@@ -26,8 +26,16 @@ time. This script exists to record how they were made and to rebuild them when a
 rule changes deliberately — never as a step in the test run. If a vector's hash
 changes because the code changed, that is the vector doing its job.
 
+**Every vector declares an outcome, and the outcome is asserted.** `index.json`
+says what a consumer must DO with each pack — load it, refuse it, load it and
+report something, load it and neutralize something — with the counts a consumer
+must report. `packages/core/test/spec-vectors.test.ts` installs every vector
+through the reference and checks those declarations; `verify.py --index` checks
+them against the fixture bytes from outside. A vector whose declaration is not
+asserted certifies nothing, which was the state of five of the first eleven.
+
 Usage:
-    python3 build.py            # rebuild every vector into ./packs/
+    python3 build.py            # rebuild every vector into ./packs/ and index.json
     python3 build.py --check    # rebuild into a temp dir and diff; exit 1 on drift
 """
 from __future__ import annotations
@@ -43,6 +51,7 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 PACKS = HERE / "packs"
+INDEX = HERE / "index.json"
 
 
 # --- serialization -----------------------------------------------------------
@@ -51,6 +60,11 @@ PACKS = HERE / "packs"
 # what we intend, since §5.5 hashes raw file bytes and forbids re-serializing
 # before hashing. And a vector whose content depends on a YAML library's emitter
 # settings is a vector that changes when that library does.
+#
+# `ensure_ascii=False` everywhere a value is emitted. `json.dumps` escapes
+# anything outside ASCII by default, so the first `non-latin` vector was pure
+# ASCII — `デ...` — and caught no encoding assumption at all. A vector that
+# claims to pin raw-byte hashing of UTF-8 must contain bytes above 0x7f.
 
 
 def engram_yaml(engrams: list[dict]) -> str:
@@ -66,12 +80,12 @@ def engram_yaml(engrams: list[dict]) -> str:
             elif isinstance(value, (int, float)):
                 rendered = str(value)
             elif isinstance(value, list):
-                rendered = "[" + ", ".join(f'"{v}"' for v in value) + "]"
+                rendered = "[" + ", ".join(json.dumps(str(v), ensure_ascii=False) for v in value) + "]"
             elif isinstance(value, dict):
-                inner = ", ".join(f"{k}: {json.dumps(v)}" for k, v in value.items())
+                inner = ", ".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in value.items())
                 rendered = "{" + inner + "}"
             else:
-                rendered = json.dumps(str(value))
+                rendered = json.dumps(str(value), ensure_ascii=False)
             out.append(f"{prefix}{key}: {rendered}")
     return "\n".join(out) + "\n"
 
@@ -129,6 +143,11 @@ BASE_ENGRAMS = [
 ]
 
 
+def without(engram: dict, *keys: str) -> dict:
+    """A copy of an engram with the named keys absent — not null, absent."""
+    return {k: v for k, v in engram.items() if k not in keys}
+
+
 def base_manifest(name: str, **extra) -> dict:
     manifest = {
         "name": name,
@@ -145,6 +164,15 @@ def base_manifest(name: str, **extra) -> dict:
     }
     manifest.update(extra)
     return manifest
+
+
+def with_provenance(name: str) -> dict:
+    return base_manifest(name, metadata={
+        "injection_policy": "on_match",
+        "match_terms": ["deploy", "migration", "pool"],
+        "engram_count": 2,
+        "provenance": True,
+    })
 
 
 def write_pack(
@@ -200,10 +228,11 @@ def write_pack(
     for rel, content in (extra_files or {}).items():
         target = d / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_bytes(content.encode("utf-8"))
 
     return {
         "pack": slug,
+        "engram_count": len(engrams),
         "computed_integrity": correct,
         "shipped_integrity": shipped,
     }
@@ -241,6 +270,20 @@ def provenance_record(engram_id: str, pack: str) -> str:
 
 
 def build(root: Path) -> list[dict]:
+    """Every vector, in the order they appear in index.json.
+
+    Index fields beyond the hash, all asserted by the TypeScript side and
+    checked against the fixture by `verify.py --index`:
+
+      expect              load | reject | load-with-report | load-neutralized | disputed
+      integrity_status    ok | modified | absent          (§5.5, §5.6.1 step 1)
+      provenance_records  readable records for shipped engrams (profile §5.4.2)
+      orphan_records      records naming an engram the pack does not ship
+      unreadable_records  records that cannot be read
+      held_private        engrams with no `visibility`, held private, reported (§5.6.1 step 2)
+      neutralized         {"pinned": n, "locked": n} — counts a consumer MUST report (§5.6.5)
+      preserves_unknown_field  a root manifest key that MUST survive (§10.3 rule 2)
+    """
     vectors: list[dict] = []
 
     def add(entry: dict, **meta) -> None:
@@ -254,7 +297,8 @@ def build(root: Path) -> list[dict]:
                    integrity=None, root=root),
         expect="load",
         integrity_status="absent",
-        note="SKILL.md + engrams.yaml only. §5.1 makes INTEGRITY optional on disk.",
+        note="SKILL.md + engrams.yaml only. §5.1 makes INTEGRITY optional on disk; "
+             "§5.6.1 step 1 makes its absence a third verdict, not a pass.",
     )
 
     add(
@@ -262,18 +306,13 @@ def build(root: Path) -> list[dict]:
                    root=root),
         expect="load",
         integrity_status="ok",
-        note="The ordinary case. Recomputing over raw bytes must reproduce the shipped value.",
+        note="The ordinary case. Recomputing over raw bytes must reproduce the shipped value (§5.5).",
     )
 
     add(
         write_pack(
             "with-provenance",
-            base_manifest("with-provenance", metadata={
-                "injection_policy": "on_match",
-                "match_terms": ["deploy", "migration", "pool"],
-                "engram_count": 2,
-                "provenance": True,
-            }),
+            with_provenance("with-provenance"),
             BASE_ENGRAMS,
             extra_files={
                 "provenance/ENG-PACK-VEC-001.jsonld": provenance_record("ENG-PACK-VEC-001", "with-provenance"),
@@ -286,7 +325,7 @@ def build(root: Path) -> list[dict]:
         provenance_records=2,
         note="§5.1: provenance/ is OPTIONAL and NOT covered by the hash. "
              "The INTEGRITY value must equal the with-integrity pack's construction, "
-             "i.e. adding records must not move it.",
+             "i.e. adding records must not move it. Profile §5.4.1: the records survive the install.",
     )
 
     add(
@@ -297,7 +336,8 @@ def build(root: Path) -> list[dict]:
         expect="load",
         integrity_status="ok",
         note="§5.5 hashes raw bytes, so UTF-8 content must hash identically in both "
-             "implementations. This is the vector that catches an encoding assumption.",
+             "implementations. The fixture carries bytes above 0x7f — the test checks "
+             "that it does — so a latin1 or ASCII assumption on either side fails here.",
     )
 
     add(
@@ -307,8 +347,8 @@ def build(root: Path) -> list[dict]:
         expect="load",
         integrity_status="ok",
         preserves_unknown_field="x-vendor",
-        note="§10.3: unknown manifest fields MUST be preserved. Root is "
-             "additionalProperties:true, so this must survive a round trip.",
+        note="§10.3 rule 2: unknown manifest fields MUST be preserved. Root is "
+             "additionalProperties:true, so the parsed manifest must still carry it.",
     )
 
     # ---- the contradiction, encoded rather than argued about ---------------
@@ -324,29 +364,18 @@ def build(root: Path) -> list[dict]:
                    BASE_ENGRAMS, root=root),
         expect="disputed",
         integrity_status="ok",
-        note="§10.3 says unknown manifest fields MUST be preserved; the published "
+        note="§10.3 rule 2 says unknown manifest fields MUST be preserved; the published "
              "schema sets metadata.additionalProperties:false and the reference has "
-             "no .passthrough(). The two disagree, so this vector asserts nothing "
-             "until #1029 decides. It exists so the decision cannot be forgotten.",
+             "no .passthrough() there. The two disagree, so this vector asserts nothing "
+             "beyond its hash until #1029 decides. It exists so the decision cannot be forgotten.",
     )
 
-    # ---- negative ----------------------------------------------------------
-
-    add(
-        write_pack("integrity-mismatch", base_manifest("integrity-mismatch"), BASE_ENGRAMS,
-                   integrity="sha256:" + "0" * 64, root=root),
-        expect="reject",
-        integrity_status="modified",
-        note="§5.5: a receiver MUST treat a mismatch as a failed integrity check.",
-    )
+    # ---- load, and report --------------------------------------------------
 
     add(
         write_pack(
             "orphan-provenance-record",
-            base_manifest("orphan-provenance-record", metadata={
-                "injection_policy": "on_match", "match_terms": ["deploy"],
-                "engram_count": 2, "provenance": True,
-            }),
+            with_provenance("orphan-provenance-record"),
             BASE_ENGRAMS,
             extra_files={
                 "provenance/ENG-PACK-VEC-001.jsonld": provenance_record("ENG-PACK-VEC-001", "orphan-provenance-record"),
@@ -356,6 +385,7 @@ def build(root: Path) -> list[dict]:
         ),
         expect="load-with-report",
         integrity_status="ok",
+        provenance_records=1,
         orphan_records=1,
         note="Profile §5.4.2: a record describing an engram the pack does not "
              "contain MUST be reported. It does not fail the install.",
@@ -364,19 +394,70 @@ def build(root: Path) -> list[dict]:
     add(
         write_pack(
             "corrupt-provenance-record",
-            base_manifest("corrupt-provenance-record", metadata={
-                "injection_policy": "on_match", "match_terms": ["deploy"],
-                "engram_count": 2, "provenance": True,
-            }),
+            with_provenance("corrupt-provenance-record"),
             BASE_ENGRAMS,
             extra_files={"provenance/ENG-PACK-VEC-001.jsonld": "{ this is not json\n"},
             root=root,
         ),
         expect="load-with-report",
         integrity_status="ok",
+        provenance_records=0,
         unreadable_records=1,
         note="Profile §5.4.2: unreadable records MUST be counted and reported, "
-             "never silently skipped. A tester's corrupt record installed with exit 0.",
+             "never silently skipped, and MUST NOT abort the install. A tester's corrupt "
+             "record installed with exit 0 and no output.",
+    )
+
+    add(
+        write_pack("omitted-visibility", base_manifest("omitted-visibility"),
+                   [BASE_ENGRAMS[0], without(BASE_ENGRAMS[1], "visibility")],
+                   root=root),
+        expect="load-with-report",
+        integrity_status="ok",
+        held_private=1,
+        note="§5.6.1 step 2: an engram with NO visibility field takes the §4.4 default "
+             "on the consumer's side. That is the consumer's assignment, not the "
+             "producer's declaration, so the pack loads; the engram is held as private "
+             "and reported, and MUST NOT be re-exported (§5.4).",
+    )
+
+    # ---- load, and neutralize ----------------------------------------------
+
+    add(
+        write_pack("pinned-engram-shipped", base_manifest("pinned-engram-shipped"),
+                   [BASE_ENGRAMS[0], {**BASE_ENGRAMS[1], "pinned": True}],
+                   root=root),
+        expect="load-neutralized",
+        integrity_status="ok",
+        neutralized={"pinned": 1, "locked": 0},
+        note="§5.4 makes stripping `pinned` a consumer MUST, and §5.6.1 step 3 requires "
+             "the count be reported per field (§5.6.5). The pack loads; the flag does not survive.",
+    )
+
+    add(
+        write_pack("locked-engram-shipped", base_manifest("locked-engram-shipped"),
+                   [BASE_ENGRAMS[0], {**BASE_ENGRAMS[1], "commitment": "locked",
+                                      "locked_at": "2026-01-01T00:00:00Z", "locked_reason": "the producer wanted this permanent"}],
+                   root=root),
+        expect="load-neutralized",
+        integrity_status="ok",
+        neutralized={"pinned": 0, "locked": 1},
+        note="§5.4 makes downgrading `commitment: locked` to `decided` a consumer MUST, "
+             "with `locked_at` and `locked_reason` removed, and §5.6.5 requires the count "
+             "per field — a pack whose only host-overriding field is a locked commitment "
+             "must not be altered in silence. The pack loads; the lock does not survive.",
+    )
+
+    # ---- refuse ------------------------------------------------------------
+
+    add(
+        write_pack("integrity-mismatch", base_manifest("integrity-mismatch"), BASE_ENGRAMS,
+                   integrity="sha256:" + "0" * 64, root=root),
+        expect="reject",
+        integrity_status="modified",
+        note="§5.5: a receiver MUST treat a mismatch as a failed integrity check; "
+             "§5.6.1 step 1: the install MUST abort unless the installer explicitly "
+             "overrides it for this pack.",
     )
 
     add(
@@ -385,35 +466,37 @@ def build(root: Path) -> list[dict]:
                    root=root),
         expect="reject",
         integrity_status="ok",
-        note="§5.4 and §4.14 invariant 7: a private engram MUST NOT be in a pack. "
-             "A conformant producer cannot emit this; a consumer must still refuse it.",
-    )
-
-    add(
-        write_pack("pinned-engram-shipped", base_manifest("pinned-engram-shipped"),
-                   [BASE_ENGRAMS[0], {**BASE_ENGRAMS[1], "pinned": True}],
-                   root=root),
-        expect="load-neutralized",
-        integrity_status="ok",
-        neutralized=1,
-        note="§5.4 makes stripping `pinned` a consumer MUST, and §5.6.1 requires it "
-             "be reported. The pack loads; the flag does not survive.",
+        note="§5.4 and §4.14 invariant 7: a private engram MUST NOT be in a pack, so a "
+             "conformant producer cannot emit this. §5.6.1 step 2: a consumer MUST refuse "
+             "a pack that DECLARES `visibility: private`, and there is no override.",
     )
 
     return vectors
 
 
+def index_document(vectors: list[dict]) -> str:
+    return json.dumps(
+        {
+            "note": "Golden pack vectors. Authored in Python, verified in TypeScript "
+                    "and Python, so neither implementation grades its own work. Every "
+                    "`expect` and every count is asserted on both sides. See build.py "
+                    "for the fields, and README.md for how to run them.",
+            "standard": "ENGRAM-STANDARD-v1.md",
+            "vectors": vectors,
+        }, indent=2, ensure_ascii=False) + "\n"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true",
-                    help="rebuild into a temp dir and fail on any difference")
+                    help="rebuild into a temp dir and fail on any difference, index.json included")
     args = ap.parse_args()
 
     if args.check:
         with tempfile.TemporaryDirectory() as tmp:
             fresh = Path(tmp) / "packs"
             fresh.mkdir()
-            build(fresh)
+            vectors = build(fresh)
             drift = []
             for path in sorted(fresh.rglob("*")):
                 if path.is_dir():
@@ -421,31 +504,30 @@ def main() -> int:
                 rel = path.relative_to(fresh)
                 committed = PACKS / rel
                 if not committed.exists():
-                    drift.append(f"missing from the repository: {rel}")
+                    drift.append(f"missing from the repository: packs/{rel}")
                 elif not filecmp.cmp(path, committed, shallow=False):
-                    drift.append(f"differs from the repository: {rel}")
+                    drift.append(f"differs from the repository: packs/{rel}")
             for path in sorted(PACKS.rglob("*")):
                 if path.is_file() and not (fresh / path.relative_to(PACKS)).exists():
-                    drift.append(f"in the repository but not rebuilt: {path.relative_to(PACKS)}")
+                    drift.append(f"in the repository but not rebuilt: packs/{path.relative_to(PACKS)}")
+            # The declarations are part of the artifact. An `expect` edited by
+            # hand to make a test pass is the same failure as an edited byte.
+            if not INDEX.exists():
+                drift.append("missing from the repository: index.json")
+            elif INDEX.read_text(encoding="utf-8") != index_document(vectors):
+                drift.append("differs from the repository: index.json")
             if drift:
                 print("Vector drift:", file=sys.stderr)
                 for d in drift:
                     print(f"  {d}", file=sys.stderr)
                 print("\nRun `python3 build.py` if the change was intended.", file=sys.stderr)
                 return 1
-            print("Vectors match what this script builds.")
+            print("Vectors and index.json match what this script builds.")
             return 0
 
     PACKS.mkdir(exist_ok=True)
     vectors = build(PACKS)
-    (HERE / "index.json").write_text(json.dumps(
-        {
-            "note": "Golden pack vectors. Authored in Python, verified in TypeScript "
-                    "and Python, so neither implementation grades its own work. "
-                    "See build.py for why, and README.md for how to run them.",
-            "standard": "ENGRAM-STANDARD-v1.md",
-            "vectors": vectors,
-        }, indent=2) + "\n")
+    INDEX.write_text(index_document(vectors), encoding="utf-8")
     print(f"Built {len(vectors)} vectors into {PACKS}")
     return 0
 

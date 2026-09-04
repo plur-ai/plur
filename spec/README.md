@@ -117,11 +117,14 @@ standard is the NGI/NLnet-fundable scope:
    (`git diff --exit-code spec/`). The divergence risk is eliminated.
 
 2. ~~**Conformance test vectors.**~~ **Partly done (#1022).** `spec/vectors/`
-   now holds 11 golden packs with known `INTEGRITY` values and 10 `.plur`
-   capsules covering magic, version, flags, header, payload and SHA-256,
-   including every §6.7 negative. They are authored in Python and verified in
-   TypeScript, and CI runs both sides. **Still missing:** per-invariant engram
-   vectors (one per §4.14 invariant), which is the third leg.
+   now holds 13 golden packs with known `INTEGRITY` values and declared
+   install outcomes (load, refuse, report, neutralize — with every count a
+   consumer must report), and 13 `.plur` capsules covering magic, version,
+   flags, header, payload, SHA-256 and the `SIGNED`/`signer` agreement,
+   including every §6.7 negative with the reason each MUST be refused for.
+   They are authored in Python and verified in TypeScript, and CI runs both
+   sides plus the drift gates. **Still missing:** per-invariant engram vectors
+   (one per §4.14 invariant), and `content_hash` vectors for §4.7.1 (#1091).
 
 3. **Ed25519 signing — finalize and implement (§7 → STABLE).** Decide and fix:
    (a) the exact capsule signed message (candidate: `preamble || header ||

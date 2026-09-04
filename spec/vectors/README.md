@@ -30,17 +30,27 @@ The bytes are **committed**, not generated at test time. `build.py` exists to
 record how they were made and to rebuild them when a rule changes deliberately —
 never as a step in the test run.
 
+**Every vector declares an outcome, and the outcome is asserted.** `index.json`
+says what a consumer must do with each pack — load it, refuse it, load it and
+report something, load it and neutralize something — with the counts a consumer
+MUST report (§5.6.5, profile §5.4.2). The TypeScript side installs every vector
+through the reference and checks the declaration; `verify.py --index` checks the
+same declaration against the fixture bytes from outside. A vector whose
+declaration is not asserted certifies nothing: the first eleven included a
+`reject` that installed, a `neutralized: 1` nothing checked, and a "non-Latin"
+fixture that was pure ASCII.
+
 ## Layout
 
 ```
 vectors/
-├── build.py            builds the pack vectors        (Python, stdlib only)
-├── build_capsules.py   builds the capsule fixtures    (Python, stdlib only)
-├── verify.py           checks packs from outside      (Python, stdlib only)
-├── index.json          the packs and what to expect
-├── capsules.json       the capsules and what to expect
-├── packs/              11 pack directories
-└── capsules/           10 .plur files
+├── build.py            builds the pack vectors and index.json     (Python, stdlib only)
+├── build_capsules.py   builds the capsule fixtures and capsules.json
+├── verify.py           checks packs, declarations and capsules from outside
+├── index.json          the packs, what to expect, and every count to report
+├── capsules.json       the capsules, what to expect, and the reason for each rejection
+├── packs/              13 pack directories
+└── capsules/           13 .plur files
 ```
 
 The TypeScript side is `packages/core/test/spec-vectors.test.ts`, which runs in
@@ -49,15 +59,22 @@ the ordinary suite.
 ## Running them
 
 ```bash
-# From outside the reference, no Node required — what a third party runs
-python3 verify.py --index index.json
+# From outside the reference, no Node required — what a third party runs.
+# --index checks index.json's declarations against the fixture bytes;
+# --capsules checks each .plur fixture's size and SHA-256 against capsules.json.
+python3 verify.py --index index.json --capsules capsules.json
 
 # The reference's side
 pnpm vitest run packages/core/test/spec-vectors.test.ts
 
-# Did anybody edit a vector by hand?
+# Did anybody edit a vector, an index entry, or a capsule by hand?
 python3 build.py --check
+python3 build_capsules.py --check
 ```
+
+CI runs all three before the type-check and before `pnpm test`, because they
+need neither Node nor a build, and a gate that only runs when everything else
+already passes is not a gate.
 
 `verify.py` needs **no dependencies at all** — that is deliberate, so a producer
 can run it anywhere, including in a container that has no package index.
@@ -68,27 +85,41 @@ can run it anywhere, including in a container that has no package index.
 
 | Vector | Expect | What it pins down |
 |---|---|---|
-| `minimal` | load | `INTEGRITY` is OPTIONAL on disk (§5.1) |
+| `minimal` | load | `INTEGRITY` is OPTIONAL on disk (§5.1); its absence is a third verdict, not a pass (§5.6.1 step 1) |
 | `with-integrity` | load | the ordinary case: recomputing over raw bytes reproduces the shipped value |
-| `with-provenance` | load | `provenance/` is OPTIONAL and **not covered by the hash** — adding records must not move it |
-| `non-latin` | load | §5.5 hashes raw bytes; the only vector that catches an encoding assumption |
-| `unknown-root-field` | load | §10.3: unknown manifest fields at root MUST survive |
+| `with-provenance` | load | `provenance/` is OPTIONAL and **not covered by the hash**; the records survive the install (profile §5.4.1) |
+| `non-latin` | load | §5.5 hashes raw bytes; the fixture is checked to contain bytes above 0x7f, so an encoding assumption has somewhere to fail |
+| `unknown-root-field` | load | §10.3 rule 2: an unknown root manifest field survives into the parsed manifest |
 | `unknown-metadata-field` | **disputed** | see below |
-| `integrity-mismatch` | reject | §5.5: a mismatch MUST be a failed integrity check |
-| `orphan-provenance-record` | load, report | profile §5.4.2: a record naming an engram not in the pack |
-| `corrupt-provenance-record` | load, report | profile §5.4.2: unreadable records are counted, never silently skipped |
-| `private-engram-shipped` | reject | §4.14 invariant 7: a producer cannot emit this, and a consumer must still refuse it |
-| `pinned-engram-shipped` | load, neutralized | §5.4: `pinned` MUST be stripped on import and the stripping reported |
+| `orphan-provenance-record` | load, report | profile §5.4.2: a record naming an engram not in the pack — counted by name, never opened |
+| `corrupt-provenance-record` | load, report | profile §5.4.2: an unreadable record is counted, never silently skipped, and never aborts the install |
+| `omitted-visibility` | load, report | §5.6.1 step 2: no `visibility` field is the consumer's default, not the producer's declaration — held private, reported, not refused |
+| `pinned-engram-shipped` | load, neutralized | §5.4 / §5.6.1 step 3: `pinned` MUST be stripped on import and the count reported |
+| `locked-engram-shipped` | load, neutralized | §5.4 / §5.6.5: `commitment: locked` MUST be downgraded, `locked_at` and `locked_reason` removed, and the count reported per field |
+| `integrity-mismatch` | reject | §5.5 / §5.6.1 step 1: refused as tampered; only an explicit per-pack override installs it |
+| `private-engram-shipped` | reject | §5.6.1 step 2: a pack that DECLARES `visibility: private` is refused, with no override |
+
+The TypeScript side asserts, for every loaded vector, the full set of counts —
+`neutralized.pinned`, `neutralized.locked`, `provenance_records`,
+`orphan_records`, `unreadable_records`, `held_private` — including the zeros.
+A `load` vector that quietly ships `pinned` and passes would mean the reference
+stopped stripping it, so the zeros are declarations too.
 
 ### Capsules
 
-One valid capsule and nine rejections, one per §6.7 check: bad magic, unknown
-`FormatVersion`, a set reserved flag bit, declared-size mismatch, SHA-256
-mismatch, a truncated preamble, a truncated payload, `COMPRESSED` disagreeing
-with the payload descriptor, and `SIGNED` with no trailer.
+One valid capsule and twelve rejections, one per §6.7 check: bad magic, unknown
+`FormatVersion`, a set reserved flag bit, a truncated preamble, a truncated
+header, declared-size mismatch, a truncated payload, a `SIGNED` payload region
+that underflows, SHA-256 mismatch, `COMPRESSED` disagreeing with the payload
+descriptor, `SIGNED` with `signer: null`, and a signer with `SIGNED` clear.
 
 The negatives carry the weight. §6.7 lists checks a reader MUST perform, and a
-check nobody has seen fail is not a check.
+check nobody has seen fail is not a check — and a check that fails for the
+wrong reason has not been seen to fail either. **Every rejection names its
+`reason`**, a regular expression the reader's error MUST match, and the test
+asserts it. The first `signed-flag-without-signature` fixture was refused as a
+payload size mismatch and the first `truncated-payload` was cut inside the
+header, so the two checks they named were never reached by any fixture at all.
 
 **§6 had no producer and no consumer anywhere** when these were written —
 `capsule.ts` can read and write capsules and nothing calls it. So these are the
@@ -110,6 +141,26 @@ Asserting either behaviour here would settle it by accident. What the vector doe
 assert is that its hash agrees across implementations either way — and that the
 question cannot be quietly forgotten, because a file in this directory is asking
 it.
+
+## What keeps the vectors honest
+
+Three gates, each catching a different way the suite could go quiet:
+
+- **Against hand edits** — `build.py --check` and `build_capsules.py --check`
+  rebuild everything into a temporary directory and diff it against what is
+  committed, `index.json` and `capsules.json` included. An `expect` changed to
+  make a test pass is the same failure as a changed byte.
+- **Against the spec text** — every `§x.y` a vector's note cites must resolve
+  to a heading in the standard (or the profile, where the note says so), and
+  every "step N", "rule N" and "invariant N" to a numbered item under it.
+  Renumber a section and the vectors say which citations broke.
+- **Against the implementation** — the counts a vector declares are read from
+  the same `InstallResult` and `PackProvenanceView` fields a user sees. Each
+  gate was checked by mutation: a hand-edited `expect`, a flipped capsule byte,
+  a reference that stops stripping `pinned`, stops refusing a declared private
+  engram, stops counting orphans, closes the manifest root again, drops the
+  `SIGNED`/`signer` check, a renumbered §6.7, and an ASCII-escaped `non-latin`
+  fixture each turn at least one check red, and nothing else.
 
 ## When a vector fails
 

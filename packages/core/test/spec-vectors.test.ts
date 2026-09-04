@@ -16,19 +16,45 @@
  * vectors exist for — anything ambiguous in §5 surfaces there as a silent
  * disagreement, and this is what turns it back into a loud one.
  *
+ * Invariants this file holds (review of #1043):
+ *
+ *  1. Every vector's declared OUTCOME is asserted through the reference —
+ *     `installPack` and `previewPack`, not `readFileSync`. A vector that says
+ *     `reject` is installed and must throw; one that says `load-neutralized`
+ *     must install with exactly the counts it declares. A vector whose
+ *     declaration is not asserted certifies nothing.
+ *  2. No vector can silently diverge from the spec text: every `§x.y` a note
+ *     cites resolves to a heading in the standard (or the profile, when it says
+ *     so), and every "step N" / "rule N" / "invariant N" resolves to a numbered
+ *     item under that heading. Renumber a section and the vectors say so.
+ *  3. No vector can silently diverge from the implementation: the counts come
+ *     from the same `InstallResult` and `PackProvenanceView` fields a user sees,
+ *     so a reference that stops stripping `pinned`, stops counting orphans, or
+ *     starts accepting a declared private engram turns a vector red.
+ *  4. A capsule is refused for the reason it was built to trigger, asserted
+ *     against `capsules.json`'s `reason`, not merely refused.
+ *  5. The `non-latin` fixture contains bytes above 0x7f, checked, so an
+ *     encoding assumption on either side has somewhere to fail.
+ *
  * When a vector fails, the question is which side is wrong. Do not "fix" the
  * vector to match the code without establishing that first.
  */
-import { describe, it, expect } from 'vitest'
-import { readFileSync, existsSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { computePackHash, verifyPackIntegrity, previewPack } from '../src/packs.js'
+import { computePackHash, verifyPackIntegrity, previewPack, installPack } from '../src/packs.js'
+import { loadEngrams } from '../src/engrams.js'
+import { readCapsule } from '../src/capsule.js'
 
-const VECTORS = resolve(__dirname, '..', '..', '..', 'spec', 'vectors')
+const SPEC = resolve(__dirname, '..', '..', '..', 'spec')
+const VECTORS = join(SPEC, 'vectors')
 const PACKS = join(VECTORS, 'packs')
+const CAPSULES = join(VECTORS, 'capsules')
 
 interface Vector {
   pack: string
+  engram_count: number
   computed_integrity: string
   shipped_integrity: string | null
   expect: 'load' | 'reject' | 'load-with-report' | 'load-neutralized' | 'disputed'
@@ -37,27 +63,56 @@ interface Vector {
   provenance_records?: number
   orphan_records?: number
   unreadable_records?: number
-  neutralized?: number
+  held_private?: number
+  neutralized?: { pinned: number; locked: number }
   preserves_unknown_field?: string
 }
 
-const index = JSON.parse(readFileSync(join(VECTORS, 'index.json'), 'utf8')) as {
-  vectors: Vector[]
+interface CapsuleVector {
+  capsule: string
+  expect: 'accept' | 'reject'
+  reason: string | null
+  bytes: number
+  sha256: string
+  note: string
 }
 
+const index = JSON.parse(readFileSync(join(VECTORS, 'index.json'), 'utf8')) as { vectors: Vector[] }
+const capsuleIndex = JSON.parse(readFileSync(join(VECTORS, 'capsules.json'), 'utf8')) as { capsules: CapsuleVector[] }
+
 const dirOf = (v: Vector) => join(PACKS, v.pack)
+const byName = (n: string) => {
+  const v = index.vectors.find(x => x.pack === n)
+  if (!v) throw new Error(`no vector named ${n} in index.json`)
+  return v
+}
+
+let packsDir: string
+beforeEach(() => { packsDir = mkdtempSync(join(tmpdir(), 'plur-spec-vectors-')) })
+afterEach(() => rmSync(packsDir, { recursive: true, force: true }))
+
+const install = (v: Vector, opts?: Parameters<typeof installPack>[3]) => installPack(packsDir, dirOf(v), undefined, opts)
+
+// ---------------------------------------------------------------------------
 
 describe('golden pack vectors — the hash', () => {
   for (const v of index.vectors) {
     it(`${v.pack}: computePackHash reproduces the value Python computed`, () => {
       // The one assertion that makes these vectors worth having. Python built
       // the bytes and hashed them; this is TypeScript hashing the same bytes.
-      expect(
-        `sha256:${computePackHash(dirOf(v))}`,
-        `${v.pack} — ${v.note}`,
-      ).toBe(v.computed_integrity)
+      expect(`sha256:${computePackHash(dirOf(v))}`, `${v.pack} — ${v.note}`).toBe(v.computed_integrity)
     })
   }
+
+  it('the non-latin fixture really is non-ASCII, so an encoding assumption has somewhere to fail', () => {
+    // The first version of this vector was pure ASCII — `\\u30c7…` escapes —
+    // and decoding the file as latin1 before hashing left the suite green.
+    const v = byName('non-latin')
+    const bytes = readFileSync(join(dirOf(v), 'engrams.yaml'))
+    expect(bytes.some(b => b > 0x7f), 'engrams.yaml must contain bytes above 0x7f').toBe(true)
+    // And the hash is over those bytes, not over any decoding of them.
+    expect(`sha256:${computePackHash(dirOf(v))}`).toBe(v.computed_integrity)
+  })
 })
 
 describe('golden pack vectors — the integrity verdict', () => {
@@ -70,96 +125,162 @@ describe('golden pack vectors — the integrity verdict', () => {
   it('an absent INTEGRITY file is not the same verdict as a mismatched one', () => {
     // §5.5 makes the file optional on disk, so "the pack shipped none" and "the
     // pack shipped one and it is wrong" are different facts about trust.
-    const absent = index.vectors.find(v => v.integrity_status === 'absent')!
-    const modified = index.vectors.find(v => v.integrity_status === 'modified')!
-    expect(verifyPackIntegrity(dirOf(absent)).status).toBe('absent')
-    expect(verifyPackIntegrity(dirOf(modified)).status).toBe('modified')
+    expect(verifyPackIntegrity(dirOf(byName('minimal'))).status).toBe('absent')
+    expect(verifyPackIntegrity(dirOf(byName('integrity-mismatch'))).status).toBe('modified')
   })
 })
 
-describe('golden pack vectors — what the reference does with each', () => {
-  const byName = (n: string) => index.vectors.find(v => v.pack === n)!
+// ---------------------------------------------------------------------------
 
-  it('loads a minimal pack that ships no INTEGRITY at all', async () => {
-    const preview = await previewPack(dirOf(byName('minimal')))
-    expect(preview.engram_count).toBe(2)
-    expect(preview.integrity.status).toBe('absent')
+describe('golden pack vectors — the declared outcome, through installPack', () => {
+  for (const v of index.vectors) {
+    if (v.expect === 'disputed') continue
+
+    it(`${v.pack}: ${v.expect}`, async () => {
+      const preview = await previewPack(dirOf(v))
+      expect(preview.engram_count, 'engram_count').toBe(v.engram_count)
+
+      if (v.expect === 'reject') {
+        await expect(install(v)).rejects.toThrow()
+        // Refused means refused: no directory, no registry row.
+        expect(existsSync(join(packsDir, v.pack))).toBe(false)
+        expect(existsSync(join(packsDir, 'registry.json')) && readFileSync(join(packsDir, 'registry.json'), 'utf8').includes(v.pack)).toBe(false)
+        return
+      }
+
+      const result = await install(v)
+      expect(result.installed).toBe(v.engram_count)
+      expect(result.integrity_check.status).toBe(v.integrity_status)
+
+      // §5.6.5: the counts, every one, for every loaded vector. Zero is a
+      // declaration too — a `load` vector that ships `pinned` and passes would
+      // mean the reference stopped stripping it.
+      const neutral = v.neutralized ?? { pinned: 0, locked: 0 }
+      expect(result.neutralized).toEqual({ pinned_stripped: neutral.pinned, locked_downgraded: neutral.locked })
+      const prov = preview.provenance
+      expect(prov.record_count, 'provenance_records').toBe(v.provenance_records ?? 0)
+      expect(prov.orphan_records, 'orphan_records').toBe(v.orphan_records ?? 0)
+      expect(prov.unreadable_records, 'unreadable_records').toBe(v.unreadable_records ?? 0)
+      const heldPrivate = preview.security.issues.filter(i => i.type === 'private_visibility' && i.declared === false).length
+      expect(heldPrivate, 'held_private').toBe(v.held_private ?? 0)
+      expect(preview.security.issues.some(i => i.type === 'private_visibility' && i.declared === true)).toBe(false)
+
+      if (v.expect === 'load') {
+        expect(preview.security.clean, 'a `load` vector is clean').toBe(true)
+      }
+    })
+  }
+})
+
+describe('golden pack vectors — what each rule looks like on the reference', () => {
+  it('integrity-mismatch: refused as tampered, and only an explicit per-pack override installs it (§5.6.1 step 1)', async () => {
+    const v = byName('integrity-mismatch')
+    await expect(install(v)).rejects.toThrow(/does not match the integrity value/)
+    // The override is the one §5.6.1 step 1 permits — explicit, for this pack.
+    const result = await install(v, { allowModified: true })
+    expect(result.installed).toBe(2)
+    expect(result.integrity_check.status).toBe('modified')
   })
 
-  it('hashes non-Latin content identically to Python', async () => {
-    // Raw bytes, per §5.5. A UTF-8 assumption on either side shows up here and
-    // nowhere else, because every other vector is ASCII.
-    const v = byName('non-latin')
-    expect(`sha256:${computePackHash(dirOf(v))}`).toBe(v.computed_integrity)
-    expect((await previewPack(dirOf(v))).engram_count).toBe(2)
-  })
-
-  it('refuses a pack whose shipped integrity does not match its bytes', () => {
-    expect(verifyPackIntegrity(dirOf(byName('integrity-mismatch'))).status).toBe('modified')
-  })
-
-  it('adding provenance records does not move the integrity value', () => {
-    // §5.1: provenance/ is not covered by the §5.5 hash. So the hash of a pack
-    // with records must equal the hash of the same SKILL.md and engrams.yaml
-    // without them. Verified by construction: recompute ignoring the directory.
-    const v = byName('with-provenance')
-    expect(existsSync(join(dirOf(v), 'provenance'))).toBe(true)
-    expect(`sha256:${computePackHash(dirOf(v))}`).toBe(v.computed_integrity)
-    expect(verifyPackIntegrity(dirOf(v)).status).toBe('ok')
-  })
-
-  it('reads the provenance a pack ships, and counts the records', async () => {
-    const preview = await previewPack(dirOf(byName('with-provenance')))
-    expect(preview.provenance.present).toBe(true)
-    expect(preview.provenance.record_count).toBe(2)
-    expect(preview.provenance.verified).toBe(false)
-  })
-
-  it('notices a record describing an engram the pack does not contain', async () => {
-    // Profile §5.4.2. This must be reported, and must not fail the load.
-    const preview = await previewPack(dirOf(byName('orphan-provenance-record')))
-    expect(preview.provenance.present).toBe(true)
-    expect(preview.engram_count).toBe(2)
-  })
-
-  it('survives an unreadable provenance record without throwing', async () => {
-    const preview = await previewPack(dirOf(byName('corrupt-provenance-record')))
-    expect(preview.provenance.present).toBe(true)
-    expect(preview.engram_count).toBe(2)
-  })
-
-  it('flags a pack shipping a private engram', async () => {
-    // §4.14 invariant 7 and §5.4: a conformant producer cannot emit this. A
-    // consumer must still refuse it, since it cannot assume the producer complied.
-    const preview = await previewPack(dirOf(byName('private-engram-shipped')))
+  it('private-engram-shipped: refused because the pack DECLARES it, naming the engram, with no override (§5.6.1 step 2)', async () => {
+    const v = byName('private-engram-shipped')
+    const preview = await previewPack(dirOf(v))
     expect(preview.security.clean).toBe(false)
-    expect(preview.security.issues.some(i => i.type === 'private_visibility')).toBe(true)
+    expect(preview.security.issues.some(i => i.type === 'private_visibility' && i.declared === true)).toBe(true)
+    expect(preview.warnings.join('\n')).toMatch(/declare visibility: private/)
+    await expect(install(v)).rejects.toThrow(/declare visibility: private[\s\S]*ENG-PACK-VEC-002/)
+    // Every option the reference has, and it still refuses.
+    await expect(install(v, { allowInjection: true, allowModified: true })).rejects.toThrow(/declare visibility: private/)
   })
 
-  it('preserves an unknown manifest field at the root', async () => {
-    // §10.3: unknown manifest fields MUST be preserved. Root is open-world.
+  it('omitted-visibility: held as private on this side and reported, not refused (§5.6.1 step 2)', async () => {
+    const v = byName('omitted-visibility')
+    const result = await install(v)
+    const installed = loadEngrams(join(packsDir, v.pack, 'engrams.yaml'))
+    expect(installed.find(e => e.id === 'ENG-PACK-VEC-002')?.visibility).toBe('private')
+    expect(installed.find(e => e.id === 'ENG-PACK-VEC-001')?.visibility).toBe('public')
+    expect(result.security.issues.find(i => i.engram_id === 'ENG-PACK-VEC-002')?.declared).toBe(false)
+  })
+
+  it('pinned-engram-shipped: the flag does not survive, and the installer is told (§5.4, §5.6.1 step 3)', async () => {
+    const v = byName('pinned-engram-shipped')
+    expect((await previewPack(dirOf(v))).warnings.join('\n')).toMatch(/1 engram\(s\) marked pinned/)
+    const result = await install(v)
+    expect(result.neutralized.pinned_stripped).toBe(1)
+    const raw = readFileSync(join(packsDir, v.pack, 'engrams.yaml'), 'utf8')
+    expect(raw).not.toMatch(/pinned/)
+    for (const e of loadEngrams(join(packsDir, v.pack, 'engrams.yaml'))) expect((e as { pinned?: boolean }).pinned).not.toBe(true)
+  })
+
+  it('locked-engram-shipped: the lock does not survive, its reason goes with it, and the installer is told (§5.4, §5.6.5)', async () => {
+    const v = byName('locked-engram-shipped')
+    expect((await previewPack(dirOf(v))).warnings.join('\n')).toMatch(/1 engram\(s\) carry commitment: locked/)
+    const result = await install(v)
+    expect(result.neutralized.locked_downgraded).toBe(1)
+    const raw = readFileSync(join(packsDir, v.pack, 'engrams.yaml'), 'utf8')
+    expect(raw).not.toMatch(/locked/)
+    const e = loadEngrams(join(packsDir, v.pack, 'engrams.yaml')).find(x => x.id === 'ENG-PACK-VEC-002') as Record<string, unknown>
+    expect(e.commitment).toBe('decided')
+    expect(e.locked_at).toBeUndefined()
+    expect(e.locked_reason).toBeUndefined()
+  })
+
+  it('with-provenance: the records travel through the install and are read there too (profile §5.4.1)', async () => {
+    const v = byName('with-provenance')
+    await install(v)
+    const installed = join(packsDir, v.pack)
+    expect(existsSync(join(installed, 'provenance', 'ENG-PACK-VEC-001.jsonld'))).toBe(true)
+    const after = (await previewPack(installed)).provenance
+    expect(after.record_count).toBe(2)
+    expect(after.verified).toBe(false)
+    expect(after.licences.map(l => ({ name: l.name, sources: l.sources })))
+      .toEqual([{ name: 'cc-by-4.0', sources: ['inheritedFromPack'] }])
+  })
+
+  it('orphan-provenance-record: the stray record is counted by name, never opened, and travels with the pack (profile §5.4.2)', async () => {
+    const v = byName('orphan-provenance-record')
+    const prov = (await previewPack(dirOf(v))).provenance
+    expect(prov.orphan_records).toBe(1)
+    expect(prov.notes.join(' ')).toMatch(/1 provenance record\(s\) describe engrams this pack does not contain/)
+    await install(v)
+    expect(existsSync(join(packsDir, v.pack, 'provenance', 'ENG-PACK-VEC-999.jsonld'))).toBe(true)
+  })
+
+  it('corrupt-provenance-record: one unreadable record, reported, and the pack still installs (profile §5.4.2)', async () => {
+    const v = byName('corrupt-provenance-record')
+    const prov = (await previewPack(dirOf(v))).provenance
+    expect(prov.unreadable_records).toBe(1)
+    expect(prov.notes.join(' ')).toMatch(/could not be read/)
+    expect((await install(v)).installed).toBe(2)
+  })
+
+  it('unknown-root-field: the parsed manifest still carries the field (§10.3 rule 2)', async () => {
     const v = byName('unknown-root-field')
-    const raw = readFileSync(join(dirOf(v), 'SKILL.md'), 'utf8')
-    expect(raw).toContain('x-vendor')
-    expect((await previewPack(dirOf(v))).engram_count).toBe(2)
+    const manifest = (await previewPack(dirOf(v))).manifest as Record<string, unknown>
+    expect(manifest[v.preserves_unknown_field!]).toBe('something-we-do-not-know')
+    // And the installed copy is byte-for-byte the shipped SKILL.md.
+    await install(v)
+    expect(readFileSync(join(packsDir, v.pack, 'SKILL.md'), 'utf8')).toContain('x-vendor: "something-we-do-not-know"')
   })
 })
 
 describe('the disputed vector', () => {
-  it('is carried without an assertion, because the specs disagree', () => {
+  it('is carried without an outcome assertion, because the specs disagree', () => {
     // `unknown-metadata-field` exists to hold a contradiction open rather than
     // to pass or fail. §10.3 says unknown manifest fields MUST be preserved;
     // the published schema sets metadata.additionalProperties:false and the
-    // reference has no .passthrough(). Asserting either way here would pick a
-    // winner that #1029 has not picked.
+    // reference has no .passthrough() there. Asserting either way here would
+    // pick a winner that #1029 has not picked.
     //
     // What IS asserted: the vector exists, so the decision cannot be quietly
     // forgotten, and its hash agrees across implementations either way.
-    const v = index.vectors.find(x => x.pack === 'unknown-metadata-field')!
+    const v = byName('unknown-metadata-field')
     expect(v.expect).toBe('disputed')
     expect(`sha256:${computePackHash(dirOf(v))}`).toBe(v.computed_integrity)
   })
 })
+
+// ---------------------------------------------------------------------------
 
 describe('golden capsule fixtures — §6', () => {
   // §6 is STABLE and `capsule.ts` has no caller anywhere outside its own tests.
@@ -167,31 +288,79 @@ describe('golden capsule fixtures — §6', () => {
   // time the reader has been asked to agree with somebody else's encoder.
   //
   // The negatives carry the weight: §6.7 lists checks a reader MUST perform, and
-  // a check nobody has seen fail is not a check.
-  const CAPSULES = join(VECTORS, 'capsules')
-  const capsuleIndex = JSON.parse(
-    readFileSync(join(VECTORS, 'capsules.json'), 'utf8'),
-  ) as { capsules: Array<{ capsule: string; expect: 'accept' | 'reject'; note: string }> }
-
+  // a check nobody has seen fail is not a check — and a check that fails for
+  // the wrong reason has not been seen to fail either.
   for (const c of capsuleIndex.capsules) {
-    it(`${c.capsule.replace('.plur', '')} — ${c.expect}s`, async () => {
-      const { readCapsule } = await import('../src/capsule.js')
-      const bytes = readFileSync(join(CAPSULES, c.capsule))
-      if (c.expect === 'accept') {
-        const result = readCapsule(bytes)
-        expect(result, c.note).toBeDefined()
-      } else {
-        // A rejection may surface as a throw or as a falsy result; both refuse
-        // to act on the capsule, which is what §6.7 requires. What must NOT
-        // happen is a successful parse.
-        let refused = false
-        try {
-          const result = readCapsule(bytes)
-          refused = !result
-        } catch {
-          refused = true
+    const bytes = () => readFileSync(join(CAPSULES, c.capsule))
+
+    it(`${c.capsule}: the committed bytes are the ones capsules.json describes`, () => {
+      const data = bytes()
+      expect(data.length).toBe(c.bytes)
+      const { createHash } = require('node:crypto') as typeof import('node:crypto')
+      expect(createHash('sha256').update(data).digest('hex')).toBe(c.sha256)
+    })
+
+    if (c.expect === 'accept') {
+      it(`${c.capsule.replace('.plur', '')} — accepts`, () => {
+        const result = readCapsule(bytes())
+        expect(result.header.schema).toBe('plur.capsule/1')
+        expect(result.header.manifest_summary.engram_count).toBe(1)
+        expect(c.reason).toBeNull()
+      })
+    } else {
+      it(`${c.capsule.replace('.plur', '')} — rejects, and for the reason it names`, () => {
+        // A throw is required, and the message must match `reason`: a fixture
+        // refused for any other reason has not exercised the check it claims.
+        expect(c.reason, `${c.capsule}: a rejection must name its reason`).toBeTruthy()
+        expect(() => readCapsule(bytes()), `${c.capsule}: ${c.note}`).toThrow(new RegExp(c.reason!))
+      })
+    }
+  }
+})
+
+// ---------------------------------------------------------------------------
+
+describe('the vectors cite spec text that exists', () => {
+  // A vector's note is its justification. If §5.6.1 is renumbered, or "step 3"
+  // becomes step 4, the note becomes a citation to something else and nobody
+  // notices — this is the gate that notices.
+  const standard = readFileSync(join(SPEC, 'ENGRAM-STANDARD-v1.md'), 'utf8')
+  const profile = readFileSync(join(SPEC, 'ENGRAM-PROVENANCE-PROFILE.md'), 'utf8')
+
+  /** The body of the section a heading like `### 5.6` / `#### 5.6.1` / `## 8.` introduces. */
+  const sectionBody = (doc: string, num: string): string | undefined => {
+    const lines = doc.split('\n')
+    const heading = new RegExp(`^#{1,6}\\s+${num.replace(/\./g, '\\.')}(?:\\.|\\s)`)
+    const start = lines.findIndex(l => heading.test(l))
+    if (start < 0) return undefined
+    const depth = lines[start].match(/^#+/)![0].length
+    let end = lines.length
+    for (let i = start + 1; i < lines.length; i++) {
+      const m = lines[i].match(/^(#+)\s/)
+      if (m && m[1].length <= depth) { end = i; break }
+    }
+    return lines.slice(start + 1, end).join('\n')
+  }
+
+  const notes = [
+    ...index.vectors.map(v => ({ who: v.pack, note: v.note })),
+    ...capsuleIndex.capsules.map(c => ({ who: c.capsule, note: c.note })),
+  ]
+
+  for (const { who, note } of notes) {
+    it(`${who}: every § it cites resolves`, () => {
+      const cites = [...note.matchAll(/(profile\s+)?§(\d+(?:\.\d+)*)(?:\s+(step|rule|invariant)\s+(\d+))?/gi)]
+      expect(cites.length, `${who} cites nothing — a vector must say which rule it pins`).toBeGreaterThan(0)
+      for (const [, inProfile, num, kind, n] of cites) {
+        const doc = inProfile ? profile : standard
+        const body = sectionBody(doc, num)
+        expect(body, `${who}: §${num}${inProfile ? ' (profile)' : ''} has no heading`).toBeDefined()
+        if (kind && n) {
+          // "step 8" of §6.7 is the line that starts `8.`; "rule 2" of §10.3
+          // and "invariant 7" of §4.14 the same.
+          const item = new RegExp(`^\\s*${n}\\.\\s`, 'm')
+          expect(item.test(body!), `${who}: §${num} has no ${kind} ${n}`).toBe(true)
         }
-        expect(refused, `${c.capsule}: ${c.note}`).toBe(true)
       }
     })
   }
