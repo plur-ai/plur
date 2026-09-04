@@ -147,7 +147,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
           // written before the field existed, and then nothing is printed
           // rather than something guessed.
           if (l.sources.length) {
-            outputText(`                 how: ${l.sources.map(src => LICENCE_SOURCE_WORDS[src] ?? src).join('; ')}`)
+            // Never the raw value: core keeps the set closed, and if that ever
+            // slipped, a stranger's string still would not reach this line.
+            outputText(`                 how: ${l.sources.map(src => LICENCE_SOURCE_WORDS[src] ?? '(unrecognised)').join('; ')}`)
           }
         }
         for (const n of prov.notes) outputText(`  • ${n}`)
