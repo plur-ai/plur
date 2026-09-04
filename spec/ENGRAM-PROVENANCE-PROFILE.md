@@ -8,7 +8,7 @@ that part should work.
 
 | | |
 |---|---|
-| **Version** | 0.8 (draft) |
+| **Version** | 0.9 (draft) |
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
 | **Companion to** | [The Engram Standard, version 1.6](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
@@ -19,6 +19,7 @@ that part should work.
 
 | Version | Date | What changed |
 |---|---|---|
+| 0.9 | 2026-09-04 | Review of plur-ai/plur#1044. Section 5.4.2 defines *unreadable* and *orphaned* and requires that a record a consumer cannot read never aborts the preview or install of its pack — the promise 0.6 made in the word "report", stated as the rule it is. Section 8.4 closes the `engram:licenseSource` set: four values, any other treated as absent and reported, never carried onto a typed surface. |
 | 0.8 | 2026-08-28 | Review corrections. §5.4.2's "none of these MUST fail the install" was ambiguous in RFC 2119 terms and said close to the opposite of what was meant; it now reads "a consumer MAY proceed despite any of these; it MUST report every one." §5.4.3 now says what becomes of the producer's own `provenance.origin` when the consumer writes `pack:<name>@<version>` — overwritten on the engram because it names the producer's store, preserved in the retained record, and optionally appended to the chain, but never silently discarded. |
 | 0.7 | 2026-08-27 | Section 4.2 rewritten, keyed on the `content_hash` test rather than on whether meaning changed — and sections 10.2 and 14.1 downgraded, following Engram Standard §4.7.1 *changing an engram*. Version-scoped identifiers were introduced because a rewritten statement is not the same thing as the one it replaced; under §4.7.1 a rewritten statement is a separate engram, so the identifier already carries the distinction. Section 10.2 *version history* is no longer required for 4.2, and 14.1's stated blocker — that the shape of a record would depend on which code path ran — is what §4.7.1 exists to prevent. |
 | 0.6 | 2026-08-27 | Section 5.4 added, "Receiving a pack's provenance". Everything before it was written from the producer's side, which is why the reference builds a record for every exported pack and its installer deletes the directory without a word — nothing told it not to. The section requires a consumer to keep the received directory as evidence rather than content, to report what it found (a tester's corrupt, missing and orphaned records all installed silently with exit code 0), and to record `pack:<name>@<version>` as the origin of anything installed. It forbids merging a received `attribution` or `claim_class` into the store unqualified — the tempting option, and the one that launders a stranger's claims — while permitting the values to be kept where the intermediary is named, exactly as section 8.4 does for an inherited licence. Also covers re-export, where forwarding and laundering are actually distinguished, and states plainly that none of this verifies anything. |
@@ -818,6 +819,18 @@ A consumer MAY proceed despite any of these; it MUST report every one. The
 earlier phrasing here read "none of these MUST fail the install", which in
 RFC 2119 terms says something close to the opposite of what was meant.
 
+A record is **unreadable** when it is not a JSON document, is not a JSON object,
+has no `@graph` array, or is larger than the consumer is prepared to read; a
+node in the graph that is not an object is skipped, not fatal. A record is
+**orphaned** when its file name (section 5.3.1: `<id>.jsonld`) is not the id of
+any engram the pack ships — decided by name, without opening the file, since
+whatever it says is about an engram that is not here. A consumer MUST NOT let a
+record it cannot read abort the preview or the install of the pack it arrived
+in: one crafted file counts as one unreadable record and nothing more. That is
+what "degrades gracefully" means here, and it was not what the reference did —
+`{"@graph": {}}` in one file threw a TypeError out of both preview and install
+until it was fenced.
+
 The failure this guards against was observed rather than imagined: a tester
 replaced one record with invalid JSON, deleted two others, and added a record for
 an engram that was not in the pack. All three installed with exit code 0 and no
@@ -1269,6 +1282,13 @@ looked at.
 
 Precedence runs down that table: the engram's own licence beats the pack's, which
 beats the configured default, which beats the schema.
+
+**The set is closed.** `engram:licenseSource` MUST be one of the four values
+above. A reader of a record somebody else wrote MUST treat any other value as
+though the field were absent — falling back to `engram:licenseIsDefault`, and
+reporting that it did so — and MUST NOT carry the unrecognised string onto any
+typed surface. A pack's records are a stranger's files; a fifth value is not a
+fifth state, it is free text.
 
 ```json
 "engram:license": "cc-by-sa-4.0",

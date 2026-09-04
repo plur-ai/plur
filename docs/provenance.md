@@ -257,6 +257,13 @@ default, and lists the unpicked one among the things nobody recorded. The
 licence is the one field here with legal weight, so it is the last one that
 should quietly look like a decision.
 
+There are four ways a licence gets there, not two — chosen for the engram,
+inherited from the pack it was exported in, the author's configured default, or
+the schema default nobody looked at — and `plur packs preview` prints which,
+under each licence line, when the pack's records say. A record that carries
+anything else in that field is read as though it said nothing: the four values
+are a closed set, and a stranger's free text does not become a fifth.
+
 **A licence is not permission to share.** It governs reuse of the content by
 somebody who already has it. Whether you may pass the memory on at all is a
 separate question, answered by its scope and visibility — and engrams are
