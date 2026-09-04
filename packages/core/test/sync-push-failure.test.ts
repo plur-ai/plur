@@ -20,6 +20,7 @@ import { execFileSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { sync as syncEngrams } from '../src/sync.js'
+import { isolateGitConfig } from './helpers/git-isolation.js'
 
 /**
  * Run git against the fixture repo, insulated from the developer's own config.
@@ -39,6 +40,7 @@ const git = (args: string[], cwd: string) =>
     { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 
 describe('syncEngrams reports a failed push', () => {
+  isolateGitConfig() // a global gitignore of engrams.yaml empties the seed commit (#1062)
   let root: string
   let remote: string
 

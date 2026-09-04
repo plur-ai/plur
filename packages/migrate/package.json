@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/migrate",
-  "version": "0.18.0",
+  "version": "0.19.4",
   "description": "Find and fix un-awaited PLUR calls after the 0.16 async migration",
   "type": "module",
   "bin": {

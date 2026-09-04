@@ -78,6 +78,41 @@ describe('plur doctor', () => {
     expect(flag({ PLUR_BACKEND: 'sqlite', PLUR_EMBEDDER: 'bge-small' })).toBe(false)
   }, 30000)
 
+  it('calls store.pglite an orphan only when NO selection route picks pglite (#1061), in JSON too (#1065)', () => {
+    // Selection has two documented routes — PLUR_BACKEND and `backend:` in
+    // config.yaml. The 0.19.0 doctor tested only the env var, told
+    // config-selected users their live index was an orphan to delete, and
+    // printed the advisory in text mode only.
+    const orphan = (over: Record<string, string>, configYaml: string | null): unknown => {
+      const store = mkdtempSync(join(tmpdir(), 'plur-1061-store-'))
+      try {
+        mkdirSync(join(store, 'store.pglite'), { recursive: true })
+        if (configYaml !== null) writeFileSync(join(store, 'config.yaml'), configYaml)
+        let out = ''
+        try {
+          out = execSync(`node ${CLI} doctor --no-handshake --json`, {
+            encoding: 'utf-8', timeout: 15000, cwd: home,
+            env: {
+              ...process.env, HOME: home, USERPROFILE: home,
+              PLUR_PATH: store, PLUR_DISABLE_EMBEDDINGS: '1', PLUR_BACKEND: '', ...over,
+            },
+          })
+        } catch (err: any) { out = err.stdout?.toString() ?? '' }
+        return JSON.parse(out).pgliteOrphan
+      } finally {
+        rmSync(store, { recursive: true, force: true })
+      }
+    }
+
+    // Neither route selects pglite → the directory IS an orphan, and the JSON
+    // report says so (this field's presence in --json is the #1065 half).
+    expect(orphan({}, null)).toMatchObject({ path: expect.stringContaining('store.pglite') })
+    // Env route selects pglite → not an orphan.
+    expect(orphan({ PLUR_BACKEND: 'pglite' }, null)).toBeNull()
+    // Config route selects pglite → not an orphan (the #1061 half).
+    expect(orphan({}, 'backend: pglite\n')).toBeNull()
+  }, 30000)
+
   it('reports ok when both hooks and plur MCP are present', () => {
     writeGlobalSettings({
       hooks: {

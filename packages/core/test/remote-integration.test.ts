@@ -116,6 +116,22 @@ describe('RemoteStore against stub server', () => {
     expect('valid_from' in sent).toBe(false)
     expect('valid_until' in sent).toBe(false)
     expect('supersedes' in sent).toBe(false)
+    expect('provenance' in sent).toBe(false)
+  })
+
+  it('#983 append carries provenance when present', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    const prov = { origin: 'user-correction', chain: ['ENG-001'], licence: 'Apache-2.0' }
+    await store.append({
+      id: 'tmp',
+      scope: 'group:test',
+      status: 'active',
+      statement: 'provenance round-trip test',
+      provenance: prov,
+    } as any)
+
+    const sent = server.lastAppendBody!
+    expect(sent.provenance).toEqual(prov)
   })
 
   it('#768 load maps flat server-row validity (valid_from/valid_until) into nested temporal', async () => {
@@ -427,8 +443,16 @@ describe('RemoteStore against stub server', () => {
 
   // Type confusion in rendered fields: formatLayer3 calls confidence_score
   // .toFixed(2), so a string here would throw at injection time. The schema
-  // must reject it; explicit nulls must still pass (servers emit them).
-  it('load drops rows with type-confused rendered fields, accepts explicit nulls', async () => {
+  // must reject the VALUE; explicit nulls must still pass (servers emit them).
+  //
+  // Updated for the schema-drift salvage (#1071): the poisoned FIELD is now
+  // stripped and the engram kept, instead of the whole row dropping. The
+  // security property is unchanged — no type-confused value survives into the
+  // injection pool (the field is gone, and formatLayer3 handles its absence) —
+  // while an enterprise row with one drifted field stays recallable. Required
+  // fields (id/scope/status/statement) still hard-drop the row: salvage
+  // re-parses after stripping, and a required field is still missing.
+  it('strips type-confused rendered fields but keeps the engram; accepts explicit nulls', async () => {
     server.seedEngram({
       id: 'ENG-SRV-210',
       scope: 'group:val',
@@ -451,7 +475,13 @@ describe('RemoteStore against stub server', () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:val', { ttlMs: 0 })
     const all = await store.load()
 
-    expect(all.map(e => e.id)).toEqual(['ENG-SRV-212'])
+    expect(all.map(e => e.id).sort()).toEqual(['ENG-SRV-210', 'ENG-SRV-211', 'ENG-SRV-212'])
+    const confused = all.find(e => e.id === 'ENG-SRV-210') as Record<string, unknown>
+    expect(confused).not.toHaveProperty('confidence_score') // the poisoned value is GONE, not passed through
+    const hidden = all.find(e => e.id === 'ENG-SRV-211') as Record<string, unknown>
+    expect(hidden).not.toHaveProperty('rationale')
+    const nulls = all.find(e => e.id === 'ENG-SRV-212') as Record<string, unknown>
+    expect(nulls.confidence_score).toBeNull() // explicit nulls pass the schema untouched
   })
 
   it('#426/#427 me() drops non-string and injection-shaped scope names', async () => {

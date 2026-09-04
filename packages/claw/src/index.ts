@@ -44,7 +44,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.17.0',
+  version: '0.17.1',
   kind: 'memory' as const,
 
   register(api: any) {
@@ -217,19 +217,22 @@ const plugin = {
       })
     }
 
-    // 6. Register MCP server via API if available (config fallback handled by setup.ts)
-    if (typeof api.registerMcpServer === 'function') {
-      try {
-        api.registerMcpServer('plur', {
-          command: 'npx',
-          args: ['-y', '@plur-ai/mcp'],
-          env: { PLUR_PATH: path },
-        })
-        api.logger.info('PLUR: registered MCP server for agent tools')
-      } catch (err: any) {
-        api.logger.debug(`PLUR: MCP server registration skipped: ${err.message}`)
-      }
-    }
+    // 6. MCP server registration is handled entirely by setup.ts, which writes
+    //    mcp.servers.plur into the OpenClaw config (see setup.ts, "Configure MCP
+    //    server for agent-callable tools").
+    //
+    //    There used to be an `api.registerMcpServer('plur', ...)` call here,
+    //    guarded by a `typeof === 'function'` check. It was removed because
+    //    `registerMcpServer` is not part of the OpenClaw plugin API — it is
+    //    absent from 2026.7.1 — so the guard never passed and the block was
+    //    dead code. Worse, it was not harmless: the ClawHub Plugin Inspector
+    //    scans the built bundle for registration names statically, cannot see
+    //    that the call is guarded, and refused to publish with
+    //    `unknown-registration-name: claw: fixture calls a registrar missing
+    //    from target OpenClaw`. That gate blocked the plugin's release.
+    //
+    //    setup.ts writes the identical descriptor (npx -y @plur-ai/mcp with
+    //    PLUR_PATH), so removing this changes nothing at runtime.
 
     // 7. CLI commands
     if (typeof api.registerCli === 'function') {

@@ -33,6 +33,11 @@
 #                    verified commit by the version bumps this script just
 #                    made — the packaged-artifact smoke test downstream is what
 #                    covers those, as it does on every release.
+#   --no-website     Skip website pre-flight (Step 3.8) and deploy (Step 8).
+#                    Normally a missing $WEBSITE_DIR is a hard abort — this flag
+#                    makes the skip explicit. Use only from worktrees or machines
+#                    where the website repo is not checked out, and complete the
+#                    deploy manually afterwards.
 #
 # Tweet validation: tweet text is generated from CHANGELOG and validated
 # (length ≤ 270) BEFORE step 4 (git). A too-long tweet would fail at the X
@@ -87,6 +92,7 @@ DRY_RUN=false
 TRUST_CI=false
 SKIP_TWEET=false
 PREVIEW_TWEET=false
+NO_WEBSITE=false
 CLAW_VERSION=""
 DSH_VERSION=""
 
@@ -96,6 +102,7 @@ while [ $# -gt 0 ]; do
     --skip-tweet) SKIP_TWEET=true; shift ;;
     --trust-ci) TRUST_CI=true; shift ;;
     --preview-tweet) PREVIEW_TWEET=true; shift ;;
+    --no-website) NO_WEBSITE=true; shift ;;
     --claw)
       shift
       CLAW_VERSION="${1:-}"
@@ -123,6 +130,15 @@ done
 if [ -z "$VERSION" ] || [[ "$VERSION" == --* ]]; then
   echo "Usage: ./scripts/release.sh <version> [--dry-run] [--skip-tweet] [--preview-tweet]"
   echo "Example: ./scripts/release.sh 0.9.4"
+  exit 1
+fi
+
+# Version SHAPE gate (0.19.1 adversarial audit, finding 3): this string is
+# sed-written into version constants and interpolated into a `/bin/sh -lc`
+# config command. The parity tests check equality, not shape — a malformed
+# value would pass them and land verbatim in user configs.
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+  echo "FAIL: '$VERSION' is not a release-shaped version (expected e.g. 0.19.1)"
   exit 1
 fi
 
@@ -279,6 +295,10 @@ echo "  ✓ packages/mcp/src/index.ts"
 
 sed -i '' "s/const VERSION = '.*'/const VERSION = '$VERSION'/" packages/cli/src/index.ts
 echo "  ✓ packages/cli/src/index.ts"
+# CLI_VERSION pins the npx-fallback MCP entries (#1069); version-parity.test.ts
+# fails the suite if this and package.json ever disagree.
+sed -i '' "s/export const CLI_VERSION = '.*'/export const CLI_VERSION = '$VERSION'/" packages/cli/src/version.ts
+echo "  ✓ packages/cli/src/version.ts"
 
 # mcp test version assertion.
 # TARGETED: replace only the literal CURRENT version ($OLD_CORE), never a generic
@@ -406,7 +426,7 @@ echo ""
 
 # --- 2. Build ---
 echo "--- Step 2: Build ---"
-pnpm build 2>&1 | grep -E "success|error"
+pnpm build
 echo ""
 
 # D1-followup gate (#177): the Stage 3b v2 tracking sentinel must be present and
@@ -588,6 +608,32 @@ if [ "$SKIP_TWEET" != true ]; then
   echo ""
 fi
 
+# --- Step 3.54: Tracked-scratch gate ---
+# Scratch probes committed via a careless `git add -A` are how a session-
+# specific absolute path ended up in git history on the 0.19.1 branch
+# (adversarial audit, finding 1) -- the same class the repo had JUST cleaned
+# up (mig-seed.mjs, #1066). Refuse to ship any tracked file matching the
+# scratch naming convention.
+TRACKED_SCRATCH=$(git ls-files '*.tmp.*' | head -20)
+if [ -n "$TRACKED_SCRATCH" ]; then
+  echo "FAIL: tracked scratch files in the repo:"
+  echo "$TRACKED_SCRATCH" | sed 's/^/    /'
+  echo "  git rm them -- *.tmp.* is the scratch convention and is gitignored."
+  exit 1
+fi
+
+# --- Step 3.55: Changelog marker gate (#1065) ---
+# The 0.19.0 tag shipped with its own section still headed "## 0.19.0
+# (unreleased)" -- the marker was removed from the PREVIOUS release's section
+# but never from the one being shipped, and nothing checked. A changelog that
+# says a published version is unreleased is wrong at the exact moment it
+# becomes permanent, so refuse before anything irreversible.
+if grep -qiE "^## ${VERSION}[[:space:]]*\(unreleased\)" CHANGELOG.md; then
+  echo "FAIL: CHANGELOG.md still marks '## $VERSION' as (unreleased)."
+  echo "  Remove the marker from that heading -- this release is about to make it permanent."
+  exit 1
+fi
+
 # --- Step 3.6: Manifest gate (Part A -- issue #544) ---
 # Abort if a PR shipped since the last tag is undeclared in this version's
 # CHANGELOG section. Catches unintended shipping -- this gate would have stopped
@@ -704,10 +750,26 @@ echo ""
 # manual pre-step; Step 8 only DEPLOYS what's already in the repo. If the site
 # wasn't bumped to $VERSION, catch it HERE — before any irreversible publish —
 # rather than shipping a stale site and only warning post-deploy at Step 8.
-# Skipped when the website dir isn't present, same as Step 8.
+#
+# A missing $WEBSITE_DIR is a HARD ABORT, not a silent skip. The website is part
+# of every release; silently dropping Step 8 is indistinguishable from running it.
+# Use --no-website if you are deliberately releasing from a machine where the
+# website repo is not checked out and will deploy manually afterwards.
 WEBSITE_PREFLIGHT_DIR="${WEBSITE_DIR:-$REPO_ROOT/../website}"
-if [ -f "$WEBSITE_PREFLIGHT_DIR/index.html" ]; then
-  echo "--- Step 3.8: Website version pre-flight ---"
+echo "--- Step 3.8: Website version pre-flight ---"
+if [ "$NO_WEBSITE" = true ]; then
+  echo "  ⊘ Skipped (--no-website). Website deploy (Step 8) will also be skipped."
+  echo "  Remember to deploy the website manually after this release."
+  echo ""
+elif [ ! -f "$WEBSITE_PREFLIGHT_DIR/index.html" ]; then
+  echo "✗ Website dir not found at $WEBSITE_PREFLIGHT_DIR"
+  echo "  The website is part of every release — a missing dir means Step 8 would silently"
+  echo "  be skipped and the live site would serve stale content next to a tweeted release."
+  echo "  Options:"
+  echo "    1. Check out the website repo at $WEBSITE_PREFLIGHT_DIR (or set WEBSITE_DIR)"
+  echo "    2. Pass --no-website to skip explicitly and deploy manually afterwards"
+  exit 1
+else
   SITE_VERSION=$(grep -Eo '"softwareVersion":[[:space:]]*"[0-9.]+"' "$WEBSITE_PREFLIGHT_DIR/index.html" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
   if [ "$SITE_VERSION" != "$VERSION" ]; then
     echo "✗ Website not bumped: $WEBSITE_PREFLIGHT_DIR/index.html softwareVersion=${SITE_VERSION:-none}, expected $VERSION"
@@ -1003,8 +1065,29 @@ echo ""
 echo "--- Step 6: Publish PyPI ---"
 cd packages/hermes
 rm -rf dist/
-python3 -m build 2>&1 | tail -1
-TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_TOKEN_PLUR_HERMES" python3 -m twine upload dist/* 2>&1 | tail -1
+# Full build output: piping to tail-1 previously swallowed errors (Metadata-Version 2.5
+# incompatibility silenced the failure and `set -e` exited with no diagnostic). Emit all
+# output so any build error is immediately readable. (#947)
+python3 -m build
+# Preflight: validate dist files before upload. Catches stale twine (e.g. twine too old
+# for Metadata-Version 2.5) with a clear error rather than a silent upload failure. If
+# this fails: pip install -U twine pkginfo (#947)
+if ! python3 -m twine check dist/*; then
+  echo "✗ Step 6: twine check failed."
+  echo "  twine or pkginfo may be outdated: pip install -U twine pkginfo"
+  exit 1
+fi
+# Full output here too: `| tail -1` previously ate the twine error and `set -e` exited
+# silently, leaving the operator to notice the GH release was missing. Explicit `if !`
+# preserves exit code and prints a recovery hint. (#947)
+if ! TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_TOKEN_PLUR_HERMES" python3 -m twine upload dist/*; then
+  echo ""
+  echo "✗ Step 6: twine upload failed. See output above."
+  echo "  If 'not a valid metadata version': pip install -U twine pkginfo"
+  echo "  PyPI is immutable: a partial upload may have registered the filename; check"
+  echo "  https://pypi.org/project/plur-hermes/#history before retrying."
+  exit 1
+fi
 
 # Post-publish verification (#584). PyPI is IMMUTABLE — a dropped or partial
 # upload can't be overwritten, only superseded by a new version — and this step
@@ -1078,9 +1161,15 @@ DEPLOY_KEY="${DEPLOY_KEY:-$HOME/Data/.datacore/env/credentials/deploy_key}"
 DEPLOY_TARGET="${DEPLOY_TARGET:-deploy@209.38.243.88:/var/www/sites/plur.ai/}"
 
 echo "--- Step 8: Website deploy ---"
-if [ ! -d "$WEBSITE_DIR" ]; then
-  echo "  ⊘ Website dir not found at $WEBSITE_DIR — skipped"
-  echo "    Set WEBSITE_DIR env var to override"
+if [ "$NO_WEBSITE" = true ]; then
+  echo "  ⊘ Skipped (--no-website). Deploy the website manually:"
+  echo "    rsync -avz -e \"ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes\" $WEBSITE_DIR/ $DEPLOY_TARGET \\"
+  echo "      --exclude='.git' --exclude='node_modules'"
+elif [ ! -d "$WEBSITE_DIR" ]; then
+  # Step 3.8 should have aborted before we get here. If we're here it's a bug in the script.
+  echo "✗ Step 8: Website dir not found at $WEBSITE_DIR"
+  echo "  Step 3.8 should have caught this. Pass --no-website to skip, or fix WEBSITE_DIR."
+  exit 1
 elif [ ! -f "$DEPLOY_KEY" ]; then
   echo "  ⊘ Deploy key not found at $DEPLOY_KEY — skipped"
   echo "    Set DEPLOY_KEY env var to override"

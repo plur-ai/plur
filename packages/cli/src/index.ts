@@ -5,7 +5,7 @@ import { unknownFlagMessage } from './known-flags.js'
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
 
-const VERSION = '0.18.0'
+const VERSION = '0.19.4'
 
 // --- Main ---
 const argv = process.argv.slice(2)
@@ -57,10 +57,10 @@ Commands:
                           [--flush] to retry them now (#667)
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
-  init                    Install Claude Code hooks + register plur MCP server
+  init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
   init-remote             Opt this project into recall from a PLUR Enterprise server
   login --status          Enterprise token validity per host (probe + expiry) (#587)
-  doctor                  Diagnose Claude Code / Claude Desktop integration
+  doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
   tensions [--scan]       List or scan for engram contradictions
@@ -78,6 +78,13 @@ Commands:
   hook-cursor-guard      (internal) Cursor preToolUse hook handler
   hook-cursor-post-tool  (internal) Cursor postToolUse hook handler
   hook-cursor-stop       (internal) Cursor stop hook handler
+  hook-codex-session-start (internal) Codex SessionStart hook handler
+  hook-codex-inject      (internal) Codex UserPromptSubmit hook handler
+  hook-codex-guard       (internal) Codex PreToolUse hook handler
+  hook-codex-post-tool   (internal) Codex PostToolUse hook handler
+  hook-codex-session-end (internal) Codex SessionEnd hook handler
+  hook-agy-pre-invocation (internal) Antigravity PreInvocation hook handler
+  hook-agy-guard         (internal) Antigravity PreToolUse hook handler
 
 Global flags:
   --json       Force JSON output (auto-detected when piped)
@@ -159,10 +166,33 @@ const COMMANDS: Record<string, string> = {
   'hook-cursor-guard': './commands/hook-cursor-guard.js',
   'hook-cursor-post-tool': './commands/hook-cursor-post-tool.js',
   'hook-cursor-stop': './commands/hook-cursor-stop.js',
+  'hook-codex-session-start': './commands/hook-codex-session-start.js',
+  'hook-codex-inject': './commands/hook-codex-inject.js',
+  'hook-codex-guard': './commands/hook-codex-guard.js',
+  'hook-codex-post-tool': './commands/hook-codex-post-tool.js',
+  'hook-codex-session-end': './commands/hook-codex-session-end.js',
+  'hook-agy-pre-invocation': './commands/hook-agy-pre-invocation.js',
+  'hook-agy-guard': './commands/hook-agy-guard.js',
   // Hidden internal subcommand — spawned by `plur doctor` to isolate the
   // ONNX embedder probe (issue #197). If the probe crashes with SIGABRT
   // on libc++ thread pool cleanup, only the subprocess dies; doctor stays alive.
   '_embedder-probe': './commands/embedder-probe.js',
+}
+
+/**
+ * Await any background derived-index work started during this process.
+ *
+ * Deliberately swallows failures: the index is derived, YAML is the source of
+ * truth, and a command that already produced correct output must not exit
+ * non-zero because a cache could not be warmed. Core records the failure for
+ * `plur doctor` either way.
+ */
+async function drainPendingIndexWork(): Promise<void> {
+  try {
+    const { getLastPlurInstance } = await import('./plur.js')
+    const plur = getLastPlurInstance?.()
+    if (plur && typeof plur.waitForIndex === 'function') await plur.waitForIndex()
+  } catch { /* derived index — never fail a command over it */ }
 }
 
 if (!command || !COMMANDS[command]) {
@@ -179,6 +209,15 @@ try {
     if (complaint) exit(1, complaint)
   }
   await mod.run(commandArgs, flags)
+  // #1046: background index work (the PGLite initial sync when that backend
+  // is opted into, and the Postgres auto-embed pass — both tracked on
+  // waitForIndex()) used to be abandoned by every command except `sync`,
+  // which on PGLite meant a full-corpus pass restarted and killed on every
+  // invocation: the index never converged, found 64MB on disk with no
+  // `engrams` table at all. The default SQLite tier does no constructor-time
+  // background sync, so for most installs this drain is a no-op; where it
+  // isn't, the fingerprint guard makes an unchanged YAML nearly free.
+  await drainPendingIndexWork()
 } catch (err: any) {
   if (shouldOutputJson(flags)) {
     outputJson({ error: err.message })

@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { execSync } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { sync, getSyncStatus } from '../src/sync.js'
+import { isolateGitConfig } from './helpers/git-isolation.js'
 
 function git(args: string, cwd: string): string {
   return execSync(`git ${args}`, { cwd, encoding: 'utf8' }).trim()
@@ -11,31 +12,10 @@ function git(args: string, cwd: string): string {
 
 describe('sync', () => {
   let dir: string
-  let tmpConfigDir: string
-  let origGitConfigGlobal: string | undefined
-  let origGitConfigSystem: string | undefined
 
-  beforeAll(() => {
-    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL
-    origGitConfigSystem = process.env.GIT_CONFIG_SYSTEM
-    // Isolate all git operations from the developer's global/system config.
-    // Without this, a global gitignore containing engrams.yaml/episodes.yaml
-    // silently drops those files from git add -A, causing 6 test failures and
-    // the same latent data-loss bug in plur sync itself (see issue #329).
-    tmpConfigDir = mkdtempSync(join(tmpdir(), 'plur-gitconfig-'))
-    const configFile = join(tmpConfigDir, 'gitconfig')
-    writeFileSync(configFile, '[user]\n  name = PLUR Test\n  email = test@plur.ai\n')
-    process.env.GIT_CONFIG_GLOBAL = configFile
-    process.env.GIT_CONFIG_SYSTEM = '/dev/null'
-  })
-
-  afterAll(() => {
-    if (origGitConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL
-    else process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal
-    if (origGitConfigSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM
-    else process.env.GIT_CONFIG_SYSTEM = origGitConfigSystem
-    rmSync(tmpConfigDir, { recursive: true, force: true })
-  })
+  // Isolate all git operations from the developer's global/system config —
+  // see helpers/git-isolation.ts (#329, hoisted for #1062).
+  isolateGitConfig()
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-sync-'))

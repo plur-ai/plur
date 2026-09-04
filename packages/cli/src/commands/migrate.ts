@@ -1,4 +1,6 @@
-import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION } from '@plur-ai/core'
+import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION, exportPgliteEmbeddingsToCache, resolveBackendTier, loadConfig } from '@plur-ai/core'
+import { existsSync } from 'fs'
+import { join, dirname } from 'path'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { detectPlurStorage } from '@plur-ai/core'
@@ -31,10 +33,41 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (subcommand === 'up' || subcommand === undefined) {
     try {
       const result = runMigrations(paths.engrams, paths.config)
+
+      // #1046: if an orphaned PGLite store is sitting next to this corpus,
+      // carry its embedding vectors into the JSON cache the yaml/sqlite
+      // tiers read — otherwise the tier switch re-embeds the whole corpus
+      // in the background while hybrid recall silently runs BM25-only.
+      // Skipped when the user is explicitly ON pglite (nothing orphaned),
+      // and harmless to re-run (existing cache entries win).
+      const storageRoot = dirname(paths.engrams)
+      const pgliteDir = join(storageRoot, 'store.pglite')
+      // Same resolver the engine uses (#1061): `backend: pglite` in
+      // config.yaml selects the tier exactly as PLUR_BACKEND does, and a
+      // bare env test ran the orphan-export path — and printed "can now be
+      // deleted" — against an index the user's config was actively using.
+      const pgliteExplicit = resolveBackendTier({
+        env: process.env.PLUR_BACKEND,
+        config: loadConfig(paths.config).backend,
+        engramCount: 0, // irrelevant: pglite is never size-selected
+        postgresConfigured: false, // ditto — pglite selection needs no connection string
+      }).tier === 'pglite'
+      let embeddingsReport: Awaited<ReturnType<typeof exportPgliteEmbeddingsToCache>> | null = null
+      if (existsSync(pgliteDir) && !pgliteExplicit) {
+        embeddingsReport = await exportPgliteEmbeddingsToCache(storageRoot, paths.engrams, pgliteDir)
+      }
       if (shouldOutputJson(flags)) {
-        outputJson(result)
+        outputJson(embeddingsReport ? { ...result, pglite_embeddings: embeddingsReport } : result)
       } else {
         // Confirmation of a requested mutation → suppressed by --quiet (#730).
+        if (embeddingsReport && embeddingsReport.status === 'done' && embeddingsReport.ported > 0) {
+          outputInfo(`Ported ${embeddingsReport.ported} embedding vector(s) from the orphaned PGLite store into the embeddings cache`, flags)
+          const skipped = embeddingsReport.stale + embeddingsReport.wrongDim
+          if (skipped > 0) outputInfo(`  (${skipped} skipped as stale or wrong-dimension — they re-embed automatically)`, flags)
+          outputInfo(`  ${pgliteDir} can now be deleted — YAML remains the source of truth.`, flags)
+        } else if (embeddingsReport && embeddingsReport.status === 'failed') {
+          outputText(`Warning: PGLite embeddings export failed (${embeddingsReport.error}) — the corpus will re-embed in the background instead.`)
+        }
         if (result.applied.length === 0) {
           outputInfo('Already up to date.', flags)
         } else {
