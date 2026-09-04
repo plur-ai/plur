@@ -264,7 +264,7 @@ if [ "$DRY_RUN" = false ]; then
   echo ""
 fi
 
-# --- 1. Version bump (11 locations) ---
+# --- 1. Version bump ---
 echo "--- Step 1: Version bump ---"
 
 OLD_CORE=$(node -e "console.log(require('./packages/core/package.json').version)")
@@ -285,18 +285,15 @@ for pkg in core mcp cli migrate; do
   echo "  ✓ packages/$pkg/package.json"
 done
 
-# TypeScript VERSION constants — core has no VERSION constant; mcp + cli do.
-# server.ts imports VERSION from version.ts, so version.ts is the source of truth.
+# TypeScript VERSION constants — core has no VERSION constant; mcp + cli do,
+# ONE each: mcp/src/version.ts (index.ts + server.ts import it) and
+# cli/src/version.ts (index.ts + mcp-config.ts import it). The version-parity
+# tests fail the suite if a constant and its package.json ever disagree, or if
+# an index.ts grows a second literal.
 sed -i '' "s/export const VERSION = '.*'/export const VERSION = '$VERSION'/" packages/mcp/src/version.ts
 echo "  ✓ packages/mcp/src/version.ts"
 
-sed -i '' "s/const VERSION = '.*'/const VERSION = '$VERSION'/" packages/mcp/src/index.ts
-echo "  ✓ packages/mcp/src/index.ts"
-
-sed -i '' "s/const VERSION = '.*'/const VERSION = '$VERSION'/" packages/cli/src/index.ts
-echo "  ✓ packages/cli/src/index.ts"
-# CLI_VERSION pins the npx-fallback MCP entries (#1069); version-parity.test.ts
-# fails the suite if this and package.json ever disagree.
+# CLI_VERSION also pins the npx-fallback MCP entries (#1069).
 sed -i '' "s/export const CLI_VERSION = '.*'/export const CLI_VERSION = '$VERSION'/" packages/cli/src/version.ts
 echo "  ✓ packages/cli/src/version.ts"
 
@@ -324,11 +321,10 @@ if [ -n "$CLAW_VERSION" ]; then
   "
   echo "  ✓ packages/claw/package.json"
 
-  sed -i '' "s/version: '.*'/version: '$CLAW_VERSION'/" packages/claw/src/index.ts
-  echo "  ✓ packages/claw/src/index.ts"
-
-  sed -i '' "s/version: '.*'/version: '$CLAW_VERSION'/" packages/claw/src/context-engine.ts
-  echo "  ✓ packages/claw/src/context-engine.ts"
+  # index.ts and context-engine.ts import CLAW_VERSION from here;
+  # claw/test/version-parity.test.ts guards the pair.
+  sed -i '' "s/export const CLAW_VERSION = '.*'/export const CLAW_VERSION = '$CLAW_VERSION'/" packages/claw/src/version.ts
+  echo "  ✓ packages/claw/src/version.ts"
 
   node -e "
     const fs = require('fs');

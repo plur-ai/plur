@@ -1,14 +1,19 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
-import { checkForUpdate, CapabilityCanary, collapseLineTerminators } from '@plur-ai/core'
-import { recordEvent } from './telemetry-counters.js'
-import { flushIfNeeded, registerFlushOnExit } from './telemetry-flush.js'
+import { checkForUpdate, CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit, collapseLineTerminators } from '@plur-ai/core'
+import { CLAW_VERSION } from './version.js'
+
+// Telemetry is core's module, not a copy (2026-09 audit): the claw copy had
+// drifted to a heartbeat endpoint that no longer resolves, so claw heartbeats
+// were silently lost. `packageVersion` keeps the payload reporting the claw
+// version rather than core's.
+const TELEMETRY = { packageVersion: CLAW_VERSION }
 
 // #128: when recordEvent rolls the day, ship yesterday's pending snapshot
 // immediately. Without this, a long-lived plugin process would only flush on
 // `beforeExit`, which can be days away.
 function maybeFlushAfter(rolledOver: boolean): void {
-  if (rolledOver) void flushIfNeeded({}).catch(() => {})
+  if (rolledOver) void flushIfNeeded(TELEMETRY).catch(() => {})
 }
 
 // Re-export everything consumers might need
@@ -44,7 +49,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.17.1',
+  version: CLAW_VERSION,
   kind: 'memory' as const,
 
   register(api: any) {
@@ -270,8 +275,8 @@ const plugin = {
 
     // 9. Telemetry flush on process exit (no-op when PLUR_TELEMETRY != 'on').
     // beforeExit fires once per long-lived OpenClaw process — flushes yesterday's
-    // counters to plur.ai/v1/heartbeat when day-rollover left a snapshot behind.
-    registerFlushOnExit({})
+    // counters to the heartbeat endpoint when day-rollover left a snapshot behind.
+    registerFlushOnExit(TELEMETRY)
 
     api.logger.info(`PLUR registered: context engine + hooks + slash commands + CLI`)
 
