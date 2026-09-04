@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, readSync, statSync, readdirSync, unlinkSync } from 'fs'
+import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, readSync, statSync, readdirSync, unlinkSync, renameSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { tmpdir, homedir } from 'os'
 import { randomUUID } from 'crypto'
@@ -206,6 +206,109 @@ function extractEventTask(input: Record<string, unknown>, event: string): string
   }
 }
 
+// Longest event id accepted onto a co_injection record. Claude Code ids are
+// short (`toolu_01...`, ~30 chars); the cap keeps a hostile or buggy payload
+// from bloating the provenance log, which is sized in the hundreds of bytes.
+const EVENT_ID_MAX_LEN = 128
+
+/**
+ * Per-event identity from the Claude Code hook payload, for the co_injection
+ * dedup key (#975, #1017 review O3).
+ *
+ * Fields read, by hook event:
+ *   PreToolUse   (plan_mode, skill, agent)  -> `tool_use_id`
+ *   SubagentStart (subagent)                -> `agent_id`
+ *   UserPromptSubmit / PostCompact          -> none; the main path below does
+ *                                              not call this and dedups on
+ *                                              content alone.
+ *
+ * `tool_use_id` is checked first because a PreToolUse payload never carries
+ * `agent_id`, and a SubagentStart payload never carries `tool_use_id` — but a
+ * future harness that sends both should key on the finer-grained tool call.
+ * Returns undefined for anything that is not a non-empty string, which the
+ * core treats as "no event identity" — the pre-#1017 behaviour.
+ */
+export function extractEventId(input: Record<string, unknown>): string | undefined {
+  for (const field of ['tool_use_id', 'agent_id'] as const) {
+    const raw = input[field]
+    if (typeof raw === 'string' && raw.length > 0) return raw.slice(0, EVENT_ID_MAX_LEN)
+  }
+  return undefined
+}
+
+/**
+ * Take the per-session inject lock (#519) ATOMICALLY (#975 root-cause note,
+ * #1017 review O4).
+ *
+ * The guard used to be stat-then-write: two hook-inject processes for the
+ * same session, spawned within a millisecond of each other, both stat a lock
+ * that is not there yet, both write it, both run the full injection — which
+ * is exactly the double fire the co_injection dedup then has to paper over,
+ * and the OOM cascade #519 was about. `wx` (O_CREAT|O_EXCL) makes the
+ * create the decision: only one contender can succeed.
+ *
+ * A stale lock (holder crashed; older than `staleMs`) is claimed by RENAME
+ * before it is recreated, so two contenders that both judge it stale cannot
+ * both proceed: one rename wins, the loser's retry meets the winner's fresh
+ * lock. And the claim is VERIFIED: rename acts on the path, not the file, so
+ * a contender that statted the stale lock, lost the race, and renamed a
+ * moment later would carry off the winner's FRESH lock — and both would
+ * proceed. The claimed file's mtime is compared with the one judged stale
+ * (they differ by at least `staleMs`); a mismatch is put back, never over a
+ * lock created meanwhile, and reported as held. Same discipline as
+ * `stealLockSync` in core.
+ *
+ *   'acquired'    — this process holds the lock and must release it
+ *   'held'        — another hook-inject is running for this session; bail
+ *   'unavailable' — the state dir is not writable; proceed unguarded, as the
+ *                   old code did (fail-open: the prompt must never be blocked
+ *                   by bookkeeping)
+ */
+export function acquireInjectLock(
+  lockPath: string,
+  staleMs: number,
+): 'acquired' | 'held' | 'unavailable' {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx' })
+      return 'acquired'
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return 'unavailable'
+    }
+    let staleMtime: number
+    try {
+      const st = statSync(lockPath)
+      if (Date.now() - st.mtimeMs < staleMs) return 'held'
+      staleMtime = st.mtimeMs
+    } catch {
+      continue // the holder released between our create and stat — retry
+    }
+    // Stale. Claim by rename: exactly one contender's rename succeeds.
+    const claim = `${lockPath}.stale.${process.pid}`
+    try { renameSync(lockPath, claim) } catch { continue }
+    try {
+      if (statSync(claim).mtimeMs === staleMtime) {
+        unlinkSync(claim) // confirmed the one we judged stale
+        continue          // and retry the exclusive create
+      }
+      // Not the file we judged: a contender recreated the lock between our
+      // stat and our rename, and we have just carried it off. Put it back —
+      // exclusively, so a lock created since ours wins — and yield.
+      const content = readFileSync(claim, 'utf8')
+      try { writeFileSync(lockPath, content, { flag: 'wx' }) } catch { /* someone else's now — theirs wins */ }
+      try { unlinkSync(claim) } catch { /* already gone */ }
+      return 'held'
+    } catch {
+      // The claim file is uniquely named; nothing else would ever clean it up.
+      try { unlinkSync(claim) } catch { /* already gone */ }
+      continue
+    }
+  }
+  // Out of attempts while the lock kept changing hands — another hook-inject
+  // is evidently active for this session. Bail, as for a fresh lock.
+  return 'held'
+}
+
 /**
  * Deferred wrap-up (#216): detect orphaned sessions from previous runs.
  *
@@ -333,7 +436,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // which is the large majority of all injections.
     let eventSessionId: string | undefined
     try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
-    const result = await plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
+    const eventId = extractEventId(input)
+    const result = await plur.inject(task, {
+      budget: 3000,
+      source: 'hook',
+      session_id: eventSessionId,
+      ...(eventId ? { event_id: eventId } : {}),
+    })
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
@@ -364,13 +473,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Multiple rapid async firings (datacore#33) otherwise pile up at ~160 MB
   // RSS each and trigger an OOM cascade. Lock is stale after HOOK_CEILING_MS
   // so a crashed process never permanently blocks subsequent invocations.
+  //
+  // Atomic since #1017: see acquireInjectLock. The old stat-then-write let two
+  // hooks spawned a millisecond apart both pass, which is one concrete way the
+  // #975 duplicate pairs arise.
   const injectLock = join(sessionDir(), `${process.ppid || 'unknown'}.injecting`)
-  let injectLockAcquired = false
-  try {
-    const s = statSync(injectLock)
-    if (Date.now() - s.mtimeMs < LOCK_STALE_MS) return
-  } catch { /* no lock file — proceed */ }
-  try { writeFileSync(injectLock, ''); injectLockAcquired = true } catch { /* fail-open */ }
+  const lockState = acquireInjectLock(injectLock, LOCK_STALE_MS)
+  if (lockState === 'held') return
+  const injectLockAcquired = lockState === 'acquired'
 
   const input = readStdinSync()
   const projectConfig = readProjectConfig()
