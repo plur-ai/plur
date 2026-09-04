@@ -290,3 +290,13 @@ describe('no path moves attribution, licence or claim class into a shared scope 
     })
   })
 })
+
+describe('the bookkeeping exemption is a list, not a prefix', () => {
+  it('scans an unknown _key and skips the known ones', () => {
+    const fields = engramContentFields({
+      id: 'ENG-1', statement: 'x', scope: 'local',
+      structured_data: { _outbox: { target_url: 'http://127.0.0.1:1' }, _demoted: { from: 'g' }, _mine: 'kept' },
+    } as unknown as Engram)!
+    expect(fields.structured_data).toEqual({ _mine: 'kept' })
+  })
+})

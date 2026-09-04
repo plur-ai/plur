@@ -94,16 +94,35 @@ export function learnContextContent(context: LearnContext | undefined): Record<s
 }
 
 /**
+ * The `structured_data` keys PLUR writes for itself. System-generated, never
+ * user content, and `_outbox.target_url` legitimately carries the very host
+ * topology the infra detector flags (`http://127.0.0.1:<port>`), so these are
+ * left out of every scan. Enumerated rather than matched by the `_` prefix:
+ * a prefix rule exempts a key nobody has written yet, and a caller who can
+ * set `structured_data` on an update could name one.
+ */
+export const PLUR_BOOKKEEPING_KEYS: ReadonlySet<string> = new Set([
+  '_outbox', '_routed', '_demoted', '_rescoped_from', '_expiry_extracted',
+])
+
+/** `structured_data` with PLUR's own bookkeeping removed, or undefined if nothing else is in it. */
+export function userStructuredData(sd: unknown): unknown {
+  if (sd == null) return undefined
+  if (typeof sd !== 'object' || Array.isArray(sd)) return sd
+  const user: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(sd as Record<string, unknown>)) {
+    if (!PLUR_BOOKKEEPING_KEYS.has(k)) user[k] = v
+  }
+  return Object.keys(user).length > 0 ? user : undefined
+}
+
+/**
  * Everything on an engram that a scan should read, apart from the statement.
  *
  * Serialised, not enumerated: every field present on the engram is included,
- * so a new field cannot be missed. The one exclusion is deliberate —
- * PLUR-internal bookkeeping keys in `structured_data` (underscore-prefixed:
- * `_outbox`, `_routed`, `_demoted`, `_rescoped_from`, …) are system-generated,
- * never user content, and legitimately carry the very host topology the infra
- * detector flags (`_outbox.target_url` is `http://127.0.0.1:<port>`). Scanning
- * them would falsely demote every remote-origin or auto-routed engram on
- * update.
+ * so a new field cannot be missed. The one exclusion is `PLUR_BOOKKEEPING_KEYS`
+ * in `structured_data`, above. Scanning those would falsely demote every
+ * remote-origin or auto-routed engram on update.
  *
  * Returns undefined when nothing but the statement is present, so a caller's
  * scan text stays statement-only in that case.
@@ -113,15 +132,8 @@ export function engramContentFields(engram: Engram): Record<string, unknown> | u
   for (const [k, v] of Object.entries(engram as Record<string, unknown>)) {
     if (k === 'statement' || v == null) continue
     if (k === 'structured_data') {
-      if (typeof v === 'object' && !Array.isArray(v)) {
-        const userSd: Record<string, unknown> = {}
-        for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
-          if (!sk.startsWith('_')) userSd[sk] = sv
-        }
-        if (Object.keys(userSd).length > 0) fields.structured_data = userSd
-      } else {
-        fields.structured_data = v
-      }
+      const user = userStructuredData(v)
+      if (user !== undefined) fields.structured_data = user
       continue
     }
     fields[k] = v

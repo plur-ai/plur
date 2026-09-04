@@ -6,7 +6,8 @@ import { execFileSync } from 'child_process'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
 import { atomicWrite, fsyncDir, withLock } from './sync.js'
-import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
+import { detectSecrets, detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
+import { userStructuredData } from './content-fields.js'
 import type { Engram } from './schemas/engram.js'
 import { buildProvenanceRecord, buildPackProvenanceRecord, serializeProvenanceRecord } from './provenance.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -451,8 +452,21 @@ function scanPackFiles(packDir: string): PrivacyIssue[] {
       issues.push({ engram_id: label, type: 'unscannable', detail: `${label} could not be read: ${(err as Error).message}` })
       continue
     }
-    // Binary-ish content produces noise, not findings.
-    if (text.includes('\u0000')) continue
+    // Binary-ish content: the infra heuristics (dotted numbers, host-like
+    // runs) produce noise on it, not findings. The credential and the
+    // instruction-override detectors are precise enough to run anyway, so a
+    // text file with one NUL byte in front of it cannot carry either past
+    // the scan into the store.
+    if (text.includes('\u0000')) {
+      const stripped = truncateToScanLimit(text.replace(/\u0000/g, ''))
+      for (const hit of detectSecrets(stripped)) {
+        issues.push({ engram_id: label, type: 'secret', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
+      }
+      for (const hit of detectPromptInjection(stripped)) {
+        issues.push({ engram_id: label, type: 'prompt_injection', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
+      }
+      continue
+    }
 
     // The FULL text goes to detectSensitive: it caps its own regex work and
     // emits the fail-closed `scan_truncated` hit past 1 MiB (#386, #425), so a
@@ -633,8 +647,32 @@ export function readPackProvenance(
   return view
 }
 
+/**
+ * Is there anything here to preview? Decided with `lstat` and without reading,
+ * BEFORE the directory is walked: `previewPack` takes a path an LLM may have
+ * chosen, and walking an arbitrary directory to list its links in an error
+ * message would turn "not a pack" into a directory listing of the host.
+ */
+function assertLooksLikeAPack(source: string): void {
+  const present = (name: string) => { try { fs.lstatSync(path.join(source, name)); return true } catch { return false } }
+  if (!present('SKILL.md') && !present('manifest.yaml')) {
+    throw new Error(`No SKILL.md found in ${source} — a knowledge pack must ship a SKILL.md (manifest.yaml is deprecated)`)
+  }
+  // The manifest, the engrams and the integrity value are read whole by
+  // `loadPack` and `computePackHash`, before the file scan applies its size
+  // limit. A multi-gigabyte SKILL.md must be refused here, not read.
+  for (const name of ['SKILL.md', 'manifest.yaml', 'engrams.yaml', 'INTEGRITY']) {
+    let size = 0
+    try { size = fs.lstatSync(path.join(source, name)).size } catch { continue }
+    if (size > MAX_PACK_FILE_BYTES) {
+      throw new Error(`[plur] refusing to read pack ${source}: ${name} is ${size} bytes, more than the ${MAX_PACK_FILE_BYTES}-byte limit for a pack file.`)
+    }
+  }
+}
+
 function _previewPackDir(source: string): PreviewResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
+  assertLooksLikeAPack(source)
   // Before ANY read. `loadPack` below reads SKILL.md and engrams.yaml, and a
   // link in their place would make it read whatever the link names.
   refuseSymlinks(source, 'preview')
@@ -1380,15 +1418,10 @@ function serializeForSecretScan(e: Engram): string {
   const scan: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(e as Record<string, unknown>)) {
     if (SECRET_SCAN_EXCLUDE.has(k)) continue
-    if (k === 'structured_data' && v && typeof v === 'object' && !Array.isArray(v)) {
-      const userSd: Record<string, unknown> = {}
-      for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
-        if (!sk.startsWith('_')) userSd[sk] = sv
-      }
-      scan[k] = userSd
-    } else {
-      scan[k] = v
-    }
+    // The same exemption the write guard applies, from the same list: PLUR's
+    // own bookkeeping keys and nothing else. A `_` prefix rule exempted any
+    // key a caller cared to name (#1002 review).
+    scan[k] = k === 'structured_data' ? (userStructuredData(v) ?? {}) : v
   }
   return JSON.stringify(scan)
 }
@@ -1693,7 +1726,7 @@ export function exportPack(
       // A session origin means nothing outside this store; `direct` is what
       // an engram with no recorded origin carries.
       cleaned.provenance = {
-        origin: origin.startsWith('session:') ? 'direct' : origin,
+        origin: typeof origin === 'string' && !origin.startsWith('session:') ? origin : 'direct',
         chain: [],
         signature: null,
         ...(license !== undefined ? { license } : {}),
