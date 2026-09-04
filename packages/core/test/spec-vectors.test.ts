@@ -41,9 +41,10 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { computePackHash, verifyPackIntegrity, previewPack, installPack } from '../src/packs.js'
+import { computePackHash, verifyPackIntegrity, previewPack, installPack, listPacks } from '../src/packs.js'
 import { loadEngrams } from '../src/engrams.js'
 import { readCapsule } from '../src/capsule.js'
 
@@ -144,7 +145,7 @@ describe('golden pack vectors — the declared outcome, through installPack', ()
         await expect(install(v)).rejects.toThrow()
         // Refused means refused: no directory, no registry row.
         expect(existsSync(join(packsDir, v.pack))).toBe(false)
-        expect(existsSync(join(packsDir, 'registry.json')) && readFileSync(join(packsDir, 'registry.json'), 'utf8').includes(v.pack)).toBe(false)
+        expect(listPacks(packsDir)).toEqual([])
         return
       }
 
@@ -296,7 +297,6 @@ describe('golden capsule fixtures — §6', () => {
     it(`${c.capsule}: the committed bytes are the ones capsules.json describes`, () => {
       const data = bytes()
       expect(data.length).toBe(c.bytes)
-      const { createHash } = require('node:crypto') as typeof import('node:crypto')
       expect(createHash('sha256').update(data).digest('hex')).toBe(c.sha256)
     })
 
