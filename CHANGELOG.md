@@ -37,6 +37,17 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 `plur doctor` also counts stale hashes and prints the remedy if any are detected
 (#911).
 
+### Breaking
+
+- **`exportPack` and `plur packs export` refuse to run without a licence (#970).**
+  A pack with no `license` used to be written with the schema default,
+  `cc-by-sa-4.0` — a share-alike grant over other people's memories that nobody
+  chose. Pass `--license` (for example `cc-by-4.0`, `apache-2.0`, `cc0-1.0`, or
+  `unlicensed` to grant nothing), or set `provenance.default_license` in your
+  config to answer once. Scripts that exported without a licence now exit
+  non-zero; the `plur_packs_export` tool returns `{ exported: false, next_step }`
+  asking the agent to put the question to the user rather than guess.
+
 ### Added
 
 - **Provenance: record where an engram came from (#958).** An engram can now
