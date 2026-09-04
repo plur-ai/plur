@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+Security: closes the prompt-structure forgery class at the render boundary and on
+every write path (#940, #952, #1003, #1004; the #1108 review).
+
+- **One sanitiser, every write path.** `collapseLineTerminators` (core
+  `sanitize.ts`, from #953) is now the single fold, called by `learn()`,
+  `learnRouted()` (both routes), `learnAsync()` (including its UPDATE and MERGE
+  branches, which write into an existing row without calling `learn()`),
+  `learnBatch()`, `updateEngram()`, pack install and pack load. The context
+  fields that land in single-line engram fields — `rationale`, `source`,
+  `domain` — are folded alongside the statement, so a forged boundary in a
+  rationale is not stored raw and folded only at render. The second sanitiser
+  #1108 originally added (`sanitizeInline`, with a blanket multi-space collapse
+  and a leading trim) is gone: the store never has spaces collapsed or pipes
+  rewritten; only line terminators, and the spaces hugging them, change.
+- **The render boundary folds every field it emits** — statement, summary,
+  rationale, domain, id, commitment, `activation.last_accessed` and the
+  `EXPIRED` marker's `temporal.valid_until` — so pack content, remote-store
+  rows, importer output and engrams already in a store render clean.
+- **The `' | '` delimiter is escaped at render.** Layer-1 (`consider`) entries
+  and the layer-3 (`DIRECTIVES`) meta values render `|` as `\|` and `\` as
+  `\\`, so a summary of `benign | [ENG-X] …` is one entry and a domain of
+  `x | Commitment: locked` is one field. Each layer's tests re-parse the output
+  with that layer's own splitter and prove N engrams in → N entries out.
+- dsh `plur_recall`, claw `/recall` and `claw recall`, the CLI's text-mode
+  listings (`recall`, `forget --search`, `tensions`, `audit`, `packs preview`,
+  `ingest`) and the internal LLM prompts (dedup, agentic search, tensions,
+  profile, meta validation) fold the same way.
+- **Pack install reports what it neutralised**: a warning names the pack, the
+  engram ids and the fields whose line terminators were folded, and counts
+  `locked` downgrades. Prevention without detection let a hostile pack install
+  everywhere, be neutralised every time, and never be noticed.
+- **Behaviour change:** the one learn input gate (`_validateLearnInput`, shared
+  by `learn()` and `learnRouted()`) folds BEFORE the emptiness check and rejects
+  a statement that is empty after the fold — whitespace-only or terminator-only
+  — with a `TypeError`, instead of storing the empty string every other such
+  statement content-hashes to. `updateEngram()` / `updateEngramAsync()` fold the
+  engram they are given.
+- New exports from `@plur-ai/core`: `collapseLineTerminators`,
+  `collapseLineTerminatorsOptional`, `collapseEngramTextFields`,
+  `collapseLearnContextText`, `LINE_TERMINATOR_CODE_POINTS`,
+  `SINGLE_LINE_TEXT_FIELDS`, `SINGLE_LINE_CONTEXT_FIELDS`,
+  `INLINE_ENTRY_DELIMITER`, `escapeInlineDelimiter`. dsh keeps its own copy of
+  the line-break set (it loads core lazily) and a test asserts it equals core's.
+- Content hashes are unaffected for the common line breaks (`\s` already folded
+  them); a statement containing NEL or a C0 separator hashes differently than it
+  did before #953. `plur reindex-hashes` repairs that case; no migration.
+- The MCP full profile serves 43 tools, not 42; the root README and the budget
+  comment in `tools.ts` are asserted against `getToolDefinitions('full')`.
+- The `plur ui --host` allowlist widening that rode on the first version of this
+  change was dropped; it shares no code or threat model with this fix and
+  belongs with #946.
+
 Architecture audit (2026-09-03, `docs/audits/2026-09-03-architecture-audit.md`):
 fewer mechanisms, one drift bug fixed, no feature changes.
 

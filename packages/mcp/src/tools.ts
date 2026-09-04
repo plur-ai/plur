@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
+import { Plur, collapseLineTerminators, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -500,11 +500,27 @@ function getLlmFunction(): LlmFunction | undefined {
 }
 
 /**
- * Strip XML parameter-envelope artifacts from a statement string.
- * When an LLM generates tool calls in the old XML format, the raw statement
- * value sometimes contains the closing tag followed by the full duplicated body:
+ * Strip XML parameter-envelope artifacts from a statement string, then fold it
+ * to a single line.
+ *
+ * XML-envelope stripping: when an LLM generates tool calls in the old XML
+ * format, the raw statement value sometimes contains the closing tag followed
+ * by the full duplicated body:
  *   "clean text</statement>\n\n<parameter name="statement">clean text..."
  * Truncate at whichever marker appears first.
+ *
+ * Line folding is delegated to core's `collapseLineTerminators` rather than
+ * reimplemented here. The set of characters a renderer treats as a line break
+ * is security-relevant — anything this layer lets through and the renderer
+ * splits on is a way to mint a forged engram — and two hand-written character
+ * classes in two packages drift, always in the direction of the narrower one.
+ * One definition, imported (sanitize.ts in core carries the threat model).
+ *
+ * This is defence in depth, not the guarantee: core folds on every write path
+ * (learn, learnRouted, learnAsync, learnBatch, updateEngram, pack install) and
+ * the render boundary folds on read, so an MCP client is covered even if this
+ * call is bypassed. The context fields (rationale, source, domain) are folded
+ * by core's write paths, not here.
  */
 function sanitizeStatement(raw: string): string {
   const markers = ['</statement>', '<parameter name=']
@@ -513,7 +529,7 @@ function sanitizeStatement(raw: string): string {
     const pos = raw.indexOf(m)
     if (pos !== -1 && pos < cut) cut = pos
   }
-  return raw.slice(0, cut).trimEnd()
+  return collapseLineTerminators(raw.slice(0, cut))
 }
 
 // Exported so the server dispatch loop can tick it once per tool call (#192).
@@ -682,7 +698,7 @@ export type ToolProfile = 'full' | 'lean' | 'cursor'
 // timeline, meta-engrams, ingest, capture, ...) is reachable through
 // plur_admin instead of its own top-level tool slot. Cursor caps a workspace
 // at ~40 MCP tools total across every server, and PLUR's full 43-tool
-// surface alone would consume ~110% of that budget.
+// surface alone would consume ~107.5% of that budget.
 //
 // Destructive tools are kept OUT of plur_admin's dispatch specifically
 // (audit fix — evaluator review, 2026-07-08; ENFORCED in the handler since

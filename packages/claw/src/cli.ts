@@ -52,7 +52,7 @@ export async function runRecall(
     err('Usage: claw recall <query>\n')
     return 1
   }
-  const { Plur } = await import('@plur-ai/core')
+  const { Plur, collapseLineTerminators } = await import('@plur-ai/core')
   const plurPath = opts.plurPath ?? process.env.PLUR_PATH ?? join(homedir(), '.plur')
   const plur = new Plur({ path: plurPath })
   const results = await plur.recall(query, { limit: 10 })
@@ -61,7 +61,9 @@ export async function runRecall(
     return 0
   }
   for (const e of results) {
-    out(`[${e.id}] ${e.statement}\n`)
+    // One line per engram (#1004): a row that predates the write-boundary fold
+    // or came from a remote store must not mint a second `[id] ...` line.
+    out(`${collapseLineTerminators(`[${e.id}] ${e.statement}`)}\n`)
   }
   return 0
 }

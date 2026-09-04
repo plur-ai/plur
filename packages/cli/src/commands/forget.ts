@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, oneLine, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -35,7 +35,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: target, statement: engram.statement } })
     } else {
-      outputInfo(`Retired: [${target}] ${engram.statement}`, flags)
+      outputInfo(`Retired: ${oneLine(`[${target}] ${engram.statement}`)}`, flags)
     }
     return
   }
@@ -59,7 +59,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: matches[0].id, statement: matches[0].statement } })
     } else {
-      outputInfo(`Retired: [${matches[0].id}] ${matches[0].statement}`, flags)
+      outputInfo(`Retired: ${oneLine(`[${matches[0].id}] ${matches[0].statement}`)}`, flags)
     }
     return
   }
@@ -74,7 +74,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } else {
     outputText(`${matches.length} matches found. Specify exact ID:`)
     for (const e of matches.slice(0, 20)) {
-      outputText(`  ${e.id}  ${e.statement}`)
+      outputText(`  ${oneLine(`${e.id}  ${e.statement}`)}`)
     }
   }
 }

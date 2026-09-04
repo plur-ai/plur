@@ -1,6 +1,7 @@
 import type { Engram } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
 import { ftsTokenize } from './fts.js'
+import { collapseLineTerminators } from './sanitize.js'
 
 export interface TensionPair {
   id_a: string
@@ -110,10 +111,10 @@ export function buildContradictionPrompt(
   return `You are a memory consistency checker. Determine whether these two statements CONTRADICT each other.
 
 ${label(a, 'A')}
-"${a.statement}"
+"${collapseLineTerminators(a.statement)}"
 
 ${label(b, 'B')}
-"${b.statement}"
+"${collapseLineTerminators(b.statement)}"
 
 Two statements CONTRADICT when one asserts X is true and the other asserts X is false, different, or mutually exclusive.
 Do NOT flag as contradictions: different topics in the same domain, complementary facts, or unrelated statements that happen to share keywords.
@@ -163,8 +164,8 @@ export function buildBatchContradictionPrompt(
         : `PAIR ${i + 1}:`
       const dateTag = (s: JudgeStatement) => (bothDated ? ` (${s.date})` : '')
       return `${header}
-A [${a.id}]${dateTag(a)}: "${a.statement}"
-B [${b.id}]${dateTag(b)}: "${b.statement}"`
+A [${a.id}]${dateTag(a)}: "${collapseLineTerminators(a.statement)}"
+B [${b.id}]${dateTag(b)}: "${collapseLineTerminators(b.statement)}"`
     })
     .join('\n\n')
 

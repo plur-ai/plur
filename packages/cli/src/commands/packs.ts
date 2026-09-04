@@ -1,7 +1,7 @@
 import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, oneLine, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -56,10 +56,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`Engrams: ${preview.engram_count}`)
       outputText('')
       for (const e of preview.engrams) {
-        const domain = e.domain ? ` [${e.domain}]` : ''
+        const domain = e.domain ? ` [${oneLine(e.domain)}]` : ''
         const tags = e.tags.length > 0 ? ` {${e.tags.join(', ')}}` : ''
         outputText(`  ${e.id} (${e.type})${domain}${tags}`)
-        outputText(`    ${e.statement}`)
+        outputText(`    ${oneLine(e.statement)}`)
       }
       if (!preview.security.clean) {
         outputText('')

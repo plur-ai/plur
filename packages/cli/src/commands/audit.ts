@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, oneLine, exit } from '../output.js'
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -260,7 +260,7 @@ function printText(report: AuditReport, flags?: GlobalFlags): void {
       outputText(`• ${f.entry.topic}  (${f.entry.filepath.split('/').slice(-2).join('/')})`)
       outputText(`    ${f.reason}`)
       for (const m of f.matchedEngrams.slice(0, 2)) {
-        outputText(`    ↳ [${m.id}] ${m.statement.slice(0, 120)}${m.statement.length > 120 ? '…' : ''}`)
+        outputText(`    ↳ ${oneLine(`[${m.id}] ${m.statement.slice(0, 120)}${m.statement.length > 120 ? '…' : ''}`)}`)
       }
     }
     outputText('')

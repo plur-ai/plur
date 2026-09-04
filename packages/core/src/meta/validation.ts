@@ -4,6 +4,7 @@ import type { MetaField } from '../schemas/meta-engram.js'
 import type { LlmFunction } from '../types.js'
 import { computeMetaConfidence } from '../confidence.js'
 import { sanitizeForPrompt } from './sanitize.js'
+import { collapseLineTerminators } from '../sanitize.js'
 
 export interface ValidationResult {
   meta_engram_id: string
@@ -37,7 +38,9 @@ export async function validateMetaEngram(
   const testEngramSummary = testEngrams
     .filter(e => e.status === 'active')
     .slice(0, 10)
-    .map(e => `  - [${e.id}] ${sanitizeForPrompt(e.statement)}`)
+    // Folded to one line first (#940): sanitizeForPrompt keeps single newlines,
+    // and this is a line-based `[id] statement` list.
+    .map(e => `  - [${e.id}] ${sanitizeForPrompt(collapseLineTerminators(e.statement))}`)
     .join('\n')
 
   if (!testEngramSummary) {

@@ -1,6 +1,7 @@
 import type { Engram } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
 import { searchEngrams, engramSearchText } from './fts.js'
+import { collapseLineTerminators, collapseLineTerminatorsOptional } from './sanitize.js'
 
 /**
  * Agentic search: uses an LLM to semantically filter and rank engrams.
@@ -45,10 +46,13 @@ async function agenticRerank(
   const numbered = candidates.map((e, i) => {
     const extra: string[] = []
     if (e.entities?.length) extra.push(`entities: ${e.entities.map(x => x.name).join(', ')}`)
-    if (e.temporal?.valid_from) extra.push(`valid from: ${e.temporal.valid_from}`)
-    if (e.temporal?.valid_until) extra.push(`valid until: ${e.temporal.valid_until}`)
+    if (e.temporal?.valid_from) extra.push(`valid from: ${collapseLineTerminatorsOptional(e.temporal.valid_from)}`)
+    if (e.temporal?.valid_until) extra.push(`valid until: ${collapseLineTerminatorsOptional(e.temporal.valid_until)}`)
     const suffix = extra.length > 0 ? ` (${extra.join('; ')})` : ''
-    return `${i + 1}. [${e.id}] ${e.statement}${suffix}`
+    // One numbered line per candidate (#940): a line terminator in a stored
+    // statement would otherwise mint an extra `[id] ...` line the LLM could
+    // select by number, or read as a memory that was never stored.
+    return `${i + 1}. [${e.id}] ${collapseLineTerminators(e.statement)}${suffix}`
   }).join('\n')
 
   const prompt = `You are a memory retrieval system. Given a query and a list of memories, select the ${limit} most relevant memories. Return ONLY the numbers of the relevant memories, comma-separated, in order of relevance (most relevant first).

@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, oneLine, exit } from '../output.js'
 import type { LlmFunction } from '@plur-ai/core'
 
 /** Create an OpenAI-compatible LLM function from base URL + key + model. */
@@ -284,8 +284,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputText('  Run `plur tensions --scan` to judge them, or purge via the plur_tensions_purge MCP tool.')
     outputText('')
     for (const t of legacy) {
-      outputText(`  A [${t.engram_a.id}]: ${t.engram_a.statement}`)
-      outputText(`  B [${t.engram_b.id}]: ${t.engram_b.statement}`)
+      outputText(`  A ${oneLine(`[${t.engram_a.id}]: ${t.engram_a.statement}`)}`)
+      outputText(`  B ${oneLine(`[${t.engram_b.id}]: ${t.engram_b.statement}`)}`)
       outputText('')
     }
   }

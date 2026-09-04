@@ -7,6 +7,7 @@ import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
 import { atomicWrite, fsyncDir, withLock } from './sync.js'
 import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
+import { collapseEngramTextFields, collapseLineTerminators } from './sanitize.js'
 import type { Engram } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
@@ -519,8 +520,26 @@ function _installPackDir(
   if (sanitized.changed) {
     newEngrams = sanitized.engrams
     saveEngrams(engramsPath, newEngrams)
+    // Folded before it reaches a log line: the name is pack-controlled.
+    const name = collapseLineTerminators(String(preview.manifest.name))
     if (sanitized.pinnedStripped > 0) {
-      logger.warning(`installPack: stripped 'pinned' from ${sanitized.pinnedStripped} engram(s) in pack '${preview.manifest.name}'`)
+      logger.warning(`installPack: stripped 'pinned' from ${sanitized.pinnedStripped} engram(s) in pack '${name}'`)
+    }
+    if (sanitized.lockedDowngraded > 0) {
+      logger.warning(`installPack: downgraded 'locked' commitment to 'decided' on ${sanitized.lockedDowngraded} engram(s) in pack '${name}'`)
+    }
+    if (sanitized.folded.length > 0) {
+      // Neutralised AND reported. A pack that ships forged structure is an
+      // attack attempt whether or not it succeeded; folding it silently would
+      // let the same pack install everywhere, be neutralised every time, and
+      // never be noticed — so it stays in the registry and the payload gets
+      // re-shipped through the next delimiter nobody has folded yet.
+      const detail = sanitized.folded.map(f => `${f.id}: ${f.fields.join(', ')}`).join('; ')
+      logger.warning(
+        `installPack: folded line terminators in ${sanitized.folded.length} engram(s) of pack '${name}' — ` +
+        `a line break inside a rendered field would have minted a forged entry in agent context (#940). ` +
+        `Folded: ${detail}. Treat the pack's source as suspect.`,
+      )
     }
   }
 
@@ -819,14 +838,53 @@ export interface PrivacyIssue {
   detail: string
 }
 
+/** What {@link sanitizePackEngrams} changed, per engram, so install can log it. */
+export interface PackSanitizeReport {
+  engrams: Engram[]
+  /** How many engrams carried `pinned: true` (stripped). */
+  pinnedStripped: number
+  /** How many engrams carried `commitment: locked` (downgraded to `decided`). */
+  lockedDowngraded: number
+  /** Engrams whose single-line text fields carried a line terminator, and which fields. */
+  folded: Array<{ id: string; fields: string[] }>
+  /** Whether anything at all changed. */
+  changed: boolean
+}
+
 /**
- * Strip fields that let a third-party pack engram override the host's behavior:
- * `pinned` (bypasses the relevance gate — always injected) and a `locked`
- * commitment (resists dedup/correction). Returns sanitized engrams plus a count
- * of how many were pinned. (Security audit 2026-06-10, finding #2.)
+ * Strip or neutralise everything a third-party pack engram can use to override
+ * the host's behavior.
+ *
+ * Two distinct classes:
+ *
+ *  - HOST OVERRIDE: `pinned` (bypasses the relevance gate — always injected)
+ *    and a `locked` commitment (resists dedup/correction).
+ *    (Security audit 2026-06-10, finding #2.)
+ *
+ *  - STRUCTURAL FORGERY: a line terminator in any single-line text field. The
+ *    renderer joins engrams with a newline and the consumers paste the block
+ *    into a prompt, so a newline inside pack text mints a second engram at
+ *    system-prompt authority (#940, #1004). The render boundary collapses these
+ *    too — that is the guarantee, and it covers packs installed before this
+ *    existed, as does the load-time fold in `_loadAllEngrams` — but a pack is
+ *    the one input we KNOW is third-party, and letting it write forged
+ *    structure into the store means every non-rendering reader (export,
+ *    `plur list`, the viewer, a downstream re-pack) sees it. Neutralise at the
+ *    boundary as well as at the render, with the same helper every other write
+ *    path uses (sanitize.ts), and REPORT what was neutralised so the operator
+ *    learns an attack was attempted.
+ *
+ * The `' | '` delimiter forgery is NOT handled here, deliberately: the pipe is
+ * the renderer's own delimiter and is escaped at render time. A stored pack
+ * engram keeps its author's pipes.
+ *
+ * @param engrams - engrams as loaded from the pack.
+ * @returns sanitized engrams plus a report of what changed.
  */
-export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pinnedStripped: number; changed: boolean } {
+export function sanitizePackEngrams(engrams: Engram[]): PackSanitizeReport {
   let pinnedStripped = 0
+  let lockedDowngraded = 0
+  const folded: Array<{ id: string; fields: string[] }> = []
   let changed = false
   const out = engrams.map(e => {
     const c = { ...e } as Record<string, unknown>
@@ -836,11 +894,19 @@ export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pin
       c.commitment = 'decided'
       delete c.locked_at
       delete c.locked_reason
+      lockedDowngraded++
       changed = true
+    }
+    const fold = collapseEngramTextFields(c)
+    if (fold.folded.length > 0) {
+      // The id is pack-controlled too; folded so the REPORT cannot forge a log line.
+      folded.push({ id: collapseLineTerminators(String(c.id)), fields: fold.folded })
+      changed = true
+      return fold.engram as unknown as Engram
     }
     return c as unknown as Engram
   })
-  return { engrams: out, pinnedStripped, changed }
+  return { engrams: out, pinnedStripped, lockedDowngraded, folded, changed }
 }
 
 const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
