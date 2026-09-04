@@ -366,8 +366,7 @@ export function fillTokenBudget(
 
   for (const engram of pinned) {
     const cost = estimateTokens(engram)
-    if (tokensUsed + cost > maxTokens) continue
-    if (tokensUsed + cost > pinnedBudget) continue
+    if (tokensUsed + cost > pinnedBudget) break
     result.push(engram)
     tokensUsed += cost
     const pack = engram.pack ?? '__personal__'

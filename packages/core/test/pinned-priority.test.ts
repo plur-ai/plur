@@ -183,6 +183,58 @@ describe('pinned_priority: eviction order within the pinned tier', () => {
     )
     expect(minSelectedPriority).toBeGreaterThanOrEqual(maxEvictedPriority)
   })
+
+  it('strict ordering: a large high-priority engram that overflows the sub-budget blocks smaller low-priority ones', () => {
+    // This is the regression test for the greedy-vs-strict bug (#1124).
+    // With `continue`, a high-priority engram that does not fit is skipped and a
+    // smaller low-priority engram is admitted instead. With `break`, admission stops
+    // once the highest remaining priority engram cannot fit.
+    const largeStatement = 'L'.repeat(400) // ~120 tokens — intentionally large
+    const smallStatement = 'S'.repeat(20)  // ~10 tokens  — intentionally small
+
+    const large = makeScored({
+      id: 'ENG-PP-LARGE',
+      statement: largeStatement,
+      pinned: true,
+      pinned_priority: 100, // highest priority
+      keyword_match: 1.0,
+      raw_score: 1.0,
+      score: 1.0,
+      activation: { retrieval_strength: 0.8, storage_strength: 0.5, frequency: 0, last_accessed: '2026-01-01' },
+    }) as ScoredEngram
+    const small = makeScored({
+      id: 'ENG-PP-SMALL',
+      statement: smallStatement,
+      pinned: true,
+      pinned_priority: 1, // lowest priority
+      keyword_match: 1.0,
+      raw_score: 1.0,
+      score: 1.0,
+      activation: { retrieval_strength: 0.8, storage_strength: 0.5, frequency: 0, last_accessed: '2026-01-01' },
+    }) as ScoredEngram
+
+    const largeCost = estimateTokens(large)
+    const smallCost = estimateTokens(small)
+
+    // Budget: the small engram fits in the pinned sub-budget; the large one does not.
+    // pinnedBudget = maxTokens * 0.5. We need:
+    //   smallCost < pinnedBudget < largeCost
+    //   => maxTokens = (largeCost + smallCost) / 2 * 2  roughly
+    // Pick maxTokens so that pinnedBudget = maxTokens*0.5 is between the two costs.
+    const pinnedBudget = Math.floor((largeCost + smallCost) / 2)
+    const maxTokens = pinnedBudget * 2 // so pinnedBudget === maxTokens * 0.5
+
+    expect(smallCost).toBeLessThan(pinnedBudget)
+    expect(largeCost).toBeGreaterThan(pinnedBudget)
+
+    const { selected } = fillTokenBudget([large, small], maxTokens)
+    const ids = selected.map(e => e.id)
+
+    // Strict ordering: the large high-priority engram overflows the sub-budget, so
+    // admission stops — the small low-priority engram must NOT be included.
+    expect(ids).not.toContain('ENG-PP-LARGE')
+    expect(ids).not.toContain('ENG-PP-SMALL')
+  })
 })
 
 describe('pinned_priority: schema and learn() integration', () => {
