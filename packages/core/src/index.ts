@@ -63,6 +63,7 @@ import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isScopeWithin, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
+import { MeasuredUnderSchema, type MeasuredUnder } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
@@ -232,7 +233,7 @@ export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
 export { atomicWrite, withLock } from './sync.js'
 export { markRemoteHostDown, remoteHostDownRemainingMs, clearRemoteHostDown, _resetRemoteHostBreaker, salvageRemoteRow } from './store/remote-store.js'
 export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
-export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
+export { scanForTensions, getCandidatePairs, getCandidatePairsDetailed, measuredUnderDiffers, measuredUnderGateApplies, engramOrigin, MEASURED_UNDER_DIMENSIONS, MEASURED_UNDER_CONFIDENCE_CAP, type CandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
 // Tension lifecycle persistence (#181)
 export { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 export { TensionRecordSchema, TensionStatusSchema, TensionCategorySchema, type TensionRecord, type TensionStatus, type TensionCategory } from './schemas/tension.js'
@@ -2446,6 +2447,26 @@ export class Plur {
     }
   }
 
+  /**
+   * `measured_under` as it may be persisted (#869 review): validated against
+   * MeasuredUnderSchema, or absent. The MCP tool passes the LLM's object
+   * through as a bare cast, and a non-string dimension written to disk makes
+   * the loader quarantine the WHOLE engram on the next read — the field that
+   * was meant to add context would silently remove the memory. Refusing at
+   * write time keeps the store loadable; the caller gets a TypeError naming
+   * the field instead of a warning in a log they may never see.
+   */
+  private _validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | undefined {
+    const raw = context?.measured_under
+    if (raw === undefined || raw === null) return undefined
+    const parsed = MeasuredUnderSchema.safeParse(raw)
+    if (!parsed.success) {
+      const issues = parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
+      throw new TypeError(`plur.learn: invalid measured_under — ${issues}. Every dimension must be a string.`)
+    }
+    return parsed.data
+  }
+
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
     if (typeof statement !== 'string' || statement.length === 0) {
@@ -2649,7 +2670,7 @@ export class Plur {
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
         // #869: measurement context — present only when the caller supplies it.
-        measured_under: context?.measured_under,
+        measured_under: this._validatedMeasuredUnder(context),
       }
 
       // #240: supersedes is a graph edge, not a temporality enum — write the
@@ -3218,7 +3239,7 @@ export class Plur {
       } : undefined,
       pinned: context?.pinned === true ? true : undefined,
       // #869: measurement context — present only when the caller supplies it.
-      measured_under: context?.measured_under,
+      measured_under: this._validatedMeasuredUnder(context),
     }
     // Echo marker for extracted expiry (#347) — mirrors the learn() stamping
     // so the remote-routed MCP response can confirm the parse too.
@@ -8121,11 +8142,12 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Resolved tension-scan defaults from config (#240). Consumers (MCP
    * plur_tensions, CLI) merge explicit args over these.
    */
-  getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; temporal_discount: boolean } {
+  getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; measured_under_pairs: 'skip' | 'floor'; temporal_discount: boolean } {
     const t = this.config.tensions ?? {}
     return {
       temporal_domains: t.temporal_domains ?? [],
       snapshot_pairs: t.snapshot_pairs ?? 'skip',
+      measured_under_pairs: t.measured_under_pairs ?? 'skip',
       temporal_discount: t.temporal_discount ?? false,
     }
   }

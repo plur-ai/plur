@@ -226,6 +226,13 @@ export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
 export const TensionsConfigSchema = z.object({
   temporal_domains: z.array(z.string()).default([]),
   snapshot_pairs: z.enum(['skip', 'floor']).default('skip'),
+  /**
+   * Same-origin measurement pairs whose `measured_under` configuration
+   * differs (#869): 'skip' (default) drops them before the judge and counts
+   * them in the scan result; 'floor' judges them with confidence capped.
+   * Never applies across stores or packs.
+   */
+  measured_under_pairs: z.enum(['skip', 'floor']).default('skip'),
   temporal_discount: z.boolean().default(false),
 }).partial()
 

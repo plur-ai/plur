@@ -1006,7 +1006,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           session_id: { type: 'string', description: 'Session this write belongs to (from plur_session_start). Resolves the session default scope (incl. mid-session plur_session_scope changes) when no explicit scope is passed. Optional when one session is open; pass it when several are (#243).' },
           measured_under: {
             type: 'object',
-            description: 'Measurement context for numeric or benchmark-derived claims (#869). Records the conditions under which the asserted value was measured — model, source_type, hardware, dataset, date. When present, differing-condition measurements are stored as refinements rather than tensions. Omit for non-numeric engrams.',
+            description: 'Measurement context for numeric or benchmark-derived claims (#869). Records the conditions under which the asserted value was measured — model, source_type, hardware, dataset, date. When present, the tension scanner does not treat two measurements from the same store taken under different configurations as a contradiction (the skipped pair is reported in the scan result). Omit for non-numeric engrams.',
             properties: {
               model: { type: 'string', description: 'Model or system variant (e.g. "claude-opus-4", "gpt-4o")' },
               source_type: { type: 'string', description: 'Source environment type (e.g. "local-git", "gitlab", "bench", "production")' },
@@ -3463,6 +3463,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             batch_size: args.batch_size as number | undefined,
             temporal_domains: tensionsConfig.temporal_domains,
             snapshot_pairs: tensionsConfig.snapshot_pairs,
+            measured_under_pairs: tensionsConfig.measured_under_pairs,
             temporal_discount: (args.temporal_discount as boolean | undefined) ?? tensionsConfig.temporal_discount,
             ...(persist ? { exclude_pairs: new Set(plur.suppressedTensionPairKeys()) } : {}),
           })
@@ -3472,6 +3473,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
           return {
             pairs_checked: result.pairs_checked,
+            // #869 review: policy skips are reported, never silent.
+            skipped: result.skipped,
             count: result.new_tensions,
             ...(persisted ? { persisted_new: persisted.new_count } : {}),
             tensions: result.tensions.map((t, i) => ({
