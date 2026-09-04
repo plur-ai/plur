@@ -33,6 +33,15 @@ export interface LearnAsyncDeps {
   recall: (query: string, options?: { limit?: number }) => Promise<Engram[]>
   /** Sync learn for the ADD path. */
   learn: (statement: string, context?: LearnContext) => Promise<Engram>
+  /**
+   * Routed learn for the ADD path in learnBatch (#930). When present, learnBatch
+   * uses this instead of `learn` so remote-scope writes await the server push and
+   * return the server-assigned id. Without this, the fire-and-forget outbox in
+   * `learn` deletes the local copy after a successful push, and the next
+   * iteration's generateEngramId finds the same slot free, producing the same id
+   * for every item in the batch.
+   */
+  learnRouted?: (statement: string, context?: LearnContext) => Promise<Engram>
   /** Get engram by ID. */
   getById: (id: string) => Promise<Engram | null>
   /**
@@ -493,11 +502,50 @@ export interface LearnBatchOptions {
 }
 
 /**
+ * Minimal record of an engram written earlier in the same learnBatch call.
+ * Only the fields that learnAsync's dedup step reads are captured (#854):
+ *   - buildDedupPrompt reads  {id, statement, type, domain}
+ *   - scope filtering reads   {scope, status}
+ *   - similarityScores reads  the Engram object (passed as candidate)
+ *
+ * The cast to Engram in the recall wrappers below is therefore safe as long
+ * as no other consumer of `candidates` is introduced without updating this
+ * interface. The alternative — storing full Engram objects — would require
+ * re-loading the just-written engram and adds a store round-trip per ADD.
+ */
+interface BatchAccumulatorEntry {
+  id: string
+  statement: string
+  type: string
+  domain?: string
+  scope?: string
+  status: 'active'
+  /**
+   * REQUIRED, not optional, and the reason is a silent failure rather than a
+   * type nicety. These entries are spliced into the dedup candidate list and
+   * reach `engramSearchText`, which reads `engram.tags.length` unguarded. On an
+   * entry without `tags` that throws, the throw is swallowed by the surrounding
+   * catch, and the run drops to hash-only dedup for every batch item after the
+   * first — silently, whenever embeddings are on and no LLM key is present,
+   * which is the normal configuration. Carrying the real tags also makes the
+   * accumulated candidates score the way indexed ones do.
+   */
+  tags: string[]
+}
+
+/**
  * Batch learn: process multiple statements sequentially with LLM dedup.
  *
  * LLM dedup calls are bounded by opts.maxLlmCalls (default 50). The cap only
  * bites on large batches of novel-but-similar statements — exact-hash NOOPs
  * and zero-candidate ADDs short-circuit before the LLM and don't consume budget.
+ *
+ * In-batch near-duplicate detection (#854): _syncIndex() is fire-and-forget,
+ * so the BM25/embedding index does not contain statement i when statement i+N
+ * is being processed. To catch new-vs-new near-duplicates, learnBatch maintains
+ * a `batchAccumulator` of engrams written so far and splices them into the
+ * recall results that learnAsync sees, before the dedup step runs. This keeps
+ * _syncIndex fire-and-forget (no blocking flush required).
  */
 export async function learnBatch(
   deps: LearnAsyncDeps,
@@ -512,6 +560,11 @@ export async function learnBatch(
   const maxLlmCalls = opts.maxLlmCalls ?? 50
   let llmCallsUsed = 0
   let capWarned = false
+
+  // In-batch accumulator (#854): collects every engram written (ADD decision)
+  // earlier in this learnBatch call. Spliced into recall results so the dedup
+  // step can see new-vs-new near-duplicates before the index is flushed.
+  const batchAccumulator: BatchAccumulatorEntry[] = []
 
   for (let i = 0; i < statements.length; i++) {
     const { statement, context } = statements[i]
@@ -533,13 +586,49 @@ export async function learnBatch(
       }
     }
 
+    // Per-statement deps that splice in-batch accumulator entries into the
+    // recall results so learnAsync's dedup step sees earlier batch writes even
+    // before _syncIndex() has flushed (#854). The accumulator entries are
+    // appended AFTER the index results so index-resident engrams rank first;
+    // dedup trims to its `limit` anyway so duplicates across both lists are
+    // harmless. Dedup-up to the caller's scope filter still runs inside
+    // learnAsync — the accumulator entries carry `scope` and `status` for it.
+    //
+    // #930: use learnRouted (if available) as the ADD-path learn function.
+    // learnRouted awaits the server push and returns the server-assigned id,
+    // so every result in the batch gets a distinct, correct id. With the plain
+    // `learn` path the fire-and-forget outbox deletes the local copy after a
+    // successful push; the next generateEngramId call finds the same slot free
+    // and produces the same id for every item. The effect is that all N items
+    // report a single id that does not exist in any store once all pushes
+    // complete (#930, defect 2). learnRouted's own hash-dedup and cross-scope
+    // recurrence checks are redundant (learnAsync already ran them) but cheap.
+    const effectiveLearn = deps.learnRouted ?? deps.learn
+    const batchDeps: LearnAsyncDeps = {
+      ...deps,
+      learn: effectiveLearn,
+      ...(batchAccumulator.length === 0 ? {} : {
+        recallHybrid: async (query: string, options?: { limit?: number }) => {
+          const indexResults = await deps.recallHybrid(query, options)
+          // Cast is safe: learnAsync only reads {id,statement,type,domain,scope,status} from candidates.
+          const extra = batchAccumulator.filter(e => !indexResults.some(r => r.id === e.id))
+          return [...indexResults, ...extra as unknown as Engram[]]
+        },
+        recall: async (query: string, options?: { limit?: number }) => {
+          const indexResults = await deps.recall(query, options)
+          const extra = batchAccumulator.filter(e => !indexResults.some(r => r.id === e.id))
+          return [...indexResults, ...extra as unknown as Engram[]]
+        },
+      }),
+    }
+
     const ctx: LearnAsyncContext = { ...context, llm: effectiveLlm }
     // Partial-failure isolation (batch API, #281 item #3): one statement's
     // failure must not abort the batch — an orchestrator persisting 50
     // consolidated findings should keep the 49 that succeed. Capture the error
     // against its input index and continue; the caller inspects `failures`.
     try {
-      const result = await learnAsync(deps, statement, ctx)
+      const result = await learnAsync(batchDeps, statement, ctx)
       // Tag with the input position so a caller can map this result back to its
       // input even though `results` is compacted (failed statements absent). #281
       results.push({ ...result, input_index: i })
@@ -547,7 +636,22 @@ export async function learnBatch(
       if (key === 'noop') stats.noops++
       else if (key === 'update') stats.updated++
       else if (key === 'merge') stats.merged++
-      else stats.added++
+      else {
+        stats.added++
+        // Record ADD-written engrams in the accumulator so subsequent statements
+        // in this batch can dedup against them (#854). UPDATE/MERGE/NOOP all
+        // point at an existing engram already in the index — only ADD produces a
+        // new one that isn't there yet.
+        batchAccumulator.push({
+          id: result.engram.id,
+          statement: result.engram.statement,
+          type: result.engram.type ?? 'observation',
+          domain: result.engram.domain,
+          scope: result.engram.scope,
+          status: 'active',
+          tags: result.engram.tags ?? [],
+        })
+      }
     } catch (err) {
       stats.failed++
       failures.push({ index: i, statement, error: err instanceof Error ? err.message : String(err) })
