@@ -25,22 +25,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // If --search flag or doesn't look like an ID, use search mode
   if (!isSearch && /^(ENG|ABS|META)-/.test(target)) {
     const engram = await plur.getById(target)
-    if (engram?.status === 'retired') exit(1, `Already retired: ${target}`)
+    if (!engram) exit(1, `Engram not found: ${target}`)
+    if (engram.status === 'retired') exit(1, `Already retired: ${target}`)
     // force (#766): `plur forget` is an explicit user-facing forget — same
     // surface as MCP plur_forget. Without force, a multiply-learned engram
     // (reference_count > 1) only decrements and stays active, and a later
     // learn() at a different scope re-matches it and inherits the old scope.
-    try {
-      await plur.forget(target, reason, { force: true })
-      if (shouldOutputJson(flags)) {
-        outputJson({ success: true, retired: { id: target, ...(engram ? { statement: engram.statement } : {}) } })
-      } else {
-        outputInfo(`Retired: [${target}]${engram ? ` ${engram.statement}` : ''}`, flags)
-      }
-      return
-    } catch (err: any) {
-      exit(1, err.message || `Engram not found: ${target}`)
+    await plur.forget(target, reason, { force: true })
+    if (shouldOutputJson(flags)) {
+      outputJson({ success: true, retired: { id: target, statement: engram.statement } })
+    } else {
+      outputInfo(`Retired: [${target}] ${engram.statement}`, flags)
     }
+    return
   }
 
   // Search mode. remote:false (#776) — forget-by-search resolves LOCAL

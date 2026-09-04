@@ -27,6 +27,12 @@ describe('bareEngramId (#1119)', () => {
     expect(bareEngramId('ABS-GPL-2026-08-13-025')).toBe('ABS-2026-08-13-025')
     expect(bareEngramId('META-GDA-2026-0501-001')).toBe('META-2026-0501-001')
   })
+
+  it('does not mangle server, cold, or pack engram shapes (#1119)', () => {
+    expect(bareEngramId('ENG-SRV-001')).toBe('ENG-SRV-001')
+    expect(bareEngramId('ENG-COLD-001')).toBe('ENG-COLD-001')
+    expect(bareEngramId('ENG-PACK-EM-006')).toBe('ENG-PACK-EM-006')
+  })
 })
 
 describe('storePrefix', () => {

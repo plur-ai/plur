@@ -1647,7 +1647,7 @@ export class Plur {
     if (nsPattern.test(id)) {
       return id.replace(nsPattern, '$1-')
     }
-    return bareEngramId(id)
+    return id
   }
 
   /** Content hash fast-path dedup. Scope-aware: same statement in a different

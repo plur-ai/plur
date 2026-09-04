@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { bareEngramId } from '@plur-ai/core'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -35,7 +36,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson({
       results: engrams.map(e => ({
-        id: (e as any)._originalId ?? e.id.replace(/^(ENG|ABS|META)-[A-Z]{2,4}-(?=\d{4}-|[A-Za-z0-9])/, '$1-'),
+        id: (e as any)._originalId ?? bareEngramId(e.id),
         statement: e.statement,
         scope: e.scope,
         type: e.type,
@@ -46,7 +47,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     })
   } else {
     engrams.forEach((e, idx) => {
-      const displayId = (e as any)._originalId ?? e.id.replace(/^(ENG|ABS|META)-[A-Z]{2,4}-(?=\d{4}-|[A-Za-z0-9])/, '$1-')
+      const displayId = (e as any)._originalId ?? bareEngramId(e.id)
       outputText(`${idx + 1}. [${displayId}] ${e.statement}`)
       outputText(`   Scope: ${e.scope} | Type: ${e.type}${e.domain ? ` | Domain: ${e.domain}` : ''} | Strength: ${e.activation.retrieval_strength.toFixed(3)}`)
     })

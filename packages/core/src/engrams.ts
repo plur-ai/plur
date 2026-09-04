@@ -628,7 +628,7 @@ export function namespaceEngramId(id: string, scope: string): string {
  * E.g. 'ENG-GPL-2026-08-13-025' -> 'ENG-2026-08-13-025'.
  */
 export function bareEngramId(id: string): string {
-  return id.replace(/^(ENG|ABS|META)-[A-Z]{2,4}-(?=\d{4}-|[A-Za-z0-9])/, '$1-')
+  return id.replace(/^(ENG|ABS|META)-[A-Z]{2,4}-(?=\d{4}-)/, '$1-')
 }
 
 /** Derive a 3-char prefix from a store scope (e.g. 'datafund' → 'DFU', 'project:myapp' → 'PMY') */
