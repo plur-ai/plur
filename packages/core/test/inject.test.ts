@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scoreEngram, selectAndSpread, estimateTokens, estimateEngramTokens, fillTokenBudget, formatWithLayer, PINNED_HARD_TOKEN_CAP } from '../src/inject.js'
+import { scoreEngram, selectAndSpread, estimateTokens, estimateEngramTokens, fillTokenBudget, formatWithLayer, PINNED_HARD_TOKEN_CAP, PINNED_HARD_PER_ENGRAM_TOKEN_CAP, validatePinnedHardPerEngramCap } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 import { daysSince } from '../src/decay.js'
 
@@ -490,6 +490,125 @@ describe('injection engine', () => {
       const cost = estimateEngramTokens(engram)
       expect(cost).toBeGreaterThan(0)
       expect(Number.isInteger(cost)).toBe(true)
+    })
+  })
+
+  // === Per-engram hard-tier cap (PINNED_HARD_PER_ENGRAM_TOKEN_CAP) ===
+
+  describe('per-engram hard-tier cap', () => {
+    const makeMinimalEngram = (statement: string) => EngramSchema.parse({
+      id: 'ENG-PER-001',
+      statement,
+      type: 'behavioral',
+      scope: 'global',
+      status: 'active',
+      pinned: true,
+      pinned_tier: 'hard',
+    })
+
+    it('PINNED_HARD_PER_ENGRAM_TOKEN_CAP is exported and equals 200', () => {
+      expect(PINNED_HARD_PER_ENGRAM_TOKEN_CAP).toBe(200)
+    })
+
+    it('validatePinnedHardPerEngramCap returns ok:true for a short engram', () => {
+      const engram = makeMinimalEngram('Always test before deploy.')
+      const result = validatePinnedHardPerEngramCap(engram)
+      expect(result.ok).toBe(true)
+      expect(result.tokens).toBeGreaterThan(0)
+      expect(result.cap).toBe(200)
+    })
+
+    it('validatePinnedHardPerEngramCap returns ok:false for an oversized engram', () => {
+      // A statement that alone drives the engram well above 200 tokens (~800 chars
+      // of statement + fixed JSON overhead ≈ 260+ tokens).
+      const longStatement = 'A'.repeat(700)
+      const engram = makeMinimalEngram(longStatement)
+      const result = validatePinnedHardPerEngramCap(engram)
+      expect(result.ok).toBe(false)
+      expect(result.tokens).toBeGreaterThan(200)
+      expect(result.cap).toBe(200)
+    })
+
+    it('validatePinnedHardPerEngramCap accepts a custom cap override', () => {
+      const engram = makeMinimalEngram('Always test before deploy.')
+      const cost = estimateEngramTokens(engram)
+      // Custom cap below actual cost → rejected
+      const tightResult = validatePinnedHardPerEngramCap(engram, cost - 1)
+      expect(tightResult.ok).toBe(false)
+      expect(tightResult.cap).toBe(cost - 1)
+      // Custom cap at exact cost → accepted
+      const exactResult = validatePinnedHardPerEngramCap(engram, cost)
+      expect(exactResult.ok).toBe(true)
+    })
+
+    it('engram exactly at the cap passes; one token over fails', () => {
+      // Find a statement length that puts the engram right at the 200-token boundary.
+      // estimateEngramTokens = ceil(JSON.stringify(wire).length / 4).
+      // The fixed JSON overhead for a minimal engram is ~100 chars; 700 statement
+      // chars → ceil((100+700)/4) = 200.
+      let lo = 0, hi = 2000
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2)
+        const e = makeMinimalEngram('X'.repeat(mid))
+        if (estimateEngramTokens(e) <= 200) lo = mid + 1
+        else hi = mid
+      }
+      // lo-1 is the largest statement length that stays at or under 200 tokens
+      const atCapEngram = makeMinimalEngram('X'.repeat(lo - 1))
+      const atCap = validatePinnedHardPerEngramCap(atCapEngram)
+      expect(atCap.ok).toBe(true)
+      expect(atCap.tokens).toBeLessThanOrEqual(200)
+
+      // lo puts us one step over
+      const overCapEngram = makeMinimalEngram('X'.repeat(lo))
+      const overCap = validatePinnedHardPerEngramCap(overCapEngram)
+      expect(overCap.ok).toBe(false)
+      expect(overCap.tokens).toBeGreaterThan(200)
+    })
+
+    it('spike validation: short engrams pass 200-token cap, verbose ones fail', () => {
+      // Qualitative validation of the 200-token per-engram cap against representative
+      // pinned engrams from the live store (2026-09-04). EngramSchema serialization
+      // includes activation, feedback_signals, relations, and other metadata that
+      // add ~88 tokens of fixed overhead — leaving ~112 tokens (~448 chars) for the
+      // statement. The full cap result: 4/13 pass; 9/13 fail because most real
+      // pinned engrams are 200-500 chars of statement alone.
+      //
+      // Spike finding: a 200-token per-engram cap for pinned_hard is too tight for
+      // real-world safety rules. A 400-token cap (ceiling for ENG-2026-0429-058,
+      // the longest single-sentence rule at ~430 chars) allows ~11/13 to pass while
+      // still blocking the verbose 10-rules engram (~2000+ chars).
+
+      // These very short engrams should always pass the 200-token cap:
+      const shortEngrams = [
+        'Read the target file before editing it. Do not edit based on imagined content, remembered structure from earlier in the conversation, or what should be there. Read then diff then write.',
+        'Never ask the user "want to continue?" or "should we do this now or next time?" — just keep working until the user says stop.',
+      ]
+      for (const stmt of shortEngrams) {
+        const result = validatePinnedHardPerEngramCap(makeMinimalEngram(stmt))
+        expect(result.ok).toBe(true)
+      }
+
+      // The verbose 10-rules engram must always fail (2000+ chars statement):
+      const verboseStatement = [
+        'Ten rules for AI-authored pull requests:\n',
+        'R1 — Check the base before you open. Run `git diff origin/development...HEAD`.\n',
+        'R2 — Every claim must be checkable against the diff.\n',
+        'R3 — A safety claim ships with the command that proves it.\n',
+        'R4 — A regression test must fail against pre-fix code.\n',
+        'R5 — Sibling sweep, stated explicitly.\n',
+        'R6 — No skip branch without a reason and a test.\n',
+        'R7 — A remainder is filed before merge, with the issue number.\n',
+        'R8 — Interlocked dependencies land together.\n',
+        'R9 — No AI attribution in commit trailers or PR bodies.\n',
+        'R10 — An approval states what was actually verified.',
+      ].join('')
+      const verboseResult = validatePinnedHardPerEngramCap(makeMinimalEngram(verboseStatement))
+      expect(verboseResult.ok).toBe(false)
+      expect(verboseResult.tokens).toBeGreaterThan(200)
+
+      // Verify the function returns the correct cap in all cases
+      expect(shortEngrams.map(s => validatePinnedHardPerEngramCap(makeMinimalEngram(s))).every(r => r.cap === 200)).toBe(true)
     })
   })
 

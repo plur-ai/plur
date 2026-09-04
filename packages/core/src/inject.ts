@@ -73,8 +73,16 @@ const MAX_PER_DOMAIN = 10
 //   Soft tier: 30% of maxTokens, priority-ordered eviction.
 // At 8K default: hard=min(2000,2000)=2000 + soft=2400 = 4400 pinned, ~3600 recall.
 // At 2K default: hard=min(2000,500)=500 + soft=600 = 1100 pinned, ~900 recall.
-/** Absolute write-time ceiling for hard-tier pinned engrams. */
+/** Absolute write-time ceiling for hard-tier pinned engrams (aggregate across all). */
 export const PINNED_HARD_TOKEN_CAP = 2000
+/**
+ * Per-engram write-time ceiling for hard-tier pinned engrams.
+ * A single hard-tier engram that exceeds this limit is rejected at plur_learn time,
+ * preventing a single oversized engram from dominating the aggregate hard-tier budget.
+ * ChatGPT Pattern A analogue — hard cap at save time, no runtime eviction decisions.
+ * Spike value: 200 tokens ≈ ~800 chars of statement + metadata overhead.
+ */
+export const PINNED_HARD_PER_ENGRAM_TOKEN_CAP = 200
 /** Fraction of maxTokens that the hard tier may consume at injection time. */
 const PINNED_HARD_TOKEN_BUDGET_RATIO = 0.25
 /** Fraction of maxTokens allocated to soft-tier pinned engrams. */
@@ -156,6 +164,26 @@ export function estimateEngramTokens(engram: Engram): number {
   const { associations: _, ...wire } = engram
   const serialized = JSON.stringify(wire)
   return Math.ceil(serialized.length / 4)
+}
+
+/**
+ * Validate that a hard-tier pinned engram candidate does not exceed the per-engram
+ * token cap. Called at plur_learn time so oversized engrams are rejected before
+ * they are written, preventing a single engram from consuming the entire hard-tier
+ * aggregate budget (PINNED_HARD_TOKEN_CAP) and making the budget unpredictable.
+ *
+ * ChatGPT Pattern A analogue: hard cap at save time, no runtime eviction decisions.
+ *
+ * @param candidate - The engram shape to check (need not be fully hydrated — must
+ *   include at least statement and all metadata fields that will be stored).
+ * @param cap - Token ceiling per engram. Defaults to PINNED_HARD_PER_ENGRAM_TOKEN_CAP.
+ */
+export function validatePinnedHardPerEngramCap(
+  candidate: Engram,
+  cap: number = PINNED_HARD_PER_ENGRAM_TOKEN_CAP,
+): { ok: boolean; tokens: number; cap: number } {
+  const tokens = estimateEngramTokens(candidate)
+  return { ok: tokens <= cap, tokens, cap }
 }
 
 // --- Anchor boost ---

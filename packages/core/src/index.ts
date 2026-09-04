@@ -11,7 +11,7 @@ import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namesp
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
-import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, PINNED_HARD_TOKEN_CAP, estimateEngramTokens } from './inject.js'
+import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, PINNED_HARD_TOKEN_CAP, PINNED_HARD_PER_ENGRAM_TOKEN_CAP, estimateEngramTokens, validatePinnedHardPerEngramCap } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -119,7 +119,7 @@ export { autoSummary, generateSummary, needsSummary } from './summary.js'
 export { selectModel, selectModelForOperation, resolveOperationTier, type ModelTier, type LlmTierConfig } from './model-routing.js'
 export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
-export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
+export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer, PINNED_HARD_TOKEN_CAP, PINNED_HARD_PER_ENGRAM_TOKEN_CAP, estimateEngramTokens, validatePinnedHardPerEngramCap } from './inject.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, type HistoryEvent, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
 export { computeReceipt } from './receipt.js'
 export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
@@ -2492,12 +2492,9 @@ export class Plur {
     // into an existing engram below.
     const validity = resolveValidity(statement, context)
 
-    // Hard-tier cap enforcement: reject writes that would exceed the 2,000-token
-    // hard-tier budget before acquiring the store lock (listPinned is a read; the
-    // lock is NOT reentrant — see async-lock.ts header).
+    // Hard-tier cap enforcement: reject writes that would exceed the caps before
+    // acquiring the store lock (listPinned is a read; the lock is NOT reentrant).
     if (context?.pinned === true && (context?.pin_tier ?? 'soft') === 'hard') {
-      const hardPinned = (await this.listPinned()).filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
-      const currentHardTokens = hardPinned.reduce((sum, e) => sum + estimateEngramTokens(e), 0)
       // Build a representative candidate shape so estimateEngramTokens accounts for
       // all serialised fields (id, temporal, pinned_tier, etc.) — not just statement
       // and rationale length. The manual estimate was ~150 tokens short in practice.
@@ -2507,13 +2504,30 @@ export class Plur {
         ...(context?.rationale ? { rationale: context.rationale } : {}),
         ...(context?.domain ? { domain: context.domain } : {}),
         ...(context?.tags?.length ? { tags: context.tags } : {}),
-        confidence: context?.confidence ?? 0.8,
+        confidence: 5,
         temporal: { learned_at: '2026-01-01T00:00:00.000Z' },
         pinned: true,
         pinned_tier: 'hard',
         ...(context?.pinned_priority != null ? { pinned_priority: context.pinned_priority } : {}),
       }
-      const estimatedNewCost = estimateEngramTokens(candidateShape as any)
+
+      // Per-engram cap: a single hard-tier engram must not exceed
+      // PINNED_HARD_PER_ENGRAM_TOKEN_CAP tokens so one oversized engram cannot
+      // consume the entire aggregate budget and make remaining slots unpredictable.
+      const perEngramCheck = validatePinnedHardPerEngramCap(candidateShape as any)
+      if (!perEngramCheck.ok) {
+        throw new Error(
+          `Hard-tier engram rejected: estimated size is ${perEngramCheck.tokens} tokens, ` +
+          `per-engram cap is ${perEngramCheck.cap} tokens (PINNED_HARD_PER_ENGRAM_TOKEN_CAP). ` +
+          `Shorten the statement/rationale or use pinned_tier="soft" for large engrams.`
+        )
+      }
+
+      // Aggregate cap: the sum of all hard-tier engrams must not exceed
+      // PINNED_HARD_TOKEN_CAP (2,000 tokens total).
+      const hardPinned = (await this.listPinned()).filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
+      const currentHardTokens = hardPinned.reduce((sum, e) => sum + estimateEngramTokens(e), 0)
+      const estimatedNewCost = perEngramCheck.tokens
       if (currentHardTokens + estimatedNewCost > PINNED_HARD_TOKEN_CAP) {
         const engramList = hardPinned.map(e => `${e.id} (${estimateEngramTokens(e)} tokens)`).join(', ')
         throw new Error(
