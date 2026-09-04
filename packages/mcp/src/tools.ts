@@ -1849,6 +1849,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
           conflicts: result.conflicts,
           security: result.security,
           registry: result.registry,
+          // ENGRAM-STANDARD-v1 §5.6.5: what was neutralized, by field, and the
+          // integrity verdict with "shipped none" distinct from "matched". Both
+          // were computed and then dropped at this surface, so an agent
+          // installing a pack could not tell the user either.
+          neutralized: result.neutralized,
+          integrity_check: result.integrity_check,
           success: true,
         }
       },

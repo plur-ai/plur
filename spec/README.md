@@ -31,7 +31,7 @@ wherever the two overlap. Profiles version independently of the standard.
 
 | Profile | Profiles | Version | Status |
 |---|---|---|---|
-| `ENGRAM-PROVENANCE-PROFILE.md` | §9 (the PROV-O half) | 0.5 (draft) | Proposed; implemented in the reference |
+| `ENGRAM-PROVENANCE-PROFILE.md` | §9 (the PROV-O half) | 0.9 (draft) | Proposed; implemented in the reference |
 
 ## What is normative vs proposed
 
@@ -39,9 +39,14 @@ Every section of the spec carries a maturity label. In short:
 
 - **STABLE** — implemented in the reference, frozen for v1, MUST be followed to
   conform. Covers: the engram object (§4), the ID grammar (§3), serialization
-  (§2), the pack format and SHA-256 pack integrity (§5), the `.plur` capsule
-  byte layout / format version `0x0001` / flag bits 0–1 / read+write algorithms
-  / SHA-256 payload integrity (§6, §8), and the versioning policy (§10).
+  (§2), the pack format and SHA-256 pack integrity (§5.1–§5.5), the `.plur`
+  capsule byte layout / format version `0x0001` / flag bits 0–1 / read+write
+  algorithms / SHA-256 payload integrity (§6, §8), and the versioning policy
+  (§10).
+- **SPECIFIED** — normative and frozen, binding on an implementer, but not yet
+  fully implemented in the reference; §5.9 lists where the reference falls
+  short, with a tracking issue per row. Covers: the pack lifecycle — install,
+  update and uninstall (§5.6–§5.8).
 - **RESERVED** — wire space is allocated and MUST be preserved, but behavior is
   not yet specified. Covers: the **Ed25519 signing model** (§7) — the `SIGNED`
   flag, the 64-byte signature trailer, `header.signer`, and

@@ -2,6 +2,22 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import type { LicenseSource } from '@plur-ai/core'
+
+/**
+ * The four ways a licence can be arrived at (provenance profile §8.4), in the
+ * words a preview prints. The preview used to print only `chosen`, which
+ * collapsed "the author configured this once" into "somebody decided" and
+ * "nobody ever chose it" into a single suffix — the very distinction the
+ * four-state field exists to keep. Keyed by the closed enum, so an unknown
+ * value cannot reach this table: core drops it before the view is built.
+ */
+const LICENCE_SOURCE_WORDS: Record<LicenseSource, string> = {
+  chosen: 'chosen for the engram itself',
+  inheritedFromPack: 'inherited from the pack, not chosen for the engram',
+  configuredDefault: "the author's configured default, chosen once in advance",
+  schemaDefault: 'the schema default nobody chose',
+}
 
 /**
  * Flags accepted across the packs subcommands (#986).
@@ -127,6 +143,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         for (const l of prov.licences) {
           const chose = l.chosen ? '' : ' (nobody chose this; it is the default)'
           outputText(`  Licence        ${l.name} — ${l.count} engram(s)${chose}`)
+          // Where it came from, per the four-state field. Absent on records
+          // written before the field existed, and then nothing is printed
+          // rather than something guessed.
+          if (l.sources.length) {
+            // Never the raw value: core keeps the set closed, and if that ever
+            // slipped, a stranger's string still would not reach this line.
+            outputText(`                 how: ${l.sources.map(src => LICENCE_SOURCE_WORDS[src] ?? '(unrecognised)').join('; ')}`)
+          }
         }
         for (const n of prov.notes) outputText(`  • ${n}`)
         outputText('')
@@ -284,6 +308,22 @@ Options:
         outputInfo(`  ${check.note}`, flags)
       } else if (result.registry) {
         outputInfo(`  Integrity (computed): ${result.registry.integrity}`, flags)
+      }
+
+      // What the install changed on the way in (ENGRAM-STANDARD-v1 §5.6.5).
+      // Loud, like the security warnings: a pack that was altered silently is
+      // indistinguishable from one that was not altered at all, and the
+      // fields in question decide whose judgement governs this store.
+      const n = result.neutralized
+      if (n && (n.pinned_stripped > 0 || n.locked_downgraded > 0)) {
+        outputText('')
+        outputText('Neutralized on import (the pack carried fields that override how this store behaves):')
+        if (n.pinned_stripped > 0) {
+          outputText(`  ⚠ pinned removed from ${n.pinned_stripped} engram(s) — they would have been injected unconditionally`)
+        }
+        if (n.locked_downgraded > 0) {
+          outputText(`  ⚠ commitment: locked downgraded to decided on ${n.locked_downgraded} engram(s) — they would have resisted correction`)
+        }
       }
 
       if (!result.security.clean) {

@@ -9,7 +9,8 @@ import { atomicWrite, fsyncDir, withLock } from './sync.js'
 import { detectSecrets, detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
 import { userStructuredData } from './content-fields.js'
 import type { Engram } from './schemas/engram.js'
-import { buildProvenanceRecord, buildPackProvenanceRecord, serializeProvenanceRecord } from './provenance.js'
+import { buildProvenanceRecord, buildPackProvenanceRecord, serializeProvenanceRecord, LICENSE_SOURCES } from './provenance.js'
+import type { LicenseSource } from './provenance.js'
 import type { PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
 
@@ -293,14 +294,34 @@ export interface PackProvenanceView {
    * engram came from and cannot be read is a finding, not an absence.
    */
   unreadable_records: number
+  /**
+   * Records under `provenance/` whose file name is not the id of any engram the
+   * pack ships (profile §5.4.2). A record about something the recipient is not
+   * receiving is the signature of a pack assembled from a larger set, and it
+   * MUST be reported rather than skipped. Counted by name, never opened: what
+   * such a file says is about an engram that is not here.
+   */
+  orphan_records: number
   /** Engrams in the pack with no record of their own. */
   engrams_without_record: number
   /** Has any of this been cryptographically verified? Always false today. */
   verified: boolean
   /** Why `verified` is false, in words a reader can act on. */
   verification_note: string
-  /** Distinct licences the pack's engrams carry, most common first. */
-  licences: Array<{ name: string; count: number; chosen: boolean }>
+  /**
+   * Distinct licences the pack's engrams carry, most common first.
+   *
+   * `chosen` answers the coarse question — did anybody decide this. `sources`
+   * carries the four-state `engram:licenseSource` values seen for this licence,
+   * so a reader can tell a licence picked for the engram from one inherited
+   * from the pack or taken from a configured default. Empty for records written
+   * before that field existed.
+   *
+   * The set is closed (profile §8.4): a value outside `LICENSE_SOURCES` never
+   * reaches this array. A record is a file a stranger wrote, and the surface a
+   * recipient reads must not carry that stranger's free text as a typed fact.
+   */
+  licences: Array<{ name: string; count: number; chosen: boolean; sources: LicenseSource[] }>
   /** Engrams naming somebody answerable, out of those with a record. */
   attributed_count: number
   /** Distinct parties named as having asserted something. */
@@ -502,6 +523,7 @@ export function readPackProvenance(
     present: false,
     record_count: 0,
     unreadable_records: 0,
+    orphan_records: 0,
     engrams_without_record: engrams.length,
     verified: false,
     verification_note:
@@ -571,8 +593,24 @@ export function readPackProvenance(
   if (packRecord) view.pack_record = packRecord
   else if (packRead !== 'absent') unreadable.push('pack.jsonld')
 
-  const licences = new Map<string, { count: number; chosen: boolean }>()
+  const licences = new Map<string, { count: number; chosen: boolean; sources: LicenseSource[] }>()
   const parties = new Set<string>()
+  let unrecognisedSources = 0
+
+  // Records that name an engram the pack does not ship (profile §5.4.2). The
+  // loop below opens a record per engram, so a record about anything else is
+  // never opened at all — which is how a tester's stray record installed with
+  // exit 0 and no output. Counted from the directory listing by NAME only: a
+  // file called `<id>.jsonld` claims to be about `<id>`, and if `<id>` is not
+  // in the pack, that claim is the finding. Its contents are not read.
+  const shipped = new Set(engrams.map(e => `${e.id}.jsonld`))
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || entry.name === 'pack.jsonld') continue
+      if (!/^[A-Za-z0-9._-]+\.jsonld$/.test(entry.name)) continue
+      if (!shipped.has(entry.name)) view.orphan_records++
+    }
+  } catch { /* an unlistable directory is reported below as one with no readable records */ }
 
   for (const engram of engrams) {
     const name = `${engram.id}.jsonld`
@@ -590,11 +628,49 @@ export function readPackProvenance(
 
       const licence = subject['engram:license']
       if (typeof licence === 'string') {
-        const chosen = subject['engram:licenseIsDefault'] !== true
+        // Read the four-state field, not the boolean beside it.
+        //
+        // `engram:licenseSource` says WHICH of four ways a licence was arrived
+        // at: chosen on the engram, inherited from the pack, the author's
+        // configured default, or the schema default nobody ever looked at. The
+        // profile replaced the boolean with it precisely because the last two
+        // are different facts — one is a decision made once in advance, the
+        // other is nobody's decision at all.
+        //
+        // Reading only `engram:licenseIsDefault` collapsed them again at the
+        // one surface a recipient sees. A preview reporting "chosen" could mean
+        // the author picked this licence for this memory, or that they set a
+        // config default years ago and have not thought about it since.
+        //
+        // Falls back to the boolean for records written before the four-state
+        // field existed.
+        //
+        // Guarded like `license` above. A record is a file a stranger wrote,
+        // and this module's stated job is packs built to mislead — an
+        // unguarded read puts whatever the file contained into
+        // `sources: string[]`, so one malformed record turns a typed array
+        // into a mixed one for every consumer downstream.
+        const rawSource = subject['engram:licenseSource']
+        // Closed set, not merely a string (profile §8.4). A string outside the
+        // four values is a stranger's free text; it is counted, reported, and
+        // then treated exactly like a missing field, so the coarser boolean
+        // decides — never passed through to a typed surface.
+        const source = typeof rawSource === 'string' && LICENSE_SOURCES.has(rawSource as LicenseSource)
+          ? rawSource as LicenseSource
+          : undefined
+        if (rawSource !== undefined && !source) unrecognisedSources++
+        const chosen = source
+          ? (source === 'chosen' || source === 'configuredDefault')
+          : subject['engram:licenseIsDefault'] !== true
         const seen = licences.get(licence)
         // One engram that CHOSE a licence is enough to stop calling it defaulted.
-        if (seen) { seen.count++; seen.chosen = seen.chosen || chosen }
-        else licences.set(licence, { count: 1, chosen })
+        if (seen) {
+          seen.count++
+          seen.chosen = seen.chosen || chosen
+          if (source && !seen.sources.includes(source)) seen.sources.push(source)
+        } else {
+          licences.set(licence, { count: 1, chosen, sources: source ? [source] : [] })
+        }
       }
 
       const attributed = subject['prov:wasAttributedTo']
@@ -617,6 +693,20 @@ export function readPackProvenance(
     )
   }
 
+  if (view.orphan_records > 0) {
+    view.notes.push(
+      `${view.orphan_records} provenance record(s) describe engrams this pack does not contain. `
+      + 'That is the signature of a pack assembled from a larger set: the records were written '
+      + 'about something you are not receiving.',
+    )
+  }
+  if (unrecognisedSources > 0) {
+    view.notes.push(
+      `${unrecognisedSources} record(s) carry an engram:licenseSource value this reader does not recognise; `
+      + 'the coarser engram:licenseIsDefault flag decided for them.',
+    )
+  }
+
   view.engrams_without_record = engrams.length - view.record_count
   // Said here, not above, because it depends on how many per-engram records
   // turned up. Claiming "records for individual engrams but none for the pack"
@@ -628,7 +718,7 @@ export function readPackProvenance(
   }
   view.asserted_by = [...parties].sort()
   view.licences = [...licences.entries()]
-    .map(([name, v]) => ({ name, count: v.count, chosen: v.chosen }))
+    .map(([name, v]) => ({ name, count: v.count, chosen: v.chosen, sources: v.sources.sort() }))
     .sort((a, b) => b.count - a.count)
 
   if (view.engrams_without_record > 0) {
@@ -670,6 +760,33 @@ function assertLooksLikeAPack(source: string): void {
   }
 }
 
+/**
+ * The ids of engrams whose shipped `engrams.yaml` says `visibility: private`
+ * in so many words. Read from the raw document, because the parsed engram
+ * cannot tell a declared value from the default the schema filled in.
+ *
+ * Defensive on every axis: the file was already size-capped and refused as a
+ * link by the caller, the YAML load is js-yaml's safe default, and nothing but
+ * a plain object with a string `id` and the literal value counts.
+ */
+function declaredPrivateIds(source: string): Set<string> {
+  const ids = new Set<string>()
+  const file = path.join(source, 'engrams.yaml')
+  if (!fs.existsSync(file)) return ids
+  let raw: unknown
+  try { raw = yaml.load(fs.readFileSync(file, 'utf8')) } catch { return ids }
+  const list = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>).engrams
+    : undefined
+  if (!Array.isArray(list)) return ids
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const e = item as Record<string, unknown>
+    if (e.visibility === 'private' && typeof e.id === 'string') ids.add(e.id)
+  }
+  return ids
+}
+
 function _previewPackDir(source: string): PreviewResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
   assertLooksLikeAPack(source)
@@ -679,6 +796,22 @@ function _previewPackDir(source: string): PreviewResult {
 
   const pack = loadPack(source)
   const security = scanPrivacy(pack.engrams)
+  // A private engram the producer DECLARED is not the same finding as one the
+  // consumer's default assigned. `visibility` defaults to `private` (§4.4), so
+  // a hand-written pack that says nothing about visibility loads as private
+  // here — that is this side's conservative assignment, and it means only that
+  // the engram will not be re-exported. `visibility: private` written INTO the
+  // shipped file is the producer's own record that the engram was not cleared
+  // to leave, shipped anyway; §5.6.1 step 2 refuses that, and the scan marks
+  // which of the two it saw so the gate can tell them apart.
+  const declaredPrivate = declaredPrivateIds(source)
+  for (const issue of security.issues) {
+    if (issue.type !== 'private_visibility') continue
+    issue.declared = declaredPrivate.has(issue.engram_id)
+    issue.detail = issue.declared
+      ? 'Engram declares visibility: private — a pack must not ship it (§5.4); install is refused'
+      : 'Engram has no visibility field and defaults to private here — it will not be re-exported'
+  }
   // The pack ships more than engrams, and the rest was never scanned.
   const fileIssues = scanPackFiles(source)
   if (fileIssues.length) {
@@ -700,6 +833,19 @@ function _previewPackDir(source: string): PreviewResult {
   // install strips these, but the preview should be honest about intent (finding #2).
   const pinnedCount = pack.engrams.filter(e => (e as any).pinned === true).length
   if (pinnedCount > 0) warnings.push(`${pinnedCount} engram(s) marked pinned — these bypass relevance filters; install will strip the flag`)
+  // Same for a locked commitment: it resists dedup and correction, so it hands
+  // the producer a claim the recipient cannot revise. Install downgrades it;
+  // the preview says so, as it does for pinned (§5.4, §5.6.1 step 3).
+  const lockedCount = pack.engrams.filter(e => (e as any).commitment === 'locked').length
+  if (lockedCount > 0) warnings.push(`${lockedCount} engram(s) carry commitment: locked — these resist correction; install will downgrade them to decided`)
+  // Flag a declared private engram before install refuses it, so a reader is
+  // told at preview rather than at the gate.
+  // Counted from the issues, not the raw set: an entry the loader quarantined
+  // is not an engram, installs nothing, and must not be warned about as one.
+  const declaredCount = security.issues.filter(i => i.type === 'private_visibility' && i.declared === true).length
+  if (declaredCount > 0) {
+    warnings.push(`${declaredCount} engram(s) declare visibility: private — a pack must not ship these; install is refused`)
+  }
   // Flag prompt-injection text surfaced by the privacy scan
   const injectionCount = security.issues.filter(i => i.type === 'prompt_injection').length
   if (injectionCount > 0) warnings.push(`${injectionCount} engram(s) contain prompt-injection / instruction-override text — install is blocked unless overridden`)
@@ -760,6 +906,20 @@ export interface InstallResult {
    * against" — the distinction the old `integrity_ok: true` erased.
    */
   integrity_check: IntegrityCheck
+  /**
+   * Host-overriding fields the install neutralized (ENGRAM-STANDARD-v1 §5.6.1
+   * step 3), by field. Zero is reported too: an install that changed nothing
+   * must be distinguishable from one that changed something and said nothing.
+   */
+  neutralized: NeutralizedCounts
+}
+
+/** How many engrams a consumer changed on import, and which field (§5.6.5). */
+export interface NeutralizedCounts {
+  /** `pinned` removed. */
+  pinned_stripped: number
+  /** `commitment: locked` downgraded to `decided`, with `locked_at`/`locked_reason` removed. */
+  locked_downgraded: number
 }
 
 export interface ConflictItem {
@@ -822,7 +982,11 @@ function detectConflicts(newEngrams: Engram[], existingEngrams: Engram[]): Confl
 }
 
 export interface InstallOptions {
-  /** Override the prompt-injection block. Secrets are ALWAYS blocked regardless. */
+  /**
+   * Override the prompt-injection block. Secrets and private-visibility engrams
+   * are ALWAYS blocked regardless — there is no option for those, by design
+   * (ENGRAM-STANDARD-v1 §5.6.1 step 2).
+   */
   allowInjection?: boolean
   /**
    * Install even though the contents do not match the integrity value the pack
@@ -846,8 +1010,17 @@ function manifestToSkillMd(m: PackManifest): string {
   if (m.metadata) fm.metadata = m.metadata
   const legacy = (m as Record<string, unknown>)['x-datacore']
   if (legacy) fm['x-datacore'] = legacy
+  // Unknown root fields survive the upgrade too (§10.3 rule 2). The schema
+  // passes them through; dropping them here would make the one path that
+  // rewrites a manifest the one path that loses what the producer wrote.
+  for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
+    if (!(k in fm) && !KNOWN_MANIFEST_KEYS.has(k)) fm[k] = v
+  }
   return `---\n${yaml.dump(fm)}---\n\n# ${m.name}\n\n${m.description ?? ''}\n`
 }
+
+/** Keys the manifest schema declares; everything else is a producer's own. */
+const KNOWN_MANIFEST_KEYS = new Set(['name', 'version', 'description', 'creator', 'license', 'tags', 'metadata', 'x-datacore'])
 
 /**
  * fsync every file in a staged pack, then the directory itself (audit
@@ -908,10 +1081,28 @@ function _installPackDir(
       + `It has been changed since it was built. Install it only if you know why it differs.`,
     )
   }
+  // No override for either of the next two, on purpose (ENGRAM-STANDARD-v1
+  // §5.6.1 step 2). Both are things §5.4 forbids a producer to ship, so their
+  // presence means the pack was built wrong or built to mislead, and the remedy
+  // is a corrected pack — not an installer who looks away. A false positive in
+  // the secret scan is fixed by editing the pack; a consumer's scan surface is
+  // documented so a producer can predict it (`detectSensitive`).
   const secretIssues = preview.security.issues.filter(i => i.type === 'secret')
   if (secretIssues.length > 0) {
     const details = secretIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
     throw new Error(`Pack contains secrets — install blocked:\n${details}`)
+  }
+  // A private engram is somebody's memory that was never cleared to leave their
+  // machine. Installing it makes the recipient hold it — and hold it under a
+  // visibility that then forbids passing it on, so the leak becomes permanent
+  // on this side too. Visibility is a permission boundary, not a hint.
+  const privateIssues = preview.security.issues.filter(i => i.type === 'private_visibility' && i.declared === true)
+  if (privateIssues.length > 0) {
+    const ids = privateIssues.map(i => `  ${i.engram_id}`).join('\n')
+    throw new Error(
+      `Pack contains ${privateIssues.length} engram(s) that declare visibility: private — install refused:\n${ids}\n`
+      + 'A private engram must not be in a pack (ENGRAM-STANDARD-v1 §5.4). Ask whoever built it to export again without them.',
+    )
   }
   // A file the scan could not read is a file that cannot be installed: nothing
   // may land in the store that was not checked. No override for this one —
@@ -1011,9 +1202,19 @@ function _installPackDir(
   if (sanitized.changed) {
     newEngrams = sanitized.engrams
     saveEngrams(engramsPath, newEngrams)
+    // Each field on its own line (§5.6.5: "which field was changed"). The
+    // locked downgrade had no line at all, so a pack that shipped only locked
+    // commitments was altered in silence.
     if (sanitized.pinnedStripped > 0) {
       logger.warning(`installPack: stripped 'pinned' from ${sanitized.pinnedStripped} engram(s) in pack '${preview.manifest.name}'`)
     }
+    if (sanitized.lockedDowngraded > 0) {
+      logger.warning(`installPack: downgraded 'commitment: locked' to 'decided' on ${sanitized.lockedDowngraded} engram(s) in pack '${preview.manifest.name}'`)
+    }
+  }
+  const neutralized: NeutralizedCounts = {
+    pinned_stripped: sanitized.pinnedStripped,
+    locked_downgraded: sanitized.lockedDowngraded,
   }
 
   // Detect conflicts with existing engrams
@@ -1075,6 +1276,7 @@ function _installPackDir(
     security: preview.security,
     registry: registryEntry,
     integrity_check: preview.integrity,
+    neutralized,
   }
 }
 
@@ -1350,16 +1552,35 @@ export interface PrivacyIssue {
     /** A file the scan could not read as a plain file — a link, a special file, one past the size or count limit. Blocks install. */
     | 'unscannable'
   detail: string
+  /**
+   * For `private_visibility` on a pack: `true` when the shipped file says
+   * `visibility: private` itself (refused at install, §5.6.1 step 2); `false`
+   * when the field was absent and the schema default made it private here.
+   * Unset for scans that do not come from a pack file.
+   */
+  declared?: boolean
 }
 
 /**
  * Strip fields that let a third-party pack engram override the host's behavior:
  * `pinned` (bypasses the relevance gate — always injected) and a `locked`
  * commitment (resists dedup/correction). Returns sanitized engrams plus a count
- * of how many were pinned. (Security audit 2026-06-10, finding #2.)
+ * for EACH field changed. (Security audit 2026-06-10, finding #2.)
+ *
+ * Both counts exist because ENGRAM-STANDARD-v1 §5.6.1 step 3 and §5.6.5 require
+ * a consumer to report how many engrams it neutralized AND which field it
+ * changed. Only the pinned count was returned, so a pack whose only
+ * host-overriding field was a locked commitment installed with no output at
+ * all — the bundled `effective-memory` pack alone ships eleven of those.
  */
-export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pinnedStripped: number; changed: boolean } {
+export function sanitizePackEngrams(engrams: Engram[]): {
+  engrams: Engram[]
+  pinnedStripped: number
+  lockedDowngraded: number
+  changed: boolean
+} {
   let pinnedStripped = 0
+  let lockedDowngraded = 0
   let changed = false
   const out = engrams.map(e => {
     const c = { ...e } as Record<string, unknown>
@@ -1369,11 +1590,12 @@ export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pin
       c.commitment = 'decided'
       delete c.locked_at
       delete c.locked_reason
+      lockedDowngraded++
       changed = true
     }
     return c as unknown as Engram
   })
-  return { engrams: out, pinnedStripped, changed }
+  return { engrams: out, pinnedStripped, lockedDowngraded, changed }
 }
 
 const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
@@ -1430,10 +1652,11 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
   const issues: PrivacyIssue[] = []
 
   for (const e of engrams) {
-    // Check visibility — private engrams should never be exported. Record the
-    // flag but DON'T skip the rest of the scan: on install, private engrams are
-    // still loaded and injected, so a pack can't use visibility:private to
-    // smuggle secrets or injection text past the gate (finding #2).
+    // Check visibility — private engrams must never be exported, and a pack
+    // that ships one is refused at install (§5.6.1 step 2). Record the flag but
+    // DON'T skip the rest of the scan: the refusal names every finding at once,
+    // and a pack must not be able to use visibility:private to keep secrets or
+    // injection text out of the report (finding #2).
     if (e.visibility === 'private') {
       issues.push({
         engram_id: e.id,

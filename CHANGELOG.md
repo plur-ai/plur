@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+Pack lifecycle, from the review of #1044 (ENGRAM-STANDARD-v1 1.7, provenance
+profile 0.9):
+
+- **Install refuses a pack that declares a private engram.** `visibility:
+  private` written into a shipped `engrams.yaml` is the producer's own record
+  that the engram was not cleared to leave, shipped anyway; the pack is refused
+  with the ids named, and no option reaches past it (§5.6.1 step 2). An engram
+  that merely omits `visibility` still installs, held as private on this side
+  and reported as such — the default is the consumer's assignment, not the
+  producer's declaration. `PrivacyIssue.declared` tells the two apart.
+- **Neutralization is counted per field.** `InstallResult.neutralized`
+  reports `pinned_stripped` and `locked_downgraded`; the CLI prints both and
+  `plur_packs_install` returns both (with `integrity_check`, which it had also
+  dropped). A pack whose only host-overriding field was a locked commitment
+  used to install with no output at all. The preview warns about locked
+  commitments as it did about pinned.
+- **Provenance records are read defensively and reported fully.** A record
+  naming an engram the pack does not ship is counted as an orphan
+  (`PackProvenanceView.orphan_records`, profile §5.4.2) without being opened.
+  `engram:licenseSource` is a closed set: a value outside the four is treated
+  as absent and reported, never carried onto `licences[].sources`, which is now
+  typed `LicenseSource[]`. `plur packs preview` prints how each licence was
+  arrived at, not only whether somebody chose it.
+- **Unknown root manifest fields are preserved** (§10.3 rule 2). The Zod
+  manifest schema now passes them through at the root, matching the published
+  JSON Schema, and the manifest.yaml → SKILL.md upgrade carries them.
+  `metadata` stays closed (#1029).
+- **`readCapsule` refuses a `SIGNED` flag that disagrees with `header.signer`**
+  (§6.7 step 7, mirroring the writer's §6.8 step 4). Such a capsule used to
+  fail as a payload size mismatch, so the defect was never named.
+
 Architecture audit (2026-09-03, `docs/audits/2026-09-03-architecture-audit.md`):
 fewer mechanisms, one drift bug fixed, no feature changes.
 

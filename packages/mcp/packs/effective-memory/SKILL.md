@@ -11,11 +11,14 @@ x-datacore:
   match_terms: [memory, learn, remember, session, feedback, engram, forget, correction, preference, recall, verification, safety, plur]
   domain: plur.best-practices
   engram_count: 12
-  # Note: every engram in this pack carries `pinned: true` at the engram
-  # level, which is the actual "always-inject" mechanism (introduced in
-  # PLUR 0.9.4). Pack-level injection_policy: pinned is not a recognized
-  # value in 0.9.4 — keep it on_match here so loaders that respect it
-  # behave predictably; the per-engram pinned flags do the work.
+  # The engrams below still carry `pinned: true`, but INSTALL STRIPS IT.
+  # `sanitizePackEngrams` removes `pinned` and downgrades `commitment: locked`
+  # from every pack, this one included, because a pack is an archive from a
+  # stranger and its author does not get to decide what is always in front of
+  # the recipient's model. The flags are left in place so the intent is
+  # legible and so the behaviour returns if the host ever grows a way to
+  # grant it deliberately. `injection_policy: on_match` is what actually
+  # governs this pack. See plur-ai/plur#1019.
 ---
 
 # Effective Memory
@@ -24,7 +27,9 @@ Your agent has memory. These habits make it actually useful.
 
 Without them, memory is a growing pile of assertions nobody retrieves. With them, memory compounds — each session builds on the last, corrections stick, and the agent gets measurably better over time.
 
-This pack is **pinned** in PLUR 0.9.4+. Engrams here bypass keyword gating and are always eligible for injection at session start. They cover the meta-rules every agent needs regardless of domain: how to capture corrections, when to recall before answering, what "verified" means, how to stay safe with destructive actions, and why never to type a weekday from memory.
+These engrams cover the meta-rules every agent needs regardless of domain: how to capture corrections, when to recall before answering, what "verified" means, how to stay safe with destructive actions, and why never to type a weekday from memory.
+
+They were written to be **pinned** — always eligible for injection, bypassing keyword gating. That is no longer what happens. Install strips `pinned` from every pack, this one included, so these engrams are matched on keywords like any other (`injection_policy: on_match`, with the `match_terms` above). The stripping is right — a pack author should not be able to occupy a recipient's context unconditionally — but it means this pack's meta-rules only surface when a session's wording happens to touch them.
 
 ## Install
 
@@ -46,9 +51,13 @@ npx @plur-ai/cli@0.9.4 packs install effective-memory
 - **Discipline** — read before edit; don't ask "want to continue?" mid-task.
 - **Time** — never type a day-of-week from memory.
 
-## Why pinned
+## Why these were written pinned, and what happens instead
 
-Pinned engrams (introduced in PLUR 0.9.4) bypass the keyword-relevance gate in `scoreEngram` and per-pack/per-domain caps in `fillTokenBudget`. They are always eligible for injection regardless of how the user's query keywords overlap with the engram statement. Use this for cross-cutting meta-rules only; pinning everything defeats the purpose.
+Pinned engrams bypass the keyword-relevance gate in `scoreEngram` and the per-pack and per-domain caps in `fillTokenBudget`. Cross-cutting meta-rules are the case that justifies it: "call `plur_learn` when corrected" is relevant to every session and keyword-matches almost none of them.
+
+**Install strips the flag**, so that is not the behaviour you get. `sanitizePackEngrams` removes `pinned` and downgrades `commitment: locked` from every installed pack, and it is right to — a pack is an archive from a stranger, and letting its author decide what is permanently in front of your model is a privilege no producer should take by shipping a YAML field.
+
+The consequence is that this pack's rules are keyword-gated, which is a weaker guarantee than they were designed for. Whether a host should be able to grant always-inject to a pack it trusts deliberately — as opposed to a pack claiming it — is an open question, tracked in plur-ai/plur#1019.
 
 ## Versioning
 

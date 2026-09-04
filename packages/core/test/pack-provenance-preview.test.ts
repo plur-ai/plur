@@ -258,6 +258,128 @@ describe('a pack built to mislead', () => {
   })
 })
 
+describe('the preview can tell the four licence states apart (#1019)', () => {
+  // The profile replaced `engram:licenseIsDefault` with the four-state
+  // `engram:licenseSource` precisely because "the author configured this once"
+  // and "nobody ever chose it" are different facts. The preview read only the
+  // boolean, so it collapsed them again at the one surface a recipient sees.
+  let home: string
+  let out: string
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'plur-licsrc-home-'))
+    out = mkdtempSync(join(tmpdir(), 'plur-licsrc-out-'))
+  })
+  afterEach(() => {
+    for (const d of [home, out]) rmSync(d, { recursive: true, force: true })
+  })
+
+  /** Export a one-engram pack, then overwrite its record with the state under test. */
+  const previewWith = async (record: Record<string, unknown>) => {
+    const plur = new Plur({ path: home })
+    await plur.learn('Pools cap at 100 on the shared tier', {
+      type: 'architectural', visibility: 'public', domain: 'ops',
+    })
+    const engrams = await plur.list()
+    plur.exportPack(engrams, out, { name: 'licsrc', version: '1.0.0', license: 'apache-2.0' } as any)
+    const id = engrams[0].id
+    writeFileSync(join(out, 'provenance', `${id}.jsonld`), JSON.stringify({
+      '@graph': [{
+        '@id': `engram:${id}`,
+        '@type': ['prov:Entity', 'engram:Engram'],
+        'engram:license': 'cc-by-4.0',
+        ...record,
+      }],
+    }))
+    const { licences } = (await plur.previewPack(out)).provenance
+    return licences.find(l => l.name === 'cc-by-4.0')
+  }
+
+  const withSource = (source: string) => ({
+    'engram:licenseSource': source,
+    ...(source === 'chosen' || source === 'configuredDefault'
+      ? {} : { 'engram:licenseIsDefault': true }),
+  })
+
+  it('reports a configured default as decided, and names how', async () => {
+    const entry = await previewWith(withSource('configuredDefault'))
+    expect(entry?.chosen).toBe(true)
+    expect(entry?.sources).toContain('configuredDefault')
+  })
+
+  it('reports the schema default as nobody having decided', async () => {
+    const entry = await previewWith(withSource('schemaDefault'))
+    expect(entry?.chosen).toBe(false)
+    expect(entry?.sources).toContain('schemaDefault')
+  })
+
+  it('separates a pack-inherited licence from one chosen for the engram', async () => {
+    expect((await previewWith(withSource('inheritedFromPack')))?.chosen).toBe(false)
+    expect((await previewWith(withSource('chosen')))?.chosen).toBe(true)
+  })
+
+  it('still reads a record written before the four-state field existed', async () => {
+    // Records already in the wild carry only the boolean.
+    const entry = await previewWith({ 'engram:licenseIsDefault': true })
+    expect(entry?.chosen).toBe(false)
+    expect(entry?.sources).toEqual([])
+  })
+})
+
+describe('a malformed licence source does not corrupt the typed output', () => {
+  // Raised in review of #1044. `license` was guarded with `typeof === 'string'`
+  // and `licenseSource` was not, in a module whose stated job is packs built to
+  // mislead. One record with a non-string there put whatever it contained into
+  // `sources: string[]`, for every consumer downstream.
+  let home: string
+  let out: string
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'plur-badsrc-home-'))
+    out = mkdtempSync(join(tmpdir(), 'plur-badsrc-out-'))
+  })
+  afterEach(() => { for (const d of [home, out]) rmSync(d, { recursive: true, force: true }) })
+
+  const previewWithSource = async (badSource: unknown) => {
+    const plur = new Plur({ path: home })
+    await plur.learn('Pools cap at 100 on the shared tier', {
+      type: 'architectural', visibility: 'public', domain: 'ops',
+    })
+    const engrams = await plur.list()
+    plur.exportPack(engrams, out, { name: 'badsrc', version: '1.0.0', license: 'apache-2.0' } as any)
+    const id = engrams[0].id
+    writeFileSync(join(out, 'provenance', `${id}.jsonld`), JSON.stringify({
+      '@graph': [{
+        '@id': `engram:${id}`,
+        '@type': ['prov:Entity', 'engram:Engram'],
+        'engram:license': 'cc-by-4.0',
+        'engram:licenseSource': badSource,
+      }],
+    }))
+    return (await plur.previewPack(out)).provenance
+  }
+
+  it('keeps sources a string array when a record carries an object', async () => {
+    const { licences } = await previewWithSource({ malicious: true })
+    const entry = licences.find(l => l.name === 'cc-by-4.0')
+    expect(entry?.sources.every(x => typeof x === 'string')).toBe(true)
+    expect(entry?.sources).toEqual([])
+  })
+
+  it('falls back to the boolean when the source is not a string', async () => {
+    // With no usable source, the older `engram:licenseIsDefault` path decides —
+    // and absent that too, the licence reads as chosen.
+    const { licences } = await previewWithSource(42)
+    expect(licences.find(l => l.name === 'cc-by-4.0')?.chosen).toBe(true)
+  })
+
+  it('still reads a well-formed source', async () => {
+    const { licences } = await previewWithSource('inheritedFromPack')
+    const entry = licences.find(l => l.name === 'cc-by-4.0')
+    expect(entry?.sources).toContain('inheritedFromPack')
+    expect(entry?.chosen).toBe(false)
+  })
+})
+
 /**
  * The records survive the install (#1002 review).
  *
