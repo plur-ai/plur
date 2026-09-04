@@ -1,0 +1,263 @@
+# Sprint 1 — PLUR core (core track)
+#
+# FIRST SPRINT IN THIS REPO. Sprints have only ever run in plur-ai/enterprise;
+# core never had a cadence, which is part of why so much core work sat unmerged.
+#
+# TRACK: core and enterprise run SEPARATE sprint sequences, because the
+# development is separate — core engine work and enterprise delivery work have
+# different cadences, reviewers and release constraints. The W20-sprint1..
+# W36-sprint9 chain is the ENTERPRISE track's history, not a global one.
+#
+# UNHELD 2026-09-04. The draft carried `held_pending: roadmap-finalisation`;
+# the roadmap is finalised (93 epics, definitions of done, and a validator in
+# the pre-commit hook), so the hold is lifted.
+#
+# THIS SPRINT IS ALSO THE FIRST ONE AGENTS CAN ACTUALLY READ. Until 2026-09-04
+# nothing in the tree consumed sprint.yaml — `miles_routing.sprint_tag_filter`
+# had zero readers — and nightshift selected work purely by the `:AI:` tag,
+# which had accumulated 92 tasks of which 4 named a surface and a definition of
+# done. `sprint_sync.py` now projects THIS FILE into that tag and clears it
+# everywhere else, so the queue is the sprint by construction:
+#
+#     python3 .datacore/lib/sprint_sync.py --active --apply
+#
+# Day-of-week verified: 2026-09-07=Mon, 2026-09-13=Sun, 2026-09-14=Mon
+# (via python3 .datacore/lib/date_utils.py dow YYYY-MM-DD)
+
+sprint_id: 2026-W37-core-sprint1
+project: 5-plur/2-projects/plur
+status: planning        # -> active on Monday. planning|active|review|retro|closed
+cadence: 1w
+dates:
+  start: 2026-09-07
+  end: 2026-09-13
+  planning: 2026-09-07
+  retro: 2026-09-14
+
+goal: |
+  Ship v0.20.0, and prove an agent can close its own work.
+
+  The release theme is "Nothing is silently dropped" — the M1 rung, and every
+  place PLUR was losing something without telling you. Its headline is #1082:
+  48 pinned engrams cost 27,706 tokens against a 4,000-token budget, so about
+  ten fit and thirty-eight are dropped from every injection, safety rules
+  included, in whatever order the array happens to be in.
+
+  THE SECOND GOAL IS THE REAL ONE. Agents have been executing for months and
+  leaving work open, and the cause is visible in the acceptance criteria we
+  wrote: they ended at "merged", which an agent cannot do, because merging
+  needs an approving review and a code-owner. An agent that cannot reach its
+  own done state never reports done — so the task sits, the human sees an open
+  issue and concludes the agent is unreliable. It was the criterion that was
+  unreachable, not the agent.
+
+  So in this sprint EVERY agent-claimed item stops at the agent's own control
+  boundary: written, pushed, CI green, review requested. Merging is a human
+  item and lives in hitl_log with a name against it. If this works, the retro
+  should show agent items CLOSING rather than accumulating — that is the
+  measurement this sprint exists to take.
+
+release:
+  target: v0.20.0
+  theme: Nothing is silently dropped
+  rung: M1
+  cut_in: 2026-W37-core-sprint1
+  status_at_planning: >
+    #953 and #950 merged. #942 closed in favour of #1108 (its plur_session_end
+    marker cut still needs re-landing standalone — item A3). #1113 is APPROVED
+    and unmerged, so the release's instrumentation is one human click away.
+    #1082 is CHANGES_REQUESTED with its fix already written on a branch that
+    has no pull request.
+
+roadmap_links: [R-041, R-018, R-007, R-070]
+milestone_links: [M1, M4, continuous]
+okr_links: []          # core has no OKR mapping yet — see R-073
+
+facilitator:
+  operational: miles-on-nightshift
+  strategic: plur9
+miles_routing:
+  primary_repo: plur-ai/plur
+  overflow_repo: plur-ai/plur   # same as primary = no cross-track overflow
+  sprint_tag_filter: 2026-W37-core-sprint1
+
+# ─── AGENT WORK ────────────────────────────────────────────────────────────
+# Projected into org by sprint_sync.py. Every item here carries roadmap,
+# milestone, surface and acceptance, because sprint_sync REFUSES an
+# agent-claimed item that does not — the same four things agent_readiness.py
+# checks. No acceptance below requires another party's approval.
+backlog:
+  - id: A1
+    ref: branch:review/1082-pinned
+    title: Open the pull request for review/1082-pinned — the fix exists and is invisible
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: S
+    roadmap: R-041
+    milestone: M1
+    surface: core
+    labels: [release-blocker, pinned, injection]
+    acceptance: |
+      A pull request exists against main, references #1082, and its body maps
+      each of the reviewer's points to the commit that answers it. CI green.
+      Review requested. STOPS THERE — merging is hitl_log H1, not this item.
+      The fix is already written and pushed; a branch with no PR is not "in
+      review", it is lost, and this is the second such branch found this week.
+
+  - id: A2
+    ref: github:plur-ai/plur#1108
+    title: Answer the review on the prompt-structure forgery fix
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: M
+    roadmap: R-007
+    milestone: M4
+    surface: core
+    labels: [security, p1, pack-trust]
+    acceptance: |
+      Every requested change is answered — by a commit that makes it, or by a
+      reply on the thread saying why not. CI green, re-review requested, and
+      no thread left without a response. STOPS THERE.
+      This is #940: a statement containing a newline followed by "[" can forge
+      a second engram entry at SYSTEM-PROMPT authority. #942 was closed in its
+      favour, so it now carries both fixes.
+
+  - id: A3
+    ref: github:plur-ai/plur#942
+    title: Re-land the plur_session_end marker cut as a standalone pull request
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    surface: core
+    labels: [cleanup, loose-end]
+    acceptance: |
+      A pull request open against main containing ONLY the plur_session_end
+      marker cut, its body linking #942 and stating why it was split out. CI
+      green. STOPS THERE.
+      #942's closing comment promised exactly this and nothing was filed —
+      this item exists because a promise in a closing comment is not a task.
+
+  - id: A4
+    ref: roadmap:R-041
+    title: Draft the v0.20.0 release notes from the theme, not the commit log
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: M
+    roadmap: R-041
+    milestone: M1
+    surface: comms
+    labels: [release, comms]
+    acceptance: |
+      A draft committed in the repo that leads with what changed for the USER
+      — thirty-eight pinned engrams silently dropped, now not — and only then
+      lists the pull requests. Must pass claims_lint: no unverified figures,
+      no superlatives, no competitor comparison (no-benchmark-war stands). The
+      token numbers are measured and citable; anything else needs a source.
+
+  - id: A5
+    ref: file:RELEASING.md
+    title: Walk the release manifest gate in the dry, and fix the CHANGELOG date
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    surface: core
+    labels: [release, hygiene]
+    acceptance: |
+      RELEASING.md's manifest gate walked against the current tree WITHOUT
+      publishing, and what would have failed recorded in the sprint directory.
+      Seventeen files carry the version on the standard track; a half-done
+      bump found on Monday is free, found mid-publish it is not. The v0.18.0
+      CHANGELOG date is corrected in the same pass.
+
+stretch:
+  - id: A6
+    ref: github:plur-ai/plur#1043,#1044
+    title: Answer any review that lands on conformance vectors or pack lifecycle
+    why: >
+      Both are clean today (CI green, no changes requested) and both belong to
+      v0.21.0 and v0.22.0 rather than to this release. Stretch, not backlog:
+      merging work early is how a release theme stops meaning anything. If
+      review lands on them this week, answering it is cheap; chasing them is
+      not this sprint's job.
+
+# ─── HUMAN-GATED: named, owned, and NOT counted as sprint throughput ───────
+# Everything here needs a person. It is listed so the sprint is honest about
+# its critical path, not so it looks fuller. The binding constraint on this
+# repo is review capacity, and pretending otherwise is what produced nine
+# CHANGES_REQUESTED pull requests with zero commits since review.
+hitl_log:
+  - item: "#1113 — spreading-activation drop counters"
+    owner: plur9
+    what: >
+      APPROVED and unmerged. It is the smallest thing standing between the
+      release and its own theme: you cannot claim "nothing is silently
+      dropped" while the code that counts the drops is unmerged. One click.
+    needed_by: 2026-09-09
+  - item: "#1082 — pinned two-tier model"
+    owner: plur9
+    what: Merge once A1 opens the PR and CI is green. The release headline.
+    needed_by: 2026-09-11
+  - item: "#1002 — the W3C provenance epic"
+    owner: plur9
+    what: >
+      +12,804 lines across 88 files, closing sixteen issues, REVIEW_REQUIRED.
+      #1000 and #1001 were closed as superseded BY this PR — their content is
+      already inside it — so there is no prerequisite merge, contrary to the
+      earlier draft of this sprint. It is the trunk of M3 and belongs to
+      v0.21.0; the review is what has to start this week, not the merge.
+  - item: "#946 — the rebinding allowlist"
+    owner: crtahlin
+    what: >
+      Deliberately not dismissed. It replaces a security mechanism Črt
+      reproduced a working exploit against, and the fix changes the shape of
+      the defence rather than patching it. His eyes, not ours.
+  - item: Branch protection requires an approving review and a code owner
+    owner: plur9
+    what: >
+      This is why no agent item below ends at "merged". #953 and #950 both
+      needed an admin merge. Either that stays the norm, or the required-review
+      rule from the process draft lands — but the sprint does not pretend an
+      agent can do it.
+
+not_this_sprint:
+  - id: "#981 / #1017"
+    why: >
+      1,624 and 767 lines, both CHANGES_REQUESTED. Real work, both features,
+      and neither is in v0.20.0's theme. Taking them would make the release
+      mean less, not more.
+  - id: "#955"
+    why: Closed already — it was on main. Kept here so the next planner does not re-find it.
+  - id: "#949"
+    why: >
+      REVIEW_REQUIRED and release-adjacent, but it is three 0.18.0 defects and
+      this release is 0.20.0. It goes in the v0.20.1 patch or W38.
+
+claims: []
+
+done_when: |
+  v0.20.0 is cut, and every agent item reached a state the agent could reach
+  on its own.
+
+  Concretely: #1082 and #1113 are merged and the release is tagged; A1–A5 are
+  each either DONE or carry a written reason they are not, with no item
+  sitting in a state that needed a human the sprint never named.
+
+  Retro Mon 2026-09-14 answers the question this sprint exists to ask: did
+  agent items CLOSE this week, where previously they accumulated? The number
+  to compare is the 66 tasks that were sitting at NIGHTSHIFT_STATUS
+  needs_review against 14 done on 2026-09-04. If the ratio has not moved, the
+  acceptance-criteria theory is wrong and the retro should say so plainly.

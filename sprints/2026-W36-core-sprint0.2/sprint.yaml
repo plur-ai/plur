@@ -1,0 +1,227 @@
+# Sprint 0.2 — PLUR core, the ramp (re-scoped)
+#
+# Thu 2026-09-03 to Sun 2026-09-06. Replaces sprint 0, which was written on a
+# premise that stopped being true the same day.
+#
+# WHAT CHANGED. Sprint 0 assumed the five stalled PRs were unmovable and
+# scoped itself around NOT merging. Since then #953 and #950 merged, #955 was
+# closed as already-on-main, #942 went to Crt with every review point addressed,
+# and #946 is held for him because it changes a security mechanism he built a
+# working exploit against. So the queue is no longer the obstacle it was, and a
+# sprint that plans around not touching it is planning around a fact that has
+# expired.
+#
+# The job is now the release. v0.20.0 ships in W37 under the theme "Nothing is
+# silently dropped", and this sprint is the four days that make that cuttable.
+#
+# Day-of-week verified: 2026-09-03=Thu, 2026-09-06=Sun, 2026-09-07=Mon
+# (via python3 .datacore/lib/date_utils.py dow YYYY-MM-DD)
+
+sprint_id: 2026-W36-core-sprint0.2
+project: 5-plur/2-projects/plur
+status: active          # planning | active | review | retro | closed
+# ACTIVATED 2026-09-04. Its window is Thu 09-03 to Sun 09-06, so this is the
+# current sprint; sprint_sync only projects sprints that are active AND whose
+# end date has not passed.
+cadence: 4d
+dates:
+  start: 2026-09-03
+  end: 2026-09-06
+  planning: 2026-09-03
+  retro: 2026-09-07      # rolls straight into W37 planning
+
+goal: |
+  Get v0.20.0 to the launch pad, with every piece of it visible.
+
+  The release theme is "Nothing is silently dropped" — the M1 rung, and every
+  place PLUR was losing something without telling you. Its headline is #1082:
+  48 pinned engrams cost 27,706 tokens against a 4,000-token budget, so about
+  ten fit and thirty-eight are dropped from every injection, safety rules
+  included, in whatever order the array happens to be in.
+
+  Half of it is already merged (#950, #953). The remaining two are #1082 and
+  #1113, and #1082's fix is already written — it is sitting on a pushed branch
+  that has no pull request yet. So the highest-value four days here are not
+  spent writing code; they are spent surfacing code that already exists and
+  giving the release its name.
+
+  The rest is the launch pad itself: release notes written from the theme, the
+  changelog straight, and the manifest gate walked once in the dry. Monday
+  should be a decision, not a discovery.
+
+release:
+  target: v0.20.0
+  theme: Nothing is silently dropped
+  rung: M1
+  cut_in: 2026-W37-core-sprint1
+  status_at_planning: >
+    #950 merged, #953 merged, #1082 open with changes requested and an
+    unlinked fix branch, #1113 open and inside a normal review window.
+
+roadmap_links: [R-041, R-018, R-070]
+milestone_links: [M1, continuous]
+okr_links: []
+
+facilitator:
+  operational: miles-on-nightshift
+  strategic: plur9
+miles_routing:
+  primary_repo: plur-ai/plur
+  overflow_repo: plur-ai/plur   # same as primary = no cross-track overflow
+  sprint_tag_filter: 2026-W36-core-sprint0.2
+
+backlog:
+  - id: S02-1
+    ref: branch:review/1082-pinned
+    title: Give review/1082-pinned a pull request, so the work can be seen
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: S
+    roadmap: R-041
+    milestone: M1
+    surface: core
+    labels: [release-blocker, pinned]
+    acceptance: |
+      A PR exists, targets main, references #1082, and its body says what it
+      changes about the review feedback. Opening it is the whole task; merging
+      is W37's problem. The fix is already written — this is the step that lets
+      anyone else see it, and it is the second branch this week that needed it.
+
+  - id: S02-2
+    ref: branch:fix/better-sqlite3-node26-compat
+    title: Decide the fate of fix/better-sqlite3-node26-compat — #874 is closed
+    owner_role: engineering
+    default_claimer: plur9
+    state: todo
+    priority: must
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    surface: core
+    labels: [cleanup, decision]
+    acceptance: |
+      plur#874 ("better-sqlite3@11.10.0 cannot build or load on Node 26 — 55
+      tests fail locally") is CLOSED and this branch has no PR. Either it
+      carries a fix worth a PR, or it is dead and gets deleted. A written
+      decision either way. Verified 2026-09-03: still on origin.
+
+  - id: S02-3
+    ref: github:plur-ai/plur#1113
+    title: Review and land the spreading-activation drop counters
+    owner_role: engineering
+    default_claimer: plur9
+    state: todo
+    priority: must
+    effort_estimate: S
+    roadmap: R-018
+    milestone: M1
+    surface: core
+    labels: [release, instrumentation]
+    acceptance: |
+      Reviewed and merged. It belongs to this release by theme rather than by
+      convenience: you cannot claim "nothing is silently dropped" while the
+      thing that counts the drops is unmerged.
+
+  - id: S02-4
+    ref: roadmap:R-041
+    title: Draft the v0.20.0 release notes from the theme, not the commit log
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: M
+    roadmap: R-041
+    milestone: M1
+    surface: comms
+    labels: [release, comms]
+    acceptance: |
+      A draft in the repo that leads with what changed for the USER — thirty-
+      eight pinned engrams silently dropped, now not — and only then lists PRs.
+      Must pass claims_lint: no unverified figures, no superlatives, no
+      competitor comparison (no-benchmark-war stands). The token numbers are
+      measured and citable; anything else needs a source.
+
+  - id: S02-5
+    # NOT #1069 — that is the MCP cold-start SIGKILL bug. This item has no
+    # issue; the acceptance below is the whole brief, and RELEASING.md is the
+    # file it works against. Corrected 2026-09-04 after an agent following the
+    # ref would have opened the wrong bug.
+    ref: file:RELEASING.md
+    title: CHANGELOG date fix, and a dry run of the manifest gate
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    surface: core
+    labels: [release, hygiene]
+    acceptance: |
+      Date corrected. Then walk RELEASING.md's manifest gate against the current
+      tree WITHOUT publishing, and record what would have failed. Seventeen
+      files carry the version on the standard track; a half-done bump found on
+      Thursday is free, found mid-publish it is not.
+
+stretch:
+  - id: S02-6
+    ref: github:plur-ai/plur#1043,#1044
+    title: The two CLEAN PRs — conformance vectors and pack lifecycle
+    why: >
+      Both are mergeable today (CI green, no changes requested) and both belong
+      to v0.21.0 and v0.22.0 rather than to this release. They are stretch, not
+      backlog, because merging work early is how a release theme stops meaning
+      anything. If they land, they land against the NEXT theme.
+
+# ─── human-gated: named and owned, not counted as sprint work ──────────────
+hitl_log:
+  - item: "#942 — render-reachable field set, session_end, pack sanitisation"
+    owner: crtahlin
+    what: >
+      Assigned 2026-09-03 with every review point addressed and a comment
+      mapping each one. Its second blocking point is fixed in core, which
+      merged with #953, so it is unblocked on our side.
+  - item: "#946 — the rebinding allowlist"
+    owner: crtahlin
+    what: >
+      Deliberately NOT dismissed. It replaces a security mechanism Crt
+      reproduced a working exploit against, and the fix changes the shape of
+      the defence rather than patching it. This one needs his eyes.
+  - item: Branch protection requires one approving review
+    owner: plur9
+    what: >
+      Dismissing a stale CHANGES_REQUESTED does not unblock a merge — main also
+      requires an approval and a code-owner review. #953 and #950 needed an
+      admin merge. Either that stays the norm, or the required-review rule from
+      the process draft has to land.
+
+claims: []
+
+done_when: |
+  Monday's planning opens with v0.20.0 ready to cut, and nothing left to find.
+
+  Concretely: every core branch has a pull request behind it; the sqlite branch
+  has a written decision; #1113 is merged, so the release can claim its own
+  theme honestly; the release notes exist as a draft that leads with the
+  user-visible change and passes claims_lint; and the manifest gate has been
+  walked in the dry, with any half-done version bump already fixed.
+
+  Retro Mon 2026-09-07 answers two questions and rolls into W37 planning: what
+  did not finish, and did scoping a sprint around a RELEASE rather than a pile
+  of PRs make it easier to say what was left.
+
+not_this_sprint:
+  - id: "#1002"
+    why: >
+      The provenance epic, +12,804 across 88 files. It is the trunk of M3 and
+      belongs to v0.21.0 — a whole sprint's attention, not a four-day tail.
+  - id: "#981 / #1017 / #1108"
+    why: >
+      1,624 / 767 / 1,226 lines, all CHANGES_REQUESTED. None is in v0.20.0's
+      theme; taking them here would make the release mean less, not more.
+  - id: "#949"
+    why: >
+      Has one approval and is still BLOCKED by branch protection. It is a
+      review-policy question, not engineering work — see the hitl_log entry.
