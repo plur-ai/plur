@@ -316,14 +316,17 @@ describe('isLoopbackName — --host flag classification', () => {
       '127.0.0.1', '127.0.0.2', '127.1.2.3',
       'localhost', 'LOCALHOST', 'localhost.',
       '::1', '[::1]', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1',
-      '',
     ]) {
       expect(isLoopbackName(v), v).toBe(true)
     }
   })
 
   it('classifies genuinely wider binds as not loopback', () => {
-    for (const v of ['0.0.0.0', '::', '192.168.1.50', '10.0.0.4', 'my-laptop.local', '::ffff:192.168.1.50']) {
+    // The empty string was asserted loopback in an earlier revision of this
+    // suite. It is the widest bind there is: Node's `listen(port, '')` binds
+    // `::`, every interface. Verified on Node 22 — `server.address()` reports
+    // `{ address: '::', family: 'IPv6' }`.
+    for (const v of ['0.0.0.0', '::', '', '192.168.1.50', '10.0.0.4', 'my-laptop.local', '::ffff:192.168.1.50']) {
       expect(isLoopbackName(v), v).toBe(false)
     }
   })

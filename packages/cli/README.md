@@ -81,19 +81,45 @@ path such as decay. Available in English and 中文; it follows your browser's
 Binds `127.0.0.1` by default and deliberately: the viewer serves your entire
 memory store with **no authentication**.
 
-`--host` widens the bind and carries two risks you should understand before
-using it:
+### Serving it to your network
+
+```bash
+plur ui --host 0.0.0.0                                # every interface
+plur ui --host 192.168.1.50                           # one address
+plur ui --host ::1                                    # IPv6 loopback; prints http://[::1]:7777/
+plur ui --host 0.0.0.0 --allow-host my-laptop.local   # answer to an mDNS name as well
+```
+
+`--host` and `--allow-host` take a bare hostname or IP literal — IPv6 with or
+without brackets, no port (that is `--port`), no scheme, no path. Anything else
+is refused with a message saying why.
+
+The viewer checks the `Host` header of every request and answers only to the
+names it was started under: `localhost`, `127.0.0.1`, `::1`, the exact value of
+`--host`, every interface address when bound to all interfaces, and each
+`--allow-host`. A request carrying any other name gets **403**. That check is
+the DNS-rebinding defence: a web page you visit can point its own domain at
+your machine and read the viewer cross-origin, and what stops it is that its
+requests carry *its* domain in `Host`. It is also why a client using a name
+the viewer does not know — an mDNS name on a `0.0.0.0` bind, a reverse proxy's
+hostname — is refused until you vouch for the name with `--allow-host`. The
+names in effect are printed at startup.
+
+It is not authentication. Widening the bind carries two risks:
 
 - **Direct access** — anyone on your network can reach the port and read every
-  engram. No credentials. No rate limit.
-- **DNS rebinding** — any website you visit while the viewer runs can rebind its
-  own domain to your machine's address and read the store cross-origin. The
-  rebinding check (Host-header validation) blocks the known attack vector by
-  only accepting the server's own addresses, but it does not make the exposure
-  safe. A compromised network or a browser vulnerability can still bypass it.
+  engram. No credentials. No rate limit. The `Host` check does nothing against
+  a client that simply sends an allowed name.
+- **DNS rebinding** — closed by the `Host` check for every browser that sends
+  the header, which is all of them. A network you do not control, or a browser
+  vulnerability, can still defeat it.
 
-Only run widened (`--host 0.0.0.0` or a LAN address) on a network you fully
-control, and stop the viewer when you are done.
+The **Open folder** button, which starts a file manager on the desktop, is
+served only on a loopback bind with no non-loopback `--allow-host`, and only to
+connections from this machine.
+
+Only run widened on a network you fully control, and stop the viewer when you
+are done. Token authentication for the widened case is tracked in #1016.
 
 ## Importing from other memory systems
 
