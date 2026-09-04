@@ -9,6 +9,7 @@ import { logger } from './logger.js'
 import { withAsyncLock } from './store/async-lock.js'
 import { maybeDailyBackup } from './backup.js'
 import { searchTextFrom } from './fts.js'
+import { engramContentFields } from './content-fields.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
@@ -162,12 +163,14 @@ function demoteIfSensitive(
   engram: any,
   newStatement: string,
 ): void {
-  // Scan the post-mutation statement AND the engram's (merged) tags. A dedup
+  // Scan the post-mutation statement AND the rest of the engram. A dedup
   // UPDATE/MERGE unions `context.tags` into the engram before this runs, so a
   // secret/infra value in a merged tag would otherwise ride to a shared store
-  // unguarded — the statement-only scan missed it (#409).
-  const tags = Array.isArray(engram.tags) ? engram.tags.filter((t: unknown) => typeof t === 'string') : []
-  const scanText = tags.length ? `${newStatement}\n${tags.join(' ')}` : newStatement
+  // unguarded — the statement-only scan missed it (#409). The field set is the
+  // same serialised surface every other engram-side guard reads
+  // (`engramContentFields`), not a list kept here that could drift from it.
+  const fields = engramContentFields({ ...engram, statement: newStatement } as Engram)
+  const scanText = fields ? `${newStatement}\n${JSON.stringify(fields)}` : newStatement
   const offending = deps.offendingHitsForScope(scanText, engram.scope ?? 'global')
   if (offending.length === 0) return
   const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')

@@ -411,6 +411,53 @@ describe('outbox pattern (issue #26)', () => {
     expect(found.structured_data?._outbox).toBeUndefined()
   })
 
+  // #1002 review: the flush re-guard reads the WHOLE engram, `attribution`
+  // and `provenance.license` included. The old reconstruct-from-engram list
+  // omitted both, so an infra value placed in `attribution.asserted_by` at
+  // queue-time rode to the shared store on flush. Statement and domain are
+  // clean here — the infra lives ONLY in the attribution and the licence.
+  it('flushOutbox() re-guards attribution and licence: infra there is demoted, not pushed (#1002)', async () => {
+    mockRemoteFailure('down at queue time')
+    const PUBLIC_IP = '139.59.155.82'
+    writeStoresConfig(primaryDir, [{
+      url: REMOTE_URL, token: 'plur_sk_test', scope: REMOTE_SCOPE, shared: true, readonly: false,
+      sensitivity: { forbid: ['infra'], allow: ['infra'] },
+    }])
+    const plur = new Plur({ path: primaryDir })
+    await plur.learnRouted('routine team note about the bastion', {
+      scope: REMOTE_SCOPE, type: 'procedural',
+      attribution: { asserted_by: `ops@${PUBLIC_IP}` },
+      license: `see ${PUBLIC_IP}:22`,
+    })
+    expect(await plur.outboxCount()).toBe(1)
+
+    writeStoresConfig(primaryDir, [{
+      url: REMOTE_URL, token: 'plur_sk_test', scope: REMOTE_SCOPE, shared: true, readonly: false,
+      sensitivity: { forbid: ['infra'] },
+    }])
+    const plur2 = new Plur({ path: primaryDir })
+
+    mockRemoteSuccess()
+    const pushSpy = vi.fn()
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') { pushSpy(); return { ok: true, status: 201, json: async () => ({ id: 'X' }), text: async () => '' } as Response }
+      return { ok: true, status: 200, json: async () => ({ rows: [], total_count: 0 }), text: async () => '' } as Response
+    }) as any)
+
+    const result = await plur2.flushOutbox()
+    expect(result.flushed).toBe(0)
+    expect(result.failed).toBe(1)
+    expect(pushSpy).not.toHaveBeenCalled()
+
+    const local = await readLocalEngrams(primaryDir)
+    const found = local.find((e: any) => e.statement.includes('bastion'))
+    expect(found).toBeDefined()
+    expect(found.scope).toBe('local')
+    expect(found.visibility).toBe('private')
+    expect(found.structured_data?._outbox).toBeUndefined()
+  })
+
   // BOUNDARY: an engram that is STILL clean under the current policy flushes
   // normally — the re-guard must not over-block.
   it('flushOutbox() still pushes when the engram is clean under the current policy', async () => {

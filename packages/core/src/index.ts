@@ -28,8 +28,10 @@ import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatu
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
-import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack } from './packs.js'
+import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack, containsEmail } from './packs.js'
 import type { ExportOptions } from './packs.js'
+import { learnContextContent, engramContentFields } from './content-fields.js'
+export { LEARN_CONTEXT_FIELD_ROLES, LEARN_CONTENT_FIELDS, learnContextContent, engramContentFields } from './content-fields.js'
 // SP5 imports (deferred — vault-export, registry not yet merged)
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
@@ -1894,8 +1896,19 @@ export class Plur {
    * recorded at the time, which is the point of recording it — rewriting them
    * would be editing history to match a later decision.
    */
-  setIdentity(identity: string | null): { identity: string; stated: boolean } {
+  setIdentity(identity: string | null): { identity: string; stated: boolean; warning?: string } {
     const value = typeof identity === 'string' ? identity.trim() : ''
+    // An email address is the most natural identity to type and the one that
+    // silently breaks sharing: the export privacy scan flags email addresses,
+    // so every memory attributed this way is dropped from every pack (#999).
+    // Accept it — it is the user's decision — but say so at the moment they
+    // choose it rather than at the first empty export.
+    const warning = value && containsEmail(value)
+      ? `"${value}" is an email address. The pack export privacy scan flags email addresses, so memories `
+        + 'attributed to it are held back from every pack until #999 lands. Prefer a local name '
+        + '(local:yourname) or a DID if you intend to share.'
+      : undefined
+    if (warning) logger.warning(`[plur:identity] ${warning}`)
     // Same read-modify-write discipline as every other config mutation here:
     // under the config lock, and written atomically. A plain write truncates in
     // place, and a parse failure makes loadConfig fall back to DEFAULT config —
@@ -1916,7 +1929,7 @@ export class Plur {
     })
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()
-    return this.identity()
+    return { ...this.identity(), ...(warning ? { warning } : {}) }
   }
 
   private _provenanceStoreInstance?: ProvenanceStore
@@ -2459,44 +2472,19 @@ export class Plur {
   }
 
   /**
-   * Collect the context-ish fields of an engram (rationale, source, snippet,
-   * dual_coding, domain, tags, knowledge_anchors, structured_data) into a plain
-   * object for the explicit-update / meta / outbox-reguard leak scan (LOW-2, #353).
-   * Must mirror the field set a LearnContext carries into `_guardSensitiveScope` —
-   * which scans `JSON.stringify(context)`. LearnContext carries `domain`, `tags`,
-   * and `knowledge_anchors`, so all three must be reconstructed here too, or the
-   * reconstruct-from-engram guards (update / meta / outbox-reguard) scan a strictly
-   * SMALLER surface than learn-time and than the learnAsync demote (which scans
-   * tags, #409) — letting a host:port / basic-auth value placed in a `tag` (or an
-   * anchor snippet/path, or `domain`) ride to a git-synced shared scope unguarded
-   * (pre-Crt audit, #405/#409 parity). Classification domains and ordinary tags
-   * produce no detector hits, so scanning them adds no false-positive demotions.
-   * Returns undefined when none are present so the scan text stays statement-only.
+   * Everything on an engram, apart from its statement, for the explicit-update /
+   * meta / outbox-reguard / rescope leak scan (LOW-2, #353).
    *
-   * PLUR-internal bookkeeping keys in `structured_data` (underscore-prefixed:
-   * `_outbox`, `_routed`, `_demoted`, …) are STRIPPED before scanning — they are
-   * system-generated, never user content, and legitimately carry the very host
-   * topology the infra detector flags (e.g. `_outbox.target_url` =
-   * `http://127.0.0.1:<port>`). Scanning them would falsely demote every
-   * remote-origin or auto-routed engram on update.
+   * This used to be a hand-kept list of context-ish fields that had to mirror
+   * `LearnContext`, and it drifted three times (#381, #405, and the #1002
+   * review: `attribution`, `claim_class` and `provenance.license` were added to
+   * the write path and not here, so a credential in `attribution.asserted_by`
+   * rescoped from local into a shared scope unscanned). It now serialises the
+   * whole engram — see `engramContentFields` for the one deliberate exclusion —
+   * so a field that reaches the engram by any route is scanned by construction.
    */
   private _engramContextFields(engram: Engram): Record<string, unknown> | undefined {
-    const e = engram as Record<string, unknown>
-    const fields: Record<string, unknown> = {}
-    for (const k of ['rationale', 'source', 'snippet', 'dual_coding', 'domain', 'tags', 'knowledge_anchors'] as const) {
-      if (e[k] != null) fields[k] = e[k]
-    }
-    const sd = e.structured_data
-    if (sd != null && typeof sd === 'object' && !Array.isArray(sd)) {
-      const userSd: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(sd as Record<string, unknown>)) {
-        if (!k.startsWith('_')) userSd[k] = v
-      }
-      if (Object.keys(userSd).length > 0) fields.structured_data = userSd
-    } else if (sd != null) {
-      fields.structured_data = sd
-    }
-    return Object.keys(fields).length > 0 ? fields : undefined
+    return engramContentFields(engram)
   }
 
   /**
@@ -2660,6 +2648,17 @@ export class Plur {
     return { scope: fallback, routed: null }
   }
 
+  /**
+   * The text the write-time HARD secret scan reads: the statement plus every
+   * caller-supplied content field, as listed by `LEARN_CONTEXT_FIELD_ROLES`.
+   * Statement-only when the context carries no content field, so a plain
+   * write scans exactly what it always did.
+   */
+  private _hardScanText(statement: string, context: LearnContext | undefined): string {
+    const content = learnContextContent(context)
+    return content ? `${statement}\n${JSON.stringify(content)}` : statement
+  }
+
   private async _guardSensitiveScope(
     statement: string,
     context?: LearnContext,
@@ -2729,16 +2728,15 @@ export class Plur {
       )
     }
     if (!this.config.allow_secrets) {
-      // Scan statement AND the caller-supplied fields that are exported verbatim /
-      // rendered into agent context — `domain`, `tags`, `abstract` (#381, #389).
-      // A secret in any of them would otherwise reach a shared pack/store. Other
-      // context fields are covered by _guardSensitiveScope on shared/remote writes.
-      const secretText = [statement, context?.domain, context?.abstract, ...(context?.tags ?? [])]
-        .filter(Boolean)
-        .join(' ')
-      const secrets = detectSecrets(secretText)
+      // Scan the statement AND every caller-supplied content field (#381,
+      // #389, #1002 review). The field set comes from ONE table,
+      // `LEARN_CONTEXT_FIELD_ROLES`, checked against `LearnContext` by the
+      // compiler — a hand-picked subset here is how `attribution` and
+      // `license` went unscanned. Shared/remote writes are additionally
+      // policy-scanned by _guardSensitiveScope below.
+      const secrets = detectSecrets(this._hardScanText(statement, context))
       if (secrets.length > 0) {
-        throw new Error(`Secret detected in statement/domain/tags: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+        throw new Error(`Secret detected in statement or context: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
     const guarded = await this._guardSensitiveScope(statement, context)
@@ -3231,16 +3229,11 @@ export class Plur {
       )
     }
     if (!this.config.allow_secrets) {
-      // Scan statement AND the caller-supplied fields that are exported verbatim /
-      // rendered into agent context — `domain`, `tags`, `abstract` (#381, #389).
-      // A secret in any of them would otherwise reach a shared pack/store. Other
-      // context fields are covered by _guardSensitiveScope on shared/remote writes.
-      const secretText = [statement, context?.domain, context?.abstract, ...(context?.tags ?? [])]
-        .filter(Boolean)
-        .join(' ')
-      const secrets = detectSecrets(secretText)
+      // Same surface as learn(): the statement plus every content field named
+      // by `LEARN_CONTEXT_FIELD_ROLES` (#381, #389, #1002 review).
+      const secrets = detectSecrets(this._hardScanText(statement, context))
       if (secrets.length > 0) {
-        throw new Error(`Secret detected in statement/domain/tags: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+        throw new Error(`Secret detected in statement or context: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
     const guarded = await this._guardSensitiveScope(statement, context)

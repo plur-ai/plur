@@ -1163,6 +1163,16 @@ const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
 const EMAIL_RE = /[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9.-]{1,255}\.[a-zA-Z]{2,24}/
 const IP_RE = /\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/
 
+/**
+ * Does the export privacy scan read this text as containing an email address?
+ * Exposed so a surface can warn BEFORE a value is committed to — `plur identity
+ * you@example.org` made every export empty (#999), and the place to say so is
+ * the moment the identity is set, not the first empty pack.
+ */
+export function containsEmail(text: string): boolean {
+  return EMAIL_RE.test(text)
+}
+
 // Fields excluded from the serialized secret/PII scan: exportPack strips these
 // (relations/associations/knowledge_anchors never reach a pack), or they are
 // internal/numeric bookkeeping that can't carry a meaningful credential and
