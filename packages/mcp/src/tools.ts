@@ -2193,6 +2193,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Core reports these; this hand-built response dropped them, so an
           // agent asking for status saw a healthy-looking `pack_count: 0`.
           ...(status.store_errors ? { store_errors: status.store_errors } : {}),
+          // Spreading-activation drop counters — absent when both are zero.
+          ...(status.spread_drops ? { spread_drops: status.spread_drops } : {}),
           // Version check (issue #151)
           ...(versionCheck?.updateAvailable && versionCheck.latest ? {
             update_available: {
