@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from '
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { resolveTelemetry } from './telemetry.js'
+import { resolveTelemetry } from '@plur-ai/core'
 
 type OpenclawConfig = {
   plugins?: {
