@@ -113,13 +113,38 @@ describe('write-path consolidation', () => {
   })
 
   describe('one body per twin', () => {
-    it('updateEngram and updateEngramAsync agree when the remote refuses', async () => {
+    // storePrefix('group:acme/eng') === 'GAC': an id carrying that prefix names
+    // exactly this store, so its refusal is the caller's business (same rule
+    // forget() adopted in #1109). A bare id is ambiguous across stores and
+    // keeps the graceful null/false contract pinned by set-pinned-remote.test.ts.
+    it('a refusal for a NAMESPACED id surfaces instead of reading as not-found', async () => {
       patchImpl = async () => { throw new Error('Remote patch failed: 401 token expired') }
       const ghost = {
-        id: 'ENG-GAE-2026-09-03-001', scope: REMOTE_SCOPE, statement: 'clean statement', status: 'active',
+        id: 'ENG-GAC-2026-09-03-001', scope: REMOTE_SCOPE, statement: 'clean statement', status: 'active',
+      } as unknown as Engram
+      await expect(plur.updateEngram(ghost)).rejects.toThrow(/401 token expired/)
+      await expect(plur.updateEngramAsync(ghost)).rejects.toThrow(/401 token expired/)
+      await expect(plur.setPinned('ENG-GAC-2026-09-03-001', true)).rejects.toThrow(/401 token expired/)
+    })
+
+    it('a refusal for a BARE id keeps the graceful contract: false / null, no throw', async () => {
+      patchImpl = async () => { throw new Error('Remote patch failed: 401 token expired') }
+      const ghost = {
+        id: 'ENG-2026-09-03-004', scope: REMOTE_SCOPE, statement: 'clean statement', status: 'active',
       } as unknown as Engram
       await expect(plur.updateEngram(ghost)).resolves.toBe(false)
       await expect(plur.updateEngramAsync(ghost)).resolves.toBeNull()
+      await expect(plur.setPinned('ENG-2026-09-03-004', true)).resolves.toBeNull()
+    })
+
+    it('a 404 from every store is genuinely not-found: false / null, no throw', async () => {
+      patchImpl = async () => null
+      const ghost = {
+        id: 'ENG-GAC-2026-09-03-003', scope: REMOTE_SCOPE, statement: 'clean statement', status: 'active',
+      } as unknown as Engram
+      await expect(plur.updateEngram(ghost)).resolves.toBe(false)
+      await expect(plur.updateEngramAsync(ghost)).resolves.toBeNull()
+      await expect(plur.setPinned('ENG-GAC-2026-09-03-003', true)).resolves.toBeNull()
     })
 
     it('updateEngram and updateEngramAsync agree when the remote accepts', async () => {
@@ -130,10 +155,12 @@ describe('write-path consolidation', () => {
       await expect(plur.updateEngramAsync(ghost)).resolves.toEqual(served)
     })
 
-    it('setPinnedAsync is setPinned', async () => {
+    it('setPinnedAsync is setPinned: same refusal on a namespaced id, same null on a bare one', async () => {
       patchImpl = async () => { throw new Error('Remote patch failed: 503') }
-      await expect(plur.setPinned('ENG-GAE-2026-09-03-002', true)).resolves.toBeNull()
-      await expect(plur.setPinnedAsync('ENG-GAE-2026-09-03-002', true)).resolves.toBeNull()
+      await expect(plur.setPinned('ENG-GAC-2026-09-03-002', true)).rejects.toThrow(/503/)
+      await expect(plur.setPinnedAsync('ENG-GAC-2026-09-03-002', true)).rejects.toThrow(/503/)
+      await expect(plur.setPinned('ENG-2026-09-03-002', true)).resolves.toBeNull()
+      await expect(plur.setPinnedAsync('ENG-2026-09-03-002', true)).resolves.toBeNull()
     })
   })
 })

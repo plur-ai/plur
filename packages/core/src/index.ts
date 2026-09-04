@@ -5416,6 +5416,15 @@ export class Plur {
     // Verified against a stub remote returning 401: the old code logged
     // `updateEngram RETURNED: true` alongside
     // `UNHANDLED REJECTIONS: [Error: Remote patch failed: 401 token expired]`.
+    // Refusal rule (2026-09 audit), the same one `forget()` uses since #1109:
+    // when the id is NAMESPACED to this store (`_stripRemotePrefix` stripped
+    // its prefix), the target is unambiguous, so a refusal (auth, validation,
+    // transport) is thrown as-is — reporting it as "not found" would claim
+    // an absence that was never verified, which is how the MCP plur_pin tool
+    // came to turn a 401 into "Engram not found". A BARE id is ambiguous
+    // across stores, so there the walk keeps the graceful contract pinned by
+    // `set-pinned-remote.test.ts`: try the next store, and report null/false
+    // rather than a success that did not happen.
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url || entry.readonly === true) continue
       // Leak guard (#353): remote-resident, explicit update → THROW on a
@@ -5436,9 +5445,8 @@ export class Plur {
         })
         // `null` is a 404 — this remote does not hold it, so keep looking.
         if (patched) return patched
-      } catch {
-        // This remote refused it (auth, validation, transport). Try the next
-        // writable store rather than reporting a success that did not happen.
+      } catch (err) {
+        if (serverId !== updated.id) throw err
         continue
       }
     }
@@ -5472,7 +5480,10 @@ export class Plur {
     if (localResult) return localResult
 
     // Remote routing (closes #86 pin remainder). Strip the namespace prefix
-    // before sending the server the unprefixed ID it knows about.
+    // before sending the server the unprefixed ID it knows about. Same
+    // refusal rule as `_updateEngramReturning`: a namespaced id names ONE
+    // store, so its refusal is thrown; a bare id keeps walking and reports
+    // null rather than a success that did not happen.
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url || entry.readonly === true) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -5492,7 +5503,8 @@ export class Plur {
         // and the honest version costs nothing.
         const patched = await driver.patch(serverId, { pinned: pinned === true ? true : undefined })
         if (patched) return patched
-      } catch {
+      } catch (err) {
+        if (serverId !== id) throw err
         continue
       }
     }
