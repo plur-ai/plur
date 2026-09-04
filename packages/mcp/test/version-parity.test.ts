@@ -4,10 +4,12 @@ import { join } from 'path'
 import { VERSION as versionTs } from '../src/version.js'
 
 /**
- * The load-bearing version constants must agree with package.json (evaluator
+ * The load-bearing version constant must agree with package.json (evaluator
  * audit finding 5): index.ts's VERSION drives the pinned MCP entry that
- * `plur-mcp init` PERSISTS into user configs — a missed sed bump there pins
- * every new install to the previous release with the suite still green. Same
+ * `plur-mcp init` PERSISTS into user configs — a missed bump there pins every
+ * new install to the previous release with the suite still green. There is
+ * ONE constant (src/version.ts); index.ts imports it, and this test pins both
+ * the value and the import so a second literal cannot creep back in. Same
  * guard pattern as dsh's manifest test and the CLI's version-parity test.
  */
 describe('mcp version parity', () => {
@@ -17,10 +19,10 @@ describe('mcp version parity', () => {
     expect(versionTs).toBe(pkg.version)
   })
 
-  it('index.ts const VERSION (drives the persisted config pin) matches package.json', () => {
+  it('index.ts (drives the persisted config pin) imports VERSION instead of repeating it', () => {
     const src = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8')
-    const m = /const VERSION = '([^']+)'/.exec(src)
-    expect(m?.[1]).toBe(pkg.version)
+    expect(src).toContain("import { VERSION } from './version.js'")
+    expect(src).not.toMatch(/const VERSION = '/)
   })
 
   it('versions are release-shaped — this string is interpolated into config commands', () => {
