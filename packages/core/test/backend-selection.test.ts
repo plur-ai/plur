@@ -20,7 +20,7 @@ import yaml from 'js-yaml'
 import {
   resolveBackendTier,
   BACKEND_TIERS,
-  PGLITE_MIN_ENGRAMS,
+  SQLITE_MIN_ENGRAMS,
   POSTGRES_MIN_ENGRAMS,
   type BackendTier,
 } from '../src/backend-selection.js'
@@ -56,27 +56,46 @@ describe('resolveBackendTier — size-based selection', () => {
     expect(s.wanted).toBeUndefined()
   })
 
-  it('escalates to PGLite at the documented threshold, not one engram earlier', () => {
-    expect(resolveBackendTier({ engramCount: PGLITE_MIN_ENGRAMS - 1, postgresConfigured: false }).tier)
+  it('escalates to SQLite at the documented threshold, not one engram earlier', () => {
+    expect(resolveBackendTier({ engramCount: SQLITE_MIN_ENGRAMS - 1, postgresConfigured: false }).tier)
       .toBe('yaml')
-    expect(resolveBackendTier({ engramCount: PGLITE_MIN_ENGRAMS, postgresConfigured: false }).tier)
-      .toBe('pglite')
+    expect(resolveBackendTier({ engramCount: SQLITE_MIN_ENGRAMS, postgresConfigured: false }).tier)
+      .toBe('sqlite')
+  })
+
+  // #1046: PGLite used to be the size-selected tier, which silently moved
+  // users onto a backend that boots Postgres in WASM on every process — 0.61s
+  // vs 300s+ per command on a 5,775-engram store. It is a capability choice
+  // now (pgvector ANN, AGE graph queries), never a consequence of growth.
+  it('never selects PGLite by size, at any corpus size', () => {
+    for (const count of [SQLITE_MIN_ENGRAMS, POSTGRES_MIN_ENGRAMS, POSTGRES_MIN_ENGRAMS * 100]) {
+      for (const postgresConfigured of [true, false]) {
+        expect(resolveBackendTier({ engramCount: count, postgresConfigured }).tier).not.toBe('pglite')
+      }
+    }
+  })
+
+  it('still reaches PGLite when the operator asks for it explicitly', () => {
+    expect(resolveBackendTier({ env: 'pglite', engramCount: 0, postgresConfigured: false }))
+      .toMatchObject({ tier: 'pglite', reason: 'env-override' })
+    expect(resolveBackendTier({ config: 'pglite', engramCount: 0, postgresConfigured: false }))
+      .toMatchObject({ tier: 'pglite', reason: 'config-override' })
   })
 
   it('escalates to Postgres at its threshold when a connection string is configured', () => {
     const below = resolveBackendTier({ engramCount: POSTGRES_MIN_ENGRAMS - 1, postgresConfigured: true })
-    expect(below.tier).toBe('pglite')
+    expect(below.tier).toBe('sqlite')
     const at = resolveBackendTier({ engramCount: POSTGRES_MIN_ENGRAMS, postgresConfigured: true })
     expect(at.tier).toBe('postgres')
     expect(at.reason).toBe('size')
   })
 
-  it('caps at PGLite when the corpus wants Postgres but nothing is configured — and SAYS so', () => {
+  it('caps at SQLite when the corpus wants Postgres but nothing is configured — and SAYS so', () => {
     const s = resolveBackendTier({ engramCount: POSTGRES_MIN_ENGRAMS * 4, postgresConfigured: false })
     // The whole point of `wanted`: falling back is fine, falling back silently
     // is the failure mode. A caller can see it asked for a server and did not
     // get one.
-    expect(s.tier).toBe('pglite')
+    expect(s.tier).toBe('sqlite')
     expect(s.wanted).toBe('postgres')
     expect(s.engramCount).toBe(POSTGRES_MIN_ENGRAMS * 4)
   })

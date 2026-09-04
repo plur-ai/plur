@@ -23,6 +23,23 @@ export function parseGlobalFlags(argv: string[]): { flags: GlobalFlags; args: st
 }
 
 /**
+ * The most recent Plur built in this process (#1046).
+ *
+ * The CLI entrypoint needs a handle on it to drain background index work
+ * before exiting, and commands construct their own instance rather than
+ * receiving one. Last-wins is the working assumption: a CLI process runs one
+ * command, and the commands that build more than one build them against the
+ * same store — `import` with `--store` routes through createPlur precisely
+ * so this stays true.
+ */
+let lastInstance: Plur | null = null
+
+/** The last Plur constructed in this process, or null if none was. */
+export function getLastPlurInstance(): Plur | null {
+  return lastInstance
+}
+
+/**
  * Create Plur instance from flags.
  *
  * `readonly: true` opens a write-guarded engine (#731): reads work, every
@@ -32,5 +49,6 @@ export function parseGlobalFlags(argv: string[]): { flags: GlobalFlags; args: st
  */
 export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean }): Plur {
   const path = flags.path || process.env.PLUR_PATH || undefined
-  return new Plur({ path, readonly: options?.readonly })
+  lastInstance = new Plur({ path, readonly: options?.readonly })
+  return lastInstance
 }

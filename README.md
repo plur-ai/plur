@@ -12,7 +12,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/plur-ai/plur?style=social)](https://github.com/plur-ai/plur/stargazers)
 [![Glama score](https://glama.ai/mcp/servers/plur-ai/plur/badges/score.svg)](https://glama.ai/mcp/servers/plur-ai/plur)
 
-Persistent, **open** memory for AI agents — local-first, zero-cost, shared across MCP tools (Claude Code, Hermes, OpenClaw, Cursor). Your agent's memory is plain-text **engrams** you can read, correct, and delete — not weights you can't.
+Persistent, **open** memory for AI agents — local-first, zero-cost, shared across MCP tools (Claude Code, Codex, Cursor, Hermes, OpenClaw). Your agent's memory is plain-text **engrams** you can read, correct, and delete — not weights you can't.
 
 [plur.ai](https://plur.ai) · [Benchmark](https://plur.ai/benchmark.html) · [Engram Spec](https://plur.ai/spec.html) · [npm](https://www.npmjs.com/org/plur-ai) · [Comparisons](comparisons/)
 
@@ -103,7 +103,52 @@ Run init from your project root — it sets up Cursor's `.cursor/mcp.json` (plus
 npx @plur-ai/mcp init
 ```
 
-PLUR runs under a **lean tool profile** in Cursor (`PLUR_TOOL_PROFILE=cursor`) — Cursor caps the tools a workspace can expose, so PLUR surfaces a curated core set (learn / recall / inject / status) instead of all 42, with the rest reachable through `plur_admin`. Cursor support shipped in v0.13.
+PLUR runs under a **lean tool profile** in Cursor (`PLUR_TOOL_PROFILE=cursor`) — Cursor caps the tools a workspace can expose, so PLUR surfaces a curated core set (learn / recall / inject / status) instead of all 43, with the rest reachable through `plur_admin`. Cursor support shipped in v0.13.
+
+### Codex
+
+```bash
+npx @plur-ai/cli init --codex
+```
+
+Registers the MCP server via `codex mcp add`, writes lifecycle hooks to `~/.codex/hooks.json`, and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.codex/` exists.
+
+Injection uses hybrid search (BM25 + embeddings) with an automatic BM25 fallback if the embedder is slow or unavailable. Set `PLUR_HOOK_HYBRID=0` to force BM25 (applies to the Antigravity hooks too; `PLUR_CODEX_HYBRID` is honoured as an alias). `PLUR_HOOK_HYBRID_DEADLINE_MS` tunes the fallback deadline — keep it below your harness's hook timeout (Codex 25s, Antigravity 20s).
+
+**One manual step after install:** open Codex, run `/hooks`, and trust the PLUR entries. Codex fingerprints every hook and refuses to run untrusted ones — *silently*, with no warning and a zero exit code. Until you trust them, memory simply never loads. `plur doctor` says so too.
+
+### Which integration you get
+
+Every MCP client can call PLUR's tools. Only some have an *adapter* — the hooks
+and always-on context that make memory load automatically instead of waiting for
+the agent to think of it. Without one, recall and learning depend entirely on the
+model choosing to call the tools, which degrades badly under context pressure.
+
+| Harness | Tools | Auto-injection + enforcement |
+|---|---|---|
+| Claude Code | ✅ | ✅ hooks + `CLAUDE.md` |
+| Codex | ✅ | ✅ hooks + `AGENTS.md` (trust `/hooks` once) |
+| Cursor | ✅ | ✅ hooks + rules |
+| OpenClaw | ✅ | ✅ ContextEngine plugin |
+| Hermes | ✅ | ✅ plugin |
+| Antigravity CLI (`agy`) | ✅ | ✅ hooks + `AGENTS.md` |
+| Windsurf, Gemini CLI, other MCP clients | ✅ | ❌ tools only |
+
+If your harness is in the last row, paste the PLUR section from `CLAUDE.md` into
+its own context file (`AGENTS.md`, `GEMINI.md`, …) as an interim measure — that
+restores the instruction layer, though not automatic injection.
+
+### Antigravity CLI (agy)
+
+```bash
+npx @plur-ai/cli init --antigravity
+```
+
+Writes hooks and the MCP server into agy's global config (`~/.gemini/config/`) and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.gemini/antigravity-cli/` exists. No trust step — agy runs configured hooks on first invocation; just restart agy.
+
+Antigravity has no session-start event and no per-prompt hook, so PLUR drives everything from `PreInvocation`: per-prompt recall is read from the conversation transcript, and the turn's memory is re-injected as an ephemeral message on every model invocation so it survives tool calls without accumulating in history.
+
+Gemini CLI users: Google is transitioning Gemini CLI to Antigravity — install `agy` and run the command above. Gemini CLI itself remains tools-only.
 
 ### OpenClaw
 

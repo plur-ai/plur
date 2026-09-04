@@ -63,3 +63,31 @@ The smoke workflow needs the `PLUR_REMOTE_TEST_TOKEN` repository secret set to a
 
 - #78 epic (4 of 5 sub-issues closed; this doc + the smoke workflow close the remainder of #92)
 - #92 (CI integration) — deviation from original spec documented above
+
+## "Worker exited unexpectedly" on macOS dev machines (not CI)
+
+A full local `pnpm test` can end with anonymous
+`[vitest-pool]: Worker forks emitted error ... Worker exited unexpectedly`
+errors and STILL print `0 failed` — the dead files are counted as neither
+passed nor failed, so the summary reads green while whole suites never ran.
+Treat `Errors > 0` as a failing run, always.
+
+Root-caused 2026-08-28 after a day of exactly this: a broken
+`better_sqlite3.node` in the monorepo (rebuilt against the wrong Node ABI —
+`NODE_MODULE_VERSION 147` vs the running Node 24's `137` — with a stale
+embedded code signature from the in-place rewrite). One broken file, two
+faces:
+
+  - Processes that faulted a signature-invalid page were SIGKILLed by
+    macOS's code-signing monitor (`~/Library/Logs/DiagnosticReports/
+    node-*.ips`, `CODESIGNING / Invalid Page`) — vitest reports the dead
+    worker with no test attribution.
+  - After `codesign --force --sign -` cleared the signature face, the same
+    file failed loudly with the catchable ABI error, finally naming the 9
+    index-path suites that had been dying all along.
+
+Fix: `pnpm rebuild better-sqlite3` under the repo's Node. Guard:
+`packages/core/test/native-abi.test.ts` loads the binary directly so an ABI
+break fails as a NAMED test, not an anonymous worker death. CI (Linux, clean
+installs) never shows either face — which is exactly why local `Errors > 0`
+must never be shrugged off as environmental.

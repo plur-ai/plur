@@ -6,7 +6,7 @@ import { join } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
-const VERSION = '0.18.0'
+const VERSION = '0.19.4'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -30,9 +30,13 @@ Docs: https://plur.ai · https://github.com/plur-ai/plur
 
 // --- Constants (must be before any await that uses them) ---
 
+// Pinned to THIS build's version, never @latest (#1069): an @latest entry
+// makes npx rewrite its cached native binaries on every publish, and macOS
+// SIGKILLs (CODESIGNING Invalid Page) any process that pages one in
+// mid-rewrite. Upgrades re-run init, which re-pins.
 const MCP_SERVER_CONFIG = {
   command: 'npx',
-  args: ['-y', '@plur-ai/mcp@latest'],
+  args: ['-y', `@plur-ai/mcp@${VERSION}`],
 }
 
 // --- Pack-upgrade helpers ---
@@ -211,14 +215,49 @@ function findMcpConfig(): string {
   return projectMcp
 }
 
+/**
+ * Read a config file this function intends to WRITE BACK. The #1059 rule,
+ * ported from @plur-ai/cli's readConfigForWrite (this package cannot import
+ * the CLI): a file that exists but does not parse to a JSON object is the
+ * user's damaged-but-recoverable data — reading it as {} and writing the
+ * merge back destroys every other entry they had. Reproduced live in the
+ * 0.19.1 evaluator audit against exactly this function.
+ */
+function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; ok: boolean } {
+  if (!existsSync(path)) return { data: {}, ok: true }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { data: parsed as Record<string, unknown>, ok: true }
+    }
+  } catch { /* fall through */ }
+  return { data: {}, ok: false }
+}
+
 function writeMcpConfig(configPath: string): string {
-  let config: McpConfig = {}
-  if (existsSync(configPath)) {
-    try { config = JSON.parse(readFileSync(configPath, 'utf8')) } catch {}
+  const { data, ok } = readJsonObjectForWrite(configPath)
+  if (!ok) {
+    return `skipped — ${configPath} exists but is not a JSON object; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur-mcp init\``
   }
+  const config = data as McpConfig
 
   const servers = (config.mcpServers ?? {}) as Record<string, unknown>
-  if (servers.plur) {
+  const existing = servers.plur as { command?: string; args?: string[] } | undefined
+  if (existing) {
+    // Heal the @latest entries THIS command's older releases wrote — the
+    // #1069 npx cache-rewrite race. Only the exact racey shape is touched;
+    // a custom or version-pinned entry is the user's decision.
+    const args = existing.args ?? []
+    const spec = args.filter(a => a !== '-y' && !a.startsWith('-'))[0] ?? ''
+    if (existing.command === 'npx' && /^@plur-ai\/mcp(@latest)?$/.test(spec)) {
+      const healed = { ...existing, ...MCP_SERVER_CONFIG }
+      if (JSON.stringify(healed) !== JSON.stringify(existing)) {
+        servers.plur = healed
+        config.mcpServers = servers
+        writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+        return `upgraded stale npx entry in ${configPath}`
+      }
+    }
     return `already configured in ${configPath}`
   }
 
@@ -237,10 +276,11 @@ function installHooks(): string {
     ? projectSettings
     : globalSettings
 
-  let settings: Settings = {}
-  if (existsSync(settingsPath)) {
-    try { settings = JSON.parse(readFileSync(settingsPath, 'utf8')) } catch {}
+  const settingsRead = readJsonObjectForWrite(settingsPath)
+  if (!settingsRead.ok) {
+    return `skipped — ${settingsPath} exists but is not a JSON object; writing would discard your other settings. Fix it by hand, then re-run \`plur-mcp init\``
   }
+  const settings = settingsRead.data as Settings
 
   // Check if already installed
   const hooks = settings.hooks ?? {}

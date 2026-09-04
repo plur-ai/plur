@@ -392,3 +392,76 @@ describe('injection engine', () => {
     }
   })
 })
+
+describe('spread_drops counter', () => {
+  const makeEngram = (overrides: Partial<any> = {}) => EngramSchema.parse({
+    id: 'ENG-2026-0319-001',
+    statement: 'deploy the system carefully',
+    type: 'behavioral',
+    scope: 'global',
+    status: 'active',
+    ...overrides,
+  })
+
+  it('absent when no associations exist', () => {
+    const e = makeEngram({ id: 'ENG-2026-0319-001', statement: 'always deploy carefully on every deploy' })
+    const result = selectAndSpread({ prompt: 'deploy', maxTokens: 5000 }, [e], [])
+    expect(result.spread_drops).toBeUndefined()
+  })
+
+  it('counts dropped_unresolvable for association targets not in engramMap', () => {
+    const e = makeEngram({
+      id: 'ENG-2026-0319-001',
+      statement: 'always deploy carefully on every deploy',
+      associations: [{ target_type: 'engram', target: 'ENG-GHOST-001', type: 'semantic', strength: 0.8 }],
+    })
+    const result = selectAndSpread({ prompt: 'deploy', maxTokens: 5000 }, [e], [])
+    expect(result.spread_drops?.dropped_unresolvable).toBe(1)
+    expect(result.spread_drops?.dropped_retired).toBe(0)
+  })
+
+  it('counts dropped_retired for association targets with non-active status', () => {
+    const directive = makeEngram({
+      id: 'ENG-2026-0319-001',
+      statement: 'always deploy carefully on every deploy',
+      associations: [{ target_type: 'engram', target: 'ENG-2026-0319-002', type: 'semantic', strength: 0.8 }],
+    })
+    const retired = makeEngram({
+      id: 'ENG-2026-0319-002',
+      statement: 'old deploy rule',
+      status: 'retired',
+    })
+    const result = selectAndSpread({ prompt: 'deploy', maxTokens: 5000 }, [directive, retired], [])
+    expect(result.spread_drops?.dropped_retired).toBe(1)
+    expect(result.spread_drops?.dropped_unresolvable).toBe(0)
+  })
+
+  it('counts both kinds independently when both occur', () => {
+    const directive = makeEngram({
+      id: 'ENG-2026-0319-001',
+      statement: 'always deploy carefully on every deploy',
+      associations: [
+        { target_type: 'engram', target: 'ENG-GHOST-001', type: 'semantic', strength: 0.8 },
+        { target_type: 'engram', target: 'ENG-2026-0319-002', type: 'semantic', strength: 0.7 },
+      ],
+    })
+    const retired = makeEngram({
+      id: 'ENG-2026-0319-002',
+      statement: 'old deploy rule',
+      status: 'retired',
+    })
+    const result = selectAndSpread({ prompt: 'deploy', maxTokens: 5000 }, [directive, retired], [])
+    expect(result.spread_drops?.dropped_unresolvable).toBe(1)
+    expect(result.spread_drops?.dropped_retired).toBe(1)
+  })
+
+  it('does not count non-engram association targets', () => {
+    const e = makeEngram({
+      id: 'ENG-2026-0319-001',
+      statement: 'always deploy carefully on every deploy',
+      associations: [{ target_type: 'document', target: '/docs/deploy.md', type: 'semantic', strength: 0.8 }],
+    })
+    const result = selectAndSpread({ prompt: 'deploy', maxTokens: 5000 }, [e], [])
+    expect(result.spread_drops).toBeUndefined()
+  })
+})

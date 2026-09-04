@@ -80,6 +80,36 @@ exactly the ones whose engram genuinely went away.
 
 `packages/core/src/backend-selection.ts` — a pure, total function:
 
+> ### Amendment — 2026-08-27 (#1046): PGLite is opt-in; the size-selected tier is SQLite
+>
+> The ladder below shipped as designed and then failed in the field: PGLite
+> boots a full Postgres-in-WASM **per process** (~1.3s fresh, ~244ms reopen),
+> and PLUR's CLI and hooks are a fresh process per invocation — measured at
+> 0.61s (sqlite) vs 300s+ (pglite) per command on a 5,775-engram store, the
+> latter compounded by an unawaited constructor-time full-corpus resync that
+> never converged. The per-query engine was never the problem (0.135ms,
+> faster than better-sqlite3 single-row inserts); the per-process boot is
+> structural and unfixable for this process model.
+>
+> The size ladder is now **yaml → sqlite → postgres**. `SQLITE_MIN_ENGRAMS`
+> replaces `PGLITE_MIN_ENGRAMS` at the same 5,000 (that threshold was always
+> "index vs brute-force scan", which stands). PGLite is reachable only via
+> `PLUR_BACKEND=pglite` / `backend: pglite` — a capability choice (pgvector,
+> AGE) and the Postgres adapter's CI test double, never a consequence of
+> growth. The `wanted: 'postgres'` loud-fallback now lands on sqlite.
+>
+> Honesty note carried from the review: the SQLite tier is a METADATA index.
+> Vector search remains brute-force JS cosine over the in-RAM embeddings
+> cache (~768 MB at 500k × 384d fp32, more as parsed JSON), so the eventual
+> escape from that memory curve is the postgres tier's HNSW — not a larger
+> local index. §1's original complaint (the default backend built no index at
+> all) recurred once during this change and is now pinned by
+> `pglite-backend-selection.test.ts`'s "materialises its index" test.
+>
+> The table and thresholds BELOW are preserved as written for the record; the
+> Verification section's claims about `pglite-backend-selection.test.ts` now
+> hold with sqlite in place of pglite.
+
 | Tier | Store | Query | Fits |
 |---|---|---|---|
 | `yaml` | YAML file | in-memory BM25 + exact cosine | a personal store |
