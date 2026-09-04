@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, oneLine, exit } from '../output.js'
+import { escapeInlineDelimiter } from '@plur-ai/core'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -46,8 +47,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     })
   } else {
     engrams.forEach((e, idx) => {
-      outputText(`${idx + 1}. [${e.id}] ${e.statement}`)
-      outputText(`   Scope: ${e.scope} | Type: ${e.type}${e.domain ? ` | Domain: ${e.domain}` : ''} | Strength: ${e.activation.retrieval_strength.toFixed(3)}`)
+      outputText(`${idx + 1}. ${oneLine(`[${e.id}] ${e.statement}`)}`)
+      // The meta line is pipe-joined, so every row-controlled field on it is
+      // escaped as well as folded — same rule as formatLayer3 in core. `type`
+      // is a schema enum; `scope` and `domain` are strings a remote row sets.
+      const meta = [`Scope: ${escapeInlineDelimiter(oneLine(e.scope))}`, `Type: ${e.type}`]
+      if (e.domain) meta.push(`Domain: ${escapeInlineDelimiter(oneLine(e.domain))}`)
+      meta.push(`Strength: ${e.activation.retrieval_strength.toFixed(3)}`)
+      outputText(`   ${meta.join(' | ')}`)
     })
   }
 }

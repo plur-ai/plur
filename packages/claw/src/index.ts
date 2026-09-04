@@ -1,6 +1,6 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
-import { checkForUpdate, CapabilityCanary } from '@plur-ai/core'
+import { checkForUpdate, CapabilityCanary, collapseLineTerminators } from '@plur-ai/core'
 import { recordEvent } from './telemetry-counters.js'
 import { flushIfNeeded, registerFlushOnExit } from './telemetry-flush.js'
 
@@ -147,7 +147,10 @@ const plugin = {
           const results = await getEngine(path).plur.recall(ctx.args.trim(), { limit: 10 })
           maybeFlushAfter(recordEvent('recall'))
           if (!Array.isArray(results) || !results.length) return { text: 'No matching memories.' }
-          return { text: `Found ${results.length} memories:\n${results.map((r: any, i: number) => `${i + 1}. [${r.id}] ${r.statement}`).join('\n')}` }
+          // One line per result (#1004): a recalled row may come from a remote
+          // store or predate the write-boundary fold, and a line terminator in
+          // it would mint an extra numbered `[id] ...` entry in the reply.
+          return { text: `Found ${results.length} memories:\n${results.map((r: any, i: number) => `${i + 1}. ${collapseLineTerminators(`[${r.id}] ${r.statement}`)}`).join('\n')}` }
         },
       })
 

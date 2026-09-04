@@ -15,6 +15,7 @@ import { readScope } from './scope.js'
 import type { Counters } from './counters.js'
 import { guard, type WriteQueue } from './guard.js'
 import type { PlurClient } from './client.js'
+import { foldEntry } from './memory-section.js'
 
 /** Dependencies shared by every tool. */
 export interface ToolDeps {
@@ -98,7 +99,11 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         const scope = await resolveScope(callerOf(exec))
         const results = (await plur?.recall?.(query, { ...readScope(scope, config.includeGlobal), limit: 10 })) ?? []
         if (results.length === 0) return 'No matching engrams.'
-        return results.map(r => `[${r.id}] ${r.statement}`).join('\n')
+        // One line per result, folded the way the memory block is: a recalled
+        // row may come from a remote store or predate the write-boundary fold,
+        // and a line terminator in it would mint an extra `[id] ...` entry in
+        // the tool result (#1004).
+        return results.map(r => foldEntry(`[${r.id}] ${r.statement}`)).join('\n')
       }),
     },
     {

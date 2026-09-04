@@ -3,6 +3,7 @@
  * Separated from index.ts to avoid merge conflicts with parallel SPs.
  */
 import { computeContentHash } from './content-hash.js'
+import { collapseLineTerminators } from './sanitize.js'
 import { buildDedupPrompt, parseDedupResponse } from './dedup.js'
 import { appendHistory } from './history.js'
 import { logger } from './logger.js'
@@ -269,7 +270,9 @@ async function executeDedupDecision(
             // Target gone — fall out of the lock and ADD; see the doc comment.
             if (idx === -1) return null
             const merged = { ...engrams[idx] } as any
-            merged.statement = `${merged.statement} ${statement}`
+            // Folded again as a whole: the existing row may predate the write
+            // boundary fold and still carry a terminator of its own (#940).
+            merged.statement = collapseLineTerminators(`${merged.statement} ${statement}`)
             merged.content_hash = computeContentHash(merged.statement)
             merged.engram_version = (merged.engram_version ?? 1) + 1
             merged.activation.last_accessed = new Date().toISOString().slice(0, 10)
@@ -311,6 +314,13 @@ export async function learnAsync(
   statement: string,
   context?: LearnAsyncContext,
 ): Promise<LearnAsyncResult> {
+  // Fold on entry (#940, #952). The UPDATE and MERGE branches of
+  // executeDedupDecision write `statement` into an existing row WITHOUT calling
+  // learn(), so learn()'s own fold never sees it; and the hash fast-path below
+  // must key on the text that will actually be stored, or the same assertion
+  // written with and without a line break is two engrams. Idempotent with the
+  // fold learn() applies on the ADD path. learnBatch reaches here per item.
+  statement = collapseLineTerminators(statement)
   // Step 1: Content hash fast-path (scope-aware — issue #136)
   const hashMatch = await deps.hashDedup(statement, context?.scope)
   if (hashMatch) {

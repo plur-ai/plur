@@ -3,6 +3,8 @@
  * Detects TTY vs piped, formats as human-readable or JSON.
  */
 
+import { collapseLineTerminatorsOptional } from '@plur-ai/core'
+
 export interface OutputOptions {
   json?: boolean
   quiet?: boolean
@@ -151,6 +153,23 @@ export function isQuiet(options?: OutputOptions): boolean {
  * one that cannot should say so rather than emit prose to a caller that asked
  * for JSON.
  */
+/**
+ * Render a piece of engram text on ONE line of CLI output.
+ *
+ * Text-mode listings (`plur recall`, `plur forget --search`, `plur tensions`,
+ * `plur packs preview`, ...) print one `[id] statement` per line, and an agent
+ * running the CLI through a shell reads that output as a tool result. A line
+ * terminator inside a statement — from a remote store, a pack, or a row that
+ * predates the write-boundary fold — would mint an extra line that looks like
+ * an entry the CLI wrote (#940, #1004). Same fold as every other render path.
+ *
+ * @param value - engram text of any provenance.
+ * @returns the text on one line, or '' for nothing.
+ */
+export function oneLine(value: unknown): string {
+  return collapseLineTerminatorsOptional(value) ?? ''
+}
+
 export function outputText(text: string): void {
   process.stdout.write(text + '\n')
 }

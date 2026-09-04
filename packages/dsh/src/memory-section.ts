@@ -117,30 +117,77 @@ function flatten(text: string): string {
     // `[ID] statement` — so engrams stay separate while everything inside one
     // is collapsed.
     .split(/\n(?=\[)/)
-    .map(entry => entry
-      // Invisibles first: JS `\s` covers \t, NBSP and BOM but NOT U+200B,
-      // U+200C, U+200F, U+2060 or the soft hyphen, so `\u200b# FORGED` slipped
-      // straight past the heading strip and rendered as a heading.
-      .replace(INVISIBLE, '')
-      // Every line terminator, not just \r?\n. A lone \r is a line break to
-      // every renderer, and U+2028/U+2029/U+0085 are too — the previous
-      // `split(/\r?\n/).join('\n')` was an identity transform that collapsed
-      // nothing at all, so a `\r## DIRECTIVES` forged a heading intact.
-      // Collapsing to a space also kills setext underlining, because `======`
-      // can no longer reach a line of its own.
-      .replace(LINE_BREAKS, ' ')
-      .replace(/^\s*#+\s*/, '')
-      .replace(/\s{2,}/g, ' ')
-      .trim())
+    .map(foldEntry)
     .filter(Boolean)
     .join('\n')
+}
+
+/**
+ * Fold ONE rendered entry onto a single line, unable to forge structure.
+ *
+ * The per-entry half of {@link flatten}, exported so `plur_recall` — which
+ * renders `[id] statement` lines of its own, from rows that may never have
+ * passed a write-boundary fold (a remote store, a pre-fix engram, #1004) —
+ * applies exactly the treatment the memory block gets, not a narrower one.
+ *
+ * @param entry - one `[id] statement` entry, from core or assembled here.
+ * @returns the entry on one line.
+ */
+export function foldEntry(entry: string): string {
+  return String(entry)
+    // Invisibles first: JS `\s` covers \t, NBSP and BOM but NOT U+200B,
+    // U+200C, U+200F, U+2060 or the soft hyphen, so `\u200b# FORGED` slipped
+    // straight past the heading strip and rendered as a heading.
+    .replace(INVISIBLE, '')
+    // Every line terminator, not just \r?\n. A lone \r is a line break to
+    // every renderer, and U+2028/U+2029/U+0085 are too — the previous
+    // `split(/\r?\n/).join('\n')` was an identity transform that collapsed
+    // nothing at all, so a `\r## DIRECTIVES` forged a heading intact.
+    // Collapsing to a space also kills setext underlining, because `======`
+    // can no longer reach a line of its own.
+    .replace(LINE_BREAKS, ' ')
+    .replace(/^\s*#+\s*/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
 }
 
 /** Zero-width and formatting characters that `\s` does not cover. */
 const INVISIBLE = /[\u00ad\u200b-\u200f\u2060\ufeff]/g
 
+/**
+ * Code points every renderer treats as a line break.
+ *
+ * This is a COPY of `LINE_TERMINATOR_CODE_POINTS` in `@plur-ai/core`'s
+ * sanitize.ts, not an import, and deliberately so: this plugin loads core
+ * lazily (see engine.ts) so that a machine where core's WASM store fails to
+ * initialise degrades to "no memory" rather than taking the host agent down at
+ * plugin-load time. A static import here would undo that. The two sets are
+ * asserted equal, by importing core, in test/memory-section.test.ts — a
+ * character one layer lets through and the other splits on is exactly the gap
+ * the fold exists to close, so drift fails the suite rather than shipping.
+ *
+ * Written as code points rather than a regex literal so the source stays pure
+ * ASCII and an editor or autocrlf cannot silently narrow the set.
+ */
+export const LINE_BREAK_CODE_POINTS: readonly number[] = [
+  0x000a, // LF
+  0x000d, // CR
+  0x2028, // LS
+  0x2029, // PS
+  0x0085, // NEL
+  0x000b, // VT
+  0x000c, // FF
+  0x001c, // FS
+  0x001d, // GS
+  0x001e, // RS
+  0x001f, // US
+]
+
 /** Every character a renderer treats as a line break. */
-const LINE_BREAKS = /[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+/g
+const LINE_BREAKS = new RegExp(
+  '[' + LINE_BREAK_CODE_POINTS.map(c => '\\u' + c.toString(16).padStart(4, '0')).join('') + ']+',
+  'g',
+)
 
 /**
  * Stable digest of a rendered block, for change detection.

@@ -3,6 +3,7 @@ import type { Engram } from '../schemas/engram.js'
 import type { LlmFunction } from '../types.js'
 import { classifyPolarity } from '../polarity.js'
 import { sanitizeForPrompt } from './sanitize.js'
+import { collapseLineTerminators } from '../sanitize.js'
 
 export interface TypedRole {
   role: string
@@ -48,10 +49,12 @@ function prioritize(engrams: Engram[]): Engram[] {
 
 function buildPrompt(engrams: Engram[]): string {
   const items = engrams.map((e, i) => {
-    const parts = [`  Statement: "${sanitizeForPrompt(e.statement)}"`]
-    if (e.rationale) parts.push(`  Rationale: "${sanitizeForPrompt(e.rationale)}"`)
+    // One labelled line per field (#940): folded before the prompt sanitiser,
+    // which deliberately keeps single newlines for multi-line templates.
+    const parts = [`  Statement: "${sanitizeForPrompt(collapseLineTerminators(e.statement))}"`]
+    if (e.rationale) parts.push(`  Rationale: "${sanitizeForPrompt(collapseLineTerminators(e.rationale))}"`)
 
-    if (e.domain) parts.push(`  Domain: "${e.domain}"`)
+    if (e.domain) parts.push(`  Domain: "${collapseLineTerminators(e.domain)}"`)
     return `Engram ${i + 1} (${e.id}):\n${parts.join('\n')}`
   }).join('\n\n')
 

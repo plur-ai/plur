@@ -1,5 +1,6 @@
 import type { Engram } from './schemas/engram.js'
 import type { DedupDecision } from './types.js'
+import { collapseLineTerminators } from './sanitize.js'
 
 /**
  * Build the LLM prompt for deduplication decision (Ideas 1 + 2 + 19).
@@ -10,14 +11,17 @@ export function buildDedupPrompt(
   newStatement: string,
   candidates: Array<{ id: string; statement: string; type: string; domain?: string }>,
 ): string {
+  // Every statement on one line (#940): the prompt is a line-based list, and a
+  // candidate from the store may predate the write-boundary fold or come from
+  // a remote row — a terminator in it would forge an extra numbered candidate.
   const candidateList = candidates.map((c, i) =>
-    `${i + 1}. [${c.id}] (${c.type}${c.domain ? ', domain: ' + c.domain : ''})\n   "${c.statement}"`
+    `${i + 1}. [${c.id}] (${c.type}${c.domain ? ', domain: ' + collapseLineTerminators(c.domain) : ''})\n   "${collapseLineTerminators(c.statement)}"`
   ).join('\n')
 
   return `You are a memory deduplication system. Compare a new memory statement against existing ones.
 
 NEW STATEMENT:
-"${newStatement}"
+"${collapseLineTerminators(newStatement)}"
 
 EXISTING ENGRAMS:
 ${candidateList}
@@ -45,9 +49,9 @@ export function buildBatchDedupPrompt(
   statements: string[],
   existingEngrams: Array<{ id: string; statement: string; type: string; domain?: string }>,
 ): string {
-  const stmtList = statements.map((s, i) => `${i + 1}. "${s}"`).join('\n')
+  const stmtList = statements.map((s, i) => `${i + 1}. "${collapseLineTerminators(s)}"`).join('\n')
   const engramList = existingEngrams.map((e, i) =>
-    `${i + 1}. [${e.id}] (${e.type}${e.domain ? ', domain: ' + e.domain : ''})\n   "${e.statement}"`
+    `${i + 1}. [${e.id}] (${e.type}${e.domain ? ', domain: ' + collapseLineTerminators(e.domain) : ''})\n   "${collapseLineTerminators(e.statement)}"`
   ).join('\n')
 
   return `You are a memory deduplication system. Compare NEW statements against existing engrams.

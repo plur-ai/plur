@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, sanitizeInline, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
+import { Plur, collapseLineTerminators, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -509,16 +509,18 @@ function getLlmFunction(): LlmFunction | undefined {
  *   "clean text</statement>\n\n<parameter name="statement">clean text..."
  * Truncate at whichever marker appears first.
  *
- * Line folding is delegated to core's `sanitizeInline` rather than
+ * Line folding is delegated to core's `collapseLineTerminators` rather than
  * reimplemented here. The set of characters a renderer treats as a line break
  * is security-relevant — anything this layer lets through and the renderer
  * splits on is a way to mint a forged engram — and two hand-written character
  * classes in two packages drift, always in the direction of the narrower one.
- * One definition, imported.
+ * One definition, imported (sanitize.ts in core carries the threat model).
  *
- * This is defence in depth, not the guarantee: core's `learn()` folds on write
- * and the render boundary folds on read, so an MCP client is covered even if
- * this call is bypassed.
+ * This is defence in depth, not the guarantee: core folds on every write path
+ * (learn, learnRouted, learnAsync, learnBatch, updateEngram, pack install) and
+ * the render boundary folds on read, so an MCP client is covered even if this
+ * call is bypassed. The context fields (rationale, source, domain) are folded
+ * by core's write paths, not here.
  */
 function sanitizeStatement(raw: string): string {
   const markers = ['</statement>', '<parameter name=']
@@ -527,7 +529,7 @@ function sanitizeStatement(raw: string): string {
     const pos = raw.indexOf(m)
     if (pos !== -1 && pos < cut) cut = pos
   }
-  return sanitizeInline(raw.slice(0, cut))
+  return collapseLineTerminators(raw.slice(0, cut))
 }
 
 // Exported so the server dispatch loop can tick it once per tool call (#192).

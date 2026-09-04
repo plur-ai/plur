@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname, basename } from 'path'
 import yaml from 'js-yaml'
-import { collapseLineTerminators } from './sanitize.js'
+import { collapseLineTerminators, collapseLearnContextText, collapseEngramTextFields } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
@@ -12,7 +12,6 @@ import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
-import { sanitizeInline } from './sanitize-inline.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -122,9 +121,14 @@ export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
 // Exported so every package that renders or stores engram text uses the SAME
-// line-break set. Two packages each rolling their own sanitizer is how one ends
-// up narrower than the other, and the narrow one becomes the way in.
-export { sanitizeInline, sanitizeInlineOptional, LINE_BREAK_CODE_POINTS } from './sanitize-inline.js'
+// line-break set and the same fold. Two packages each rolling their own
+// sanitizer is how one ends up narrower than the other, and the narrow one
+// becomes the way in. sanitize.ts carries the threat model.
+export {
+  collapseLineTerminators, collapseLineTerminatorsOptional, collapseEngramTextFields, collapseLearnContextText,
+  LINE_TERMINATOR_CODE_POINTS, SINGLE_LINE_TEXT_FIELDS, SINGLE_LINE_CONTEXT_FIELDS, type FoldedEngram,
+} from './sanitize.js'
+export { INLINE_ENTRY_DELIMITER, escapeInlineDelimiter } from './inject.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, type HistoryEvent, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
 export { computeReceipt } from './receipt.js'
 export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
@@ -1226,11 +1230,9 @@ export class Plur {
         // Load time rather than install time, deliberately. Install time would
         // leave every already-installed pack, and any pack placed in the
         // directory by hand or by a sync, unsanitised. This is the last gate
-        // before injection, so it is the one that has to hold.
-        for (const f of ['statement', 'rationale', 'source', 'summary', 'domain'] as const) {
-          if (typeof cloned[f] === 'string') cloned[f] = collapseLineTerminators(cloned[f])
-        }
-        all.push(cloned)
+        // before injection, so it is the one that has to hold. Same helper as
+        // pack install and updateEngram, so the field set cannot drift.
+        all.push(collapseEngramTextFields(cloned).engram)
       }
     }
 
@@ -2467,21 +2469,27 @@ export class Plur {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
     // Collapse line terminators so a crafted boundary cannot be promoted to
-    // system-prompt authority by the renderer's splitter (#952, #940) — with
-    // #953's helper, and BEFORE the emptiness check, not after.
+    // system-prompt authority by the renderer's splitter (#952, #940) — and do
+    // it BEFORE the emptiness check, not after.
     //
     // Order is load-bearing. Validating first and transforming after means the
     // value that was checked is not the value that is stored: a statement of
     // only line terminators passes a `length === 0` guard and then collapses to
     // the empty string, which is written, and which every other such statement
     // then content-hashes to. Sanitise, then validate what will actually land.
+    // This also rejects a whitespace-only statement, which was accepted before;
+    // an announced behaviour change (CHANGELOG, Unreleased).
     //
     // learnRouted() applies the same helper on its own entry, because it does
-    // NOT enter this method on the remote route — see sanitize.ts.
+    // NOT enter this method on the remote route — see sanitize.ts. The context
+    // fields that land in single-line engram fields (rationale, source, domain)
+    // are folded alongside, so a forged boundary in a rationale is not stored
+    // raw and folded only at render.
     statement = collapseLineTerminators(statement)
     if (statement.length === 0) {
       throw new TypeError('plur.learn: statement must be a non-empty string, got only whitespace or line terminators')
     }
+    context = collapseLearnContextText(context)
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
       throw new TypeError(
         `plur.learn: invalid type '${context.type}'. Must be one of: behavioral, terminological, procedural, architectural`
@@ -2987,7 +2995,14 @@ export class Plur {
     // Applied before the secret scan and before _guardSensitiveScope so every
     // downstream gate, and the content hash, sees the text that is actually
     // stored. Idempotent, so the local route sanitising twice is harmless.
+    if (typeof statement !== 'string') {
+      throw new TypeError(`plur.learnRouted: statement must be a non-empty string, got ${typeof statement}`)
+    }
     statement = collapseLineTerminators(statement)
+    if (statement.length === 0) {
+      throw new TypeError('plur.learnRouted: statement must be a non-empty string, got only whitespace or line terminators')
+    }
+    context = collapseLearnContextText(context)
     // #729: validate type BEFORE the secrets scan — a bad type must fail
     // loudly even when the statement would also trip the secret detector.
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
@@ -5503,6 +5518,10 @@ export class Plur {
    */
   async updateEngram(updated: Engram): Promise<boolean> {
     this._assertWritable()
+    // Fold the single-line text fields before anything reads them (#940). This
+    // takes a caller-built engram and never passes through learn(), so it is a
+    // write path of its own; the fold covers the local row and the remote PATCH.
+    updated = collapseEngramTextFields(updated).engram
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.

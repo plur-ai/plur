@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import type { Engram } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
+import { collapseLineTerminators } from './sanitize.js'
 
 export interface ProfileCache {
   profile: string
@@ -64,7 +65,9 @@ function formatClusters(clusters: Map<string, Engram[]>): string {
   const lines: string[] = []
   for (const [domain, engrams] of clusters) {
     lines.push(`\n### ${domain} (${engrams.length} engrams)`)
-    for (const e of engrams.slice(0, 10)) lines.push(`- ${e.statement}`)
+    // One bullet per engram (#940): a terminator in a stored statement would
+    // otherwise open a line of its own in the profile prompt.
+    for (const e of engrams.slice(0, 10)) lines.push(`- ${collapseLineTerminators(e.statement)}`)
     if (engrams.length > 10) lines.push(`  ... and ${engrams.length - 10} more`)
   }
   return lines.join('\n')
