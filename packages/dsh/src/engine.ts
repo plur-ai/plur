@@ -36,11 +36,13 @@ export interface Engine extends PlurClient {
  *
  * @param config - supplies the optional store path.
  * @param importCore - overridable for tests.
+ * @param warn - called once on load failure; defaults to console.warn.
  * @returns the engine, or undefined when core cannot be loaded.
  */
 async function loadEngine(
   config: Config,
   importCore: () => Promise<unknown>,
+  warn: (msg: string) => void,
 ): Promise<PlurClient | undefined> {
   try {
     const mod = await importCore() as { Plur?: PlurCtor; default?: { Plur?: PlurCtor } }
@@ -49,7 +51,8 @@ async function loadEngine(
     const Plur = mod.Plur ?? mod.default?.Plur
     if (typeof Plur !== 'function') return undefined
     return new Plur({ path: config.path })
-  } catch {
+  } catch (error) {
+    warn(`[plur] memory engine unavailable, continuing without memory: ${error}`)
     return undefined
   }
 }
@@ -64,14 +67,16 @@ async function loadEngine(
  *
  * @param config - plugin configuration.
  * @param importCore - overridable module loader, for tests.
+ * @param warn - called once if the engine fails to load; defaults to console.warn.
  * @returns the facade.
  */
 export function createEngine(
   config: Config,
   importCore: () => Promise<unknown> = () => import('@plur-ai/core'),
+  warn: (msg: string) => void = (msg) => console.warn(msg),
 ): Engine {
   let pending: Promise<PlurClient | undefined> | undefined
-  const engine = (): Promise<PlurClient | undefined> => (pending ??= loadEngine(config, importCore))
+  const engine = (): Promise<PlurClient | undefined> => (pending ??= loadEngine(config, importCore, warn))
 
   return {
     ready: async () => (await engine()) !== undefined,
