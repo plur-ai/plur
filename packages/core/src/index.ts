@@ -119,7 +119,7 @@ export { selectModel, selectModelForOperation, resolveOperationTier, type ModelT
 export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
-export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, computeEventHash, canonicalEventBytes, sortKeysDeep, tailSeekLastHash, readChainHead, clearChainHeadMemCache, hashEngramsFile, attestStore, countEngramsInStore, emitCheckpoint, type HistoryEvent, type CheckpointData, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
+export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, computeEventHash, canonicalEventBytes, sortKeysDeep, tailSeekLastHash, readChainHead, clearChainHeadMemCache, hashEngramsFile, attestStore, countEngramsInStore, emitCheckpoint, appendHistoryStamped, type HistoryEvent, type CheckpointData, type CheckpointSigningOptions, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
 export { computeReceipt } from './receipt.js'
 export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
 import type { Receipt } from './receipt.js'
@@ -228,7 +228,8 @@ export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
  * neither a lock nor an atomic replace; re-implementing them per package is how
  * the two drift, and the drift is always in the unsafe direction.
  */
-export { verifyChain, hashStoreFile, type ChainVerifyOutcome, type ChainVerifyResult, type ChainBreak, type ChainFork, type BreakReason } from './verify-chain.js'
+export { verifyChain, hashStoreFile, type ChainVerifyOutcome, type ChainVerifyResult, type ChainBreak, type ChainFork, type BreakReason, type VerifyChainOptions, type SignatureResult, type SignatureVerdict } from './verify-chain.js'
+export { initActorKey, loadPrivateKeyBuffer, signWithActorKey, verifySignature, loadKeysRegistry, lookupPublicKey, registerPublicKey, keyFingerprint, privateKeyPath, keysRegistryPath, type PublicKeyEntry, type KeysRegistry } from './actor-keys.js'
 export { atomicWrite, withLock } from './sync.js'
 export { markRemoteHostDown, remoteHostDownRemainingMs, clearRemoteHostDown, _resetRemoteHostBreaker, salvageRemoteRow } from './store/remote-store.js'
 export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'

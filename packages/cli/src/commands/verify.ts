@@ -1,5 +1,6 @@
 /**
- * `plur verify` — verify the history chain (#1053).
+ * `plur verify` — verify the history chain (#1053) and optionally checkpoint
+ * signatures (#1056).
  *
  * Exit codes are the contract, and all three are distinct:
  *
@@ -14,15 +15,18 @@
  * states the same rule for the audit chain).
  *
  * Usage:
- *   plur verify           Human-readable report
- *   plur verify --json    Full structured result
+ *   plur verify                Human-readable report
+ *   plur verify --signatures   Also verify Ed25519 signatures on checkpoints (#1056)
+ *   plur verify --json         Full structured result
  */
 import { join } from 'path'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
 import { verifyChain, hashStoreFile } from '@plur-ai/core'
 
-export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
+export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  const verifySignatures = args.includes('--signatures')
+
   // Read-only, like `plur ui`. Verification must not be able to write to the
   // artefact it is examining — and a write-capable handle can, through a lazy
   // path such as a daily backup or a migration that runs on construction.
@@ -31,7 +35,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // assumed from the fact that this function does not call a write method.
   const plur = createPlur(flags, { readonly: true })
   const root = plur.storageRoot
-  const outcome = verifyChain(root)
+  const outcome = verifyChain(root, { verifySignatures })
 
   if (outcome.status === 'cannot_verify') {
     if (shouldOutputJson(flags)) {
@@ -108,6 +112,21 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     for (const c of f.claimed_by) outputText(`    ${c.month} #${c.index} ${c.event_id} -> ${c.hash}`)
     outputText('    Two writers appended from the same predecessor. This is a')
     outputText('    concurrency fault, not evidence of tampering.')
+  }
+
+  if (r.signatures !== null && r.signatures.length > 0) {
+    outputText('')
+    outputText(`  Signature verification (--signatures):`)
+    for (const s of r.signatures) {
+      const verdictStr = s.verdict === 'valid' ? 'VALID'
+        : s.verdict === 'invalid' ? 'INVALID'
+        : s.verdict === 'unsigned' ? 'unsigned (L2 — no signature)'
+        : `unknown signer: ${s.signer ?? '?'}`
+      outputText(`    checkpoint ${s.month} #${s.index}: ${verdictStr}`)
+    }
+  } else if (verifySignatures && r.checkpoints_checked === 0) {
+    outputText('')
+    outputText('  No checkpoints found to verify signatures for.')
   }
 
   if (outcome.status === 'verified' && r.verified_events > 0) {
