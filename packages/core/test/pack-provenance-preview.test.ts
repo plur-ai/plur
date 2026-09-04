@@ -14,10 +14,12 @@
  * because it turns a claim into a belief without anyone deciding to.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
+import * as yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
+import { installPack, previewPack, computePackHash, listPacks } from '../src/packs.js'
 
 describe('previewing what a pack says about its origins', () => {
   let home: string
@@ -253,5 +255,162 @@ describe('a pack built to mislead', () => {
     const view = readPackProvenance(out, [] as any)
     expect(view.notes.join(' ')).toContain('no readable records')
     expect(view.notes.join(' ')).not.toContain('records for individual engrams')
+  })
+})
+
+/**
+ * The records survive the install (#1002 review).
+ *
+ * `installPack` copied top-level files only, so `provenance/` never landed,
+ * and a preview of the installed copy then reported the pack as damaged —
+ * "declares provenance and ships none" — about a pack that was fine.
+ */
+describe('provenance travels through install', () => {
+  let home: string
+  let out: string
+  let packs: string
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'plur-provinst-home-'))
+    out = join(mkdtempSync(join(tmpdir(), 'plur-provinst-out-')), 'demo-pack')
+    packs = mkdtempSync(join(tmpdir(), 'plur-provinst-packs-'))
+  })
+  afterEach(() => { for (const d of [home, out, packs]) rmSync(d, { recursive: true, force: true }) })
+
+  const exportOne = async () => {
+    const plur = new Plur({ path: home })
+    const e = await plur.learn('Prefer squash merges on main', {
+      visibility: 'public', license: 'cc-by-4.0', claim_class: 'asserted', attribution: { asserted_by: 'local:maintainer' },
+    })
+    return plur.exportPack([e], out, { name: 'demo-pack', version: '1.0.0', license: 'cc-by-4.0' })
+  }
+
+  it('an installed pack still has its records, and is not called damaged', async () => {
+    const exported = await exportOne()
+    expect(exported.provenance_files?.length).toBe(2)
+    await installPack(packs, out)
+    const installed = join(packs, basename(out))
+    expect(existsSync(join(installed, 'provenance', 'pack.jsonld'))).toBe(true)
+    const view = (await previewPack(installed)).provenance
+    expect(view.present).toBe(true)
+    expect(view.record_count).toBe(1)
+    expect(view.unreadable_records).toBe(0)
+    expect(view.notes.some(n => /damaged/.test(n))).toBe(false)
+    expect(view.asserted_by).toContain('local:maintainer')
+  })
+
+  it('the registry hash still describes the installed content', async () => {
+    await exportOne()
+    const result = await installPack(packs, out)
+    const installed = join(packs, basename(out))
+    // The §5.5 hash covers SKILL.md and engrams.yaml only, so the records
+    // change nothing about it — and the value recorded is the value the
+    // installed directory hashes to.
+    expect(result.registry.integrity).toBe(`sha256:${computePackHash(installed)}`)
+    const listed = listPacks(packs).find(p => p.name === 'demo-pack')!
+    expect(listed.integrity_ok).toBe(true)
+  })
+
+  it('copies only record files, under their own names', async () => {
+    await exportOne()
+    writeFileSync(join(out, 'provenance', 'stray.txt'), 'not a record')
+    mkdirSync(join(out, 'provenance', 'nested'))
+    writeFileSync(join(out, 'provenance', 'nested', 'deep.jsonld'), '{}')
+    await installPack(packs, out)
+    const installed = join(packs, basename(out), 'provenance')
+    expect(existsSync(join(installed, 'stray.txt'))).toBe(false)
+    expect(existsSync(join(installed, 'nested'))).toBe(false)
+    expect(existsSync(join(installed, 'pack.jsonld'))).toBe(true)
+  })
+})
+
+/**
+ * A malformed record must not take the pack down with it (#1002 review).
+ *
+ * `(record['@graph'] ?? []).find(…)` assumed an array. `{"@graph": {}}`,
+ * `{"@graph": "x"}` and `{"@graph": [null]}` each threw a TypeError out of
+ * preview and install; the file was also read with no size cap. Every value
+ * in these files was written by a stranger, so the shape is checked, one bad
+ * record is counted rather than fatal, and the count is reported — a record
+ * that cannot be read is a finding, not an absence.
+ */
+describe('a pack whose provenance records are malformed', () => {
+  let dir: string
+  let packs: string
+  const ID = 'ENG-2026-08-23-500'
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-badprov-'))
+    packs = mkdtempSync(join(tmpdir(), 'plur-badprov-packs-'))
+    writeFileSync(join(dir, 'SKILL.md'), '---\nname: p5\nversion: 1.0.0\ndescription: d\nmetadata:\n  provenance: true\n---\nbody\n')
+    writeFileSync(join(dir, 'engrams.yaml'), yaml.dump({ engrams: [{
+      id: ID, statement: 'ordinary', type: 'behavioral', scope: 'global', status: 'active',
+      visibility: 'public', content_hash: 'a'.repeat(64),
+    }] }))
+    mkdirSync(join(dir, 'provenance'))
+  })
+  afterEach(() => { for (const d of [dir, packs]) rmSync(d, { recursive: true, force: true }) })
+
+  const record = (body: string) => writeFileSync(join(dir, 'provenance', `${ID}.jsonld`), body)
+
+  it.each([
+    ['an object where the graph should be', '{"@graph": {}}'],
+    ['a string where the graph should be', '{"@graph": "x"}'],
+    ['a bare null document', 'null'],
+    ['a bare string document', '"x"'],
+    ['an array document', '[1,2]'],
+    ['not JSON at all', '{"@graph": ['],
+  ])('%s does not crash preview or install, and is counted as unreadable', async (_label, body) => {
+    record(body)
+    const preview = await previewPack(dir)
+    expect(preview.provenance.present).toBe(true)
+    expect(preview.provenance.record_count).toBe(0)
+    expect(preview.provenance.unreadable_records).toBe(1)
+    expect(preview.provenance.notes.some(n => /could not be read/.test(n))).toBe(true)
+    await expect(installPack(packs, dir)).resolves.toBeDefined()
+  })
+
+  it.each([
+    ['a null node in the graph', '{"@graph": [null]}'],
+    ['a number node in the graph', '{"@graph": [1, "two"]}'],
+  ])('%s does not crash preview or install; the nodes are skipped', async (_label, body) => {
+    // A well-formed document whose graph holds nothing usable: read, but it
+    // names no subject, so nothing is learned from it.
+    record(body)
+    const preview = await previewPack(dir)
+    expect(preview.provenance.record_count).toBe(1)
+    expect(preview.provenance.unreadable_records).toBe(0)
+    expect(preview.provenance.attributed_count).toBe(0)
+    await expect(installPack(packs, dir)).resolves.toBeDefined()
+  })
+
+  it('a null node beside the real one is skipped, not fatal', async () => {
+    record(JSON.stringify({ '@graph': [null, 7, { '@id': `engram:${ID}`, 'engram:license': 'cc-by-4.0' }] }))
+    const view = (await previewPack(dir)).provenance
+    expect(view.record_count).toBe(1)
+    expect(view.unreadable_records).toBe(0)
+    expect(view.licences[0]?.name).toBe('cc-by-4.0')
+  })
+
+  it('a wrongly shaped attribution is ignored, not fatal', async () => {
+    record(JSON.stringify({ '@graph': [{ '@id': `engram:${ID}`, 'prov:wasAttributedTo': 'not-a-node', 'engram:license': 7 }] }))
+    const view = (await previewPack(dir)).provenance
+    expect(view.record_count).toBe(1)
+    expect(view.attributed_count).toBe(0)
+    expect(view.licences).toEqual([])
+  })
+
+  it('a record too large to read is counted as unreadable, not read', async () => {
+    record('{"@graph": []}')
+    truncateSync(join(dir, 'provenance', `${ID}.jsonld`), 16 * 1024 * 1024 + 1)
+    const view = (await previewPack(dir)).provenance
+    expect(view.unreadable_records).toBe(1)
+  })
+
+  it('a malformed pack record is counted too', async () => {
+    writeFileSync(join(dir, 'provenance', 'pack.jsonld'), '{"@graph": "nope"}')
+    const view = (await previewPack(dir)).provenance
+    expect(view.pack_record).toBeUndefined()
+    expect(view.unreadable_records).toBe(1)
   })
 })
