@@ -199,6 +199,41 @@ describe('learn() — remote routing (issue #25)', () => {
     expect(found!.structured_data?._outbox).toBeDefined()
     expect(found!.structured_data._outbox.target_scope).toBe('group:plur/plur-ai/engineering')
   })
+
+  // #1109 — learnRouted catch-block gap: the fallback path (plur.learn inside
+  // the catch) returned engram.id raw, the same collision risk as before #914
+  // if learnRouted throws and learn falls back for a remote-backed scope.
+  // readIdFor must be applied here too so the returned ID matches recall.
+  it('readIdFor returns namespaced form for a remote-backed scope', async () => {
+    mockSuccessfulAppend()
+
+    writeStoresConfig(primaryDir, [
+      {
+        url: 'https://plur.example.com/sse',
+        token: 'plur_sk_test',
+        scope: 'group:plur/plur-ai/engineering',
+        shared: true,
+        readonly: false,
+      },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    // learnRouted returns the server's raw ID; readIdFor converts it to the
+    // namespaced form that recall surfaces so both sides agree on the key.
+    const engram = await plur.learnRouted('test for readIdFor namespacing', {
+      scope: 'group:plur/plur-ai/engineering',
+    })
+    // Wait for the async push to settle before reading the returned id.
+    await new Promise(r => setTimeout(r, 100))
+
+    const readId = plur.readIdFor(engram)
+    // storePrefix('group:plur/plur-ai/engineering') → 'GPL'
+    expect(readId).toMatch(/^ENG-GPL-/)
+    // The raw engram.id is the server-assigned bare form.
+    expect(engram.id).not.toMatch(/^ENG-GPL-/)
+    // The namespaced form differs from the raw form.
+    expect(readId).not.toBe(engram.id)
+  })
 })
 
 /**
@@ -595,6 +630,74 @@ describe('forget() — remote routing (issue #84)', () => {
 
     // RemoteStore.getById catches errors and returns null, so this falls through to "not found"
     await expect(plur.forget('ENG-NETERR-001')).rejects.toThrow('Engram not found')
+  })
+
+  // #1109 — a namespaced ID (ENG-GTE-...) unambiguously identifies one store.
+  // forget() must strip the prefix and DELETE the server-side id from that store.
+  // storePrefix('group:test') === 'GTE'.
+  it('forget(namespaced-id) strips prefix and deletes from the correct remote', async () => {
+    const serverId = 'ENG-2026-09-01-036'
+    const namespaced = 'ENG-GTE-2026-09-01-036'
+
+    fetchMock.mockImplementation((async (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'GET' && typeof url === 'string' && url.includes(`/engrams/${serverId}`)) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ id: serverId, scope: 'group:test', status: 'active', data: { statement: 'remote engram' } }),
+          text: async () => '',
+        } as Response
+      }
+      if (method === 'DELETE' && typeof url === 'string' && url.includes(`/engrams/${serverId}`)) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ id: serverId, status: 'retired' }),
+          text: async () => '',
+        } as Response
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => ({ rows: [], total_count: 0 }),
+        text: async () => '',
+      } as Response
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.forget(namespaced, 'no longer needed')
+
+    const dels = deleteCalls()
+    expect(dels.length).toBe(1)
+    // The DELETE hits the bare server-side id, not the namespaced caller-facing id.
+    expect(dels[0][0]).toContain(`/engrams/${serverId}`)
+    expect(dels[0][0]).not.toContain('GTE')
+  })
+
+  // #1109 — when the target store is unreachable (expired token, network down)
+  // and the id is namespaced, forget() must throw an actionable error naming the
+  // scope and the escape hatch — NOT the generic "Engram not found" that leaves
+  // the caller with no path forward.
+  it('forget(namespaced-id) with unreachable remote throws actionable error, not "Engram not found"', async () => {
+    const namespaced = 'ENG-GTE-2026-09-01-099'
+
+    fetchMock.mockImplementation((async () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:443')
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    // Must throw with the scope name so the caller knows where to retry.
+    await expect(plur.forget(namespaced)).rejects.toThrow(/Cannot reach/)
+    await expect(plur.forget(namespaced)).rejects.toThrow(/group:test/)
+    // Must NOT emit the generic "Engram not found" — that implies absence,
+    // which was never verified when the store was unreachable.
+    await expect(plur.forget(namespaced)).rejects.not.toThrow(/^Engram not found/)
   })
 })
 
