@@ -38,10 +38,10 @@ src/
 │   └── config.ts          # User config (stores list, search config, sync settings)
 │
 ├── store/                 # Persistence backends
-│   ├── types.ts           # EngramStore interface (what every backend implements)
-│   ├── factory.ts         # createStore() — picks YamlStore or SqliteStore
-│   ├── yaml-store.ts      # Default — plain YAML file, atomic write via tmp+rename
-│   ├── sqlite-store.ts    # Optional — better-sqlite3 backend for scale
+│   ├── primary-store.ts   # PrimaryStore interface — the source-of-truth seam (ADR-0003)
+│   ├── yaml-primary-store.ts # Default — engrams.yaml via loadEngrams/saveEngrams
+│   ├── memory-primary-store.ts # In-memory store for tests and sandboxed sessions
+│   ├── readonly-store-guard.ts # Wraps a store so every mutation throws
 │   ├── remote-store.ts    # Talks to a PLUR Enterprise /api/v1/engrams server
 │   ├── async-fs.ts        # AsyncFs — promisified fs with single-file write lock
 │   └── async-lock.ts      # In-process mutex
@@ -63,12 +63,10 @@ src/
 ├── inject.ts              # Context-aware engram selection inside a token budget
 ├── decay.ts               # ACT-R activation update on each read; pruning
 ├── confidence.ts          # Heuristics for "how sure are we about this engram"
-├── quality.ts             # Quality gates for new engrams (length, novelty, etc.)
 ├── dedup.ts               # Near-dup detection on learn()
 ├── content-hash.ts        # Stable hash for de-dup
 ├── conflict.ts            # Detects contradictions between engrams
 ├── polarity.ts            # do/don't polarity inversion detection
-├── trust.ts               # Source trust scoring
 │
 ├── # — lifecycle —
 ├── engrams.ts             # CRUD helpers (lower-level than Plur class)
@@ -133,20 +131,23 @@ forever-load-bearing once written to user disks.
                     Plur (in-memory)
                          │
                          ▼
-                   EngramStore                 — interface (load/save/append/getById/remove/count/close)
-                   ┌─────┴──────┬───────────────┐
-                   ▼            ▼               ▼
-              YamlStore     SqliteStore    RemoteStore
-              (default)     (optional)     (PLUR Enterprise)
-                   │            │               │
-            ~/.plur/         ~/.plur/      https://plur.datafund.io
-            engrams.yaml     engrams.db    /api/v1/engrams
+                  PrimaryStore                 — interface (load/loadCached/save + optional row seams, ADR-0003)
+          ┌──────────────┼──────────────────┐
+          ▼              ▼                  ▼
+   YamlPrimaryStore  MemoryPrimaryStore  PostgresAdapter
+     (default)         (tests, sandbox)    (server tier; also a query StorageAdapter)
+          │
+   ~/.plur/engrams.yaml
+
+   Secondary stores (config.yaml `stores:`): file paths are YamlPrimaryStore
+   instances; `url` entries are RemoteStore drivers (PLUR Enterprise /api/v1).
 ```
 
 ### YAML is the source of truth
 
-`YamlStore` (in `src/store/yaml-store.ts`) writes the entire engram array
-on every save. Atomic via tmp+rename. **The on-disk YAML is
+`YamlPrimaryStore` (in `src/store/yaml-primary-store.ts`) persists through
+`saveEngrams` — the single whole-corpus YAML writer in core, atomic via
+tmp+rename and guarded against unexpected shrink. **The on-disk YAML is
 human-readable and human-editable** — open it, version it with git, share
 it with a teammate. Every other layer (BM25 index, embeddings cache) is a
 derived cache that can be rebuilt from the YAML.
@@ -304,8 +305,6 @@ scope, so they don't pollute the user's primary engram set.
 
 ## Quality, dedup, conflict, polarity
 
-- `quality.ts` — gates new engrams on length, novelty, presence of
-  context. Failing engrams go to `candidates.yaml` for later review.
 - `dedup.ts` — content-hash + fuzzy match against existing engrams; on
   match, reinforces the existing engram's `frequency` instead of
   creating a new one

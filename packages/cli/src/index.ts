@@ -5,7 +5,7 @@ import { unknownFlagMessage } from './known-flags.js'
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
 
-const VERSION = '0.19.4'
+import { CLI_VERSION as VERSION } from './version.js'
 
 // --- Main ---
 const argv = process.argv.slice(2)

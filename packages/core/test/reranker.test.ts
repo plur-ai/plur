@@ -40,8 +40,7 @@ import {
   type RerankerAdapter,
   type RerankerName,
 } from '../src/rerankers/index.js'
-import { BGE_RERANKER_V2_M3_MODEL_ID } from '../src/rerankers/bge-reranker-v2-m3.js'
-import { MS_MARCO_MINILM_L6_MODEL_ID } from '../src/rerankers/ms-marco-minilm-l6.js'
+import { BGE_RERANKER_V2_M3_MODEL_ID, MS_MARCO_MINILM_L6_MODEL_ID } from '../src/rerankers/transformers-cross-encoder.js'
 
 const NETWORK = process.env.PLUR_RERANKER_NETWORK_TESTS === '1'
 
