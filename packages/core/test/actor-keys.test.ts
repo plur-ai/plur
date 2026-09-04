@@ -42,6 +42,16 @@ import {
 
 import { verifyChain } from '../src/verify-chain.js'
 
+/**
+ * `verifyChain` returns a discriminated union; a `cannot_verify` outcome has
+ * no `result`. The tests below assert `status` first and then read the
+ * result, so narrow here instead of at every call site.
+ */
+function resultOf(outcome: ReturnType<typeof verifyChain>) {
+  if (outcome.status === 'cannot_verify') throw new Error(`chain could not be verified: ${outcome.reason}`)
+  return outcome.result
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -452,15 +462,15 @@ describe('verifyChain --signatures (#1056)', () => {
     emitCheckpoint(dir, engramsPath, 'cli')
     const outcome = verifyChain(dir)
     expect(outcome.status).toBe('verified')
-    expect(outcome.result.signatures).toBeNull()
+    expect(resultOf(outcome).signatures).toBeNull()
   })
 
   it('with --signatures: unsigned checkpoint reports "unsigned"', () => {
     emitCheckpoint(dir, engramsPath, 'cli')
     const outcome = verifyChain(dir, { verifySignatures: true })
     expect(outcome.status).toBe('verified') // unsigned is not a break
-    expect(outcome.result.signatures).toHaveLength(1)
-    expect(outcome.result.signatures![0].verdict).toBe('unsigned')
+    expect(resultOf(outcome).signatures).toHaveLength(1)
+    expect(resultOf(outcome).signatures![0].verdict).toBe('unsigned')
   })
 
   it('with --signatures: valid signed checkpoint reports "valid"', () => {
@@ -475,9 +485,9 @@ describe('verifyChain --signatures (#1056)', () => {
 
     const outcome = verifyChain(dir, { verifySignatures: true })
     expect(outcome.status).toBe('verified')
-    expect(outcome.result.signatures).toHaveLength(1)
-    expect(outcome.result.signatures![0].verdict).toBe('valid')
-    expect(outcome.result.signatures![0].signer).toBe('agent:test')
+    expect(resultOf(outcome).signatures).toHaveLength(1)
+    expect(resultOf(outcome).signatures![0].verdict).toBe('valid')
+    expect(resultOf(outcome).signatures![0].signer).toBe('agent:test')
   })
 
   it('with --signatures: unknown signer is "unknown_signer", NOT a chain break', () => {
@@ -492,8 +502,8 @@ describe('verifyChain --signatures (#1056)', () => {
 
     const outcome = verifyChain(dir, { verifySignatures: true })
     expect(outcome.status).toBe('verified')
-    expect(outcome.result.breaks).toHaveLength(0)
-    expect(outcome.result.signatures![0].verdict).toBe('unknown_signer')
+    expect(resultOf(outcome).breaks).toHaveLength(0)
+    expect(resultOf(outcome).signatures![0].verdict).toBe('unknown_signer')
   })
 
   it('with --signatures: invalid signature is a named failure AND a break', () => {
@@ -524,8 +534,8 @@ describe('verifyChain --signatures (#1056)', () => {
     fs.writeFileSync(jsonlPath, lines.join('\n') + '\n', 'utf8')
 
     const outcome = verifyChain(dir, { verifySignatures: true })
-    expect(outcome.result.signatures![0].verdict).toBe('invalid')
-    expect(outcome.result.breaks.length).toBeGreaterThan(0)
+    expect(resultOf(outcome).signatures![0].verdict).toBe('invalid')
+    expect(resultOf(outcome).breaks.length).toBeGreaterThan(0)
   })
 
   it('with --signatures: no checkpoints → empty signatures array, still verified', () => {
@@ -538,6 +548,6 @@ describe('verifyChain --signatures (#1056)', () => {
 
     const outcome = verifyChain(dir, { verifySignatures: true })
     expect(outcome.status).toBe('verified')
-    expect(outcome.result.signatures).toEqual([])
+    expect(resultOf(outcome).signatures).toEqual([])
   })
 })
