@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import * as yaml from 'js-yaml'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EngramSchema } from '../src/schemas/engram.js'
@@ -373,5 +374,96 @@ describe('export will not choose a licence for you', () => {
       Array.isArray(n['@type']) && n['@type'].includes('engram:Engram'))
     expect(eng['engram:license']).toBe('cc-by-4.0')
     expect(eng['engram:licenseSource']).toBe('chosen')
+  })
+})
+
+/**
+ * A record that leaves must not name what stays behind (#1002 review).
+ *
+ * Portable records were stamped `recordIsSelfContained: true` while naming
+ * other engrams (`derived_from`, `supersedes`, `superseded_by`), and
+ * `engrams.yaml` carried `provenance.chain`, a `session:<episode>` origin,
+ * `episode_ids` and `sources[].session_id` verbatim — while `exportPack`
+ * stripped `relations.supersedes` for exactly this reason. Profile §2.2: "No
+ * identifiers only our store can resolve."
+ */
+describe('an exported pack names nothing the recipient cannot resolve', () => {
+  let out: string
+  beforeEach(() => { out = join(mkdtempSync(join(tmpdir(), 'plur-selfcontained-')), 'p') })
+  afterEach(() => rmSync(join(out, '..'), { recursive: true, force: true }))
+
+  const OUTSIDE = ['ENG-2026-08-23-777', 'ENG-2026-08-23-888', 'ENG-2026-08-23-999', 'ENG-2026-08-23-666']
+  const SESSION = 'EP-2026-08-23-005'
+  const linked = (id: string, extra: Record<string, unknown> = {}) => engramOf(id, {
+    derived_from: OUTSIDE[0],
+    relations: { supersedes: [OUTSIDE[1]], superseded_by: [OUTSIDE[2]] },
+    provenance: { origin: `session:${SESSION}`, chain: [OUTSIDE[3]], signature: null, license: 'cc-by-4.0' },
+    episode_ids: [SESSION],
+    sources: [{ scope: 'global', session_id: SESSION, stored_at: '2026-08-23T00:00:00Z' }],
+    ...extra,
+  })
+
+  const everything = () => {
+    const files = [readFileSync(join(out, 'engrams.yaml'), 'utf8')]
+    for (const f of ['pack.jsonld', 'ENG-2026-08-23-001.jsonld', 'ENG-2026-08-23-002.jsonld']) {
+      if (existsSync(join(out, 'provenance', f))) files.push(readFileSync(join(out, 'provenance', f), 'utf8'))
+    }
+    return files.join('\n')
+  }
+
+  it('strips every outside identifier and every session identifier', () => {
+    exportPack([linked('ENG-2026-08-23-001')], out, { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
+    const text = everything()
+    for (const id of OUTSIDE) expect(text, id).not.toContain(id)
+    expect(text).not.toContain(SESSION)
+    expect(text).not.toContain('session:')
+    // The record still exists and still stands on its own.
+    const record = JSON.parse(readFileSync(join(out, 'provenance', 'ENG-2026-08-23-001.jsonld'), 'utf8'))
+    const bundle = nodesOf(record).find((n: any) => String(n['@id']).startsWith('engram:record/'))
+    expect(bundle['engram:recordIsSelfContained']).toBe(true)
+    const thing = nodeById(record, 'engram:ENG-2026-08-23-001')
+    expect(thing['engram:unresolvableReferencesOmitted']).toBe(3)
+    expect(thing['engram:license']).toBe('cc-by-4.0')
+  })
+
+  it('keeps a reference to another member of the same pack', () => {
+    // The recipient holds both, so "002 revised 001" is something they can follow.
+    const older = engramOf('ENG-2026-08-23-001')
+    const newer = engramOf('ENG-2026-08-23-002', { relations: { supersedes: ['ENG-2026-08-23-001'], superseded_by: [] } })
+    exportPack([older, newer], out, { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
+    const record = JSON.parse(readFileSync(join(out, 'provenance', 'ENG-2026-08-23-002.jsonld'), 'utf8'))
+    expect(nodeById(record, 'engram:ENG-2026-08-23-002')['prov:wasRevisionOf']).toEqual([{ '@id': 'engram:ENG-2026-08-23-001' }])
+    expect(nodesOf(record)[0]['engram:recordIsSelfContained']).toBe(true)
+  })
+
+  it('leaves a chosen licence and a real origin alone', () => {
+    exportPack([linked('ENG-2026-08-23-001', {
+      provenance: { origin: 'https://example.org/runbook', chain: [OUTSIDE[3]], signature: null, license: 'cc-by-4.0' },
+    })], out, { name: 'p', version: '1.0.0', license: 'apache-2.0' })
+    const rows = (yaml.load(readFileSync(join(out, 'engrams.yaml'), 'utf8')) as any).engrams
+    expect(rows[0].provenance).toEqual({ origin: 'https://example.org/runbook', chain: [], signature: null, license: 'cc-by-4.0' })
+    expect(rows[0].derived_from).toBeNull()
+    expect(rows[0].episode_ids).toEqual([])
+    expect(rows[0].sources[0].session_id).toBeNull()
+  })
+})
+
+describe('the self-contained flag is computed, not asserted', () => {
+  it('is false on a portable record that still names other engrams for a local reader', () => {
+    const e = engramOf('ENG-2026-08-23-001', { derived_from: 'ENG-2026-08-23-777' })
+    const record = buildProvenanceRecord(e, [], { mode: 'portable' })
+    expect(nodesOf(record)[0]['engram:recordIsSelfContained']).toBe(false)
+    // The reference is kept: the reader is local and can follow it.
+    expect(nodeById(record, 'engram:ENG-2026-08-23-001')['prov:wasDerivedFrom']).toEqual({ '@id': 'engram:ENG-2026-08-23-777' })
+  })
+
+  it('is true on a portable record with nothing to resolve', () => {
+    const record = buildProvenanceRecord(engramOf('ENG-2026-08-23-001'), [], { mode: 'portable' })
+    expect(nodesOf(record)[0]['engram:recordIsSelfContained']).toBe(true)
+  })
+
+  it('is false on a local record, whatever it names', () => {
+    const record = buildProvenanceRecord(engramOf('ENG-2026-08-23-001'), [], { mode: 'local' })
+    expect(nodesOf(record)[0]['engram:recordIsSelfContained']).toBe(false)
   })
 })

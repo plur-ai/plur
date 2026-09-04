@@ -10,9 +10,9 @@
  * that records start appearing.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { FileProvenanceStore, MemoryProvenanceStore, provenanceMode, type ProvenanceStore } from '../src/provenance-store.js'
 import { PlurConfigSchema } from '../src/schemas/config.js'
 import { Plur } from '../src/index.js'
@@ -234,5 +234,51 @@ describe('repeated saves', () => {
     ] as any))
     expect(second).not.toBe(first)
     expect(readdirSync(join(dir, 'provenance', engram.id))).toHaveLength(2)
+  })
+})
+
+/**
+ * `provenance.path` cannot leave the store (#1002 review).
+ *
+ * The setting was sanitised by character class, which kept `.`, so `..`
+ * passed through untouched and `provenance.path: ".."` wrote every record one
+ * level ABOVE the store. Containment is decided on the resolved path now, the
+ * way the pack installer decides it.
+ */
+describe('FileProvenanceStore keeps records inside the store', () => {
+  let root: string
+  beforeEach(() => { root = join(mkdtempSync(join(tmpdir(), 'plur-prov-contain-')), 'store'); mkdirSync(root) })
+  afterEach(() => rmSync(join(root, '..'), { recursive: true, force: true }))
+
+  it.each(['..', '.', '../../..', 'a/../..', '/tmp'])('refuses %j', sub => {
+    expect(() => new FileProvenanceStore(root, sub)).toThrow(/inside the store/)
+  })
+
+  it('treats a blank value as unset', async () => {
+    const ref = await new FileProvenanceStore(root, '   ').put('ENG-2026-01-01-001', { x: 1 })
+    expect(ref.startsWith(join(root, 'provenance') + sep)).toBe(true)
+  })
+
+  it('accepts a nested relative directory, and writes inside it', async () => {
+    const store = new FileProvenanceStore(root, 'prov/records')
+    const ref = await store.put('ENG-2026-01-01-001', { x: 1 })
+    expect(ref.startsWith(join(root, 'prov', 'records') + sep)).toBe(true)
+  })
+
+  it('keeps the default where it always was', async () => {
+    const ref = await new FileProvenanceStore(root).put('ENG-2026-01-01-001', { x: 1 })
+    expect(ref.startsWith(join(root, 'provenance') + sep)).toBe(true)
+  })
+
+  it('a bad config value fails the explicit write with a clear message, not the learn', async () => {
+    const plur = new Plur({ path: root })
+    writeFileSync(join(root, 'config.yaml'), 'provenance:\n  path: ".."\n  generate: always\n')
+    const plur2 = new Plur({ path: root })
+    // A learn must never fail because provenance could not be written.
+    const e = await plur2.learn('Provenance is a description, not a precondition')
+    expect(e.id).toBeTruthy()
+    await expect(plur2.writeProvenance(e.id)).rejects.toThrow(/inside the store/)
+    expect(existsSync(join(root, '..', 'ENG-' ))).toBe(false)
+    void plur
   })
 })

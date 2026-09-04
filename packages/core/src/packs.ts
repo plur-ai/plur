@@ -1676,6 +1676,29 @@ export function exportPack(
     if (cleaned.associations) {
       cleaned.associations = []
     }
+    // The same rule for every other identifier only our store can resolve
+    // (profile §2.2: "No identifiers only our store can resolve"). The
+    // supersedes edges above were stripped and these were not, so a pack
+    // carried a `derived_from` id, a derivation `chain`, and a
+    // `provenance.origin` of `session:<episode>` — plus `episode_ids` and
+    // `sources[].session_id` — that a recipient cannot look up and that name
+    // our sessions to them.
+    cleaned.derived_from = null
+    cleaned.episode_ids = []
+    if (cleaned.sources?.length) {
+      cleaned.sources = cleaned.sources.map(s => ({ ...s, session_id: null }))
+    }
+    if (cleaned.provenance) {
+      const { origin, license } = cleaned.provenance
+      // A session origin means nothing outside this store; `direct` is what
+      // an engram with no recorded origin carries.
+      cleaned.provenance = {
+        origin: origin.startsWith('session:') ? 'direct' : origin,
+        chain: [],
+        signature: null,
+        ...(license !== undefined ? { license } : {}),
+      } as NonNullable<Engram['provenance']>
+    }
     // Strip knowledge_anchors (local file paths)
     if (cleaned.knowledge_anchors) {
       cleaned.knowledge_anchors = []
@@ -1741,14 +1764,19 @@ export function exportPack(
     fs.writeFileSync(path.join(provDir, 'pack.jsonld'), serializeProvenanceRecord(packRecord))
     provenanceFiles.push(path.join('provenance', 'pack.jsonld'))
 
+    // The engrams a recipient of this pack CAN resolve: the ones in it. A
+    // record may name another member (this one revised that one); it may not
+    // name an engram that stays behind.
+    const members = new Set(safeEngrams.map(e => e.id))
     for (const engram of safeEngrams) {
-      // Portable by default: a record that stands on its own, names no other
-      // engram, and carries no session identifier.
+      // Portable by default: a record that stands on its own, names no engram
+      // outside the pack, and carries no session identifier.
       // A member with no licence of its own inherits the pack's, recorded as
       // inheritance rather than as the engram's own choice — the assembler
       // granted it, and may not hold rights over every engram in the pack.
       const record = buildProvenanceRecord(engram, [], {
         mode: 'portable',
+        members,
         packLicense,
         packId: `${manifest.name}@${manifest.version}`,
       })

@@ -9,7 +9,7 @@
  * separate step, and the Swarm provenance toolkit already covers it.
  */
 import * as fs from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { logger } from './logger.js'
 
 export interface ProvenanceStore {
@@ -59,18 +59,33 @@ export class FileProvenanceStore implements ProvenanceStore {
    * makes the config key mean something; the default keeps every existing
    * store on the same path it already uses.
    */
-  constructor(private readonly root: string, private readonly subdir: string = 'provenance') {}
+  /** Where records go: `root/<subdir>`, checked to be inside `root`. */
+  private readonly base: string
+
+  constructor(private readonly root: string, subdir: string = 'provenance') {
+    // The configured subdirectory is arbitrary operator-supplied text. It used
+    // to be sanitised by character class, which kept `.` and so let `..` through
+    // untouched: `provenance.path: ".."` wrote every record one level ABOVE the
+    // store. Containment is decided on the RESOLVED path instead, the way the
+    // pack installer decides it (`resolveInside` in packs.ts): whatever the text
+    // is, the only question is whether it ends up strictly inside the root.
+    const base = resolve(root)
+    const candidate = resolve(base, subdir.trim() || 'provenance')
+    if (candidate === base || !candidate.startsWith(base + sep)) {
+      throw new Error(
+        `[plur] refusing provenance.path "${subdir}": records must live in a directory inside the store `
+        + `(${base}), and this one resolves to ${candidate}. Use a relative name such as "provenance".`,
+      )
+    }
+    this.base = candidate
+  }
 
   private dirFor(engramId: string): string {
     // Engram identifiers are constrained to ^(ENG|ABS|META)-[A-Za-z0-9-]+$ by
     // the schema, so they cannot climb out of the directory. Belt and braces
     // anyway, because this builds a filesystem path.
     const safe = engramId.replace(/[^A-Za-z0-9-]/g, '_')
-    // The configured subdirectory gets the same treatment, and for a stronger
-    // reason: unlike an engram id it is arbitrary operator-supplied text, so a
-    // '../' in config.yaml would otherwise write records outside the store.
-    const safeSubdir = this.subdir.replace(/[^A-Za-z0-9._-]/g, '_') || 'provenance'
-    return join(this.root, safeSubdir, safe)
+    return join(this.base, safe)
   }
 
   async put(engramId: string, record: unknown): Promise<string> {
