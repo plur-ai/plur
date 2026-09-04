@@ -5082,13 +5082,18 @@ export class Plur {
       // Narrowing here is what lets BOTH counters follow one reading without
       // redefining what an injection is for every other caller.
       const dedupApplies = options?.source === 'hook'
+      // Never throws. This closure runs inside `inject()` on the hook path,
+      // and nothing on disk may turn it into an exception: the dedup check is
+      // fail-open and total (history.ts), appendHistory is best-effort and
+      // reports rather than throws, and the whole body is wrapped anyway so
+      // that a failure nobody foresaw degrades to "not recorded" — which the
+      // counter block below then honours — instead of escaping.
       const writeCoInjection = (): void => {
-        if (dedupApplies
-          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
-        recordedInjection = true
-        const injection_id = generateInjectionId()
         try {
-          appendHistory(this.paths.root, {
+          if (dedupApplies
+            && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id, options?.event_id)) return
+          const injection_id = generateInjectionId()
+          const landed = appendHistory(this.paths.root, {
             event: 'co_injection',
             engram_id: injection_id,
             timestamp: new Date().toISOString(),
@@ -5102,23 +5107,56 @@ export class Plur {
               source: options?.source ?? 'inject',
               ...(options?.scope ? { scope: options.scope } : {}),
               ...(options?.session_id ? { session_id: options.session_id } : {}),
+              ...(options?.event_id ? { event_id: options.event_id } : {}),
             },
           })
+          // Recorded means ON DISK. Set before the append, this flag let the
+          // counter advance for an event that was never written (month file
+          // replaced by a directory: injection_count 1, zero co_injection
+          // events) — the store-disagrees-with-its-history state, relocated to
+          // the error path. The counter may lag the log; it may not lead it.
+          if (!landed) return
+          recordedInjection = true
           for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
-        } catch { /* best-effort */ }
+        } catch { /* best-effort: provenance must never break injection */ }
       }
 
-      try {
-        // The lock file lives beside the month files, so the directory has to
-        // exist before we can take it. appendHistory creates it too, but that
-        // is inside the section we are trying to guard.
-        if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true })
-        withLock(join(historyDir, 'co-injection-dedup'), writeCoInjection, { maxRetries: 12, baseDelay: 2 })
-      } catch {
-        // Could not take the lock. Write UNDEDUPED rather than dropping the
-        // event: a duplicate provenance record is noise, a missing one is a
-        // hole in the log `plur restore` reads to NAME what it cannot recover.
-        // Losing a record to avoid a duplicate is the wrong way round.
+      if (dedupApplies) {
+        // Only the hook path takes the lock. `dedupApplies` used to gate the
+        // CHECK while the lock was taken unconditionally, so an MCP `inject`
+        // or `session_start` — a source that never dedups — still contended
+        // for it, and could spin the full budget on an orphaned lock whose
+        // pid a live process had since reused, for a section it was never
+        // going to use.
+        //
+        // Budget: 6 retries at a 2 ms base is 2+4+...+64 = 126 ms of
+        // busy-wait, sized for a critical section that is a tail read and one
+        // append. The earlier 12 retries summed to ~8.2 s — most of an event
+        // hook's 10 s timeout, spent spinning to avoid a duplicate provenance
+        // line. Giving up is cheap here: the fallback below still writes.
+        //
+        // `ran` separates "could not take the lock" from "took it and the
+        // section ran": withLock rethrows whatever `fn` throws, so a catch
+        // that unconditionally re-runs the section could run it twice. The
+        // section cannot throw (above), but the structure should not depend
+        // on that.
+        let ran = false
+        try {
+          // The lock file lives beside the month files, so the directory has
+          // to exist before we can take it. appendHistory creates it too, but
+          // that is inside the section we are trying to guard.
+          if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true })
+          withLock(join(historyDir, 'co-injection-dedup'), () => { ran = true; writeCoInjection() }, { maxRetries: 6, baseDelay: 2 })
+        } catch { /* lock not acquired, or the directory could not be made */ }
+        // Could not take the lock. Run the section UNLOCKED rather than
+        // dropping the event: a duplicate provenance record is noise, a
+        // missing one is a hole in the log `plur restore` reads to NAME what
+        // it cannot recover. Losing a record to avoid a duplicate is the wrong
+        // way round. Unlocked, not unchecked — the check still runs, it just
+        // reverts to read-then-append across processes, which can let a
+        // RACING duplicate through (fail-open) but never eats a record.
+        if (!ran) writeCoInjection()
+      } else {
         writeCoInjection()
       }
 

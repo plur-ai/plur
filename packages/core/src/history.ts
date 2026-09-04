@@ -19,11 +19,23 @@ export interface HistoryEvent {
  * Append a history event to the JSONL file for the current month.
  * Files are stored in {root}/history/YYYY-MM.jsonl.
  * Auto-creates the history directory and file on first write.
+ *
+ * Returns whether the line LANDED. The append is best-effort by design (see
+ * below) and never throws, so without a return value a caller cannot tell a
+ * recorded event from a swallowed one — and one caller must: the co_injection
+ * path advances `injection_count` only for an injection that has a history
+ * record, or the store disagrees with its own log (#1017 review). Every other
+ * caller ignores the result, as before.
  */
-export function appendHistory(root: string, event: HistoryEvent): void {
+export function appendHistory(root: string, event: HistoryEvent): boolean {
   const historyDir = join(root, 'history')
-  if (!fs.existsSync(historyDir)) {
-    fs.mkdirSync(historyDir, { recursive: true })
+  try {
+    if (!fs.existsSync(historyDir)) {
+      fs.mkdirSync(historyDir, { recursive: true })
+    }
+  } catch {
+    // Fall through: the open below fails with the same cause and takes the
+    // warned, non-throwing path. mkdirSync was the one unguarded call left.
   }
 
   const date = event.timestamp.slice(0, 7) // YYYY-MM
@@ -62,6 +74,7 @@ export function appendHistory(root: string, event: HistoryEvent): void {
     } finally {
       fs.closeSync(fd)
     }
+    return true
   } catch (err) {
     if (!warnedHistoryPaths.has(filePath)) {
       warnedHistoryPaths.add(filePath)
@@ -71,6 +84,7 @@ export function appendHistory(root: string, event: HistoryEvent): void {
         `unrecoverable engrams and engram-id allocation loses its cross-compaction guarantee (#816).`,
       )
     }
+    return false
   }
 }
 
@@ -79,8 +93,48 @@ export function appendHistory(root: string, event: HistoryEvent): void {
 const warnedHistoryPaths = new Set<string>()
 
 /**
+ * Coerce one parsed JSONL value into a `HistoryEvent`, or `null` when it is
+ * not one (#1017 review, B2).
+ *
+ * `JSON.parse` succeeding is not the same as the line being a record: `null`,
+ * `42`, `"x"` and `[]` all parse. Every reader used to take a parsed line at
+ * its declared type and dereference `ev.event` / `ev.data.ids` on it, so a
+ * single `null` line in the month file — one truncated append away — threw a
+ * TypeError out of `readHistoryForEngram`, `findLatestInjectionFor`,
+ * `countInjectionEvents`, `readCoInjections` and the dedup check. The last
+ * one sits inside `inject()`, on the hook path that must never fail closed.
+ *
+ * The contract this enforces is exactly the interface: `event` is a string
+ * (a line without one is not an event of any kind and is dropped, like
+ * corrupt JSON), and `data` is a plain object (coerced to `{}` when absent or
+ * of another shape, so `ev.data.<field>` is always a lookup, never a throw).
+ * `engram_id` and `timestamp` are coerced to `''` when not strings: `''`
+ * never matches a real id, parses to no valid time, and fails the strict ISO
+ * check in `readCoInjections` — so a crafted value can only make the record
+ * invisible, never mis-attributed.
+ */
+function toHistoryEvent(parsed: unknown): HistoryEvent | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+  const raw = parsed as Record<string, unknown>
+  if (typeof raw.event !== 'string') return null
+  const data = raw.data
+  const dataIsObject = typeof data === 'object' && data !== null && !Array.isArray(data)
+  return {
+    ...raw,
+    event: raw.event as HistoryEvent['event'],
+    engram_id: typeof raw.engram_id === 'string' ? raw.engram_id : '',
+    timestamp: typeof raw.timestamp === 'string' ? raw.timestamp : '',
+    data: dataIsObject ? (data as Record<string, unknown>) : {},
+  }
+}
+
+/**
  * Read history events from a specific month's JSONL file.
  * Returns empty array if file doesn't exist.
+ *
+ * Every returned element satisfies the `HistoryEvent` shape — see
+ * `toHistoryEvent`. Lines that are not records are skipped the way corrupt
+ * JSON always was.
  */
 export function readHistory(root: string, yearMonth: string): HistoryEvent[] {
   const filePath = join(root, 'history', `${yearMonth}.jsonl`)
@@ -90,11 +144,14 @@ export function readHistory(root: string, yearMonth: string): HistoryEvent[] {
   const lines = content.split('\n').filter(l => l.trim().length > 0)
   const events: HistoryEvent[] = []
   for (const line of lines) {
+    let parsed: unknown
     try {
-      events.push(JSON.parse(line) as HistoryEvent)
+      parsed = JSON.parse(line)
     } catch {
-      // Skip malformed lines
+      continue // Skip malformed lines
     }
+    const event = toHistoryEvent(parsed)
+    if (event) events.push(event)
   }
   return events
 }
@@ -242,8 +299,30 @@ export function computeQueryHash(task: string): string {
  * injections), and because two different sessions selecting the same engrams
  * are two real injections rather than one duplicated.
  *
+ * Plus the EVENT identity when the caller has one (#1017 review, O3). Content
+ * alone cannot tell "one hook event fired twice" from "two events that happen
+ * to read the same": two `Explore` subagents launched in one message both
+ * arrive as `subagent: Explore`, same session, same engrams, and collapsed to
+ * one record. Claude Code stamps every PreToolUse payload with `tool_use_id`
+ * and every SubagentStart payload with `agent_id`; hook-inject passes
+ * whichever it finds as `eventId`. Two records with the same content AND the
+ * same event id are one event written twice; different ids are different
+ * events however alike their text. Compared symmetrically — an absent id on
+ * both sides is equal (UserPromptSubmit and PostCompact carry none, and dedup
+ * on content there), an id on one side only is a mismatch.
+ *
  * Window: 5 seconds (matches the near-duplicate definition in #975).
- * Reads only the tail of the current month's file — bounded I/O.
+ * Reads only the tail of the month file(s) the window can touch — bounded I/O.
+ *
+ * ## Fail-open, and total
+ *
+ * This function may let a duplicate through; it may never eat a real record,
+ * and it may never throw. It runs inside `inject()` on the hook path — the
+ * product's primary path — so nothing the local history log can contain is
+ * allowed to turn into an exception here. Every parsed line is shape-checked
+ * before a field is read (a `null` line, a record without `data`, a non-array
+ * `ids` all used to throw a TypeError out of `inject()`), and the whole check
+ * is wrapped: any failure, foreseen or not, answers "not a duplicate".
  */
 export function isRecentDuplicateInjection(
   root: string,
@@ -252,6 +331,23 @@ export function isRecentDuplicateInjection(
   windowMs = 5_000,
   source?: string,
   sessionId?: string,
+  eventId?: string,
+): boolean {
+  try {
+    return isRecentDuplicateInjectionUnsafe(root, queryHash, engramIds, windowMs, source, sessionId, eventId)
+  } catch {
+    return false // fail-open: unreadable or hostile history is not a duplicate
+  }
+}
+
+function isRecentDuplicateInjectionUnsafe(
+  root: string,
+  queryHash: string,
+  engramIds: string[],
+  windowMs: number,
+  source: string | undefined,
+  sessionId: string | undefined,
+  eventId: string | undefined,
 ): boolean {
   const now = Date.now()
 
@@ -305,9 +401,15 @@ export function isRecentDuplicateInjection(
   const lines = tail.split('\n').filter(l => l.trim().length > 0)
 
   for (const line of lines) {
-    let ev: HistoryEvent
-    try { ev = JSON.parse(line) as HistoryEvent } catch { continue }
-    if (ev.event !== 'co_injection') continue
+    let parsed: unknown
+    try { parsed = JSON.parse(line) } catch { continue }
+    // Same shape contract as readHistory: a line that is not a record with a
+    // string `event` and an object `data` is not a co_injection, whatever else
+    // it is. `toHistoryEvent` coerces a missing `data` to `{}`, which then
+    // fails the query_hash comparison below — so a data-less co_injection can
+    // never match, and can never throw.
+    const ev = toHistoryEvent(parsed)
+    if (!ev || ev.event !== 'co_injection') continue
 
     // A malformed timestamp yields NaN, and `now - NaN > windowMs` is FALSE —
     // so the `continue` below would not fire and the event would be treated as
@@ -316,16 +418,21 @@ export function isRecentDuplicateInjection(
     // is the opposite of the failure this function is allowed to have: it may
     // let a duplicate through, it may not eat a real record. Same reasoning for
     // a timestamp in the future (clock skew): unusable, so out of scope.
+    //
+    // Strict ISO only, as in readCoInjections: `Date.parse` is lenient, and a
+    // co_injection timestamp is always `toISOString()` output.
+    if (!ISO_TIMESTAMP.test(ev.timestamp)) continue
     const evTime = new Date(ev.timestamp).getTime()
     if (!Number.isFinite(evTime)) continue
     const age = now - evTime
     if (age < 0 || age > windowMs) continue
 
-    const evHash = ev.data.query_hash as string | undefined
-    if (evHash !== queryHash) continue
+    const evHash = ev.data.query_hash
+    if (typeof evHash !== 'string' || evHash !== queryHash) continue
 
-    const evIds = ev.data.ids as string[] | undefined
+    const evIds = ev.data.ids
     if (!Array.isArray(evIds)) continue
+    if (!evIds.every((id): id is string => typeof id === 'string')) continue
     if ([...evIds].sort().join(',') !== sortedIds) continue
     // Normalise BOTH sides rather than skipping the check when the caller's
     // value is absent. `if (source !== undefined)` meant a programmatic
@@ -347,6 +454,12 @@ export function isRecentDuplicateInjection(
     // the dedup started working.
     const evSession = ev.data.session_id as string | undefined
     if (evSession !== sessionId) continue
+    // Event identity, when the harness gave us one — see the header. A string
+    // on the event is compared as-is; anything else on the event reads as
+    // "absent", which only ever makes the key STRICTER (an absent id matches
+    // only a caller that also has none).
+    const evEvent = typeof ev.data.event_id === 'string' ? ev.data.event_id : undefined
+    if (evEvent !== eventId) continue
     return true
   }
 
@@ -415,6 +528,15 @@ export interface CoInjectionData {
   source?: InjectionSource
   scope?: string
   session_id?: string
+  /**
+   * Identity of the harness event that triggered a hook injection — Claude
+   * Code's `tool_use_id` (PreToolUse: plan_mode, skill, agent) or `agent_id`
+   * (SubagentStart). Part of the hook dedup key; see
+   * {@link isRecentDuplicateInjection}. Absent on UserPromptSubmit and
+   * PostCompact injections, on every non-hook source, and on events written
+   * before #1017.
+   */
+  event_id?: string
 }
 
 export interface CoInjectionEvent {
@@ -472,6 +594,7 @@ export function readCoInjections(root: string, months?: string[]): CoInjectionRe
       }
       if (typeof raw.scope === 'string') data.scope = raw.scope
       if (typeof raw.session_id === 'string') data.session_id = raw.session_id
+      if (typeof raw.event_id === 'string') data.event_id = raw.event_id
 
       events.push({ injection_id: event.engram_id, timestamp: event.timestamp, data })
     }

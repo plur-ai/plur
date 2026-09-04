@@ -1,9 +1,38 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { fileURLToPath } from 'url'
 import { spawn } from 'child_process'
 import { appendHistory, computeQueryHash, isRecentDuplicateInjection, generateInjectionId } from '../src/history.js'
+
+// The multi-process race below runs its children against the BUILT bundle —
+// they are separate node processes and cannot share vitest's transform. The
+// path is resolved from this file, not from `process.cwd()`, so the suite
+// runs the same from the repo root, from `packages/core`, or from an IDE.
+// A stale or missing bundle is reported as what it is rather than as four
+// children exiting 1, which reads like a concurrency failure.
+const here = path.dirname(fileURLToPath(import.meta.url))
+const CORE_DIST = path.resolve(here, '..', 'dist', 'index.js')
+const CORE_SRC = path.resolve(here, '..', 'src')
+
+function newestMtime(dir: string): number {
+  let newest = 0
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name)
+    const m = entry.isDirectory() ? newestMtime(p) : fs.statSync(p).mtimeMs
+    if (m > newest) newest = m
+  }
+  return newest
+}
+
+function assertCoreDistFresh(): void {
+  const remedy = 'run `pnpm --filter @plur-ai/core build` before this suite'
+  if (!fs.existsSync(CORE_DIST)) throw new Error(`packages/core/dist/index.js is missing — ${remedy}`)
+  if (fs.statSync(CORE_DIST).mtimeMs < newestMtime(CORE_SRC)) {
+    throw new Error(`packages/core/dist/index.js is older than packages/core/src — ${remedy}`)
+  }
+}
 
 describe('cross-process injection dedup (#975)', () => {
   let root: string
@@ -113,6 +142,7 @@ describe('cross-process dedup is atomic, not check-then-act (#975)', () => {
    * set produce exactly ONE co_injection event.
    */
   let root: string
+  beforeAll(assertCoreDistFresh)
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-dedup-race-')) })
   afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
 
@@ -135,7 +165,7 @@ describe('cross-process dedup is atomic, not check-then-act (#975)', () => {
     fs.writeFileSync(path.join(root, 'engrams.yaml'), store, 'utf8')
 
     const script = `
-      const { Plur } = require(${JSON.stringify(path.join(process.cwd(), 'packages/core/dist/index.js'))});
+      const { Plur } = require(${JSON.stringify(CORE_DIST)});
       (async () => {
         const p = new Plur({ path: ${JSON.stringify(root)} });
         await p.inject('prefer pnpm over npm', { source: 'hook' });
@@ -327,6 +357,9 @@ describe('injection_count follows the same verdict as the history event', () => 
 
     const all = await plur.list()
     const counted = all.filter(e => ((e as never as Record<string, unknown>).injection_count ?? 0) !== 0)
+    // Without this the loop below is vacuous: if no counter moved at all the
+    // assertion inside never runs and the test passes having checked nothing.
+    expect(counted.length, 'the recorded injection should have moved a counter').toBeGreaterThan(0)
     for (const e of counted) {
       const n = (e as never as Record<string, unknown>).injection_count as number
       expect(n, `${e.id}: store says ${n} injections, history says ${events}`).toBe(events)
@@ -354,22 +387,29 @@ describe('the dedup window straddles a month rollover', () => {
   it('finds a duplicate written in the previous month file', () => {
     // A pair one to four milliseconds apart across midnight on the 1st lands in
     // two different files. Reading only the current month missed it.
+    //
+    // With the production 5 s window this case is only reachable in the first
+    // five seconds of a UTC month, so the earlier version of this test wrote
+    // to `monthOf(now - 5s)` — the CURRENT month's file on every other run —
+    // and passed for the ordinary reason. A 40-day window makes the window's
+    // start fall in a different month whatever today is; the event goes ONLY
+    // into that earlier file, so the current file cannot supply the match.
+    const WINDOW_MS = 40 * 24 * 60 * 60 * 1000
     const now = Date.now()
-    const prevMonth = new Date(now - 5_000).toISOString().slice(0, 7)
+    const windowStartMonth = new Date(now - WINDOW_MS).toISOString().slice(0, 7)
     const thisMonth = new Date(now).toISOString().slice(0, 7)
+    expect(windowStartMonth, 'a 40-day window must start in an earlier month').not.toBe(thisMonth)
 
     const hd = path.join(dir, 'history')
     fs.mkdirSync(hd, { recursive: true })
     const qh = computeQueryHash('pnpm install')
     const ids = ['eng-1']
-    fs.writeFileSync(path.join(hd, `${prevMonth}.jsonl`),
+    fs.writeFileSync(path.join(hd, `${windowStartMonth}.jsonl`),
       JSON.stringify({ event: 'co_injection', engram_id: 'x',
-        timestamp: new Date(now - 1000).toISOString(),
+        timestamp: new Date(now - WINDOW_MS + 60_000).toISOString(), // inside the window
         data: { ids, query_hash: qh, source: 'inject' } }) + '\n', 'utf8')
+    expect(fs.existsSync(path.join(hd, `${thisMonth}.jsonl`)), 'only the earlier file exists').toBe(false)
 
-    // Only meaningful when the two differ; otherwise this is the ordinary case
-    // and still must pass.
-    expect(isRecentDuplicateInjection(dir, qh, ids, 5_000, 'inject', undefined)).toBe(true)
-    expect(prevMonth === thisMonth || fs.existsSync(path.join(hd, `${prevMonth}.jsonl`))).toBe(true)
+    expect(isRecentDuplicateInjection(dir, qh, ids, WINDOW_MS, 'inject', undefined)).toBe(true)
   })
 })

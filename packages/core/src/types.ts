@@ -272,6 +272,18 @@ export interface InjectOptions {
   /** Which surface asked for this injection. Recorded on the co_injection event. */
   source?: InjectionSource
   /**
+   * Identity of the harness event behind a `source: 'hook'` injection, when
+   * the harness provides one: Claude Code's `tool_use_id` on PreToolUse
+   * payloads (the plan_mode, skill and agent hooks) and `agent_id` on
+   * SubagentStart. Recorded on the co_injection event and part of the hook
+   * dedup key (#975, #1017 review): two hook processes carrying the same id
+   * are one event fired twice; two carrying different ids are two events
+   * however alike their text — two `Explore` subagents launched in one message
+   * are two injections. Omit when the harness has no per-event id
+   * (UserPromptSubmit, PostCompact); those dedup on content alone.
+   */
+  event_id?: string
+  /**
    * Server-authoritative remote recall leg for `injectHybrid` (#776).
    * Default true. Same contract as {@link RecallOptions.remote}; BM25-only
    * `inject()` NEVER dials regardless of this flag.
