@@ -29,7 +29,8 @@
  */
 import * as fs from 'node:fs'
 import { join } from 'node:path'
-import { computeEventHash, hashEngramsFile, listHistoryMonths, type HistoryEvent } from './history.js'
+import { computeEventHash, hashEngramsFile, canonicalEventBytes, listHistoryMonths, type HistoryEvent } from './history.js'
+import { lookupPublicKey, verifySignature } from './actor-keys.js'
 
 export type BreakReason =
   | 'hash_mismatch'            // the event does not hash to its recorded hash
@@ -38,6 +39,22 @@ export type BreakReason =
   | 'checkpoint_head_missing'  // a checkpoint pins a head the chain no longer contains
   | 'store_hash_mismatch'      // the newest checkpoint attests a store that is not the one on disk
   | 'declared_gap'             // prev is null mid-chain: a writer could not take the lock
+
+/** Result of signature verification for one checkpoint (#1056). */
+export type SignatureVerdict =
+  | 'valid'           // signature checks out against the registered public key
+  | 'invalid'         // signature does not verify (wrong key, tampered bytes)
+  | 'unknown_signer'  // signer identity not in the store's keys.yaml
+  | 'unsigned'        // checkpoint has no signature field (valid L2, not L3)
+
+export interface SignatureResult {
+  /** 0-based index of the checkpoint event in the full scanned sequence. */
+  index:    number
+  month:    string
+  event_id: string
+  verdict:  SignatureVerdict
+  signer:   string | null
+}
 
 export interface ChainBreak {
   month:    string
@@ -73,6 +90,12 @@ export interface ChainVerifyResult {
    * verify". Never null-and-silent: a caller that wants to know is told.
    */
   torn_tail: { month: string; line: number } | null
+  /**
+   * Per-checkpoint signature results (#1056). Populated only when
+   * `verifyChain` is called with `{ verifySignatures: true }`.
+   * null means signatures were not checked.
+   */
+  signatures: SignatureResult[] | null
 }
 
 export type ChainVerifyOutcome =
@@ -91,6 +114,18 @@ interface Scanned { month: string; index: number; event: HistoryEvent }
  */
 const GENESIS_CLAIM = '(genesis)'
 
+/** Options for `verifyChain`. */
+export interface VerifyChainOptions {
+  /**
+   * When true, verify Ed25519 signatures on checkpoint events against the
+   * store's `keys.yaml` registry (#1056). An unknown signer is a named
+   * `unknown_signer` result, not a chain break. An invalid signature IS a
+   * chain break (signature field reports it as `invalid`).
+   * Default: false (chain-only verification).
+   */
+  verifySignatures?: boolean
+}
+
 /**
  * Verify the whole history chain for a store.
  *
@@ -99,7 +134,8 @@ const GENESIS_CLAIM = '(genesis)'
  * report a clean chain over a file it could not fully read — the benign-zero
  * this surface exists to refuse. A line that will not parse is a refusal.
  */
-export function verifyChain(root: string): ChainVerifyOutcome {
+export function verifyChain(root: string, options?: VerifyChainOptions): ChainVerifyOutcome {
+  const verifySignatures = options?.verifySignatures === true
   const months = listHistoryMonths(root)
   const scanned: Scanned[] = []
   /** A torn final line in the newest month — an in-flight write, reported not refused. */
@@ -165,6 +201,7 @@ export function verifyChain(root: string): ChainVerifyOutcome {
     forks: [],
     checkpoints_checked: 0,
     torn_tail: null,
+    signatures: verifySignatures ? [] : null,
   }
 
   // Unchained (pre-#1051) events. They carry neither hash nor prev; per runbook
@@ -329,6 +366,66 @@ export function verifyChain(root: string): ChainVerifyOutcome {
   }
 
   result.torn_tail = torn_tail
+
+  // Signature verification (#1056). Performed AFTER chain verification so a
+  // caller that only wants chain integrity can skip the key-registry read.
+  //
+  // An unknown signer is a named `unknown_signer` result, not a chain break —
+  // the chain itself is intact, we just cannot verify the external attestation.
+  // An invalid signature IS a named failure in `signatures`, and also registers
+  // as a break so the exit code signals actionable failure.
+  if (verifySignatures) {
+    for (const { month, index, event } of scanned) {
+      if (event.event !== 'checkpoint') continue
+      // signer and signature are top-level HistoryEvent fields (excluded from
+      // canonical bytes). Older checkpoints stored signer in event.data — fall
+      // back to that for any written before this migration.
+      const dataSigner = (event.data as { signer?: unknown }).signer
+      const signer = typeof event.signer === 'string' ? event.signer
+        : typeof dataSigner === 'string' ? dataSigner
+        : null
+      const sigB64 = typeof event.signature === 'string' ? event.signature : null
+
+      let verdict: SignatureVerdict
+      if (sigB64 === null) {
+        verdict = 'unsigned'
+      } else if (signer === null) {
+        // Signature present but no signer field — treat as unknown.
+        verdict = 'unknown_signer'
+      } else {
+        const pubKeyB64 = lookupPublicKey(root, signer)
+        if (pubKeyB64 === null) {
+          verdict = 'unknown_signer'
+        } else {
+          // Verify the signature over the canonical bytes: the event as it was
+          // before `hash` and `signature` were added. canonicalEventBytes already
+          // excludes both.
+          const canonical = canonicalEventBytes(event)
+          verdict = verifySignature(canonical, sigB64, pubKeyB64) ? 'valid' : 'invalid'
+        }
+      }
+
+      const sigResult: SignatureResult = {
+        index, month,
+        event_id: event.engram_id || '(checkpoint)',
+        verdict, signer,
+      }
+      result.signatures!.push(sigResult)
+
+      // An invalid signature is a break: the checkpoint can no longer be trusted
+      // as an external attestation. Unknown signer is NOT a break — it may just
+      // mean the key was not registered on this machine yet.
+      if (verdict === 'invalid') {
+        result.breaks.push({
+          month, index, event_id: sigResult.event_id,
+          reason: 'hash_mismatch', // repurposed: signature did not verify
+          expected: 'valid Ed25519 signature',
+          actual: `invalid signature by ${signer ?? '(unknown)'}`,
+        })
+      }
+    }
+  }
+
   // A torn tail does not make the chain broken — everything before it verified.
   result.ok = result.breaks.length === 0 && result.forks.length === 0
   return { status: result.ok ? 'verified' : 'broken', result }

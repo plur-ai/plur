@@ -28,6 +28,20 @@ export interface HistoryEvent {
    * Legacy events have no prev field — readers must tolerate its absence.
    */
   prev?: string | null
+  /**
+   * Ed25519 signature over the canonical bytes of this event (the same bytes
+   * the `hash` covers — excludes `hash`, `signature`, and `signer` themselves).
+   * Present only on `checkpoint` events when the acting identity has a key
+   * configured (#1056). Base64-encoded. Absent from most events — readers must
+   * tolerate its absence. A missing signature is "unsigned (L2)", not "tampered".
+   */
+  signature?: string
+  /**
+   * Identity of the signer when `signature` is present. Top-level field,
+   * excluded from canonical bytes (so it cannot differ from the signature's
+   * implicit claim). Readers must tolerate its absence.
+   */
+  signer?: string
 }
 
 /**
@@ -92,8 +106,16 @@ export function sortKeysDeep(value: unknown): unknown {
  * - Hashes: lowercase hex SHA-256
  */
 export function canonicalEventBytes(event: HistoryEvent): Buffer {
-  const { hash: _hash, ...rest } = event
-  void _hash // excluded from the canonical form
+  // `hash` is excluded because it is computed FROM these bytes (circular).
+  // `signature` and `signer` are excluded for the same reason: both `hash`
+  // and `signature` cover the identical payload, and `signer` is metadata
+  // about the signing — excluding it keeps the signed bytes stable regardless
+  // of which identity signs. A third-party verifier recomputes hash and checks
+  // the signature from the same canonical form without special-casing any field.
+  const { hash: _hash, signature: _sig, signer: _snr, ...rest } = event
+  void _hash
+  void _sig
+  void _snr
   const sorted = sortKeysDeep(rest)
   return Buffer.from(JSON.stringify(sorted), 'utf8')
 }
@@ -714,6 +736,17 @@ export interface CheckpointData {
   store_hash: string
   engram_count: number
   actor: string
+  /**
+   * Ed25519 signature over the checkpoint's canonical bytes, base64-encoded.
+   * Present only when the acting identity has a key configured (#1056).
+   * An unsigned checkpoint is a valid L2 object — absence is "unsigned", not error.
+   */
+  signature?: string | null
+  /**
+   * Identity of the signer, when `signature` is present.
+   * Allows a verifier to look up the public key in `keys.yaml`.
+   */
+  signer?: string | null
 }
 
 /**
@@ -821,6 +854,26 @@ export function countEngramsInStore(engramsPath: string): number {
 }
 
 /**
+ * Signing options for `emitCheckpoint` (#1056).
+ *
+ * When provided, the checkpoint event gains a `signature` field (Ed25519
+ * over its canonical bytes) and a `signer` field naming the identity.
+ * An unsigned checkpoint is a valid L2 object — callers omit this when no
+ * key is configured.
+ */
+export interface CheckpointSigningOptions {
+  /** The actor identity whose key should sign — typically `provenance.identity`. */
+  identity: string
+  /**
+   * Function that returns an Ed25519 signature (base64) for the given bytes,
+   * or null when the key is unavailable. Injected rather than resolved here to
+   * keep `history.ts` free of a `node:crypto` dependency beyond what it already
+   * has, and to make signing testable in isolation.
+   */
+  sign: (data: Buffer) => string | null
+}
+
+/**
  * Emit a `checkpoint` history event for the store at `root`.
  *
  * Computes:
@@ -845,6 +898,8 @@ export function countEngramsInStore(engramsPath: string): number {
  * the compiler reports rather than a number that quietly stops mattering.
  * @param actor       — who triggered the checkpoint ('session_end' | 'cli' | custom)
  * @param timestamp   — ISO-8601 timestamp; defaults to now
+ * @param signing     — optional signing options (#1056); when absent the checkpoint
+ *                      is unsigned (valid L2, not L3-capable)
  * @returns the written CheckpointData
  */
 export function emitCheckpoint(
@@ -852,6 +907,7 @@ export function emitCheckpoint(
   engramsPath: string,
   actor: string,
   timestamp?: string,
+  signing?: CheckpointSigningOptions,
 ): CheckpointData {
   const ts = timestamp ?? new Date().toISOString()
 
@@ -906,6 +962,32 @@ export function emitCheckpoint(
     const { store_hash, engram_count } = attestStore(engramsPath)
     const data: CheckpointData = { chain_head: prev, store_hash, engram_count, actor }
     event.data = data as unknown as Record<string, unknown>
+
+    // Sign the checkpoint (#1056) if a key is available. The signature is
+    // computed over the canonical bytes of the event as it stands at this
+    // point: data and prev are set; hash, signature, and signer are absent
+    // (all three are excluded from canonical bytes by canonicalEventBytes).
+    // Any field added AFTER signing would be uncovered by the signature;
+    // keeping signer top-level (not in data) prevents a circular dependency
+    // where the signer's identity would have to be in the signed bytes.
+    //
+    // An unsigned checkpoint is a valid L2 object. Signing failure is
+    // best-effort: if the key cannot be read or signing fails, we proceed
+    // without a signature rather than aborting the checkpoint.
+    if (signing !== undefined) {
+      try {
+        const sig = signing.sign(canonicalEventBytes(event))
+        if (sig !== null) {
+          event.signature = sig
+          event.signer = signing.identity
+          // signer and signature are top-level fields; they are NOT added to
+          // event.data so they are excluded from the canonical bytes that both
+          // the hash and the signature cover — keeping both consistent.
+        }
+      } catch {
+        // best-effort: unsigned checkpoint is still valid L2
+      }
+    }
   })
 
   // The checkpoint's OWN hash, returned but not persisted — an event cannot
@@ -915,7 +997,15 @@ export function emitCheckpoint(
   // tool returned the STORE hash under the name `checkpoint_hash`. #1052 exists
   // so that a checkpoint is anchorable, and a payload omitting the hash you
   // would anchor is not anchorable either.
-  return { ...(event.data as unknown as CheckpointData), event_hash: event.hash ?? null }
+  //
+  // signature and signer are top-level HistoryEvent fields (not in event.data),
+  // so they must be added explicitly to the return value (#1056).
+  return {
+    ...(event.data as unknown as CheckpointData),
+    event_hash: event.hash ?? null,
+    signature: event.signature,
+    signer: event.signer,
+  }
 }
 
 /**

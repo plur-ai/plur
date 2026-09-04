@@ -17,9 +17,9 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
-import { emitCheckpoint } from '@plur-ai/core'
+import { emitCheckpoint, signWithActorKey } from '@plur-ai/core'
 
-export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
+export async function run(_args: string[], flags: GlobalFlags & { signatures?: boolean }): Promise<void> {
   // Write engine needed: emitCheckpoint calls appendHistory (a write).
   const plur = createPlur(flags)
   const status = await plur.status()
@@ -39,6 +39,15 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
+  // Resolve signing options if the acting identity has a key configured (#1056).
+  // Signing is best-effort: if the key is absent or the identity is unidentified,
+  // the checkpoint is still written (unsigned is a valid L2 object).
+  const identity = status.provenance_identity
+  const keysDir = join(plurRoot, 'keys')
+  const signingOptions = (identity && identity !== 'agent:unidentified')
+    ? { identity, sign: (data: Buffer) => signWithActorKey(data, identity, keysDir) }
+    : undefined
+
   // engram_count is derived from the bytes that were hashed, inside
   // emitCheckpoint — not passed in. An attested count that is not bound to the
   // hash beside it is not attested at all.
@@ -49,7 +58,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // of the built CLI.
   let data
   try {
-    data = emitCheckpoint(plurRoot, engramsPath, 'cli')
+    data = emitCheckpoint(plurRoot, engramsPath, 'cli', undefined, signingOptions)
   } catch (err) {
     outputText('Cannot checkpoint: the store could not be read as a store.')
     outputText(`  ${engramsPath}`)
@@ -59,6 +68,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
+  const signed = typeof data.signature === 'string'
+
   if (shouldOutputJson(flags)) {
     outputJson({
       // First, because it is the value you anchor.
@@ -67,6 +78,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       store_hash: data.store_hash,
       engram_count: data.engram_count,
       actor: data.actor,
+      signer: data.signer ?? null,
+      signature: data.signature ?? null,
     })
   } else {
     outputText(`Checkpoint emitted`)
@@ -75,5 +88,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     outputText(`  chain_head:   ${data.chain_head ?? '(genesis — no prior chained event)'}`)
     outputText(`  engram_count: ${data.engram_count}`)
     outputText(`  actor:        ${data.actor}`)
+    if (signed) {
+      outputText(`  signer:       ${data.signer}`)
+      outputText(`  signature:    (Ed25519, base64 — run 'plur verify --signatures' to check)`)
+    } else {
+      outputText(`  signature:    (unsigned — run 'plur keys init' to enable L3 signing)`)
+    }
   }
 }
