@@ -1,6 +1,6 @@
 [project]
 name = "plur-hermes"
-version = "0.19.3"
+version = "0.19.4"
 description = "PLUR persistent memory plugin for Hermes Agent"
 readme = "README.md"
 license = "Apache-2.0"
@@ -49,7 +49,16 @@ test = ["pytest>=7.0"]
 plur = "plur_hermes"
 
 [project.entry-points."hermes_agent.memory_providers"]
-plur = "plur_hermes.memory_provider:create_memory_provider"
+# Target the package, not the factory. Hermes' _load_provider_from_entry_point
+# tries isinstance/issubclass against its MemoryProvider ABC first; PlurMemoryProvider
+# deliberately does not subclass it (that would make hermes_agent a hard runtime
+# dependency and cost the zero-dependency guarantee). The one branch with no type
+# check is `hasattr(loaded, "register")` -> loaded.register(collector) ->
+# collector.register_memory_provider(provider), and plur_hermes.register() already
+# does exactly that. Pointing at the factory function skipped that branch entirely:
+# a function has no .register, so the loader fell through to `loaded(collector)`,
+# passed the collector in as `bridge`, and returned collector.provider == None.
+plur = "plur_hermes"
 
 [build-system]
 requires = ["hatchling"]

@@ -68,6 +68,24 @@ describe('createEngine when core is unavailable', () => {
     }))
     await expect(engine.ready()).resolves.toBe(false)
   })
+
+  it('calls warn with the error when load fails (#941)', async () => {
+    const warn = vi.fn()
+    const engine = createEngine(config(), missing, warn)
+    await engine.ready()
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0][0]).toMatch(/memory engine unavailable/)
+    expect(warn.mock.calls[0][0]).toMatch(/ERR_MODULE_NOT_FOUND/)
+  })
+
+  it('calls warn exactly once however many methods are called after a failed load (#941)', async () => {
+    const warn = vi.fn()
+    const engine = createEngine(config(), missing, warn)
+    await engine.ready()
+    await engine.list!()
+    await engine.recall!('x')
+    expect(warn).toHaveBeenCalledOnce()
+  })
 })
 
 describe('the facade shape', () => {

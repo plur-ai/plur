@@ -55,25 +55,22 @@ pnpm --filter @plur-ai/core build
 2. `packages/mcp/package.json`
 3. `packages/cli/package.json`
 4. `packages/migrate/package.json` — ships with the release it migrates TO
-5. `packages/mcp/src/version.ts` — `export const VERSION`
-6. `packages/mcp/src/index.ts` — `const VERSION`
-7. `packages/cli/src/index.ts` — `const VERSION`
-8. `packages/cli/src/version.ts` — `CLI_VERSION` (pins npx-fallback MCP entries, #1069; version-parity.test.ts guards the pair)
-9. `packages/mcp/test/server.test.ts` — version assertions
-10. `packages/hermes/pyproject.toml`
-11. `packages/hermes/plugin.yaml` — top-level `version:` field
-12. `packages/hermes/plur_hermes/skills/plur-memory.SKILL.md` — frontmatter `version:`
-13. `packages/hermes/plur_hermes/bridge.py` — `_NPX_CLI_VERSION`
-14. `packages/python/pyproject.toml`
-15. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
-16. `skills/plur-memory/SKILL.md` — frontmatter `version:` (standalone skills.sh copy)
-17. `server.json` — both top-level `version` and `packages[0].version` (MCP Registry / ClawHub listing)
+5. `packages/mcp/src/version.ts` — `export const VERSION` (index.ts and server.ts import it; version-parity.test.ts guards it)
+6. `packages/cli/src/version.ts` — `CLI_VERSION` (index.ts and mcp-config.ts import it; pins npx-fallback MCP entries, #1069; version-parity.test.ts guards it)
+7. `packages/mcp/test/server.test.ts` — version assertions
+8. `packages/hermes/pyproject.toml`
+9. `packages/hermes/plugin.yaml` — top-level `version:` field
+10. `packages/hermes/plur_hermes/skills/plur-memory.SKILL.md` — frontmatter `version:`
+11. `packages/hermes/plur_hermes/bridge.py` — `_NPX_CLI_VERSION`
+12. `packages/python/pyproject.toml`
+13. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
+14. `skills/plur-memory/SKILL.md` — frontmatter `version:` (standalone skills.sh copy)
+15. `server.json` — both top-level `version` and `packages[0].version` (MCP Registry / ClawHub listing)
 
 **Claw track** (independent — only bumped when `--claw <ver>` is passed to release.sh):
 
 - `packages/claw/package.json`
-- `packages/claw/src/index.ts` — `version:` in plugin object
-- `packages/claw/src/context-engine.ts` — `version:` in info object
+- `packages/claw/src/version.ts` — `CLAW_VERSION` (index.ts and context-engine.ts import it; version-parity.test.ts guards it)
 - `packages/claw/openclaw.plugin.json` — `version` field
 - `packages/claw/test/hello.test.ts` — version assertion
 
