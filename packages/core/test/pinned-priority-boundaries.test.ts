@@ -157,6 +157,23 @@ describe('invariant 2 — no value can crash, persist as garbage, or unload an e
     expect((await again.listPinned()).map(x => x.id)).toContain(e.id)
   })
 
+  it('updateEngram / updateEngramAsync refuse garbage and clamp finite values', async () => {
+    writeFileSync(join(dir, 'engrams.yaml'), 'engrams: []\n')
+    const plur = new Plur({ path: dir })
+    await plur.ready()
+    const e = await plur.learn('critical rule', { pinned: true, pinned_priority: 50 })
+    for (const bad of [NaN, Infinity, 'abc']) {
+      await expect(plur.updateEngram({ ...e, pinned_priority: bad as never }), String(bad)).rejects.toThrow(TypeError)
+      await expect(plur.updateEngramAsync({ ...e, pinned_priority: bad as never }), String(bad)).rejects.toThrow(TypeError)
+    }
+    expect(readFileSync(join(dir, 'engrams.yaml'), 'utf8')).not.toMatch(/\.nan|\.inf|abc/)
+    expect(((await plur.getById(e.id)) as any).pinned_priority).toBe(50)
+    expect(await plur.updateEngram({ ...e, pinned_priority: 150 })).toBe(true)
+    const again = new Plur({ path: dir })
+    await again.ready()
+    expect(((await again.getById(e.id)) as any).pinned_priority).toBe(100)
+  })
+
   it('learnRouted validates the same way', async () => {
     writeFileSync(join(dir, 'engrams.yaml'), 'engrams: []\n')
     const plur = new Plur({ path: dir })

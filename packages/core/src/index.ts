@@ -2474,6 +2474,25 @@ export class Plur {
    * priority on an unpinned engram stored a field the spec says is only
    * meaningful when pinned.
    */
+  /**
+   * #1121: the update twins take a whole engram from the caller, so a
+   * non-finite or non-numeric `pinned_priority` would otherwise be written
+   * as-is (`.nan` in YAML). Same contract as learn(): finite values are
+   * clamped to the bounds, anything else is refused before the store lock
+   * is taken. The pinned/priority coupling is left alone here so that
+   * toggling `pinned` never has to know about the field.
+   */
+  private _withValidatedPinnedPriority(updated: Engram, fn: string): Engram {
+    const raw = (updated as { pinned_priority?: unknown }).pinned_priority
+    if (raw === undefined) return updated
+    const pp = validatePinnedPriority(raw, fn)
+    if (pp === raw) return updated
+    const rest: Record<string, unknown> = { ...updated }
+    delete rest.pinned_priority
+    if (pp !== undefined) rest.pinned_priority = pp
+    return rest as Engram
+  }
+
   private _validatedPinnedPriority(context: LearnContext | undefined, fn: string): number | undefined {
     if (context?.pinned_priority === undefined || context?.pinned_priority === null) return undefined
     if (context.pinned !== true) {
@@ -5515,6 +5534,7 @@ export class Plur {
    */
   async updateEngram(updated: Engram): Promise<boolean> {
     this._assertWritable()
+    updated = this._withValidatedPinnedPriority(updated, 'updateEngram')
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.
@@ -5585,6 +5605,7 @@ export class Plur {
    */
   async updateEngramAsync(updated: Engram): Promise<Engram | null> {
     this._assertWritable()
+    updated = this._withValidatedPinnedPriority(updated, 'updateEngramAsync')
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.
