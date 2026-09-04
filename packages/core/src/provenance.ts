@@ -310,6 +310,16 @@ export interface ProvenanceOptions {
  */
 export type LicenseSource = 'chosen' | 'inheritedFromPack' | 'configuredDefault' | 'schemaDefault'
 
+/**
+ * The closed set behind `LicenseSource`, for readers of records somebody else
+ * wrote (profile §8.4). A pack's provenance is a stranger's file; a value that
+ * is not one of these four is not a fifth state, it is free text, and a reader
+ * treats it as absent rather than carrying it onto a typed surface.
+ */
+export const LICENSE_SOURCES: ReadonlySet<LicenseSource> = new Set<LicenseSource>([
+  'chosen', 'inheritedFromPack', 'configuredDefault', 'schemaDefault',
+])
+
 /** Was this licence the result of somebody deciding? */
 const wasDecided = (source: LicenseSource) => source === 'chosen' || source === 'configuredDefault'
 

@@ -253,7 +253,7 @@ export type { Engram, PreviousVersionRef } from './schemas/engram.js'
 export { ExtractionProvenanceSchema, getExtractionProvenance, type ExtractionProvenance } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
-export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView } from './packs.js'
+export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView, InstallResult, NeutralizedCounts } from './packs.js'
 export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
@@ -871,6 +871,8 @@ export {
   summariseProvenance,
   renderProvenanceSummary,
   assertDomainFields,
+  LICENSE_SOURCES,
+  type LicenseSource,
   type ProvenanceOptions,
   type DomainExtension,
   type PackProvenanceInput,
