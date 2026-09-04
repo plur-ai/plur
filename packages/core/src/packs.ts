@@ -6,7 +6,8 @@ import { execFileSync } from 'child_process'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
 import { atomicWrite, fsyncDir, withLock } from './sync.js'
-import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
+import { detectSecrets, detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
+import { userStructuredData } from './content-fields.js'
 import type { Engram } from './schemas/engram.js'
 import { buildProvenanceRecord, buildPackProvenanceRecord, serializeProvenanceRecord } from './provenance.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -81,8 +82,10 @@ export async function downloadAndExtractPack(url: string): Promise<{ packDir: st
 
   // Find the pack directory: either a single top-level subdirectory, or the
   // extraction root itself (for flat archives).
+  // `lstat`: a tar entry that is a symbolic link to a directory must not be
+  // taken for the pack directory, or the preview would walk wherever it points.
   const entries = fs.readdirSync(extractDir)
-  const subdirs = entries.filter(e => fs.statSync(path.join(extractDir, e)).isDirectory())
+  const subdirs = entries.filter(e => fs.lstatSync(path.join(extractDir, e)).isDirectory())
 
   let packDir: string
   if (subdirs.length === 1) {
@@ -283,6 +286,13 @@ export interface PackProvenanceView {
   present: boolean
   /** Records found, and how many engrams they cover. */
   record_count: number
+  /**
+   * Record files that exist but could not be read as a provenance record —
+   * malformed JSON, a document with no `@graph` array, one too large to read.
+   * Counted rather than skipped: a record that promised to say where an
+   * engram came from and cannot be read is a finding, not an absence.
+   */
+  unreadable_records: number
   /** Engrams in the pack with no record of their own. */
   engrams_without_record: number
   /** Has any of this been cryptographically verified? Always false today. */
@@ -325,6 +335,87 @@ export interface PackProvenanceView {
  * names where to look. The scan input is capped exactly as the engram scan is,
  * because the same catastrophic-backtracking risk applies to a crafted file.
  */
+/** The most files a pack may ship before the scan stops and says so. */
+const MAX_PACK_ENTRIES = 10_000
+/** The largest file the scan will read. Bigger ones are flagged, not skipped. */
+const MAX_PACK_FILE_BYTES = 16 * 1024 * 1024
+
+/**
+ * Every entry under a pack directory, without following anything.
+ *
+ * `lstat` semantics throughout — `Dirent.isSymbolicLink()` rather than
+ * `isFile()` — because a symbolic link answers `isFile() === false` and the old
+ * walk silently skipped it, then `installPack` copied THROUGH it. A reviewer
+ * shipped `SKILL.md -> a/b/c/d/e/skill.md` holding an AWS key and
+ * instruction-override text: the scan reported clean, install succeeded, and
+ * the installed files contained both. An absolute link copied arbitrary
+ * readable host files into `~/.plur/packs/<name>/`. `tar -xzf` preserves
+ * symlinks, so a URL pack can do the same.
+ *
+ * Iterative, so a deeply nested archive cannot exhaust the stack; bounded by
+ * an entry count rather than a depth, so a file at depth six is scanned like
+ * one at depth one, and a pack past the bound is reported rather than
+ * partially scanned in silence.
+ */
+function walkPack(packDir: string): {
+  files: string[]
+  symlinks: Array<{ path: string; target: string }>
+  special: string[]
+  truncated: boolean
+} {
+  const files: string[] = []
+  const symlinks: Array<{ path: string; target: string }> = []
+  const special: string[] = []
+  let seen = 0
+  let truncated = false
+  const pending = [packDir]
+  while (pending.length) {
+    const dir = pending.pop()!
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { continue }
+    for (const e of entries) {
+      if (++seen > MAX_PACK_ENTRIES) { truncated = true; return { files, symlinks, special, truncated } }
+      const full = path.join(dir, e.name)
+      const rel = path.relative(packDir, full)
+      if (e.isSymbolicLink()) {
+        let target = '?'
+        try { target = fs.readlinkSync(full) } catch { /* reported as unknown */ }
+        symlinks.push({ path: rel, target })
+        continue
+      }
+      if (e.isDirectory()) { pending.push(full); continue }
+      if (!e.isFile()) { special.push(rel); continue }
+      files.push(full)
+    }
+  }
+  return { files, symlinks, special, truncated }
+}
+
+/**
+ * Refuse a pack that contains a symbolic link, before anything reads it.
+ *
+ * A link is not content — it is an instruction to read some OTHER file, and
+ * every reader of a pack (`loadPack`, the integrity hash, the file scan,
+ * `installPack`'s copy) would follow it. There is no legitimate reason for a
+ * pack to ship one, and no safe way to preview a pack whose manifest may be a
+ * link to a file outside it: the preview would report the target's contents
+ * as the pack's manifest. So the check runs first, and a link anywhere is a
+ * refusal naming the link, not a scan finding beside a manifest read through
+ * it.
+ */
+function refuseSymlinks(packDir: string, op: string): void {
+  const { symlinks } = walkPack(packDir)
+  if (!symlinks.length) return
+  const listed = symlinks.slice(0, 5).map(l => `  ${l.path} -> ${l.target}`).join('\n')
+  const more = symlinks.length > 5 ? `\n  … and ${symlinks.length - 5} more` : ''
+  throw new Error(
+    `[plur] refusing to ${op} pack ${packDir}: it contains symbolic links, and a pack must ship plain files.\n`
+    + `${listed}${more}\n`
+    + 'A link would make the scan read one file and the install copy another, and an absolute link '
+    + 'reaches outside the pack. Replace each link with the file it points at, then retry.',
+  )
+}
+
 function scanPackFiles(packDir: string): PrivacyIssue[] {
   const issues: PrivacyIssue[] = []
 
@@ -336,39 +427,63 @@ function scanPackFiles(packDir: string): PrivacyIssue[] {
   //
   // engrams.yaml is skipped here because scanPrivacy already reads it as
   // structured data, which catches more than scanning its raw text would.
-  const files: string[] = []
-  const walk = (dir: string, depth: number) => {
-    if (depth > 4) return
-    let entries: fs.Dirent[]
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
-      const full = path.join(dir, e.name)
-      if (e.isDirectory()) { walk(full, depth + 1); continue }
-      if (!e.isFile()) continue
-      if (path.relative(packDir, full) === 'engrams.yaml') continue
-      files.push(full)
-    }
+  const walked = walkPack(packDir)
+  // Anything the scan could not read is REPORTED, never silently skipped. A
+  // skipped file is a place to hide things; a flagged one blocks the install
+  // until somebody looks. `refuseSymlinks` normally runs first, so links only
+  // reach here when this is called on its own.
+  for (const link of walked.symlinks) {
+    issues.push({ engram_id: link.path, type: 'unscannable', detail: `${link.path} is a symbolic link to ${link.target} — not scanned, not installable` })
   }
-  walk(packDir, 0)
+  for (const rel of walked.special) {
+    issues.push({ engram_id: rel, type: 'unscannable', detail: `${rel} is not a regular file — not scanned, not installable` })
+  }
+  if (walked.truncated) {
+    issues.push({
+      engram_id: '(pack)', type: 'unscannable',
+      detail: `the pack has more than ${MAX_PACK_ENTRIES} entries — the scan stopped, so the rest was not checked`,
+    })
+  }
 
-  for (const file of files.sort()) {
+  for (const file of walked.files.sort()) {
     const label = path.relative(packDir, file)
+    if (label === 'engrams.yaml') continue
     let text: string
     try {
-      const stat = fs.statSync(file)
-      // A very large file is capped rather than skipped: skipping it would be a
-      // place to hide things, and the cap is the same one the engram scan uses.
-      if (stat.size > 16 * 1024 * 1024) continue
+      const stat = fs.lstatSync(file)
+      if (stat.size > MAX_PACK_FILE_BYTES) {
+        issues.push({ engram_id: label, type: 'unscannable', detail: `${label} is ${stat.size} bytes, more than the ${MAX_PACK_FILE_BYTES}-byte scan limit — not scanned` })
+        continue
+      }
       text = fs.readFileSync(file, 'utf8')
-    } catch { continue }
-    // Binary-ish content produces noise, not findings.
-    if (text.includes('\u0000')) continue
+    } catch (err) {
+      issues.push({ engram_id: label, type: 'unscannable', detail: `${label} could not be read: ${(err as Error).message}` })
+      continue
+    }
+    // Binary-ish content: the infra heuristics (dotted numbers, host-like
+    // runs) produce noise on it, not findings. The credential and the
+    // instruction-override detectors are precise enough to run anyway, so a
+    // text file with one NUL byte in front of it cannot carry either past
+    // the scan into the store.
+    if (text.includes('\u0000')) {
+      const stripped = truncateToScanLimit(text.replace(/\u0000/g, ''))
+      for (const hit of detectSecrets(stripped)) {
+        issues.push({ engram_id: label, type: 'secret', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
+      }
+      for (const hit of detectPromptInjection(stripped)) {
+        issues.push({ engram_id: label, type: 'prompt_injection', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
+      }
+      continue
+    }
 
-    const capped = truncateToScanLimit(text)
-    for (const hit of detectSensitive(capped)) {
+    // The FULL text goes to detectSensitive: it caps its own regex work and
+    // emits the fail-closed `scan_truncated` hit past 1 MiB (#386, #425), so a
+    // credential beyond the cap blocks rather than passing unseen. The
+    // injection detector has no cap of its own, so it gets the capped copy.
+    for (const hit of detectSensitive(text)) {
       issues.push({ engram_id: label, type: 'secret', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
     }
-    for (const hit of detectPromptInjection(capped)) {
+    for (const hit of detectPromptInjection(truncateToScanLimit(text))) {
       issues.push({ engram_id: label, type: 'prompt_injection', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
     }
   }
@@ -394,6 +509,7 @@ export function readPackProvenance(
   const view: PackProvenanceView = {
     present: false,
     record_count: 0,
+    unreadable_records: 0,
     engrams_without_record: engrams.length,
     verified: false,
     verification_note:
@@ -429,69 +545,115 @@ export function readPackProvenance(
   // anyway: this builds a filesystem path from untrusted input, and if that
   // validation is ever loosened or another caller skips it, the cost of being
   // wrong is an arbitrary file read.
-  const readJson = (name: string): any | undefined => {
+  //
+  // Every value read below comes from a stranger's file, so nothing about its
+  // SHAPE is assumed either. `{"@graph": {}}`, `{"@graph": "x"}` and
+  // `{"@graph": [null]}` each threw a TypeError out of preview and install; a
+  // record is a plain object with an array `@graph`, and anything else is
+  // counted as unreadable rather than crashing the pack it arrived in.
+  const readJson = (name: string): 'absent' | 'unreadable' | Record<string, unknown> => {
     const safe = name.replace(/[^A-Za-z0-9._-]/g, '_')
-    try { return JSON.parse(fs.readFileSync(path.join(dir, safe), 'utf8')) } catch { return undefined }
+    const file = path.join(dir, safe)
+    let stat: fs.Stats
+    try { stat = fs.lstatSync(file) } catch { return 'absent' }
+    // A link is refused at the pack boundary; here it is simply not a record.
+    if (!stat.isFile() || stat.size > MAX_PACK_FILE_BYTES) return 'unreadable'
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'unreadable'
+      return parsed as Record<string, unknown>
+    } catch { return 'unreadable' }
   }
+  /** The nodes of a record's graph: only the plain objects, or none at all. */
+  const graphOf = (record: Record<string, unknown>): Array<Record<string, unknown>> | undefined => {
+    const graph = record['@graph']
+    if (!Array.isArray(graph)) return undefined
+    return graph.filter((n): n is Record<string, unknown> => !!n && typeof n === 'object' && !Array.isArray(n))
+  }
+  const unreadable: string[] = []
 
-  const packRecord = readJson('pack.jsonld')
+  // The pack record is handed back verbatim, so its shape is checked the same
+  // way: an object with an array graph, or it is unreadable.
+  const packRead = readJson('pack.jsonld')
+  const packRecord = typeof packRead === 'object' && graphOf(packRead) ? packRead : undefined
   if (packRecord) view.pack_record = packRecord
+  else if (packRead !== 'absent') unreadable.push('pack.jsonld')
 
   const licences = new Map<string, { count: number; chosen: boolean; sources: string[] }>()
   const parties = new Set<string>()
 
   for (const engram of engrams) {
-    const record = readJson(`${engram.id}.jsonld`)
-    if (!record) continue
-    view.record_count++
+    const name = `${engram.id}.jsonld`
+    const record = readJson(name)
+    if (record === 'absent') continue
+    // One bad record must not abort the reading of the rest: the per-record
+    // body is fenced so a crafted file counts as unreadable and nothing more.
+    try {
+      const graph = record === 'unreadable' ? undefined : graphOf(record)
+      if (!graph) { unreadable.push(name); continue }
+      view.record_count++
 
-    const subject = (record['@graph'] ?? []).find((n: any) => n['@id'] === `engram:${engram.id}`)
-    if (!subject) continue
+      const subject = graph.find(n => n['@id'] === `engram:${engram.id}`)
+      if (!subject) continue
 
-    const licence = subject['engram:license']
-    if (typeof licence === 'string') {
-      // Read the four-state field, not the boolean beside it.
-      //
-      // `engram:licenseSource` says WHICH of four ways a licence was arrived at:
-      // chosen on the engram, inherited from the pack, the author's configured
-      // default, or the schema default nobody ever looked at. The profile
-      // replaced the boolean with it precisely because the last two are
-      // different facts — one is a decision made once in advance, the other is
-      // nobody's decision at all.
-      //
-      // Reading only `engram:licenseIsDefault` collapsed them again at the one
-      // surface a recipient sees. A preview reporting "chosen" could mean the
-      // author picked this licence for this memory, or that they set a config
-      // default years ago and have not thought about it since.
-      //
-      // Falls back to the boolean for records written before the four-state
-      // field existed.
-      // Guarded like `license` above. A record is a file a stranger wrote, and
-      // this module's stated job is packs built to mislead — an unguarded read
-      // puts whatever the file contained into `sources: string[]`, so one
-      // malformed record turns a typed array into a mixed one for every
-      // consumer downstream.
-      const rawSource = subject['engram:licenseSource']
-      const source = typeof rawSource === 'string' ? rawSource : undefined
-      const chosen = source
-        ? (source === 'chosen' || source === 'configuredDefault')
-        : subject['engram:licenseIsDefault'] !== true
-      const seen = licences.get(licence)
-      // One engram that CHOSE a licence is enough to stop calling it defaulted.
-      if (seen) {
-        seen.count++
-        seen.chosen = seen.chosen || chosen
-        if (source && !seen.sources.includes(source)) seen.sources.push(source)
-      } else {
-        licences.set(licence, { count: 1, chosen, sources: source ? [source] : [] })
+      const licence = subject['engram:license']
+      if (typeof licence === 'string') {
+        // Read the four-state field, not the boolean beside it.
+        //
+        // `engram:licenseSource` says WHICH of four ways a licence was arrived
+        // at: chosen on the engram, inherited from the pack, the author's
+        // configured default, or the schema default nobody ever looked at. The
+        // profile replaced the boolean with it precisely because the last two
+        // are different facts — one is a decision made once in advance, the
+        // other is nobody's decision at all.
+        //
+        // Reading only `engram:licenseIsDefault` collapsed them again at the
+        // one surface a recipient sees. A preview reporting "chosen" could mean
+        // the author picked this licence for this memory, or that they set a
+        // config default years ago and have not thought about it since.
+        //
+        // Falls back to the boolean for records written before the four-state
+        // field existed.
+        //
+        // Guarded like `license` above. A record is a file a stranger wrote,
+        // and this module's stated job is packs built to mislead — an
+        // unguarded read puts whatever the file contained into
+        // `sources: string[]`, so one malformed record turns a typed array
+        // into a mixed one for every consumer downstream.
+        const rawSource = subject['engram:licenseSource']
+        const source = typeof rawSource === 'string' ? rawSource : undefined
+        const chosen = source
+          ? (source === 'chosen' || source === 'configuredDefault')
+          : subject['engram:licenseIsDefault'] !== true
+        const seen = licences.get(licence)
+        // One engram that CHOSE a licence is enough to stop calling it defaulted.
+        if (seen) {
+          seen.count++
+          seen.chosen = seen.chosen || chosen
+          if (source && !seen.sources.includes(source)) seen.sources.push(source)
+        } else {
+          licences.set(licence, { count: 1, chosen, sources: source ? [source] : [] })
+        }
       }
-    }
 
-    const who = subject['prov:wasAttributedTo']?.['@id']
-    if (typeof who === 'string') {
-      const name = who.replace(/^engram:agent\//, '')
-      if (name !== 'unidentified') { view.attributed_count++; parties.add(name) }
+      const attributed = subject['prov:wasAttributedTo']
+      const who = attributed && typeof attributed === 'object' ? (attributed as Record<string, unknown>)['@id'] : undefined
+      if (typeof who === 'string') {
+        const party = who.replace(/^engram:agent\//, '')
+        if (party !== 'unidentified') { view.attributed_count++; parties.add(party) }
+      }
+    } catch {
+      unreadable.push(name)
     }
+  }
+
+  view.unreadable_records = unreadable.length
+  if (unreadable.length) {
+    view.notes.push(
+      `${unreadable.length} provenance record(s) could not be read (${unreadable.slice(0, 3).join(', ')}`
+      + `${unreadable.length > 3 ? ', …' : ''}). A record that cannot be read says nothing, and a pack `
+      + 'that ships one may have been damaged or altered — check where you got it from.',
+    )
   }
 
   view.engrams_without_record = engrams.length - view.record_count
@@ -524,8 +686,35 @@ export function readPackProvenance(
   return view
 }
 
+/**
+ * Is there anything here to preview? Decided with `lstat` and without reading,
+ * BEFORE the directory is walked: `previewPack` takes a path an LLM may have
+ * chosen, and walking an arbitrary directory to list its links in an error
+ * message would turn "not a pack" into a directory listing of the host.
+ */
+function assertLooksLikeAPack(source: string): void {
+  const present = (name: string) => { try { fs.lstatSync(path.join(source, name)); return true } catch { return false } }
+  if (!present('SKILL.md') && !present('manifest.yaml')) {
+    throw new Error(`No SKILL.md found in ${source} — a knowledge pack must ship a SKILL.md (manifest.yaml is deprecated)`)
+  }
+  // The manifest, the engrams and the integrity value are read whole by
+  // `loadPack` and `computePackHash`, before the file scan applies its size
+  // limit. A multi-gigabyte SKILL.md must be refused here, not read.
+  for (const name of ['SKILL.md', 'manifest.yaml', 'engrams.yaml', 'INTEGRITY']) {
+    let size = 0
+    try { size = fs.lstatSync(path.join(source, name)).size } catch { continue }
+    if (size > MAX_PACK_FILE_BYTES) {
+      throw new Error(`[plur] refusing to read pack ${source}: ${name} is ${size} bytes, more than the ${MAX_PACK_FILE_BYTES}-byte limit for a pack file.`)
+    }
+  }
+}
+
 function _previewPackDir(source: string): PreviewResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
+  assertLooksLikeAPack(source)
+  // Before ANY read. `loadPack` below reads SKILL.md and engrams.yaml, and a
+  // link in their place would make it read whatever the link names.
+  refuseSymlinks(source, 'preview')
 
   const pack = loadPack(source)
   const security = scanPrivacy(pack.engrams)
@@ -763,6 +952,14 @@ function _installPackDir(
     const details = secretIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
     throw new Error(`Pack contains secrets — install blocked:\n${details}`)
   }
+  // A file the scan could not read is a file that cannot be installed: nothing
+  // may land in the store that was not checked. No override for this one —
+  // the remedy is to fix the pack, not to look away.
+  const unscannable = preview.security.issues.filter(i => i.type === 'unscannable')
+  if (unscannable.length > 0) {
+    const details = unscannable.map(i => `  ${i.detail}`).join('\n')
+    throw new Error(`Pack contains files the security scan could not read — install blocked:\n${details}`)
+  }
   // Prompt-injection text is blocked unless explicitly overridden (finding #2).
   const injectionIssues = preview.security.issues.filter(i => i.type === 'prompt_injection')
   if (injectionIssues.length > 0 && !opts.allowInjection) {
@@ -797,12 +994,35 @@ function _installPackDir(
   fs.rmSync(staging, { recursive: true, force: true })
   fs.mkdirSync(staging, { recursive: true })
 
-  const files = fs.readdirSync(source)
-  for (const file of files) {
-    const srcPath = path.join(source, file)
-    const destPath = path.join(staging, file)
-    if (fs.statSync(srcPath).isFile()) {
-      fs.copyFileSync(srcPath, destPath)
+  // Plain files only, and checked again HERE with `lstat`, not `stat`: the
+  // preview above refuses links, but this copy is the last step before bytes
+  // reach the store and must not trust that the check ran. `stat().isFile()`
+  // was true for a symlink to a file, so the copy followed it.
+  const copyPlainFile = (srcPath: string, destPath: string, label: string) => {
+    const st = fs.lstatSync(srcPath)
+    if (st.isSymbolicLink()) {
+      throw new Error(`[plur] refusing to install pack: ${label} is a symbolic link, and a pack must ship plain files.`)
+    }
+    if (!st.isFile()) return
+    fs.copyFileSync(srcPath, destPath)
+  }
+  for (const file of fs.readdirSync(source)) {
+    copyPlainFile(path.join(source, file), path.join(staging, file), file)
+  }
+
+  // The provenance records travel with the pack (#972). Install used to copy
+  // top-level files only, so `provenance/` never landed and a preview of the
+  // installed copy then called the pack damaged — "declares provenance and
+  // ships none". Only `*.jsonld` plain files, only one level deep, and only
+  // under the name the export gave them: the record for an engram is found by
+  // `<id>.jsonld`, so a name that does not fit that shape is not a record.
+  const provSrc = path.join(source, 'provenance')
+  if (fs.existsSync(provSrc) && fs.lstatSync(provSrc).isDirectory()) {
+    const provDest = path.join(staging, 'provenance')
+    for (const file of fs.readdirSync(provSrc)) {
+      if (!/^[A-Za-z0-9._-]+\.jsonld$/.test(file)) continue
+      fs.mkdirSync(provDest, { recursive: true })
+      copyPlainFile(path.join(provSrc, file), path.join(provDest, file), path.join('provenance', file))
     }
   }
 
@@ -1166,6 +1386,8 @@ export interface PrivacyScanResult {
 export interface PrivacyIssue {
   engram_id: string
   type: 'secret' | 'private_visibility' | 'personal_path' | 'email' | 'ip_address' | 'prompt_injection'
+    /** A file the scan could not read as a plain file — a link, a special file, one past the size or count limit. Blocks install. */
+    | 'unscannable'
   detail: string
 }
 
@@ -1201,6 +1423,16 @@ const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
 const EMAIL_RE = /[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9.-]{1,255}\.[a-zA-Z]{2,24}/
 const IP_RE = /\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/
 
+/**
+ * Does the export privacy scan read this text as containing an email address?
+ * Exposed so a surface can warn BEFORE a value is committed to — `plur identity
+ * you@example.org` made every export empty (#999), and the place to say so is
+ * the moment the identity is set, not the first empty pack.
+ */
+export function containsEmail(text: string): boolean {
+  return EMAIL_RE.test(text)
+}
+
 // Fields excluded from the serialized secret/PII scan: exportPack strips these
 // (relations/associations/knowledge_anchors never reach a pack), or they are
 // internal/numeric bookkeeping that can't carry a meaningful credential and
@@ -1225,15 +1457,10 @@ function serializeForSecretScan(e: Engram): string {
   const scan: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(e as Record<string, unknown>)) {
     if (SECRET_SCAN_EXCLUDE.has(k)) continue
-    if (k === 'structured_data' && v && typeof v === 'object' && !Array.isArray(v)) {
-      const userSd: Record<string, unknown> = {}
-      for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
-        if (!sk.startsWith('_')) userSd[sk] = sv
-      }
-      scan[k] = userSd
-    } else {
-      scan[k] = v
-    }
+    // The same exemption the write guard applies, from the same list: PLUR's
+    // own bookkeeping keys and nothing else. A `_` prefix rule exempted any
+    // key a caller cared to name (#1002 review).
+    scan[k] = k === 'structured_data' ? (userStructuredData(v) ?? {}) : v
   }
   return JSON.stringify(scan)
 }
@@ -1521,6 +1748,29 @@ export function exportPack(
     if (cleaned.associations) {
       cleaned.associations = []
     }
+    // The same rule for every other identifier only our store can resolve
+    // (profile §2.2: "No identifiers only our store can resolve"). The
+    // supersedes edges above were stripped and these were not, so a pack
+    // carried a `derived_from` id, a derivation `chain`, and a
+    // `provenance.origin` of `session:<episode>` — plus `episode_ids` and
+    // `sources[].session_id` — that a recipient cannot look up and that name
+    // our sessions to them.
+    cleaned.derived_from = null
+    cleaned.episode_ids = []
+    if (cleaned.sources?.length) {
+      cleaned.sources = cleaned.sources.map(s => ({ ...s, session_id: null }))
+    }
+    if (cleaned.provenance) {
+      const { origin, license } = cleaned.provenance
+      // A session origin means nothing outside this store; `direct` is what
+      // an engram with no recorded origin carries.
+      cleaned.provenance = {
+        origin: typeof origin === 'string' && !origin.startsWith('session:') ? origin : 'direct',
+        chain: [],
+        signature: null,
+        ...(license !== undefined ? { license } : {}),
+      } as NonNullable<Engram['provenance']>
+    }
     // Strip knowledge_anchors (local file paths)
     if (cleaned.knowledge_anchors) {
       cleaned.knowledge_anchors = []
@@ -1586,14 +1836,19 @@ export function exportPack(
     fs.writeFileSync(path.join(provDir, 'pack.jsonld'), serializeProvenanceRecord(packRecord))
     provenanceFiles.push(path.join('provenance', 'pack.jsonld'))
 
+    // The engrams a recipient of this pack CAN resolve: the ones in it. A
+    // record may name another member (this one revised that one); it may not
+    // name an engram that stays behind.
+    const members = new Set(safeEngrams.map(e => e.id))
     for (const engram of safeEngrams) {
-      // Portable by default: a record that stands on its own, names no other
-      // engram, and carries no session identifier.
+      // Portable by default: a record that stands on its own, names no engram
+      // outside the pack, and carries no session identifier.
       // A member with no licence of its own inherits the pack's, recorded as
       // inheritance rather than as the engram's own choice — the assembler
       // granted it, and may not hold rights over every engram in the pack.
       const record = buildProvenanceRecord(engram, [], {
         mode: 'portable',
+        members,
         packLicense,
         packId: `${manifest.name}@${manifest.version}`,
       })

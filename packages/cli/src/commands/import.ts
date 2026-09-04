@@ -10,8 +10,8 @@
  * the content-hash dedup gate and the secret guard apply — never raw-append.
  */
 import { readFileSync } from 'fs'
-import { Plur, importFrom, listImportSources, type FieldMapping, type MigrationReport } from '@plur-ai/core'
-import type { GlobalFlags } from '../plur.js'
+import { importFrom, listImportSources, type FieldMapping, type MigrationReport } from '@plur-ai/core'
+import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
 async function usage(): Promise<string> {
@@ -63,7 +63,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
   }
 
-  const plur = new Plur({ path: store || process.env.PLUR_PATH || undefined })
+  // Via createPlur, not `new Plur` directly (evaluator audit minor): the CLI
+  // entrypoint drains background index work through getLastPlurInstance()
+  // before exiting, and import — the one command with the largest bulk
+  // write — was the one command whose instance the drain could not see.
+  // createPlur honours --store by mapping it onto flags.path.
+  const plur = createPlur({ ...flags, path: store || flags.path })
   const report = await importFrom(plur, { from, path: file, mapping, dryRun, scope })
 
   if (shouldOutputJson(flags)) {

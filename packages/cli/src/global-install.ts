@@ -76,6 +76,6 @@ export function formatGlobalInstallWarning(result: GlobalInstallResult): string[
   }
   lines.push('')
   lines.push('   Fix: npm uninstall -g @plur-ai/mcp @plur-ai/cli')
-  lines.push('   Then: npx @plur-ai/mcp@latest  (fetches the latest version each run)')
+  lines.push('   Then: npx @plur-ai/mcp@<version>  (pin a version — @latest re-resolves each publish and races the npx cache, #1069)')
   return lines
 }

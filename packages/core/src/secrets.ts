@@ -24,16 +24,35 @@ const SECRET_PATTERNS: { name: string; regex: RegExp }[] = [
   { name: 'bearer_token', regex: /Bearer\s+[A-Za-z0-9._~+/=-]{20,}/ },
 ]
 
+/**
+ * The raw text and, when it differs, the folded copy a reader would see.
+ *
+ * A zero-width joiner inside `AKIA…` splits the key for every regex and for no
+ * human, and the outbound guard let it through — the same evasion the
+ * injection detector already folds away (`foldForMatching`). Both views are
+ * scanned so nothing that matched before stops matching; a pattern is
+ * reported once whichever view found it.
+ */
+function scanViews(text: string): string[] {
+  const folded = foldForMatching(text)
+  return folded === text ? [text] : [text, folded]
+}
+
 /** Scan text for potential secrets. Returns empty array if clean. */
 export function detectSecrets(text: string): SecretMatch[] {
   if (typeof text !== 'string') {
     throw new TypeError(`detectSecrets: expected string, got ${typeof text}`)
   }
   const matches: SecretMatch[] = []
-  for (const { name, regex } of SECRET_PATTERNS) {
-    const m = text.match(regex)
-    if (m) {
-      matches.push({ pattern: name, match: m[0].slice(0, 20) + '...' })
+  const found = new Set<string>()
+  for (const view of scanViews(text)) {
+    for (const { name, regex } of SECRET_PATTERNS) {
+      if (found.has(name)) continue
+      const m = view.match(regex)
+      if (m) {
+        found.add(name)
+        matches.push({ pattern: name, match: m[0].slice(0, 20) + '...' })
+      }
     }
   }
   return matches
@@ -103,6 +122,11 @@ const LOOKALIKES: Record<string, string> = {
  * the person reading the finding sees what the file actually contains.
  */
 export function foldForMatching(text: string): string {
+  // Pure ASCII has nothing to fold — no invisible characters, no lookalikes,
+  // no presentation forms — and this runs on every write and every pack file,
+  // up to the 1 MiB scan cap. One regex test spares the normalisation.
+  // eslint-disable-next-line no-control-regex
+  if (!/[^\x00-\x7f]/.test(text)) return text
   const folded = text
     .normalize('NFKC')
     // eslint-disable-next-line no-control-regex
@@ -487,25 +511,40 @@ export function detectSensitive(text: string): SecretMatch[] {
     text = Buffer.from(text, 'utf8').subarray(0, MAX_SCAN_BYTES).toString('utf8')
   }
   const matches = detectSecrets(text)
-  for (const { name, regex } of SENSITIVE_PATTERNS) {
-    const m = text.match(regex)
-    if (m) matches.push({ pattern: name, match: m[0].slice(0, 30) + '...' })
-  }
-  for (const ip of text.match(IPV4) ?? []) {
-    if (isPublicIpv4(ip)) {
-      matches.push({ pattern: 'public_ipv4', match: ip })
-      break
+  // Same two views as detectSecrets, for the same reason: an invisible
+  // character inside a host name or an address must not hide it.
+  const found = new Set<string>()
+  for (const view of scanViews(text)) {
+    for (const { name, regex } of SENSITIVE_PATTERNS) {
+      if (found.has(name)) continue
+      const m = view.match(regex)
+      if (m) { found.add(name); matches.push({ pattern: name, match: m[0].slice(0, 30) + '...' }) }
     }
-  }
-  for (const candidate of text.match(IPV6_CANDIDATE) ?? []) {
-    if (isPublicIpv6(candidate)) {
-      matches.push({ pattern: 'public_ipv6', match: candidate })
-      break
+    if (!found.has('public_ipv4')) {
+      for (const ip of view.match(IPV4) ?? []) {
+        if (isPublicIpv4(ip)) {
+          found.add('public_ipv4')
+          matches.push({ pattern: 'public_ipv4', match: ip })
+          break
+        }
+      }
     }
-  }
-  const internalHost = matchInternalHost(text)
-  if (internalHost) {
-    matches.push({ pattern: 'internal_host', match: internalHost.slice(0, 30) })
+    if (!found.has('public_ipv6')) {
+      for (const candidate of view.match(IPV6_CANDIDATE) ?? []) {
+        if (isPublicIpv6(candidate)) {
+          found.add('public_ipv6')
+          matches.push({ pattern: 'public_ipv6', match: candidate })
+          break
+        }
+      }
+    }
+    if (!found.has('internal_host')) {
+      const internalHost = matchInternalHost(view)
+      if (internalHost) {
+        found.add('internal_host')
+        matches.push({ pattern: 'internal_host', match: internalHost.slice(0, 30) })
+      }
+    }
   }
   if (truncated) {
     // Fail-closed (#386): the region past MAX_SCAN_BYTES was not scanned, so we

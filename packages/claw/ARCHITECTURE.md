@@ -33,8 +33,7 @@ src/
 ├── learner.ts             # Auto-extract learnings from a turn
 ├── setup.ts               # CLI: enable plugin in OpenClaw config
 ├── cli.ts                 # CLI dispatch (setup, doctor)
-├── telemetry.ts           # Per-event observability
-├── telemetry-counters.ts  # In-memory counters surfaced in /status
+├── version.ts             # CLAW_VERSION — the one place the plugin version is written
 └── types.ts               # Shared types
 ```
 
@@ -150,14 +149,17 @@ fires on a casual remark, the engram is wrong forever.
 Pure config edit — no MCP registration, no hook installation. OpenClaw
 already exposes plugins to its agents.
 
-## Telemetry (`telemetry.ts`, `telemetry-counters.ts`)
+## Telemetry
 
-Per-event counters: `injects_attempted`, `engrams_injected`,
-`learnings_captured`, `errors_swallowed`, etc. Exposed via the OpenClaw
-status surface. Pure local — never sent off-machine.
+Claw uses `@plur-ai/core`'s telemetry modules — `recordEvent`,
+`flushIfNeeded`, `registerFlushOnExit`, `resolveTelemetry` — and carries no
+copy of its own. It did until 2026-09, and the copy had drifted to a
+heartbeat endpoint that no longer resolved, so claw heartbeats were lost;
+`test/telemetry-wiring.test.ts` now forbids a copy from coming back.
 
-When debugging "why didn't my agent learn this", check the counters
-first; they'll show whether the learner ran at all.
+Opt-in (`PLUR_TELEMETRY=on`), daily learn/recall/session counts, flushed
+with `packageVersion: CLAW_VERSION` so the payload identifies the plugin.
+Design and privacy contract: `docs/telemetry-design.md`.
 
 ## Boundary with `@plur-ai/core`
 

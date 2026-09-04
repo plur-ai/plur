@@ -53,7 +53,7 @@ import { homedir } from 'os'
 import { join, dirname } from 'path'
 import { z } from 'zod'
 import type { Engram } from './schemas/engram.js'
-import { RemoteRowSchema, normalizeEndpointUrl } from './store/remote-store.js'
+import { normalizeEndpointUrl, salvageRemoteRow } from './store/remote-store.js'
 import { isScopeWithin, isSharedScope } from './scope-util.js'
 import { namespaceEngramId } from './engrams.js'
 import { logger } from './logger.js'
@@ -573,13 +573,16 @@ function processHostRows(
     const candidate = (r.data && typeof r.data === 'object' && !('statement' in r))
       ? { ...(r.data as Record<string, unknown>), id: r.id, scope: r.scope, status: r.status }
       : r
-    const parsed = RemoteRowSchema.safeParse(candidate)
-    if (!parsed.success) {
+    // Schema-drift salvage — same rule as RemoteStore.reshape (shared helper):
+    // an engram whose only problem is a drifted optional field stays in
+    // recall, minus that field, instead of silently vanishing.
+    const salvaged = salvageRemoteRow(candidate as Record<string, unknown>, { url: host.url, rowId: (candidate as Record<string, unknown>).id })
+    if (!salvaged) {
       const safeId = String((candidate as Record<string, unknown>).id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
       logger.debug(`[plur:remote-recall] ${host.url} returned a malformed row (id="${safeId}") — dropped`)
       continue
     }
-    const e = parsed.data as unknown as Engram
+    const e = salvaged.data as unknown as Engram
     // Scope guard with explicit global admission.
     const entry = e.scope === 'global'
       ? dialedEntries[0]

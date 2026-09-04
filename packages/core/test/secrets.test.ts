@@ -651,3 +651,51 @@ describe('text disguised to look like something else', () => {
       .not.toContain('disguised')
   })
 })
+
+/**
+ * An invisible character inside a credential must not hide it (#1002 review).
+ *
+ * The injection detector already folds zero-width and lookalike characters
+ * away before matching (`foldForMatching`); the secret detectors did not, so
+ * `AKIA<zero-width joiner>IOSFODNN7EXAMPLE` passed the outbound guard while
+ * reading, to a person, as the key it is.
+ */
+describe('secret detection sees through invisible characters', () => {
+  const ZWJ = '‍'
+  const ZWSP = '​'
+
+  it('detectSecrets: a zero-width joiner inside an AWS key', () => {
+    const hits = detectSecrets(`Use AKIA${ZWJ}IOSFODNN7EXAMPLE for S3`)
+    expect(hits.map(h => h.pattern)).toContain('aws_access_key')
+  })
+
+  it('detectSecrets: a zero-width space inside an sk- key', () => {
+    const hits = detectSecrets(`OPENAI_API_KEY=sk-1234${ZWSP}567890abcdefghijklmn`)
+    expect(hits.map(h => h.pattern)).toContain('generic_api_key')
+  })
+
+  it('detectSecrets: fullwidth letters in a connection string', () => {
+    // NFKC folds fullwidth forms to plain ASCII.
+    expect(detectSecrets('ｐｏｓｔｇｒｅｓ://u:p@host:5432/db').map(h => h.pattern)).toContain('connection_string')
+  })
+
+  it('detectSensitive: a zero-width joiner inside a public IP', () => {
+    const hits = detectSensitive(`the box is 139.59${ZWJ}.155.82`)
+    expect(hits.map(h => h.pattern)).toContain('public_ipv4')
+  })
+
+  it('detectSensitive: a zero-width space inside an internal host', () => {
+    const hits = detectSensitive(`talk to db.${ZWSP}internal first`)
+    expect(hits.map(h => h.pattern)).toContain('internal_host')
+  })
+
+  it('reports each pattern once, whichever view found it', () => {
+    const hits = detectSensitive(`AKIAIOSFODNN7EXAMPLE and AKIA${ZWJ}IOSFODNN7EXAMPLE`)
+    expect(hits.filter(h => h.pattern === 'aws_access_key')).toHaveLength(1)
+  })
+
+  it('leaves plain ASCII exactly as it was', () => {
+    expect(detectSecrets('nothing to see here')).toEqual([])
+    expect(detectSensitive('a clean sentence about nothing')).toEqual([])
+  })
+})

@@ -48,5 +48,8 @@ export default defineConfig({
     testTimeout: 30000,
     hookTimeout: 30000,
     exclude: ['**/node_modules/**', '**/dist/**', ...PGLITE_SUITES],
+    // The #1069 host breaker is process-global by design; without a per-test
+    // reset it leaks "host down" verdicts across test files (see the helper).
+    setupFiles: ['test/helpers/reset-remote-breaker-setup.ts'],
   },
 })

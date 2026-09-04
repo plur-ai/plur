@@ -30,7 +30,7 @@ wrappers go through the same gate, so an opted-out install does nothing.
 ### Exit-flush is best-effort — unreliable for short-lived processes
 
 `registerFlushOnExit()` (`packages/core/src/telemetry-flush.ts`; `@plur-ai/claw`
-carries an identical copy in `packages/claw/src/telemetry-flush.ts`) registers a
+imports it from core and passes its own `packageVersion`) registers a
 `process.once('beforeExit', …)` handler whose body fires `flushIfNeeded()` as a
 fire-and-forget `void` promise. Two consequences:
 

@@ -1,14 +1,19 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
-import { checkForUpdate, CapabilityCanary } from '@plur-ai/core'
-import { recordEvent } from './telemetry-counters.js'
-import { flushIfNeeded, registerFlushOnExit } from './telemetry-flush.js'
+import { checkForUpdate, CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit } from '@plur-ai/core'
+import { CLAW_VERSION } from './version.js'
+
+// Telemetry is core's module, not a copy (2026-09 audit): the claw copy had
+// drifted to a heartbeat endpoint that no longer resolves, so claw heartbeats
+// were silently lost. `packageVersion` keeps the payload reporting the claw
+// version rather than core's.
+const TELEMETRY = { packageVersion: CLAW_VERSION }
 
 // #128: when recordEvent rolls the day, ship yesterday's pending snapshot
 // immediately. Without this, a long-lived plugin process would only flush on
 // `beforeExit`, which can be days away.
 function maybeFlushAfter(rolledOver: boolean): void {
-  if (rolledOver) void flushIfNeeded({}).catch(() => {})
+  if (rolledOver) void flushIfNeeded(TELEMETRY).catch(() => {})
 }
 
 // Re-export everything consumers might need
@@ -44,7 +49,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.17.0',
+  version: CLAW_VERSION,
   kind: 'memory' as const,
 
   register(api: any) {
@@ -217,19 +222,22 @@ const plugin = {
       })
     }
 
-    // 6. Register MCP server via API if available (config fallback handled by setup.ts)
-    if (typeof api.registerMcpServer === 'function') {
-      try {
-        api.registerMcpServer('plur', {
-          command: 'npx',
-          args: ['-y', '@plur-ai/mcp'],
-          env: { PLUR_PATH: path },
-        })
-        api.logger.info('PLUR: registered MCP server for agent tools')
-      } catch (err: any) {
-        api.logger.debug(`PLUR: MCP server registration skipped: ${err.message}`)
-      }
-    }
+    // 6. MCP server registration is handled entirely by setup.ts, which writes
+    //    mcp.servers.plur into the OpenClaw config (see setup.ts, "Configure MCP
+    //    server for agent-callable tools").
+    //
+    //    There used to be an `api.registerMcpServer('plur', ...)` call here,
+    //    guarded by a `typeof === 'function'` check. It was removed because
+    //    `registerMcpServer` is not part of the OpenClaw plugin API — it is
+    //    absent from 2026.7.1 — so the guard never passed and the block was
+    //    dead code. Worse, it was not harmless: the ClawHub Plugin Inspector
+    //    scans the built bundle for registration names statically, cannot see
+    //    that the call is guarded, and refused to publish with
+    //    `unknown-registration-name: claw: fixture calls a registrar missing
+    //    from target OpenClaw`. That gate blocked the plugin's release.
+    //
+    //    setup.ts writes the identical descriptor (npx -y @plur-ai/mcp with
+    //    PLUR_PATH), so removing this changes nothing at runtime.
 
     // 7. CLI commands
     if (typeof api.registerCli === 'function') {
@@ -264,8 +272,8 @@ const plugin = {
 
     // 9. Telemetry flush on process exit (no-op when PLUR_TELEMETRY != 'on').
     // beforeExit fires once per long-lived OpenClaw process — flushes yesterday's
-    // counters to plur.ai/v1/heartbeat when day-rollover left a snapshot behind.
-    registerFlushOnExit({})
+    // counters to the heartbeat endpoint when day-rollover left a snapshot behind.
+    registerFlushOnExit(TELEMETRY)
 
     api.logger.info(`PLUR registered: context engine + hooks + slash commands + CLI`)
 

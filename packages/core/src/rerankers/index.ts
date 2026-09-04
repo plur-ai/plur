@@ -20,8 +20,7 @@
  * without an extra `if (!reranker)` branch in the hot path.
  */
 import { logger } from '../logger.js'
-import { makeBgeRerankerV2M3Adapter } from './bge-reranker-v2-m3.js'
-import { makeMsMarcoMiniLmL6Adapter } from './ms-marco-minilm-l6.js'
+import { makeBgeRerankerV2M3Adapter, makeMsMarcoMiniLmL6Adapter } from './transformers-cross-encoder.js'
 import type { RerankerAdapter } from './types.js'
 
 export type { RerankerAdapter } from './types.js'
@@ -231,6 +230,3 @@ export function resolveRerankerName(env: NodeJS.ProcessEnv = process.env): Reran
 export function _resetResolveWarnings(): void {
   warnedUnknown = false
 }
-
-// Fit-check (#451): score-distribution domain-fit check for cross-encoder rerankers.
-export { checkRerankerFit, type FitCheckResult, type FitCheckEngram } from './fit-check.js'

@@ -1,7 +1,295 @@
 # Changelog
 
-## 0.18.0 (unreleased)
+## Unreleased
 
+Architecture audit (2026-09-03, `docs/audits/2026-09-03-architecture-audit.md`):
+fewer mechanisms, one drift bug fixed, no feature changes.
+
+- **claw heartbeats reach the live endpoint again.** claw carried copies of core's
+  three telemetry modules; #562 pointed the copy at `heartbeat.plur-ai.org`, which
+  does not resolve, while core (MCP, CLI) kept `plur.ai/v1/heartbeat`, which does.
+  claw now imports core's modules and passes its own `packageVersion`; the copies
+  and their duplicated tests are gone.
+- **`learnRouted()` refuses an empty statement** before dialing a remote store, as
+  `learn()` always did — both now run one input gate.
+- **`updateEngramAsync()` / `setPinnedAsync()`** are the same implementation as
+  `updateEngram()` / `setPinned()` (as their docs claimed since 0.16). A remote that
+  refuses a PATCH is now skipped in favour of the next writable store on the
+  deprecated names too, instead of throwing.
+
+**Removed from `@plur-ai/core`** (breaking for anyone importing them; nothing in
+this repo did): `YamlStore`, `SqliteStore`, `createStore`, `migrateStore`,
+`EngramStore`, `StorageBackend`, `StorageConfig` — the pre-ADR-0003 persistence
+seam. `YamlStore.save()` was a second whole-corpus YAML writer that had shipped
+without the shrink guard (#824), and `SqliteStore` made SQLite a primary store
+against the documented invariant. `saveEngrams` is now the only whole-corpus YAML
+writer. The unread `storage:` config key that only fed the deleted factory is
+gone too (unknown keys are ignored, so existing `config.yaml` files still load).
+Also removed: `rebuildJsonCache`, `COMMITMENT_MULTIPLIER`, `BoundedRecallResult`,
+`computePackChecksum`/`verifyPackChecksum` (never exported), `computeQualityScore`
+(no caller), the embedder dim-check module (the doctor grew its own).
+
+Internal: one cross-encoder module builds both rerankers; the rerankers import
+cycle is gone; `mcp`, `cli` and `claw` each show their version from one constant
+(`release.sh` bumps 15 places, not 17; claw bumps one source file, not two).
+
+## 0.19.4
+
+Patch release: makes the Hermes memory provider actually load. 0.19.3 shipped the entry
+point and still discovered nothing.
+
+- `plur-hermes` now resolves through Hermes' memory-provider loader
+
+**The memory-provider entry point now resolves (#957 follow-up).** 0.19.3 declared
+`[project.entry-points."hermes_agent.memory_providers"]` but pointed it at the factory
+function, and Hermes' `_load_provider_from_entry_point` returned `None` anyway. It tries
+`isinstance`/`issubclass` against its `MemoryProvider` ABC, then `hasattr(loaded, "register")`,
+then `callable(loaded)` — and `PlurMemoryProvider` deliberately does not subclass the ABC,
+because subclassing would make `hermes_agent` a hard runtime dependency and cost the
+zero-dependency guarantee. A plain function has no `.register`, so every branch missed and the
+loader fell through to `loaded(collector)`, returning `collector.provider` = `None`.
+
+The entry point now targets the package: `plur_hermes.register()` already calls
+`ctx.register_memory_provider()`, which is the one loader branch with no type check.
+
+Verified on two hosts against a clean clone of `NousResearch/hermes-agent` main, driving the
+real loader — the old value yields `None`, the new one yields `PlurMemoryProvider` with 22
+tools. Injection verified end-to-end: the registered `pre_llm_call` hook returns engram
+content, and `prefetch()` correctly no-ops while hooks are active so nothing double-injects.
+Three regression tests pin the two properties the loader depends on; they fail against the
+old value.
+
+**Note:** `plur-hermes` requires the `@plur-ai/cli` binary on PATH. Without it,
+`plur_hermes.register()` returns early and registers nothing — pip install alone is not enough.
+
+
+## 0.19.3
+
+Patch release: ships the Hermes memory-provider entry point that 0.19.0-0.19.2
+were missing, and carries engram provenance through team pushes.
+
+- `plur-hermes` is discoverable as a Hermes memory provider again
+- remote-store team pushes no longer drop `origin`/`chain`/licence fields
+
+**PlurMemoryProvider is registered as a Hermes memory provider (#957).** The
+`[project.entry-points."hermes_agent.memory_providers"]` group was never declared
+in `packages/hermes/pyproject.toml`, so `create_memory_provider()` was unreachable
+and auto-discovery silently did nothing. 0.18.1 shipped the group; 0.19.0, 0.19.1
+and 0.19.2 did not — 0.19.2 contained `memory_provider.py` but no entry point, so
+the capability it advertised could not load. This release restores the group and
+adds the provider suite (204 tests). Requires hermes-agent Herald (0.20.x) for the
+`memory_providers` group; on earlier gateways the plugin path is unaffected.
+
+**Remote-store pushes carry provenance (#983).** `RemoteStore.append()` dropped
+`origin`, `chain` and licence fields on team push, so engrams arriving at a shared
+store lost the record of where they came from. They are now carried through.
+
+
+## 0.19.1
+
+Patch release (#1072): every finding from the independent 0.19.0 audit (#1058),
+the two same-day production crash bugs, and every finding from this patch's own
+three-audit round — with the bonus instances the fixes' bug classes turned up
+on the way through.
+
+- `plur init` never destroys a config it cannot parse
+- tmp-dir hardening now covers the Codex and Cursor hook families, not just agy
+- doctor/migrate stop calling a config-selected PGLite index an orphan
+
+**`plur init` and `plur-mcp init` refuse to write through a config they could
+not parse (#1059).** A config with a JSON error (one trailing comma) was read
+as empty and written back, silently discarding everything else the user had in
+it. Every write-back leg now refuses with a fix-by-hand message: the three
+harness MCP legs (Claude Desktop, Cursor, Antigravity), BOTH Claude Code
+`settings.json` legs — the most hand-edited file of them all, carrying the
+user's permissions, env and other hooks, which the first cut of this fix
+missed — and `plur-mcp init`'s `.mcp.json`/`settings.json` writers. The Cursor
+hooks leg additionally gained the valid-JSON-wrong-shape refusal and now
+preserves unknown top-level keys through the round trip.
+
+**Session tmp-dir hardening for every hook family (#1060).** 0.19.0 shipped
+symlink/ownership/mode vetting (0700 dirs, 0600 files) for the Antigravity
+session directory only. The shared `ensureSessionDir` now covers Codex and
+Cursor too, and every stale-file sweep first refuses to delete through a
+symlink or another user's directory — closing an arbitrary-file-deletion
+primitive on shared-/tmp systems. Bonus instance: Cursor's counter could throw
+out of a hook (fail-closed); it now fails open like the Codex and agy counters.
+
+**doctor/migrate honour `backend: pglite` in config.yaml (#1061).** Both used
+to test only `PLUR_BACKEND`, so a user who selected PGLite via config.yaml was
+told their live index was an orphan they could delete. Both now resolve the
+tier through the same `resolveBackendTier` the engine uses. The orphan
+advisory also appears in `plur doctor --json` output, not just text (#1065).
+
+**PGLite embeddings export: one bad row costs one vector (#1063).** Any throw
+while decoding a row used to abort the whole export (`ported: 0`) — the silent
+full re-embed the export exists to avoid. Rows are now contained individually
+(reported as `malformed`), the BYTEA decode copies before viewing so alignment
+can never throw, and schema discovery reads every schema holding
+`engram_embeddings` deterministically instead of `LIMIT 1`-ing an arbitrary
+one on stores that ran both with and without AGE.
+
+**The MCP server survives background faults (#1070).** Unhandled rejections
+are survived with rate-limited logging; an uncaught EXCEPTION now logs and
+exits instead — resuming after one is unsafe, and a wedged-but-alive server
+holding the store lock would block every other writer indefinitely (the
+cross-process stale-lock recovery rightly never steals from a live pid).
+Original entry: Node's default turns any
+unhandled rejection — an un-awaited retry, a background probe — into process
+death, and Claude Code never restarts an MCP server mid-session, so one
+transient hiccup silently ended memory for the whole session (the observed
+"plur_doctor failed after 0s: Connection closed" was the server already dead —
+doctor found the corpse, it didn't create it). The stdio server now logs and
+survives unhandled rejections and uncaught exceptions, with a spawned-process
+regression test proving plur_doctor over MCP returns AND the server answers
+the next call.
+
+**MCP config entries pin their version — never `@latest` (#1069 root cause).**
+The cold-start SIGKILL was macOS's code-signing monitor: an `@latest` npx
+entry makes npx rewrite its cached native binaries (`better_sqlite3.node`) on
+every publish, and any process paging in a mid-rewrite binary dies with
+"CODESIGNING Invalid Page" (captured in Diagnostic Reports). `plur init`
+writes the shim where resolvable (including, at last, from the monorepo
+workspace layout) and otherwise pins the installing CLI's own version;
+`plur-mcp init` pins its own version. Re-running either HEALS a stale
+`@latest` entry instead of reporting "already registered" past it — healing
+only the exact racey shapes init itself wrote: a deliberate old-version pin,
+a fork package, or a custom command that merely mentions the package name is
+never touched, and unknown fields on the entry survive the upgrade. The Codex
+leg (TOML, managed by `codex mcp`) detects a stale entry and prints the exact
+fix. Version constants are parity-and-shape-tested against package.json in
+both packages, and the release script refuses non-release-shaped versions.
+
+**Dead remote hosts cost one timeout per process, not one per store entry
+(#1069).** A production config was observed with nine store entries pointing
+at one unreachable host — every load paid nine connect timeouts, in every
+fresh process, multiplied by concurrent hook processes, all inside
+`plur_session_start`. A network-level failure now marks the HOST down for 60s
+process-wide: every store on that origin fast-fails to its prior cache. HTTP
+errors never trip it — a 401 is a live host talking.
+
+**Remote schema drift no longer silently hides engrams (#1071).** An
+enterprise server on a different release can serve field values a stricter
+client rejects — observed live: ~100 engrams dropped wholesale over
+`commitment: invalid_enum_value`, invisible to recall with no signal. Both
+remote read paths now salvage such rows by dropping exactly the drifted
+optional field (one warning per drift shape, on both paths), keeping the
+engram. Privacy and privilege fields fail CLOSED: a drifted `visibility` or
+`pinned` still drops the whole row, because their absence is more permissive
+than any value — stripping `visibility` would have fail-opened the
+pack-export privacy gate. A genuinely malformed row still drops.
+
+**Test suite is hermetic against the host's git config (#1062).** Three sync
+tests failed on any machine whose global gitignore lists `engrams.yaml` —
+exactly how a PLUR user keeps their memory store out of every repo. Git-config
+isolation (first added for #329) is now a shared helper used by every
+git-spawning test file.
+
+Also fixed from this release's own audit round: three scratch probe files
+(one carrying a machine-local path) removed and gated at release time
+(`*.tmp.*` refused when tracked); the accidentally-committed machine-local
+`.claude/settings.json` and installer-generated `AGENTS.md` untracked and
+gitignored; doctor's PGLite+embedding-gemma advisory resolves the backend
+through `resolveBackendTier` like everything else (#1061 class); the in-app
+update advice no longer recommends the `@latest` invocation that pinned
+configs made a no-op.
+
+Also: the dev scratch script `packages/core/mig-seed.mjs` is gone from the repo
+(#1066), the 0.19.0 changelog entry below no longer claims to be unreleased
+(#1065), and the release script now refuses to ship a version whose changelog
+section still carries an `(unreleased)` marker.
+
+## 0.19.0
+
+The memory layer forgot Codex. Awkward. Fixed — agy too.
+
+- `plur init --codex` / `--antigravity`
+- Hybrid recall in hooks
+- Size ladder: yaml → sqlite → postgres
+
+**Codex CLI adapter (#1031).** `plur init --codex` wires `~/.codex/hooks.json` (five lifecycle
+hooks), registers the MCP server via `codex mcp add`, and adds a PLUR section to
+`AGENTS.md`. One manual step: Codex refuses untrusted hooks *silently* — run `/hooks`
+in Codex once and trust the PLUR entries. `plur doctor` reports Codex wiring and
+repeats that caveat.
+
+**Antigravity CLI (agy) adapter (#1033).** `plur init --antigravity` wires agy's global config
+(`~/.gemini/config/`): a `plur-memory` hook set (PreInvocation injection + PreToolUse
+guard), the MCP server, and `AGENTS.md`. No trust step — restart agy and memory flows.
+Per-prompt recall reads the conversation transcript (agy's hook payload carries no
+prompt text), and each turn's memory is re-injected as an ephemeral message on every
+model invocation so it survives tool calls without accumulating in history. Google is
+transitioning Gemini CLI to Antigravity; Gemini CLI itself remains tools-only.
+
+**Hybrid injection in hooks.** Hook injection is now hybrid (BM25 + embeddings) with an
+automatic BM25 fallback on an 8s soft deadline — measured ~4.7s hybrid vs ~1.6s BM25 on
+a 5,775-engram store, with hybrid diverging most exactly on the vague prompts where
+memory matters. `PLUR_HOOK_HYBRID=0` forces BM25; `PLUR_HOOK_HYBRID_DEADLINE_MS` tunes
+the deadline (keep it under your harness's hook timeout: Codex 25s, agy 20s). Enabled
+by the `@huggingface/transformers` 3.8.1 → 4.2.0 upgrade, which fixes a SIGABRT during
+ONNX teardown (#1040) that made every embedder-touching process exit 134 — and, in
+3.8.1, could leave a truncated model file that permanently and silently degraded search
+to BM25 (#340's failure mode; 4.2.0 downloads atomically). Embedding vectors are
+bit-identical across the upgrade — no re-embed, caches stay valid.
+
+**PGLite sync is no longer quadratic with your session count.** `syncFromYaml` batches
+upserts (a 5,000-engram corpus builds in ~2s instead of 10+ minutes), records a
+fingerprint so an unchanged store skips the sync entirely, tolerates duplicate ids
+last-wins, and the CLI drains background index work before exiting so the index
+actually converges.
+
+**Security.** Transitive `adm-zip` is forced to `>=0.6.0` via pnpm override
+(GHSA: crafted ZIP triggers a 4GB allocation; pulled in by `onnxruntime-node`,
+where it only ever extracts onnxruntime's own install artifact — exposure was
+minimal, now zero).
+
+**Release tooling.** The release script now probes the X credentials it will
+actually post with before any irreversible step (#948, #951), so a dead token
+aborts the release instead of stranding it half-published.
+
+### BREAKING — PGLite is opt-in, never selected by corpus size (#1046)
+
+The automatic ladder is now **yaml → sqlite → postgres**. Stores past 5,000 engrams
+select a SQLite metadata index (sub-millisecond opens measured to 500k engrams)
+instead of PGLite, which boots a full Postgres-in-WASM per process — measured at
+0.61s vs 300s+ per command on a 5,775-engram store under PLUR's
+fresh-process-per-hook model.
+
+**Who is affected:** any default install with more than 5,000 engrams. On first run
+after upgrading, selection moves to `sqlite` and builds `engrams.db`. Nothing is
+lost — YAML remains the source of truth.
+
+**Migration: nothing to do.** Recall keeps working immediately (BM25), and
+embeddings rebuild automatically — the first hybrid recalls re-embed the corpus,
+which takes a few minutes of background CPU on a large store and then it is done.
+The old `~/.plur/store.pglite/` directory (typically 60–500MB) is orphaned and safe
+to delete whenever convenient; `plur doctor` points it out.
+
+Optional shortcut for large stores: `plur migrate` carries the old store's
+embedding vectors straight into the new tier's cache (each verified against the
+engram's current text and the active embedder's dimension), skipping the rebuild
+window entirely.
+
+To keep the old behaviour set `backend: pglite` in `~/.plur/config.yaml` or
+`PLUR_BACKEND=pglite`; PGLite remains the right choice only where its pgvector/AGE
+capabilities are the point, and it now logs its per-process boot cost once at
+startup when explicitly selected.
+
+
+## 0.18.1
+
+### Added
+
+- **`plur-hermes` is now discoverable as a Hermes MemoryProvider.** Added the
+  `hermes_agent.memory_providers` entry point (`plur_hermes.memory_provider:create_memory_provider`)
+  so `hermes plugins --memory` lists PLUR alongside bundled providers and `memory.provider: plur`
+  works in `config.yaml`. `register()` also calls `ctx.register_memory_provider()` when the
+  context supports it (Hermes Herald Release ≥ 0.20.0), passing a `PlurMemoryProvider` instance
+  that shares the same `PlurBridge` as the standalone hook path — no duplicate CLI subprocess
+  spawns. Older Hermes versions that lack `register_memory_provider()` are unaffected; the
+  standalone `hermes_agent.plugins` entry point is retained alongside the new one.
+
+## 0.18.0
 Your agents' memory, on a dashboard.
 
 - Open it: `plur dashboard`
@@ -36,6 +324,17 @@ failure. `plur reindex-hashes --apply` remains available for the repair alone, a
 its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 `plur doctor` also counts stale hashes and prints the remedy if any are detected
 (#911).
+
+### Breaking
+
+- **`exportPack` and `plur packs export` refuse to run without a licence (#970).**
+  A pack with no `license` used to be written with the schema default,
+  `cc-by-sa-4.0` — a share-alike grant over other people's memories that nobody
+  chose. Pass `--license` (for example `cc-by-4.0`, `apache-2.0`, `cc0-1.0`, or
+  `unlicensed` to grant nothing), or set `provenance.default_license` in your
+  config to answer once. Scripts that exported without a licence now exit
+  non-zero; the `plur_packs_export` tool returns `{ exported: false, next_step }`
+  asking the agent to put the question to the user rather than guess.
 
 ### Added
 

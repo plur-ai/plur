@@ -16,7 +16,10 @@ import {
   readConfig,
 } from '../mcp-config.js'
 import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
-import { computeContentHash, detectPlurStorage, loadEngrams } from '@plur-ai/core'
+import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
+import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
+import { codexHome } from '../mcp-config.js'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig } from '@plur-ai/core'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -87,6 +90,32 @@ interface DoctorReport {
   cursorProjectDetected: boolean
   cursorWired: boolean
   /**
+   * Whether Codex is installed on this machine (`~/.codex/` exists, honouring
+   * `CODEX_HOME`) and, if so, whether Codex's OWN two config files have PLUR
+   * wired in — `hooks.json` carrying our hooks, `config.toml` carrying the
+   * `[mcp_servers.plur]` table. Same rationale as `cursorWired`: a healthy
+   * Claude Code setup elsewhere says nothing about this harness.
+   *
+   * Reported as its own line and deliberately NOT folded into `overall` —
+   * see the comment at the `overall` computation for why a machine-level
+   * detection must not fail a project-level health check.
+   *
+   * NOTE: `codexWired: true` does NOT mean the hooks will actually run. Codex
+   * fingerprints every non-managed hook and skips it until reviewed via
+   * `/hooks`, with no warning and exit 0 when it doesn't — a state nothing on
+   * disk distinguishes from a trusted one. `printText` says so explicitly
+   * rather than letting a green tick imply more than it knows.
+   */
+  codexDetected: boolean
+  codexWired: boolean
+  /**
+   * Antigravity CLI (agy). Same machine-level detection rationale as Codex —
+   * reported as its own line, deliberately NOT folded into `overall`. Unlike
+   * Codex there is no trust caveat: agy runs configured hooks immediately.
+   */
+  agyDetected: boolean
+  agyWired: boolean
+  /**
    * PGLite backend running the opt-in embedding-gemma embedder (#581). #483
    * corrected embedding-gemma's role prefixes and bumped the JSON embedding
    * cache name so the SQLite/flat-file path auto-rebuilds — but the PGLite
@@ -110,6 +139,16 @@ interface DoctorReport {
    * `plur reindex-hashes --apply`.
    */
   staleContentHashes: number
+  /**
+   * A `store.pglite` directory the resolved backend tier no longer uses
+   * (#1046) — orphaned disk the user may delete, ideally after `plur migrate`
+   * ports its vectors. `null` when there is no such directory or when PGLite
+   * IS the selected tier (by env or config.yaml — resolved through
+   * resolveBackendTier, #1061). In the report struct, not just the text
+   * renderer, so `--json` consumers see the advisory too (#1065). Advisory
+   * only: does not fail the overall check.
+   */
+  pgliteOrphan: { path: string } | null
   overall: 'ok' | 'fail'
 }
 
@@ -259,6 +298,52 @@ function inspectConfigs(): ConfigFileReport[] {
         hasPlurMcp: false,
         hasDatacoreMcp: false,
         hasPlurHooks: hasPlurCursorHooks(hooksConfig),
+      }
+    }
+    if (cf.kind === 'agy-hooks') {
+      // agy's hooks.json is a map of NAMED hook sets — neither Claude Code's
+      // nested shape nor Cursor's flat one. PLUR-present = our named key exists.
+      const hooksConfig = readAgyHooksConfig(cf.path)
+      return {
+        label: cf.label,
+        path: cf.path,
+        exists: true,
+        hasPlurMcp: false,
+        hasDatacoreMcp: false,
+        hasPlurHooks: hasPlurAgyHooks(hooksConfig),
+      }
+    }
+    if (cf.kind === 'codex-hooks') {
+      const hooksConfig = readCodexHooksConfig(cf.path)
+      return {
+        label: cf.label,
+        path: cf.path,
+        exists: true,
+        hasPlurMcp: false,
+        hasDatacoreMcp: false,
+        hasPlurHooks: hasPlurCodexHooks(hooksConfig),
+      }
+    }
+    if (cf.kind === 'codex-toml') {
+      // config.toml is TOML, not JSON — readConfig() would return {} and the
+      // report would claim Codex has no MCP server registered even when it
+      // does. We only need one fact from this file (is there an
+      // `[mcp_servers.plur]` table?), which a targeted regex answers without
+      // pulling in a TOML parser. Deliberately narrow: a commented-out line
+      // must not count, and neither must `[mcp_servers.plurality]`.
+      let hasPlur = false
+      try {
+        const raw = readFileSync(cf.path, 'utf8')
+        hasPlur = /^\s*\[mcp_servers\.plur\]\s*$/m.test(raw)
+          || /^\s*\[mcp_servers\]/m.test(raw) && /^\s*plur\s*=/m.test(raw)
+      } catch { /* unreadable — report as absent */ }
+      return {
+        label: cf.label,
+        path: cf.path,
+        exists: true,
+        hasPlurMcp: hasPlur,
+        hasDatacoreMcp: false,
+        hasPlurHooks: false,
       }
     }
     const config = readConfig(cf.path)
@@ -458,9 +543,14 @@ function resolveCliJsEntry(): string | null {
  *
  * Timeout: 60s default (#273). Cold model downloads (130MB for bge-small,
  * 325MB for embedding-gemma) need 60-300s on slow connections. Override via
- * PLUR_DOCTOR_TIMEOUT env var (in seconds) if 60s is still too short.
+ * PLUR_DOCTOR_TIMEOUT env var (in seconds) if 300s is still too short.
  */
-const DEFAULT_PROBE_TIMEOUT_MS = 60_000
+// 300s, not 60s (data-loss audit F6): on a FRESH install this probe is the
+// only sanctioned path that downloads the ~133MB embedding model — the hooks
+// race an 8s deadline and force-exit, so they can never complete it, and
+// there is no resume. 60s required >2.2MB/s; a slower connection made hybrid
+// permanently unavailable with nothing ever able to finish the fetch.
+const DEFAULT_PROBE_TIMEOUT_MS = 300_000
 
 /**
  * Resolve the probe timeout from PLUR_DOCTOR_TIMEOUT (seconds). Invalid values
@@ -626,6 +716,24 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     cursorHooksConfigReport?.exists && cursorHooksConfigReport.hasPlurHooks,
   )
 
+  // Codex health, from Codex's OWN two files only.
+  const codexDetected = existsSync(codexHome())
+  const codexHooksReport = configs.find((c) => c.label === 'Codex (~/.codex/hooks.json)')
+  const codexTomlReport = configs.find((c) => c.label === 'Codex (~/.codex/config.toml)')
+  const codexWired = Boolean(
+    codexHooksReport?.exists && codexHooksReport.hasPlurHooks &&
+    codexTomlReport?.exists && codexTomlReport.hasPlurMcp,
+  )
+
+  // Antigravity health, from agy's OWN two files only.
+  const agyDetected = existsSync(join(homedir(), '.gemini', 'antigravity-cli'))
+  const agyHooksReport = configs.find((c) => c.label === 'Antigravity (~/.gemini/config/hooks.json)')
+  const agyMcpReport = configs.find((c) => c.label === 'Antigravity (~/.gemini/config/mcp_config.json)')
+  const agyWired = Boolean(
+    agyHooksReport?.exists && agyHooksReport.hasPlurHooks &&
+    agyMcpReport?.exists && agyMcpReport.hasPlurMcp,
+  )
+
   const handshakePromise = skipHandshake
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
@@ -650,14 +758,35 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // the overall doctor check (BM25 still works); it just signals semantic
     // recall is disabled until the model loads.
     const overall: 'ok' | 'fail' =
-      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) && (!cursorProjectDetected || cursorWired)
+      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
+      (!cursorProjectDetected || cursorWired)
         ? 'ok' : 'fail'
+    // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
+    // The two detections are not the same kind of signal. A `.cursor/`
+    // directory sits IN THIS PROJECT and says "the user works on this
+    // project in Cursor", so an unwired Cursor there is a genuine failure.
+    // `~/.codex/` is machine-level: it says the user has Codex installed
+    // somewhere, not that they use it here. Folding it into `overall` would
+    // turn doctor red for every Claude-Code-only user who once tried Codex —
+    // a false alarm on a check whose whole value is that a red result means
+    // something. It is reported as its own line instead.
     // #581: PGLite + embedding-gemma both opt-in via env (PLUR_BACKEND=pglite,
     // PLUR_EMBEDDER=embedding-gemma) — the documented activation for each. When
     // both are set, #483's prefix fix did not auto-rebuild the PGLite vectors
     // (dimension-keyed cache), so flag a one-time re-embed.
+    // Backend half through the real resolver (#1061 class — the orphan
+    // advisory 20 lines down was fixed for exactly this and this raw env
+    // test survived beside it): `backend: pglite` in config.yaml and
+    // case/whitespace variants of PLUR_BACKEND all select the tier. The
+    // embedder half stays env-only — resolveEmbedderName has no config route.
+    const gemmaRoot = process.env.PLUR_PATH || join(homedir(), '.plur')
     const pgliteGemmaReembedNeeded =
-      process.env.PLUR_BACKEND === 'pglite' && process.env.PLUR_EMBEDDER === 'embedding-gemma'
+      resolveBackendTier({
+        env: process.env.PLUR_BACKEND,
+        config: loadConfig(join(gemmaRoot, 'config.yaml')).backend,
+        engramCount: 0,
+        postgresConfigured: false,
+      }).tier === 'pglite' && process.env.PLUR_EMBEDDER === 'embedding-gemma'
 
     // #911: count engrams whose content_hash is out of step with their
     // statement under the current normalizer. Non-zero after upgrading from a
@@ -666,10 +795,27 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // those engrams as dedup attractors. Advisory: does not fail overall.
     const staleContentHashes = countStaleContentHashes(flags)
 
+    // #1046 orphan advisory — computed HERE, not in the text renderer, so
+    // `--json` consumers see it too (#1065). "Selected" goes through the real
+    // resolver: `backend: pglite` in config.yaml counts exactly as
+    // PLUR_BACKEND=pglite does (#1061).
+    const orphanRoot = process.env.PLUR_PATH || join(homedir(), '.plur')
+    const orphanPglitePath = join(orphanRoot, 'store.pglite')
+    const pgliteSelected = resolveBackendTier({
+      env: process.env.PLUR_BACKEND,
+      config: loadConfig(join(orphanRoot, 'config.yaml')).backend,
+      engramCount: 0, // irrelevant: pglite is never size-selected
+      postgresConfigured: false, // ditto — pglite selection needs no connection string
+    }).tier === 'pglite'
+    const pgliteOrphan = existsSync(orphanPglitePath) && !pgliteSelected
+      ? { path: orphanPglitePath }
+      : null
+
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
-      cursorProjectDetected, cursorWired, pgliteGemmaReembedNeeded, staleContentHashes, overall,
+      cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, overall,
     }
   })
 }
@@ -686,7 +832,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
 export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
-  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor diagnostic', flags)
+  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor / Codex / Antigravity diagnostic', flags)
   outputInfo('', flags)
   outputText('Config files:')
   for (const c of report.configs) {
@@ -712,6 +858,49 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  A Claude Code config being healthy elsewhere does NOT cover Cursor —')
       outputText('  this project has a .cursor/ directory but its own config is incomplete.')
       outputText('  Fix: run `plur init --cursor` from this project.')
+    }
+  }
+
+  // #1046 migration signal: PGLite is no longer size-selected, so a store
+  // that auto-built one now runs SQLite and the old directory is orphaned
+  // disk (60–500MB observed). This advisory is the only signal the affected
+  // cohort gets — the runtime opt-in log line deliberately fires only for
+  // explicit selections. Computed in buildReport (#1065) so --json sees it.
+  if (report.pgliteOrphan) {
+    outputText('')
+    outputText(`ℹ  ${report.pgliteOrphan.path} exists but PGLite is no longer selected by store size (v0.19).`)
+    outputText('   Nothing to do — embeddings rebuild automatically — and this directory is an')
+    outputText('   orphaned index you can delete whenever convenient. YAML remains the source of')
+    outputText('   truth. (Optional: `plur migrate` ports the old vectors over, skipping the rebuild.)')
+  }
+
+  if (report.agyDetected) {
+    outputText(`${tick(report.agyWired)} Antigravity: ~/.gemini/config hooks.json + mcp_config.json wired to plur`)
+    if (!report.agyWired) {
+      outputText('  Antigravity CLI (agy) is installed but PLUR is not wired into it — it')
+      outputText('  would get no injection, enforcement, or learn nudges. If you use agy,')
+      outputText('  run `plur init --antigravity`. (Advisory: does not fail the check above.)')
+    }
+  }
+
+  if (report.codexDetected) {
+    outputText(`${tick(report.codexWired)} Codex: ~/.codex/hooks.json + config.toml wired to plur`)
+    if (!report.codexWired) {
+      outputText('  Codex is installed on this machine but PLUR is not wired into it — it')
+      outputText('  would get MCP tools with no injection, enforcement, or learn nudges.')
+      outputText('  If you use Codex, run `plur init --codex`. (Advisory: this does not')
+      outputText('  fail the check above — having Codex installed is not the same as')
+      outputText('  using it on this project.)')
+    } else {
+      // A green tick here is genuinely weaker than it looks, so say so every
+      // time rather than only on failure. Codex skips untrusted hooks with
+      // NO warning and exit 0, and nothing on disk distinguishes trusted
+      // from untrusted — so a config that reads as perfect can still be
+      // completely inert. This is the single most likely reason a user
+      // reports "I ran plur init --codex and nothing happens".
+      outputText('  Note: wired ≠ running. Codex skips hooks it has not been told to trust,')
+      outputText('  silently. If memory never loads, open Codex, run /hooks, and trust the')
+      outputText('  PLUR entries.')
     }
   }
 

@@ -117,3 +117,52 @@ describe('session provenance (#960) and retirement reasons (#959)', () => {
     expect(result.success).toBe(true)
   })
 })
+
+/**
+ * A session end that cannot store one suggestion still stores the rest, and
+ * says which failed (#1002 review). The episode is captured before the learns
+ * because they point at it; a throwing learn used to abort the loop with the
+ * episode and some engrams already written and the call reported as failed.
+ */
+describe('plur_session_end and a suggestion that cannot be stored', () => {
+  let plur: Plur
+  let dir: string
+  let tools: ReturnType<typeof getToolDefinitions>
+  const callTool = async (name: string, args: Record<string, unknown> = {}) =>
+    tools.find(t => t.name === name)!.handler(args, plur) as Promise<any>
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-session-fail-'))
+    plur = new Plur({ path: dir })
+    tools = getToolDefinitions()
+    _resetSessionTelemetry()
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('stores the others, names the failure, and keeps the episode', async () => {
+    const result = await callTool('plur_session_end', {
+      summary: 'One bad apple',
+      engram_suggestions: [
+        'The first learning is fine',
+        'The key is AKIAIOSFODNN7EXAMPLE, remember it',
+        'The third learning is fine too',
+      ],
+    })
+    expect(result.engrams_created).toBe(2)
+    expect(result.engrams_failed).toHaveLength(1)
+    expect(result.engrams_failed[0].index).toBe(1)
+    expect(result.engrams_failed[0].error).toMatch(/Secret detected/)
+    expect(result.hint).toMatch(/could not be stored/)
+    expect((await plur.list()).length).toBe(2)
+    expect((await plur.timeline({})).some(e => e.summary === 'One bad apple')).toBe(true)
+  })
+
+  it('a malformed suggestion is refused before anything is written', async () => {
+    await expect(callTool('plur_session_end', {
+      summary: 'Nothing should land',
+      engram_suggestions: ['fine', 42],
+    })).rejects.toThrow(/engram_suggestions\[1\]/)
+    expect((await plur.list()).length).toBe(0)
+    expect((await plur.timeline({})).some(e => e.summary === 'Nothing should land')).toBe(false)
+  })
+})

@@ -1,4 +1,5 @@
-import { Plur } from '@plur-ai/core'
+import { Plur, recordEvent, flushIfNeeded } from '@plur-ai/core'
+import { CLAW_VERSION } from './version.js'
 import type { LearnContext } from '@plur-ai/core'
 import type {
   ContextEngine, ContextEngineInfo, AssembleResult, IngestResult,
@@ -7,14 +8,14 @@ import type {
 } from './types.js'
 import { extractLearnings, isCorrection } from './learner.js'
 import { assembleContext } from './assembler.js'
-import { recordEvent } from './telemetry-counters.js'
-import { flushIfNeeded } from './telemetry-flush.js'
 
 // #128: if recordEvent rolled the day, ship yesterday's pending snapshot now
 // (rather than waiting for process exit — long-lived plugin sessions might
 // span multiple days otherwise). Fire-and-forget; flushIfNeeded swallows.
+// Telemetry is core's module; `packageVersion` keeps the heartbeat reporting
+// the claw version.
 function maybeFlushAfter(rolledOver: boolean): void {
-  if (rolledOver) void flushIfNeeded({}).catch(() => {})
+  if (rolledOver) void flushIfNeeded({ packageVersion: CLAW_VERSION }).catch(() => {})
 }
 
 /**
@@ -59,7 +60,7 @@ export class PlurContextEngine implements ContextEngine {
   readonly info: ContextEngineInfo = {
     id: 'plur-claw',
     name: 'PLUR Memory Engine',
-    version: '0.17.0',
+    version: CLAW_VERSION,
     ownsCompaction: false,
   }
 

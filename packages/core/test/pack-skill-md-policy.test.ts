@@ -4,7 +4,6 @@ import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import * as crypto from 'crypto'
 import { computePackHash, installPack } from '../src/packs.js'
-import { computePackChecksum, verifyPackChecksum } from '../src/trust.js'
 import { loadPack } from '../src/engrams.js'
 
 /**
@@ -41,12 +40,11 @@ describe('pack SKILL.md policy + manifest.yaml deprecation (#325)', () => {
   ].join('\n') + '\n'
 
   describe('hashing', () => {
-    it('checksum equals hash (single implementation) over SKILL.md + engrams.yaml', () => {
+    it('hash covers SKILL.md + engrams.yaml (single implementation)', () => {
       const s = skillMd(); const e = validEngrams
       writeFileSync(join(dir, 'SKILL.md'), s)
       writeFileSync(join(dir, 'engrams.yaml'), e)
-      expect(computePackChecksum(dir)).toBe(computePackHash(dir))
-      expect(computePackChecksum(dir)).toBe(sha256(s, e))
+      expect(computePackHash(dir)).toBe(sha256(s, e))
     })
 
     it('manifest.yaml does NOT contribute to the hash', () => {
@@ -55,18 +53,6 @@ describe('pack SKILL.md policy + manifest.yaml deprecation (#325)', () => {
       const before = computePackHash(dir)
       writeFileSync(join(dir, 'manifest.yaml'), 'name: ignored\nversion: 9\n')
       expect(computePackHash(dir)).toBe(before)
-    })
-
-    it('null-on-empty contract preserved', () => {
-      expect(computePackChecksum(dir)).toBeNull()
-    })
-
-    it('verifyPackChecksum round-trips', () => {
-      writeFileSync(join(dir, 'SKILL.md'), skillMd())
-      writeFileSync(join(dir, 'engrams.yaml'), validEngrams)
-      const c = computePackChecksum(dir)!
-      expect(verifyPackChecksum(dir, c)).toEqual({ valid: true, actual: c })
-      expect(verifyPackChecksum(dir, 'sha256:wrong')).toEqual({ valid: false, actual: c })
     })
   })
 

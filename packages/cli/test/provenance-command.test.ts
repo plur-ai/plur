@@ -110,3 +110,11 @@ describe('plur packs install states what was checked (#987)', () => {
     expect(install).toContain('check.note')
   })
 })
+
+describe('plur provenance <search> stays local (#776, #1002 review)', () => {
+  it('passes remote:false to recall, so the phrase is not sent to every host', () => {
+    // A remote top hit would only fail `provenanceFor`, which reads our store.
+    const cmd = readFileSync(join(SRC, 'commands/provenance.ts'), 'utf8')
+    expect(cmd).toMatch(/plur\.recall\(query, \{[^}]*remote: false/)
+  })
+})
