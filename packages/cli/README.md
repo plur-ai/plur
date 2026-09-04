@@ -49,7 +49,7 @@ plur forget ENG-2026-0329-001
 | `plur recall <query>` | Search engrams (hybrid: BM25 + embeddings) |
 | `plur inject <task>` | Get relevant engrams for a task (three-tier output) |
 | `plur list` | List all engrams with optional filtering |
-| `plur forget <id>` | Retire an engram |
+| `plur forget <id> [--scope <scope>]` | Retire an engram — a namespaced id (`ENG-GPL-…`) is routed to the store it names; `--scope` picks the store when a bare id exists in more than one |
 | `plur feedback <id> <signal>` | Rate an engram (positive/negative/neutral) |
 | `plur capture <summary>` | Record an episode to the timeline |
 | `plur timeline [query]` | Query the episodic timeline |
