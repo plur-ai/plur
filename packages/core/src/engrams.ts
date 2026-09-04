@@ -623,6 +623,14 @@ export function namespaceEngramId(id: string, scope: string): string {
   return id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
 }
 
+/**
+ * Strip any store namespace prefix from an ID to obtain its bare form (#1119).
+ * E.g. 'ENG-GPL-2026-08-13-025' -> 'ENG-2026-08-13-025'.
+ */
+export function bareEngramId(id: string): string {
+  return id.replace(/^(ENG|ABS|META)-[A-Z]{2,4}-(?=\d{4}-)/, '$1-')
+}
+
 /** Derive a 3-char prefix from a store scope (e.g. 'datafund' → 'DFU', 'project:myapp' → 'PMY') */
 export function storePrefix(scope: string): string {
   const parts = scope.split(/[:\-_./]/).filter(Boolean)

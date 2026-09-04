@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -138,7 +138,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
               .join(', ') + ']'
           : ''
         return {
-          id: e.id,
+          id: (raw._originalId as string | undefined) ?? bareEngramId(e.id),
           statement: e.statement + annotation + measuredAnnotation,
           type: e.type,
           scope: e.scope,
@@ -215,7 +215,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
             .join(', ') + ']'
         : ''
       const base: Record<string, unknown> = {
-        id: e.id,
+        id: (raw._originalId as string | undefined) ?? bareEngramId(e.id),
         statement: e.statement + annotation + measuredAnnotation,
         type: e.type,
         scope: e.scope,

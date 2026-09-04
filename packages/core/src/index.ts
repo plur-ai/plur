@@ -7,7 +7,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, initFilesystemStore } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -104,7 +104,7 @@ export { loadEngrams, saveEngrams } from './engrams.js'
 // The id-namespacing pair (#914). `readIdFor` is the API a surface should use;
 // these are exported so a caller (and the tests) can reason about the shape
 // without re-deriving the prefix rule a fourth time.
-export { storePrefix, namespaceEngramId } from './engrams.js'
+export { storePrefix, namespaceEngramId, bareEngramId } from './engrams.js'
 export {
   maybeDailyBackup,
   listBackups,
