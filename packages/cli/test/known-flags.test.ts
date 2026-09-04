@@ -203,3 +203,80 @@ describe('a flag that takes a value must have one', () => {
     expect(unknownFlagMessage(['--license', 'cc-by-4.0'], DECLARED, TAKES)).toBeUndefined()
   })
 })
+
+/**
+ * A declared command flag can never be rejected by the global parser (#1002
+ * review).
+ *
+ * The `--path` near-miss check ran at edit distance two, and two edits covers
+ * real flags: `feedback --batch` and `restore --date` were both rejected as
+ * "did you mean --path?" before the command ever loaded. The check now allows
+ * one edit — a single typo, as its own comment always said — and this sweep
+ * holds every flag literal in the package against it, so a future flag that
+ * collides is caught here rather than by a user.
+ */
+describe('no declared command flag is mistaken for a --path typo', () => {
+  it('feedback --batch is accepted', () => {
+    expect(parseGlobalFlags(['feedback', '--batch', '[]']).error).toBeUndefined()
+  })
+
+  it('restore --date is accepted', () => {
+    expect(parseGlobalFlags(['restore', '--date', '2026-01-01']).error).toBeUndefined()
+  })
+
+  it('every --flag literal under src/ passes the global parser', () => {
+    const { readdirSync, readFileSync, statSync } = require('node:fs') as typeof import('node:fs')
+    const src = join(__dirname, '..', 'src')
+    const files: string[] = []
+    const walk = (d: string) => {
+      for (const name of readdirSync(d)) {
+        const p = join(d, name)
+        if (statSync(p).isDirectory()) walk(p)
+        else if (p.endsWith('.ts')) files.push(p)
+      }
+    }
+    walk(src)
+    const flags = new Set<string>()
+    for (const f of files) {
+      for (const m of readFileSync(f, 'utf8').matchAll(/'(--[a-z][a-z0-9-]*)'/g)) flags.add(m[1])
+    }
+    expect(flags.size).toBeGreaterThan(50)
+    const rejected = [...flags].filter(flag => parseGlobalFlags(['cmd', flag, 'value']).error !== undefined)
+    expect(rejected).toEqual([])
+  })
+
+  it('still catches the typo it exists for', () => {
+    for (const typo of ['--pathh', '--pat', '--paths', '--pth']) {
+      expect(parseGlobalFlags(['status', typo, '/tmp/x']).error, typo).toContain('did you mean --path')
+    }
+  })
+})
+
+describe('feedback --batch and restore --date run, end to end', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-flags-e2e-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const run = (args: string[]) => {
+    try {
+      return { code: 0, out: execFileSync('node', [CLI, ...args, '--path', dir], { encoding: 'utf8', stdio: 'pipe', timeout: 30_000 }) }
+    } catch (e: any) {
+      return { code: e.status ?? 1, out: String(e.stdout ?? '') + String(e.stderr ?? '') }
+    }
+  }
+
+  it('feedback --batch reaches the command', () => {
+    const r = run(['feedback', '--batch', '[]', '--json'])
+    expect(r.out).not.toContain('did you mean --path')
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.out).mode).toBe('batch')
+  })
+
+  it('restore --date reaches the command', () => {
+    // No snapshots exist, so the command itself reports that — which proves
+    // the flag got through. The global parser's message must not appear.
+    const r = run(['restore', '--date', '2026-01-01'])
+    expect(r.out).not.toContain('did you mean --path')
+    expect(r.out).not.toContain('Unrecognised flag')
+  })
+})

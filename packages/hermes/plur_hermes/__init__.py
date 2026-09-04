@@ -496,3 +496,15 @@ def register(ctx):
 
     total_tools = len(TOOL_SCHEMAS) + len(META_TOOL_SCHEMAS)
     logger.info(f"PLUR registered: 4 hooks + {total_tools} tools (incl. meta)")
+
+    # --- MemoryProvider path ---
+    # Register PlurMemoryProvider with Hermes when the context supports it
+    # (Hermes Herald Release and later).  Standalone plugin contexts from older
+    # Hermes versions lack register_memory_provider() — guard with hasattr so
+    # those hosts keep working unchanged.
+    if hasattr(ctx, "register_memory_provider"):
+        from .memory_provider import PlurMemoryProvider
+        ctx.register_memory_provider(
+            PlurMemoryProvider(bridge=bridge, standalone_hooks_active=True)
+        )
+        logger.info("PLUR MemoryProvider registered (hermes_agent.memory_providers path)")

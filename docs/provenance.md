@@ -37,7 +37,8 @@ plur_provenance { "id": "ENG-2026-08-21-086" }
 ```
 
 You get a readable answer, not a document. Add `"format": "record"` when you
-actually want the JSON-LD, and `"save": true` to store it.
+actually want the JSON-LD. The tool is read-only; to store a record, use
+`plur provenance <id> --write` on the command line.
 
 The tool lives behind `plur_admin`, like most of the surface — the lean profile
 exposes only the eleven tools used every session, to keep the schema small.
@@ -255,6 +256,13 @@ but a record distinguishes a licence somebody picked from one that arrived by
 default, and lists the unpicked one among the things nobody recorded. The
 licence is the one field here with legal weight, so it is the last one that
 should quietly look like a decision.
+
+There are four ways a licence gets there, not two — chosen for the engram,
+inherited from the pack it was exported in, the author's configured default, or
+the schema default nobody looked at — and `plur packs preview` prints which,
+under each licence line, when the pack's records say. A record that carries
+anything else in that field is read as though it said nothing: the four values
+are a closed set, and a stranger's free text does not become a fifth.
 
 **A licence is not permission to share.** It governs reuse of the content by
 somebody who already has it. Whether you may pass the memory on at all is a

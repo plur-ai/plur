@@ -86,7 +86,15 @@ export function parseGlobalFlags(rawArgv: string[]): {
       // specific harm: a mistyped `--path` is passed through as a positional
       // argument, `--path` is never set, and the command runs against the
       // user's real store. Every other global flag mistyped is merely ignored.
-      if (/^--[A-Za-z]/.test(arg) && !GLOBAL_NAMES.includes(arg) && editDistance(arg, '--path') <= 2) {
+      //
+      // "A single typo" means ONE edit. At two, `--batch` (feedback) and
+      // `--date` (restore) were both rejected as misspellings of `--path`, so a
+      // real flag on a real command could not be used at all. This runs before
+      // the command is loaded and cannot consult what it declares, so the
+      // distance has to be tight enough that no declared flag falls inside it;
+      // test/known-flags.test.ts sweeps every flag literal in this package
+      // against this check.
+      if (/^--[A-Za-z]/.test(arg) && !GLOBAL_NAMES.includes(arg) && editDistance(arg, '--path') <= 1) {
         error = error ?? `Unrecognised flag ${arg} — did you mean --path? `
           + 'Left as it is, this command would run against your default store rather than the one you named.'
       }
@@ -94,6 +102,23 @@ export function parseGlobalFlags(rawArgv: string[]): {
     }
   }
   return { flags, args, error }
+}
+
+/**
+ * The most recent Plur built in this process (#1046).
+ *
+ * The CLI entrypoint needs a handle on it to drain background index work
+ * before exiting, and commands construct their own instance rather than
+ * receiving one. Last-wins is the working assumption: a CLI process runs one
+ * command, and the commands that build more than one build them against the
+ * same store — `import` with `--store` routes through createPlur precisely
+ * so this stays true.
+ */
+let lastInstance: Plur | null = null
+
+/** The last Plur constructed in this process, or null if none was. */
+export function getLastPlurInstance(): Plur | null {
+  return lastInstance
 }
 
 /**
@@ -106,5 +131,6 @@ export function parseGlobalFlags(rawArgv: string[]): {
  */
 export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean }): Plur {
   const path = flags.path || process.env.PLUR_PATH || undefined
-  return new Plur({ path, readonly: options?.readonly })
+  lastInstance = new Plur({ path, readonly: options?.readonly })
+  return lastInstance
 }

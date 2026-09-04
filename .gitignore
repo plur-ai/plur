@@ -40,6 +40,15 @@ packages/core/test/.scratch-auto-discover/
 # Committing it churns a 40K blob and puts one machine's IDs in the repo (#706).
 .embeddings-cache.json
 
+# Scratch/probe files — never committed (adversarial audit 0.19.1, finding 1)
+*.tmp.mjs
+*.tmp.ts
+
+# Machine-local dogfood artifacts (0.19.1 evaluator audit, finding 4):
+# installer output with absolute local paths — every contributor generates their own.
+.claude/settings.json
+AGENTS.md
+
 # Conformance-vector fixtures are named engrams.yaml on purpose — they ARE pack
 # payloads, and their bytes are what the vectors hash. A contributor whose global
 # gitignore excludes engrams.yaml (a sensible rule for a real store) would

@@ -29,5 +29,12 @@ export const PackManifestSchema = z.object({
     engram_count: z.number().int().min(0),
   }).optional().describe("LEGACY namespace, retained for backward compatibility with Datacore-era packs. New packs SHOULD use 'metadata'. Note: injection_policy here does NOT include 'always'."),
 })
+  // The root is open-world: ENGRAM-STANDARD-v1 §10.3 rule 2 makes preserving
+  // unknown manifest fields a MUST, and the published JSON Schema already says
+  // `additionalProperties: true` at the root. Without this the Zod parse
+  // silently dropped whatever a producer added, so the reference violated the
+  // rule its own schema advertised. `metadata` stays closed — that is #1029's
+  // open question, and the disputed conformance vector holds it open.
+  .passthrough()
 
 export type PackManifest = z.infer<typeof PackManifestSchema>

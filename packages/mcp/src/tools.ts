@@ -681,8 +681,8 @@ export type ToolProfile = 'full' | 'lean' | 'cursor'
 // `destructiveHint: true` — everything else (packs install/list, sync,
 // timeline, meta-engrams, ingest, capture, ...) is reachable through
 // plur_admin instead of its own top-level tool slot. Cursor caps a workspace
-// at ~40 MCP tools total across every server, and PLUR's full 39-tool
-// surface alone would consume ~97.5% of that budget.
+// at ~40 MCP tools total across every server, and PLUR's full 43-tool
+// surface alone would consume ~110% of that budget.
 //
 // Destructive tools are kept OUT of plur_admin's dispatch specifically
 // (audit fix — evaluator review, 2026-07-08; ENFORCED in the handler since
@@ -1055,6 +1055,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
             description:
               'Which licence governs reuse of this memory, as an SPDX-style identifier such as "cc-by-4.0" or "apache-2.0". Set it only when the user has actually said which licence applies — do NOT guess one. Left unset, a default applies that nobody chose, and a provenance record reports it as unchosen rather than presenting it as a decision.',
           },
+          // Deliberately exposed to the LLM, reversing #139, which kept
+          // `visibility` off this schema because `public` is what gates pack
+          // export and shared git sync. Without it an agent cannot mark
+          // anything shareable, so every pack built from agent-written
+          // memories was empty (#970) — the walkthrough and the agent
+          // conversation demo both depend on it. The reason #139 was cautious
+          // still holds, and is answered elsewhere: every path `public` opens
+          // (pack export, shared sync, remote push, rescope, explicit update,
+          // outbox flush) scans the FULL engram — statement plus every other
+          // field, `attribution` and `license` included — before content
+          // leaves the machine. See `engramContentFields` in core.
           visibility: {
             type: 'string',
             enum: ['private', 'public', 'template'],
@@ -1066,12 +1077,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         const llm = getLlmFunction()
-        // LLM-facing context. Fields not in inputSchema (visibility,
-        // knowledge_anchors, dual_coding, abstract, derived_from, memory_class,
+        // LLM-facing context. Fields not in inputSchema (knowledge_anchors,
+        // dual_coding, abstract, derived_from, memory_class,
         // session_episode_id) stay in the engram spec and remain settable via
         // the Plur class / REST — just not asked of the LLM. Their feature
-        // paths (private/public gating, meta-engram routing, etc.) are
-        // unaffected. See plur-ai/plur#139.
+        // paths (meta-engram routing, etc.) are unaffected. See
+        // plur-ai/plur#139; `visibility` is the one exception, see the schema.
         const context = {
           type: args.type as any,
           scope: args.scope as string | undefined,
@@ -1223,7 +1234,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Opt-in, content-free engagement counter (default-off; no statement text).
           recordTelemetry('learn')
           return {
-            id: engram.id, statement: engram.statement,
+            // Mirror the happy-path fix (#914): report the namespaced form so a
+            // caller holding this id can pass it to plur_forget / plur_feedback
+            // without hitting the collision the id form mismatch causes.
+            // Outbox engrams stay local-form (same rule as line 1149).
+            id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routedFallback),
@@ -1328,9 +1343,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // was `results.map(r => r.engram.id)` — a COMPACTED array, so after a
         // mid-batch failure every subsequent id shifted left and mis-attributed
         // to the wrong input (#281). Build from input_index instead.
+        //
+        // #930/#914 parity: report ids in the namespaced form plur_recall returns,
+        // matching the fix applied to plur_learn in b93fa8e. An outbox engram is
+        // excluded — it sits in the LOCAL store under a local id until the retry
+        // lands, and that is what recall returns for it.
         const ids: (string | null)[] = raw.map(() => null)
         for (const r of results) {
-          if (r.input_index !== undefined) ids[r.input_index] = r.engram.id
+          if (r.input_index !== undefined) {
+            const isOutbox = !!(r.engram as any).structured_data?._outbox
+            ids[r.input_index] = isOutbox ? r.engram.id : plur.readIdFor(r.engram)
+          }
         }
         // Missing-domain nudge (#671), batch form: aggregate count instead of a
         // per-item echo. Same gate as plur_learn — only items that passed
@@ -1375,9 +1398,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         return {
           ids,
-          results: results.map((r) => ({
+          results: results.map((r) => {
+            const isOutbox = !!(r.engram as any).structured_data?._outbox
+            return {
             input_index: r.input_index,
-            id: r.engram.id,
+            id: isOutbox ? r.engram.id : plur.readIdFor(r.engram),
             statement: r.engram.statement,
             scope: r.engram.scope,
             type: r.engram.type,
@@ -1387,7 +1412,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // reporting it exists for reached no caller — "anything below the
             // bar is still reported" was not observable anywhere.
             ...(r.dedup ? { dedup: r.dedup } : {}),
-          })),
+          }
+          }),
           stats,
           ...batchDomainHint,
           ...(failures.length > 0
@@ -1823,6 +1849,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
           conflicts: result.conflicts,
           security: result.security,
           registry: result.registry,
+          // ENGRAM-STANDARD-v1 §5.6.5: what was neutralized, by field, and the
+          // integrity verdict with "shipped none" distinct from "matched". Both
+          // were computed and then dropped at this surface, so an agent
+          // installing a pack could not tell the user either.
+          neutralized: result.neutralized,
+          integrity_check: result.integrity_check,
           success: true,
         }
       },
@@ -2235,6 +2267,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Core reports these; this hand-built response dropped them, so an
           // agent asking for status saw a healthy-looking `pack_count: 0`.
           ...(status.store_errors ? { store_errors: status.store_errors } : {}),
+          // Spreading-activation drop counters — absent when both are zero.
+          ...(status.spread_drops ? { spread_drops: status.spread_drops } : {}),
           // Version check (issue #151)
           ...(versionCheck?.updateAvailable && versionCheck.latest ? {
             update_available: {
@@ -2268,7 +2302,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
             enum: ['summary', 'record'],
             description: 'summary (default) is prose a person can read. record is the JSON-LD document, for machines.',
           },
-          save: { type: 'boolean', description: 'Also write the record to the store, and return where it went.' },
+          // No `save` here. This tool is annotated read-only and idempotent,
+          // and a host may run it without asking on that basis; a flag that
+          // writes files would make the annotation a lie. Writing a record is
+          // `plur provenance --write` on the command line, or
+          // `plur.writeProvenance()`.
         },
       },
       handler: async (args, plur) => {
@@ -2291,7 +2329,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // confidently about a memory nobody asked about — the exact failure
           // this tool exists to prevent.
           const LIST = 3
-          const matches = await plur.recall(args.search, { limit: 25 })
+          // remote:false (#776): this is a lookup in OUR store for an engram
+          // whose provenance WE hold. Dialling every configured host with the
+          // phrase leaks the query, and a remote top hit would then fail
+          // `provenanceFor`, which reads the local store.
+          const matches = await plur.recall(args.search, { limit: 25, remote: false })
           if (!matches.length) {
             return {
               found: false,
@@ -2328,7 +2370,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
 
         const summary = summariseProvenance(record as any)
-        const saved = args.save === true ? await plur.writeProvenance(id) : undefined
 
         if (args.format === 'record') {
           return {
@@ -2341,7 +2382,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ...summary.fields,
             not_recorded: summary.missing,
             complete: summary.complete,
-            ...(saved ? { saved_to: saved } : {}),
           }
         }
 
@@ -2366,7 +2406,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
                 other_matches: alternatives,
               }
             : {}),
-          ...(saved ? { saved_to: saved } : {}),
         }
       },
     },
@@ -2890,10 +2929,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
         if (versionCheck?.updateAvailable && versionCheck.latest) {
           const behind = minorVersionsBehind(versionCheck.current, versionCheck.latest)
           if (behind > 2) {
-            version_warning = `CRITICAL: Running PLUR v${versionCheck.current} — latest is v${versionCheck.latest} (${behind} minor versions behind). Known bugs may be present. Update immediately: npx @plur-ai/mcp@latest`
+            version_warning = `CRITICAL: Running PLUR v${versionCheck.current} — latest is v${versionCheck.latest} (${behind} minor versions behind). Known bugs may be present. Update immediately: upgrade @plur-ai/cli and re-run plur init (configs pin versions; running @latest no longer updates them)`
             guide = `⚠️ ${version_warning}\n\n${guide}`
           } else {
-            version_warning = `Update available: PLUR v${versionCheck.current} → v${versionCheck.latest}. Run: npx @plur-ai/mcp@latest`
+            version_warning = `Update available: PLUR v${versionCheck.current} → v${versionCheck.latest}. Run: npm i -g @plur-ai/cli@latest && plur init (configs pin versions)`
           }
         }
 
@@ -3239,20 +3278,12 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const session_id = args.session_id as string | undefined
         const suggestions = args.engram_suggestions as unknown[] | undefined
 
-        // Capture the episode FIRST (#960).
-        //
-        // Engrams created at session end are derived from this session, and
-        // `sources[].session_id` is filled from `session_episode_id`. Capturing
-        // the episode after the learns left every one of them with no session to
-        // point at — and this path writes a large share of all engrams.
-        const episode = plur.capture(summary, {
-          session_id,
-          channel: 'mcp',
-        })
-
-        // Create engrams from suggestions. Tolerate bare strings (a common
-        // LLM mistake — see issue #231) by coercing them into {statement} objects.
-        let engrams_created = 0
+        // Validate every suggestion BEFORE anything is written. Tolerate bare
+        // strings (a common LLM mistake — see issue #231) by coercing them into
+        // {statement} objects. The episode is captured below and the learns
+        // point at it, so a malformed item found halfway through would leave an
+        // episode and some engrams behind with the call reported as failed.
+        const items: Array<{ statement: string; type?: string }> = []
         if (Array.isArray(suggestions) && suggestions.length) {
           for (let i = 0; i < suggestions.length; i++) {
             const s = suggestions[i]
@@ -3269,6 +3300,30 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
                 `engram_suggestions[${i}] must be a string or {statement: string, type?: string}, got ${typeof s}`,
               )
             }
+            items.push({ statement, type })
+          }
+        }
+
+        // Capture the episode FIRST (#960).
+        //
+        // Engrams created at session end are derived from this session, and
+        // `sources[].session_id` is filled from `session_episode_id`. Capturing
+        // the episode after the learns left every one of them with no session to
+        // point at — and this path writes a large share of all engrams.
+        const episode = plur.capture(summary, {
+          session_id,
+          channel: 'mcp',
+        })
+
+        // One suggestion that cannot be learned — a credential in it, say —
+        // must not abort the rest and leave the call half done. Each write is
+        // complete on its own; the ones that failed are named in the result,
+        // the way learnBatch reports its failures.
+        let engrams_created = 0
+        const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
+        for (let i = 0; i < items.length; i++) {
+          const { statement, type } = items[i]
+          try {
             await plur.learn(statement, {
               type: type as any,
               // Link the engram back to the session that produced it (#960).
@@ -3278,6 +3333,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               claim_class: 'inferred',
             })
             engrams_created++
+          } catch (err) {
+            engrams_failed.push({ index: i, statement: statement.slice(0, 80), error: (err as Error).message })
           }
         }
 
@@ -3318,10 +3375,13 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         return {
           engrams_created,
+          ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode.id,
           total_engrams: status.engram_count,
           ...(injection_summary ? { injection_summary } : {}),
-          hint: engrams_created === 0
+          hint: engrams_failed.length
+            ? `${engrams_failed.length} suggestion(s) could not be stored — see engrams_failed. The rest were.`
+            : engrams_created === 0
             ? 'No engrams captured this session. If any corrections, preferences, or patterns came up, consider calling plur_learn before ending.'
             : undefined,
         }
@@ -3895,13 +3955,32 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const { homedir } = await import('os')
         const { join } = await import('path')
         const outputDir = (args.output_dir as string) || join(homedir(), 'plur-packs', name)
-        const result = plur.exportPack(engrams, outputDir, {
-          name,
-          version: '1.0.0',
-          description: args.description as string | undefined,
-          creator: (args.creator as string) || undefined,
-          license: (args.license as string) || undefined,
-        })
+        let result: ReturnType<typeof plur.exportPack>
+        try {
+          result = plur.exportPack(engrams, outputDir, {
+            name,
+            version: '1.0.0',
+            description: args.description as string | undefined,
+            creator: (args.creator as string) || undefined,
+            license: (args.license as string) || undefined,
+          })
+        } catch (err) {
+          // Export refuses to run without a licence (breaking since #970).
+          // For an agent that refusal has to say what to DO, not only why —
+          // and what to do is ask the user, never pick one.
+          const message = (err as Error).message
+          if (/needs a licence/.test(message)) {
+            return {
+              exported: false,
+              error: 'This pack has no licence, and export will not choose one.',
+              next_step: 'Ask the user which licence applies to this pack (for example cc-by-4.0, apache-2.0, cc0-1.0, '
+                + 'or "unlicensed" to grant nothing) and call plur_packs_export again with `license` set. '
+                + 'The user can also set provenance.default_license in their config to answer once.',
+              name,
+            }
+          }
+          throw err
+        }
         return {
           path: result.path,
           engram_count: result.engram_count,

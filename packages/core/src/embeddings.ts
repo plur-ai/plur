@@ -321,6 +321,38 @@ function hashStatement(statement: string): string {
 }
 
 /**
+ * Merge externally-obtained vectors into the on-disk embeddings cache.
+ *
+ * The #1046 PGLite→SQLite migration's write half: vectors verified fresh
+ * against the CURRENT engram text are folded into the cache under this
+ * module's own key discipline (`hashStatement` of the search text), so the
+ * yaml/sqlite tiers serve them exactly as if they had been computed here.
+ * Lives in this file because the cache format — meta header, entry shape,
+ * hash function — is deliberately private to it.
+ *
+ * Existing entries win: an entry already in the cache was written by the
+ * live embed path against the same text and is at least as fresh as the
+ * import. Returns how many entries were written.
+ */
+export function mergeEmbeddingsIntoCache(
+  storagePath: string,
+  active: { name: string; dim: number },
+  imports: Array<{ engramId: string; searchText: string; embedding: number[] }>,
+): number {
+  const cachePath = join(storagePath, '.embeddings-cache.json')
+  const cache = loadCache(cachePath, active)
+  let written = 0
+  for (const imp of imports) {
+    if (imp.embedding.length !== active.dim) continue
+    if (cache.entries[imp.engramId]) continue
+    cache.entries[imp.engramId] = { hash: hashStatement(imp.searchText), embedding: imp.embedding }
+    written++
+  }
+  if (written > 0) saveCache(cachePath, cache)
+  return written
+}
+
+/**
  * Semantic search using embeddings.
  * Computes embedding for query, compares against cached engram embeddings.
  * Returns engrams sorted by cosine similarity (descending).
@@ -457,50 +489,3 @@ export async function embeddingSearchWithScores(
   return similarities.slice(0, limit)
 }
 
-/**
- * Rebuild the JSON `.embeddings-cache.json` file under `storagePath` using
- * the active embedder. Used by `plur sync --reembed` when PGLite is NOT the
- * active backend so non-PGLite users have a real migration path on embedder
- * switches.
- *
- * `full=true` deletes the existing cache file before rebuilding (forces every
- * engram to be re-embedded from scratch). `full=false` invalidates the meta
- * header but lets matching entries survive — useful when only the cache file
- * format version bumped without an embedder change.
- *
- * Returns the count of engrams whose embedding was rewritten. Returns 0 and
- * `skipped: true` when embeddings are disabled or the embedder failed to
- * load. Closes RC-3 for the default (non-PGLite) user (Sprint 0 iter-2 B-3).
- */
-export async function rebuildJsonCache(
-  engrams: Engram[],
-  storagePath: string,
-  opts?: { full?: boolean },
-): Promise<{ reembedded: number; skipped: boolean; reason?: string }> {
-  const activeMeta = await getActiveEmbedderMeta()
-  if (!activeMeta) {
-    return { reembedded: 0, skipped: true, reason: 'embedder unavailable' }
-  }
-  const cachePath = join(storagePath, '.embeddings-cache.json')
-  // Start fresh when --full was requested. Even without --full we want the
-  // cache header to track the active embedder, so loadCache's invalidation
-  // path already does the right thing for matched entries.
-  const cache: EmbeddingCache = opts?.full
-    ? emptyCache(activeMeta)
-    : loadCache(cachePath, activeMeta)
-
-  let count = 0
-  for (const engram of engrams) {
-    const searchText = engramSearchText(engram)
-    const hash = hashStatement(searchText)
-    if (cache.entries[engram.id]?.hash === hash && !opts?.full) continue
-    const vec = await embed(searchText)
-    if (!vec) {
-      return { reembedded: count, skipped: true, reason: 'embedder unavailable mid-rebuild' }
-    }
-    cache.entries[engram.id] = { hash, embedding: Array.from(vec) }
-    count++
-  }
-  saveCache(cachePath, cache)
-  return { reembedded: count, skipped: false }
-}

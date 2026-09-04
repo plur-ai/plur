@@ -57,6 +57,49 @@ types are curated out — the standard `chore`/`ci`/`docs`/`test`/`build`/`refac
 `style` plus this repo's internal `ops` (release tooling), `cmo` (marketing copy),
 and `infra` (server-side infrastructure — heartbeat, ingress, telemetry server).
 
+## Pre-release audit discipline (issue #1058 retrospective)
+
+The independent audit of 0.19.0 found two blocking defects that our own
+three-audit cycle (evaluator, data-loss, adversarial) had **already found and
+fixed — in one place each**. The malformed-config clobber (#1059) was fixed on
+the hooks legs and missed on the MCP legs of the *same functions*; the tmp-dir
+hardening (#1060) was applied to the Antigravity adapter and missed on the
+Codex and Cursor families with the *same threat model*. The audits weren't too
+shallow; the fixes were too narrow. These rules exist so that stays a
+one-release lesson:
+
+1. **A finding is a bug class, not a bug instance.** No audit finding is
+   "fixed" until you have swept for its siblings: the other harness adapters,
+   the other config legs in the same function, the other counter/sentinel
+   implementations. Grep for the pattern you just fixed; the sweep is part of
+   the fix, not a follow-up. (The structural end-state is shared code — one
+   `ensureSessionDir`, one `readConfigForWrite` — because a fix to shared code
+   propagates by construction. #1034 tracks that refactor.)
+
+2. **Run the suite in a clean environment at least once before releasing.**
+   `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null pnpm test`, from a
+   clean worktree, ideally under a scratch `HOME`. Three 0.19.0 test failures
+   (#1062) were invisible on the maintainer's machine and deterministic on a
+   machine with a global gitignore — an environment PLUR's own users are
+   *unusually likely* to have. "Passes on my machine" is a fact about the
+   machine.
+
+3. **Every "verified live" claim in a code comment names the event it covers;
+   everything else gets a tracked issue before release.** 0.19.0's Codex
+   SessionStart/UserPromptSubmit delivery was live-verified; PostToolUse
+   delivery was not, the comment didn't distinguish, and no issue tracked the
+   gap until the external audit filed #1064. Unverified behaviour may ship —
+   silently-assumed behaviour may not.
+
+4. **Sweep the diff for stray files.** Before tagging, read
+   `git diff --stat <last-tag>..HEAD` and account for every file that is not
+   source, test, or docs the CHANGELOG explains. `packages/core/mig-seed.mjs`
+   (#1066) — a dev scratch script with a hardcoded maintainer path — rode into
+   a public repo inside an otherwise-reviewed PR.
+
+Step 3.55 of `release.sh` additionally refuses to ship a version whose own
+CHANGELOG heading still says `(unreleased)` (#1065).
+
 ## Publish verification (npm smoke + PyPI verify)
 
 `scripts/release.sh` publishes npm to the `@next` dist-tag first, smoke-tests, then

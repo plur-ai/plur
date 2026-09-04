@@ -94,16 +94,22 @@ describe('plur init', () => {
     const plur = settings.mcpServers?.plur
     expect(plur).toBeDefined()
 
-    if (platform() === 'win32') {
+    const blob = `${plur?.command} ${(plur?.args ?? []).join(' ')}`
+    // Preferred outcome since the workspace-sibling resolution fix: the shim
+    // installed and the entry points at it. Fallback (CLI-only installs):
+    // platform-appropriate npx wrapper, PINNED — never @latest (#1069).
+    if (String(plur?.command).endsWith(platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp')) {
+      expect(blob).not.toContain('npx')
+    } else if (platform() === 'win32') {
       expect(plur?.command).toBe('cmd.exe')
-      expect(plur?.args).toContain('npx')
-      expect(plur?.args.join(' ')).toContain('@plur-ai/mcp')
+      expect(blob).toMatch(/npx .*@plur-ai\/mcp@\d+\.\d+\.\d+/)
     } else {
       // macOS/Linux: login shell wrapper so PATH (nvm/brew) loads under GUI launches
       expect(plur?.command).toBe('/bin/sh')
       expect(plur?.args).toContain('-lc')
-      expect(plur?.args.join(' ')).toContain('npx -y @plur-ai/mcp')
+      expect(blob).toMatch(/npx -y @plur-ai\/mcp@\d+\.\d+\.\d+/)
     }
+    expect(blob).not.toContain('@latest')
   })
 
   it('is idempotent — re-running does not duplicate hooks or mcp entries', () => {
@@ -347,7 +353,9 @@ describe('plur init', () => {
     const content = readFileSync(shim, 'utf-8')
     expect(content).not.toContain('npx')
     expect(content).toContain('index.js')
-    expect(content).toMatch(/@plur-ai[\\/]mcp/)
+    // node_modules layout (@plur-ai/mcp/dist) or monorepo workspace layout
+    // (packages/mcp/dist) — both are the real package, verified by name.
+    expect(content).toMatch(/mcp[\\/]dist[\\/]index\.js/)
 
     if (platform() !== 'win32') {
       expect(content).toContain('#!/bin/sh')
@@ -410,7 +418,7 @@ describe('plur init', () => {
 
     const meta = JSON.parse(readFileSync(metaPath, 'utf-8'))
     expect(meta.entrypoint).toBeDefined()
-    expect(meta.entrypoint).toMatch(/@plur-ai[\\/]mcp.*index\.js/)
+    expect(meta.entrypoint).toMatch(/mcp[\\/]dist[\\/]index\.js/) // node_modules or workspace layout
     expect(meta.node).toBeDefined()
     expect(meta.installed).toBeDefined()
   })

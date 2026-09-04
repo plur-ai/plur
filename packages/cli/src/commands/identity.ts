@@ -39,6 +39,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     lines.push(after.stated
       ? `Memories written from now on are attributed to ${after.identity}.`
       : 'Identity cleared. Memories written from now on are recorded as "unidentified".')
+    // An email address is accepted and warned about, here, where the choice
+    // is made. Learning it at the first empty export is what #999 reports.
+    if (after.warning) {
+      lines.push('')
+      lines.push(`  Note: ${after.warning}`)
+    }
     // Say plainly what this does not do. Somebody clearing an identity is
     // usually trying to un-say something, and this is the moment to be honest
     // that the past is not rewritten.
@@ -69,10 +75,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       '',
       '  Set one:   plur identity local:yourname',
       '             plur identity did:web:example.org:yourname',
-      '             plur identity you@example.org',
       '',
       '  Any address works. Nothing verifies it — packs are not signed — so this',
-      '  is a claim about who is answerable, not proof of it.',
+      '  is a claim about who is answerable, not proof of it. An email address',
+      '  is accepted too, but the pack export privacy scan flags email addresses,',
+      '  so memories attributed to one are held back from every pack (#999).',
     ].join('\n'))
     return
   }

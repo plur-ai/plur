@@ -257,6 +257,15 @@ export interface ProvenanceOptions {
    * Default is `portable`, because that is the mode where a mistake does harm.
    */
   mode?: 'portable' | 'local'
+  /**
+   * The engrams the recipient of a portable record can resolve — the members
+   * of the pack it travels in. A reference to any other engram (derived from,
+   * revised, superseded by) is dropped from a portable record, because the
+   * recipient holds none of our files and the identifier is only ours to look
+   * up (profile §2.2). Absent, a portable record keeps its references: the
+   * reader is local and can follow them.
+   */
+  members?: Set<string>
   /** Include the engram's own text. Off by default: the origin can often be shared when the content cannot. */
   includeStatement?: boolean
   /** Fixed time, for tests. Defaults to now. */
@@ -300,6 +309,16 @@ export interface ProvenanceOptions {
  * way as the schema's `cc-by-sa-4.0` that nobody has ever looked at.
  */
 export type LicenseSource = 'chosen' | 'inheritedFromPack' | 'configuredDefault' | 'schemaDefault'
+
+/**
+ * The closed set behind `LicenseSource`, for readers of records somebody else
+ * wrote (profile §8.4). A pack's provenance is a stranger's file; a value that
+ * is not one of these four is not a fifth state, it is free text, and a reader
+ * treats it as absent rather than carrying it onto a typed surface.
+ */
+export const LICENSE_SOURCES: ReadonlySet<LicenseSource> = new Set<LicenseSource>([
+  'chosen', 'inheritedFromPack', 'configuredDefault', 'schemaDefault',
+])
 
 /** Was this licence the result of somebody deciding? */
 const wasDecided = (source: LicenseSource) => source === 'chosen' || source === 'configuredDefault'
@@ -692,25 +711,50 @@ export function buildProvenanceRecord(
   // saying whether a model worked something out.
   if (agents.usedModel) thing['engram:usedModel'] = { '@id': agents.usedModel }
 
+  // References to OTHER engrams. In a portable record built for a pack, only
+  // the ones the recipient can resolve — the pack's members — are kept; the
+  // rest would be identifiers only our store can look up, which is exactly
+  // what a record that stands on its own may not contain. `exportPack` strips
+  // the same edges from engrams.yaml for the same reason, and the record used
+  // to reintroduce them.
+  const resolvable = (id: string) => !portable || !options.members || options.members.has(id)
+  let dropped = 0
+  const keep = (ids: string[]) => {
+    const kept = ids.filter(resolvable)
+    dropped += ids.length - kept.length
+    return kept
+  }
+
   const derivedFrom = (engram as any).derived_from as string | null | undefined
-  if (derivedFrom) thing['prov:wasDerivedFrom'] = { '@id': `engram:${derivedFrom}` }
+  if (derivedFrom && keep([derivedFrom]).length) thing['prov:wasDerivedFrom'] = { '@id': `engram:${derivedFrom}` }
 
   // The engram this one REPLACED. Standard PROV has a term for it.
-  const supersedes = (engram as any).relations?.supersedes as string[] | undefined
+  const supersedes = keep(((engram as any).relations?.supersedes as string[] | undefined) ?? [])
 
   // And the engram that replaced THIS one. PROV has no reverse of a revision,
   // so this is our own term — but it has to be recorded, because it is the
   // question a reader of the old memory is actually asking. Without it, asking
   // about a memory that was corrected five minutes ago returns a confident
   // answer with no hint that anybody has since disagreed.
-  const supersededBy = (engram as any).relations?.superseded_by as string[] | undefined
-  if (supersededBy?.length) {
+  const supersededBy = keep(((engram as any).relations?.superseded_by as string[] | undefined) ?? [])
+  if (supersededBy.length) {
     thing['engram:supersededBy'] = supersededBy.map(s => ({ '@id': `engram:${s}` }))
   }
 
-  if (supersedes?.length) {
+  if (supersedes.length) {
     thing['prov:wasRevisionOf'] = supersedes.map(s => ({ '@id': `engram:${s}` }))
   }
+  // Say that something was left out, without saying what. A recipient who
+  // sees "revised an earlier memory" and no identifier knows there is history
+  // they were not given, which is more honest than silence.
+  if (dropped > 0) thing['engram:unresolvableReferencesOmitted'] = dropped
+  // The self-contained flag is now COMPUTED, not asserted from the mode. A
+  // portable record built with no `members` keeps its references for a local
+  // reader — and then names identifiers only our store can resolve, which is
+  // the one thing §2.2 says a self-contained record may not do. Saying `true`
+  // on such a record was the defect: a claim the record itself contradicted.
+  const kept = (derivedFrom && resolvable(derivedFrom) ? 1 : 0) + supersedes.length + supersededBy.length
+  bundle['engram:recordIsSelfContained'] = portable && (options.members ? true : kept === 0)
   graph.push(thing)
 
   // --- activities, from the history log ---------------------------------

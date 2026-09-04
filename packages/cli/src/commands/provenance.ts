@@ -54,7 +54,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let matched: string | undefined
   if (!id) {
     // Ask for more than we list, so the count reported is the true one.
-    const matches = await plur.recall(query, { limit: 25 })
+    // remote:false (#776): the engram whose provenance we can show is one in
+    // our own store, so the phrase is not sent to every configured host — and
+    // a remote top hit would only fail `provenanceFor` below.
+    const matches = await plur.recall(query, { limit: 25, remote: false })
     if (!matches.length) {
       fail(`Nothing matched "${query}". Try different words, or pass an exact id.`, { query })
     }

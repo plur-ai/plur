@@ -85,7 +85,8 @@ export class EngramStoreUnreadableError extends Error {
  *
  * The single definition of "is this a readable engram store". It exists as a
  * standalone function because the rules were previously written out twice —
- * once in {@link loadEngrams} and once in `YamlStore` — and the copies drifted:
+ * once in {@link loadEngrams} and once in a since-removed parallel YAML
+ * store — and the copies drifted:
  * #766 hardened the first and left the second returning `[]` for a file it
  * could not parse (audit #794, F14). Anything that reads a store file goes
  * through here so that cannot recur.
@@ -390,49 +391,15 @@ export function saveEngrams(filePath: string, engrams: Engram[], opts: SaveEngra
  * the records on disk.
  *
  * Extracted so it is a SHARED FUNCTION rather than a step inside one writer
- * (#824, found in Črt's independent review). The guard lived only in
- * `saveEngrams`, and `YamlStore.save()` — the `EngramStore` backend from
- * `createStore`/`factory.ts` — is a parallel whole-corpus writer that
- * `yaml.dump`s straight to disk, so the F2/F3 wipe protection was silently
- * absent there. Same shape as the quarantine bug: a cross-cutting rule enforced
- * by convention and missed at a parallel call site.
- *
- * Sharing the function does not make the rule structural — a third writer could
- * still forget to call it — but it removes the copy, which is the part that
- * drifts. #824 tracks making it a type every writer must pass through.
+ * (#824, found in Črt's independent review). The guard once lived only in
+ * `saveEngrams` while a second, parallel whole-corpus YAML writer (the
+ * `EngramStore`-era `YamlStore`, removed in the 2026-09 audit) dumped straight
+ * to disk without it. `saveEngrams` is now the ONLY whole-corpus YAML writer
+ * in core; a future writer must call this before touching the file. #824
+ * tracks making it a type every writer must pass through.
  */
 export function assertShrinkAllowed(filePath: string, outgoingCount: number): void {
   const before = countEngramsOnDisk(filePath)
-  if (before !== null && outgoingCount < before * (1 - SHRINK_TOLERANCE)) {
-    throw new EngramStoreShrinkError(filePath, before, outgoingCount)
-  }
-}
-
-/**
- * Async twin of {@link assertShrinkAllowed}, for the async store backends.
- *
- * Shares `countRecordStarts` — the counting RULE has exactly one definition, so
- * the two paths cannot disagree about what a record is. Only the read differs,
- * because blocking the event loop on a multi-megabyte corpus is precisely what
- * the async store exists to avoid.
- */
-export async function assertShrinkAllowedAsync(filePath: string, outgoingCount: number): Promise<void> {
-  let before: number | null = null
-  try {
-    const { readFile, stat } = await import('fs/promises')
-    const info = await stat(filePath)
-    if (!info.isDirectory() && info.size > 0) {
-      const text = await readFile(filePath, 'utf8')
-      const scanned = countRecordStarts(text)
-      if (scanned !== null) before = scanned
-      else {
-        const raw: any = yaml.load(text)
-        before = raw && typeof raw === 'object' && Array.isArray(raw.engrams) ? raw.engrams.length : null
-      }
-    }
-  } catch {
-    before = null // no baseline — nothing to guard against
-  }
   if (before !== null && outgoingCount < before * (1 - SHRINK_TOLERANCE)) {
     throw new EngramStoreShrinkError(filePath, before, outgoingCount)
   }

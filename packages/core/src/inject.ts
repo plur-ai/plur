@@ -58,6 +58,13 @@ export interface InternalInjectionResult {
   constraints: WireEngram[]
   consider: WireEngram[]
   tokens_used: { directives: number; consider: number }
+  /**
+   * Association edges dropped during spreading activation, by reason.
+   * `dropped_unresolvable`: target id not found in local engramMap (remote-only
+   * or deleted engram). `dropped_retired`: target found but status !== 'active'.
+   * Absent when both counts are zero.
+   */
+  spread_drops?: { dropped_unresolvable: number; dropped_retired: number }
 }
 
 const DEFAULT_MAX_TOKENS = 8000
@@ -404,14 +411,18 @@ export function selectAndSpread(
   const graceDays = config?.expiry?.grace_days ?? DEFAULT_GRACE_DAYS
   const graceCutoff = new Date(Date.now() - graceDays * 86400000).toISOString().slice(0, 10)
 
-  // Step 0: Build engram map for spreading activation
+  // Step 0: Build engram map for spreading activation.
+  // `nonActiveIds` tracks personal engrams that exist locally but are not active
+  // (status !== 'active') — so spreading activation can distinguish
+  // "locally known but inactive" from "absent entirely (remote-only or missing)".
   const engramMap = new Map<string, Engram>()
+  const nonActiveIds = new Set<string>()
 
   // Step 1-2: Score all active engrams
   const scored: ScoredEngram[] = []
 
   for (const engram of personalEngrams) {
-    if (engram.status !== 'active') continue
+    if (engram.status !== 'active') { nonActiveIds.add(engram.id); continue }
     if (skipForValidity(engram, today, expiryMode, graceCutoff)) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
@@ -541,6 +552,8 @@ export function selectAndSpread(
 
   const spreadCandidates: ScoredEngram[] = []
   let spreadTokens = 0
+  let droppedUnresolvable = 0
+  let droppedRetired = 0
 
   for (const directive of directives) {
     // Get associations (fall back to converting relations if associations empty)
@@ -553,7 +566,12 @@ export function selectAndSpread(
       if (visited.has(assoc.target)) continue
 
       const target = engramMap.get(assoc.target)
-      if (!target || target.status !== 'active') continue
+      if (!target) {
+        if (nonActiveIds.has(assoc.target)) droppedRetired++
+        else droppedUnresolvable++
+        continue
+      }
+      if (target.status !== 'active') { droppedRetired++; continue }
 
       // Apply decay to co_accessed associations at read time
       const effectiveStrength = assoc.type === 'co_accessed' && assoc.updated_at
@@ -625,6 +643,9 @@ export function selectAndSpread(
     constraints: wireConstraints,
     consider: allWireConsider,
     tokens_used: { directives: directiveTokens, consider: considerTokens },
+    ...(droppedUnresolvable > 0 || droppedRetired > 0
+      ? { spread_drops: { dropped_unresolvable: droppedUnresolvable, dropped_retired: droppedRetired } }
+      : {}),
   }
 }
 

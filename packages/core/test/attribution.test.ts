@@ -406,3 +406,31 @@ describe('the derivation chain, the last of the four dormant fields', () => {
     expect(chain).toEqual([left.id, root.id])
   })
 })
+
+/**
+ * An email address as identity is accepted and warned about (#999, #1002
+ * review). `plur identity you@example.org` was the form the CLI recommended,
+ * and it made every export empty: the pack privacy scan flags email
+ * addresses. The place to say so is the moment the identity is chosen.
+ */
+describe('setIdentity warns about an email address', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-identity-warn-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('returns a warning naming the consequence, but still sets it', () => {
+    const plur = new Plur({ path: dir })
+    const result = plur.setIdentity('you@example.org')
+    expect(result.stated).toBe(true)
+    expect(result.identity).toBe('you@example.org')
+    expect(result.warning).toMatch(/email address/)
+    expect(result.warning).toMatch(/pack/)
+  })
+
+  it('says nothing for a local name or a DID', () => {
+    const plur = new Plur({ path: dir })
+    expect(plur.setIdentity('local:maintainer').warning).toBeUndefined()
+    expect(plur.setIdentity('did:web:example.org:alex').warning).toBeUndefined()
+    expect(plur.setIdentity(null).warning).toBeUndefined()
+  })
+})

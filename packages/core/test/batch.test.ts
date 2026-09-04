@@ -80,6 +80,87 @@ describe('learnBatch: dedup within the batch', () => {
   })
 })
 
+describe('learnBatch: in-batch near-duplicate detection (#854)', () => {
+  /**
+   * Regression test for the in-batch dedup blind spot (#854).
+   *
+   * Root cause: _syncIndex() is fire-and-forget, so the BM25/embedding index
+   * does not contain statement[i] when statement[i+N] is processed. With the
+   * real recall deps, learnAsync sees zero candidates for subsequent statements
+   * and short-circuits to ADD — producing one engram per batch item regardless
+   * of similarity.
+   *
+   * Fix: learnBatch now maintains a `batchAccumulator` of ADD-written engrams
+   * and splices them into the recall results so the dedup step sees them even
+   * before the index has flushed.
+   *
+   * This test uses fake deps where `recall`/`recallHybrid` return [] to
+   * simulate the stale-index blind spot exactly. The LLM is supplied so the
+   * dedup step reaches the LLM decision branch. The second statement (near-
+   * duplicate) must be NOOP or UPDATE — not a second ADD.
+   */
+  it('catches a near-duplicate written earlier in the same batch (index blind spot)', async () => {
+    // First engram written by deps.learn on the ADD path.
+    const firstEngram = {
+      id: 'ENG-2026-0854-001',
+      statement: 'Always rebase before pushing to the shared branch',
+      type: 'behavioral',
+      domain: 'test',
+      scope: 'global',
+      status: 'active',
+    } as unknown as Engram
+
+    // Track written statements to drive the learn stub.
+    const written: string[] = []
+
+    const deps: LearnAsyncDeps = {
+      // hashDedup: always miss — we want the full dedup path to run.
+      hashDedup: async () => null,
+      // Index is stale: return [] so the blind spot is reproduced exactly.
+      recallHybrid: async () => [],
+      recall: async () => [],
+      learn: async (statement: string) => {
+        written.push(statement)
+        // Return firstEngram for the first ADD so the accumulator captures it.
+        return written.length === 1 ? firstEngram : ({ id: 'ENG-2026-0854-002', statement } as unknown as Engram)
+      },
+      getById: async (id: string) => id === firstEngram.id ? firstEngram : null,
+      store: new MemoryPrimaryStore(),
+      engramsPath: '/tmp/plur-test-854-engrams.yaml',
+      rootPath: '/tmp/plur-test-854',
+      dedupConfig: { enabled: true, mode: 'llm' },
+      isLlmAvailable: () => true,
+      recordLlmSuccess: () => {},
+      recordLlmFailure: () => {},
+      offendingHitsForScope: () => [],
+      syncIndex: async () => {},
+    }
+
+    // LLM returns NOOP against the accumulator-supplied candidate.
+    const llm = async (_prompt: string): Promise<string> =>
+      `DECISION: NOOP\nTARGET: ${firstEngram.id}\nREASON: Same advice, different wording`
+
+    const res = await learnBatch(deps, [
+      { statement: 'Always rebase before pushing to the shared branch' },
+      // Near-duplicate: same meaning, different wording.
+      // With the blind spot, recallHybrid/recall return [] so this becomes ADD.
+      // With the fix, the accumulator supplies the first engram as a candidate.
+      { statement: 'Rebase onto the shared branch before every push' },
+    ], llm)
+
+    expect(res.results).toHaveLength(2)
+    // First statement is a fresh ADD.
+    expect(res.results[0]!.decision).toBe('ADD')
+    // Second statement must NOT be ADD — the accumulator made the first engram
+    // visible to the dedup step before the index flushed (#854).
+    expect(res.results[1]!.decision).not.toBe('ADD')
+    expect(['NOOP', 'UPDATE', 'MERGE']).toContain(res.results[1]!.decision)
+    // Stats reflect dedup working: only one net ADD.
+    expect(res.stats.added).toBe(1)
+    expect(res.stats.failed).toBe(0)
+  })
+})
+
 describe('learnBatch: partial-failure isolation', () => {
   // A fake deps whose write throws for one statement, so we can assert the
   // batch keeps going and records the failure against its input index.
@@ -144,5 +225,101 @@ describe('learnBatch: partial-failure isolation', () => {
     expect(res.stats.added).toBe(0)
     expect(res.stats.failed).toBe(2)
     expect(res.failures.map(f => f.index)).toEqual([0, 1])
+  })
+})
+
+describe('learnBatch: accumulator entries are shaped for the similarity scorer', () => {
+  /**
+   * Regression test for the silent dedup regression found reviewing #950.
+   *
+   * The accumulator entry omitted `tags`. Those entries are spliced into the
+   * dedup candidate list and reach `engramSearchText`, which read
+   * `engram.tags.length` unguarded — a TypeError on an entry without the field.
+   * The throw was swallowed by the surrounding catch, so nothing surfaced: the
+   * run simply dropped to hash-only dedup for every batch item after the first,
+   * whenever embeddings are on and no LLM key is present. That is the normal
+   * configuration, and it silently biased the write distribution #856 exists to
+   * collect.
+   *
+   * This test discriminates. It asserts the shape the real scorer depends on,
+   * so it fails against the pre-fix accumulator and passes after it.
+   */
+  it('supplies tags on accumulator candidates, so the scorer cannot throw', async () => {
+    const firstEngram = {
+      id: 'ENG-2026-0950-001',
+      statement: 'Always rebase before pushing to the shared branch',
+      type: 'behavioral',
+      domain: 'test',
+      scope: 'global',
+      status: 'active',
+      tags: ['git', 'workflow'],
+    } as unknown as Engram
+
+    const written: string[] = []
+    // Every candidate the scorer is handed, across all invocations.
+    const seen: Array<{ id: string; tags: unknown }> = []
+
+    const deps: LearnAsyncDeps = {
+      hashDedup: async () => null,
+      // Stale index, exactly as in the #854 case: the accumulator is the only
+      // source of candidates for the second statement.
+      recallHybrid: async () => [],
+      recall: async () => [],
+      learn: async (statement: string) => {
+        written.push(statement)
+        return written.length === 1
+          ? firstEngram
+          : ({ id: 'ENG-2026-0950-002', statement, tags: [] } as unknown as Engram)
+      },
+      getById: async (id: string) => (id === firstEngram.id ? firstEngram : null),
+      store: new MemoryPrimaryStore(),
+      engramsPath: '/tmp/plur-test-950-engrams.yaml',
+      rootPath: '/tmp/plur-test-950',
+      // Cosine mode, no LLM: exactly the configuration the regression bit —
+      // "embeddings on, no language-model key present", which #854's closing
+      // comment calls the normal state. similarityScores only runs when
+      // dedupMode !== 'llm' (learn-async.ts), so an 'llm' mode here would take
+      // the other branch and never touch the accumulator entries at all.
+      dedupConfig: { enabled: true, mode: 'cosine' },
+      // Stand-in for the real scorer. The real one reaches engramSearchText,
+      // which reads `tags.length`; reproducing that read here is what makes the
+      // test fail on the old shape instead of quietly passing.
+      similarityScores: async (_statement, candidates) => {
+        for (const c of candidates) {
+          seen.push({ id: c.id, tags: (c as unknown as { tags: unknown }).tags })
+          // The read that used to throw.
+          void (c.tags as string[]).length
+        }
+        return candidates.map(c => ({ id: c.id, score: 0.9 }))
+      },
+      isLlmAvailable: () => false,
+      recordLlmSuccess: () => {},
+      recordLlmFailure: () => {},
+      offendingHitsForScope: () => [],
+      syncIndex: async () => {},
+    }
+
+    // No LLM passed — the local similarity path is the one under test.
+    const res = await learnBatch(deps, [
+      { statement: 'Always rebase before pushing to the shared branch' },
+      { statement: 'Rebase onto the shared branch before every push' },
+    ])
+
+    // The scorer must actually have been given the accumulated engram — if it
+    // was not, the rest of the assertions would pass vacuously.
+    const accumulated = seen.filter(c => c.id === firstEngram.id)
+    expect(accumulated.length).toBeGreaterThan(0)
+
+    // The defect: `tags` was undefined on those entries.
+    for (const c of seen) {
+      expect(Array.isArray(c.tags)).toBe(true)
+    }
+
+    // The scorer ran to completion rather than throwing into the swallowing
+    // catch. Cosine is reporting-only (#856) and never gates a write, so the
+    // decision here is still ADD — what matters is that near-duplicates were
+    // REPORTED for the second item, which is the signal that silently vanished.
+    expect(res.stats.failed).toBe(0)
+    expect(res.results[1]!.dedup?.near_duplicates?.length ?? 0).toBeGreaterThan(0)
   })
 })

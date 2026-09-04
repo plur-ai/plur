@@ -13,13 +13,21 @@
  * job a binary should have — turn a result into streams and an exit code.
  */
 
+/** What `installPack` reports back; `neutralized` is optional so a stub can omit it. */
+export interface InstallOutcome {
+  name: string
+  installed: number
+  /** ENGRAM-STANDARD-v1 §5.6.5: what the install changed on the way in, per field. */
+  neutralized?: { pinned_stripped: number; locked_downgraded: number }
+}
+
 /** Just enough of `Plur` for this command, so tests need no real store. */
 export interface PacksCapablePlur {
   // `Plur.installPack` is declared `Promise<ReturnType<typeof installPack>>`
   // where `installPack` is itself async, so its type is a nested promise.
   // Awaiting it flattens either shape, and structural typing needs the
   // declaration to accept both.
-  installPack(source: string): Promise<{ name: string; installed: number } | PromiseLike<{ name: string; installed: number }>>
+  installPack(source: string): Promise<InstallOutcome | PromiseLike<InstallOutcome>>
   listPacks(): Array<{ name: string; engram_count: number; manifest?: { version?: string } | null }>
   uninstallPack(name: string): { name: string; engram_count: number }
 }
@@ -43,7 +51,13 @@ export async function packsCommand(args: string[], plur: PacksCapablePlur): Prom
     if (!arg) return fail('Usage: plur-mcp packs install <path>\n')
     try {
       const result = await plur.installPack(arg)
-      return ok(`Installed pack '${result.name}' (${result.installed} engrams)\n`)
+      let out = `Installed pack '${result.name}' (${result.installed} engrams)\n`
+      // §5.6.5: a pack altered on the way in must say so, per field. This is
+      // the surface a script wrapping `plur-mcp packs install` reads.
+      const n = result.neutralized
+      if (n?.pinned_stripped) out += `  neutralized: pinned removed from ${n.pinned_stripped} engram(s)\n`
+      if (n?.locked_downgraded) out += `  neutralized: commitment: locked downgraded to decided on ${n.locked_downgraded} engram(s)\n`
+      return ok(out)
     } catch (err) {
       return fail(`Error: ${(err as Error).message}\n`)
     }
