@@ -11,7 +11,7 @@ import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namesp
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
-import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, PINNED_HARD_TOKEN_CAP, estimateEngramTokens } from './inject.js'
+import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, PINNED_HARD_TOKEN_CAP, PINNED_HARD_TOKEN_BUDGET_RATIO, estimateEngramTokens } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -2498,28 +2498,51 @@ export class Plur {
     if (context?.pinned === true && (context?.pin_tier ?? 'soft') === 'hard') {
       const hardPinned = (await this.listPinned()).filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
       const currentHardTokens = hardPinned.reduce((sum, e) => sum + estimateEngramTokens(e), 0)
-      // Build a representative candidate shape so estimateEngramTokens accounts for
-      // all serialised fields (id, temporal, pinned_tier, etc.) — not just statement
-      // and rationale length. The manual estimate was ~150 tokens short in practice.
+      // Build a representative candidate shape including all major structural fields
+      // so estimateEngramTokens approximates the real persisted size. The mandatory
+      // scaffolding (activation, provenance, relations, sources, feedback_signals)
+      // adds ~200 tokens per engram regardless of statement length.
       const candidateShape = {
         id: '00000000-0000-0000-0000-000000000000',
         statement,
         ...(context?.rationale ? { rationale: context.rationale } : {}),
         ...(context?.domain ? { domain: context.domain } : {}),
         ...(context?.tags?.length ? { tags: context.tags } : {}),
-        confidence: context?.confidence ?? 0.8,
-        temporal: { learned_at: '2026-01-01T00:00:00.000Z' },
+        confidence: 0.8,
+        commitment: 'leaning',
+        type: { memory_class: 'semantic', cognitive_level: 'understand' },
+        temporal: {
+          learned_at: '2026-01-01T00:00:00.000Z',
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+        activation: {
+          retrieval_strength: 0.5,
+          storage_strength: 0.5,
+          frequency: 1,
+          last_accessed: '2026-01-01T00:00:00.000Z',
+        },
+        provenance: { origin: 'local', chain: [], signature: null, license: 'cc-by-sa-4.0' },
+        relations: { broader: [], narrower: [], related: [], conflicts: [], supersedes: [], superseded_by: [] },
+        feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+        sources: [{ session_id: '00000000-0000-0000-0000-000000000000', operation: 'learn', timestamp: '2026-01-01T00:00:00.000Z' }],
         pinned: true,
         pinned_tier: 'hard',
         ...(context?.pinned_priority != null ? { pinned_priority: context.pinned_priority } : {}),
       }
       const estimatedNewCost = estimateEngramTokens(candidateShape as any)
-      if (currentHardTokens + estimatedNewCost > PINNED_HARD_TOKEN_CAP) {
+      // Mirror the injection formula: hard tier is clamped to the smaller of the
+      // absolute write ceiling and its proportional share of the session budget.
+      // Using the same fallback (2000) as the MCP/inject path so the gate the user
+      // sees matches the budget available at recall time.
+      const injectionBudget = this.config.injection_budget ?? 2000
+      const effectiveHardCap = Math.min(PINNED_HARD_TOKEN_CAP, Math.floor(PINNED_HARD_TOKEN_BUDGET_RATIO * injectionBudget))
+      if (currentHardTokens + estimatedNewCost > effectiveHardCap) {
         const engramList = hardPinned.map(e => `${e.id} (${estimateEngramTokens(e)} tokens)`).join(', ')
         throw new Error(
           `Hard-tier pinned cap exceeded: current hard-tier total is ${currentHardTokens} tokens, ` +
           `estimated cost of new engram is ${estimatedNewCost} tokens, ` +
-          `cap is ${PINNED_HARD_TOKEN_CAP} tokens. ` +
+          `effective cap is ${effectiveHardCap} tokens ` +
+          `(min(${PINNED_HARD_TOKEN_CAP}, ${Math.floor(PINNED_HARD_TOKEN_BUDGET_RATIO * 100)}% × ${injectionBudget} injection budget)). ` +
           `Existing hard-tier engrams: [${engramList}]. ` +
           `Demote an existing engram to soft tier (pinned_tier="soft") or unpin it before adding a new hard-tier engram.`
         )

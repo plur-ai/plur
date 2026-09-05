@@ -67,16 +67,17 @@ const DEFAULT_MIN_RELEVANCE = 0.3
 const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
 // Two-tier pinned budget (pinned-tier spec):
-//   Hard tier: absolute ceiling, write-rejected on overflow — guaranteed injection.
-//             At injection time, further clamped to PINNED_HARD_TOKEN_BUDGET_RATIO
-//             of the session's maxTokens so the tier cannot starve the recall pool.
+//   Hard tier: guaranteed injection — write-rejected if adding the engram would
+//             exceed the effective hard cap, which is clamped to the smaller of
+//             PINNED_HARD_TOKEN_CAP and PINNED_HARD_TOKEN_BUDGET_RATIO * injection_budget.
+//             The write gate uses the same formula so what is admitted is what injects.
 //   Soft tier: 30% of maxTokens, priority-ordered eviction.
-// At 8K default: hard=min(2000,2000)=2000 + soft=2400 = 4400 pinned, ~3600 recall.
-// At 2K default: hard=min(2000,500)=500 + soft=600 = 1100 pinned, ~900 recall.
+// At 8K budget: effective cap = min(2000, 0.25×8000) = 2000; soft = 2400 → ~3600 recall.
+// At 2K budget: effective cap = min(2000, 0.25×2000) = 500; soft = 600 → ~900 recall.
 /** Absolute write-time ceiling for hard-tier pinned engrams. */
 export const PINNED_HARD_TOKEN_CAP = 2000
 /** Fraction of maxTokens that the hard tier may consume at injection time. */
-const PINNED_HARD_TOKEN_BUDGET_RATIO = 0.25
+export const PINNED_HARD_TOKEN_BUDGET_RATIO = 0.25
 /** Fraction of maxTokens allocated to soft-tier pinned engrams. */
 const PINNED_SOFT_TOKEN_BUDGET_RATIO = 0.3
 
