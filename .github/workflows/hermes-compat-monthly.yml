@@ -1,0 +1,140 @@
+name: hermes-agent PyPI compat
+
+# Monthly canary: pip install hermes-agent (latest from PyPI) and run the
+# plur-hermes test suite against it.
+#
+# WHY THIS EXISTS:
+# plur-hermes v0.17.2+ passes all 144 tests against hermes-agent 0.19.0
+# (the current pip-installable release). The Hermes Herald Release (v0.20.0,
+# 2026-08-03) ships via shell installer / Docker / Nix only — PyPI / pip is
+# a deprecated install channel as of Herald. This job monitors the latest
+# pip-installable version and catches any regression before it affects users
+# who still install via pip.
+#
+# RETIREMENT SIGNAL:
+# When `pip install hermes-agent` stops advancing beyond 0.19.0 for two or
+# more consecutive months, this job should be retired or replaced with a
+# Herald-native install step (shell installer or Docker image pull).
+
+on:
+  schedule:
+    # 1st of each month at 09:00 UTC
+    - cron: '0 9 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  hermes-compat:
+    name: hermes-compat / py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    # The third-party package's install and test code runs with this job's
+    # token; keep the permissions above minimal and the job bounded.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # plur_hermes.register() verifies the @plur-ai/cli binary first and
+      # returns early without it, which is what the entry-point suite
+      # (test_memory_provider_entrypoint.py) exercises — so the canary needs
+      # the CLI on PATH exactly as a user's machine does. Latest published,
+      # not a workspace build: this job asks whether the shipped pair works.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the plur CLI (latest from npm)
+        run: npm install -g @plur-ai/cli
+
+      - name: Install hermes-agent (latest from PyPI)
+        run: pip install hermes-agent
+
+      - name: Show installed hermes-agent version
+        run: pip show hermes-agent | grep -E '^(Name|Version)'
+
+      # The [test] extra is what brings pytest: neither hermes-agent (pytest is
+      # only in its `dev` extra) nor the bare plur-hermes install provides it,
+      # so without the extra every run failed with "pytest: command not found"
+      # and filed a bogus issue.
+      - name: Install plur-hermes with its test extra
+        run: pip install -e "packages/hermes[test]"
+
+      # `shell: bash` matters: GitHub runs an explicit bash as
+      # `bash --noprofile --norc -eo pipefail {0}`, whereas the default shell
+      # for `run:` is `bash -e {0}` WITHOUT pipefail — under which the step's
+      # status was tee's (always 0), a failing pytest passed the step, and the
+      # issue-on-failure step below could never fire.
+      - name: Run plur-hermes test suite
+        id: pytest
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest packages/hermes/test/ -v --tb=short 2>&1 | tee pytest-output.txt
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            // Guard: if the failure happened before pytest ran, the output file
+            // does not exist. Fall back to a generic body so the issue still
+            // fires with useful run context rather than throwing here.
+            const output = fs.existsSync('pytest-output.txt')
+              ? fs.readFileSync('pytest-output.txt', 'utf8')
+              : '(no pytest output captured — failure occurred before test run)';
+            const now = new Date();
+            const month = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+            const title = `hermes-agent PyPI compat failure — ${month} (py${{ matrix.python-version }})`;
+
+            // Avoid duplicate issues — paginate to handle repos with many open
+            // issues; the label filter keeps the page count small in practice.
+            let existing = [];
+            for await (const page of github.paginate.iterator(
+              github.rest.issues.listForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'hermes-compat', per_page: 100 }
+            )) {
+              existing = existing.concat(page.data);
+            }
+            const duplicate = existing.find(i => i.title === title);
+            if (duplicate) {
+              console.log(`Issue already exists: #${duplicate.number}`);
+              return;
+            }
+
+            const body = [
+              `## hermes-agent PyPI compatibility failure`,
+              ``,
+              `**Python version:** ${{ matrix.python-version }}`,
+              `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `### pytest output`,
+              ``,
+              '```',
+              output.slice(0, 60000),  // GH issue body cap
+              '```',
+              ``,
+              `---`,
+              `> **Note:** PyPI is a deprecated install channel as of hermes-agent v0.20.0`,
+              `> (Herald Release, 2026-08-03). If \`pip install hermes-agent\` has stopped`,
+              `> advancing beyond 0.19.0 for two or more consecutive months, retire this`,
+              `> job or replace it with a Herald-native install step.`,
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['hermes-compat', 'bug'],
+            });
