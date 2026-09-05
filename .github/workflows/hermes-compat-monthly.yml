@@ -87,19 +87,26 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const output = fs.readFileSync('pytest-output.txt', 'utf8');
+            // Guard: if the failure happened before pytest ran, the output file
+            // does not exist. Fall back to a generic body so the issue still
+            // fires with useful run context rather than throwing here.
+            const output = fs.existsSync('pytest-output.txt')
+              ? fs.readFileSync('pytest-output.txt', 'utf8')
+              : '(no pytest output captured — failure occurred before test run)';
             const now = new Date();
             const month = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
             const title = `hermes-agent PyPI compat failure — ${month} (py${{ matrix.python-version }})`;
 
-            // Avoid duplicate issues: search for open issues with this title prefix
-            const existing = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'hermes-compat',
-            });
-            const duplicate = existing.data.find(i => i.title === title);
+            // Avoid duplicate issues — paginate to handle repos with many open
+            // issues; the label filter keeps the page count small in practice.
+            let existing = [];
+            for await (const page of github.paginate.iterator(
+              github.rest.issues.listForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'hermes-compat', per_page: 100 }
+            )) {
+              existing = existing.concat(page.data);
+            }
+            const duplicate = existing.find(i => i.title === title);
             if (duplicate) {
               console.log(`Issue already exists: #${duplicate.number}`);
               return;
