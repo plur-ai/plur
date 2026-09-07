@@ -591,6 +591,8 @@ describe('spread_drops counter', () => {
     })
     const result = selectAndSpread({ prompt: 'deploy', maxTokens: 5000 }, [e], [])
     expect(result.spread_drops).toBeUndefined()
+  })
+})
 
 describe('estimateTokens measures the rendered form (#1145)', () => {
   const mk = (o: Record<string, unknown> = {}) => EngramSchema.parse({
