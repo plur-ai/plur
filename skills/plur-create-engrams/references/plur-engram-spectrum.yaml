@@ -1,0 +1,1563 @@
+# PLUR engram spectrum — 19 fully specified teaching examples
+# Authored 2026-09-07. Fictional user Mira and fictional projects Luma,
+# public talks, and Fieldnotes. No real preferences, approvals, studies,
+# benchmark results, or production behavior are claimed.
+#
+# Read the statement as the useful memory payload; rationale explains its value.
+# The example source is embedded, and each record has a positive retrieval case,
+# a near-miss case, and a review trigger. These checks are proposed, not executed.
+# Every statement AND compact summary retain an EXAMPLE marker. Non-active
+# records also retain their modeled state in those two strings.
+# These examples have not been installed in an agent memory store.
+#
+# Coverage:
+# 01 recommendation preference       global / pinned / active
+# 02 standing value                  global / pinned / active
+# 03 context fact                    global / retrieved / active
+# 04 creative taste                  global / retrieved / active
+# 05 project purpose                 scoped / pinned / active
+# 06 project invariant               scoped / pinned / active
+# 07 local definition                scoped / retrieved / active
+# 08 decision + reopening condition  scoped / retrieved / active
+# 09 procedure                       scoped / retrieved / active
+# 10 episode                         scoped / retrieved / active
+# 11 bounded measurement             scoped / retrieved / active
+# 12 hypothesis                      scoped / candidate review
+# 13 temporary priority              scoped / pinned / expiring
+# 14 lesson                          scoped / retrieved / active
+# 15 domain abstraction (ABS)         global / candidate review
+# 16 non-software procedure          scoped / retrieved / active
+# 17 cross-domain pattern (META)      global / candidate review
+# 18 superseded decision             scoped / historical review / retired
+# 19 paused intention                scoped / resumption review / dormant
+#
+# Scope, delivery, content, epistemic standing, and lifecycle are separate axes.
+# Global means potentially applicable across projects; it does not mean always
+# relevant. Pinned is a delivery preference, not additional authority or evidence.
+# A current explicit direction can revise a remembered preference or decision.
+#
+# Shape: Open Engram Standard v1 working draft, engram object version 2.
+# Checked against the pinned schema snapshot below; no claim about fixes
+# landing on current main or the behavior of a particular deployment is made.
+# https://github.com/plur-ai/plur/blob/1557e14f9953ec97c41ef484723b1a15422b42a8/spec/ENGRAM-STANDARD-v1.md
+# https://github.com/plur-ai/plur/blob/1557e14f9953ec97c41ef484723b1a15422b42a8/spec/engram.schema.json
+# https://github.com/plur-ai/plur/blob/1557e14f9953ec97c41ef484723b1a15422b42a8/packages/core/src/schemas/meta-engram.ts
+#
+# PLUR native type values are behavioral, terminological, procedural, and
+# architectural. Labels such as preference, episode, hypothesis, and decision
+# describe semantic roles, not invented values for the native type field.
+# knowledge_type provides the additional native memory-class/cognitive-level axes.
+# commitment is decision state; it is not epistemic confidence.
+#
+# candidate and dormant are schema-accepted reserved/legacy states in this
+# snapshot. They are used here to illustrate lifecycle concepts; this file does
+# not assert that automatic review or reactivation workflows are implemented.
+# META is the informative extension; its complete meta block follows the
+# referenced runtime schema. Evidence here means two constructed mappings,
+# not two verified episodes. Alignment scores describe role correspondence
+# by construction. External validation and composite confidence remain zero.
+#
+# structured_data.example is author-defined teaching metadata, not a native
+# PLUR trigger, quality gate, workflow, or enforcement mechanism. File + JSON
+# Pointer knowledge anchors resolve within this document; automatic resolution
+# by a PLUR deployment is not asserted. Source text is illustrative evidence.
+#
+# Unobserved activation, fitness, calibrated confidence, signed provenance,
+# runtime event IDs, and learned association weights are omitted. Usage and
+# feedback are zero. Optional fields are populated when relevant; defaults and
+# unrelated fields are not expanded just to make a record look complete.
+# learned_at is this example's authoring date; historical dates and validity
+# windows belong to the explicitly fictional scenario.
+#
+# Example selection design (not a measured runtime trace): before 19 September,
+# an eligible Luma session has five pinned examples: 01, 02, 05, 06, 13.
+# A usability-planning task can add 09 and 10, then inspect 12 explicitly as a
+# hypothesis. A naming task for a different project needs the two global pins
+# and may retrieve 04; it does not need Luma's project memories.
+# The collection represents a memory bank, not a request to inject all 19.
+#
+engrams:
+- id: ENG-2026-09-07-101
+  version: 2
+  engram_version: 1
+  status: active
+  type: behavioral
+  scope: global
+  visibility: template
+  pinned: true
+  summary: '[EXAMPLE] Recommendation preference'
+  statement: |-
+    [EXAMPLE] For recommendations, lead with the option you would choose and the deciding reason. Then show the main tradeoff and the condition that would change your choice. If I ask to explore possibilities, keep the options open.
+  rationale: |-
+    Resolves a recurring presentation choice across projects without forcing every conversation into decision mode.
+  contraindications:
+  - Explore ten radically different newsletter formats. — Develop a range of possibilities; the explicit
+    exploration request controls.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: apply
+  domain: collaboration.communication
+  tags:
+  - recommendations
+  - decision presentation
+  - tradeoffs
+  source: Authored teaching fixture 01; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/0/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL explicit preference from Mira: When I ask what to do, give me your recommendation
+      first, then its downside and what would change your mind. During brainstorming, let us explore.'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 1
+      title: Recommendation preference
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL explicit preference from Mira: When I ask what to do, give me your recommendation first, then its downside and what would change your mind. During brainstorming, let us explore.
+      expected_selection: pinned within eligible scope
+      statement_words_excluding_fixture_marker: 36
+      applies:
+        task: Recommend a format for a research newsletter.
+        expected: Choose a format, give the deciding reason, main tradeoff, and a reversal condition.
+      near_miss:
+        task: Explore ten radically different newsletter formats.
+        expected: Develop a range of possibilities; the explicit exploration request controls.
+      review_trigger: Change when Mira revises this preference or repeated corrections reveal a narrower
+        context.
+      checks_executed: false
+  polarity: do
+  commitment: decided
+- id: ENG-2026-09-07-102
+  version: 2
+  engram_version: 1
+  status: active
+  type: behavioral
+  scope: global
+  visibility: template
+  pinned: true
+  summary: '[EXAMPLE] Attention as a standing value'
+  statement: |-
+    [EXAMPLE] When choices create ongoing obligations, count future attention alongside money and speed. Prefer the option I can realistically maintain; show me the concrete benefit before recommending recurring complexity.
+  rationale: |-
+    Provides a personal optimization criterion for tools, plans, purchases, and projects. It does not declare complexity inherently bad.
+  contraindications:
+  - Choose a more involved workflow required by an explicit client constraint. — Account for upkeep while
+    satisfying the actual requirement.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: evaluate
+  domain: collaboration.priorities
+  tags:
+  - maintenance
+  - attention
+  - recurring commitments
+  source: Authored teaching fixture 02; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/1/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL explicit value from Mira: My scarce resource is attention. I will accept a more
+      elaborate system when its continuing benefit justifies the upkeep.'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 2
+      title: Attention as a standing value
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL explicit value from Mira: My scarce resource is attention. I will accept a more elaborate system when its continuing benefit justifies the upkeep.
+      expected_selection: pinned within eligible scope
+      statement_words_excluding_fixture_marker: 28
+      applies:
+        task: Compare a simple newsletter workflow with a multi-service automation.
+        expected: Include the maintenance burden in the recommendation and name what the extra machinery
+          buys.
+      near_miss:
+        task: Choose a more involved workflow required by an explicit client constraint.
+        expected: Account for upkeep while satisfying the actual requirement.
+      review_trigger: Revisit if Mira delegates maintenance or changes her priorities.
+      checks_executed: false
+  polarity: do
+  commitment: decided
+- id: ENG-2026-09-07-103
+  version: 2
+  engram_version: 1
+  status: active
+  type: terminological
+  scope: global
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Personal context fact'
+  statement: |-
+    [EXAMPLE] Mira prototypes her own research tools in Python and TypeScript.
+  rationale: |-
+    A compact entity-context fact helps select relevant examples and implementation options without prescribing an action.
+  contraindications:
+  - Explain an unrelated historical event. — Do not force the programming context into the answer or infer
+    general expertise from it.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: remember
+  domain: person.mira
+  tags:
+  - Mira
+  - prototyping
+  - Python
+  - TypeScript
+  source: Authored teaching fixture 03; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/2/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL profile statement from Mira: I prototype my own research tools in Python and TypeScript.'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 3
+      title: Personal context fact
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL profile statement from Mira: I prototype my own research tools in Python and TypeScript.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 10
+      applies:
+        task: Suggest a quick way for Mira to prototype a reading workflow.
+        expected: Consider her existing languages before proposing a new stack.
+      near_miss:
+        task: Explain an unrelated historical event.
+        expected: Do not force the programming context into the answer or infer general expertise from
+          it.
+      review_trigger: Update when Mira reports a changed toolset; do not infer employer, seniority, or
+        proficiency level.
+      checks_executed: false
+  entities:
+  - name: Mira
+    type: person
+  - name: Python
+    type: technology
+  - name: TypeScript
+    type: technology
+- id: ENG-2026-09-07-104
+  version: 2
+  engram_version: 1
+  status: active
+  type: behavioral
+  scope: global
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Creative taste'
+  statement: |-
+    [EXAMPLE] For names and visual directions, Mira prefers concrete nouns, quiet humor, and one surprising detail. She dislikes faux-Latin names and cosmic metaphors. Client work follows the client’s brief.
+  rationale: |-
+    Specific aesthetic axes distinguish useful creative suggestions from interchangeable branding. Task-specific briefs remain authoritative.
+  contraindications:
+  - Create a cosmic visual direction explicitly required by a client brief. — Follow that brief rather
+    than projecting Mira’s personal taste onto the client.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: apply
+  domain: creative.direction
+  tags:
+  - naming
+  - visual direction
+  - personal taste
+  source: Authored teaching fixture 04; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/3/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL explicit taste note from Mira: Concrete words, quiet humor, one odd detail. Please
+      avoid fake Latin and cosmic branding for my projects. Client briefs take priority for client work.'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 4
+      title: Creative taste
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL explicit taste note from Mira: Concrete words, quiet humor, one odd detail. Please avoid fake Latin and cosmic branding for my projects. Client briefs take priority for client work.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 28
+      applies:
+        task: Name Mira’s personal reading application.
+        expected: Offer concrete, distinctive names and explain the chosen detail briefly.
+      near_miss:
+        task: Create a cosmic visual direction explicitly required by a client brief.
+        expected: Follow that brief rather than projecting Mira’s personal taste onto the client.
+      review_trigger: Adjust from explicit taste corrections; one rejected name does not establish an
+        entire new preference.
+      checks_executed: false
+  commitment: decided
+- id: ENG-2026-09-07-105
+  version: 2
+  engram_version: 1
+  status: active
+  type: architectural
+  scope: project:luma
+  visibility: template
+  pinned: true
+  summary: '[EXAMPLE] Project purpose'
+  statement: |-
+    [EXAMPLE] Luma helps independent researchers turn scattered reading into a defensible synthesis. Its core success criterion is whether someone can trace a claim back to the evidence; citation counts and chat volume are secondary.
+  rationale: |-
+    Preserves the project’s reason for existing so feature, design, and evaluation choices share the same objective.
+  contraindications:
+  - Design a different product whose approved objective is entertainment. — Use that product’s objective;
+    Luma’s purpose is scoped.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: understand
+  domain: product.luma
+  tags:
+  - Luma
+  - product purpose
+  - research
+  - traceability
+  source: Authored teaching fixture 05; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/4/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL accepted Luma product brief: Audience: independent researchers. Job: make a defensible
+      synthesis from scattered reading. Primary criterion: a reader can trace claims to evidence. Usage
+      co...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 5
+      title: Project purpose
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL accepted Luma product brief: Audience: independent researchers. Job: make a defensible synthesis from scattered reading. Primary criterion: a reader can trace claims to evidence. Usage counts are supporting signals.
+      expected_selection: pinned within eligible scope
+      statement_words_excluding_fixture_marker: 33
+      applies:
+        task: Prioritize a new chat animation versus claim-to-source navigation.
+        expected: Evaluate both against the traceability objective.
+      near_miss:
+        task: Design a different product whose approved objective is entertainment.
+        expected: Use that product’s objective; Luma’s purpose is scoped.
+      review_trigger: Revisit when the product brief or target audience changes.
+      checks_executed: false
+  commitment: decided
+  entities:
+  - name: Luma
+    type: project
+- id: ENG-2026-09-07-106
+  version: 2
+  engram_version: 1
+  status: active
+  type: architectural
+  scope: project:luma
+  visibility: template
+  pinned: true
+  summary: '[EXAMPLE] Project invariant'
+  statement: |-
+    [EXAMPLE] In Luma, generated synthesis and source evidence are separate objects. Users may rewrite a synthesis without changing its quotations or source locations; export must preserve that distinction.
+  rationale: |-
+    A stable data-model distinction affects editing, storage, export, and interface design. Remembering it prevents locally plausible designs from changing the project’s meaning.
+  contraindications:
+  - Discuss a proposed change to Luma’s evidence model. — Use the invariant as the current baseline and
+    allow an explicit revised decision to replace it.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: apply
+  domain: product.luma.data_model
+  tags:
+  - Luma
+  - synthesis
+  - evidence
+  - export
+  source: Authored teaching fixture 06; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/5/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL accepted Luma model note: Synthesis is editable interpretation. Evidence objects
+      retain source quotations and anchors independently. Exports represent both distinctly.'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 6
+      title: Project invariant
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL accepted Luma model note: Synthesis is editable interpretation. Evidence objects retain source quotations and anchors independently. Exports represent both distinctly.
+      expected_selection: pinned within eligible scope
+      statement_words_excluding_fixture_marker: 27
+      applies:
+        task: Design an editor or export format for Luma.
+        expected: Keep edited prose independent from anchored evidence and preserve both in export.
+      near_miss:
+        task: Discuss a proposed change to Luma’s evidence model.
+        expected: Use the invariant as the current baseline and allow an explicit revised decision to
+          replace it.
+      review_trigger: Replace through an explicit model decision; UI convenience alone is not evidence
+        that the invariant changed.
+      checks_executed: false
+  polarity: do
+  commitment: decided
+  abstract: ABS-2026-09-07-115
+- id: ENG-2026-09-07-107
+  version: 2
+  engram_version: 1
+  status: active
+  type: terminological
+  scope: project:luma
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Local definition'
+  statement: |-
+    [EXAMPLE] In Luma, a claim is a user assertion linked to supporting or challenging excerpts. Its verification status is stored separately.
+  rationale: |-
+    Preserves a local meaning that differs from an everyday assumption that a saved claim is an endorsed fact.
+  contraindications:
+  - Explain an insurance claim. — Use the meaning appropriate to insurance; a keyword match does not establish
+    Luma scope.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: remember
+  domain: product.luma.vocabulary
+  tags:
+  - Luma
+  - claim
+  - definition
+  - verification
+  source: Authored teaching fixture 07; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/6/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL Luma glossary: claim = user assertion linked to supporting/challenging excerpts.
+      Verification status is a separate attribute.'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 7
+      title: Local definition
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL Luma glossary: claim = user assertion linked to supporting/challenging excerpts. Verification status is a separate attribute.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 20
+      applies:
+        task: Write Luma UI copy explaining saved claims.
+        expected: Explain the assertion-and-evidence relationship without implying automatic verification.
+      near_miss:
+        task: Explain an insurance claim.
+        expected: Use the meaning appropriate to insurance; a keyword match does not establish Luma scope.
+      review_trigger: Update with the product glossary and model, preserving migrations if the entity
+        meaning changes.
+      checks_executed: false
+  entities:
+  - name: claim
+    type: concept
+  - name: Luma
+    type: project
+- id: ENG-2026-09-07-108
+  version: 2
+  engram_version: 1
+  status: active
+  type: architectural
+  scope: project:luma
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Decision with a reopening condition'
+  statement: |-
+    [EXAMPLE] Luma v1 uses a local SQLite store because single-user, offline reading is the launch priority. Cloud collaboration is deferred. Revisit the storage boundary when shared editing becomes an approved requirement; higher document count alone does not reopen the decision.
+  rationale: |-
+    Remembers both the choice and its premises. It avoids relitigating a settled tradeoff while making a legitimate reopening condition explicit.
+  contraindications:
+  - Plan an approved shared-editing release. — Revisit the decision because a stated premise has changed.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: evaluate
+  domain: product.luma.architecture
+  tags:
+  - Luma
+  - SQLite
+  - offline
+  - storage decision
+  source: Authored teaching fixture 08; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/7/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL decision D2, 2026-08-21: Replace D1’s browser-storage launch direction with local
+      SQLite for offline, single-user v1. Reopen the boundary for approved shared editing. Dataset growth
+      calls...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+    valid_from: '2026-08-21'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 8
+      title: Decision with a reopening condition
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL decision D2, 2026-08-21: Replace D1’s browser-storage launch direction with local SQLite for offline, single-user v1. Reopen the boundary for approved shared editing. Dataset growth calls for measurement, not an automatic reversal.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 39
+      applies:
+        task: Choose storage for an additional Luma v1 feature.
+        expected: Start from SQLite and evaluate the feature within the accepted offline boundary.
+      near_miss:
+        task: Plan an approved shared-editing release.
+        expected: Revisit the decision because a stated premise has changed.
+      review_trigger: Approved shared editing, changed offline requirements, or evidence that the chosen
+        store cannot meet a required workload.
+      checks_executed: false
+  commitment: decided
+  relations:
+    supersedes:
+    - ENG-2026-09-07-118
+  entities:
+  - name: Luma
+    type: project
+  - name: SQLite
+    type: technology
+- id: ENG-2026-09-07-109
+  version: 2
+  engram_version: 1
+  status: active
+  type: procedural
+  scope: project:luma
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Repeatable procedure'
+  statement: |-
+    [EXAMPLE] For each Luma usability round, revise the prototype with the internal team, freeze the task wording, then test with participants who have not seen the design. Record unprompted task completion before discussing solutions. Keep the moderator script and previous-round notes in the study packet.
+  rationale: |-
+    A concise sequence preserves the boundary between formative help and a fresh assessment. The detailed study packet can carry prompts, consent logistics, and reporting format.
+  contraindications:
+  - Run an internal co-design workshop. — Allow collaborative refinement; do not present the workshop
+    as an independent usability assessment.
+  knowledge_type:
+    memory_class: procedural
+    cognitive_level: apply
+  domain: product_research
+  tags:
+  - Luma
+  - usability
+  - research procedure
+  - fresh participants
+  source: Authored teaching fixture 09; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/8/structured_data/example/source_text
+    relevance: primary
+    snippet: 'AUTHORED FICTIONAL workflow, not an observed result: Internal review -> freeze tasks ->
+      fresh participants -> record unprompted completion -> discuss solutions. Packet contents: moderator
+      script, p...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 9
+      title: Repeatable procedure
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        AUTHORED FICTIONAL workflow, not an observed result: Internal review -> freeze tasks -> fresh participants -> record unprompted completion -> discuss solutions. Packet contents: moderator script, prior-round notes, current prototype version.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 44
+      applies:
+        task: Prepare the next Luma usability round.
+        expected: Separate internal refinement from fresh-participant testing, and record behavior before
+          offering explanations.
+      near_miss:
+        task: Run an internal co-design workshop.
+        expected: Allow collaborative refinement; do not present the workshop as an independent usability
+          assessment.
+      review_trigger: Revise for a different study objective or an explicitly approved research protocol.
+      checks_executed: false
+  polarity: do
+  relations:
+    broader:
+    - META-2026-09-07-117
+- id: ENG-2026-09-07-110
+  version: 2
+  engram_version: 1
+  status: active
+  type: behavioral
+  scope: project:luma
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Episodic memory'
+  statement: |-
+    [EXAMPLE] In Luma’s 12 August research session, a participant abandoned the answer panel and opened the source passages side by side to reconcile conflicting studies. The team recorded evidence comparison as the next workflow to investigate.
+  rationale: |-
+    Preserves an event that explains the team’s current question. It deliberately stops short of asserting what all users want or why this participant acted.
+  contraindications:
+  - Estimate what proportion of Luma users distrust generated text. — State that this episode provides
+    no population estimate or established motive.
+  knowledge_type:
+    memory_class: episodic
+    cognitive_level: remember
+  domain: product.luma.research_history
+  tags:
+  - Luma
+  - research session
+  - evidence comparison
+  - '2026-08-12'
+  source: Authored teaching fixture 10; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/9/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL session note, 2026-08-12: P1 left the answer panel and arranged two cited passages
+      side by side while reconciling conflicting findings. Team follow-up: investigate evidence comparison.
+      Th...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 10
+      title: Episodic memory
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL session note, 2026-08-12: P1 left the answer panel and arranged two cited passages side by side while reconciling conflicting findings. Team follow-up: investigate evidence comparison. This is one invented participant, not a real study.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 35
+      applies:
+        task: Explain why evidence comparison entered Luma’s research agenda.
+        expected: Recall the event and distinguish the observed behavior from proposed explanations.
+      near_miss:
+        task: Estimate what proportion of Luma users distrust generated text.
+        expected: State that this episode provides no population estimate or established motive.
+      review_trigger: Preserve as history; correct it if the source note changes. Additional episodes
+        may support a separate generalization.
+      checks_executed: false
+      event:
+        occurred_at: '2026-08-12'
+        participants_in_fixture: 1
+        observed_behavior: Opened conflicting source passages side by side
+        motive_established: false
+  relations:
+    related:
+    - ENG-2026-09-07-112
+    broader:
+    - ABS-2026-09-07-115
+- id: ENG-2026-09-07-111
+  version: 2
+  engram_version: 1
+  status: active
+  type: architectural
+  scope: project:luma
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Bounded measurement'
+  statement: |-
+    [EXAMPLE] In the Luma R3 fixture benchmark, full-text search returned in 42 ms at p95 across 20,000 documents on the stated test machine. This describes local query latency for that run; it says nothing about indexing, semantic retrieval, or larger libraries.
+  rationale: |-
+    Keeps a quantitative fact attached to its workload and measurement conditions. A later result under other conditions can coexist rather than overwrite it.
+  contraindications:
+  - Promise production semantic-search latency at one million documents. — Do not extrapolate the fixture
+    result to that workload, search method, or a real deployment.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: understand
+  domain: product.luma.performance
+  tags:
+  - Luma
+  - full-text search
+  - R3
+  - latency
+  source: Authored teaching fixture 11; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/10/structured_data/example/source_text
+    relevance: primary
+    snippet: 'SIMULATED aggregate data solely for this teaching example; no benchmark was run. Fixture
+      R3: full-text search; SQLite 3.46 FTS5; Apple M2, 16 GB RAM; 20,000 documents; 2,000 words/document
+      mean; 1,...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 11
+      title: Bounded measurement
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        SIMULATED aggregate data solely for this teaching example; no benchmark was run. Fixture R3: full-text search; SQLite 3.46 FTS5; Apple M2, 16 GB RAM; 20,000 documents; 2,000 words/document mean; 1,000 timed queries after 50 warm-up queries; warm cache; concurrency 1; nearest-rank p95 42 ms.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 40
+      applies:
+        task: Summarize the R3 fixture’s measured full-text query latency.
+        expected: Report the value with its workload and conditions, explicitly recognizing that this
+          catalog contains simulated data.
+      near_miss:
+        task: Promise production semantic-search latency at one million documents.
+        expected: Do not extrapolate the fixture result to that workload, search method, or a real deployment.
+      review_trigger: Retain as a historical fixture result. Supersede only to correct the same run; add
+        a new record for a different run.
+      checks_executed: false
+      measurement:
+        metric: query_latency
+        statistic: p95
+        value: 42
+        unit: ms
+        actual_run_performed: false
+  measured_under:
+    source_type: simulated teaching fixture; no execution
+    hardware: Apple M2; 16 GB RAM (scenario only)
+    dataset: 'R3: 20,000 documents, 2,000 words/document mean (synthetic scenario)'
+    date: '2026-08-28'
+    engine: SQLite 3.46 FTS5
+    cache_state: warm
+    concurrency: 1
+    warmup_queries: 50
+    timed_queries: 1000
+    percentile_method: nearest rank
+- id: ENG-2026-09-07-112
+  version: 2
+  engram_version: 1
+  status: candidate
+  type: architectural
+  scope: project:luma
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE; CANDIDATE] Provisional hypothesis'
+  statement: |-
+    [EXAMPLE; CANDIDATE] In Luma, switching from answers to source passages may reflect difficulty comparing conflicting evidence. Comparison-first navigation is a candidate design; test it with new participants before making it the default.
+  rationale: |-
+    Keeps a useful explanation available without converting one episode into established user intent or an approved design decision.
+  contraindications:
+  - Implement the approved navigation requirements. — Do not treat this candidate as an accepted requirement
+    or established user preference.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: analyze
+  domain: product.luma.research
+  tags:
+  - Luma
+  - hypothesis
+  - comparison-first
+  - navigation
+  source: Authored teaching fixture 12; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/11/structured_data/example/source_text
+    relevance: primary
+    snippet: AUTHOR INFERENCE from fixture 10. The event is compatible with a comparison problem, distrust,
+      a personal reading habit, or other explanations. No follow-up test has occurred.
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 12
+      title: Provisional hypothesis
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        AUTHOR INFERENCE from fixture 10. The event is compatible with a comparison problem, distrust, a personal reading habit, or other explanations. No follow-up test has occurred.
+      expected_selection: explicit candidate/history/resumption review only
+      statement_words_excluding_fixture_marker: 30
+      applies:
+        task: Generate research hypotheses for Luma’s evidence-comparison study.
+        expected: Offer this as a candidate explanation and propose a discriminating task.
+      near_miss:
+        task: Implement the approved navigation requirements.
+        expected: Do not treat this candidate as an accepted requirement or established user preference.
+      review_trigger: Compare first-time participants using answer-first and comparison-first navigation;
+        retain rival explanations and update from observed outcomes.
+      checks_executed: false
+  commitment: exploring
+  derived_from: ENG-2026-09-07-110
+  relations:
+    related:
+    - ENG-2026-09-07-110
+- id: ENG-2026-09-07-113
+  version: 2
+  engram_version: 1
+  status: active
+  type: behavioral
+  scope: project:luma
+  visibility: template
+  pinned: true
+  summary: '[EXAMPLE] Temporary pinned priority'
+  statement: |-
+    [EXAMPLE] Until Luma’s 18 September research sessions are complete, the design priority is evidence comparison. Route new onboarding ideas to the next-iteration list unless they prevent a participant from completing the study.
+  rationale: |-
+    A temporary operating mode reduces repeated prioritization work without silently turning a short research focus into permanent product policy.
+  contraindications:
+  - Plan work on 19 September without a renewed study plan. — Treat this priority as expired and consult
+    the current plan rather than extending the old one.
+  knowledge_type:
+    memory_class: procedural
+    cognitive_level: apply
+  domain: product.luma.current_work
+  tags:
+  - Luma
+  - research sessions
+  - current priority
+  - '2026-09-18'
+  source: Authored teaching fixture 13; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/12/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL accepted study plan, 2026-09-07: Through completion of the 18 September sessions,
+      focus design work on evidence comparison. Queue onboarding ideas except study-blocking issues. Any
+      extens...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+    valid_from: '2026-09-07'
+    valid_until: '2026-09-18T23:59:59Z'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 13
+      title: Temporary pinned priority
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL accepted study plan, 2026-09-07: Through completion of the 18 September sessions, focus design work on evidence comparison. Queue onboarding ideas except study-blocking issues. Any extension requires an updated plan.
+      expected_selection: pinned within eligible scope
+      statement_words_excluding_fixture_marker: 31
+      applies:
+        task: Prioritize a new welcome animation on 10 September while sessions are pending.
+        expected: Place it on the next-iteration list unless it solves a study-blocking problem.
+      near_miss:
+        task: Plan work on 19 September without a renewed study plan.
+        expected: Treat this priority as expired and consult the current plan rather than extending the
+          old one.
+      review_trigger: Expire when the sessions finish, or at the stated end date. Confirm any rescheduling
+        through a new plan.
+      checks_executed: false
+  polarity: do
+  commitment: decided
+- id: ENG-2026-09-07-114
+  version: 2
+  engram_version: 1
+  status: active
+  type: behavioral
+  scope: project:luma
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Lesson with a boundary'
+  statement: |-
+    [EXAMPLE] In Luma’s first concept test, a single blended confidence score made participants confuse source quality with model certainty. Keep those judgments separately named in research materials; this observation does not establish which visual treatment works best.
+  rationale: |-
+    Turns a specific misunderstanding into an actionable local lesson while keeping the untested visual solution open.
+  contraindications:
+  - Choose a universally best uncertainty visualization. — Do not claim this local lesson settles a general
+    visualization question.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: apply
+  domain: product.luma.research
+  tags:
+  - Luma
+  - confidence
+  - source quality
+  - model certainty
+  source: Authored teaching fixture 14; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/13/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL concept-test note: Three participants read a blended score as simultaneously describing
+      source credibility and model certainty. Team decision: name these separately in the next research
+      m...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 14
+      title: Lesson with a boundary
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL concept-test note: Three participants read a blended score as simultaneously describing source credibility and model certainty. Team decision: name these separately in the next research materials. No alternative visual treatments were compared.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 36
+      applies:
+        task: Prepare Luma’s next concept-test materials.
+        expected: Name source quality and model certainty separately; leave the visual design open to
+          evaluation.
+      near_miss:
+        task: Choose a universally best uncertainty visualization.
+        expected: Do not claim this local lesson settles a general visualization question.
+      review_trigger: Revisit the local presentation rule when direct comprehension evidence supports
+        an alternative.
+      checks_executed: false
+  polarity: do
+  abstract: ABS-2026-09-07-115
+  relations:
+    broader:
+    - ABS-2026-09-07-115
+- id: ABS-2026-09-07-115
+  version: 2
+  engram_version: 1
+  status: candidate
+  type: architectural
+  scope: global
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE; CANDIDATE] Abstraction within a domain'
+  statement: |-
+    [EXAMPLE; CANDIDATE] In evidence-based products, preserve the distinctions users need to judge a conclusion: provenance, disagreement, and uncertainty. Compression is useful only while those distinctions remain recoverable; a single reassuring score should not silently replace them.
+  rationale: |-
+    Generalizes the evidence/synthesis invariant and local research examples into a candidate design principle for research products. Broader scope does not establish broader validation.
+  contraindications:
+  - Design a deliberately impressionistic poem or a simple status indicator with a different approved
+    purpose. — Do not impose a research-product principle on an unrelated goal.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: analyze
+  domain: research_products.design
+  tags:
+  - evidence
+  - provenance
+  - uncertainty
+  - abstraction
+  source: Authored teaching fixture 15; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/14/structured_data/example/source_text
+    relevance: primary
+    snippet: AUTHOR GENERALIZATION from fixtures 6, 10, and 14. These are constructed examples from one
+      product, so applicability to other evidence-based products is proposed, not demonstrated.
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 15
+      title: Abstraction within a domain
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        AUTHOR GENERALIZATION from fixtures 6, 10, and 14. These are constructed examples from one product, so applicability to other evidence-based products is proposed, not demonstrated.
+      expected_selection: explicit candidate/history/resumption review only
+      statement_words_excluding_fixture_marker: 34
+      applies:
+        task: Review a new research product’s approach to combining evidence and synthesis.
+        expected: Use this candidate lens to ask which distinctions remain recoverable, then check against
+          that product’s requirements.
+      near_miss:
+        task: Design a deliberately impressionistic poem or a simple status indicator with a different
+          approved purpose.
+        expected: Do not impose a research-product principle on an unrelated goal.
+      review_trigger: Look for success and failure cases in other research products before adopting this
+        as a broader default.
+      checks_executed: false
+  commitment: exploring
+  source_patterns:
+  - ENG-2026-09-07-106
+  - ENG-2026-09-07-110
+  - ENG-2026-09-07-114
+  relations:
+    narrower:
+    - ENG-2026-09-07-106
+    - ENG-2026-09-07-110
+    - ENG-2026-09-07-114
+- id: ENG-2026-09-07-116
+  version: 2
+  engram_version: 1
+  status: active
+  type: procedural
+  scope: project:public-talks
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE] Procedure outside software'
+  statement: |-
+    [EXAMPLE] For Mira’s public talks, use familiar reviewers to refine wording and a fresh listener to test whether the main idea survives. Ask the fresh listener to explain the takeaway before showing them the intended message.
+  rationale: |-
+    A constructive creative workflow separates refinement from a comprehension check and preserves an observable outcome.
+  contraindications:
+  - Rehearse exact wording for a recurring scripted announcement. — Recognize that exact repetition may
+    be the real goal; do not require a comprehension holdout for its own sake.
+  knowledge_type:
+    memory_class: procedural
+    cognitive_level: apply
+  domain: public_speaking
+  tags:
+  - Mira
+  - public talks
+  - rehearsal
+  - fresh listener
+  source: Authored teaching fixture 16; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/15/structured_data/example/source_text
+    relevance: primary
+    snippet: 'AUTHORED FICTIONAL speaking workflow, not an observed result: Familiar reviewers help revise
+      the talk. A fresh listener then states the takeaway before seeing the speaker’s intended message.'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 16
+      title: Procedure outside software
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        AUTHORED FICTIONAL speaking workflow, not an observed result: Familiar reviewers help revise the talk. A fresh listener then states the takeaway before seeing the speaker’s intended message.
+      expected_selection: retrieve when relevant
+      statement_words_excluding_fixture_marker: 35
+      applies:
+        task: Plan the review process for Mira’s next public talk.
+        expected: Use both refinement feedback and an independent first-exposure comprehension check.
+      near_miss:
+        task: Rehearse exact wording for a recurring scripted announcement.
+        expected: Recognize that exact repetition may be the real goal; do not require a comprehension
+          holdout for its own sake.
+      review_trigger: Adapt when the purpose is memorization, collaborative development, or a different
+        audience outcome.
+      checks_executed: false
+  polarity: do
+  relations:
+    broader:
+    - META-2026-09-07-117
+- id: META-2026-09-07-117
+  version: 2
+  engram_version: 1
+  status: candidate
+  type: procedural
+  scope: global
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE; CANDIDATE] Cross-domain meta-engram'
+  statement: |-
+    [EXAMPLE; CANDIDATE] When the same feedback both guides improvement and certifies success, reserve an untouched check before iterating. Reusing the training signal can reward adaptation to the test instead of the goal. Consider this for evaluations, rehearsal audiences, and interview questions; skip a holdout when exact repetition is the real objective.
+  rationale: |-
+    Recognizes the same relationship between refinement, exposure, and assessment in two distinct domains. The evidence entries are constructed workflow mappings, not empirical validation.
+  contraindications:
+  - Improve accurate reproduction of a fixed script. — Recognize that adaptation to the exact material
+    may be the objective, so a holdout may add no value.
+  knowledge_type:
+    memory_class: metacognitive
+    cognitive_level: evaluate
+  domain: reasoning.evaluation
+  tags:
+  - feedback
+  - holdout
+  - meta-engram
+  - independent assessment
+  source: Authored teaching fixture 17; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/16/structured_data/example/source_text
+    relevance: primary
+    snippet: AUTHOR STRUCTURAL COMPARISON of fixture 9 (product research) and fixture 16 (public speaking).
+      Both separate feedback used for refinement from a first-exposure check. Transfer to other domains
+      rema...
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 17
+      title: Cross-domain meta-engram
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        AUTHOR STRUCTURAL COMPARISON of fixture 9 (product research) and fixture 16 (public speaking). Both separate feedback used for refinement from a first-exposure check. Transfer to other domains remains a hypothesis.
+      expected_selection: explicit candidate/history/resumption review only
+      statement_words_excluding_fixture_marker: 49
+      applies:
+        task: Design an assessment after repeatedly revising material against the same reviewers.
+        expected: Consider reserving an independent check and identify the intended outcome it would measure.
+      near_miss:
+        task: Improve accurate reproduction of a fixed script.
+        expected: Recognize that adaptation to the exact material may be the objective, so a holdout may
+          add no value.
+      review_trigger: Test transfer in each target domain. Reject a mapping if the proposed fresh check
+        measures a different goal or repeated exposure is itself the intended outcome.
+      checks_executed: false
+      meta_assessment:
+        evidence_kind: two deliberately constructed workflow examples, not independent observations
+        alignment_score_basis: author assessment of exact role correspondence by construction; not measured
+          model performance
+        structural_depth_basis: one explicitly represented feedback relationship
+        confidence_basis: zero external validation; no calibrated confidence estimate is claimed
+  commitment: exploring
+  source_patterns:
+  - ENG-2026-09-07-109
+  - ENG-2026-09-07-116
+  relations:
+    narrower:
+    - ENG-2026-09-07-109
+    - ENG-2026-09-07-116
+  meta:
+    structure:
+      goal_type: Improve an artifact and assess its effect on first exposure
+      constraint_type: The feedback source becomes familiar with the artifact during revision
+      outcome_type: The assessment may reflect familiarity or coaching rather than first-exposure performance
+      template: Refine with one feedback source; preserve a separate first-exposure check of the intended
+        goal.
+      structure_type: feedback-loop
+    evidence:
+    - engram_id: ENG-2026-09-07-109
+      domain: product_research
+      mapping_rationale: Internal review refines the prototype; unexposed participants assess unprompted
+        task completion. Exact role match by construction, not a measured effect.
+      alignment_score: 1.0
+    - engram_id: ENG-2026-09-07-116
+      domain: public_speaking
+      mapping_rationale: Familiar reviewers refine wording; a fresh listener reports the takeaway without
+        coaching. Exact role match by construction, not a measured effect.
+      alignment_score: 1.0
+    domain_coverage:
+      validated: []
+      failed: []
+      predicted:
+      - product_research
+      - public_speaking
+      - interview_design
+    falsification:
+      expected_conditions: The intended outcome concerns first exposure and revision feedback can create
+        familiarity or coaching.
+      expected_exceptions: Exact repetition is the target, or the independent check does not measure the
+        intended goal.
+      test_prediction: When familiarity is material, repeated-reviewer assessments will be more optimistic
+        than first-exposure outcomes; a held-aside check should better reveal that gap. No such comparison
+        was run here.
+    confidence:
+      evidence_count: 2
+      domain_count: 2
+      structural_depth: 1
+      validation_ratio: 0.0
+      composite: 0.0
+    hierarchy:
+      level: mop
+      parent: null
+      children:
+      - ENG-2026-09-07-109
+      - ENG-2026-09-07-116
+    pipeline_version: authored-spectrum-fixture-v1
+- id: ENG-2026-09-07-118
+  version: 2
+  engram_version: 1
+  status: retired
+  type: architectural
+  scope: project:luma
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE; RETIRED] Retired predecessor'
+  statement: |-
+    [EXAMPLE; RETIRED] The Luma launch plan uses browser storage to minimize setup and share a hosted prototype. Offline reading is deferred.
+  rationale: |-
+    A superseded decision remains useful for explaining history. Its retired status, validity window, and successor link prevent treating it as the current plan.
+  contraindications:
+  - Choose the storage model for current Luma v1 work. — Use the active successor, not this retired direction.
+  knowledge_type:
+    memory_class: semantic
+    cognitive_level: remember
+  domain: product.luma.architecture
+  tags:
+  - Luma
+  - browser storage
+  - decision history
+  source: Authored teaching fixture 18; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/17/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL decision D1, 2026-07-10: Launch direction uses browser storage and defers offline
+      reading. FICTIONAL decision D2, 2026-08-21, replaces this direction with local SQLite and offline-first
+      v...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+    valid_from: '2026-07-10'
+    valid_until: '2026-08-20T23:59:59Z'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 18
+      title: Retired predecessor
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL decision D1, 2026-07-10: Launch direction uses browser storage and defers offline reading. FICTIONAL decision D2, 2026-08-21, replaces this direction with local SQLite and offline-first v1.
+      expected_selection: explicit candidate/history/resumption review only
+      statement_words_excluding_fixture_marker: 19
+      applies:
+        task: Explain why old Luma mockups assume browser storage.
+        expected: Identify this as the historical plan and point to decision 8 as its replacement.
+      near_miss:
+        task: Choose the storage model for current Luma v1 work.
+        expected: Use the active successor, not this retired direction.
+      review_trigger: Keep for historical questions; a later return to this approach requires a new decision
+        rather than silent reactivation.
+      checks_executed: false
+  commitment: decided
+  relations:
+    superseded_by:
+    - ENG-2026-09-07-108
+- id: ENG-2026-09-07-119
+  version: 2
+  engram_version: 1
+  status: dormant
+  type: procedural
+  scope: project:fieldnotes-workshop
+  visibility: template
+  pinned: false
+  summary: '[EXAMPLE; DORMANT] Dormant intention'
+  statement: |-
+    [EXAMPLE; DORMANT] If the Fieldnotes workshop resumes, build the first session around a participant’s unresolved question. The facilitator outline already contains an opening exercise; update that outline before drafting a new format.
+  rationale: |-
+    Preserves where to resume a paused effort without allowing an inactive intention to consume current attention.
+  contraindications:
+  - Plan current Luma work while Fieldnotes remains paused. — Keep this intention outside the ordinary
+    working set.
+  knowledge_type:
+    memory_class: procedural
+    cognitive_level: apply
+  domain: workshops.fieldnotes
+  tags:
+  - Fieldnotes
+  - workshop
+  - resume
+  - unfinished work
+  source: Authored teaching fixture 19; structured_data.example.source_text
+  provenance:
+    origin: Assistant-authored teaching fixture; no real user preference, approval, event, or measurement
+      asserted
+    chain: []
+    signature: null
+    license: cc-by-sa-4.0
+  knowledge_anchors:
+  - path: plur-engram-spectrum.yaml#/engrams/18/structured_data/example/source_text
+    relevance: primary
+    snippet: 'FICTIONAL paused-project note: On resume, use a participant’s unresolved question as the
+      first session’s spine. Existing opening outline: (1) collect unresolved questions; (2) choose one
+      question; ...'
+    snippet_extracted_at: '2026-09-07'
+  temporal:
+    learned_at: '2026-09-07'
+  usage:
+    injections: 0
+    hits: 0
+    misses: 0
+  feedback_signals:
+    positive: 0
+    negative: 0
+    neutral: 0
+  injection_count: 0
+  recurrence_count: 0
+  structured_data:
+    example:
+      number: 19
+      title: Dormant intention
+      fictional: true
+      status_is_modeled: true
+      source_text: |-
+        FICTIONAL paused-project note: On resume, use a participant’s unresolved question as the first session’s spine. Existing opening outline: (1) collect unresolved questions; (2) choose one question; (3) map what evidence would change the group’s view. Project is paused.
+      expected_selection: explicit candidate/history/resumption review only
+      statement_words_excluding_fixture_marker: 30
+      applies:
+        task: Explicitly resume the Fieldnotes workshop project.
+        expected: Recover and review the saved outline and intention before proposing a new format.
+      near_miss:
+        task: Plan current Luma work while Fieldnotes remains paused.
+        expected: Keep this intention outside the ordinary working set.
+      review_trigger: On explicit project resumption, check whether the intention is still wanted and
+        then choose a current state.
+      checks_executed: false
+  commitment: leaning

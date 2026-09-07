@@ -433,6 +433,18 @@ export interface OmittedPinned {
 export function fillTokenBudget(
   scored: ScoredEngram[],
   maxTokens: number,
+  /**
+   * Base for the pinned sub-budget. Defaults to `maxTokens`, but MUST be the
+   * whole injection budget when this is one of several section passes (#1142).
+   *
+   * Splitting selection into a constraints pass plus a directives pass silently
+   * shrank the pinned allowance from 50% of the budget to 50% of a section.
+   * Measured on a real store: 29 of 34 pinned engrams dropped, including
+   * "CREDENTIALS: never search for them" and the external-claims fact-check
+   * rule. The ratio is a guard against pinned starving contextual recall — it
+   * is not meant to compound once per pass.
+   */
+  pinnedBudgetBase: number = maxTokens,
 ): { selected: ScoredEngram[]; tokens_used: number; omitted_pinned: OmittedPinned[] } {
   const result: ScoredEngram[] = []
   const omittedPinned: OmittedPinned[] = []
@@ -447,7 +459,7 @@ export function fillTokenBudget(
   // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
   const pinned = scored.filter(e => (e as any).pinned === true)
   const unpinned = scored.filter(e => (e as any).pinned !== true)
-  const pinnedBudget = Math.floor(maxTokens * PINNED_TOKEN_BUDGET_RATIO)
+  const pinnedBudget = Math.floor(pinnedBudgetBase * PINNED_TOKEN_BUDGET_RATIO)
 
   // Omissions are REPORTED, not silent (#1142). `pinned: true` reads as a
   // promise of always-load, but pinning is priority-subject-to-capacity: a
@@ -553,7 +565,15 @@ export function selectAndSpread(
       const ftBoost = freshTailBoost(createdAt, (engram as any).commitment, new Date())
       if (ftBoost > 0) raw += ftBoost
     }
-    if (raw > 0) {
+    // Pinned engrams enter the pool even at raw 0 (#1142). "Always-load" is the
+    // whole contract of pinning, and the minRelevance exemption below is too
+    // late to deliver it: an engram dropped here for having no keyword overlap
+    // never reaches that gate. Measured 2026-09-07 — "Never mention client or
+    // customer names unless the user raises them first", pinned and global, was
+    // absent from a BM25 injection entirely. Under injectHybrid an embedding
+    // boost usually rescues such an engram, which is precisely why the hole
+    // stayed invisible: the fast path drops it and the hybrid path does not.
+    if (raw > 0 || (engram as { pinned?: boolean }).pinned === true) {
       scored.push({ ...engram, keyword_match: raw, raw_score: raw, score: raw })
     }
   }
@@ -574,7 +594,8 @@ export function selectAndSpread(
       } else if (raw > 0 && embBoost > 0) {
         raw += embBoost
       }
-      if (raw > 0) {
+      // Same pinned exemption as the personal path above (#1142).
+      if (raw > 0 || (engram as { pinned?: boolean }).pinned === true) {
         // Stamp `_pack` so the pack name survives stripAssociations/stripScoring into
         // WireEngram — the telemetry loop in _inject reads `_pack` to bucket
         // pack_counts. The corpus path no longer carries these rows (filtered by the
@@ -631,18 +652,18 @@ export function selectAndSpread(
   const otherCandidates = filtered.filter(e => !isConstraintCandidate(e))
 
   const constraintsFloor = Math.floor(maxTokens * CONSTRAINTS_FLOOR_RATIO)
-  const firstPass = fillTokenBudget(constraintCandidates, constraintsFloor)
+  const firstPass = fillTokenBudget(constraintCandidates, constraintsFloor, maxTokens)
 
   // Directives get everything the constraints floor did not use.
   const directivesBudget = Math.max(0, maxTokens - firstPass.tokens_used)
-  const dirPass = fillTokenBudget(otherCandidates, directivesBudget)
+  const dirPass = fillTokenBudget(otherCandidates, directivesBudget, maxTokens)
 
   // Any budget the directives left over flows BACK to constraints, so a
   // session with few directives carries more of its rules, not fewer.
   const slack = Math.max(0, maxTokens - firstPass.tokens_used - dirPass.tokens_used)
   const chosen = new Set(firstPass.selected.map(e => e.id))
   const secondPass = slack > 0
-    ? fillTokenBudget(constraintCandidates.filter(e => !chosen.has(e.id)), slack)
+    ? fillTokenBudget(constraintCandidates.filter(e => !chosen.has(e.id)), slack, maxTokens)
     : { selected: [] as ScoredEngram[], tokens_used: 0, omitted_pinned: [] as OmittedPinned[] }
 
   const selectedConstraints = [...firstPass.selected, ...secondPass.selected]

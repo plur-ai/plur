@@ -5029,6 +5029,11 @@ export class Plur {
       tokens_used: tokensUsed,
       injected_ids,
       ...(injected_packs ? { injected_packs } : {}),
+      // Pinned engrams that did not make it (#1142). Surfaced here because the
+      // internal result carried it and the public shape dropped it, so the
+      // reporting existed and never reached a caller — the same silent-omission
+      // shape the field was added to close.
+      ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     }
   }
