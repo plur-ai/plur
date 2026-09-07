@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, _setCachedReranker, _resetRerankerCache, resetRerankerStatus, rerankerStatus } from '@plur-ai/core'
 import type { RerankerAdapter } from '@plur-ai/core'
-import { getToolDefinitions } from '../src/tools.js'
+import { getToolDefinitions, composeHints } from '../src/tools.js'
 
 describe('MCP tools', () => {
   let plur: Plur
@@ -996,5 +996,34 @@ describe('MCP tools', () => {
       expect(result.min_confidence).toBe(0.15)
       expect(result.count).toBe(0)
     })
+  })
+})
+
+describe('composition feedback on a written engram', () => {
+  // Not a length warning — "your engram is 1454 chars" is not actionable.
+  // The point is naming WHICH field each excess span belongs to.
+  it('stays silent on a short statement', () => {
+    expect(composeHints('Never name a client unless the user names them first')).toBeUndefined()
+  })
+
+  it('routes a dated observation to source', () => {
+    const long = 'Never name a client unless the user names them first. '.repeat(9)
+    const c = composeHints(long + ' Proven 2026-09-07 during a live demo.', 'a mechanism', 'a source')
+    expect(c?.misplaced.join(' ')).toContain('`source`')
+  })
+
+  it('flags a long statement whose rationale is empty', () => {
+    // The signal that matters most: the author had a mechanism and did not
+    // place it, which is how one statement ends up carrying eleven claims.
+    const long = 'Never name a client unless the user names them first. '.repeat(9)
+    const c = composeHints(long)
+    expect(c?.chars).toBeGreaterThan(400)
+    expect(c?.misplaced.some(h => h.includes('rationale'))).toBe(true)
+  })
+
+  it('spots a second engram hiding behind "and also"', () => {
+    const long = 'Never name a client unless the user names them first. '.repeat(9)
+    const c = composeHints(long + ' And also never quote invoice dates.', 'm', 's')
+    expect(c?.misplaced.some(h => h.includes('second engram'))).toBe(true)
   })
 })

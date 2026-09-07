@@ -487,7 +487,11 @@ const PLUR_GUIDE = `## PLUR Quick Start
 5. Call **plur_session_end** before the conversation ends — suggest new engrams
 
 ### Core Tools
-- **plur_learn** — record corrections, preferences, patterns (CALL THIS OFTEN)
+- **plur_learn** — one assertion per call, small enough to act on at a glance. The
+  mechanism goes in \`rationale\`, the evidence in \`source\`. Call it often, and do not
+  force one: a bad engram costs injection budget forever, a missed one costs a re-ask.
+  For anything beyond a one-line correction, use the \`plur-create-engrams\` skill —
+  it is the authoring contract, not a style preference.
 - **plur_recall** — search engrams by topic (default: hybrid BM25 + embeddings; use mode:"keyword" for BM25-only)
 - **plur_forget** — retire an outdated engram`
 
@@ -517,6 +521,48 @@ function sanitizeStatement(raw: string): string {
 }
 
 // Exported so the server dispatch loop can tick it once per tool call (#192).
+/**
+ * Composition feedback on a written engram (#1138 follow-up).
+ *
+ * Not a length warning. "Your engram is 1,454 chars" is not actionable; naming
+ * WHICH field each excess span belongs to is. Reported after the write, never
+ * blocking it — the same posture as dedup.near_duplicates.
+ *
+ * The signal that matters most is the last one: a long statement with an EMPTY
+ * rationale means the author had a mechanism to state and did not state it,
+ * which is how a 1,454-char statement carrying eleven claims gets written.
+ */
+export function composeHints(statement: string, rationale?: string, source?: string): {
+  chars: number
+  misplaced: string[]
+} | undefined {
+  const hints: string[] = []
+  const chars = statement.length
+  if (chars <= 400) return undefined
+
+  if (/\b(on|proven|observed|stated|decided|confirmed)\s+20\d\d-\d\d-\d\d/i.test(statement)) {
+    hints.push('carries a dated observation — that is a citation, move it to `source`')
+  }
+  const engRefs = statement.match(/\b(ENG|ABS|META)-[A-Za-z0-9-]+/g)
+  if (engRefs && engRefs.length >= 2) {
+    hints.push(`names ${engRefs.length} other engrams — use relations.supersedes, or cite them in \`rationale\``)
+  }
+  if (/\b(because|since|the reason is|which is why)\b/i.test(statement) && !rationale) {
+    hints.push('argues its own case inline while `rationale` is empty — move the mechanism there')
+  }
+  if (/\b(and also|additionally|separately|furthermore)\b/i.test(statement)) {
+    hints.push('contains "and also" — that is a second engram, split it')
+  }
+  if (!rationale) {
+    hints.push('`rationale` is empty on a long statement: state the mechanism that makes this true, and therefore when it stops being true')
+  }
+  if (!source) {
+    hints.push('`source` is empty: where did this come from')
+  }
+  if (!hints.length) return undefined
+  return { chars, misplaced: hints }
+}
+
 export const mcpCanary = new CapabilityCanary({ threshold: 10 })
 mcpCanary.expect({
   id: 'session_start_hook',
@@ -987,7 +1033,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       inputSchema: {
         type: 'object',
         properties: {
-          statement: { type: 'string', description: 'The knowledge assertion to store' },
+          statement: { type: 'string', description: 'ONE assertion, written so someone who was not there can act on it. Route the rest to the field whose job it is: the mechanism that makes it true goes in `rationale`, where it came from in `source`, when it applies in `tags`/`domain`. An "and also" means a second engram. Good: "Never name a client unless the user names them first, say the customer." Typical 100-300 chars; past ~600 you are carrying another field content. Length is a symptom, not the rule.' },
           type: {
             type: 'string',
             enum: ['behavioral', 'terminological', 'procedural', 'architectural'],
@@ -996,7 +1042,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Namespace, e.g. global, project:myapp' },
           domain: { type: 'string', description: 'Domain tag, e.g. software.deployment' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Searchable keyword tags — contribute to BM25/embedding recall, so concrete keywords pay off' },
-          rationale: { type: 'string', description: 'Why this knowledge matters — also enters the search corpus, helps recall by intent not just statement' },
+          rationale: { type: 'string', description: 'The mechanism that makes the statement true, and therefore the condition under which it would STOP being true. One sentence. "Because the user said so on <date>" is a citation, not a mechanism: that belongs in `source`. This text is indexed, so a real mechanism also carries concrete nouns a future query can match. NOTE: constraints render without rationale (plur-ai/plur#1144), so a mechanism a prohibition needs the model to weigh must stay in the statement.' },
           source: { type: 'string', description: 'Origin of this knowledge (URL, conversation ref, etc.)' },
           pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
           commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed to this belief (default: leaning). `draft` marks the engram as pending human approval: core stores and RECALLS it normally but NEVER injects it (#1141), so an unapproved rule cannot shape agent behaviour. Retrieval stays open because reviewing something requires reading it.' },
@@ -1182,6 +1228,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             decision: 'ADD',
             ...(dedup?.near_duplicates?.length ? { dedup } : {}),
             ...(redraft ? { redraft } : {}),
+            ...(() => { const c = composeHints(statement, context?.rationale, context?.source); return c ? { composition: c } : {} })(),
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed),
             ...domainHint(!!routed),
@@ -1242,7 +1289,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             items: {
               type: 'object',
               properties: {
-                statement: { type: 'string', description: 'The knowledge assertion to store' },
+                statement: { type: 'string', description: 'ONE assertion, written so someone who was not there can act on it. Route the rest to the field whose job it is: the mechanism that makes it true goes in `rationale`, where it came from in `source`, when it applies in `tags`/`domain`. An "and also" means a second engram. Good: "Never name a client unless the user names them first, say the customer." Typical 100-300 chars; past ~600 you are carrying another field content. Length is a symptom, not the rule.' },
                 type: { type: 'string', enum: ['behavioral', 'terminological', 'procedural', 'architectural'], description: 'Category of the engram' },
                 scope: { type: 'string', description: 'Namespace, e.g. global, project:myapp' },
                 domain: { type: 'string', description: 'Domain tag, e.g. software.deployment' },
