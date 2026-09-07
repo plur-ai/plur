@@ -74,20 +74,29 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
   if (budget === 0) return ''
 
   // Same construction as @plur-ai/mcp's session-start block.
-  const assemble = (withConstraints: boolean, withConsider: boolean): string => {
+  //
+  // CONSTRAINTS FIRST, and CONSTRAINTS LAST TO GO. Both are deliberate.
+  // Prohibitions — what the agent may never say or do — outrank process
+  // hygiene at every budget. The previous ladder dropped CONSTRAINTS while
+  // keeping DIRECTIVES, treating directives as the irreducible core; that is
+  // backwards. On 2026-09-07 a session_start payload put CONSTRAINTS at char
+  // 35,260 behind 35KB of DIRECTIVES, the agent read the first 3,000 chars,
+  // and disclosed a customer name on a live demo. Every rule it broke was in
+  // the section it never reached.
+  const assemble = (withDirectives: boolean, withConsider: boolean): string => {
     const lines: string[] = []
-    if (injection.directives) lines.push('## DIRECTIVES\n', flatten(injection.directives))
-    if (withConstraints && injection.constraints) lines.push('\n## CONSTRAINTS\n', flatten(injection.constraints))
+    if (injection.constraints) lines.push('## CONSTRAINTS\n', flatten(injection.constraints))
+    if (withDirectives && injection.directives) lines.push('\n## DIRECTIVES\n', flatten(injection.directives))
     if (withConsider && injection.consider) lines.push('\n## ALSO CONSIDER\n', flatten(injection.consider))
     return lines.join('\n')
   }
 
-  for (const [constraints, consider] of [[true, true], [true, false], [false, false]] as const) {
-    const block = assemble(constraints, consider)
+  for (const [directives, consider] of [[true, true], [true, false], [false, false]] as const) {
+    const block = assemble(directives, consider)
     if (estimateTokens(block) <= budget) return block
   }
 
-  // Even directives alone overflow: emit nothing rather than a truncated engram.
+  // Even constraints alone overflow: emit nothing rather than a truncated engram.
   return ''
 }
 

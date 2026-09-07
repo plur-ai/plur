@@ -976,7 +976,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
       description:
         'Create an engram — record a reusable learning, preference, or correction. ' +
         'A write is never suppressed by similarity: exact content-hash duplicates NOOP, and anything merely SIMILAR ' +
-        'is written and reported back in `dedup.near_duplicates` (closest existing engrams and their cosine scores) ' +
+        'is written and reported back in `dedup.near_duplicates` (closest existing engrams, their cosine scores, and ' +
+        'a preview of each neighbour\'s own statement — read them before moving on; that is what they are for) ' +
         'so you can supersede or merge deliberately. High similarity is a reason to look, not a decision — cosine ' +
         'cannot tell a duplicate from a correction of it. ' +
         'Multi-agent note: in an orchestration that spawns subagents, have the PARENT session own plur_learn writes — ' +
@@ -1139,6 +1140,33 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const dedup = isOutbox
             ? undefined
             : await plur.nearDuplicates(statement, context, engram.id)
+
+          // Redraft detection (2026-09-07). Superseding an engram written only
+          // minutes ago is not a correction — it is a redraft, and it leaves a
+          // chain of near-identical records behind. Cosine cannot catch this:
+          // every link in such a chain carries `supersedes`, so a similarity
+          // gate never fires, and the writes are genuinely different text.
+          // Observed: three versions of one rule inside a single session.
+          // Reported, never blocked — the write may well be right.
+          // Engram records carry no creation timestamp — only
+          // activation.last_accessed, which is a date and moves on read. The
+          // ID does carry the mint date, in either ENG-YYYY-MM-DD-NNN or
+          // ENG-YYYY-MMDD-NNN form (optionally with a store prefix), and
+          // same-day is the resolution this needs. No I/O, so it cannot fail.
+          const redraft = (() => {
+            const ids = args.supersedes as string[] | undefined
+            if (!ids?.length) return undefined
+            const today = new Date().toISOString().slice(0, 10)
+            const sameDay = ids.filter(id => {
+              const m = /(\d{4})-(\d{2})-?(\d{2})/.exec(id)
+              return m ? `${m[1]}-${m[2]}-${m[3]}` === today : false
+            })
+            if (!sameDay.length) return undefined
+            return {
+              superseded_today: sameDay,
+              note: 'You are replacing an engram minted today — that is a redraft, not a correction, and it leaves a chain of near-identical records behind. Think the assertion through once and write it once. If the earlier one was simply wrong, retire it with plur_forget instead of stacking another supersede.',
+            }
+          })()
           return {
             // #914: report the id in the form plur_recall hands back, so a
             // caller that records what it just learned and passes it to
@@ -1153,6 +1181,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             content_hash: (engram as { content_hash?: string }).content_hash,
             decision: 'ADD',
             ...(dedup?.near_duplicates?.length ? { dedup } : {}),
+            ...(redraft ? { redraft } : {}),
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed),
             ...domainHint(!!routed),
@@ -2685,9 +2714,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           })
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
+            // CONSTRAINTS FIRST — deliberate, do not "restore" the old order.
+            // A session_start payload can exceed the host's tool-result limit and
+            // be spilled to a file, leaving the agent a pointer it may only read
+            // the head of. Whatever is emitted first is what actually gets read.
+            // 2026-09-07: DIRECTIVES ran 35,260 chars, pushing CONSTRAINTS past
+            // char 35k; an agent read the first 3,000 and disclosed a customer
+            // name on a live demo. Every rule it broke was in CONSTRAINTS.
+            // Prohibitions outrank process hygiene at every budget.
             const lines: string[] = []
-            if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
-            if (result.constraints) lines.push('\n## CONSTRAINTS\n', result.constraints)
+            if (result.constraints) lines.push('## CONSTRAINTS\n', result.constraints)
+            if (result.directives) lines.push('\n## DIRECTIVES\n', result.directives)
             if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
             engrams = { text: lines.join('\n'), count: result.count, injected_ids: result.injected_ids }
           }
@@ -2700,9 +2737,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           })
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
+            // CONSTRAINTS FIRST — deliberate, do not "restore" the old order.
+            // A session_start payload can exceed the host's tool-result limit and
+            // be spilled to a file, leaving the agent a pointer it may only read
+            // the head of. Whatever is emitted first is what actually gets read.
+            // 2026-09-07: DIRECTIVES ran 35,260 chars, pushing CONSTRAINTS past
+            // char 35k; an agent read the first 3,000 and disclosed a customer
+            // name on a live demo. Every rule it broke was in CONSTRAINTS.
+            // Prohibitions outrank process hygiene at every budget.
             const lines: string[] = []
-            if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
-            if (result.constraints) lines.push('\n## CONSTRAINTS\n', result.constraints)
+            if (result.constraints) lines.push('## CONSTRAINTS\n', result.constraints)
+            if (result.directives) lines.push('\n## DIRECTIVES\n', result.directives)
             if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
             engrams = { text: lines.join('\n'), count: result.count, injected_ids: result.injected_ids }
           }

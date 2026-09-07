@@ -53,13 +53,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       tokens_used: result.tokens_used,
     })
   } else {
-    if (directives) {
-      outputText('## DIRECTIVES')
-      outputText(directives)
-    }
+    // CONSTRAINTS FIRST — matches @plur-ai/mcp and @plur-ai/dsh. Consumers
+    // truncate head-first, so prohibitions must lead. See memory-section.ts.
     if (result.constraints) {
       outputText('## CONSTRAINTS')
       outputText(result.constraints)
+    }
+    if (directives) {
+      outputText('## DIRECTIVES')
+      outputText(directives)
     }
     if (result.consider) {
       outputText('## ALSO CONSIDER')

@@ -51,6 +51,51 @@ describe('injection engine', () => {
     expect(result.constraints).toBeDefined()
   })
 
+  it('reserves a budget floor for constraints under heavy directive competition', () => {
+    // The 2026-09-07 regression. Selection used to be one pool split by
+    // polarity afterwards, so constraints competed with every other engram on
+    // task similarity. Long, keyword-dense directives crowded them out and a
+    // "never name a customer" rule landed 45,000 chars into the payload.
+    // Here 60 fat, perfectly on-topic directives swamp 3 short constraints.
+    const noise = Array.from({ length: 60 }, (_, i) => makeEngram({
+      id: `ENG-2026-0319-${String(i + 10).padStart(3, '0')}`,
+      statement: `Deploy runbook ${i}: always deploy carefully. ${'deploy '.repeat(60)}`,
+    }))
+    const rules = [
+      makeEngram({ id: 'ENG-2026-0319-001', statement: 'Never deploy on a Friday' }),
+      makeEngram({ id: 'ENG-2026-0319-002', statement: 'Do not deploy without a rollback' }),
+      makeEngram({ id: 'ENG-2026-0319-003', statement: 'Never deploy unreviewed code' }),
+    ]
+    const result = selectAndSpread(
+      { prompt: 'deploy the app', maxTokens: 2000 },
+      [...noise, ...rules], []
+    )
+    // Every constraint survives: they are filled first, from a reserved floor.
+    expect(result.constraints.length).toBe(3)
+    // And they lead the payload, so a head-first truncation keeps them.
+    const ids = [...result.constraints, ...result.directives].map(e => e.id)
+    expect(ids.slice(0, 3).sort()).toEqual([
+      'ENG-2026-0319-001', 'ENG-2026-0319-002', 'ENG-2026-0319-003',
+    ])
+    // The floor is a floor, not a cap — directives still get the rest.
+    expect(result.directives.length).toBeGreaterThan(0)
+    expect(result.tokens_used.directives).toBeLessThanOrEqual(2000)
+  })
+
+  it('gives unused constraint floor back to directives', () => {
+    // The reservation must cost nothing when there are few constraints.
+    const many = Array.from({ length: 40 }, (_, i) => makeEngram({
+      id: `ENG-2026-0319-${String(i + 10).padStart(3, '0')}`,
+      statement: `Rule ${i}: always deploy carefully`,
+    }))
+    const withFloor = selectAndSpread({ prompt: 'deploy the app', maxTokens: 2000 }, many, [])
+    // No constraints at all → the 40% floor must not be stranded. Directives
+    // are free to spend well past the 60% that would remain if it were.
+    // (Count is capped by MAX_PER_DOMAIN, not by budget, so assert on tokens.)
+    expect(withFloor.constraints.length).toBe(0)
+    expect(withFloor.tokens_used.directives).toBeGreaterThan(2000 * 0.6)
+  })
+
   it('splits dont-pattern engrams into constraints', () => {
     const engrams = [
       makeEngram({ id: 'ENG-2026-0319-001', statement: 'Always deploy using blue-green strategy' }),

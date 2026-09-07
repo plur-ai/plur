@@ -79,6 +79,27 @@ const MAX_PER_DOMAIN = 10
 // still gets at least half the budget. Tuned for default 8000 → 4000 pinned.
 const PINNED_TOKEN_BUDGET_RATIO = 0.5
 
+// --- Section budgets (2026-09-07) ---
+//
+// Constraints used to have no budget of their own. One `fillTokenBudget` call
+// selected a single pool and the split into directives/constraints happened
+// AFTERWARDS, by polarity — so a constraint competed against every other
+// engram on similarity to the task, and "constraints" was only ever a label
+// applied to whatever had already won.
+//
+// That is how a store gets 110 engrams injected and none of the four rules
+// that mattered near the top. Measured on the 2026-09-07 payload: the task
+// terms ("plur", "enterprise", "session", "engrams") appear in 62%/31%/27%/24%
+// of the corpus, so they carry almost no IDF and ranking degenerates toward
+// the longest, most keyword-dense documents. Deck-version histories won;
+// "never name a customer" placed 45,000 characters down.
+//
+// Constraints are now filled FIRST, from a reserved floor, before anything
+// else competes. Ranking still orders them — it just cannot evict the section.
+const CONSTRAINTS_FLOOR_RATIO = 0.4
+// Unused floor flows to directives, and unused directive budget flows back to
+// constraints, so the reservation costs nothing when a section is small.
+
 // DIP-0019 consider pool (bottom 1/3 of first-pass)
 const DIP19_CONSIDER_MAX = 5
 const DIP19_CONSIDER_BUDGET = 200
@@ -151,6 +172,26 @@ function getPackMetadata(manifest: PackManifest) {
 }
 
 // --- Token estimation ---
+
+/**
+ * Would this engram render into `## CONSTRAINTS`?
+ *
+ * MUST stay in step with the wire-time routing at the end of `inject()`.
+ * Selection reserves budget on this predicate; if the two ever disagree, the
+ * floor protects engrams that then render somewhere else and the guarantee is
+ * silently void. The duplication is deliberate — the wire split runs on
+ * WireEngram after stripping, this runs on the scored engram before selection,
+ * and they cannot share a signature without threading the strip pipeline
+ * earlier than it belongs.
+ */
+export function isConstraintCandidate(e: Pick<Engram, 'statement' | 'polarity'> & {
+  knowledge_type?: { cognitive_level?: string }
+}): boolean {
+  const cog = e.knowledge_type?.cognitive_level
+  if (cog === 'remember' || cog === 'understand') return false  // → consider
+  if ((e.polarity ?? classifyPolarity(e.statement)) === 'dont') return true
+  return cog === 'apply' || cog === 'analyze'
+}
 
 export function estimateTokens(engram: ScoredEngram): number {
   // Serialize wire-visible fields only (exclude scoring + associations)
@@ -520,8 +561,38 @@ export function selectAndSpread(
     filtered.sort((a, b) => b.score - a.score)
   }
 
-  // Step 6: Fill directive token budget
-  const { selected: directives, tokens_used: directiveTokens } = fillTokenBudget(filtered, maxTokens)
+  // Step 6: Fill section budgets — CONSTRAINTS FIRST, from a reserved floor.
+  //
+  // `isConstraintCandidate` mirrors the wire-time routing below (polarity
+  // 'dont', or cognitive_level apply/analyze). It must stay in step with it:
+  // if the two disagree, the floor reserves space for engrams that then get
+  // rendered into a different section.
+  const constraintCandidates = filtered.filter(isConstraintCandidate)
+  const otherCandidates = filtered.filter(e => !isConstraintCandidate(e))
+
+  const constraintsFloor = Math.floor(maxTokens * CONSTRAINTS_FLOOR_RATIO)
+  const firstPass = fillTokenBudget(constraintCandidates, constraintsFloor)
+
+  // Directives get everything the constraints floor did not use.
+  const directivesBudget = Math.max(0, maxTokens - firstPass.tokens_used)
+  const dirPass = fillTokenBudget(otherCandidates, directivesBudget)
+
+  // Any budget the directives left over flows BACK to constraints, so a
+  // session with few directives carries more of its rules, not fewer.
+  const slack = Math.max(0, maxTokens - firstPass.tokens_used - dirPass.tokens_used)
+  const chosen = new Set(firstPass.selected.map(e => e.id))
+  const secondPass = slack > 0
+    ? fillTokenBudget(constraintCandidates.filter(e => !chosen.has(e.id)), slack)
+    : { selected: [] as ScoredEngram[], tokens_used: 0 }
+
+  const selectedConstraints = [...firstPass.selected, ...secondPass.selected]
+  const constraintTokens = firstPass.tokens_used + secondPass.tokens_used
+
+  // Downstream (spreading activation, consider pool, wire split) consumes one
+  // ordered pool. Constraints lead it so any consumer that truncates head-first
+  // keeps the prohibitions.
+  const directives = [...selectedConstraints, ...dirPass.selected]
+  const directiveTokens = constraintTokens + dirPass.tokens_used
   const directiveIds = new Set(directives.map(e => e.id))
 
   // DIP-0019 consider pool: next candidates that didn't fit as directives

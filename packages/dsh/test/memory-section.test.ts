@@ -27,18 +27,36 @@ describe('renderBlock', () => {
       consider: '[ENG-3] Maybe relevant.',
       count: 3,
     }), 2000)
-    expect(out.indexOf('## DIRECTIVES')).toBeLessThan(out.indexOf('## CONSTRAINTS'))
-    expect(out.indexOf('## CONSTRAINTS')).toBeLessThan(out.indexOf('## ALSO CONSIDER'))
+    // CONSTRAINTS first: a spilled payload is read head-first, so prohibitions
+    // must occupy the head. See memory-section.ts for the 2026-09-07 incident.
+    expect(out.indexOf('## CONSTRAINTS')).toBeLessThan(out.indexOf('## DIRECTIVES'))
+    expect(out.indexOf('## DIRECTIVES')).toBeLessThan(out.indexOf('## ALSO CONSIDER'))
   })
 
   it('matches @plur-ai/mcp session-start construction byte for byte', () => {
-    // The canonical assembly, copied from packages/mcp/src/tools.ts:2622-2626.
+    // The canonical assembly, copied from packages/mcp/src/tools.ts.
     const result = { directives: 'D-text', constraints: 'C-text', consider: 'A-text', count: 3 }
     const lines: string[] = []
-    if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
-    if (result.constraints) lines.push('\n## CONSTRAINTS\n', result.constraints)
+    if (result.constraints) lines.push('## CONSTRAINTS\n', result.constraints)
+    if (result.directives) lines.push('\n## DIRECTIVES\n', result.directives)
     if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
     expect(renderBlock(result, 2000)).toBe(lines.join('\n'))
+  })
+
+  it('drops DIRECTIVES before CONSTRAINTS when over budget', () => {
+    // The safety-critical invariant. Constraints are the last section standing:
+    // an agent that loses its prohibitions to a budget squeeze is worse off
+    // than one that loses its process hygiene.
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(4000),
+      constraints: 'c'.repeat(100),
+      consider: 'x'.repeat(4000),
+      count: 3,
+    }), 100)
+    expect(out).toContain('## CONSTRAINTS')
+    expect(out).toContain('c'.repeat(100))
+    expect(out).not.toContain('## DIRECTIVES')
+    expect(out).not.toContain('## ALSO CONSIDER')
   })
 
   it('omits a section the injection left empty', () => {
@@ -58,15 +76,20 @@ describe('renderBlock', () => {
     expect(out).not.toContain('## ALSO CONSIDER')
   })
 
-  it('drops CONSTRAINTS next when still over budget', () => {
+  it('emits nothing rather than shedding CONSTRAINTS to fit the budget', () => {
+    // Inverted 2026-09-07. This test previously asserted that CONSTRAINTS was
+    // dropped while DIRECTIVES survived — it encoded the defect rather than
+    // catching it. Constraints are never traded for budget: if they do not
+    // fit, the block is empty and the caller is told nothing, which is honest.
+    // Silently returning process hygiene while withholding prohibitions is not.
     const out = renderBlock(injection({
       directives: 'd'.repeat(200),
       constraints: 'c'.repeat(4000),
       consider: 'x'.repeat(4000),
       count: 3,
     }), 100)
-    expect(out).toContain('## DIRECTIVES')
-    expect(out).not.toContain('## CONSTRAINTS')
+    expect(out).toBe('')
+    expect(out).not.toContain('## DIRECTIVES')
   })
 
   it('emits nothing rather than a truncated engram when even directives overflow', () => {
