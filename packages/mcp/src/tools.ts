@@ -1627,8 +1627,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
               this_engram_cost: q.candidate.cost,
               would_be: q.candidate.would_be,
               over_by: deficit,
-              unpin_suggestions: suggestions,
-              note: 'Pinned engrams are always-load, so the set cannot exceed its share of the injection budget — over-committing means silently dropping something already pinned. Unpin one of the suggestions (ordered least-endorsed, least-recently-used, largest first), or raise `injection_budget` / `injection.pinned_ratio` in ~/.plur/config.yaml. The ordering is a starting point, not a ranking to trust blindly — the user decides what stops being always-load.',
+              unpin_candidates: suggestions,
+              note: 'Pinned engrams are always-load, so the set cannot exceed its share of the injection budget — over-committing means silently dropping something already pinned. Unpin one of the suggestions (listed largest-first — that is arithmetic, not a recommendation), or raise `injection_budget` / `injection.pinned_ratio` in ~/.plur/config.yaml. Candidates are ordered by what they free, NOT by importance: feedback covers ~4% of engrams so it cannot rank them, and a ranking that looks authoritative would put a thumb on a decision only the user can make.',
             }
           }
         }

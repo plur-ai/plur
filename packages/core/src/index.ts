@@ -5629,13 +5629,22 @@ export class Plur {
       }
     })
 
-    // Expendability order, cheapest signal first: engrams nobody has endorsed,
-    // then least recently touched, then largest. Deliberately NOT a score —
-    // this only orders a suggestion the human accepts or ignores.
-    entries.sort((a, b) =>
-      a.net_feedback - b.net_feedback ||
-      (a.last_accessed ?? '').localeCompare(b.last_accessed ?? '') ||
-      b.cost - a.cost)
+    // Ordered by COST, largest first — "what frees the most budget", which is
+    // arithmetic. Deliberately NOT an expendability ranking.
+    //
+    // The first version sorted by net feedback ascending, on the theory that
+    // an unendorsed engram is a safe cut. Run against a real store it proposed
+    // unpinning the demo-redaction rule, "never name enterprise customers",
+    // and "customer-named work runs in a dedicated session" — the three rules
+    // whose absence had caused a live disclosure that same day. The reason is
+    // structural: only 275 of 7,920 injections were ever rated, so ~96% of
+    // engrams sit at net_feedback 0 and the sort collapses into noise.
+    //
+    // `net_feedback` and `last_accessed` are still reported per entry, because
+    // they are real signals a human can weigh. They are just not a ranking,
+    // and presenting them as one puts the system's thumb on a decision it has
+    // no basis for.
+    entries.sort((a, b) => b.cost - a.cost)
 
     const used = entries.reduce((n, e) => n + e.cost, 0)
 

@@ -103,14 +103,20 @@ describe('pinned quota (#1142)', () => {
     expect(q.candidate).toBeUndefined()
   })
 
-  it('orders unpin suggestions most-expendable first', async () => {
+  it('orders entries by cost, not by a guessed expendability', async () => {
+    // An earlier version sorted by net feedback ascending. Against a real
+    // store that proposed unpinning the demo-redaction rule and two
+    // client-confidentiality rules, because only ~4% of engrams carry any
+    // feedback at all and the rest tie at zero. Cost is arithmetic; the
+    // judgement stays with the user.
     const plur = freshPlur(100000, 0.5)
-    const ids = await pinMany(plur, 3)
-    // Endorse the middle one; it should sink to the bottom of the suggestions.
-    await plur.feedback(ids[1], 'positive')
-    await plur.feedback(ids[1], 'positive')
+    await pinMany(plur, 2, 10)
+    await pinMany(plur, 1, 90)
     const q = await plur.pinnedQuota()
-    expect(q.entries[q.entries.length - 1].id).toBe(ids[1])
-    expect(q.entries[0].net_feedback).toBeLessThanOrEqual(q.entries[q.entries.length - 1].net_feedback)
+    const costs = q.entries.map(e => e.cost)
+    expect(costs).toEqual([...costs].sort((a, b) => b - a))
+    // The signals are still reported, they are just not the sort key.
+    expect(q.entries[0]).toHaveProperty('net_feedback')
+    expect(q.entries[0]).toHaveProperty('last_accessed')
   })
 })
