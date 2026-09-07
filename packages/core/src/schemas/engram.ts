@@ -304,6 +304,23 @@ export const EngramSchema = z.object({
   visibility: z.enum(['private', 'public', 'template']).default('private')
     .describe("Sharing posture. 'private' engrams MUST NOT be exported in packs."),
 
+  // Provenance timestamps (added 2026-09-07).
+  //
+  // Before this the object carried no canonical creation time. `sources[]`
+  // records a `stored_at` per write, but only 2,765 of 5,477 engrams in a real
+  // store had one; `temporal.learned_at` had 12. So for half the corpus there
+  // was no answer to "when was this learned", and callers fell back to parsing
+  // the date out of the ID — which is date-only, absent on non-canonical ids,
+  // and silently wrong for a store-namespaced or migrated engram.
+  //
+  // Both OPTIONAL rather than defaulted: a default would stamp today's date
+  // onto every legacy engram at load time and destroy the very provenance this
+  // adds. Absent means genuinely unknown; the backfill sets what can be known.
+  created_at: z.string().optional()
+    .describe('ISO 8601 timestamp of first mint. Immutable — never rewritten by an update. Absent on engrams written before this field existed and not recoverable from any other record.'),
+  updated_at: z.string().optional()
+    .describe('ISO 8601 timestamp of the last mutation to this record (statement, scope, commitment, relations). Not touched by reads, decay, injection or feedback — those move activation/usage, not the content.'),
+
   // Content
   statement: z.string().min(1).describe('The assertion itself — the load-bearing content of the engram.'),
   rationale: z.string().optional().describe('Why this is true / why it matters.'),

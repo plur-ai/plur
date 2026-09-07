@@ -275,6 +275,27 @@ destroying any.
 | `type` | string | **R** | `behavioral` \| `terminological` \| `procedural` \| `architectural` | Top-level knowledge class. |
 | `scope` | string | **R** | free-form | Hierarchical namespace. Convention: `kind:path`, e.g. `global`, `project:my-app`, `group:plur/test`. |
 | `visibility` | string | | `private` \| `public` \| `template`, default `private` | Sharing posture. `private` engrams MUST NOT be exported (§5.4). `template` = shippable skeleton. |
+| `created_at` | string | | RFC 3339 instant | Timestamp of first mint. Immutable. |
+| `updated_at` | string | | RFC 3339 instant | Timestamp of the last mutation to content or lifecycle. |
+
+Both timestamps are OPTIONAL and deliberately **not** defaulted. An
+implementation MUST NOT synthesise `created_at` at load time for an engram that
+lacks it: a default stamps the load date onto every legacy record and destroys
+the provenance the field exists to carry. Absent means genuinely unknown.
+
+`updated_at` tracks mutation of the engram's *content or lifecycle* — statement,
+scope, commitment, relations, retirement. It MUST NOT be moved by reads, decay,
+injection, or feedback; those change `activation` and `usage`, which are
+separate state carrying their own timestamps. An implementation that bumps
+`updated_at` on read makes it indistinguishable from `activation.last_accessed`
+and useless for provenance.
+
+> **Added 2026-09-07.** Before this the object had no canonical creation time.
+> `sources[].stored_at` records a timestamp per write but is optional: a real
+> 5,477-engram store carried one on 2,765 of them, and `temporal.learned_at` on
+> 12. Consumers were left parsing the mint date out of the identifier — which is
+> date-only, is absent for any id not in the canonical form of §3.3, and is
+> wrong for a migrated or store-namespaced engram.
 
 ### 4.3 Content
 

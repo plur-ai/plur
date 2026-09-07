@@ -2878,8 +2878,18 @@ export class Plur {
       const scored = await embeddingSearchWithScores(candidates, query, candidates.length, this.paths.root)
       if (scored.length === 0) return { mode: 'hash-only' }
 
+      // Carry the neighbour's own text, not just its id. Reporting id+score
+      // alone makes "read the neighbour first" an extra tool call, and that
+      // call does not get made (2026-09-07: four near-identical engrams in one
+      // session, every one reporting an unread 0.86-0.87 neighbour).
       const ranked = scored
-        .map(s => ({ id: s.engram.id, score: s.score }))
+        .map(s => ({
+          id: s.engram.id,
+          score: s.score,
+          statement: s.engram.statement.length > 240
+            ? `${s.engram.statement.slice(0, 240)}…`
+            : s.engram.statement,
+        }))
         .sort((a, b) => b.score - a.score)
       const top = ranked[0]
       if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
@@ -3132,6 +3142,8 @@ export class Plur {
       commitment,
       locked_at: commitment === 'locked' ? now : undefined,
       locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
+      created_at: now,
+      updated_at: now,
       write_count: 1,
       injection_count: 0,
       sources: [this._buildSourceEntry(scope, context)],
@@ -5850,6 +5862,7 @@ export class Plur {
 
       if (newCount === 0) {
         engram.status = 'retired'
+        engram.updated_at = new Date().toISOString()
         if (reason && !engram.rationale) {
           engram.rationale = `Retired: ${reason}`
         }
@@ -5922,6 +5935,7 @@ export class Plur {
 
         if (newCount === 0) {
           engram.status = 'retired'
+          engram.updated_at = new Date().toISOString()
           if (reason && !engram.rationale) {
             engram.rationale = `Retired: ${reason}`
           }
@@ -6391,6 +6405,7 @@ export class Plur {
       const t = fresh.find(e => e.id === id)
       if (!t) return
       t.status = 'retired'
+      t.updated_at = new Date().toISOString()
       if (!t.rationale) t.rationale = `Retired: rescoped to ${toScope} as ${newId}`
       const rel = t.relations ?? { broader: [], narrower: [], related: [], conflicts: [], supersedes: [], superseded_by: [] }
       rel.superseded_by = rel.superseded_by ?? []
@@ -7942,6 +7957,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   private async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
     const stamp = (engram: Engram): void => {
       engram.status = 'retired'
+      engram.updated_at = new Date().toISOString()
       if (!engram.rationale) engram.rationale = `Retired: ${reason}`
     }
     const foundInPrimary = await this._withStoreLock(this.paths.engrams, async () => {
