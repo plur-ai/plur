@@ -105,8 +105,17 @@ export interface LearnAsyncResult {
    */
   dedup?: {
     mode: 'llm' | 'cosine' | 'hash-only'
-    /** Closest candidates and their scores — present whenever similarity ran. */
-    near_duplicates?: Array<{ id: string; score: number }>
+    /**
+     * Closest candidates and their scores — present whenever similarity ran.
+     *
+     * `statement` carries a preview of the neighbour's own text (2026-09-07).
+     * Reporting id+score alone made "read the neighbour before you write"
+     * cost an extra round-trip, so it was skipped: four near-identical
+     * engrams were written in one session, each reporting a 0.86-0.87
+     * neighbour that was never read. Cosine still never gates a write — the
+     * fix is to make the correct behaviour free, not to block the write.
+     */
+    near_duplicates?: Array<{ id: string; score: number; statement?: string }>
   }
   /**
    * Position of this result's statement in the original learnBatch input array
