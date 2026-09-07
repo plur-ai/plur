@@ -1580,7 +1580,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_pin',
-      description: 'Toggle the always-load (pinned) flag on an engram. Pinned engrams bypass the keyword-relevance gate at injection time and are eligible for loading on every session, regardless of overlap with the user task. Use sparingly — meta-rules, safety conventions, core operating principles. Pass {id, pinned:true} to pin or {id, pinned:false} to unpin. List current pinned with {list:true}.',
+      description: 'Toggle the always-load (pinned) flag on an engram. Pinned engrams bypass the keyword-relevance gate and load on every session regardless of overlap with the task. Use sparingly — meta-rules, safety conventions, core operating principles; a fact you need only sometimes should be recalled, not pinned. The pinned set has a QUOTA (injection_budget × injection.pinned_ratio): "always-load" only means anything if the set fits, so a pin that would exceed it is REFUSED with the current usage and unpin suggestions rather than silently dropping something already pinned. Resolve it by unpinning something or raising the limit — the choice is the user\'s, so surface it rather than picking one. Pass {id, pinned:true} to pin, {id, pinned:false} to unpin, {list:true} to list the set with its quota usage.',
       annotations: { title: 'Pin', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1593,13 +1593,45 @@ function getAllToolDefinitions(): ToolDefinition[] {
       handler: async (args, plur) => {
         if (args.list === true) {
           const pinned = await plur.listPinned()
+          const q = await plur.pinnedQuota()
           return {
             count: pinned.length,
+            quota: { tokens: q.quota, used: q.used, free: q.free, over: q.over },
+            ...(q.over ? { warning: `Pinned engrams use ${q.used} tokens against a ${q.quota}-token quota. The overflow is dropped at injection time, so some pinned engrams are NOT being loaded. Unpin some, or raise injection_budget / injection.pinned_ratio.` } : {}),
             pinned: pinned.map(e => ({ id: e.id, statement: e.statement, scope: e.scope, domain: e.domain })),
           }
         }
         if (!args.id) throw new Error('Provide id (or list:true to list pinned)')
         const target = (args.pinned as boolean | undefined) ?? true
+
+        // Quota is enforced HERE, not at injection time (#1142). The spec calls
+        // `pinned` an always-load flag; honouring that means refusing to
+        // over-commit, because the alternative is silently dropping something
+        // the user already pinned. Pinning is a deliberate act with a human
+        // present — this is the only moment where "unpin one or raise the
+        // limit" is a question someone can actually answer.
+        if (target === true) {
+          const q = await plur.pinnedQuota(args.id as string)
+          if (q.candidate && !q.candidate.fits) {
+            const deficit = q.candidate.would_be - q.quota
+            let freed = 0
+            const suggestions = q.entries
+              .filter(e => freed < deficit && (freed += e.cost) > 0)
+              .slice(0, 5)
+              .map(e => ({ id: e.id, frees: e.cost, net_feedback: e.net_feedback, last_accessed: e.last_accessed, statement: e.statement.slice(0, 100) }))
+            return {
+              success: false,
+              error: 'pinned_quota_exceeded',
+              quota: q.quota,
+              used: q.used,
+              this_engram_cost: q.candidate.cost,
+              would_be: q.candidate.would_be,
+              over_by: deficit,
+              unpin_suggestions: suggestions,
+              note: 'Pinned engrams are always-load, so the set cannot exceed its share of the injection budget — over-committing means silently dropping something already pinned. Unpin one of the suggestions (ordered least-endorsed, least-recently-used, largest first), or raise `injection_budget` / `injection.pinned_ratio` in ~/.plur/config.yaml. The ordering is a starting point, not a ranking to trust blindly — the user decides what stops being always-load.',
+            }
+          }
+        }
         // Audit iter-1 fix (CTO): use async variant so remote pin operations
         // await the PATCH instead of returning an optimistic shell engram.
         // The sync setPinned() fire-and-forgets the remote PATCH and returns

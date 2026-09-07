@@ -237,6 +237,17 @@ export const PlurConfigSchema = z.object({
     spread_cap: z.number().default(3),
     spread_budget: z.number().default(480),
     co_access: z.boolean().default(true),
+    /**
+     * Share of `injection_budget` reserved for pinned engrams — and, since
+     * #1142, the QUOTA enforced when pinning rather than a cap applied
+     * silently at injection time.
+     *
+     * This key was previously read from config.yaml by nobody: the object
+     * strips unknown keys, so a user setting `injection.pinned_ratio` had it
+     * dropped and the hardcoded 0.5 used instead. Declared here so the knob
+     * actually works.
+     */
+    pinned_ratio: z.number().min(0).max(1).default(0.5),
   }).default({}),
   dedup: DedupConfigSchema.default({}),
   /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */

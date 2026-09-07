@@ -11,7 +11,7 @@ import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namesp
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
-import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
+import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -5585,6 +5585,76 @@ export class Plur {
   async listPinned(): Promise<Engram[]> {
     const all = await this._loadAllEngrams()
     return all.filter(e => (e as any).pinned === true && e.status === 'active')
+  }
+
+  /**
+   * Pinned-budget accounting (#1142).
+   *
+   * The spec says `pinned` is an "always-load flag". The selector did not
+   * honour that: it capped pinned at a share of the injection budget and
+   * silently skipped the overflow, so pinning something could quietly evict
+   * something else the user had also pinned. Measured on a real store,
+   * lowering `injection_budget` from 56,000 to 12,000 dropped 36 of 46 pinned
+   * engrams with nothing in the output saying so.
+   *
+   * The fix is not a better eviction rule — it is to stop over-committing.
+   * Pinning is a deliberate act with a human present, so the quota is checked
+   * THERE, where someone can decide, instead of at injection time where nobody
+   * can. Over quota, the user unpins something or raises the limit.
+   */
+  async pinnedQuota(candidateId?: string): Promise<{
+    quota: number
+    used: number
+    free: number
+    count: number
+    over: boolean
+    /** Pinned engrams, most-expendable first — the unpin suggestion order. */
+    entries: Array<{ id: string; statement: string; cost: number; net_feedback: number; last_accessed: string | null }>
+    /** Set when `candidateId` names a not-yet-pinned engram: what pinning it would cost. */
+    candidate?: { id: string; cost: number; would_be: number; fits: boolean }
+  }> {
+    const budget = this.config.injection_budget ?? 2000
+    const ratio = this.config.injection?.pinned_ratio ?? 0.5
+    const quota = Math.floor(budget * ratio)
+    const pinned = await this.listPinned()
+
+    const entries = pinned.map(e => {
+      const fb = e.feedback_signals
+      return {
+        id: e.id,
+        statement: e.statement,
+        cost: estimateTokens(e as never),
+        net_feedback: (fb?.positive ?? 0) - (fb?.negative ?? 0),
+        last_accessed: e.activation?.last_accessed ?? null,
+      }
+    })
+
+    // Expendability order, cheapest signal first: engrams nobody has endorsed,
+    // then least recently touched, then largest. Deliberately NOT a score —
+    // this only orders a suggestion the human accepts or ignores.
+    entries.sort((a, b) =>
+      a.net_feedback - b.net_feedback ||
+      (a.last_accessed ?? '').localeCompare(b.last_accessed ?? '') ||
+      b.cost - a.cost)
+
+    const used = entries.reduce((n, e) => n + e.cost, 0)
+
+    let candidate: { id: string; cost: number; would_be: number; fits: boolean } | undefined
+    if (candidateId) {
+      const e = await this.getById(candidateId)
+      // Already-pinned is a no-op re-pin, not a new commitment — it must not
+      // be charged twice or it would refuse itself.
+      if (e && (e as { pinned?: boolean }).pinned !== true) {
+        const cost = estimateTokens(e as never)
+        candidate = { id: e.id, cost, would_be: used + cost, fits: used + cost <= quota }
+      }
+    }
+
+    return {
+      quota, used, free: Math.max(0, quota - used),
+      count: entries.length, over: used > quota, entries,
+      ...(candidate ? { candidate } : {}),
+    }
   }
 
   /**
