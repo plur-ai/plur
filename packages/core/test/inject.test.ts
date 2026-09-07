@@ -251,6 +251,84 @@ describe('injection engine', () => {
     })
   })
 
+  describe('contraindications reach the agent (#1140)', () => {
+    const qualified = () => makeEngram({
+      id: 'ENG-2026-1140-001',
+      statement: 'Retry order creation after a timeout',
+      contraindications: ['Do not replay after the idempotency retention window expires'],
+    })
+
+    const wireFor = (e: any) => {
+      const r = selectAndSpread({ prompt: 'retry order creation timeout', maxTokens: 5000 }, [e], [])
+      return [...r.directives, ...r.constraints, ...r.consider].find(x => x.id === e.id)!
+    }
+
+    // A rule delivered without its condition is not a shorter rule, it is a
+    // different and wronger one. The field existed, was populated, and no
+    // formatter read it — so a qualified record arrived as unconditional.
+    for (const layer of [2, 3] as const) {
+      it(`layer ${layer} carries the condition, not just the instruction`, () => {
+        const text = formatWithLayer([wireFor(qualified())], layer)
+        expect(text).toContain('Retry order creation after a timeout')
+        expect(text).toContain('idempotency retention window')
+      })
+    }
+
+    it('says nothing extra when there are no contraindications', () => {
+      const plain = makeEngram({ id: 'ENG-2026-1140-002', statement: 'Retry order creation after a timeout' })
+      expect(formatWithLayer([wireFor(plain)], 2)).not.toContain('Does NOT apply')
+    })
+  })
+
+  describe('recency is not a verification claim (#1139)', () => {
+    // activation.last_accessed is re-anchored by applyFeedback() on ANY signal,
+    // including negative. Rendering it as "Last verified" turned disputing a
+    // claim into evidence that the claim had just been confirmed.
+    it('labels activation recency as activity, never as verification', () => {
+      const e = makeEngram({
+        id: 'ENG-2026-1139-001',
+        statement: 'Deploy using blue-green strategy',
+        activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: '2026-09-07' },
+      })
+      const r = selectAndSpread({ prompt: 'deploy the app', maxTokens: 5000 }, [e], [])
+      const wire = [...r.directives, ...r.constraints, ...r.consider].find(x => x.id === e.id)!
+      const text = formatWithLayer([wire], 3)
+      expect(text).toContain('Last active: 2026-09-07')
+      expect(text).not.toContain('Last verified')
+    })
+  })
+
+  describe('omitted pinned engrams are reported (#1142)', () => {
+    const pinnedOf = (n: number, statement: string) => makeEngram({
+      id: `ENG-2026-1142-${String(n).padStart(3, '0')}`,
+      statement,
+      pinned: true,
+    })
+
+    it('names the pinned engrams that did not fit, and why', () => {
+      // The reported repro: pinned records competing for a 50% sub-budget while
+      // overall capacity remains. Silence here is what let 36 of 46 pinned
+      // engrams vanish from a real store with nothing in the output saying so.
+      const many = Array.from({ length: 12 }, (_, i) =>
+        pinnedOf(i + 1, `Never deploy on a Friday, rule ${i}. ${'deploy '.repeat(40)}`))
+      const out = fillTokenBudget(many, 1000)
+
+      expect(out.omitted_pinned.length).toBeGreaterThan(0)
+      expect(out.selected.length + out.omitted_pinned.length).toBe(many.length)
+      for (const o of out.omitted_pinned) {
+        expect(o.id).toMatch(/^ENG-2026-1142-/)
+        expect(o.cost).toBeGreaterThan(0)
+        expect(['pinned-sub-budget', 'total-budget']).toContain(o.reason)
+      }
+    })
+
+    it('reports nothing when the whole pinned set fits', () => {
+      const out = fillTokenBudget([pinnedOf(1, 'Never force-push to main')], 5000)
+      expect(out.selected).toHaveLength(1)
+      expect(out.omitted_pinned).toEqual([])
+    })
+  })
+
   // === formatLayer3 commitment tier rendering (SP1 Idea 6) ===
 
   describe('formatLayer3 commitment rendering', () => {

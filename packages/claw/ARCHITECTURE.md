@@ -97,7 +97,7 @@ text block:
 ## DIRECTIVES
 
 [ENG-2026-...] High-confidence engram statement.
-  Domain: ... | Confidence: 0.85 | Last verified: ...
+  Domain: ... | Confidence: 0.85 | Last active: ...
 
 ## ALSO CONSIDER
 

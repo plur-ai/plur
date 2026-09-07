@@ -67,6 +67,14 @@ export interface InternalInjectionResult {
    * Absent when both counts are zero.
    */
   spread_drops?: { dropped_unresolvable: number; dropped_retired: number }
+  /**
+   * Pinned engrams that were NOT delivered, and why (#1142). Empty when the
+   * whole pinned set fit. `pinned: true` reads as a promise of always-load but
+   * is priority-subject-to-capacity, and the omission used to be silent — so a
+   * caller could not distinguish "no pinned engrams matched" from "36 of your
+   * 46 pinned engrams did not fit". Consumers MUST NOT assume full delivery.
+   */
+  omitted_pinned: OmittedPinned[]
 }
 
 const DEFAULT_MAX_TOKENS = 8000
@@ -391,11 +399,22 @@ export function scoreEngram(
 
 // --- Token budget filler ---
 
+/** A pinned engram that did not make it in, and why (#1142). */
+export interface OmittedPinned {
+  id: string
+  /** Estimated token cost of the engram that was skipped. */
+  cost: number
+  /** `pinned-sub-budget`: the 50% pinned share was exhausted while overall
+   *  budget remained. `total-budget`: no room left at all. */
+  reason: 'pinned-sub-budget' | 'total-budget'
+}
+
 export function fillTokenBudget(
   scored: ScoredEngram[],
   maxTokens: number,
-): { selected: ScoredEngram[]; tokens_used: number } {
+): { selected: ScoredEngram[]; tokens_used: number; omitted_pinned: OmittedPinned[] } {
   const result: ScoredEngram[] = []
+  const omittedPinned: OmittedPinned[] = []
   const packCounts = new Map<string, number>()
   const domainCounts = new Map<string, number>()
   let tokensUsed = 0
@@ -409,10 +428,25 @@ export function fillTokenBudget(
   const unpinned = scored.filter(e => (e as any).pinned !== true)
   const pinnedBudget = Math.floor(maxTokens * PINNED_TOKEN_BUDGET_RATIO)
 
+  // Omissions are REPORTED, not silent (#1142). `pinned: true` reads as a
+  // promise of always-load, but pinning is priority-subject-to-capacity: a
+  // pinned engram that does not fit the sub-budget is skipped even when the
+  // overall budget has room. Measured on a real store, dropping the injection
+  // budget from 56,000 to 12,000 silently omitted 36 of 46 pinned engrams,
+  // chosen by score rather than importance, with nothing in the output saying
+  // so. Whether pinning should instead GUARANTEE inclusion is an open contract
+  // question; until it is answered, callers must at least be able to see what
+  // they did not get.
   for (const engram of pinned) {
     const cost = estimateTokens(engram)
-    if (tokensUsed + cost > maxTokens) continue
-    if (tokensUsed + cost > pinnedBudget) continue
+    if (tokensUsed + cost > maxTokens) {
+      omittedPinned.push({ id: engram.id, cost, reason: 'total-budget' })
+      continue
+    }
+    if (tokensUsed + cost > pinnedBudget) {
+      omittedPinned.push({ id: engram.id, cost, reason: 'pinned-sub-budget' })
+      continue
+    }
     result.push(engram)
     tokensUsed += cost
     const pack = engram.pack ?? '__personal__'
@@ -439,7 +473,7 @@ export function fillTokenBudget(
     packCounts.set(pack, packCount + 1)
     domainCounts.set(topDomain, domainCount + 1)
   }
-  return { selected: result, tokens_used: tokensUsed }
+  return { selected: result, tokens_used: tokensUsed, omitted_pinned: omittedPinned }
 }
 
 // --- Main injection function ---
@@ -583,7 +617,7 @@ export function selectAndSpread(
   const chosen = new Set(firstPass.selected.map(e => e.id))
   const secondPass = slack > 0
     ? fillTokenBudget(constraintCandidates.filter(e => !chosen.has(e.id)), slack)
-    : { selected: [] as ScoredEngram[], tokens_used: 0 }
+    : { selected: [] as ScoredEngram[], tokens_used: 0, omitted_pinned: [] as OmittedPinned[] }
 
   const selectedConstraints = [...firstPass.selected, ...secondPass.selected]
   const constraintTokens = firstPass.tokens_used + secondPass.tokens_used
@@ -622,6 +656,7 @@ export function selectAndSpread(
       constraints: [],
       consider: [],
       tokens_used: { directives: 0, consider: 0 },
+      omitted_pinned: [],
     }
   }
 
@@ -727,6 +762,12 @@ export function selectAndSpread(
     ...(droppedUnresolvable > 0 || droppedRetired > 0
       ? { spread_drops: { dropped_unresolvable: droppedUnresolvable, dropped_retired: droppedRetired } }
       : {}),
+    // Union across every fillTokenBudget pass (constraints floor, directives,
+    // constraints slack). An engram omitted in one pass may be selected in a
+    // later one, so report only those still missing from the final set.
+    omitted_pinned: [...firstPass.omitted_pinned, ...dirPass.omitted_pinned, ...secondPass.omitted_pinned]
+      .filter((o, i, all) => all.findIndex(x => x.id === o.id) === i)
+      .filter(o => !directives.some(d => d.id === o.id)),
   }
 }
 
@@ -772,12 +813,36 @@ export function formatLayer1(engram: WireEngram): string {
   return `[${engram.id}] ${expiredMarker(engram)}${entrySafe(display)}`
 }
 
+/**
+ * Conditions under which the statement does NOT apply (#1140).
+ *
+ * `contraindications` is a first-class schema field and no formatter read it,
+ * so a correctly authored qualified rule was delivered as an unconditional
+ * one — "retry after a timeout" arriving without "but not after the
+ * idempotency window expires". The author did the right thing and the
+ * delivery path discarded it.
+ *
+ * These ride with the statement in EVERY actionable layer rather than being
+ * treated as optional detail: a rule shipped without its condition is not a
+ * shorter version of the rule, it is a different and wronger rule. If budget
+ * is ever tight enough that they must go, the instruction goes with them.
+ */
+function contraindicationLines(engram: WireEngram, indent: string): string[] {
+  const c = engram.contraindications
+  if (!c?.length) return []
+  return [`${indent}Does NOT apply when: ${c.map(entrySafe).join('; ')}`]
+}
+
 export function formatLayer2(engram: WireEngram): string {
-  return `[${engram.id}] ${expiredMarker(engram)}${entrySafe(engram.statement)}`
+  return [
+    `[${engram.id}] ${expiredMarker(engram)}${entrySafe(engram.statement)}`,
+    ...contraindicationLines(engram, '  '),
+  ].join('\n')
 }
 
 export function formatLayer3(engram: WireEngram): string {
   const lines = [`[${engram.id}] ${expiredMarker(engram)}${entrySafe(engram.statement)}`]
+  lines.push(...contraindicationLines(engram, '  '))
   if (engram.rationale) lines.push(`  Rationale: ${entrySafe(engram.rationale)}`)
   const meta: string[] = []
   if (engram.domain) meta.push(`Domain: ${engram.domain}`)
@@ -790,7 +855,13 @@ export function formatLayer3(engram: WireEngram): string {
   const commitment = (engram as any).commitment as string | undefined
   if (commitment) meta.push(`Commitment: ${commitment}`)
   if (engram.confidence_score != null) meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
-  if (engram.activation?.last_accessed) meta.push(`Last verified: ${engram.activation.last_accessed}`)
+  // "Last active", NOT "Last verified" (#1139). This renders
+  // activation.last_accessed, which applyFeedback() re-anchors on ANY signal —
+  // including negative. Labelled "Last verified" it asserted a source check
+  // that never happened, and disputing a claim made it look freshly confirmed.
+  // The field is memory activity; say so. Factual verification needs its own
+  // evidence and must not be inferred from recall or feedback.
+  if (engram.activation?.last_accessed) meta.push(`Last active: ${engram.activation.last_accessed}`)
   if (meta.length > 0) lines.push(`  ${meta.map(metaSafe).join(' | ')}`)
   return lines.join('\n')
 }
