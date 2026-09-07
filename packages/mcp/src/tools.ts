@@ -2745,6 +2745,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ? 'project-config'
             : 'none'
 
+        // Surface the project domain the same way (#1147). `scope` and `domain`
+        // sit adjacent in .plur.yaml and in `plur init`'s own usage line, so a
+        // user reasonably reads them as a pair. Until now `scope` was
+        // load-bearing and `domain` produced one sentence of injected text —
+        // an asymmetry nothing signalled. plur_learn now defaults from it; this
+        // makes the default visible at session start rather than implicit.
+        const default_domain = projectConfig.domain ?? null
+
         // Always reset _sessionScope BEFORE possibly setting it. The MCP server
         // is one long-lived process serving many sequential session_start calls;
         // without this reset, a default_scope set in session A leaks into every
@@ -3000,6 +3008,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Remote scope routing info (#229)
           ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
           ...(default_scope ? { default_scope, scope_source } : {}),
+          ...(default_domain ? { default_domain, domain_source: 'project-config' as const } : {}),
           // Ask LLM to check back — MCP can't push, but we can request a follow-up
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'
