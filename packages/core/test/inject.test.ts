@@ -89,11 +89,16 @@ describe('injection engine', () => {
       statement: `Rule ${i}: always deploy carefully`,
     }))
     const withFloor = selectAndSpread({ prompt: 'deploy the app', maxTokens: 2000 }, many, [])
-    // No constraints at all → the 40% floor must not be stranded. Directives
-    // are free to spend well past the 60% that would remain if it were.
-    // (Count is capped by MAX_PER_DOMAIN, not by budget, so assert on tokens.)
+    // No constraints at all → the 40% floor must not be stranded: every
+    // directive the per-domain cap allows still gets selected.
+    //
+    // This asserted tokens_used > 60% of budget until #1145 made engrams
+    // ~4x cheaper by estimating the rendered form instead of the serialised
+    // record. Everything now fits well inside the budget, so an absolute
+    // token floor tested the old inflated cost rather than the reservation.
     expect(withFloor.constraints.length).toBe(0)
-    expect(withFloor.tokens_used.directives).toBeGreaterThan(2000 * 0.6)
+    expect(withFloor.directives.length).toBe(10)   // MAX_PER_DOMAIN, not the budget
+    expect(withFloor.tokens_used.directives).toBeLessThanOrEqual(2000)
   })
 
   it('splits dont-pattern engrams into constraints', () => {
@@ -586,5 +591,57 @@ describe('spread_drops counter', () => {
     })
     const result = selectAndSpread({ prompt: 'deploy', maxTokens: 5000 }, [e], [])
     expect(result.spread_drops).toBeUndefined()
+
+describe('estimateTokens measures the rendered form (#1145)', () => {
+  const mk = (o: Record<string, unknown> = {}) => EngramSchema.parse({
+    id: 'ENG-2026-1145-001',
+    statement: 'Never force-push to a protected branch',
+    type: 'behavioral', scope: 'global', status: 'active',
+    ...o,
+  }) as never
+
+  it('does not charge for runtime state the model never receives', () => {
+    // The defect: serialising the whole record billed activation, usage,
+    // feedback_signals, injection_count and sources[] against the injection
+    // budget. None of them reach any layer. Two engrams with identical
+    // delivered text must cost the same however much history one carries.
+    const fresh = mk()
+    const veteran = mk({
+      feedback_signals: { positive: 40, negative: 3, neutral: 12 },
+      usage: { injections: 900, hits: 400, misses: 500, last_hit_at: '2026-09-07' },
+      injection_count: 900,
+      recurrence_count: 55,
+      episode_ids: Array.from({ length: 20 }, (_, i) => `EP-2026-09-07-${i}`),
+    })
+    expect(estimateTokens(veteran)).toBe(estimateTokens(fresh))
+  })
+
+  it('tracks the length of what is actually emitted', () => {
+    const short = mk()
+    const long = mk({ statement: 'Never force-push to a protected branch. '.repeat(10) })
+    expect(estimateTokens(long)).toBeGreaterThan(estimateTokens(short) * 3)
+  })
+
+  it('counts rationale and contraindications, which do render', () => {
+    const bare = mk()
+    const withRationale = mk({ rationale: 'A force-push rewrites history other clones already fetched.' })
+    const withBoth = mk({
+      rationale: 'A force-push rewrites history other clones already fetched.',
+      contraindications: ['A branch nobody else has fetched'],
+    })
+    expect(estimateTokens(withRationale)).toBeGreaterThan(estimateTokens(bare))
+    expect(estimateTokens(withBoth)).toBeGreaterThan(estimateTokens(withRationale))
+  })
+
+  it('stays within tolerance of the real rendered length', () => {
+    // The estimate and the formatter must not drift. If a formatter starts
+    // emitting a field the estimate ignores, the budget silently stops
+    // describing the context — the defect this replaced.
+    const e = mk({ rationale: 'A force-push rewrites history other clones already fetched.', domain: 'git.safety' })
+    const r = selectAndSpread({ prompt: 'force-push protected branch', maxTokens: 5000 }, [e as never], [])
+    const wire = [...r.directives, ...r.constraints, ...r.consider][0]
+    const rendered = formatWithLayer([wire], 3).length / 4
+    const estimated = estimateTokens(e)
+    expect(Math.abs(estimated - rendered) / rendered).toBeLessThan(0.35)
   })
 })

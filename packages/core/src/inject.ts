@@ -222,11 +222,47 @@ export function isConstraintCandidate(e: Pick<Engram, 'statement' | 'polarity'> 
   return cog === 'apply' || cog === 'analyze'
 }
 
+/**
+ * Cost of an engram against the injection budget (#1145).
+ *
+ * Estimates what the formatters actually EMIT, not the stored record. The
+ * previous implementation serialised the whole engram, so the budget was
+ * charged for `activation`, `feedback_signals`, `usage`, `injection_count`,
+ * `recurrence_count`, `sources[]`, `provenance` and `content_hash` — runtime
+ * state that reaches no layer. Measured across 29 deliberately-short pinned
+ * engrams (median statement 233 chars): statement 15% of the serialised bytes,
+ * rationale 9%, source 8%, and 68% fields the model never sees. Authoring
+ * guidance was consequently near-powerless against the budget — cutting every
+ * statement to zero would have freed 15%.
+ *
+ * Estimated at the RICHEST layer (3: statement + contraindications + rationale
+ * + meta line). Constraints render at layer 2 and are therefore slightly
+ * over-charged; that is deliberate. Over-charging costs a little budget,
+ * under-charging overflows the context, and #1144 may yet give constraints
+ * their rationale back — at which point this estimate is already correct.
+ *
+ * MUST stay in step with formatLayer2/formatLayer3. If a formatter starts
+ * emitting a field this does not count, the budget silently drifts from
+ * reality again, which is the defect this replaces.
+ */
 export function estimateTokens(engram: ScoredEngram): number {
-  // Serialize wire-visible fields only (exclude scoring + associations)
-  const { keyword_match: _km, raw_score: _rs, score: _s, associations: _a, ...wire } = engram
-  const serialized = JSON.stringify(wire)
-  return Math.ceil(serialized.length / 4)
+  const e = engram as ScoredEngram & {
+    contraindications?: string[]
+    rationale?: string
+    commitment?: string
+  }
+  let chars = e.id.length + 4 + (e.statement?.length ?? 0)          // "[ID] statement"
+  const contra = e.contraindications
+  if (contra?.length) chars += 24 + contra.join('; ').length         // "  Does NOT apply when: "
+  if (e.rationale) chars += 15 + e.rationale.length                  // "  Rationale: "
+  // Meta line: Domain | Commitment | Confidence | Last active.
+  const meta =
+    (e.domain ? e.domain.length + 10 : 0) +
+    (e.commitment ? e.commitment.length + 14 : 0) +
+    20 +                                                             // "Confidence: 0.00"
+    (e.activation?.last_accessed ? e.activation.last_accessed.length + 15 : 0)
+  if (meta > 20) chars += meta + 3
+  return Math.ceil(chars / 4)
 }
 
 // --- Anchor boost ---
