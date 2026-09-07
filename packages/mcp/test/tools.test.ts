@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, _setCachedReranker, _resetRerankerCache, resetRerankerStatus, rerankerStatus } from '@plur-ai/core'
@@ -1025,5 +1025,18 @@ describe('composition feedback on a written engram', () => {
     const long = 'Never name a client unless the user names them first. '.repeat(9)
     const c = composeHints(long + ' And also never quote invoice dates.', 'm', 's')
     expect(c?.misplaced.some(h => h.includes('second engram'))).toBe(true)
+  })
+})
+
+describe('.plur.yaml domain default (#1148)', () => {
+  // The key was parsed by project-config and consumed nowhere, so setting it
+  // was a silent no-op. Domain is not decorative: scoreEngram counts every
+  // matching hierarchy segment as a full term hit, double a statement word.
+  it('declares domain on the plur_learn surface and defaults it from project config', () => {
+    const learn = getToolDefinitions().find(t => t.name === 'plur_learn')!
+    expect((learn.inputSchema as any).properties.domain).toBeDefined()
+    const src = readFileSync(join(__dirname, '..', 'src', 'tools.ts'), 'utf8')
+    // Explicit argument must win; the config is only a fallback.
+    expect(src).toContain('(args.domain as string | undefined) ?? readProjectConfig().domain')
   })
 })

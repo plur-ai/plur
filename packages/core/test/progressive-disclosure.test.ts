@@ -44,7 +44,12 @@ describe('progressive disclosure', () => {
 
   it('assignLayer maps correctly (F20)', () => {
     expect(assignLayer('directives')).toBe(3)
-    expect(assignLayer('constraints')).toBe(2)
+    // Constraints moved 2 -> 3 in #1144. At layer 2 a prohibition rendered as a
+    // bare statement: no rationale, so no account of when it stops applying,
+    // and no commitment or confidence. Measured on a real 110-engram payload,
+    // 0 of 73 constraints carried either while all 34 directives did. A rule an
+    // agent is accountable for should not be delivered with the least support.
+    expect(assignLayer('constraints')).toBe(3)
     expect(assignLayer('consider')).toBe(1)
   })
 

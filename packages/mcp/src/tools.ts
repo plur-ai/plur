@@ -1076,7 +1076,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const context = {
           type: args.type as any,
           scope: args.scope as string | undefined,
-          domain: args.domain as string | undefined,
+          // .plur.yaml `domain:` as the default (#1148). The key was parsed by
+          // project-config and consumed nowhere, so setting it was a silent
+          // no-op — the same shape as injection.pinned_ratio before #1142.
+          // Domain is not decorative: scoreEngram counts every matching
+          // hierarchy segment as a FULL term hit, double the weight of a
+          // statement word, so a missing domain forfeits the strongest
+          // retrieval signal an author has. Explicit argument always wins.
+          domain: (args.domain as string | undefined) ?? readProjectConfig().domain ?? undefined,
           source: args.source as string | undefined,
           tags: args.tags as string[] | undefined,
           rationale: args.rationale as string | undefined,

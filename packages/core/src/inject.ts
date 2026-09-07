@@ -986,10 +986,29 @@ export function formatLayer3(engram: WireEngram): string {
   return lines.join('\n')
 }
 
+/**
+ * Render depth per section.
+ *
+ * CONSTRAINTS renders at 3, not 2 (#1144). It used to get the thinner
+ * formatter, so a prohibition reached the model as a bare statement — no
+ * `rationale`, therefore no account of why it holds or when it stops holding,
+ * and no commitment or confidence. Measured on a real 110-engram payload: all
+ * 34 directives carried the meta line and 18 carried a rationale; 0 of 73
+ * constraints carried either.
+ *
+ * That was the third expression of one wrong premise, that directives outrank
+ * constraints — the other two being emission order and budget-shedding order,
+ * both fixed in #1138. A prohibition is what an agent is most accountable for;
+ * it should not be the thing delivered with least support.
+ *
+ * The cost is already budgeted: `estimateTokens` estimates at the richest
+ * layer, so constraints were never under-charged for the rationale they now
+ * render. Estimator and formatter agree.
+ */
 export function assignLayer(bucket: 'directives' | 'constraints' | 'consider'): InjectionLayer {
   switch (bucket) {
     case 'directives': return 3
-    case 'constraints': return 2
+    case 'constraints': return 3
     case 'consider': return 1
   }
 }

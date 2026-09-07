@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer } from '../src/inject.js'
+import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer, assignLayer } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 import { daysSince } from '../src/decay.js'
 
@@ -643,5 +643,27 @@ describe('estimateTokens measures the rendered form (#1145)', () => {
     const rendered = formatWithLayer([wire], 3).length / 4
     const estimated = estimateTokens(e)
     expect(Math.abs(estimated - rendered) / rendered).toBeLessThan(0.35)
+  })
+})
+
+describe('constraints render with full context (#1144)', () => {
+  it('gives a prohibition the same render depth as a directive', () => {
+    // A constraint used to render at layer 2: statement only, no rationale,
+    // so the model got the rule without any account of when it stops applying.
+    expect(assignLayer('constraints')).toBe(assignLayer('directives'))
+  })
+
+  it('emits the rationale of a constraint', () => {
+    const rule = EngramSchema.parse({
+      id: 'ENG-2026-1144-001',
+      statement: 'Never deploy on a Friday',
+      rationale: 'Nobody is on call over the weekend to roll it back.',
+      type: 'behavioral', scope: 'global', status: 'active',
+    })
+    const r = selectAndSpread({ prompt: 'deploy on friday', maxTokens: 5000 }, [rule as never], [])
+    expect(r.constraints.length).toBe(1)
+    const text = formatWithLayer(r.constraints, assignLayer('constraints'))
+    expect(text).toContain('Never deploy on a Friday')
+    expect(text).toContain('Nobody is on call')
   })
 })
