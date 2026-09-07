@@ -57,7 +57,13 @@ Write the words a future *task* will contain, not the words your topic belongs t
 
 **2. One topic per record.** An embedding is a centroid. Two claims in one engram produce a vector between them that matches neither well. Splitting raises the score of both.
 
-**3. Situational rules need a trigger, not a topic.** Task-similarity cannot surface "when X goes wrong, do Y" — the task rarely mentions X until X has already happened. For these, either put the trigger condition in the statement in the words the situation will use, or pin it. Do not assume ranking will find it.
+**3. A behavioural rule usually cannot be retrieved at all — pin it.** This is the hard limit, and it is measured, not theoretical. Twelve rewritten rules were probed with the situation each one governs, phrased as a real task would phrase it. **R@1 was 2/12 and R@5 was 3/12.**
+
+The failure is structural. For *"publish the new version to npm"*, the top five results were all about npm publishing mechanics — they repeat "npm" and "publish", while a governance rule about sign-off does not. The words that describe a situation are the words that describe its topic, and the topic always has more documents. A rule competes against facts and loses.
+
+Situation-words help only when the situation is lexically distinctive: *"ssh into the client VPS"* ranked #1, *"investor deck, can we mention the pilots"* ranked #5. Generic situations — *"ready to ship"*, *"finished that part"* — ranked nowhere at all.
+
+So: write the situation words anyway, because they are what buys you the distinctive cases. But **do not rely on retrieval for a rule you need obeyed unprompted.** That is what `pinned` is for, and it is the only mechanism that works for this class. A behavioural rule left unpinned is a rule that fires on the rare task whose wording happens to be unusual.
 
 `rationale` and `tags` are indexed as well as `statement`, so a concrete mechanism sentence adds retrieval surface at no cost to the statement's length. **Caveat:** for constraints, `rationale` is indexed but *not rendered* to the model (see *What the model actually receives*). It helps findability, not comprehension.
 
