@@ -4,8 +4,9 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 import { runCli } from './helpers/spawn.js'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 
 describe('plur sync', () => {
   let dir: string

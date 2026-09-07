@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { runCli } from './helpers/spawn.js'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 
 /**
  * hook-session-mark is the PostToolUse sentinel-writer that lets

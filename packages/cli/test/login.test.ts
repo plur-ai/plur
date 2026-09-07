@@ -25,8 +25,9 @@ import { StubServer } from '../../core/test/helpers/stub-server.js'
 // @plur-ai/core barrel (checkRemoteHealth reuse, #587), and paying that import
 // inside the FIRST per-test dynamic import blows the 5s test timeout.
 import '../src/commands/login.js'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 
 const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const makeJwt = (payload: object) =>

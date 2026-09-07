@@ -21,8 +21,9 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawn } from 'child_process'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 const TOKEN = 'hook-recall-token'
 const SCOPE = 'group:test'
 
