@@ -393,7 +393,7 @@ export const EngramSchema = z.object({
   // === SP1: Memory Intelligence fields ===
   content_hash: z.string().optional().describe('Hash of normalized statement content, used for dedup.'),
   commitment: z.enum(['exploring', 'leaning', 'decided', 'locked', 'draft']).optional()
-    .describe("Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval; core stores and recalls it like any other value — enforcement is left to deployments that implement a review queue. A positive feedback signal does not advance it (see feedback.ts:nextCommitment)."),
+    .describe("Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval: core stores and RECALLS it like any other value but NEVER injects it (#1141), so an unapproved rule cannot shape an agent's behaviour before someone has agreed to it. Retrieval stays open because reviewing something requires reading it. A positive feedback signal does not advance it (see feedback.ts:nextCommitment) — relevance is not approval."),
   locked_at: z.string().optional().describe("Timestamp when commitment reached 'locked'."),
   locked_reason: z.string().optional().describe('Why this engram was locked.'),
 

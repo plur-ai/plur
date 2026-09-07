@@ -153,6 +153,27 @@ function skipForValidity(
 }
 
 /**
+ * An engram awaiting human approval MUST NOT be injected (#1141).
+ *
+ * `commitment: 'draft'` means the engram is sitting in a review queue. Core
+ * stored and recalled it normally and the selector never looked at the field,
+ * so a draft was eligible for injection like anything else — a rule nobody had
+ * approved could shape an agent's behaviour, and the only thing standing
+ * between "proposed" and "in force" was that a deployment might filter it.
+ *
+ * Decided 2026-09-07: as long as an engram is a draft it is not part of shared
+ * memory and is not injected into prompts. Enforced here, in core, so the
+ * guarantee does not depend on every deployment reimplementing it.
+ *
+ * Retrieval is deliberately unaffected — an explicit `plur_recall` may still
+ * return a draft. Review requires being able to read the thing under review;
+ * what is gated is automatic delivery into an agent's context.
+ */
+function skipForApproval(engram: Engram): boolean {
+  return (engram as { commitment?: string }).commitment === 'draft'
+}
+
+/**
  * "⚠ EXPIRED <date> — verify before use: " prefix for an engram whose
  * `valid_until` is in the past. Only soft-expiry mode lets expired engrams
  * reach the formatters, so in hard mode this never fires.
@@ -508,6 +529,10 @@ export function selectAndSpread(
 
   for (const engram of personalEngrams) {
     if (engram.status !== 'active') { nonActiveIds.add(engram.id); continue }
+    // NOT added to nonActiveIds: a draft is active, it is simply ungated for
+    // delivery (#1141). That set feeds spread_drops accounting for retired or
+    // unresolvable targets, and a pending-review engram is neither.
+    if (skipForApproval(engram)) continue
     if (skipForValidity(engram, nowMs, expiryMode, graceDays)) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
@@ -539,6 +564,7 @@ export function selectAndSpread(
     const matchTerms = packMeta.match_terms
     for (const engram of pack.engrams) {
       if (engram.status !== 'active') continue
+      if (skipForApproval(engram)) continue
       if (skipForValidity(engram, nowMs, expiryMode, graceDays)) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
