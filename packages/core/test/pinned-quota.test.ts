@@ -19,6 +19,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
+import { EngramSchema } from '../src/schemas/engram.js'
+import { fillTokenBudget, pinnedOriginRank } from '../src/inject.js'
 
 describe('pinned quota (#1142)', () => {
   const dirs: string[] = []
@@ -118,5 +120,54 @@ describe('pinned quota (#1142)', () => {
     // The signals are still reported, they are just not the sort key.
     expect(q.entries[0]).toHaveProperty('net_feedback')
     expect(q.entries[0]).toHaveProperty('last_accessed')
+  })
+})
+
+describe('pinned origin ranking (#1121, adopted)', () => {
+  // `pinned` bypasses the relevance gate, so the key that orders pins is a
+  // security control: without it an installed pack could fill the pinned
+  // budget and displace the user's own always-load rules.
+  const mk = (id: string, marker: Record<string, unknown> = {}) => ({
+    ...EngramSchema.parse({
+      id, statement: `Never deploy on a Friday, rule ${id}. ${'deploy '.repeat(20)}`,
+      type: 'behavioral', scope: 'global', status: 'active', pinned: true,
+    }),
+    keyword_match: 1, raw_score: 1, score: 1,
+    ...marker,
+  })
+
+  it('ranks a primary pin ahead of a pack pin under budget pressure', () => {
+    const fromPack = mk('ENG-2026-1121-001', { _pack: 'some-installed-pack' })
+    const primary = mk('ENG-2026-1121-002')
+    // Budget fits exactly one.
+    const out = fillTokenBudget([fromPack, primary] as never, 170)
+    expect(out.selected.map(e => e.id)).toEqual(['ENG-2026-1121-002'])
+    expect(out.omitted_pinned.map(o => o.id)).toContain('ENG-2026-1121-001')
+  })
+
+  it('ranks a remote/store pin ahead of a pack pin', () => {
+    const fromPack = mk('ENG-2026-1121-003', { _pack: 'p' })
+    const fromStore = mk('ENG-2026-1121-004', { _storeScope: 'group:org/team' })
+    const out = fillTokenBudget([fromPack, fromStore] as never, 170)
+    expect(out.selected.map(e => e.id)).toEqual(['ENG-2026-1121-004'])
+  })
+
+  it('a row cannot claim primary origin by shipping its own marker', () => {
+    // Markers are loader-stamped. A row carrying _pack can only rank itself
+    // lower; there is no marker it can set to become primary.
+    expect(pinnedOriginRank({ _pack: 'x' })).toBe(2)
+    expect(pinnedOriginRank({ _storeScope: 's' })).toBe(1)
+    expect(pinnedOriginRank({})).toBe(0)
+  })
+
+  it('does not admit a lower-origin pin after skipping a higher-origin one', () => {
+    // #1124: selection was greedy, so a large primary pin could be skipped for
+    // size while smaller pack pins were still admitted after it.
+    const bigPrimary = { ...mk('ENG-2026-1121-005'), statement: 'x'.repeat(4000) }
+    const smallPack = mk('ENG-2026-1121-006', { _pack: 'p' })
+    const out = fillTokenBudget([bigPrimary, smallPack] as never, 200)
+    expect(out.selected.map(e => e.id)).not.toContain('ENG-2026-1121-006')
+    expect(out.omitted_pinned.map(o => o.id)).toEqual(
+      expect.arrayContaining(['ENG-2026-1121-005', 'ENG-2026-1121-006']))
   })
 })

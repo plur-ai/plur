@@ -223,6 +223,27 @@ export function isConstraintCandidate(e: Pick<Engram, 'statement' | 'polarity'> 
 }
 
 /**
+ * Where a pinned row came from, for ordering (adapted from plur-ai/plur#1121,
+ * whose two-tier priority model was otherwise closed in favour of the pin-time
+ * quota in #1142).
+ *
+ * 0 = primary store, 1 = a `stores:` entry or remote store, 2 = an installed
+ * pack. Markers are stamped by the LOADER (`_storeScope` in index.ts and
+ * remote-recall.ts, `_pack` in the pack loop below), never by the row itself —
+ * so a row that ships its own marker can only rank itself lower, never claim
+ * to be primary.
+ *
+ * This is a security control, not a preference. `pinned` bypasses the
+ * relevance gate, so without it an installed pack could fill the pinned budget
+ * and displace the user's own always-load rules.
+ */
+export function pinnedOriginRank(e: Record<string, unknown>): 0 | 1 | 2 {
+  if (typeof e._pack === 'string') return 2
+  if (typeof e._storeScope === 'string') return 1
+  return 0
+}
+
+/**
  * Cost of an engram against the injection budget (#1145).
  *
  * Estimates what the formatters actually EMIT, not the stored record. The
@@ -493,7 +514,11 @@ export function fillTokenBudget(
   // always-load — but they respect both maxTokens AND a sub-budget so they
   // can't starve the relevance-scored engrams. With many pinned packs, the
   // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
-  const pinned = scored.filter(e => (e as any).pinned === true)
+  // Primary-store pins first, then `stores:`/remote, then packs; score orders
+  // within an origin. Sorted before selection so budget pressure can never let
+  // a pack pin in ahead of one of the user's own.
+  const pinned = scored.filter(e => (e as any).pinned === true).sort((a, b) =>
+    pinnedOriginRank(a as never) - pinnedOriginRank(b as never) || b.score - a.score)
   const unpinned = scored.filter(e => (e as any).pinned !== true)
   const pinnedBudget = Math.floor(pinnedBudgetBase * PINNED_TOKEN_BUDGET_RATIO)
 
@@ -506,14 +531,26 @@ export function fillTokenBudget(
   // so. Whether pinning should instead GUARANTEE inclusion is an open contract
   // question; until it is answered, callers must at least be able to see what
   // they did not get.
+  // Once a pin is skipped for budget, no LOWER-origin pin may be admitted after
+  // it (plur-ai/plur#1124: selection was greedy, so a large primary pin could be
+  // skipped while smaller pack pins still got in). Within one origin, greedy is
+  // fine and wastes less budget.
+  let skippedRank: number | null = null
   for (const engram of pinned) {
+    const rank = pinnedOriginRank(engram as never)
+    if (skippedRank !== null && rank > skippedRank) {
+      omittedPinned.push({ id: engram.id, cost: estimateTokens(engram), reason: 'pinned-sub-budget' })
+      continue
+    }
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > maxTokens) {
       omittedPinned.push({ id: engram.id, cost, reason: 'total-budget' })
+      skippedRank = skippedRank === null ? rank : Math.min(skippedRank, rank)
       continue
     }
     if (tokensUsed + cost > pinnedBudget) {
       omittedPinned.push({ id: engram.id, cost, reason: 'pinned-sub-budget' })
+      skippedRank = skippedRank === null ? rank : Math.min(skippedRank, rank)
       continue
     }
     result.push(engram)
