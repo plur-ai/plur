@@ -76,20 +76,62 @@ describe('renderBlock', () => {
     expect(out).not.toContain('## ALSO CONSIDER')
   })
 
-  it('emits nothing rather than shedding CONSTRAINTS to fit the budget', () => {
-    // Inverted 2026-09-07. This test previously asserted that CONSTRAINTS was
-    // dropped while DIRECTIVES survived — it encoded the defect rather than
-    // catching it. Constraints are never traded for budget: if they do not
-    // fit, the block is empty and the caller is told nothing, which is honest.
-    // Silently returning process hygiene while withholding prohibitions is not.
+  it('never sheds CONSTRAINTS silently — it says they were withheld', () => {
+    // Inverted 2026-09-07: this previously asserted that CONSTRAINTS was
+    // dropped while DIRECTIVES survived, encoding the defect rather than
+    // catching it.
+    //
+    // Then refined again. "Emit nothing" kept the honesty but lost the
+    // directives too, so a store whose constraints are merely large got no
+    // memory at all — a capability regression flagged in review of #1138. The
+    // property that actually matters is not silence, it is that prohibitions
+    // are never dropped WITHOUT SAYING SO: an agent cannot tell "no rules
+    // apply" from "your rules did not fit". A notice buys both.
     const out = renderBlock(injection({
       directives: 'd'.repeat(200),
       constraints: 'c'.repeat(4000),
       consider: 'x'.repeat(4000),
       count: 3,
     }), 100)
-    expect(out).toBe('')
+
+    // The constraint text itself is gone — it did not fit and is not truncated.
+    expect(out).not.toContain('c'.repeat(50))
+    // But its absence is declared, in the section where it would have been.
+    expect(out).toContain('## CONSTRAINTS')
+    expect(out).toContain('WITHHELD')
+    expect(out).toContain('UNREAD')
+  })
+
+  it('lets directives through alongside the withheld notice when they fit', () => {
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(40),
+      constraints: 'c'.repeat(4000),
+      count: 2,
+    }), 100)
+    expect(out).toContain('WITHHELD')
+    expect(out).toContain('## DIRECTIVES')
+    expect(out).toContain('d'.repeat(40))
+  })
+
+  it('drops the directives before the notice when both will not fit', () => {
+    // The notice outranks the directives: knowing a rule was withheld matters
+    // more than the process hygiene it was competing with.
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(4000),
+      constraints: 'c'.repeat(4000),
+      count: 2,
+    }), 60)
+    expect(out).toContain('WITHHELD')
     expect(out).not.toContain('## DIRECTIVES')
+  })
+
+  it('emits nothing when not even the notice fits', () => {
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(4000),
+      constraints: 'c'.repeat(4000),
+      count: 2,
+    }), 5)
+    expect(out).toBe('')
   })
 
   it('emits nothing rather than a truncated engram when even directives overflow', () => {
