@@ -2,7 +2,7 @@
 
 **Version:** 1.7 (draft)
 **Status:** Working Draft
-**Date:** 2026-09-04
+**Date:** 2026-09-08
 **Editors:** PLUR.ai (plur-ai)
 **License:** This specification is licensed under CC-BY-4.0. Reference code is Apache-2.0.
 **Companion profiles:** [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md)
@@ -283,6 +283,27 @@ destroying any.
 | `type` | string | **R** | `behavioral` \| `terminological` \| `procedural` \| `architectural` | Top-level knowledge class. |
 | `scope` | string | **R** | free-form | Hierarchical namespace. Convention: `kind:path`, e.g. `global`, `project:my-app`, `group:plur/test`. |
 | `visibility` | string | | `private` \| `public` \| `template`, default `private` | Sharing posture. `private` engrams MUST NOT be exported (§5.4). `template` = shippable skeleton. |
+| `created_at` | string | | RFC 3339 instant | Timestamp of first mint. Immutable. |
+| `updated_at` | string | | RFC 3339 instant | Timestamp of the last mutation to content or lifecycle. |
+
+Both timestamps are OPTIONAL and deliberately **not** defaulted. An
+implementation MUST NOT synthesise `created_at` at load time for an engram that
+lacks it: a default stamps the load date onto every legacy record and destroys
+the provenance the field exists to carry. Absent means genuinely unknown.
+
+`updated_at` tracks mutation of the engram's *content or lifecycle* — statement,
+scope, commitment, relations, retirement. It MUST NOT be moved by reads, decay,
+injection, or feedback; those change `activation` and `usage`, which are
+separate state carrying their own timestamps. An implementation that bumps
+`updated_at` on read makes it indistinguishable from `activation.last_accessed`
+and useless for provenance.
+
+> **Added 2026-09-07.** Before this the object had no canonical creation time.
+> `sources[].stored_at` records a timestamp per write but is optional: a real
+> 5,477-engram store carried one on 2,765 of them, and `temporal.learned_at` on
+> 12. Consumers were left parsing the mint date out of the identifier — which is
+> date-only, is absent for any id not in the canonical form of §3.3, and is
+> wrong for a migrated or store-namespaced engram.
 
 ### 4.3 Content
 
@@ -581,7 +602,7 @@ ignore the values.
 | Field | Type | Range / enum | Semantics |
 |---|---|---|---|
 | `content_hash` | string | | SHA-256 of the normalized `statement` (§4.7.1). Used for deduplication, and as the test for whether an edit changed the claim. **Not an integrity check** — see §4.12.1. |
-| `commitment` | string | `exploring` \| `leaning` \| `decided` \| `locked` \| `draft` | Epistemic commitment level. `draft` marks the engram as pending human approval — core stores and recalls it normally; enforcement is left to deployments with a review queue. |
+| `commitment` | string | `exploring` \| `leaning` \| `decided` \| `locked` \| `draft` | Epistemic commitment level. `draft` marks the engram as pending human approval. A conforming implementation MUST NOT deliver a `draft` engram into an agent's context automatically; it MAY return one in response to an explicit retrieval, since reviewing an engram requires reading it. Feedback MUST NOT advance `draft` — relevance is not approval. |
 | `locked_at` | string | | When commitment became `locked`. |
 | `locked_reason` | string | | Why locked. |
 | `write_count` | integer | ≥0, default 1 | Same-scope re-learn count. Engram retires only at 0. Renamed from `reference_count` (#866); implementations MUST backfill on first parse. |
@@ -635,11 +656,18 @@ scope: project:my-app         # free-form §4.2
 All five of `id`, `statement`, `type`, `status`, `scope` are REQUIRED. Every
 other field is optional with the default given above.
 
-> **Note on `created_at`.** Some reference example documents show a top-level
-> `created_at` timestamp. It is **not** a validated field in v1 — it survives
-> only via the open-world rule (§4.1). Implementers SHOULD use `temporal.learned_at`
-> (or `sources[].stored_at`) for authoritative creation time. A future minor
-> version MAY promote a creation timestamp to a first-class field (§10.2).
+> **Note on `created_at` / `updated_at`.** Both are first-class OPTIONAL fields
+> as of 2026-09-07; see the §4.2 rows and the normative paragraph there. This
+> note previously said `created_at` was *not* a validated field and directed
+> implementers to `temporal.learned_at` instead — that text predates the change
+> and contradicted it 180 lines later in the same document.
+>
+> `temporal.learned_at` and `sources[].stored_at` remain valid and are not
+> deprecated, but neither is a substitute: on a real 5,477-engram store
+> `stored_at` was present on 2,765 records and `learned_at` on 12, so a consumer
+> relying on either sees most of the corpus as undated. Neither is defaulted,
+> and an absent `created_at` still means genuinely unknown rather than "the day
+> you loaded it".
 
 ### 4.14 Key invariants (normative)
 
@@ -876,8 +904,19 @@ to a reader until all of them have completed:
    teach installers to look away from the finding the scan exists to make. A
    false positive — a pack that legitimately teaches credential handling and
    contains an example key — is resolved the same way, by the producer
-   changing the example until it no longer reads as a live credential. This
-   standard does not define the scan; a consumer SHOULD document the scan
+   changing the example until it no longer reads as a live credential.
+
+   Where the producer cannot be reached, the recipient MAY make that same
+   correction themselves. Doing so changes the pack's contents and therefore
+   its hash, so the corrected pack is installed by overriding **step 1**, the
+   integrity mismatch — a decision about bytes the installer changed and can
+   account for. It is not an override of this step, and a consumer MUST NOT
+   offer one: the refusal is lifted by the finding no longer being there, never
+   by a flag that installs it anyway. A consumer that offers no way at all to
+   install a locally corrected pack has made the remedy in this paragraph
+   unreachable, which is a defect in that consumer.
+
+   This standard does not define the scan; a consumer SHOULD document the scan
    surface it applies so that a producer can predict it. (An earlier revision
    made the secret refusal overridable. That was withdrawn: the reference has
    never offered an override for secrets, and fail-closed is the specified
@@ -949,8 +988,9 @@ Therefore:
   to **write** to. Placing engrams somewhere is a write, so read access is the
   wrong ceiling: a person who can read a team's scope but not write to it must
   not be able to put a stranger's pack into it.
-- A consumer **SHOULD** let the installer name one target scope for the pack, and
-  **SHOULD** report the scope every engram landed in.
+- A consumer **SHOULD** let the installer name one target scope for the pack.
+  Reporting the scope every engram landed in is required by §5.6.5; it is stated
+  there once, as a MUST, rather than restated here with a weaker keyword.
 - Where a pack declares `global` or an equivalent everyone-sees-it scope, a
   consumer **MUST** obtain explicit consent rather than adopting it.
 
@@ -1170,6 +1210,7 @@ implementer to discover by disagreeing with us:
 |---|---|---|
 | §5.6.2 (pack membership) | The registry records pack names, not engram ids, and `pack` (§4.4) is never written. There is no way to enumerate an installed pack's engrams, so §5.8 (uninstall) is not implementable. | plur-ai/plur#1025 *write `engram.pack` on import*; plur-ai/plur#1023 *project pack engrams into the primary store* |
 | §5.6.3 (scope on import) | No scope resolution on import at all. Engrams keep the producer's scopes, including `global`; the installer is warned and not asked. | plur-ai/plur#1024 *name a target scope at import* |
+| §5.6.5 (what a consumer MUST report) | Every item is reported at install except **the scope every engram landed in**, which follows from §5.6.3: there is no scope resolution to report the result of. The four provenance counts are reported (`InstallResult.provenance`, `plur packs install`, `plur_packs_install`). | plur-ai/plur#1024 *name a target scope at import* |
 | §5.6.4 (the install registry) | `integrity_shipped` is not retained — the post-neutralization hash is recorded under that name (§5.5.1, two hashes). `source` is present but removed *before* the pack directory during uninstall. | plur-ai/plur#1027 *uninstall: retire with tombstones, keep the source* |
 | §5.7 (update) | No update path exists for a user-installed pack. Versions are never compared at install, so upgrade, reinstall and downgrade are indistinguishable. | plur-ai/plur#1026 *pack update: compare versions, migrate state* |
 | §5.8.1 (retire, do not erase) | Uninstall deletes the pack directory. Nothing is retired, no reason is recorded, and no history event is written. | plur-ai/plur#1027 *uninstall: retire with tombstones, keep the source* |
@@ -1501,7 +1542,7 @@ they are holding and what changed. Version numbers follow §10.2.
 
 | Version | Date | Change class | What changed |
 |---|---|---|---|
-| 1.7 | 2026-09-04 | Minor (additive; one correction) | Review of plur-ai/plur#1044. **§5.6.1 step 2 is no longer overridable**: a pack that trips a secret scan, or ships an engram declaring `visibility: private`, MUST be refused with no per-install override — the 1.5 text had required an override the reference never offered, and fail-closed is the specified posture; an engram with no `visibility` at all is held as private and reported, not refused, because the default is the consumer's assignment rather than the producer's declaration. **§5.4** now says MUST where it said SHOULD for enforcing neutralization on import, matching §5.6.1 step 3 (plur-ai/plur#1092). **§5.6.5** requires the neutralization count *per field* and restates the four provenance counts in this document rather than importing them from an OPTIONAL profile. §5.6.1's ordering rationale now says what it governs — which verdict a consumer acts on, not the order it reads bytes in. §5.7.3 no longer calls §5.4's SHOULD a requirement. **§5.9** gains a row for the bundled hand-authored pack, which ships `pinned` and `locked` engrams. **§6.7 step 7** states the `SIGNED`/`header.signer` agreement a reader checks, mirroring §6.8 step 4. |
+| 1.7 | 2026-09-08 | **Minor, but one behaviour break for consumers** | Review of plur-ai/plur#1044. **§5.6.1 step 2 is no longer overridable**: a pack that trips a secret scan, or ships an engram declaring `visibility: private`, MUST be refused with no per-install override — the 1.5 text had required an override the reference never offered, and fail-closed is the specified posture; an engram with no `visibility` at all is held as private and reported, not refused, because the default is the consumer's assignment rather than the producer's declaration. **§5.4** now says MUST where it said SHOULD for enforcing neutralization on import, matching §5.6.1 step 3 (plur-ai/plur#1092). **§5.6.5** requires the neutralization count *per field* and restates the four provenance counts in this document rather than importing them from an OPTIONAL profile. §5.6.1's ordering rationale now says what it governs — which verdict a consumer acts on, not the order it reads bytes in. §5.7.3 no longer calls §5.4's SHOULD a requirement. **§5.9** gains a row for the bundled hand-authored pack, which ships `pinned` and `locked` engrams. **§6.7 step 7** states the `SIGNED`/`header.signer` agreement a reader checks, mirroring §6.8 step 4. **Second review round.** The change class above was *Minor (additive)* and is corrected here: making the declared-private refusal unconditional refuses packs that installed before, which is a break for a consumer even though no field, constraint or default on engram *data* changed — a released consumer needs a migration note. **§5.6.3** no longer restates §5.6.5's reporting obligation with a weaker keyword; it said SHOULD where §5.6.5 says MUST, which is the same contradiction class as plur-ai/plur#1092 and left a consumer conformant by one section and not the other. **§5.6.1 step 2** now says what a recipient does when the producer cannot be reached: correcting the pack yourself moves its hash, so it installs by overriding step 1, and a consumer offering no such path has made this paragraph's remedy unreachable. **§5.9** gains the row it was missing for §5.6.5. |
 | 1.6 | 2026-08-28 | Minor (additive) | **§4.12.1 added**: `content_hash` detects corruption, not tampering. `content_hash` is stored in the same file as the statement `content_hash` covers, so anybody who edits the statement recomputes `content_hash` in the same write. The distinction was easy to lose because §4.7.1 makes `content_hash` the authority on whether an edit changed a claim — a reliable authority when the producer is the party being asked, and no defence at all against a party who does not want the change seen. §4.3's and §4.12's descriptions of `content_hash` now point at §4.12.1. Raised in the provenance-ladder design note. |
 | 1.5 | 2026-08-28 | Minor (additive) | Review corrections to 1.4, before it was ever merged. **§4.7.1 is scoped to a live store**, resolving a contradiction with §5.7: as written, a compliant producer could never emit the changed-statement carry-over that §5.7.3 was built around, and when it complied by minting a new id, §5.4 stripped the supersedes edge so the correction reached the recipient as an unlinked stranger. **§5.7.2 now keys correspondence on the `(id, content_hash)` pair** — in a pack an id is a stable *name*, so identity binds to the id and judgement binds to the hash. The rule reads "an **edit to `statement`** that moves the hash", and renormalization is explicitly not an edit: the normalizer is versioned and already on its second version, so the earlier phrasing would have turned a maintenance migration into thousands of spurious supersessions. The empty-normalization and punctuation blind spots are stated. §5.6.1 step 1 covers a **missing** `INTEGRITY` as a third outcome; step 2's secret refusal becomes **overridable**, since an unconditional refusal on a test this document does not define would permanently lock out a pack that legitimately teaches credential handling. §5.6.3 uses **write** authorization, not read — placing engrams is a write. §5.7.1 requires a consumer to assume SemVer, since it cannot discover a scheme documented where it cannot read. §5.8.1 states the floor for a consumer with no retired state. Corrected a factual error in §4.7.1's non-compliance table: the dedup paths **do** retain the previous statement, in the history log's `old_statement`. |
 | 1.4 | 2026-08-27 | Minor (additive) | **§4.7.1 added, "Changing an engram"**. The document defined two ways an engram can change — in place with `engram_version`, or by supersession with a new id — and never said which applies when, so the choice was made per code path by whoever wrote it. The test is mechanical: **a change that moves `content_hash` MUST be a supersession; anything else is in place.** A draft tested whether *the meaning* changed and was withdrawn before publication — meaning-change is a judgement, frequently subjective, and three implementations applying it independently would disagree, which defeats the purpose of specifying it. `content_hash` is already computed on every write and is invariant under capitalisation, punctuation and spacing. A producer MUST NOT rewrite a `statement` in place in a way that moves its hash, because that is the one operation leaving nothing that holds what the engram used to say. `engram_version`'s semantics expanded from six words. Nothing constrains previously-valid data; the obligation is on producers at edit time. |

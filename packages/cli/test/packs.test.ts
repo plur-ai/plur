@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 
 describe('plur packs', () => {
   let dir: string
@@ -227,6 +228,52 @@ describe('plur packs — text surface', () => {
     const clean = writePack('clean', [engram('ENG-2026-0101-001')])
     await packs(['install', clean])
     expect(stdout()).not.toMatch(/Neutralized/)
+  })
+
+  it('install reports the four provenance counts, including the orphan', async () => {
+    // §5.6.5 puts the obligation on the consumer, and an install is when a
+    // recipient is looking. These were computed by the preview install already
+    // runs and printed nowhere, so anyone who did not separately run
+    // `plur packs preview` was told nothing — including that a record names an
+    // engram the pack does not ship, which means it was cut from a larger set.
+    const packDir = writePack('prov-counts', [engram('ENG-2026-0101-001'), engram('ENG-2026-0101-002')], {
+      provenance: {
+        'ENG-2026-0101-001.jsonld': record('ENG-2026-0101-001', {}),
+        'ENG-2026-0101-999.jsonld': record('ENG-2026-0101-999', {}),
+      },
+    })
+    await packs(['install', packDir])
+    expect(stdout()).toMatch(/Provenance: 1 record\(s\) for 2 engram\(s\)/)
+    expect(stdout()).toMatch(/1 record\(s\) describe engrams this pack does not ship/)
+    expect(stdout()).toMatch(/1 engram\(s\) arrived with no record of their own/)
+  })
+
+  it('install says nothing about provenance when the pack ships none', async () => {
+    const packDir = writePack('no-prov', [engram('ENG-2026-0101-001')])
+    await packs(['install', packDir])
+    expect(stdout()).not.toMatch(/Provenance:/)
+  })
+
+  it('--force accepts an integrity mismatch, and says that it did', async () => {
+    // The standard's remedy for a false-positive scan is to correct the pack
+    // (§5.6.1 step 2) — and correcting a pack moves the hash it shipped, so
+    // without a way past step 1 the remedy was unreachable. `--force` was
+    // listed in FLAGS and wired to nothing, so it parsed and did nothing.
+    const packDir = writePack('forced', [engram('ENG-2026-0101-001')])
+    writeFileSync(join(packDir, 'INTEGRITY'), 'sha256:0000000000000000000000000000000000000000000000000000000000000000\n')
+    await expect(packs(['install', packDir])).rejects.toThrow(/integrity/i)
+    out.length = 0
+    await packs(['install', packDir, '--force'])
+    expect(stdout()).toMatch(/--force: an integrity mismatch will not block this install/)
+    expect(stdout()).toMatch(/Installed pack/)
+  })
+
+  it('--force does NOT reach the refusals §5.6.1 makes non-overridable', async () => {
+    // Overriding an integrity mismatch says "I know why these bytes differ".
+    // Installing a declared-private engram says "install something the standard
+    // forbids", which is a different sentence and stays refused.
+    const packDir = writePack('forced-private', [engram('ENG-2026-0101-001', { visibility: 'private' })])
+    await expect(packs(['install', packDir, '--force'])).rejects.toThrow(/declare visibility: private/)
   })
 
   it('install refuses a pack that declares a private engram, names it, and installs nothing', async () => {

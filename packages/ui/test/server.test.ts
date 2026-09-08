@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { request } from 'node:http'
-import { createUiServer, startViewer } from '../src/server.js'
+import { createUiServer, startViewer, isLoopbackName, normaliseHostName } from '../src/server.js'
 
 /** A GET with headers fetch refuses to set, notably `Host`. */
 function rawGet(port: number, path: string, headers: Record<string, string>) {
@@ -234,3 +234,107 @@ describe('the viewer refuses requests that are not its own page', () => {
   })
 })
 
+describe('widened server (--host non-loopback)', () => {
+  // Simulates the state after `plur ui --host 0.0.0.0`. The rebinding check is
+  // NOT skipped: the allowlist is widened to this server's own addresses.
+  //
+  // The distinction is the whole point of the change. Network reachability is
+  // about who can open a socket; DNS rebinding is about an OFF-network attacker
+  // using a victim's browser as a proxy, and the bind address does not affect it.
+  // Skipping the check let any site the operator visited rebind its domain to
+  // this machine and read the entire store cross-origin.
+  const OWN = '192.168.1.50'
+
+  async function bootWide(allowedHosts: string[] = [OWN]) {
+    const server = createUiServer({ load: async () => ROWS, where: '~/.plur', allowedHosts })
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    const port = typeof addr === 'object' && addr ? addr.port : 0
+    return { port, close: () => new Promise<void>(r => server.close(() => r())) }
+  }
+
+  it("accepts the server's own address — the legitimate LAN client case", async () => {
+    const h = await bootWide()
+    try {
+      const { status, body } = await rawGet(h.port, '/', { host: `${OWN}:${h.port}` })
+      expect(status).toBe(200)
+      expect(body).toContain('Pin dsh deps.')
+    } finally { await h.close() }
+  })
+
+  it('REFUSES an attacker domain — the rebinding request that used to succeed', async () => {
+    const h = await bootWide()
+    try {
+      // Exactly the request the review reproduced: a rebound browser sends the
+      // attacker's domain as Host, plus the fetch-metadata header a genuine
+      // rebound request carries. Before this change it returned 200 with the
+      // engram statement in the body.
+      const { status, body } = await rawGet(h.port, '/', {
+        host: `attacker.example:${h.port}`,
+        'sec-fetch-site': 'none',
+      })
+      expect(status).toBe(403)
+      expect(body).not.toContain('Pin dsh deps.')
+    } finally { await h.close() }
+  })
+
+  it('still accepts loopback hosts', async () => {
+    const h = await bootWide()
+    try {
+      for (const host of [`127.0.0.1:${h.port}`, `localhost:${h.port}`]) {
+        expect((await rawGet(h.port, '/', { host })).status, host).toBe(200)
+      }
+    } finally { await h.close() }
+  })
+
+  it('accepts every loopback spelling the header policy already allowed', async () => {
+    // NOTE the boundary: the review's table is about classifying the --host
+    // FLAG, and isLoopbackName covers it (including `localhost.` and
+    // 127.0.0.2). The HEADER policy is deliberately stricter and unchanged —
+    // `localhost.`, `sub.localhost` and `127.0.0.1.nip.io` stay spoof shapes
+    // and stay refused, asserted by 'refuses every Host spoof shape' above.
+    const h = await bootWide([])
+    try {
+      for (const host of [
+        `127.0.0.1:${h.port}`,
+        `LOCALHOST:${h.port}`,
+        `[::1]:${h.port}`,
+      ]) {
+        expect((await rawGet(h.port, '/', { host })).status, host).toBe(200)
+      }
+    } finally { await h.close() }
+  })
+})
+
+describe('isLoopbackName — --host flag classification', () => {
+  // The table from the review on #946. Every one of these binds is reachable
+  // only from this machine, so classifying any as "widened" would drop the
+  // rebinding defence while granting no network reach at all — strictly worse
+  // than the default. The previous code compared against exactly two literals.
+  it('classifies every loopback spelling as loopback', () => {
+    for (const v of [
+      '127.0.0.1', '127.0.0.2', '127.1.2.3',
+      'localhost', 'LOCALHOST', 'localhost.',
+      '::1', '[::1]', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1',
+    ]) {
+      expect(isLoopbackName(v), v).toBe(true)
+    }
+  })
+
+  it('classifies genuinely wider binds as not loopback', () => {
+    // The empty string was asserted loopback in an earlier revision of this
+    // suite. It is the widest bind there is: Node's `listen(port, '')` binds
+    // `::`, every interface. Verified on Node 22 — `server.address()` reports
+    // `{ address: '::', family: 'IPv6' }`.
+    for (const v of ['0.0.0.0', '::', '', '192.168.1.50', '10.0.0.4', 'my-laptop.local', '::ffff:192.168.1.50']) {
+      expect(isLoopbackName(v), v).toBe(false)
+    }
+  })
+
+  it('normalisation is idempotent — a bare IPv6 must survive it twice', () => {
+    // A naive /:\d+$/ port strip eats the last group of `::1`, so normalising
+    // twice yielded `:` and IPv6 loopback was misclassified.
+    expect(normaliseHostName(normaliseHostName('[::1]:7777'))).toBe('::1')
+    expect(normaliseHostName(normaliseHostName('127.0.0.1:7777'))).toBe('127.0.0.1')
+  })
+})

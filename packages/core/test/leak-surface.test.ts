@@ -139,7 +139,12 @@ describe('both engram constructors put every content field where the scan reads 
       const f = { ...engramContentFields(e) } as Record<string, any>
       // Bookkeeping that legitimately differs between a persisted engram and a
       // not-yet-persisted shape.
-      for (const k of ['id', 'sources', 'activation', 'temporal', 'locked_at']) delete f[k]
+      // `created_at` / `updated_at` join this list on the merge with #1138,
+      // for the same reason `id` is already on it: they are stamped per call,
+      // so the two constructors differ by however many milliseconds elapsed
+      // between them. Observed failing on a 2 ms gap. The test is about the
+      // SHAPE and the content fields, not about running inside one tick.
+      for (const k of ['id', 'sources', 'activation', 'temporal', 'locked_at', 'created_at', 'updated_at']) delete f[k]
       return f
     }
     expect(content(shaped)).toEqual(content(learned))

@@ -27,18 +27,36 @@ describe('renderBlock', () => {
       consider: '[ENG-3] Maybe relevant.',
       count: 3,
     }), 2000)
-    expect(out.indexOf('## DIRECTIVES')).toBeLessThan(out.indexOf('## CONSTRAINTS'))
-    expect(out.indexOf('## CONSTRAINTS')).toBeLessThan(out.indexOf('## ALSO CONSIDER'))
+    // CONSTRAINTS first: a spilled payload is read head-first, so prohibitions
+    // must occupy the head. See memory-section.ts for the 2026-09-07 incident.
+    expect(out.indexOf('## CONSTRAINTS')).toBeLessThan(out.indexOf('## DIRECTIVES'))
+    expect(out.indexOf('## DIRECTIVES')).toBeLessThan(out.indexOf('## ALSO CONSIDER'))
   })
 
   it('matches @plur-ai/mcp session-start construction byte for byte', () => {
-    // The canonical assembly, copied from packages/mcp/src/tools.ts:2622-2626.
+    // The canonical assembly, copied from packages/mcp/src/tools.ts.
     const result = { directives: 'D-text', constraints: 'C-text', consider: 'A-text', count: 3 }
     const lines: string[] = []
-    if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
-    if (result.constraints) lines.push('\n## CONSTRAINTS\n', result.constraints)
+    if (result.constraints) lines.push('## CONSTRAINTS\n', result.constraints)
+    if (result.directives) lines.push('\n## DIRECTIVES\n', result.directives)
     if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
     expect(renderBlock(result, 2000)).toBe(lines.join('\n'))
+  })
+
+  it('drops DIRECTIVES before CONSTRAINTS when over budget', () => {
+    // The safety-critical invariant. Constraints are the last section standing:
+    // an agent that loses its prohibitions to a budget squeeze is worse off
+    // than one that loses its process hygiene.
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(4000),
+      constraints: 'c'.repeat(100),
+      consider: 'x'.repeat(4000),
+      count: 3,
+    }), 100)
+    expect(out).toContain('## CONSTRAINTS')
+    expect(out).toContain('c'.repeat(100))
+    expect(out).not.toContain('## DIRECTIVES')
+    expect(out).not.toContain('## ALSO CONSIDER')
   })
 
   it('omits a section the injection left empty', () => {
@@ -58,15 +76,62 @@ describe('renderBlock', () => {
     expect(out).not.toContain('## ALSO CONSIDER')
   })
 
-  it('drops CONSTRAINTS next when still over budget', () => {
+  it('never sheds CONSTRAINTS silently — it says they were withheld', () => {
+    // Inverted 2026-09-07: this previously asserted that CONSTRAINTS was
+    // dropped while DIRECTIVES survived, encoding the defect rather than
+    // catching it.
+    //
+    // Then refined again. "Emit nothing" kept the honesty but lost the
+    // directives too, so a store whose constraints are merely large got no
+    // memory at all — a capability regression flagged in review of #1138. The
+    // property that actually matters is not silence, it is that prohibitions
+    // are never dropped WITHOUT SAYING SO: an agent cannot tell "no rules
+    // apply" from "your rules did not fit". A notice buys both.
     const out = renderBlock(injection({
       directives: 'd'.repeat(200),
       constraints: 'c'.repeat(4000),
       consider: 'x'.repeat(4000),
       count: 3,
     }), 100)
+
+    // The constraint text itself is gone — it did not fit and is not truncated.
+    expect(out).not.toContain('c'.repeat(50))
+    // But its absence is declared, in the section where it would have been.
+    expect(out).toContain('## CONSTRAINTS')
+    expect(out).toContain('WITHHELD')
+    expect(out).toContain('UNREAD')
+  })
+
+  it('lets directives through alongside the withheld notice when they fit', () => {
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(40),
+      constraints: 'c'.repeat(4000),
+      count: 2,
+    }), 100)
+    expect(out).toContain('WITHHELD')
     expect(out).toContain('## DIRECTIVES')
-    expect(out).not.toContain('## CONSTRAINTS')
+    expect(out).toContain('d'.repeat(40))
+  })
+
+  it('drops the directives before the notice when both will not fit', () => {
+    // The notice outranks the directives: knowing a rule was withheld matters
+    // more than the process hygiene it was competing with.
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(4000),
+      constraints: 'c'.repeat(4000),
+      count: 2,
+    }), 60)
+    expect(out).toContain('WITHHELD')
+    expect(out).not.toContain('## DIRECTIVES')
+  })
+
+  it('emits nothing when not even the notice fits', () => {
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(4000),
+      constraints: 'c'.repeat(4000),
+      count: 2,
+    }), 5)
+    expect(out).toBe('')
   })
 
   it('emits nothing rather than a truncated engram when even directives overflow', () => {

@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, _setCachedReranker, _resetRerankerCache, resetRerankerStatus, rerankerStatus } from '@plur-ai/core'
 import type { RerankerAdapter } from '@plur-ai/core'
-import { getToolDefinitions } from '../src/tools.js'
+import { getToolDefinitions, composeHints } from '../src/tools.js'
 
 describe('MCP tools', () => {
   let plur: Plur
@@ -996,5 +996,88 @@ describe('MCP tools', () => {
       expect(result.min_confidence).toBe(0.15)
       expect(result.count).toBe(0)
     })
+  })
+})
+
+describe('composition feedback on a written engram', () => {
+  // Not a length warning — "your engram is 1454 chars" is not actionable.
+  // The point is naming WHICH field each excess span belongs to.
+  it('stays silent on a short statement', () => {
+    expect(composeHints('Never name a client unless the user names them first')).toBeUndefined()
+  })
+
+  it('routes a dated observation to source', () => {
+    const long = 'Never name a client unless the user names them first. '.repeat(9)
+    const c = composeHints(long + ' Proven 2026-09-07 during a live demo.', 'a mechanism', 'a source')
+    expect(c?.misplaced.join(' ')).toContain('`source`')
+  })
+
+  it('flags a long statement whose rationale is empty', () => {
+    // The signal that matters most: the author had a mechanism and did not
+    // place it, which is how one statement ends up carrying eleven claims.
+    const long = 'Never name a client unless the user names them first. '.repeat(9)
+    const c = composeHints(long)
+    expect(c?.chars).toBeGreaterThan(400)
+    expect(c?.misplaced.some(h => h.includes('rationale'))).toBe(true)
+  })
+
+  it('spots a second engram hiding behind "and also"', () => {
+    const long = 'Never name a client unless the user names them first. '.repeat(9)
+    const c = composeHints(long + ' And also never quote invoice dates.', 'm', 's')
+    expect(c?.misplaced.some(h => h.includes('second engram'))).toBe(true)
+  })
+})
+
+describe('.plur.yaml domain default (#1148)', () => {
+  // The key was parsed by project-config and consumed nowhere, so setting it
+  // was a silent no-op. Domain is not decorative: scoreEngram counts every
+  // matching hierarchy segment as a full term hit, double a statement word.
+  //
+  // Driven through the HANDLER, against a real `.plur.yaml`. The first version
+  // of this test read `src/tools.ts` and asserted it contained the expression
+  // `(args.domain as string | undefined) ?? readProjectConfig().domain`. That
+  // pins text, not semantics: a behaviour-preserving refactor fails it and a
+  // text-preserving behaviour change passes it — the second being the failure
+  // mode that matters, since the defect it guards was a value parsed and never
+  // consumed.
+  let projDir: string
+  let projPlur: Plur
+  let cwd: string
+
+  beforeEach(async () => {
+    projDir = mkdtempSync(join(tmpdir(), 'plur-projdomain-'))
+    writeFileSync(join(projDir, '.plur.yaml'), 'domain: plur.engineering.search\n')
+    projPlur = new Plur({ path: projDir })
+    await projPlur.ready()
+    cwd = process.cwd()
+    // readProjectConfig() resolves from process.cwd() by default.
+    process.chdir(projDir)
+  })
+
+  afterEach(() => {
+    process.chdir(cwd)
+    rmSync(projDir, { recursive: true, force: true })
+  })
+
+  const learn = async (args: Record<string, unknown>) => {
+    const tool = getToolDefinitions('full').find(t => t.name === 'plur_learn')!
+    return await tool.handler(args, projPlur) as { engram?: { id?: string } } & Record<string, unknown>
+  }
+
+  it('declares domain on the plur_learn surface', () => {
+    const tool = getToolDefinitions().find(t => t.name === 'plur_learn')!
+    expect((tool.inputSchema as any).properties.domain).toBeDefined()
+  })
+
+  it('stamps the project domain on an engram that does not name one', async () => {
+    await learn({ statement: 'Vector lookups use the HNSW index by default.' })
+    const [stored] = await projPlur.list()
+    expect(stored.domain).toBe('plur.engineering.search')
+  })
+
+  it('lets an explicit domain argument win over the project config', async () => {
+    await learn({ statement: 'Release notes are written from the theme.', domain: 'plur.comms.release' })
+    const [stored] = await projPlur.list()
+    expect(stored.domain).toBe('plur.comms.release')
   })
 })

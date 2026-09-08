@@ -11,7 +11,7 @@
  * text the same way.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, existsSync, truncateSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, existsSync, truncateSync, readdirSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -378,5 +378,84 @@ describe('the pack boundary, second pass', () => {
     // And the bookkeeping key alone is not a finding.
     const clean = EngramSchema.parse({ ...ENGRAM, structured_data: { _outbox: { target_url: 'http://127.0.0.1:3000' } } })
     expect(exportPack([clean], join(dir, 'out2'), { name: 'p', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(1)
+  })
+})
+
+/**
+ * Exempt from the scan MUST mean stripped from the export.
+ *
+ * `PLUR_BOOKKEEPING_KEYS` — `_outbox`, `_routed`, `_demoted`, `_rescoped_from`,
+ * `_expiry_extracted` — are excluded from every scan, and rightly:
+ * `_outbox.target_url` legitimately carries the host topology the infra
+ * detector flags, so scanning it would falsely demote every remote-origin or
+ * auto-routed engram on update.
+ *
+ * The export did not strip them, so the one thing nothing checks was also the
+ * one thing that shipped. Measured before the fix, an exported pack carried the
+ * remote store's internal host and port, three internal scope names, and — via
+ * `_demoted.patterns`, which is the deduplicated list of detector names that
+ * matched — WHICH CLASS OF SECRET was once in that engram.
+ *
+ * The profile rule the neighbouring strips cite covers all of it: "No
+ * identifiers only our store can resolve."
+ */
+describe('an exported pack carries no PLUR bookkeeping', () => {
+  let dir: string
+  let out: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-export-bookkeeping-'))
+    out = join(dir, 'out')
+  })
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  /** Exactly what learn()/learnRouted()/rescope stamp on the real write paths. */
+  const stamped = () => EngramSchema.parse({
+    ...ENGRAM,
+    visibility: 'public',
+    structured_data: {
+      _outbox: { target_url: 'https://plur.internal.acme.example:8443', attempt_count: 2 },
+      _demoted: { from: 'group:acme/engineering', to: 'user:alice', patterns: 'aws_secret_access_key' },
+      _routed: { scope: 'group:acme/engineering', confidence: 0.82, reason: 'covers matched' },
+      _rescoped_from: 'group:acme/finance',
+      _expiry_extracted: { valid_until: '2026-12-31', phrase: 'until the end of the year' },
+    },
+  })
+
+  const exported = (): string => {
+    exportPack([stamped()], out, { name: 'bk-pack', version: '1.0.0', description: 'x', license: 'CC-BY-4.0' }, 'CC-BY-4.0')
+    return readFileSync(join(out, 'engrams.yaml'), 'utf8')
+  }
+
+  it.each([
+    ['_outbox'], ['_demoted'], ['_routed'], ['_rescoped_from'], ['_expiry_extracted'],
+  ])('does not ship the %s marker', (key) => {
+    expect(exported()).not.toContain(key)
+  })
+
+  it.each([
+    ['the remote store host', 'plur.internal.acme.example'],
+    ['an internal scope name', 'group:acme/engineering'],
+    ['a previous scope name', 'group:acme/finance'],
+    ['which secret was found', 'aws_secret_access_key'],
+  ])('does not ship %s', (_what, needle) => {
+    expect(exported()).not.toContain(needle)
+  })
+
+  it('keeps user content in structured_data, including a _-prefixed key the caller named', () => {
+    // The control. A prefix rule would strip these too; the set is enumerated
+    // precisely so a caller's own `_mine` stays content, stays scanned, stays.
+    const e = EngramSchema.parse({
+      ...ENGRAM,
+      visibility: 'public',
+      structured_data: { _outbox: { target_url: 'http://127.0.0.1:3000' }, _mine: 'my own note', note: 'plain' },
+    })
+    exportPack([e], out, { name: 'bk-pack2', version: '1.0.0', description: 'x', license: 'CC-BY-4.0' }, 'CC-BY-4.0')
+    const yamlText = readFileSync(join(out, 'engrams.yaml'), 'utf8')
+    expect(yamlText).not.toContain('_outbox')
+    expect(yamlText).toContain('_mine')
+    expect(yamlText).toContain('my own note')
+    expect(yamlText).toContain('plain')
   })
 })

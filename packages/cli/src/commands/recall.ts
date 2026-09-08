@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { bareEngramId } from '@plur-ai/core'
 
 /**
  * Flags this command accepts (#986).
@@ -42,7 +43,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson({
       results: engrams.map(e => ({
-        id: e.id,
+        id: (e as any)._originalId ?? bareEngramId(e.id),
         statement: e.statement,
         scope: e.scope,
         type: e.type,
@@ -53,7 +54,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     })
   } else {
     engrams.forEach((e, idx) => {
-      outputText(`${idx + 1}. [${e.id}] ${e.statement}`)
+      const displayId = (e as any)._originalId ?? bareEngramId(e.id)
+      outputText(`${idx + 1}. [${displayId}] ${e.statement}`)
       outputText(`   Scope: ${e.scope} | Type: ${e.type}${e.domain ? ` | Domain: ${e.domain}` : ''} | Strength: ${e.activation.retrieval_strength.toFixed(3)}`)
     })
   }
