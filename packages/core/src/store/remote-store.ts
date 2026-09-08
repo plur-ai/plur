@@ -192,6 +192,21 @@ const NEVER_STRIP = new Set(['visibility', 'pinned'])
 /** Per-process dedupe for salvage warnings: one line per (store, field-set), on BOTH read paths (audit finding 5). */
 const warnedSalvages = new Set<string>()
 
+/**
+ * A response whose body has already been read, inside the request deadline.
+ *
+ * `json` is present only for a 2xx (and is `undefined` when the payload would
+ * not parse); `text` only for a non-2xx, already sanitised. Keeping both off
+ * the same object as a live `Response` is what stops a caller reading a body
+ * after the deadline has been cleared (#1152).
+ */
+interface BoundedResponse {
+  readonly ok: boolean
+  readonly status: number
+  readonly json?: unknown
+  readonly text?: string
+}
+
 export function salvageRemoteRow(
   candidate: Record<string, unknown>,
   logContext?: { url: string; rowId?: unknown },
@@ -261,7 +276,46 @@ export class RemoteStore {
    * keeps relearning: a rule enforced by convention at N sites is a rule that
    * holds at N-1 of them. A seventh endpoint added later inherits the bound.
    */
-  private async fetchBounded(url: string, init: RequestInit = {}): Promise<Response> {
+  /**
+   * A response whose body has ALREADY been read, inside the request deadline.
+   *
+   * Returned instead of a `Response` so that no caller can be handed a live
+   * body to read after the timer has been cleared — which is the shape of
+   * #1152. Callers branch on `ok`/`status` exactly as before; the payload is
+   * simply already here.
+   */
+  private static async readBounded(res: Response): Promise<BoundedResponse> {
+    // 2xx carries the payload; anything else carries an error body that gets
+    // sanitised before it can reach a log line or an exception message.
+    return res.ok
+      ? { ok: true, status: res.status, json: await res.json().catch(() => undefined) }
+      : { ok: false, status: res.status, text: sanitiseResponseBody(await res.text().catch(() => '')) }
+  }
+
+  /**
+   * Run a request AND read its body under ONE deadline.
+   *
+   * `fetch()` resolves when response HEADERS arrive, so the timer this used to
+   * clear on return stopped guarding the part that actually streams. Callers
+   * then awaited `r.json()` or `r.text()` with no bound at all: a peer that
+   * sent headers and stalled the body held `me()` open indefinitely against a
+   * 30s limit — measured at 31s, settling only once the body was released
+   * (#1152).
+   *
+   * #525 fixed this same shape in `load()`, by giving that one method's body
+   * read its own timer. That closed the instance; every other caller of the
+   * shared helper kept the gap, and it resurfaced in six of them. Owning the
+   * read is what makes the bound structural rather than a rule each new caller
+   * has to remember — so this takes a reader instead of returning a `Response`.
+   *
+   * @param consume - reads the body. Runs INSIDE the deadline, and the abort
+   *   signal is wired to the response stream, so a stalled read rejects.
+   */
+  private async fetchBounded<T>(
+    url: string,
+    init: RequestInit,
+    consume: (res: Response) => Promise<T>,
+  ): Promise<T> {
     // #1069: a network-level failure here MARKS the host down (so the passive
     // read path fast-fails), but this method never fast-fails itself. It
     // carries writes, /me and explicit retries — an outbox flush the user just
@@ -271,17 +325,37 @@ export class RemoteStore {
     // clean; on failure the mark is refreshed.
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
+    const timedOut = () => new Error(`request to ${url} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`)
     try {
-      const res = await fetch(url, { ...init, signal: ctrl.signal })
+      let res: Response
+      try {
+        res = await fetch(url, { ...init, signal: ctrl.signal })
+      } catch (err) {
+        // fetch only throws on network-level failures (and our abort) — an HTTP
+        // error status resolves normally — so any throw here marks the host.
+        markRemoteHostDown(url)
+        throw ctrl.signal.aborted ? timedOut() : (err as Error)
+      }
       clearRemoteHostDown(url) // the host answered — any HTTP status is a live host
-      return res
-    } catch (err) {
-      // fetch only throws on network-level failures (and our abort) — an HTTP
-      // error status resolves normally — so any throw here marks the host.
-      markRemoteHostDown(url)
-      throw ctrl.signal.aborted
-        ? new Error(`request to ${url} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`)
-        : (err as Error)
+      try {
+        const out = await consume(res)
+        // The SIGNAL is the authority on whether the deadline was met, not the
+        // shape of what came back. A reader that tolerates a malformed payload
+        // — `readBounded` returns `json: undefined` rather than throwing — will
+        // otherwise swallow an abort and hand back an empty body as if the
+        // request had succeeded. That failure mode is worse than the one this
+        // method exists to fix: a stalled `/me` would return zero scopes,
+        // silently, instead of timing out.
+        if (ctrl.signal.aborted) throw timedOut()
+        return out
+      } catch (err) {
+        // Deliberately NOT a host-down mark. The peer answered; a 5xx body, a
+        // decode failure or a stalled stream says nothing about reachability,
+        // and tripping the breaker on them would fast-fail a live host. Only
+        // the deadline is reinterpreted, so a stalled body reports as the
+        // timeout it is rather than as a bare AbortError.
+        throw ctrl.signal.aborted ? timedOut() : (err as Error)
+      }
     } finally {
       clearTimeout(timer)
     }
@@ -362,12 +436,9 @@ export class RemoteStore {
    * Throws on a non-2xx response (caller decides whether to swallow per URL).
    */
   async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[] }> {
-    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() })
-    if (!r.ok) {
-      const text = sanitiseResponseBody(await r.text().catch(() => ''))
-      throw new Error(`Remote /me failed: ${r.status} ${text}`)
-    }
-    const body = await r.json().catch(() => ({})) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[] }>
+    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded)
+    if (!r.ok) throw new Error(`Remote /me failed: ${r.status} ${r.text}`)
+    const body = (r.json ?? {}) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[] }>
     const scopes = Array.isArray(body.scopes)
       // Validate every /me scope to a safe grammar at the trust boundary:
       //  - #427: a non-string element would later throw in isSharedScope's
@@ -580,17 +651,29 @@ export class RemoteStore {
       // #983: carry provenance records so the receiving store can answer
       // origin/chain/licence questions. Omitted when unset.
       ...(e.provenance != null              ? { provenance: e.provenance }     : {}),
+      // #1151: the conditions a measurement was taken under, the material that
+      // supports it, and its worked example. All three were accepted by
+      // `learnRouted()`, returned to the caller, and never sent.
+      //
+      // `measured_under` is the one that does real damage. It exists (#869) so
+      // a measured claim carries what makes it true — hardware, dataset,
+      // source, date. Dropping it on the way to a SHARED store is the worst
+      // case for that field: a result that held on one machine, one dataset,
+      // one day arrives at a teammate as an unconditional fact. The immediate
+      // return value hid it, because `learnRouted()` answers from the local
+      // shape plus the server-assigned id rather than from a persisted record.
+      ...(e.measured_under != null          ? { measured_under: e.measured_under } : {}),
+      ...(Array.isArray(e.knowledge_anchors) && e.knowledge_anchors.length > 0
+        ? { knowledge_anchors: e.knowledge_anchors } : {}),
+      ...(e.dual_coding != null             ? { dual_coding: e.dual_coding }   : {}),
     })
     const r = await this.fetchBounded(`${this.apiBase}/engrams`, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body,
-    })
-    if (!r.ok) {
-      const text = sanitiseResponseBody(await r.text().catch(() => ''))
-      throw new Error(`Remote store append failed: ${r.status} ${text}`)
-    }
-    const data = await r.json().catch(() => ({})) as { id?: unknown }
+    }, RemoteStore.readBounded)
+    if (!r.ok) throw new Error(`Remote store append failed: ${r.status} ${r.text}`)
+    const data = (r.json ?? {}) as { id?: unknown }
     // #404: validate the server-assigned id's SHAPE, not just truthiness. It
     // becomes this engram's id (cached, rendered, used as a key), so a non-string,
     // empty, over-long, or control-char-bearing id from a buggy/hostile endpoint
@@ -627,11 +710,13 @@ export class RemoteStore {
 
   async getById(id: string): Promise<Engram | null> {
     try {
-      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() })
+      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, RemoteStore.readBounded)
       if (r.status === 404) return null
       if (!r.ok) return null
-      const row = await r.json() as any
-      return this.reshape(row)
+      // An unparseable 2xx body arrives as `undefined` rather than throwing;
+      // same outcome as before, where the throw was swallowed by the catch.
+      if (r.json === undefined) return null
+      return this.reshape(r.json as any)
     } catch {
       return null
     }
@@ -707,18 +792,18 @@ export class RemoteStore {
    * the failure modes are split out.
    */
   async probeById(id: string): Promise<'owned' | 'absent' | 'unknown'> {
-    let r: Response
+    let r: BoundedResponse
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      })
+      }, RemoteStore.readBounded)
     } catch {
       return 'unknown'
     }
     if (r.status === 404) return 'absent'
     // Any other non-ok says nothing about whether the row exists.
     if (!r.ok) return 'unknown'
-    const row = await r.json().catch(() => null)
+    const row = r.json ?? null
     if (row === null) return 'unknown'
     return this.reshape(row as { id?: unknown; scope?: unknown; status?: unknown; data?: unknown })
       ? 'owned' : 'absent'
@@ -729,7 +814,7 @@ export class RemoteStore {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
-    })
+    }, RemoteStore.readBounded)
     if (!r.ok) return false
     this.cache = null
     return true
@@ -748,11 +833,8 @@ export class RemoteStore {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ signal }),
-    })
-    if (!r.ok) {
-      const text = sanitiseResponseBody(await r.text().catch(() => ''))
-      throw new Error(`Remote feedback failed: ${r.status} ${text}`)
-    }
+    }, RemoteStore.readBounded)
+    if (!r.ok) throw new Error(`Remote feedback failed: ${r.status} ${r.text}`)
     this.cache = null
   }
 
@@ -780,19 +862,16 @@ export class RemoteStore {
       method: 'PATCH',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(updates),
-    })
+    }, RemoteStore.readBounded)
     if (r.status === 404) return null
-    if (!r.ok) {
-      const text = sanitiseResponseBody(await r.text().catch(() => ''))
-      throw new Error(`Remote patch failed: ${r.status} ${text}`)
-    }
+    if (!r.ok) throw new Error(`Remote patch failed: ${r.status} ${r.text}`)
     // #327: the server confirmed the write (2xx). Capture the pre-write row
     // from the cache BEFORE invalidating so the fallback below can merge it.
     const prev = this.cache?.engrams.find(e => e.id === id) ?? null
     this.cache = null
     // Server returns {engram: {id, scope, status, data: {...}, ...}}; reshape
     // to top-level Engram (same as load() does for rows[]).
-    const body = await r.json().catch(() => null) as { engram?: { id: string; scope: string; status: string; data?: any } } | null
+    const body = (r.json ?? null) as { engram?: { id: string; scope: string; status: string; data?: any } } | null
     const reshaped = body?.engram ? this.reshape(body.engram) : null
     if (reshaped) return reshaped
     // #327: 2xx but the echoed row was missing or failed validation. Returning

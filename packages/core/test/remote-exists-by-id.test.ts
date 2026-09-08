@@ -165,6 +165,38 @@ describe('every RemoteStore request is bounded', () => {
     await expect(settled, 'the call never returned — it would hold the store lock').resolves.toBe('settled')
   })
 
+  /**
+   * Headers arrive, the body never does — the #1152 shape.
+   *
+   * The `stalling` helper above never resolves `fetch` itself, so it only ever
+   * exercised the handshake. That is why the gap survived: the deadline was
+   * cleared the moment headers landed, and every caller then read the body
+   * outside it. Measured against a real loopback server, `me()` was still
+   * pending after 31 seconds under a 30-second bound, and settled only when
+   * the body was finally released.
+   */
+  const stallingBody = (status: number) => vi.fn((_u: string, init?: { signal?: AbortSignal }) => {
+    const never = <T>() => new Promise<T>((_res, rej) => {
+      init?.signal?.addEventListener('abort', () => rej(new Error('aborted')))
+    })
+    return Promise.resolve({ ok: status >= 200 && status < 300, status, json: never, text: never })
+  }) as never
+
+  it.each([
+    ['a 2xx whose JSON never completes', 200],
+    ['an error response whose text never completes', 500],
+  ])('settles at the deadline on %s (#1152)', async (_name, status) => {
+    vi.useFakeTimers()
+    globalThis.fetch = stallingBody(status)
+
+    const settled = store().me().then(() => 'resolved', (e: Error) => e.message)
+    await vi.advanceTimersByTimeAsync(31_000)
+
+    // Not merely "settled": it must settle through the DOCUMENTED timeout, not
+    // as a bare AbortError leaking from the body read.
+    await expect(settled).resolves.toMatch(/timed out after 30000ms/)
+  })
+
   it('the bound is one shared helper, so a new endpoint inherits it', () => {
     // The reason this is a helper and not six call-site fixes: a rule enforced
     // by convention at N sites holds at N-1 of them. Asserted against the

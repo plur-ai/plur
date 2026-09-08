@@ -47,6 +47,7 @@ import type { TensionRecord, TensionStatus } from './schemas/tension.js'
 import type { TensionPair } from './tensions.js'
 import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity } from './expiry.js'
+import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import {
@@ -3944,12 +3945,11 @@ export class Plur {
   private _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
     let out = engrams
     if (!options?.include_expired) {
-      const today = new Date().toISOString().slice(0, 10)
-      out = out.filter(e => {
-        if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
-        if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
-        return true
-      })
+      // #1150: instants compared as instants. The lexical form this replaces
+      // read `valid_until: 2026-09-07T01:00:00Z` as still valid at noon that
+      // day, and a `valid_from` of the same shape as not yet reached.
+      const nowMs = Date.now()
+      out = out.filter(e => isCurrentlyValid(e.temporal, nowMs))
     }
     if (options?.min_strength !== undefined) {
       out = out.filter(e => e.activation.retrieval_strength >= options.min_strength!)
@@ -4508,12 +4508,9 @@ export class Plur {
     // with learn()'s content-hash gate (which ignores temporal validity,
     // e.g. the migration import engine, #441) must see the full active set.
     if (!options?.include_expired) {
-      const today = new Date().toISOString().slice(0, 10)
-      engrams = engrams.filter(e => {
-        if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
-        if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
-        return true
-      })
+      // #1150: one evaluator, shared with _applyResidualFilters and injection.
+      const nowMs = Date.now()
+      engrams = engrams.filter(e => isCurrentlyValid(e.temporal, nowMs))
     }
     if (options?.min_strength !== undefined) {
       engrams = engrams.filter(e => e.activation.retrieval_strength >= options.min_strength!)
@@ -5537,7 +5534,23 @@ export class Plur {
         // The justification was that `setPinned` had to keep a synchronous
         // signature. It is `async` since the 0.16 flip, so that reason is gone
         // and the honest version costs nothing.
-        const patched = await driver.patch(serverId, { pinned: pinned === true ? true : undefined })
+        // Send the BOOLEAN, including an explicit `false` (#1149).
+        //
+        // This read `pinned === true ? true : undefined`, mirroring the local
+        // branch above — but the two representations exist for opposite
+        // reasons. Locally the engram is rewritten WHOLE, so `undefined`
+        // drops the key and keeps unpinned rows out of the YAML. Here the
+        // object is a PARTIAL update, and `JSON.stringify` omits `undefined`,
+        // so the unpin left as `{}` — a server applying ordinary PATCH
+        // semantics changed nothing and returned the still-pinned row, which
+        // this method then reported as success.
+        //
+        // Measured on a loopback server against the real serializer: PATCH
+        // body `{}`, engram still pinned afterwards, no error raised. An
+        // unpin the user was told had worked had not happened on any other
+        // machine — and with the pinned set now quota-enforced at pin time,
+        // it also held budget nobody could reclaim.
+        const patched = await driver.patch(serverId, { pinned })
         if (patched) return patched
       } catch (err) {
         if (serverId !== id) throw err
