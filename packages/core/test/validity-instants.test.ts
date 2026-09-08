@@ -128,6 +128,41 @@ describe('validity evaluator', () => {
   })
 })
 
+/**
+ * The same question under a host that is NOT on UTC (#1157).
+ *
+ * Node re-reads `process.env.TZ` for each `Date` operation, so the timezone can
+ * be pinned for the duration of a test rather than only via the runner's
+ * environment. Worth doing explicitly: CI runs on UTC, where a naive timestamp
+ * and its explicit-Z twin are indistinguishable and every assertion below would
+ * pass with the defect present.
+ */
+describe('validity is host-timezone independent (#1157)', () => {
+  const REAL_TZ = process.env.TZ
+
+  afterEach(() => {
+    if (REAL_TZ === undefined) delete process.env.TZ
+    else process.env.TZ = REAL_TZ
+  })
+
+  it.each(['America/New_York', 'Asia/Tokyo', 'Pacific/Kiritimati', 'UTC'])(
+    'decides the same way in %s', (tz) => {
+      process.env.TZ = tz
+      // Sanity: the offset really did change for at least the non-UTC zones,
+      // so a green run cannot mean "TZ was ignored".
+      const shifted = new Date('2026-09-07T13:00:00').toISOString()
+      if (tz !== 'UTC') expect(shifted, tz).not.toBe('2026-09-07T13:00:00.000Z')
+
+      // 11:00 is the discriminating hour: it sits before NOON in UTC and after
+      // it in the western zones, so a host-local reading flips the answer.
+      expect(isNotYetValid({ valid_from: '2026-09-07T11:00:00' } as never, NOON), tz).toBe(false)
+      expect(isExpired({ valid_until: '2026-09-07T11:00:00' } as never, NOON), tz).toBe(true)
+      expect(isNotYetValid({ valid_from: '2026-09-07T13:00:00' } as never, NOON), tz).toBe(true)
+      expect(isExpired({ valid_until: '2026-09-07T13:00:00' } as never, NOON), tz).toBe(false)
+    },
+  )
+})
+
 describe('list(), recall() and injection agree, at instant granularity (#1150)', () => {
   let dir: string
   let plur: Plur
