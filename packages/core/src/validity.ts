@@ -46,13 +46,39 @@ const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
 
 const DAY_MS = 86_400_000
 
+/** A trailing `Z` or `±HH:MM` / `±HHMM` zone designator. */
+const HAS_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i
+
+/**
+ * Pin a timestamp to UTC when it names no zone (#1157).
+ *
+ * `Date.parse('2026-09-07T01:00:00')` — no `Z`, no offset — resolves in the
+ * HOST's local time, so the same stored engram expires at different moments on
+ * different machines, and a team sharing a store disagrees about which rules
+ * are live. `TemporalSchema` accepts any string, and `salvageRemoteRow` copies
+ * server values verbatim, so a store emitting naive timestamps reaches this
+ * function unchanged.
+ *
+ * UTC is the right default rather than an arbitrary one: every timestamp this
+ * codebase MINTS is `toISOString()`, which is UTC, so a naive value is a
+ * foreign or hand-edited one and reading it as UTC agrees with the rest of the
+ * store instead of with whoever happens to be running the query.
+ *
+ * Exported for the regression test. The behavioural test can only tell the
+ * difference in a non-UTC timezone, and CI runs in UTC — so the mechanism has
+ * to be assertable directly, or a reintroduction ships green.
+ */
+export function pinToUtc(value: string): string {
+  return HAS_ZONE.test(value) ? value : `${value}Z`
+}
+
 /**
  * First instant a bound includes, in epoch ms; `null` when unparseable.
  *
  * A date-only value opens at midnight UTC of that day.
  */
 function opensAt(value: string): number | null {
-  const ms = Date.parse(DATE_ONLY.test(value) ? `${value}T00:00:00.000Z` : value)
+  const ms = Date.parse(DATE_ONLY.test(value) ? `${value}T00:00:00.000Z` : pinToUtc(value))
   return Number.isNaN(ms) ? null : ms
 }
 
@@ -64,7 +90,7 @@ function opensAt(value: string): number | null {
  * date-only `valid_until` must not be treated as midnight.
  */
 function closesAt(value: string): number | null {
-  const ms = Date.parse(DATE_ONLY.test(value) ? `${value}T23:59:59.999Z` : value)
+  const ms = Date.parse(DATE_ONLY.test(value) ? `${value}T23:59:59.999Z` : pinToUtc(value))
   return Number.isNaN(ms) ? null : ms
 }
 
