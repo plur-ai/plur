@@ -1732,6 +1732,30 @@ export function exportPack(
         ...(license !== undefined ? { license } : {}),
       } as NonNullable<Engram['provenance']>
     }
+    // PLUR's own `structured_data` bookkeeping does not leave either.
+    //
+    // `PLUR_BOOKKEEPING_KEYS` is EXEMPT from every scan, and that exemption is
+    // right: `_outbox.target_url` legitimately carries the host topology the
+    // infra detector flags, so scanning it would falsely demote every
+    // remote-origin or auto-routed engram on update. But exempt from the scan
+    // has to mean stripped from the export, or the one thing nothing checks is
+    // also the one thing that ships.
+    //
+    // It shipped. Measured on this branch before the fix, an exported pack
+    // carried `_outbox.target_url` (the remote store's internal host and port),
+    // `_routed.scope` and `_demoted.from`/`.to` (internal scope names),
+    // `_rescoped_from` (another one), and `_demoted.patterns` — the detector
+    // names that matched, which tells a recipient WHICH CLASS OF SECRET was
+    // once in that engram. The profile rule the strips above cite covers all of
+    // it: "No identifiers only our store can resolve."
+    //
+    // One set decides both halves now: a key in it is unscanned and removed, a
+    // key outside it is scanned and kept. User-set keys — including a
+    // `_`-prefixed one a caller named themselves — are content, are scanned,
+    // and stay.
+    const userSd = userStructuredData(cleaned.structured_data)
+    if (userSd === undefined) delete (cleaned as { structured_data?: unknown }).structured_data
+    else cleaned.structured_data = userSd as Record<string, unknown>
     // Strip knowledge_anchors (local file paths)
     if (cleaned.knowledge_anchors) {
       cleaned.knowledge_anchors = []
