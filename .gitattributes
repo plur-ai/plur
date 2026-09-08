@@ -1,0 +1,5 @@
+# Auto-detect text files and normalize line endings to LF on commit and checkout
+* text=auto eol=lf
+
+# Conformance vectors must preserve exact byte stability across platforms
+spec/vectors/** -text

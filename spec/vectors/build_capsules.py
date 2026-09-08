@@ -285,7 +285,7 @@ def main() -> int:
             return 0
 
     index = build(OUT)
-    INDEX.write_text(capsules_document(index), encoding="utf-8")
+    INDEX.write_text(capsules_document(index), encoding="utf-8", newline="")
     print(f"Built {len(index)} capsule fixtures into {OUT}")
     return 0
 
