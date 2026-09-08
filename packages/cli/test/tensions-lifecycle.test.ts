@@ -6,8 +6,9 @@ import { execSync, execFile } from 'child_process'
 import { promisify } from 'util'
 import { createServer, type Server } from 'http'
 import { Plur } from '@plur-ai/core'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 
 /**
  * plur tensions lifecycle CLI (#181): scan persistence, suppress-list,

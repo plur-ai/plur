@@ -438,7 +438,18 @@ export async function learnAsync(
         .sort((a, b) => b.score - a.score)
       if (scores.length > 0) {
         dedupMode = 'cosine'
-        nearDuplicates = scores.slice(0, 3)
+        // Join the neighbour's own text back on. `similarityScores` returns
+        // id+score, but `candidates` is right here — and a report the reader
+        // has to make another call to act on is a report that gets skipped
+        // (2026-09-07: four near-identical engrams, every neighbour unread).
+        const byId = new Map(candidates.map(c => [c.id, c]))
+        nearDuplicates = scores.slice(0, 3).map(s => {
+          const st = byId.get(s.id)?.statement
+          return {
+            ...s,
+            ...(st ? { statement: st.length > 240 ? `${st.slice(0, 240)}…` : st } : {}),
+          }
+        })
         // REPORTING ONLY — cosine never gates a write (#856 audit).
         //
         // The gate was removed rather than retuned, because the audit showed

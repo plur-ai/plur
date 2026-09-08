@@ -98,7 +98,12 @@ describe('write-path consolidation', () => {
       const remote = posted[0] as Record<string, unknown>
 
       const strip = (e: Record<string, unknown>) => {
-        const { id: _id, scope: _scope, sources: _sources, statement: _s, content_hash: _h, summary: _sum, ...rest } = e
+        // created_at/updated_at are excluded for the same reason as sources:
+        // the two routes construct at different instants, so they differ by a
+        // few milliseconds. That is elapsed time, not a shape difference — the
+        // invariant under test is that one constructor produces both.
+        const { id: _id, scope: _scope, sources: _sources, statement: _s, content_hash: _h, summary: _sum,
+          created_at: _ca, updated_at: _ua, ...rest } = e
         // learned_at is a millisecond timestamp taken per call.
         const temporal = { ...(rest.temporal as Record<string, unknown>), learned_at: 'T' }
         return { ...rest, temporal }

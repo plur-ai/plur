@@ -23,9 +23,14 @@ import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
 
 const SKILL_BODY = `Use PLUR memory deliberately.
 
-Relevant memories are ALREADY in your system prompt, under "## DIRECTIVES" and
-"## ALSO CONSIDER". You do not need to call a tool to see them, and you should not
-ask the user to remind you of something that is already there.
+Relevant memories are ALREADY in your system prompt, under "## CONSTRAINTS",
+"## DIRECTIVES" and "## ALSO CONSIDER". You do not need to call a tool to see them,
+and you should not ask the user to remind you of something that is already there.
+
+CONSTRAINTS comes first because it is the section you are most accountable for:
+it is what you may never say or do. If you are ever handed a memory payload you
+have only partially read, you have not read your constraints — read the rest
+before acting, and never treat an unread rule as a rule that did not exist.
 
 - \`plur_recall\` — only for a targeted lookup beyond what is already shown.
 - \`plur_learn\` — when the user corrects you or states a durable preference.

@@ -7,11 +7,11 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, initFilesystemStore } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
-import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
+import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -41,7 +41,7 @@ import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } f
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
-import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
+import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
 import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
@@ -50,6 +50,7 @@ import type { TensionRecord, TensionStatus } from './schemas/tension.js'
 import type { TensionPair } from './tensions.js'
 import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity } from './expiry.js'
+import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import {
@@ -66,7 +67,7 @@ import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isScopeWithin, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
-import { ATTRIBUTION_UNIDENTIFIED } from './schemas/engram.js'
+import { ATTRIBUTION_UNIDENTIFIED, MeasuredUnderSchema, type MeasuredUnder } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
@@ -108,7 +109,7 @@ export { loadEngrams, saveEngrams } from './engrams.js'
 // The id-namespacing pair (#914). `readIdFor` is the API a surface should use;
 // these are exported so a caller (and the tests) can reason about the shape
 // without re-deriving the prefix rule a fourth time.
-export { storePrefix, namespaceEngramId } from './engrams.js'
+export { storePrefix, namespaceEngramId, bareEngramId } from './engrams.js'
 export {
   maybeDailyBackup,
   listBackups,
@@ -235,7 +236,7 @@ export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
 export { atomicWrite, withLock } from './sync.js'
 export { markRemoteHostDown, remoteHostDownRemainingMs, clearRemoteHostDown, _resetRemoteHostBreaker, salvageRemoteRow } from './store/remote-store.js'
 export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
-export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
+export { scanForTensions, getCandidatePairs, getCandidatePairsDetailed, measuredUnderDiffers, measuredUnderGateApplies, engramOrigin, MEASURED_UNDER_DIMENSIONS, MEASURED_UNDER_CONFIDENCE_CAP, type CandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
 // Tension lifecycle persistence (#181)
 export { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 export { TensionRecordSchema, TensionStatusSchema, TensionCategorySchema, type TensionRecord, type TensionStatus, type TensionCategory } from './schemas/tension.js'
@@ -1887,14 +1888,20 @@ export class Plur {
    * answers, and collapsing them loses both — which is precisely what a reader
    * auditing a correction needs to know.
    */
-  private _appendHistory(event: HistoryEventType): void {
+  /**
+   * @returns whether the event was written — propagated from `appendHistory`,
+   *   which reports rather than throws (#1017). `inject()` gates
+   *   `injection_count` on this, so swallowing it here would put the counter
+   *   back out of step with the log it is supposed to be explained by.
+   */
+  private _appendHistory(event: HistoryEventType): boolean {
     if (!event.actor) {
       event.actor = {
         asserted_by: this._configuredIdentity() ?? ATTRIBUTION_UNIDENTIFIED,
         runtime: { name: 'plur-core' },
       }
     }
-    appendHistory(this.paths.root, event)
+    return appendHistory(this.paths.root, event)
   }
 
   /**
@@ -2768,6 +2775,26 @@ export class Plur {
     }
   }
 
+/**
+   * `measured_under` as it may be persisted (#869 review): validated against
+   * MeasuredUnderSchema, or absent. The MCP tool passes the LLM's object
+   * through as a bare cast, and a non-string dimension written to disk makes
+   * the loader quarantine the WHOLE engram on the next read — the field that
+   * was meant to add context would silently remove the memory. Refusing at
+   * write time keeps the store loadable; the caller gets a TypeError naming
+   * the field instead of a warning in a log they may never see.
+   */
+  private _validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | undefined {
+    const raw = context?.measured_under
+    if (raw === undefined || raw === null) return undefined
+    const parsed = MeasuredUnderSchema.safeParse(raw)
+    if (!parsed.success) {
+      const issues = parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
+      throw new TypeError(`plur.learn: invalid measured_under — ${issues}. Every dimension must be a string.`)
+    }
+    return parsed.data
+  }
+
   /**
    * The input gate every learn path runs before touching a store.
    *
@@ -3178,8 +3205,18 @@ export class Plur {
       const scored = await embeddingSearchWithScores(candidates, query, candidates.length, this.paths.root)
       if (scored.length === 0) return { mode: 'hash-only' }
 
+      // Carry the neighbour's own text, not just its id. Reporting id+score
+      // alone makes "read the neighbour first" an extra tool call, and that
+      // call does not get made (2026-09-07: four near-identical engrams in one
+      // session, every one reporting an unread 0.86-0.87 neighbour).
       const ranked = scored
-        .map(s => ({ id: s.engram.id, score: s.score }))
+        .map(s => ({
+          id: s.engram.id,
+          score: s.score,
+          statement: s.engram.statement.length > 240
+            ? `${s.engram.statement.slice(0, 240)}…`
+            : s.engram.statement,
+        }))
         .sort((a, b) => b.score - a.score)
       const top = ranked[0]
       if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
@@ -3450,6 +3487,8 @@ export class Plur {
       commitment,
       locked_at: commitment === 'locked' ? now : undefined,
       locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
+      created_at: now,
+      updated_at: now,
       write_count: 1,
       injection_count: 0,
       sources: [this._buildSourceEntry(scope, context)],
@@ -3466,7 +3505,7 @@ export class Plur {
       } : undefined,
       pinned: context?.pinned === true ? true : undefined,
       // #869: measurement context — present only when the caller supplies it.
-      measured_under: context?.measured_under,
+      measured_under: this._validatedMeasuredUnder(context),
     }
     // Echo marker for extracted expiry (#347) — mirrors the learn() stamping
     // so the remote-routed MCP response can confirm the parse too.
@@ -4263,12 +4302,11 @@ export class Plur {
   private _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
     let out = engrams
     if (!options?.include_expired) {
-      const today = new Date().toISOString().slice(0, 10)
-      out = out.filter(e => {
-        if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
-        if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
-        return true
-      })
+      // #1150: instants compared as instants. The lexical form this replaces
+      // read `valid_until: 2026-09-07T01:00:00Z` as still valid at noon that
+      // day, and a `valid_from` of the same shape as not yet reached.
+      const nowMs = Date.now()
+      out = out.filter(e => isCurrentlyValid(e.temporal, nowMs))
     }
     if (options?.min_strength !== undefined) {
       out = out.filter(e => e.activation.retrieval_strength >= options.min_strength!)
@@ -4827,12 +4865,9 @@ export class Plur {
     // with learn()'s content-hash gate (which ignores temporal validity,
     // e.g. the migration import engine, #441) must see the full active set.
     if (!options?.include_expired) {
-      const today = new Date().toISOString().slice(0, 10)
-      engrams = engrams.filter(e => {
-        if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
-        if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
-        return true
-      })
+      // #1150: one evaluator, shared with _applyResidualFilters and injection.
+      const nowMs = Date.now()
+      engrams = engrams.filter(e => isCurrentlyValid(e.temporal, nowMs))
     }
     if (options?.min_strength !== undefined) {
       engrams = engrams.filter(e => e.activation.retrieval_strength >= options.min_strength!)
@@ -5256,31 +5291,152 @@ export class Plur {
     // edges (#200/#201) and temporal-replay self-labeling (#202). Compact by
     // design (IDs + query hash, never statements); best-effort — a history
     // write failure must never break injection.
+    //
+    // #975: cross-process dedup. Hooks spawn fresh processes (empty address
+    // space each time), so an in-memory map cannot see the other process's
+    // injection. The check reads the HISTORY FILE — durable, shared across
+    // processes. Keyed on query_hash + sorted engram IDs (not hash alone)
+    // because the same query can legitimately select different engrams after
+    // a write.
     if (injected_ids.length > 0) {
-      const injection_id = generateInjectionId()
+      // #975: cross-process dedup for the co_injection HISTORY EVENT only.
+      // The injection_count increment (#866) is NOT gated — the engram was
+      // genuinely injected into context even if the history event is a
+      // duplicate. Only the provenance log is deduped.
+      const queryHash = computeQueryHash(task)
+
+      // The check and the append are ONE critical section, or this does not
+      // dedup anything.
+      //
+      // The duplicates being suppressed come from hook processes that spawn
+      // "within milliseconds" of each other — which is precisely the window in
+      // which both read the tail before either has appended to it. Read, decide,
+      // then append is a read-modify-write across processes, and O_APPEND makes
+      // the WRITE atomic without making the SEQUENCE atomic. Both would see no
+      // duplicate and both would write one, so the fix would help only when the
+      // processes happen to be staggered by more than a read plus an append —
+      // the case that was never the problem.
+      //
+      // Its OWN lock file, deliberately not the one #1051 uses for chain
+      // stamping. #1051 moves that lock INSIDE appendHistory; taking the same
+      // file here would mean this frame holds it while appendHistory tries to
+      // take it again, and withLock is file-based and not reentrant — so once
+      // both changes are on main every co_injection would fail to acquire,
+      // fall through to the unlocked path, and the dedup would be silently
+      // inert again. Two locks, two concerns: this one serialises the
+      // dedup DECISION, #1051's serialises the chain STAMP. They nest in one
+      // direction only (this one outside), and never contend for the same file.
+      //
+      // Tuned like #1051's: the section is a tail read and an append, so the
+      // stock 100 ms first backoff has waiters sleeping orders of magnitude
+      // longer than the holder needs.
+      const historyDir = join(this.paths.root, 'history')
+      // Whether THIS call is the one that recorded the injection. Decided inside
+      // the lock, read afterwards by the injection_count block so both counters
+      // follow the same verdict.
+      let recordedInjection = false
+      // Dedup applies to HOOK-sourced injections only.
+      //
+      // The key is content-based — query hash, engram set, source, session — so
+      // it cannot tell "the hook fired twice for one event" from "the caller
+      // injected the same thing three times". #975's duplicates come from
+      // hook processes: a fresh process per event, racing a sibling
+      // milliseconds away. Every other source ('inject', 'session_start')
+      // originates in a single long-lived MCP process making deliberate calls,
+      // and three deliberate calls are three injections, not one duplicated.
+      //
+      // Applied to all sources, the filter swallowed those: it turned three
+      // explicit `inject()` calls into one recorded injection, which
+      // inject-counter-and-flush-merge.test.ts has asserted against since
+      // #900. That test predates this dedup and is right — the counter is
+      // supposed to accumulate.
+      //
+      // Narrowing here is what lets BOTH counters follow one reading without
+      // redefining what an injection is for every other caller.
+      const dedupApplies = options?.source === 'hook'
+      const writeCoInjection = (): void => {
+        if (dedupApplies
+          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
+        const injection_id = generateInjectionId()
+        try {
+          // ASK whether the write landed; do not infer it from the absence of a
+          // throw (review of #1017). `recordedInjection = true` used to sit
+          // above this block, so a failed history write still counted the
+          // injection — injection_count incremented with no co_injection event
+          // to explain it, which is the store-disagrees-with-its-own-history
+          // state this change set out to eliminate, relocated to the error
+          // path.
+          //
+          // Moving the assignment below `appendHistory` — the obvious fix, and
+          // the one the review suggested — does NOT close it: appendHistory
+          // deliberately swallows its own failure and returns normally, so an
+          // unwritable history directory cannot fail the learn that called it.
+          // Nothing is ever thrown, so the try/catch never fires and the
+          // assignment runs either way. Verified: the regression test still
+          // read injection_count: 1 with the assignment moved.
+          //
+          // So it reports instead.
+          // `this._appendHistory`, not the bare `appendHistory` (#963). The
+          // wrapper stamps `event.actor` with the configured identity, and
+          // taking main's dedup block wholesale would have dropped that from
+          // co_injection events alone — the one history event with no actor.
+          const wrote = this._appendHistory({
+            event: 'co_injection',
+            engram_id: injection_id,
+            timestamp: new Date().toISOString(),
+            data: {
+              ids: injected_ids,
+              query_hash: queryHash,
+              // Event provenance for offline token-economics analysis of real
+              // sessions (the plur-bench #42 measurement). Deliberately NOT read
+              // by the receipt, which shows no token/cost figure by design.
+              tokens_used: tokensUsed,
+              source: options?.source ?? 'inject',
+              ...(options?.scope ? { scope: options.scope } : {}),
+              ...(options?.session_id ? { session_id: options.session_id } : {}),
+            },
+          })
+          // In-memory provenance is set regardless: the engrams WERE injected,
+          // whatever the log managed to record.
+          for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
+          recordedInjection = wrote
+        } catch { /* best-effort */ }
+      }
+
       try {
-        this._appendHistory({
-          event: 'co_injection',
-          engram_id: injection_id,
-          timestamp: new Date().toISOString(),
-          data: {
-            ids: injected_ids,
-            query_hash: computeQueryHash(task),
-            // Event provenance for offline token-economics analysis of real
-            // sessions (the plur-bench #42 measurement). Deliberately NOT read
-            // by the receipt, which shows no token/cost figure by design.
-            tokens_used: tokensUsed,
-            source: options?.source ?? 'inject',
-            ...(options?.scope ? { scope: options.scope } : {}),
-            ...(options?.session_id ? { session_id: options.session_id } : {}),
-          },
-        })
-        for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
-      } catch { /* best-effort */ }
+        // The lock file lives beside the month files, so the directory has to
+        // exist before we can take it. appendHistory creates it too, but that
+        // is inside the section we are trying to guard.
+        if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true })
+        withLock(join(historyDir, 'co-injection-dedup'), writeCoInjection, { maxRetries: 12, baseDelay: 2 })
+      } catch {
+        // Could not take the lock. Write UNDEDUPED rather than dropping the
+        // event: a duplicate provenance record is noise, a missing one is a
+        // hole in the log `plur restore` reads to NAME what it cannot recover.
+        // Losing a record to avoid a duplicate is the wrong way round.
+        writeCoInjection()
+      }
 
       // #866: increment injection_count on primary-store engrams selected for context.
       // Distinct from activation.frequency (recall events) — this tracks actual
       // injection into the model's context window. Best-effort: never breaks injection.
+      //
+      // GATED on the same verdict as the history event. It used to be exempt, on
+      // the reasoning that the engram was genuinely injected even when the log
+      // entry is a duplicate — but that contradicts the premise the dedup rests
+      // on. Either the two events describe ONE injection, in which case counting
+      // it twice is the inflation #975 opens with ("usage data is inflated, and
+      // not by a constant factor"), or they describe two, in which case the
+      // history event should not have been suppressed either. It cannot be one
+      // reading for the log and the other for the counter: that left
+      // engrams.yaml showing injection_count: 2 against a single co_injection
+      // event, which is a store that disagrees with its own history.
+      //
+      // One reading, taken: they are one injection. Both counters follow.
+      if (!recordedInjection) {
+        // A duplicate. The engram's count was already incremented by the call
+        // that recorded the event, microseconds ago and in another process.
+      } else {
       //
       // TARGETED, via the `_loadTargeted`/`_updateEngrams` pair (2026-08-13
       // panel). This first loaded the whole corpus and wrote the whole corpus
@@ -5325,6 +5481,7 @@ export class Plur {
           )
         }
       }
+      }
     }
 
     // #181: surface persisted tensions touching this injection — flag,
@@ -5339,6 +5496,11 @@ export class Plur {
       tokens_used: tokensUsed,
       injected_ids,
       ...(injected_packs ? { injected_packs } : {}),
+      // Pinned engrams that did not make it (#1142). Surfaced here because the
+      // internal result carried it and the public shape dropped it, so the
+      // reporting existed and never reached a caller — the same silent-omission
+      // shape the field was added to close.
+      ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     }
   }
@@ -5749,7 +5911,13 @@ export class Plur {
       // Leak guard (#353): local-resident → demote a sensitive update in place.
       // LOW-2: scan context fields too, not just the statement.
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
-      const toWrite = demote ? { ...updated, ...demote } : updated
+      // #1138 review: stamp `updated_at` on the mutation path, not only on
+      // creation and retirement. Without this it equalled `created_at` for
+      // every engram that had ever been edited — worse than an absent field,
+      // because it reads as authoritative. The spec added alongside it names
+      // statement, scope, commitment, relations and retirement as the tracked
+      // mutations, and this is where four of the five actually happen.
+      const toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
       engrams[idx] = toWrite
       // Incremental write (#740): only the updated engram row changed.
       await this._updateEngrams(engrams, [toWrite])
@@ -5825,7 +5993,12 @@ export class Plur {
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
-      const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
+      // #1138 review: pinning is a mutation, so it moves `updated_at`.
+      const updated: Engram = {
+        ...e,
+        pinned: pinned === true ? true : undefined,
+        updated_at: new Date().toISOString(),
+      }
       engrams[idx] = updated
       // Incremental write (#740): only the (un)pinned engram row changed.
       await this._updateEngrams(engrams, [updated])
@@ -5856,7 +6029,23 @@ export class Plur {
         // The justification was that `setPinned` had to keep a synchronous
         // signature. It is `async` since the 0.16 flip, so that reason is gone
         // and the honest version costs nothing.
-        const patched = await driver.patch(serverId, { pinned: pinned === true ? true : undefined })
+        // Send the BOOLEAN, including an explicit `false` (#1149).
+        //
+        // This read `pinned === true ? true : undefined`, mirroring the local
+        // branch above — but the two representations exist for opposite
+        // reasons. Locally the engram is rewritten WHOLE, so `undefined`
+        // drops the key and keeps unpinned rows out of the YAML. Here the
+        // object is a PARTIAL update, and `JSON.stringify` omits `undefined`,
+        // so the unpin left as `{}` — a server applying ordinary PATCH
+        // semantics changed nothing and returned the still-pinned row, which
+        // this method then reported as success.
+        //
+        // Measured on a loopback server against the real serializer: PATCH
+        // body `{}`, engram still pinned afterwards, no error raised. An
+        // unpin the user was told had worked had not happened on any other
+        // machine — and with the pinned set now quota-enforced at pin time,
+        // it also held budget nobody could reclaim.
+        const patched = await driver.patch(serverId, { pinned })
         if (patched) return patched
       } catch (err) {
         if (serverId !== id) throw err
@@ -5879,6 +6068,85 @@ export class Plur {
   async listPinned(): Promise<Engram[]> {
     const all = await this._loadAllEngrams()
     return all.filter(e => (e as any).pinned === true && e.status === 'active')
+  }
+
+  /**
+   * Pinned-budget accounting (#1142).
+   *
+   * The spec says `pinned` is an "always-load flag". The selector did not
+   * honour that: it capped pinned at a share of the injection budget and
+   * silently skipped the overflow, so pinning something could quietly evict
+   * something else the user had also pinned. Measured on a real store,
+   * lowering `injection_budget` from 56,000 to 12,000 dropped 36 of 46 pinned
+   * engrams with nothing in the output saying so.
+   *
+   * The fix is not a better eviction rule — it is to stop over-committing.
+   * Pinning is a deliberate act with a human present, so the quota is checked
+   * THERE, where someone can decide, instead of at injection time where nobody
+   * can. Over quota, the user unpins something or raises the limit.
+   */
+  async pinnedQuota(candidateId?: string): Promise<{
+    quota: number
+    used: number
+    free: number
+    count: number
+    over: boolean
+    /** Pinned engrams, most-expendable first — the unpin suggestion order. */
+    entries: Array<{ id: string; statement: string; cost: number; net_feedback: number; last_accessed: string | null }>
+    /** Set when `candidateId` names a not-yet-pinned engram: what pinning it would cost. */
+    candidate?: { id: string; cost: number; would_be: number; fits: boolean }
+  }> {
+    const budget = this.config.injection_budget ?? 2000
+    const ratio = this.config.injection?.pinned_ratio ?? 0.5
+    const quota = Math.floor(budget * ratio)
+    const pinned = await this.listPinned()
+
+    const entries = pinned.map(e => {
+      const fb = e.feedback_signals
+      return {
+        id: e.id,
+        statement: e.statement,
+        cost: estimateTokens(e as never),
+        net_feedback: (fb?.positive ?? 0) - (fb?.negative ?? 0),
+        last_accessed: e.activation?.last_accessed ?? null,
+      }
+    })
+
+    // Ordered by COST, largest first — "what frees the most budget", which is
+    // arithmetic. Deliberately NOT an expendability ranking.
+    //
+    // The first version sorted by net feedback ascending, on the theory that
+    // an unendorsed engram is a safe cut. Run against a real store it proposed
+    // unpinning the demo-redaction rule, "never name enterprise customers",
+    // and "customer-named work runs in a dedicated session" — the three rules
+    // whose absence had caused a live disclosure that same day. The reason is
+    // structural: only 275 of 7,920 injections were ever rated, so ~96% of
+    // engrams sit at net_feedback 0 and the sort collapses into noise.
+    //
+    // `net_feedback` and `last_accessed` are still reported per entry, because
+    // they are real signals a human can weigh. They are just not a ranking,
+    // and presenting them as one puts the system's thumb on a decision it has
+    // no basis for.
+    entries.sort((a, b) => b.cost - a.cost)
+
+    const used = entries.reduce((n, e) => n + e.cost, 0)
+
+    let candidate: { id: string; cost: number; would_be: number; fits: boolean } | undefined
+    if (candidateId) {
+      const e = await this.getById(candidateId)
+      // Already-pinned is a no-op re-pin, not a new commitment — it must not
+      // be charged twice or it would refuse itself.
+      if (e && (e as { pinned?: boolean }).pinned !== true) {
+        const cost = estimateTokens(e as never)
+        candidate = { id: e.id, cost, would_be: used + cost, fits: used + cost <= quota }
+      }
+    }
+
+    return {
+      quota, used, free: Math.max(0, quota - used),
+      count: entries.length, over: used > quota, entries,
+      ...(candidate ? { candidate } : {}),
+    }
   }
 
   /**
@@ -6156,6 +6424,7 @@ export class Plur {
 
       if (newCount === 0) {
         engram.status = 'retired'
+        engram.updated_at = new Date().toISOString()
         if (reason && !engram.rationale) {
           engram.rationale = `Retired: ${reason}`
         }
@@ -6228,6 +6497,7 @@ export class Plur {
 
         if (newCount === 0) {
           engram.status = 'retired'
+          engram.updated_at = new Date().toISOString()
           if (reason && !engram.rationale) {
             engram.rationale = `Retired: ${reason}`
           }
@@ -6697,6 +6967,7 @@ export class Plur {
       const t = fresh.find(e => e.id === id)
       if (!t) return
       t.status = 'retired'
+      t.updated_at = new Date().toISOString()
       if (!t.rationale) t.rationale = `Retired: rescoped to ${toScope} as ${newId}`
       const rel = t.relations ?? { broader: [], narrower: [], related: [], conflicts: [], supersedes: [], superseded_by: [] }
       rel.superseded_by = rel.superseded_by ?? []
@@ -8255,6 +8526,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   private async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
     const stamp = (engram: Engram): void => {
       engram.status = 'retired'
+      engram.updated_at = new Date().toISOString()
       if (!engram.rationale) engram.rationale = `Retired: ${reason}`
     }
     const foundInPrimary = await this._withStoreLock(this.paths.engrams, async () => {
@@ -8353,11 +8625,12 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Resolved tension-scan defaults from config (#240). Consumers (MCP
    * plur_tensions, CLI) merge explicit args over these.
    */
-  getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; temporal_discount: boolean } {
+  getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; measured_under_pairs: 'skip' | 'floor'; temporal_discount: boolean } {
     const t = this.config.tensions ?? {}
     return {
       temporal_domains: t.temporal_domains ?? [],
       snapshot_pairs: t.snapshot_pairs ?? 'skip',
+      measured_under_pairs: t.measured_under_pairs ?? 'skip',
       temporal_discount: t.temporal_discount ?? false,
     }
   }

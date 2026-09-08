@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 const SESSIONS_DIR = join(tmpdir(), 'plur-cursor-sessions')
 
 // Every conversation_id this file's tests use. The shared sessions dir is

@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync
 import { join } from 'path'
 import { tmpdir, platform } from 'os'
 import { execSync } from 'child_process'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 
 interface Settings {
   hooks?: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; async?: boolean }> }>>
