@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+**Nothing is silently dropped.**
+
+An injection payload is read head-first. Until now it led with `DIRECTIVES` —
+process hygiene — and placed `CONSTRAINTS`, the prohibitions, behind it; under
+budget pressure it then shed `CONSTRAINTS` *first*, and a test enforced that
+order. Measured on a real store, the constraints section began 35,260 characters
+in, behind 34 directive engrams: far enough that any partially-read payload
+reliably contained none of it. The ordering is inverted, and the guarantee with
+it.
+
+- **`CONSTRAINTS` is emitted first, and is never dropped in silence.** In the
+  dsh block, where whole sections are shed, constraints are the last section
+  standing and their absence is declared rather than implied — the block says
+  they were withheld and must be treated as unread, instead of returning process
+  hygiene as if no rule applied. In core's per-engram selection the guarantee is
+  weaker and worth stating precisely: constraints get a reserved 40% floor plus
+  whatever the directives leave over, not absolute priority. With 40 large
+  constraints and 40 large directives at a 2,000-token budget the result is 11
+  constraints and 10 directives, not 40 and 0.
+- **The pinned budget is a quota enforced at pin time, not a truncation at
+  injection.** `plur_pin` refuses a pin that would exceed
+  `injection_budget × injection.pinned_ratio` and returns current usage plus
+  unpin candidates ordered by what they free. The eviction choice goes to a human
+  instead of being settled by array order.
+- **`estimateTokens` measures the rendered form, not the serialised record.**
+  Roughly 68% of an engram's serialised size is metadata the model never sees. On
+  a real store this took the pinned set from 18,290 tokens to 3,663 against a
+  6,000 quota — from 3.0x over to fitting — and engrams omitted at injection from
+  26 to zero.
+- **Engrams that a budget omitted are named.** `inject()` returns
+  `omitted_pinned`: each id, its cost, and whether it lost to the pinned
+  sub-budget or to the total.
+- **`created_at` and `updated_at` carry provenance.** Both optional and never
+  defaulted — absent means genuinely unknown, and synthesising a timestamp
+  destroys the record it exists to keep.
+- **A `draft` engram is never injected.** Core still stores and recalls it, since
+  reviewing one requires reading it, but an unapproved rule cannot shape
+  behaviour.
+- **Constraints render their contraindications.** A rule delivered without its
+  "does NOT apply when" reads as unconditional.
+- **`.plur.yaml`'s `domain` is honoured and surfaced at session start** (#1147),
+  so an engram written inside a project routes by that project's domain instead
+  of falling to `global`.
+
+Also in this release:
+
+- **`plur ui --host` keeps its DNS-rebinding check on a widened bind** (#939,
+  #946). The flag used to switch the check off, leaving the store reachable under
+  any `Host` header a browser could be induced to send. The allowlist is widened
+  instead: the literal `--host` value is allowed, IPv6 URLs are bracketed, a
+  flag-shaped or unspecified host is refused, and `--allow-host` covers what the
+  default policy should not.
+- **Tensions skips pairs measured under differing configurations** (#869, #981).
+  Two measurements taken under different conditions are not a contradiction.
+  Known gaps remain tracked in #1008 and #1009.
+- **Recall returns ids that `plur forget` accepts** (#1119, #1122). Namespaced
+  ids were displayed but not operable, and the CLI aborted before any remote
+  dispatch could happen. Thanks to
+  **[@amasen02](https://github.com/amasen02)** (Ama Senevirathne) for this, their
+  first contribution to PLUR.
+- **A monthly canary runs the plur-hermes suite against the published
+  hermes-agent** (#1120), so an upstream break arrives as a deduplicated issue
+  rather than as silent drift.
+
 Pack lifecycle, from the review of #1044 (ENGRAM-STANDARD-v1 1.7, provenance
 profile 0.9):
 

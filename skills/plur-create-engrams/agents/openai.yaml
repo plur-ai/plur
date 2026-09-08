@@ -1,0 +1,14 @@
+interface:
+  display_name: Create PLUR Engrams
+  short_description: Create useful, grounded engrams across the full spectrum
+  default_prompt: Use $plur-create-engrams to turn this material into useful PLUR
+    engrams, with justified scope, pinning, provenance, and lifecycle.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

@@ -176,6 +176,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       batch_size: batchSize,
       temporal_domains: tensionsConfig.temporal_domains,
       snapshot_pairs: tensionsConfig.snapshot_pairs,
+      measured_under_pairs: tensionsConfig.measured_under_pairs,
       temporal_discount: temporalDiscount ?? tensionsConfig.temporal_discount,
       ...(persist ? { exclude_pairs: new Set(plur.suppressedTensionPairKeys()) } : {}),
     })
@@ -184,6 +185,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (shouldOutputJson(flags)) {
       outputJson({
         pairs_checked: result.pairs_checked,
+        skipped: result.skipped,
         count: result.new_tensions,
         ...(persisted ? { persisted_new: persisted.new_count } : {}),
         tensions: result.tensions.map((t, idx) => ({
@@ -200,6 +202,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     outputText(`Checked: ${result.pairs_checked} candidate pairs`)
+    if (result.skipped.measured_under > 0) {
+      outputText(`Skipped: ${result.skipped.measured_under} same-store measurement pair(s) with differing measured_under (tensions.measured_under_pairs: floor judges them)`)
+    }
     outputText(`Found:   ${result.new_tensions} tension${result.new_tensions === 1 ? '' : 's'} (confidence >= ${minConfidence})`)
     if (persisted) outputText(`Persisted: ${persisted.new_count} new record${persisted.new_count === 1 ? '' : 's'}`)
     outputText('')

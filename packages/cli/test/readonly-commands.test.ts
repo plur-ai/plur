@@ -5,8 +5,9 @@ import { tmpdir } from 'os'
 import { execSync, execFile } from 'child_process'
 import { promisify } from 'util'
 import { createServer, type Server } from 'http'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 
 /**
  * Read-only engine wiring for pure-query commands (#731).

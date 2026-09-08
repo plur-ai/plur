@@ -364,6 +364,23 @@ export const EngramSchema = z.object({
   visibility: z.enum(['private', 'public', 'template']).default('private')
     .describe("Sharing posture. 'private' engrams MUST NOT be exported in packs."),
 
+  // Provenance timestamps (added 2026-09-07).
+  //
+  // Before this the object carried no canonical creation time. `sources[]`
+  // records a `stored_at` per write, but only 2,765 of 5,477 engrams in a real
+  // store had one; `temporal.learned_at` had 12. So for half the corpus there
+  // was no answer to "when was this learned", and callers fell back to parsing
+  // the date out of the ID — which is date-only, absent on non-canonical ids,
+  // and silently wrong for a store-namespaced or migrated engram.
+  //
+  // Both OPTIONAL rather than defaulted: a default would stamp today's date
+  // onto every legacy engram at load time and destroy the very provenance this
+  // adds. Absent means genuinely unknown; the backfill sets what can be known.
+  created_at: z.string().optional()
+    .describe('ISO 8601 timestamp of first mint. Immutable — never rewritten by an update. Absent on engrams written before this field existed and not recoverable from any other record.'),
+  updated_at: z.string().optional()
+    .describe('ISO 8601 timestamp of the last mutation to this record (statement, scope, commitment, relations). Not touched by reads, decay, injection or feedback — those move activation/usage, not the content.'),
+
   // Content
   statement: z.string().min(1).describe('The assertion itself — the load-bearing content of the engram.'),
   rationale: z.string().optional().describe('Why this is true / why it matters.'),
@@ -442,7 +459,7 @@ export const EngramSchema = z.object({
   // === SP1: Memory Intelligence fields ===
   content_hash: z.string().optional().describe('Hash of normalized statement content, used for dedup.'),
   commitment: z.enum(['exploring', 'leaning', 'decided', 'locked', 'draft']).optional()
-    .describe("Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval; core stores and recalls it like any other value — enforcement is left to deployments that implement a review queue. A positive feedback signal does not advance it (see feedback.ts:nextCommitment)."),
+    .describe("Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval: core stores and RECALLS it like any other value but NEVER injects it (#1141), so an unapproved rule cannot shape an agent's behaviour before someone has agreed to it. Retrieval stays open because reviewing something requires reading it. A positive feedback signal does not advance it (see feedback.ts:nextCommitment) — relevance is not approval."),
   locked_at: z.string().optional().describe("Timestamp when commitment reached 'locked'."),
   locked_reason: z.string().optional().describe('Why this engram was locked.'),
 
@@ -501,9 +518,11 @@ export const EngramSchema = z.object({
 
   /** Measurement context for numeric or benchmark-derived claims (#869).
    *  Records model, source_type, hardware, dataset, and/or date under which the
-   *  asserted value was measured, so differing-condition measurements can be
-   *  stored as refinements rather than tensions (#203). Absent for non-numeric
-   *  engrams; all sub-fields are optional even when the object is present. */
+   *  asserted value was measured. The tension scanner does not judge two
+   *  same-origin measurements taken under different configurations as a
+   *  contradiction (it counts the skipped pair instead, or caps the verdict in
+   *  'floor' mode). Absent for non-numeric engrams; all sub-fields are optional
+   *  even when the object is present. */
   measured_under: MeasuredUnderSchema.optional(),
 })
 

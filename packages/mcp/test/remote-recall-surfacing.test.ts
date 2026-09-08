@@ -90,6 +90,18 @@ describe('remote_stores block on plur_recall', () => {
     expect(res.results.some((r: any) => String(r.id).includes('2026-0731-080'))).toBe(true)
   })
 
+  it('serves bare operable engram ID in plur_recall results (#1119)', async () => {
+    stub.recallRows = [{ id: 'ENG-2026-0813-025', scope: SCOPE, status: 'active', statement: 'deploy checklist', score: 1 }]
+    const client = await makeClient(writeConfig(baseUrl))
+    const res = callResult(await client.callTool({
+      name: 'plur_recall',
+      arguments: { query: 'deploy checklist', scope: PROJECT },
+    }))
+    expect(res.results).toHaveLength(1)
+    expect(res.results[0].id).toBe('ENG-2026-0813-025')
+    expect(res.results[0].scope).toBe(SCOPE)
+  })
+
   it('is PRESENT with a prose warning when the host is unreachable', async () => {
     const client = await makeClient(writeConfig('http://127.0.0.1:1'))
     const res = callResult(await client.callTool({

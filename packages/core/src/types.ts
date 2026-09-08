@@ -132,8 +132,17 @@ export interface LearnAsyncResult {
    */
   dedup?: {
     mode: 'llm' | 'cosine' | 'hash-only'
-    /** Closest candidates and their scores — present whenever similarity ran. */
-    near_duplicates?: Array<{ id: string; score: number }>
+    /**
+     * Closest candidates and their scores — present whenever similarity ran.
+     *
+     * `statement` carries a preview of the neighbour's own text (2026-09-07).
+     * Reporting id+score alone made "read the neighbour before you write"
+     * cost an extra round-trip, so it was skipped: four near-identical
+     * engrams were written in one session, each reporting a 0.86-0.87
+     * neighbour that was never read. Cosine still never gates a write — the
+     * fix is to make the correct behaviour free, not to block the write.
+     */
+    near_duplicates?: Array<{ id: string; score: number; statement?: string }>
   }
   /**
    * Position of this result's statement in the original learnBatch input array
@@ -324,6 +333,20 @@ export interface InjectionResult {
    * detected → both sides injected together). Surface, don't adjudicate.
    */
   warnings?: string[]
+  /**
+   * Pinned engrams that did NOT make this injection, with what each would have
+   * cost and which cap it lost to (#1142).
+   *
+   * `pinned: true` reads as a promise of always-load; it is really
+   * priority-subject-to-capacity. Measured on a real store, dropping the
+   * injection budget silently omitted 36 of 46 pinned engrams — safety rules
+   * among them — with nothing in the output saying so. Whether pinning should
+   * GUARANTEE inclusion is an open contract question; until it is answered, a
+   * caller must at least be able to see what it did not get.
+   *
+   * Absent when nothing was omitted.
+   */
+  omitted_pinned?: Array<{ id: string; cost: number; reason: 'pinned-sub-budget' | 'total-budget' }>
 }
 
 export interface CaptureContext {

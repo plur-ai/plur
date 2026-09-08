@@ -25,8 +25,9 @@ import { PassThrough } from 'stream'
 
 // Unit import — tests the function directly without spawning a child process.
 import { promptTelemetryOptIn } from '../src/commands/init.js'
+import { builtCliPath } from './helpers/built-cli.js'
 
-const CLI = join(__dirname, '..', 'dist', 'index.js')
+const CLI = builtCliPath(join(__dirname, '..'))
 
 // ── Helper: run plur init in non-interactive mode (no TTY) ──────────────────
 
