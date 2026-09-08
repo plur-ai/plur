@@ -487,6 +487,26 @@ export interface OmittedPinned {
   reason: 'pinned-sub-budget' | 'total-budget'
 }
 
+/**
+ * Union the per-pass omission lists into what the caller actually did not get.
+ *
+ * One entry per engram, and nothing that a later pass went on to select — an
+ * engram skipped by the constraints floor may still land in the slack pass, and
+ * reporting it as omitted would be a lie in the other direction.
+ *
+ * Extracted so the empty guard and the normal return cannot disagree: the guard
+ * previously hardcoded `[]`, which reported "nothing omitted" in precisely the
+ * case where everything was.
+ *
+ * @param all - omissions from every pass, in pass order.
+ * @param selected - the engrams that made the final set.
+ */
+function dedupeOmitted(all: OmittedPinned[], selected: ScoredEngram[] = []): OmittedPinned[] {
+  return all
+    .filter((o, i, list) => list.findIndex(x => x.id === o.id) === i)
+    .filter(o => !selected.some(d => d.id === o.id))
+}
+
 export function fillTokenBudget(
   scored: ScoredEngram[],
   maxTokens: number,
@@ -502,6 +522,20 @@ export function fillTokenBudget(
    * is not meant to compound once per pass.
    */
   pinnedBudgetBase: number = maxTokens,
+  /**
+   * Running total of pinned tokens committed by EVERY pass sharing this
+   * budget. Shared and mutated, because the sub-budget is a property of the
+   * injection, not of a pass (#1138 review).
+   *
+   * `pinnedBudgetBase` alone closed the shrink direction and opened the grow
+   * one: each pass was handed 50% of the WHOLE budget afresh, so three passes
+   * granted 150%. Measured A/B at `maxTokens` 2000 with 40 pinned and 40
+   * unpinned candidates — `main` selected 5 pinned and 5 unpinned; the split
+   * selected 27 pinned and 0 unpinned, filling 1998 of 2000 tokens. Pinned had
+   * eaten the entire injection and no relevance-scored engram reached the
+   * agent, which is the exact failure the sub-budget exists to prevent.
+   */
+  pinnedLedger: { spent: number } = { spent: 0 },
 ): { selected: ScoredEngram[]; tokens_used: number; omitted_pinned: OmittedPinned[] } {
   const result: ScoredEngram[] = []
   const omittedPinned: OmittedPinned[] = []
@@ -548,13 +582,16 @@ export function fillTokenBudget(
       skippedRank = skippedRank === null ? rank : Math.min(skippedRank, rank)
       continue
     }
-    if (tokensUsed + cost > pinnedBudget) {
+    // Against the SHARED spend, so the cap binds across passes rather than
+    // once per pass.
+    if (pinnedLedger.spent + cost > pinnedBudget) {
       omittedPinned.push({ id: engram.id, cost, reason: 'pinned-sub-budget' })
       skippedRank = skippedRank === null ? rank : Math.min(skippedRank, rank)
       continue
     }
     result.push(engram)
     tokensUsed += cost
+    pinnedLedger.spent += cost
     const pack = engram.pack ?? '__personal__'
     packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
     const topDomain = (engram.domain ?? '__none__').split('.')[0]
@@ -725,18 +762,23 @@ export function selectAndSpread(
   const otherCandidates = filtered.filter(e => !isConstraintCandidate(e))
 
   const constraintsFloor = Math.floor(maxTokens * CONSTRAINTS_FLOOR_RATIO)
-  const firstPass = fillTokenBudget(constraintCandidates, constraintsFloor, maxTokens)
+  // ONE ledger for all three passes drawing on `maxTokens`. The pinned
+  // sub-budget is a share of the injection; granting it per pass multiplied it
+  // by the number of passes and let pinned starve contextual recall entirely.
+  // The DIP-19 consider pass below draws on its own budget and so keeps its own.
+  const pinnedLedger = { spent: 0 }
+  const firstPass = fillTokenBudget(constraintCandidates, constraintsFloor, maxTokens, pinnedLedger)
 
   // Directives get everything the constraints floor did not use.
   const directivesBudget = Math.max(0, maxTokens - firstPass.tokens_used)
-  const dirPass = fillTokenBudget(otherCandidates, directivesBudget, maxTokens)
+  const dirPass = fillTokenBudget(otherCandidates, directivesBudget, maxTokens, pinnedLedger)
 
   // Any budget the directives left over flows BACK to constraints, so a
   // session with few directives carries more of its rules, not fewer.
   const slack = Math.max(0, maxTokens - firstPass.tokens_used - dirPass.tokens_used)
   const chosen = new Set(firstPass.selected.map(e => e.id))
   const secondPass = slack > 0
-    ? fillTokenBudget(constraintCandidates.filter(e => !chosen.has(e.id)), slack, maxTokens)
+    ? fillTokenBudget(constraintCandidates.filter(e => !chosen.has(e.id)), slack, maxTokens, pinnedLedger)
     : { selected: [] as ScoredEngram[], tokens_used: 0, omitted_pinned: [] as OmittedPinned[] }
 
   const selectedConstraints = [...firstPass.selected, ...secondPass.selected]
@@ -776,7 +818,13 @@ export function selectAndSpread(
       constraints: [],
       consider: [],
       tokens_used: { directives: 0, consider: 0 },
-      omitted_pinned: [],
+      // NOT `[]`. This hardcoded an empty array, so the one case where
+      // everything was dropped reported nothing dropped — re-opening the hole
+      // #1142 exists to close, in its worst instance. A single oversized
+      // pinned engram at a tiny budget returned silence.
+      omitted_pinned: dedupeOmitted([
+        ...firstPass.omitted_pinned, ...dirPass.omitted_pinned, ...secondPass.omitted_pinned,
+      ]),
     }
   }
 
@@ -882,12 +930,10 @@ export function selectAndSpread(
     ...(droppedUnresolvable > 0 || droppedRetired > 0
       ? { spread_drops: { dropped_unresolvable: droppedUnresolvable, dropped_retired: droppedRetired } }
       : {}),
-    // Union across every fillTokenBudget pass (constraints floor, directives,
-    // constraints slack). An engram omitted in one pass may be selected in a
-    // later one, so report only those still missing from the final set.
-    omitted_pinned: [...firstPass.omitted_pinned, ...dirPass.omitted_pinned, ...secondPass.omitted_pinned]
-      .filter((o, i, all) => all.findIndex(x => x.id === o.id) === i)
-      .filter(o => !directives.some(d => d.id === o.id)),
+    omitted_pinned: dedupeOmitted(
+      [...firstPass.omitted_pinned, ...dirPass.omitted_pinned, ...secondPass.omitted_pinned],
+      directives,
+    ),
   }
 }
 

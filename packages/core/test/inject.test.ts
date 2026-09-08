@@ -303,6 +303,58 @@ describe('injection engine', () => {
     })
   })
 
+  describe('the pinned sub-budget binds ACROSS section passes', () => {
+    // selectAndSpread splits selection into three passes over one budget:
+    // constraints floor, directives, constraints slack. Each was handed
+    // `pinnedBudgetBase = maxTokens`, so the 50% pinned cap was granted afresh
+    // per pass — three passes, 150% of the budget available to pinned.
+    //
+    // Measured A/B at maxTokens 2000 with 40 pinned and 40 unpinned candidates:
+    // main selected 5 pinned / 5 unpinned; the split selected 27 pinned and
+    // ZERO unpinned, filling 1998 of 2000 tokens. Pinned had eaten the whole
+    // injection and no relevance-scored engram reached the agent — the exact
+    // failure the sub-budget exists to prevent, arrived at from the other side.
+    //
+    // Fixed by sharing one spend ledger across the passes. Asserted on the
+    // COMBINED share, because per-pass assertions are what missed it.
+    const fat = (n: number, extra: Record<string, unknown>) => EngramSchema.parse({
+      id: `ENG-2026-0808-${String(n).padStart(3, '0')}`,
+      statement: `Never deploy on a Friday, rule ${n}. ${'deploy '.repeat(40)}`,
+      type: 'behavioral', scope: 'global', status: 'active', ...extra,
+    })
+
+    const scenario = () => {
+      const engrams = [
+        // Pinned, and phrased as prohibitions so they route to constraints.
+        ...Array.from({ length: 40 }, (_, i) => fat(i + 1, { pinned: true, polarity: 'dont' })),
+        // Unpinned, relevance-scored, matching the prompt.
+        ...Array.from({ length: 40 }, (_, i) => fat(i + 100, {})),
+      ]
+      return selectAndSpread({ prompt: 'deploy the app on friday', maxTokens: 2000 }, engrams, [])
+    }
+
+    it('never lets pinned exceed its share of the whole budget', () => {
+      const r = scenario()
+      const all = [...r.directives, ...r.constraints]
+      const pinnedCost = all
+        .filter(e => (e as { pinned?: boolean }).pinned === true)
+        .reduce((acc, e) => acc + estimateTokens(e as never), 0)
+
+      // 50% of 2000. Before the fix this reached 1998.
+      expect(pinnedCost).toBeLessThanOrEqual(2000 * 0.5)
+    })
+
+    it('still admits relevance-scored engrams — pinned must not starve recall', () => {
+      const r = scenario()
+      const all = [...r.directives, ...r.constraints]
+      const unpinned = all.filter(e => (e as { pinned?: boolean }).pinned !== true)
+
+      // This was ZERO. A budget entirely consumed by pins is not an injection,
+      // it is a fixed prompt.
+      expect(unpinned.length).toBeGreaterThan(0)
+    })
+  })
+
   describe('omitted pinned engrams are reported (#1142)', () => {
     // fillTokenBudget takes ScoredEngram[] = Engram + keyword_match/raw_score/
     // score, the same shape the sub-cap test below builds. selectAndSpread

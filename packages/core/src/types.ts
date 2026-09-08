@@ -306,6 +306,20 @@ export interface InjectionResult {
    * detected → both sides injected together). Surface, don't adjudicate.
    */
   warnings?: string[]
+  /**
+   * Pinned engrams that did NOT make this injection, with what each would have
+   * cost and which cap it lost to (#1142).
+   *
+   * `pinned: true` reads as a promise of always-load; it is really
+   * priority-subject-to-capacity. Measured on a real store, dropping the
+   * injection budget silently omitted 36 of 46 pinned engrams — safety rules
+   * among them — with nothing in the output saying so. Whether pinning should
+   * GUARANTEE inclusion is an open contract question; until it is answered, a
+   * caller must at least be able to see what it did not get.
+   *
+   * Absent when nothing was omitted.
+   */
+  omitted_pinned?: Array<{ id: string; cost: number; reason: 'pinned-sub-budget' | 'total-budget' }>
 }
 
 export interface CaptureContext {

@@ -51,6 +51,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       consider: result.consider,
       count: result.count,
       tokens_used: result.tokens_used,
+      // #1142: pinned engrams the budget dropped. Absent when none were.
+      ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
     })
   } else {
     // CONSTRAINTS FIRST — matches @plur-ai/mcp and @plur-ai/dsh. Consumers
@@ -68,5 +70,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(result.consider)
     }
     outputInfo(`\nInjected ${result.count} engrams (${result.tokens_used} tokens)`, flags)
+    // #1142: say what was pinned and did not fit. A pin the user set and the
+    // budget dropped is the case where silence costs most — they believe a
+    // standing rule is loaded.
+    if (result.omitted_pinned?.length) {
+      outputInfo(
+        `${result.omitted_pinned.length} pinned engram(s) did NOT fit: `
+        + result.omitted_pinned.map(o => `${o.id} (${o.cost}t, ${o.reason})`).join(', '),
+        flags,
+      )
+    }
   }
 }
