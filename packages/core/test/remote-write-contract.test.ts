@@ -37,6 +37,9 @@ const TRANSMITTED = new Set([
   'commitment', 'locked_reason', 'source', 'provenance',
   // #1151.
   'measured_under', 'knowledge_anchors', 'dual_coding',
+  // #1172. `license` is absent on purpose: it travels inside
+  // `provenance.license`, so it is covered by `provenance` above.
+  'attribution', 'claim_class',
 ])
 
 /** Sent as flattened top-level keys, not as the nested object. */
@@ -89,19 +92,6 @@ const NOT_MODELLED = new Set([
   'visibility', 'contraindications', 'knowledge_type', 'entities', 'episodic',
   'exchange', 'structured_data', 'insight', 'polarity', 'locked_at', 'sources',
   'summary',
-  // Added by #1002 and caught here on the merge — the guard doing its job.
-  //
-  // These have the STRONGEST claim of anything in this set to being
-  // TRANSMITTED. `attribution` is who is answerable for the memory and
-  // `claim_class` separates "a model inferred this" from "a person asserted
-  // it"; a shared store that loses them presents an inference as an assertion,
-  // which is the #1151 failure in the fields #1002 exists to add. `license`
-  // already travels, because it lands in `provenance.license`.
-  //
-  // Deciding it here would mean changing the wire contract inside a conflict
-  // resolution on someone else's PR, which is the bundling that hid #1138's
-  // blocking defect. Recorded as undecided and raised as its own question.
-  'attribution', 'claim_class',
   // Added by #1138 and caught here on the merge, which is the guard working:
   // two new schema fields could not reach `main` without someone stating what
   // a remote write should do with them.
@@ -217,6 +207,12 @@ describe('every TRANSMITTED field actually reaches the wire (#1158)', () => {
       measured_under: { hardware: '8-core', dataset: '100 rows', source_type: 'bench', date: '2026-09-07' },
       knowledge_anchors: [{ path: 'bench/results.json', relevance: 'primary', snippet: 'Median 18 ms.' }],
       dual_coding: { example: 'Applies to the measured dataset and machine.' },
+      // #1172 — who is answerable, and what kind of claim this is.
+      attribution: {
+        asserted_by: 'agent:bench-runner',
+        runtime: { name: 'plur-core', version: '0.19.4' },
+      },
+      claim_class: 'observed',
     })
 
     await driver.appendAndGetServerId(full as never)

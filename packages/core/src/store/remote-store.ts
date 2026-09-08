@@ -680,6 +680,20 @@ export class RemoteStore {
       ...(Array.isArray(e.knowledge_anchors) && e.knowledge_anchors.length > 0
         ? { knowledge_anchors: e.knowledge_anchors } : {}),
       ...(e.dual_coding != null             ? { dual_coding: e.dual_coding }   : {}),
+      // #1172: who is answerable for the claim, and what kind of claim it is.
+      //
+      // Without these a team push arrives with no record of who asserted the
+      // memory, and with no distinction between something a person stated and
+      // something a model worked out. `inject.ts` marks `claim_class:
+      // 'inferred'` at layers 1 and 2 precisely because "a model's conclusion
+      // and a user's flat statement render identically" was reported as a live
+      // failure — a marker that cannot fire on the receiving side if the field
+      // never crosses.
+      //
+      // `license` needs no line here: it lands in `provenance.license`, and
+      // `provenance` is already above.
+      ...(e.attribution != null             ? { attribution: e.attribution }   : {}),
+      ...(e.claim_class != null             ? { claim_class: e.claim_class }   : {}),
     })
     const r = await this.fetchBounded(`${this.apiBase}/engrams`, {
       method: 'POST',
