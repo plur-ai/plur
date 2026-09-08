@@ -651,6 +651,21 @@ export class RemoteStore {
       // #983: carry provenance records so the receiving store can answer
       // origin/chain/licence questions. Omitted when unset.
       ...(e.provenance != null              ? { provenance: e.provenance }     : {}),
+      // #1151: the conditions a measurement was taken under, the material that
+      // supports it, and its worked example. All three were accepted by
+      // `learnRouted()`, returned to the caller, and never sent.
+      //
+      // `measured_under` is the one that does real damage. It exists (#869) so
+      // a measured claim carries what makes it true — hardware, dataset,
+      // source, date. Dropping it on the way to a SHARED store is the worst
+      // case for that field: a result that held on one machine, one dataset,
+      // one day arrives at a teammate as an unconditional fact. The immediate
+      // return value hid it, because `learnRouted()` answers from the local
+      // shape plus the server-assigned id rather than from a persisted record.
+      ...(e.measured_under != null          ? { measured_under: e.measured_under } : {}),
+      ...(Array.isArray(e.knowledge_anchors) && e.knowledge_anchors.length > 0
+        ? { knowledge_anchors: e.knowledge_anchors } : {}),
+      ...(e.dual_coding != null             ? { dual_coding: e.dual_coding }   : {}),
     })
     const r = await this.fetchBounded(`${this.apiBase}/engrams`, {
       method: 'POST',
