@@ -98,6 +98,29 @@ jobs:
       # gate surfaced 93 errors, several of them tests that were not testing what
       # they claimed. Keep it ahead of `pnpm test` so the cause is reported
       # instead of the symptom.
+      # The conformance vectors, checked from OUTSIDE the reference (#1022).
+      #
+      # The vectors are authored in Python and verified in TypeScript, so neither
+      # implementation grades its own work. `verify.py` needs no dependencies at
+      # all, which is deliberate — a third-party producer must be able to run it
+      # anywhere.
+      #
+      # These run BEFORE the typecheck and before pnpm test, and that ordering is
+      # load-bearing rather than cosmetic. They need neither Node nor a build, and
+      # when they sat after the typecheck a broken typecheck aborted the job before
+      # either gate executed — which is how the suite once shipped without any of
+      # its engrams.yaml fixtures, excluded by a contributor's global gitignore,
+      # with 29 of 43 tests failing on a fresh clone and nothing reporting it.
+      # A gate that only runs when everything else already passes is not a gate.
+      #
+      # The drift check runs first of the two. A vector edited by hand to make a
+      # test pass is the one failure mode that would quietly disable the suite.
+      - name: Conformance vectors — no pack vector or index entry was edited by hand
+        run: python3 spec/vectors/build.py --check
+      - name: Conformance vectors — no capsule fixture or capsules.json entry was edited by hand
+        run: python3 spec/vectors/build_capsules.py --check
+      - name: Conformance vectors — verify from outside the reference, declarations included
+        run: python3 spec/vectors/verify.py --index spec/vectors/index.json --capsules spec/vectors/capsules.json
       - name: Type-check test suites
         run: pnpm typecheck:tests
       # D1-followup gate (#177): the KNOWN_ISSUES Stage 3b v2 tracking sentinel
