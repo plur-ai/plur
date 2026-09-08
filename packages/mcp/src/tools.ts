@@ -1089,6 +1089,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           rationale: args.rationale as string | undefined,
           commitment: args.commitment as any,
           locked_reason: args.locked_reason as string | undefined,
+          // Quota-gated below, before the write — `plur_pin` was the only
+          // guarded entry point, and writing a NEW pinned engram is the other
+          // normal way to create a pin (#1138 review).
           pinned: args.pinned as boolean | undefined,
           valid_from: args.valid_from as string | undefined,
           valid_until: args.valid_until as string | undefined,
@@ -1176,6 +1179,32 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
 
         const statement = sanitizeStatement(args.statement as string)
+
+        // A NEW pinned engram is the other way to create a pin, and it was
+        // ungated: `plur_pin` refused an over-quota pin while `plur_learn
+        // { pinned: true }` walked straight past the same limit (#1138 review).
+        //
+        // Necessarily coarser than the `plur_pin` check: the engram does not
+        // exist yet, so its rendered cost is not knowable here and this cannot
+        // say "it would exceed by N". What it CAN say without guessing is that
+        // there is no room at all — which is the state the reported store was
+        // in, three times over quota. An exact pre-check would mean predicting
+        // the cost of a record that has not been built.
+        if (context.pinned === true) {
+          const q = await plur.pinnedQuota()
+          if (q.free <= 0) {
+            return {
+              success: false,
+              error: 'pinned_quota_exceeded',
+              quota: q.quota,
+              used: q.used,
+              free: q.free,
+              pinned_count: q.count,
+              note: 'The pinned set has no room left, so this engram cannot be pinned — a pin that does not fit is dropped at injection time, which is the silent failure the quota exists to prevent. Learn it unpinned (drop `pinned`), or unpin something first with plur_pin {list:true} to see the set and its costs, or raise `injection_budget` / `injection.pinned_ratio` in ~/.plur/config.yaml. The statement was NOT stored — re-send it once you have decided.',
+            }
+          }
+        }
+
         try {
           const engram = await plur.learnRouted(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
@@ -1528,6 +1557,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           injected_ids: result.injected_ids,
           // #181: unresolved-tension warnings — flag contradicted context
           ...(result.warnings ? { warnings: result.warnings } : {}),
+          // #1142: pinned engrams that did not fit. `pinned: true` reads as a
+          // promise; it is priority-subject-to-capacity, and a caller must be
+          // able to see what it did not get.
+          ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
         }
       },
     },
@@ -1564,6 +1597,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           mode: 'hybrid',
           // #181: unresolved-tension warnings — flag contradicted context
           ...(result.warnings ? { warnings: result.warnings } : {}),
+          // #1142: pinned engrams that did not fit. `pinned: true` reads as a
+          // promise; it is priority-subject-to-capacity, and a caller must be
+          // able to see what it did not get.
+          ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
         }
         // A4′ (#776): per-host remote degradation — only when non-ok.
         attachRemoteStoreDegradation(response, plur)
@@ -1668,9 +1705,19 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const q = await plur.pinnedQuota(args.id as string)
           if (q.candidate && !q.candidate.fits) {
             const deficit = q.candidate.would_be - q.quota
+            // Take entries until the deficit is covered. This accumulated
+            // `freed` as a side effect INSIDE a `filter` predicate and then
+            // truncated to five, so whenever more than five unpins were needed
+            // the list did not cover the deficit while the note told the user
+            // to unpin one of them.
+            const covering: typeof q.entries = []
             let freed = 0
-            const suggestions = q.entries
-              .filter(e => freed < deficit && (freed += e.cost) > 0)
+            for (const e of q.entries) {
+              if (freed >= deficit) break
+              covering.push(e)
+              freed += e.cost
+            }
+            const suggestions = covering
               .slice(0, 5)
               .map(e => ({ id: e.id, frees: e.cost, net_feedback: e.net_feedback, last_accessed: e.last_accessed, statement: e.statement.slice(0, 100) }))
             return {
@@ -1682,7 +1729,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
               would_be: q.candidate.would_be,
               over_by: deficit,
               unpin_candidates: suggestions,
-              note: 'Pinned engrams are always-load, so the set cannot exceed its share of the injection budget — over-committing means silently dropping something already pinned. Unpin one of the suggestions (listed largest-first — that is arithmetic, not a recommendation), or raise `injection_budget` / `injection.pinned_ratio` in ~/.plur/config.yaml. Candidates are ordered by what they free, NOT by importance: feedback covers ~4% of engrams so it cannot rank them, and a ranking that looks authoritative would put a thumb on a decision only the user can make.',
+              unpins_needed: covering.length,
+              note: `Pinned engrams are always-load, so the set cannot exceed its share of the injection budget — over-committing means silently dropping something already pinned. `
+                + (covering.length > suggestions.length
+                  ? `At least ${covering.length} unpins are needed to fit this one; the ${suggestions.length} largest are listed. `
+                  : `Unpin ${covering.length === 1 ? 'the suggestion' : 'the suggestions'} below to fit this one. `)
+                + 'Or raise `injection_budget` / `injection.pinned_ratio` in ~/.plur/config.yaml. Candidates are ordered by what they free, NOT by importance: feedback covers ~4% of engrams so it cannot rank them, and a ranking that looks authoritative would put a thumb on a decision only the user can make.',
             }
           }
         }
@@ -2820,6 +2872,18 @@ function getAllToolDefinitions(): ToolDefinition[] {
             if (result.constraints) lines.push('## CONSTRAINTS\n', result.constraints)
             if (result.directives) lines.push('\n## DIRECTIVES\n', result.directives)
             if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
+            // #1142: name the pinned rules that did NOT fit, in the payload the
+            // agent reads. An engram the user pinned and the budget dropped is
+            // exactly the case where silence is worst — the user believes a
+            // standing rule is loaded and it is not.
+            if (result.omitted_pinned?.length) {
+              lines.push(
+                '\n## PINNED, NOT LOADED\n',
+                `${result.omitted_pinned.length} pinned engram(s) did not fit this injection: `
+                + `${result.omitted_pinned.map(o => o.id).join(', ')}. `
+                + 'Treat them as unread, not as absent — recall one explicitly if the task touches it.',
+              )
+            }
             engrams = { text: lines.join('\n'), count: result.count, injected_ids: result.injected_ids }
           }
         } catch {
@@ -2843,6 +2907,18 @@ function getAllToolDefinitions(): ToolDefinition[] {
             if (result.constraints) lines.push('## CONSTRAINTS\n', result.constraints)
             if (result.directives) lines.push('\n## DIRECTIVES\n', result.directives)
             if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
+            // #1142: name the pinned rules that did NOT fit, in the payload the
+            // agent reads. An engram the user pinned and the budget dropped is
+            // exactly the case where silence is worst — the user believes a
+            // standing rule is loaded and it is not.
+            if (result.omitted_pinned?.length) {
+              lines.push(
+                '\n## PINNED, NOT LOADED\n',
+                `${result.omitted_pinned.length} pinned engram(s) did not fit this injection: `
+                + `${result.omitted_pinned.map(o => o.id).join(', ')}. `
+                + 'Treat them as unread, not as absent — recall one explicitly if the task touches it.',
+              )
+            }
             engrams = { text: lines.join('\n'), count: result.count, injected_ids: result.injected_ids }
           }
         }

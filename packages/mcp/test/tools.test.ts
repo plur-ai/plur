@@ -1032,11 +1032,52 @@ describe('.plur.yaml domain default (#1148)', () => {
   // The key was parsed by project-config and consumed nowhere, so setting it
   // was a silent no-op. Domain is not decorative: scoreEngram counts every
   // matching hierarchy segment as a full term hit, double a statement word.
-  it('declares domain on the plur_learn surface and defaults it from project config', () => {
-    const learn = getToolDefinitions().find(t => t.name === 'plur_learn')!
-    expect((learn.inputSchema as any).properties.domain).toBeDefined()
-    const src = readFileSync(join(__dirname, '..', 'src', 'tools.ts'), 'utf8')
-    // Explicit argument must win; the config is only a fallback.
-    expect(src).toContain('(args.domain as string | undefined) ?? readProjectConfig().domain')
+  //
+  // Driven through the HANDLER, against a real `.plur.yaml`. The first version
+  // of this test read `src/tools.ts` and asserted it contained the expression
+  // `(args.domain as string | undefined) ?? readProjectConfig().domain`. That
+  // pins text, not semantics: a behaviour-preserving refactor fails it and a
+  // text-preserving behaviour change passes it — the second being the failure
+  // mode that matters, since the defect it guards was a value parsed and never
+  // consumed.
+  let projDir: string
+  let projPlur: Plur
+  let cwd: string
+
+  beforeEach(async () => {
+    projDir = mkdtempSync(join(tmpdir(), 'plur-projdomain-'))
+    writeFileSync(join(projDir, '.plur.yaml'), 'domain: plur.engineering.search\n')
+    projPlur = new Plur({ path: projDir })
+    await projPlur.ready()
+    cwd = process.cwd()
+    // readProjectConfig() resolves from process.cwd() by default.
+    process.chdir(projDir)
+  })
+
+  afterEach(() => {
+    process.chdir(cwd)
+    rmSync(projDir, { recursive: true, force: true })
+  })
+
+  const learn = async (args: Record<string, unknown>) => {
+    const tool = getToolDefinitions('full').find(t => t.name === 'plur_learn')!
+    return await tool.handler(args, projPlur) as { engram?: { id?: string } } & Record<string, unknown>
+  }
+
+  it('declares domain on the plur_learn surface', () => {
+    const tool = getToolDefinitions().find(t => t.name === 'plur_learn')!
+    expect((tool.inputSchema as any).properties.domain).toBeDefined()
+  })
+
+  it('stamps the project domain on an engram that does not name one', async () => {
+    await learn({ statement: 'Vector lookups use the HNSW index by default.' })
+    const [stored] = await projPlur.list()
+    expect(stored.domain).toBe('plur.engineering.search')
+  })
+
+  it('lets an explicit domain argument win over the project config', async () => {
+    await learn({ statement: 'Release notes are written from the theme.', domain: 'plur.comms.release' })
+    const [stored] = await projPlur.list()
+    expect(stored.domain).toBe('plur.comms.release')
   })
 })
