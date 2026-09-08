@@ -11,13 +11,21 @@ import type { LicenseSource } from '@plur-ai/core'
  * "nobody ever chose it" into a single suffix — the very distinction the
  * four-state field exists to keep. Keyed by the closed enum, so an unknown
  * value cannot reach this table: core drops it before the view is built.
+ *
+ * A `Map`, not an object literal, so the lookup cannot walk a prototype chain.
+ * The previous form was `WORDS[src] ?? '(unrecognised)'`, and `??` does not
+ * catch an inherited value: `constructor`, `toString` and `valueOf` all return
+ * a truthy function, which `.join('; ')` would then render into the terminal as
+ * its source text. Core does gate the value, so it was not reachable — but the
+ * comment above claims a stranger's string could never reach this line, and a
+ * defence in depth that depends on the layer above it is not one.
  */
-const LICENCE_SOURCE_WORDS: Record<LicenseSource, string> = {
-  chosen: 'chosen for the engram itself',
-  inheritedFromPack: 'inherited from the pack, not chosen for the engram',
-  configuredDefault: "the author's configured default, chosen once in advance",
-  schemaDefault: 'the schema default nobody chose',
-}
+const LICENCE_SOURCE_WORDS = new Map<LicenseSource, string>([
+  ['chosen', 'chosen for the engram itself'],
+  ['inheritedFromPack', 'inherited from the pack, not chosen for the engram'],
+  ['configuredDefault', "the author's configured default, chosen once in advance"],
+  ['schemaDefault', 'the schema default nobody chose'],
+])
 
 /**
  * Flags accepted across the packs subcommands (#986).
@@ -149,7 +157,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
           if (l.sources.length) {
             // Never the raw value: core keeps the set closed, and if that ever
             // slipped, a stranger's string still would not reach this line.
-            outputText(`                 how: ${l.sources.map(src => LICENCE_SOURCE_WORDS[src] ?? '(unrecognised)').join('; ')}`)
+            outputText(`                 how: ${l.sources.map(src => LICENCE_SOURCE_WORDS.get(src) ?? '(unrecognised)').join('; ')}`)
           }
         }
         for (const n of prov.notes) outputText(`  • ${n}`)
@@ -283,9 +291,29 @@ Options:
   if (subcommand === 'install') {
     const source = args[1]
     if (!source) {
-      exit(1, 'Usage: plur packs install <source>')
+      exit(1, 'Usage: plur packs install <source> [--force]\n\n'
+        + '  --force  install a pack whose contents no longer match the integrity value\n'
+        + '           it shipped — for a pack you corrected yourself. It does NOT install\n'
+        + '           secrets, declared-private engrams, or files the scan could not read.')
     }
-    const result = await plur.installPack(source)
+    // `--force` was listed in FLAGS and wired to nothing, so it parsed cleanly
+    // and did nothing at all. It now does the one thing an override may do
+    // here: accept a pack whose contents no longer match the integrity value it
+    // shipped. The standard's remedy for a false-positive secret scan (§5.6.1
+    // step 2) is "edit the pack" — and editing a pack moves its hash, so
+    // without this the remedy was unreachable through any surface we ship.
+    //
+    // It deliberately does NOT reach the three refusals §5.6.1 makes
+    // non-overridable: a secret, a declared-private engram, and a file the scan
+    // could not read still refuse with or without it. Overriding an integrity
+    // mismatch says "I know why these bytes differ"; the others say "install
+    // something I could not check", which is a different sentence.
+    const force = args.includes('--force')
+    if (force) {
+      outputText('⚠ --force: an integrity mismatch will not block this install.')
+      outputText('  Secrets, declared-private engrams and unreadable files still refuse (§5.6.1 step 2).')
+    }
+    const result = await plur.installPack(source, force ? { allowModified: true } : undefined)
     if (shouldOutputJson(flags)) {
       outputJson(result)
     } else {
@@ -323,6 +351,31 @@ Options:
         }
         if (n.locked_downgraded > 0) {
           outputText(`  ⚠ commitment: locked downgraded to decided on ${n.locked_downgraded} engram(s) — they would have resisted correction`)
+        }
+      }
+
+      // What the pack's provenance turned out to be (ENGRAM-STANDARD-v1
+      // §5.6.5). These four counts were computed by the preview this install
+      // already runs and then never printed, so an installer who did not
+      // separately run `plur packs preview` was told nothing — including about
+      // an orphan record, which means the pack was cut from a larger set than
+      // the one being handed over. Loud, not suppressed by --quiet: it is a
+      // finding about what arrived, not a confirmation that it worked.
+      const p = result.provenance
+      if (p) {
+        outputText('')
+        outputText(`Provenance: ${p.record_count} record(s) for ${p.engrams_total} engram(s).`)
+        if (p.unreadable_records > 0) {
+          outputText(`  ⚠ ${p.unreadable_records} record(s) could not be read.`)
+        }
+        if (p.orphan_records > 0) {
+          outputText(`  ⚠ ${p.orphan_records} record(s) describe engrams this pack does not ship.`)
+        }
+        if (p.engrams_without_record > 0) {
+          outputText(`  ⚠ ${p.engrams_without_record} engram(s) arrived with no record of their own.`)
+        }
+        if (p.not_retained > 0) {
+          outputText(`  ⚠ ${p.not_retained} record(s) were not kept — the scan could not check them.`)
         }
       }
 

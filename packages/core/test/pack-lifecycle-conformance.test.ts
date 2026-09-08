@@ -25,7 +25,7 @@
  *     manifest key named `__proto__` survives nowhere and pollutes nothing.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as yaml from 'js-yaml'
@@ -363,4 +363,135 @@ describe('invariant 5 — unknown root manifest fields survive, and __proto__ do
     expect(result.installed).toBe(1)
     expect(({} as Record<string, unknown>).polluted).toBeUndefined()
   })
+})
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Invariant 6 — a record the consumer cannot read is a finding, never a veto.
+ *
+ * The provenance profile §5.4.2 says in terms that a record a consumer cannot
+ * read MUST NOT abort the preview or the install of the pack it arrived in.
+ * The reference obeyed that in `readPackProvenance` and broke it one layer up:
+ * the same oversize bytes were flagged `unscannable` by the file scan, and the
+ * install refused the whole pack. Both halves are pinned here, together with
+ * the rule that keeps the carve-out honest — the file does not travel.
+ */
+describe('invariant 6 — an unreadable provenance record does not veto the install', () => {
+  /** One byte over the 16 MiB scan limit, which is what makes it unscannable. */
+  const oversize = () => `{"@graph":[]}${' '.repeat(16 * 1024 * 1024)}`
+
+  it('installs, counts the record as unreadable, and leaves it behind', async () => {
+    const dir = writePack({
+      engrams: [engram('ENG-2026-0101-001', { visibility: 'public' })],
+      provenance: { 'ENG-2026-0101-001.jsonld': oversize() },
+    })
+    const result = await installPack(packsDir, dir)
+    expect(result.installed).toBe(1)
+    // Reported (§5.6.5) rather than silently dropped.
+    expect(result.provenance?.unreadable_records).toBe(1)
+    expect(result.provenance?.not_retained).toBe(1)
+    // Not copied: the install proceeded past a file nothing could check, so
+    // that file must not reach the installed pack.
+    expect(existsSync(join(packsDir, result.name, 'provenance', 'ENG-2026-0101-001.jsonld'))).toBe(false)
+  })
+
+  it('a symlink under provenance/ still refuses — a different finding', async () => {
+    const dir = writePack({
+      engrams: [engram('ENG-2026-0101-001', { visibility: 'public' })],
+      provenance: { 'ENG-2026-0101-001.jsonld': '{"@graph":[]}' },
+    })
+    rmSync(join(dir, 'provenance', 'ENG-2026-0101-001.jsonld'))
+    symlinkSync('/etc/hosts', join(dir, 'provenance', 'ENG-2026-0101-001.jsonld'))
+    await expect(installPack(packsDir, dir)).rejects.toThrow(/could not read|symbolic link/)
+  })
+
+  it('an oversize file that is NOT a provenance record still refuses', async () => {
+    const dir = writePack({ engrams: [engram('ENG-2026-0101-001', { visibility: 'public' })] })
+    writeFileSync(join(dir, 'README.md'), ' '.repeat(16 * 1024 * 1024 + 1))
+    await expect(installPack(packsDir, dir)).rejects.toThrow(/security scan could not read/)
+  })
+})
+
+/**
+ * Invariant 7 — the four provenance counts reach the installer (§5.6.5).
+ *
+ * They were computed by the preview the install already runs, and then dropped
+ * at every surface, so an installer who did not separately run a preview was
+ * told nothing — including about an orphan record, which is the signature of a
+ * pack cut from a larger set than the one being handed over.
+ */
+describe('invariant 7 — install reports what the provenance turned out to be', () => {
+  const record = (id: string) => JSON.stringify({ '@graph': [{ '@id': `engram:${id}` }] })
+
+  it('counts records against engrams, and names the orphan and the gap', async () => {
+    const dir = writePack({
+      engrams: [
+        engram('ENG-2026-0101-001', { visibility: 'public' }),
+        engram('ENG-2026-0101-002', { visibility: 'public' }),
+      ],
+      provenance: {
+        'ENG-2026-0101-001.jsonld': record('ENG-2026-0101-001'),
+        'ENG-2026-0101-999.jsonld': record('ENG-2026-0101-999'),
+      },
+    })
+    const result = await installPack(packsDir, dir)
+    expect(result.provenance).toEqual({
+      record_count: 1,
+      engrams_total: 2,
+      unreadable_records: 0,
+      orphan_records: 1,
+      engrams_without_record: 1,
+      not_retained: 0,
+    })
+  })
+
+  it('is absent, not zeroed, when the pack ships no provenance at all', async () => {
+    const dir = writePack({ engrams: [engram('ENG-2026-0101-001', { visibility: 'public' })] })
+    const result = await installPack(packsDir, dir)
+    // "There was nothing to report" and "everything was zero" are different facts.
+    expect(result.provenance).toBeUndefined()
+  })
+
+  it('two engrams sharing an id name one record, and the gap cannot go negative', async () => {
+    const dir = writePack({
+      engrams: [
+        engram('ENG-2026-0101-001', { visibility: 'public' }),
+        engram('ENG-2026-0101-001', { visibility: 'public', statement: 'a second engram under the same id' }),
+      ],
+      provenance: { 'ENG-2026-0101-001.jsonld': record('ENG-2026-0101-001') },
+    })
+    const preview = await previewPack(dir)
+    // One file is one record, however many engrams point at it. Reading it once
+    // per engram made this 2, and drove `engrams_without_record` to 0 — and
+    // below zero on a pack with fewer records than engrams.
+    expect(preview.provenance.record_count).toBe(1)
+    expect(preview.provenance.engrams_without_record).toBe(0)
+    expect(preview.provenance.engrams_without_record).toBeGreaterThanOrEqual(0)
+  })
+})
+
+/**
+ * Invariant 8 — a producer's own manifest field survives, whatever it is called.
+ *
+ * §10.3 rule 2 says an unknown root field is preserved. The carry-forward used
+ * `k in fm`, which walks the prototype chain, so a field named after an
+ * `Object.prototype` member read as already-present and was dropped by the one
+ * path that rewrites a manifest.
+ */
+describe('invariant 8 — an unknown manifest field named after a prototype member survives', () => {
+  for (const key of ['constructor', 'toString', 'valueOf', 'hasOwnProperty']) {
+    it(`preserves a root field named \`${key}\` through the manifest.yaml upgrade`, async () => {
+      const dir = writePack({
+        engrams: [engram('ENG-2026-0101-001', { visibility: 'public' })],
+        legacyManifest: true,
+        manifest: { [key]: 'a producer field, not a prototype member' },
+      })
+      const result = await installPack(packsDir, dir)
+      // The upgrade rewrites SKILL.md; the field must be in the rewritten copy.
+      const skill = readFileSync(join(packsDir, result.name, 'SKILL.md'), 'utf8')
+      expect(skill).toContain('a producer field, not a prototype member')
+      expect(Object.prototype.toString.call({})).toBe('[object Object]')
+    })
+  }
 })

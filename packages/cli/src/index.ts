@@ -42,7 +42,7 @@ Commands:
   receipt [--days N]      What your memory retrieved for you
   sync                    Cross-device sync
   packs list              List installed packs
-  packs install <source>  Install engram pack
+  packs install <source>  Install engram pack (--force: accept an integrity mismatch)
   packs export <name>     Export engrams as a pack
   similarity-search <q>   Search by cosine similarity with scores
   promote <id>            Promote an engram to active

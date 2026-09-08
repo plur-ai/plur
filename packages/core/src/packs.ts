@@ -446,14 +446,14 @@ function scanPackFiles(packDir: string): PrivacyIssue[] {
   // until somebody looks. `refuseSymlinks` normally runs first, so links only
   // reach here when this is called on its own.
   for (const link of walked.symlinks) {
-    issues.push({ engram_id: link.path, type: 'unscannable', detail: `${link.path} is a symbolic link to ${link.target} — not scanned, not installable` })
+    issues.push({ engram_id: link.path, type: 'unscannable', unscannable_reason: 'symlink', detail: `${link.path} is a symbolic link to ${link.target} — not scanned, not installable` })
   }
   for (const rel of walked.special) {
-    issues.push({ engram_id: rel, type: 'unscannable', detail: `${rel} is not a regular file — not scanned, not installable` })
+    issues.push({ engram_id: rel, type: 'unscannable', unscannable_reason: 'special', detail: `${rel} is not a regular file — not scanned, not installable` })
   }
   if (walked.truncated) {
     issues.push({
-      engram_id: '(pack)', type: 'unscannable',
+      engram_id: '(pack)', type: 'unscannable', unscannable_reason: 'entry_limit',
       detail: `the pack has more than ${MAX_PACK_ENTRIES} entries — the scan stopped, so the rest was not checked`,
     })
   }
@@ -465,12 +465,12 @@ function scanPackFiles(packDir: string): PrivacyIssue[] {
     try {
       const stat = fs.lstatSync(file)
       if (stat.size > MAX_PACK_FILE_BYTES) {
-        issues.push({ engram_id: label, type: 'unscannable', detail: `${label} is ${stat.size} bytes, more than the ${MAX_PACK_FILE_BYTES}-byte scan limit — not scanned` })
+        issues.push({ engram_id: label, type: 'unscannable', unscannable_reason: 'oversize', detail: `${label} is ${stat.size} bytes, more than the ${MAX_PACK_FILE_BYTES}-byte scan limit — not scanned` })
         continue
       }
       text = fs.readFileSync(file, 'utf8')
     } catch (err) {
-      issues.push({ engram_id: label, type: 'unscannable', detail: `${label} could not be read: ${(err as Error).message}` })
+      issues.push({ engram_id: label, type: 'unscannable', unscannable_reason: 'read_error', detail: `${label} could not be read: ${(err as Error).message}` })
       continue
     }
     // Binary-ish content: the infra heuristics (dotted numbers, host-like
@@ -607,12 +607,26 @@ export function readPackProvenance(
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isFile() || entry.name === 'pack.jsonld') continue
+      // A name outside this class is not a record, so it is neither an orphan
+      // nor read — which makes it invisible in the report. That is only safe
+      // while the engram id grammar (§3.3) cannot produce such a name, so the
+      // day ids admit a character outside `[A-Za-z0-9._-]`, this line starts
+      // hiding real records and must widen with it.
       if (!/^[A-Za-z0-9._-]+\.jsonld$/.test(entry.name)) continue
       if (!shipped.has(entry.name)) view.orphan_records++
     }
   } catch { /* an unlistable directory is reported below as one with no readable records */ }
 
-  for (const engram of engrams) {
+  // By DISTINCT id, not per engram. A record is found by name (`<id>.jsonld`),
+  // so two engrams sharing an id name one file — and reading it once per engram
+  // counted the same file twice: `record_count` reached 2 for a single record,
+  // and `engrams_without_record` (computed as a subtraction below) could reach
+  // zero, or go negative, from a pack that ships fewer records than engrams.
+  // §5.6.5 asks how many records were present; a file is one record however
+  // many engrams point at it.
+  const distinctIds = [...new Set(engrams.map(e => e.id))]
+  for (const engramId of distinctIds) {
+    const engram = engrams.find(e => e.id === engramId)!
     const name = `${engram.id}.jsonld`
     const record = readJson(name)
     if (record === 'absent') continue
@@ -707,7 +721,11 @@ export function readPackProvenance(
     )
   }
 
-  view.engrams_without_record = engrams.length - view.record_count
+  // Against DISTINCT ids, for the same reason the loop above runs over them:
+  // records are named by id, so a pack shipping two engrams under one id has
+  // one id that either has a record or does not. Subtracting from
+  // `engrams.length` let this go negative, which is not a count of anything.
+  view.engrams_without_record = distinctIds.length - view.record_count
   // Said here, not above, because it depends on how many per-engram records
   // turned up. Claiming "records for individual engrams but none for the pack"
   // when there are no records of any kind is simply false.
@@ -912,6 +930,40 @@ export interface InstallResult {
    * must be distinguishable from one that changed something and said nothing.
    */
   neutralized: NeutralizedCounts
+  /**
+   * What the pack's provenance records turned out to be (ENGRAM-STANDARD-v1
+   * §5.6.5, provenance profile §5.4.2).
+   *
+   * §5.6.5 puts the obligation on the *consumer*, and an install is the moment
+   * a recipient is looking. These four counts were computed by `previewPack`
+   * and then dropped here, so an installer who did not separately run a preview
+   * was told nothing — including about an orphan record, which is the signature
+   * of a pack assembled from a larger set than the one being handed over.
+   *
+   * Absent when the pack carries no `provenance/` directory at all: "there was
+   * nothing to report" and "everything was zero" are different facts.
+   */
+  provenance?: InstallProvenanceCounts
+}
+
+/** The four counts §5.6.5 requires a consumer to report about a pack's records. */
+export interface InstallProvenanceCounts {
+  /** Records read successfully. */
+  record_count: number
+  /** Engrams the pack ships, so `record_count` has something to be "against". */
+  engrams_total: number
+  /** Record files present but unreadable (profile §5.4.2). */
+  unreadable_records: number
+  /** Records naming an engram the pack does not ship. */
+  orphan_records: number
+  /** Engrams with no record of their own. */
+  engrams_without_record: number
+  /**
+   * Records the consumer did not retain, because it could not check them
+   * (profile §5.4.1). Reported so that "we dropped this" stays distinguishable
+   * from "there was nothing here"; the file names are in `security.issues`.
+   */
+  not_retained: number
 }
 
 /** How many engrams a consumer changed on import, and which field (§5.6.5). */
@@ -1013,8 +1065,13 @@ function manifestToSkillMd(m: PackManifest): string {
   // Unknown root fields survive the upgrade too (§10.3 rule 2). The schema
   // passes them through; dropping them here would make the one path that
   // rewrites a manifest the one path that loses what the producer wrote.
+  //
+  // `Object.hasOwn`, not `k in fm`: `in` walks the prototype chain, so a
+  // producer field literally named `constructor`, `toString`, `valueOf` or
+  // `hasOwnProperty` read as already-present and was dropped by the one path
+  // that rewrites a manifest — exactly the loss §10.3 rule 2 forbids.
   for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
-    if (!(k in fm) && !KNOWN_MANIFEST_KEYS.has(k)) fm[k] = v
+    if (!Object.hasOwn(fm, k) && !KNOWN_MANIFEST_KEYS.has(k)) fm[k] = v
   }
   return `---\n${yaml.dump(fm)}---\n\n# ${m.name}\n\n${m.description ?? ''}\n`
 }
@@ -1085,8 +1142,11 @@ function _installPackDir(
   // §5.6.1 step 2). Both are things §5.4 forbids a producer to ship, so their
   // presence means the pack was built wrong or built to mislead, and the remedy
   // is a corrected pack — not an installer who looks away. A false positive in
-  // the secret scan is fixed by editing the pack; a consumer's scan surface is
-  // documented so a producer can predict it (`detectSensitive`).
+  // the secret scan is fixed by editing the pack; this consumer's scan surface
+  // is written down so a producer can predict it, in `docs/pack-scan-surface.md`
+  // (the patterns themselves are `detectSecrets` / `detectSensitive` in
+  // `secrets.ts`). §5.6.1 asks a consumer to document that surface, and until
+  // the document existed this comment was asserting a SHOULD nobody had met.
   const secretIssues = preview.security.issues.filter(i => i.type === 'secret')
   if (secretIssues.length > 0) {
     const details = secretIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
@@ -1107,11 +1167,39 @@ function _installPackDir(
   // A file the scan could not read is a file that cannot be installed: nothing
   // may land in the store that was not checked. No override for this one —
   // the remedy is to fix the pack, not to look away.
+  //
+  // With one carve-out, required by the provenance profile §5.4.2: a record in
+  // `provenance/` that is merely too large or that the filesystem would not
+  // hand over is an UNREADABLE RECORD, and the profile says in terms that a
+  // record a consumer cannot read MUST NOT abort the preview or the install of
+  // the pack it arrived in — one crafted file counts as one unreadable record
+  // and nothing more. Before this, `readPackProvenance` counted such a file
+  // correctly and then `scanPackFiles` flagged the same bytes as unscannable,
+  // so a 17 MiB record refused the whole pack: the reference obeyed the letter
+  // of its own scan rule and broke the profile's MUST.
+  //
+  // The carve-out is narrow on purpose. It covers only `oversize` and
+  // `read_error`, and only for a file under `provenance/` whose name has the
+  // §5.3.1 record shape. A symlink, a special file or a truncated walk still
+  // blocks wherever it is: those say the pack is shaped to hide something,
+  // which is a different finding from a file that would not fit in the scanner.
+  // The exempted file is reported here and skipped by the copy below, so
+  // nothing unchecked reaches the installed pack.
+  const isUnreadableProvenanceRecord = (i: PrivacyIssue): boolean =>
+    (i.unscannable_reason === 'oversize' || i.unscannable_reason === 'read_error')
+    && /^provenance\/[A-Za-z0-9._-]+\.jsonld$/.test(i.engram_id.split(path.sep).join('/'))
   const unscannable = preview.security.issues.filter(i => i.type === 'unscannable')
-  if (unscannable.length > 0) {
-    const details = unscannable.map(i => `  ${i.detail}`).join('\n')
+  const blocking = unscannable.filter(i => !isUnreadableProvenanceRecord(i))
+  if (blocking.length > 0) {
+    const details = blocking.map(i => `  ${i.detail}`).join('\n')
     throw new Error(`Pack contains files the security scan could not read — install blocked:\n${details}`)
   }
+  // Names of the provenance records the scan could not check, so the copy below
+  // leaves them behind. Normalized to forward slashes to match the copy loop.
+  const unreadableProvenanceFiles = new Set(
+    unscannable.filter(isUnreadableProvenanceRecord)
+      .map(i => i.engram_id.split(path.sep).join('/').slice('provenance/'.length)),
+  )
   // Prompt-injection text is blocked unless explicitly overridden (finding #2).
   const injectionIssues = preview.security.issues.filter(i => i.type === 'prompt_injection')
   if (injectionIssues.length > 0 && !opts.allowInjection) {
@@ -1173,6 +1261,13 @@ function _installPackDir(
     const provDest = path.join(staging, 'provenance')
     for (const file of fs.readdirSync(provSrc)) {
       if (!/^[A-Za-z0-9._-]+\.jsonld$/.test(file)) continue
+      // A record the scan could not check does not travel. The install was
+      // allowed to proceed past it (profile §5.4.2 — an unreadable record must
+      // not abort the pack), which is only defensible while the file itself
+      // stays out of the installed copy: the rule that nothing unchecked lands
+      // is not relaxed, only the rule that everything must be installable.
+      // It is counted as unreadable in the preview and reported at install.
+      if (unreadableProvenanceFiles.has(file)) continue
       fs.mkdirSync(provDest, { recursive: true })
       copyPlainFile(path.join(provSrc, file), path.join(provDest, file), path.join('provenance', file))
     }
@@ -1277,6 +1372,19 @@ function _installPackDir(
     registry: registryEntry,
     integrity_check: preview.integrity,
     neutralized,
+    // Carried from the preview this install already ran (§5.6.5). Only when the
+    // pack actually shipped a `provenance/` directory — see the field's note on
+    // why "nothing to report" is not the same as four zeros.
+    provenance: preview.provenance.present
+      ? {
+          record_count: preview.provenance.record_count,
+          engrams_total: newEngrams.length,
+          unreadable_records: preview.provenance.unreadable_records,
+          orphan_records: preview.provenance.orphan_records,
+          engrams_without_record: preview.provenance.engrams_without_record,
+          not_retained: unreadableProvenanceFiles.size,
+        }
+      : undefined,
   }
 }
 
@@ -1552,6 +1660,19 @@ export interface PrivacyIssue {
     /** A file the scan could not read as a plain file — a link, a special file, one past the size or count limit. Blocks install. */
     | 'unscannable'
   detail: string
+  /**
+   * Why an `unscannable` file could not be scanned. Present only on that type.
+   *
+   * The install gate reads this rather than parsing `detail`, because the two
+   * halves are not the same kind of finding. A link, a special file or a
+   * truncated walk means the pack is shaped to hide something and install must
+   * refuse. A plain file that is merely too large, or that the filesystem would
+   * not hand over, is just a file the consumer could not check — and for a
+   * `provenance/` record the provenance profile §5.4.2 requires that this
+   * cannot abort the install of the pack it arrived in. It is reported, and the
+   * file is not copied, so nothing unchecked lands.
+   */
+  unscannable_reason?: 'symlink' | 'special' | 'entry_limit' | 'oversize' | 'read_error'
   /**
    * For `private_visibility` on a pack: `true` when the shipped file says
    * `visibility: private` itself (refused at install, §5.6.1 step 2); `false`

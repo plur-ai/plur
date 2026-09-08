@@ -1855,6 +1855,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // installing a pack could not tell the user either.
           neutralized: result.neutralized,
           integrity_check: result.integrity_check,
+          // The four provenance counts §5.6.5 requires a consumer to report:
+          // records found against engrams shipped, how many were unreadable,
+          // how many name an engram the pack does not contain, and how many
+          // engrams have no record. Computed by the preview install already
+          // runs, and dropped at this surface until now — so an agent
+          // installing a pack could not tell the user any of it. Absent when
+          // the pack shipped no provenance directory at all.
+          provenance: result.provenance,
           success: true,
         }
       },

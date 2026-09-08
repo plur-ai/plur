@@ -7150,7 +7150,11 @@ export class Plur {
    * and on prompt-injection text unless opts.allowInjection), clamps host-
    * overriding fields (pinned / locked), detects conflicts, records in registry.
    */
-  async installPack(source: string, opts?: { allowInjection?: boolean }): Promise<ReturnType<typeof installPack>> {
+  // `allowModified` was declared on `InstallOptions` and then narrowed away
+  // here, so no caller outside this module could ever pass it. That made the
+  // standard's own remedy for a false-positive scan — correct the pack and
+  // install it — unreachable, since correcting a pack moves the hash it shipped.
+  async installPack(source: string, opts?: { allowInjection?: boolean; allowModified?: boolean }): Promise<ReturnType<typeof installPack>> {
     const existing = await this._loadAllEngrams()
     return installPack(this.paths.packs, source, existing, opts)
   }
