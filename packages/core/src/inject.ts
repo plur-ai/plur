@@ -6,6 +6,7 @@ import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
 import { freshTailBoost } from './fresh-tail.js'
 import { makeVisibilityPredicate } from './scope-util.js'
+import { isNotYetValid, isExpired, isExpiredBeyondGrace } from './validity.js'
 
 /**
  * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
@@ -99,19 +100,24 @@ const DEFAULT_GRACE_DAYS = 30
 /**
  * True when the engram must be skipped for temporal validity. Not-yet-valid
  * engrams (`valid_from` in the future) are always skipped; expired engrams
- * are skipped in hard mode, and in soft mode once past the grace cutoff.
+ * are skipped in hard mode, and in soft mode once past the grace window.
+ *
+ * Delegates to `validity.ts` (#1150). This used to compare timestamp STRINGS
+ * against today's DATE string, which read every RFC 3339 instant backwards —
+ * so an engram that expired hours ago was still injected, and one that became
+ * valid hours ago was not.
  */
 function skipForValidity(
   engram: Engram,
-  today: string,
+  nowMs: number,
   mode: 'hard' | 'soft',
-  graceCutoff: string,
+  graceDays: number,
 ): boolean {
   const t = engram.temporal
-  if (t?.valid_from && t.valid_from > today) return true
-  if (t?.valid_until && t.valid_until < today) {
+  if (isNotYetValid(t, nowMs)) return true
+  if (isExpired(t, nowMs)) {
     if (mode !== 'soft') return true
-    if (t.valid_until < graceCutoff) return true
+    if (isExpiredBeyondGrace(t, nowMs, graceDays)) return true
   }
   return false
 }
@@ -120,10 +126,14 @@ function skipForValidity(
  * "⚠ EXPIRED <date> — verify before use: " prefix for an engram whose
  * `valid_until` is in the past. Only soft-expiry mode lets expired engrams
  * reach the formatters, so in hard mode this never fires.
+ *
+ * Uses the same evaluator as the filter that let it through (#1150). When these
+ * disagreed, a soft-mode engram inside its grace window could be delivered
+ * WITHOUT the marker that is the entire point of soft mode.
  */
 function expiredMarker(engram: WireEngram): string {
   const until = engram.temporal?.valid_until
-  if (until && until < new Date().toISOString().slice(0, 10)) {
+  if (until && isExpired(engram.temporal, Date.now())) {
     return `⚠ EXPIRED ${until} — verify before use: `
   }
   return ''
@@ -406,10 +416,9 @@ export function selectAndSpread(
   const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
   const maxTokens = ctx.maxTokens ?? DEFAULT_MAX_TOKENS
   const minRelevance = ctx.minRelevance ?? DEFAULT_MIN_RELEVANCE
-  const today = new Date().toISOString().slice(0, 10)
+  const nowMs = Date.now()
   const expiryMode = config?.expiry?.mode ?? 'hard'
   const graceDays = config?.expiry?.grace_days ?? DEFAULT_GRACE_DAYS
-  const graceCutoff = new Date(Date.now() - graceDays * 86400000).toISOString().slice(0, 10)
 
   // Step 0: Build engram map for spreading activation.
   // `nonActiveIds` tracks personal engrams that exist locally but are not active
@@ -423,7 +432,7 @@ export function selectAndSpread(
 
   for (const engram of personalEngrams) {
     if (engram.status !== 'active') { nonActiveIds.add(engram.id); continue }
-    if (skipForValidity(engram, today, expiryMode, graceCutoff)) continue
+    if (skipForValidity(engram, nowMs, expiryMode, graceDays)) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
     // Embedding boost: semantically similar engrams with zero keyword hits still get scored.
@@ -454,7 +463,7 @@ export function selectAndSpread(
     const matchTerms = packMeta.match_terms
     for (const engram of pack.engrams) {
       if (engram.status !== 'active') continue
-      if (skipForValidity(engram, today, expiryMode, graceCutoff)) continue
+      if (skipForValidity(engram, nowMs, expiryMode, graceDays)) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
