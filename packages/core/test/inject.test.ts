@@ -304,10 +304,19 @@ describe('injection engine', () => {
   })
 
   describe('omitted pinned engrams are reported (#1142)', () => {
-    const pinnedOf = (n: number, statement: string) => makeEngram({
-      id: `ENG-2026-1142-${String(n).padStart(3, '0')}`,
-      statement,
-      pinned: true,
+    // fillTokenBudget takes ScoredEngram[] = Engram + keyword_match/raw_score/
+    // score, the same shape the sub-cap test below builds. selectAndSpread
+    // stamps all three from one raw score; mirror that. estimateTokens strips
+    // them before serializing, so they do not affect the token math here.
+    const pinnedOf = (n: number, statement: string) => ({
+      ...makeEngram({
+        id: `ENG-2026-1142-${String(n).padStart(3, '0')}`,
+        statement,
+        pinned: true,
+      }),
+      keyword_match: 1.0,
+      raw_score: 1.0,
+      score: 1.0,
     })
 
     it('names the pinned engrams that did not fit, and why', () => {
