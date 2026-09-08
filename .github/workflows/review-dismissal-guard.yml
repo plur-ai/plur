@@ -1,0 +1,66 @@
+name: Review Dismissal Guard
+
+# A review dismissal must say what was done.
+#
+# An empty dismissal is indistinguishable from ignoring the review. An audit on
+# 2026-09-08 of every dismissal since 2026-08-18 found that nine of twelve
+# carried itemised messages citing the commits that fixed each finding — and
+# that the three which read as negligent were simply the three with no message.
+# The work may have been done in those cases too; the record cannot say, which
+# is the problem this closes.
+#
+# `pull_request_review` (not `pull_request_target`) is correct here: the job
+# never checks out or executes the head ref, and it only needs read access plus
+# the ability to report a check result.
+#
+# ADVISORY until `dismissal message required` is added to the required status
+# checks for `main` in branch protection. Without that it is a visible failing
+# check, not a merge gate.
+
+on:
+  pull_request_review:
+    types: [dismissed]
+
+permissions:
+  pull-requests: read
+  contents: read
+
+jobs:
+  dismissal-message-required:
+    name: dismissal message required
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            // The dismissal message is NOT on the webhook's review object — it
+            // lives on the `review_dismissed` timeline event, so read it there.
+            const events = await github.paginate(
+              github.rest.issues.listEventsForTimeline,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              }
+            );
+            const dismissals = events.filter(e => e.event === 'review_dismissed');
+            if (!dismissals.length) {
+              core.info('No review_dismissed event found on this pull request.');
+              return;
+            }
+            const last = dismissals[dismissals.length - 1];
+            const msg = ((last.dismissed_review || {}).dismissal_message || '').trim();
+            const who = last.actor ? last.actor.login : 'unknown';
+            if (!msg) {
+              core.setFailed(
+                `@${who} dismissed a review without a message.\n\n` +
+                'A dismissal must state what was done, citing the commits that addressed ' +
+                'the review. An empty dismissal is indistinguishable from ignoring the ' +
+                'review, whether or not the work was actually done.\n\n' +
+                'Re-dismiss with a message, or ask the reviewer to re-review.'
+              );
+            } else {
+              core.info(`Dismissal by @${who} carries a ${msg.length}-character message.`);
+            }
