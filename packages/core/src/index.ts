@@ -5444,7 +5444,13 @@ export class Plur {
       // Leak guard (#353): local-resident → demote a sensitive update in place.
       // LOW-2: scan context fields too, not just the statement.
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
-      const toWrite = demote ? { ...updated, ...demote } : updated
+      // #1138 review: stamp `updated_at` on the mutation path, not only on
+      // creation and retirement. Without this it equalled `created_at` for
+      // every engram that had ever been edited — worse than an absent field,
+      // because it reads as authoritative. The spec added alongside it names
+      // statement, scope, commitment, relations and retirement as the tracked
+      // mutations, and this is where four of the five actually happen.
+      const toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
       engrams[idx] = toWrite
       // Incremental write (#740): only the updated engram row changed.
       await this._updateEngrams(engrams, [toWrite])
@@ -5520,7 +5526,12 @@ export class Plur {
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
-      const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
+      // #1138 review: pinning is a mutation, so it moves `updated_at`.
+      const updated: Engram = {
+        ...e,
+        pinned: pinned === true ? true : undefined,
+        updated_at: new Date().toISOString(),
+      }
       engrams[idx] = updated
       // Incremental write (#740): only the (un)pinned engram row changed.
       await this._updateEngrams(engrams, [updated])

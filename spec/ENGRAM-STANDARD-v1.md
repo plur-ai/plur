@@ -455,11 +455,18 @@ scope: project:my-app         # free-form §4.2
 All five of `id`, `statement`, `type`, `status`, `scope` are REQUIRED. Every
 other field is optional with the default given above.
 
-> **Note on `created_at`.** Some reference example documents show a top-level
-> `created_at` timestamp. It is **not** a validated field in v1 — it survives
-> only via the open-world rule (§4.1). Implementers SHOULD use `temporal.learned_at`
-> (or `sources[].stored_at`) for authoritative creation time. A future minor
-> version MAY promote a creation timestamp to a first-class field (§10.2).
+> **Note on `created_at` / `updated_at`.** Both are first-class OPTIONAL fields
+> as of 2026-09-07; see the §4.2 rows and the normative paragraph there. This
+> note previously said `created_at` was *not* a validated field and directed
+> implementers to `temporal.learned_at` instead — that text predates the change
+> and contradicted it 180 lines later in the same document.
+>
+> `temporal.learned_at` and `sources[].stored_at` remain valid and are not
+> deprecated, but neither is a substitute: on a real 5,477-engram store
+> `stored_at` was present on 2,765 records and `learned_at` on 12, so a consumer
+> relying on either sees most of the corpus as undated. Neither is defaulted,
+> and an absent `created_at` still means genuinely unknown rather than "the day
+> you loaded it".
 
 ### 4.14 Key invariants (normative)
 
