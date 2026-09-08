@@ -155,3 +155,22 @@ export function isExpiredBeyondGrace(temporal: Temporal, nowMs: number, graceDay
 export function isCurrentlyValid(temporal: Temporal, nowMs: number): boolean {
   return !isNotYetValid(temporal, nowMs) && !isExpired(temporal, nowMs)
 }
+
+/**
+ * Interpret an "evaluate as of" parameter as an instant.
+ *
+ * Callers that expose a `now` option take a `YYYY-MM-DD` string. A whole day is
+ * not an instant, so it has to be resolved to one, and the END of the day is
+ * the resolution that preserves existing behaviour: under the old lexical
+ * comparison a date-only `valid_until` equal to `now` was NOT expired (the
+ * strings compared equal), which is the same answer end-of-day gives. Resolving
+ * to midnight instead would expire everything a day early.
+ *
+ * @param now - `YYYY-MM-DD`, or an RFC 3339 instant, or nothing for the
+ *   current moment.
+ */
+export function evaluationInstant(now?: string): number {
+  if (!now) return Date.now()
+  const ms = closesAt(now)
+  return ms === null ? Date.now() : ms
+}

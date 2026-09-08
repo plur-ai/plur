@@ -1,5 +1,6 @@
 import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
+import { isExpired, evaluationInstant } from './validity.js'
 import { ftsTokenize } from './fts.js'
 
 export interface TensionPair {
@@ -341,11 +342,6 @@ function supersedesLinked(a: Engram, b: Engram): boolean {
   )
 }
 
-/** True when the engram's validity window has closed (`temporal.valid_until` before `now`). */
-function validityExpired(e: Engram, now: string): boolean {
-  const until = e.temporal?.valid_until
-  return Boolean(until && until < now)
-}
 
 /** Confidence cap for measured-under pairs in `measured_under_pairs: 'floor'` mode (#869). */
 export const MEASURED_UNDER_CONFIDENCE_CAP = 0.1
@@ -517,13 +513,19 @@ export function getCandidatePairsDetailed(
   const snapshotMode = options?.snapshot_pairs ?? 'skip'
   const measuredUnderMode = options?.measured_under_pairs ?? 'skip'
   const skippedMeasuredUnder: string[] = []
-  const now = options?.now ?? new Date().toISOString().slice(0, 10)
+  // #1156: the last site still comparing a timestamp STRING against a date
+  // string. `'2026-09-07T01:00:00Z' < '2026-09-07'` is false at every hour of
+  // that day, so an engram whose window closed at 01:00 was still treated as
+  // live — the same defect as #1150, in the one place that fix did not reach.
+  // Smaller blast radius than injection (this only affects tension pairing),
+  // but the point of a shared evaluator is that there is no second opinion.
+  const nowMs = evaluationInstant(options?.now)
   const excludePairs = options?.exclude_pairs
 
   // Tokenize each engram once instead of once per pair (O(n) vs O(n²) passes).
   const subjectTokens = active.map(e => extractSubjectTokens(e.statement))
   const statementTokens = active.map(e => new Set(ftsTokenize(e.statement)))
-  const expired = active.map(e => validityExpired(e, now))
+  const expired = active.map(e => isExpired(e.temporal, nowMs))
 
   const scored: Array<{ pair: [Engram, Engram]; overlap: number }> = []
 

@@ -364,6 +364,43 @@ describe('getCandidatePairs', () => {
     expect(pairs).toHaveLength(0)
   })
 
+  it('skips a pair whose engram expired at an INSTANT earlier the same day (#1156)', () => {
+    // The last site still comparing a timestamp string against a date string.
+    // `'2026-09-07T01:00:00Z' < '2026-09-07'` is false at every hour of that
+    // day, so an engram whose window closed at 01:00 was still treated as a
+    // live peer claim and lined up against a current one — a tension reported
+    // against something that had already lapsed.
+    const a = makeEngram({ id: 'E1', statement: 'plur search uses BM25.', scope: 'global' })
+    const b = makeEngram({
+      id: 'E2', statement: 'plur search uses embeddings.', scope: 'global',
+      temporal: { learned_at: '2026-09-06', valid_until: '2026-09-07T01:00:00Z' },
+    } as never)
+    expect(getCandidatePairs([a, b], { now: '2026-09-07' })).toHaveLength(0)
+  })
+
+  it('still pairs when the instant window has NOT closed yet', () => {
+    // The control. Without it, "skips expired" and "skips anything carrying a
+    // valid_until" are indistinguishable.
+    const a = makeEngram({ id: 'E1', statement: 'plur search uses BM25.', scope: 'global' })
+    const b = makeEngram({
+      id: 'E2', statement: 'plur search uses embeddings.', scope: 'global',
+      temporal: { learned_at: '2026-09-06', valid_until: '2026-09-30T01:00:00Z' },
+    } as never)
+    expect(getCandidatePairs([a, b], { now: '2026-09-07' })).toHaveLength(1)
+  })
+
+  it('keeps whole-day semantics for a date-only expiry', () => {
+    // A date-only valid_until equal to `now` is NOT expired — it closes at the
+    // END of that day. Resolving `now` to midnight instead would expire it a
+    // day early and silently drop real tension candidates.
+    const a = makeEngram({ id: 'E1', statement: 'plur search uses BM25.', scope: 'global' })
+    const b = makeEngram({
+      id: 'E2', statement: 'plur search uses embeddings.', scope: 'global',
+      temporal: { learned_at: '2026-09-06', valid_until: '2026-09-07' },
+    } as never)
+    expect(getCandidatePairs([a, b], { now: '2026-09-07' })).toHaveLength(1)
+  })
+
   it('skips inactive engrams', () => {
     const a = makeEngram({ id: 'E1', statement: 'plur search uses BM25.', scope: 'global' })
     const b = makeEngram({ id: 'E2', statement: 'plur search uses embeddings.', scope: 'global', status: 'retired' as any })
