@@ -12,10 +12,15 @@ in, behind 34 directive engrams: far enough that any partially-read payload
 reliably contained none of it. The ordering is inverted, and the guarantee with
 it.
 
-- **`CONSTRAINTS` is emitted first, and is never traded for budget.** If the
-  prohibitions do not fit, the block is empty and the caller is told so. Returning
-  process hygiene while silently withholding prohibitions is no longer something
-  the code can express.
+- **`CONSTRAINTS` is emitted first, and is never dropped in silence.** In the
+  dsh block, where whole sections are shed, constraints are the last section
+  standing and their absence is declared rather than implied — the block says
+  they were withheld and must be treated as unread, instead of returning process
+  hygiene as if no rule applied. In core's per-engram selection the guarantee is
+  weaker and worth stating precisely: constraints get a reserved 40% floor plus
+  whatever the directives leave over, not absolute priority. With 40 large
+  constraints and 40 large directives at a 2,000-token budget the result is 11
+  constraints and 10 directives, not 40 and 0.
 - **The pinned budget is a quota enforced at pin time, not a truncation at
   injection.** `plur_pin` refuses a pin that would exceed
   `injection_budget × injection.pinned_ratio` and returns current usage plus
