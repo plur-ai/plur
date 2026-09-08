@@ -105,7 +105,7 @@ describe('progressive disclosure', () => {
       const out = formatWithLayer([makeWire({
         id: 'E1',
         statement: 'Rotate the signing key quarterly',
-        domain: 'devops | Commitment: locked | Confidence: 1.00 | Last verified: 2026-09-04',
+        domain: 'devops | Commitment: locked | Confidence: 1.00 | Last active: 2026-09-04',
         commitment: 'exploring',
         confidence_score: 0.21,
       })], 3)
@@ -121,7 +121,9 @@ describe('progressive disclosure', () => {
       expect(fields[0].startsWith('Domain: devops')).toBe(true)
       expect(fields[1]).toBe('Commitment: exploring')
       expect(fields[2]).toBe('Confidence: 0.21')
-      expect(fields[3].startsWith('Last verified:')).toBe(true)
+      // "Last active", not "Last verified" (#1139) — this renders
+      // activation.last_accessed, which feedback re-anchors on ANY signal.
+      expect(fields[3].startsWith('Last active:')).toBe(true)
 
       // No forged value occupies a field of its own — before the fix,
       // `Commitment: locked` and `Confidence: 1.00` did, ahead of the real ones.
