@@ -4,6 +4,7 @@ import * as path from 'path'
 import * as os from 'os'
 import { spawn } from 'child_process'
 import { appendHistory, computeQueryHash, isRecentDuplicateInjection, generateInjectionId } from '../src/history.js'
+import { Plur } from '../src/index.js'
 
 describe('cross-process injection dedup (#975)', () => {
   let root: string
@@ -371,5 +372,64 @@ describe('the dedup window straddles a month rollover', () => {
     // and still must pass.
     expect(isRecentDuplicateInjection(dir, qh, ids, 5_000, 'inject', undefined)).toBe(true)
     expect(prevMonth === thisMonth || fs.existsSync(path.join(hd, `${prevMonth}.jsonl`))).toBe(true)
+  })
+})
+
+/**
+ * The counter must not move when the history write fails (review of #1017).
+ *
+ * `recordedInjection = true` was assigned BEFORE the `appendHistory` try block,
+ * so a failed history write still counted the injection: `injection_count`
+ * incremented with no `co_injection` event behind it. That is the exact
+ * store-disagrees-with-its-own-history state this change set out to eliminate,
+ * relocated to the error path — the counter is the thing the event exists to
+ * explain, so an increment nothing accounts for is worse than neither.
+ *
+ * `appendHistory` is deliberately best-effort and swallows its own failure, so
+ * nothing surfaces to the caller. The disagreement is the only observable.
+ */
+describe('a failed history write does not count the injection', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-hist-fail-'))
+    fs.writeFileSync(path.join(dir, 'engrams.yaml'), 'engrams: []\n')
+  })
+
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+  const countOf = async (plur: Plur): Promise<number> => {
+    const [stored] = await plur.list()
+    return (stored as unknown as { injection_count?: number }).injection_count ?? 0
+  }
+
+  it('leaves injection_count at 0 when the month file cannot be written', async () => {
+    const plur = new Plur({ path: dir })
+    await plur.ready()
+    await plur.learn('Never deploy on a Friday.', { scope: 'global' })
+
+    // Make appendHistory throw: the month file it wants is a DIRECTORY.
+    // `learn()` above already created it as a file, so clear that first.
+    const month = new Date().toISOString().slice(0, 7)
+    const monthFile = path.join(dir, 'history', month + '.jsonl')
+    fs.rmSync(monthFile, { force: true, recursive: true })
+    fs.mkdirSync(monthFile, { recursive: true })
+
+    await plur.inject('deploy on friday')
+
+    // Before the fix this was 1, with zero history events to account for it.
+    expect(await countOf(plur)).toBe(0)
+  })
+
+  it('counts the injection normally when the history write succeeds', async () => {
+    // The control: without it, "does not count on failure" and "never counts"
+    // are indistinguishable.
+    const plur = new Plur({ path: dir })
+    await plur.ready()
+    await plur.learn('Never deploy on a Friday.', { scope: 'global' })
+
+    await plur.inject('deploy on friday')
+
+    expect(await countOf(plur)).toBeGreaterThan(0)
   })
 })

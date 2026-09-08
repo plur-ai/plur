@@ -5006,10 +5006,26 @@ export class Plur {
       const writeCoInjection = (): void => {
         if (dedupApplies
           && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
-        recordedInjection = true
         const injection_id = generateInjectionId()
         try {
-          appendHistory(this.paths.root, {
+          // ASK whether the write landed; do not infer it from the absence of a
+          // throw (review of #1017). `recordedInjection = true` used to sit
+          // above this block, so a failed history write still counted the
+          // injection — injection_count incremented with no co_injection event
+          // to explain it, which is the store-disagrees-with-its-own-history
+          // state this change set out to eliminate, relocated to the error
+          // path.
+          //
+          // Moving the assignment below `appendHistory` — the obvious fix, and
+          // the one the review suggested — does NOT close it: appendHistory
+          // deliberately swallows its own failure and returns normally, so an
+          // unwritable history directory cannot fail the learn that called it.
+          // Nothing is ever thrown, so the try/catch never fires and the
+          // assignment runs either way. Verified: the regression test still
+          // read injection_count: 1 with the assignment moved.
+          //
+          // So it reports instead.
+          const wrote = appendHistory(this.paths.root, {
             event: 'co_injection',
             engram_id: injection_id,
             timestamp: new Date().toISOString(),
@@ -5025,7 +5041,10 @@ export class Plur {
               ...(options?.session_id ? { session_id: options.session_id } : {}),
             },
           })
+          // In-memory provenance is set regardless: the engrams WERE injected,
+          // whatever the log managed to record.
           for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
+          recordedInjection = wrote
         } catch { /* best-effort */ }
       }
 

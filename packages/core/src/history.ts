@@ -20,7 +20,17 @@ export interface HistoryEvent {
  * Files are stored in {root}/history/YYYY-MM.jsonl.
  * Auto-creates the history directory and file on first write.
  */
-export function appendHistory(root: string, event: HistoryEvent): void {
+/**
+ * @returns `true` when the event was written, `false` when it could not be.
+ *
+ * The return value exists because this function deliberately does NOT throw: an
+ * unwritable history directory must not fail the learn/forget/feedback that
+ * called it. That makes the outcome invisible to callers, and a caller that
+ * needs to stay CONSISTENT with the log — `inject()`'s `injection_count`, which
+ * the co_injection event exists to explain — cannot do so by wrapping this in a
+ * try/catch, because nothing is ever thrown. It has to ask.
+ */
+export function appendHistory(root: string, event: HistoryEvent): boolean {
   const historyDir = join(root, 'history')
   if (!fs.existsSync(historyDir)) {
     fs.mkdirSync(historyDir, { recursive: true })
@@ -62,6 +72,7 @@ export function appendHistory(root: string, event: HistoryEvent): void {
     } finally {
       fs.closeSync(fd)
     }
+    return true
   } catch (err) {
     if (!warnedHistoryPaths.has(filePath)) {
       warnedHistoryPaths.add(filePath)
@@ -71,6 +82,7 @@ export function appendHistory(root: string, event: HistoryEvent): void {
         `unrecoverable engrams and engram-id allocation loses its cross-compaction guarantee (#816).`,
       )
     }
+    return false
   }
 }
 
