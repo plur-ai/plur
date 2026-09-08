@@ -435,9 +435,11 @@ export const EngramSchema = z.object({
 
   /** Measurement context for numeric or benchmark-derived claims (#869).
    *  Records model, source_type, hardware, dataset, and/or date under which the
-   *  asserted value was measured, so differing-condition measurements can be
-   *  stored as refinements rather than tensions (#203). Absent for non-numeric
-   *  engrams; all sub-fields are optional even when the object is present. */
+   *  asserted value was measured. The tension scanner does not judge two
+   *  same-origin measurements taken under different configurations as a
+   *  contradiction (it counts the skipped pair instead, or caps the verdict in
+   *  'floor' mode). Absent for non-numeric engrams; all sub-fields are optional
+   *  even when the object is present. */
   measured_under: MeasuredUnderSchema.optional(),
 })
 

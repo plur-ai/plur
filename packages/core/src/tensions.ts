@@ -1,4 +1,4 @@
-import type { Engram } from './schemas/engram.js'
+import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
 import { ftsTokenize } from './fts.js'
 
@@ -19,6 +19,14 @@ export interface TensionScanResult {
   pairs_checked: number
   new_tensions: number
   tensions: TensionPair[]
+  /**
+   * Pairs the pre-filters removed for a reason that is a policy, not a
+   * structural impossibility (#869 review). A skip that leaves no trace is
+   * indistinguishable from a pair that was never a candidate, so every
+   * policy skip is counted here and its pair key (sorted ids joined by
+   * ':') listed. Always present; zero when nothing was skipped.
+   */
+  skipped: { measured_under: number; measured_under_pairs: string[] }
 }
 
 /** A statement handed to the judge — `date` is its recorded date (#240). */
@@ -90,6 +98,14 @@ export interface TemporalGateOptions {
    * caps confidence at SNAPSHOT_CONFIDENCE_CAP.
    */
   snapshot_pairs?: 'skip' | 'floor'
+  /**
+   * Handling of same-origin measurement pairs whose `measured_under`
+   * configuration differs (#869): 'skip' (default) drops them before the
+   * judge and counts them in `skipped.measured_under`; 'floor' judges them
+   * but caps confidence at MEASURED_UNDER_CONFIDENCE_CAP. The gate never
+   * applies across a trust boundary — see measuredUnderGateApplies.
+   */
+  measured_under_pairs?: 'skip' | 'floor'
   /** ISO date treated as "today" for expired-validity gating. Defaults to the current date. */
   now?: string
 }
@@ -331,6 +347,93 @@ function validityExpired(e: Engram, now: string): boolean {
   return Boolean(until && until < now)
 }
 
+/** Confidence cap for measured-under pairs in `measured_under_pairs: 'floor'` mode (#869). */
+export const MEASURED_UNDER_CONFIDENCE_CAP = 0.1
+
+/**
+ * Configuration dimensions of `measured_under` that identify a measurement
+ * context (#869 / #203). `date` is deliberately NOT here: a regression
+ * benchmark — same config, different dates, different values — is a genuine
+ * contradiction (or regression) and must surface as a tension.
+ */
+export const MEASURED_UNDER_DIMENSIONS: ReadonlyArray<string> = ['source_type', 'model', 'hardware', 'dataset']
+
+/**
+ * A dimension value as compared: trimmed, case-folded, and `null` when it
+ * carries no information — absent, empty, or not a string. Labels are typed
+ * by LLMs and humans, so `'GitLab'` and `'gitlab '` are the same
+ * configuration; an empty string is "unknown", not a value, exactly like an
+ * absent key (#869 review).
+ */
+function measuredUnderValue(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const norm = v.trim().toLowerCase()
+  return norm.length > 0 ? norm : null
+}
+
+/**
+ * True when BOTH engrams have `measured_under` AND at least one of
+ * MEASURED_UNDER_DIMENSIONS carries a value on both sides that differs after
+ * normalisation. An engram without `measured_under` is an unconditional
+ * assertion and stays a tension candidate regardless of the other side; a
+ * dimension present on one side only is "unknown", not "same", so it cannot
+ * establish a difference.
+ *
+ * This is a comparison, not a policy: whether a differing pair is skipped is
+ * decided by measuredUnderGateApplies, which also checks who wrote each side.
+ */
+export function measuredUnderDiffers(a: Engram, b: Engram): boolean {
+  const muA: MeasuredUnder | undefined = a.measured_under
+  const muB: MeasuredUnder | undefined = b.measured_under
+  if (!muA || !muB || typeof muA !== 'object' || typeof muB !== 'object') return false
+  return MEASURED_UNDER_DIMENSIONS.some(dim => {
+    const valA = measuredUnderValue((muA as Record<string, unknown>)[dim])
+    const valB = measuredUnderValue((muB as Record<string, unknown>)[dim])
+    return valA !== null && valB !== null && valA !== valB
+  })
+}
+
+/**
+ * Where a loaded engram came from, as the LOADER marked it: packs carry
+ * `_pack` (set by `_loadSecondaryAndPacks` from the manifest), `stores:` and
+ * remote rows carry `_storeScope` (set from the config entry), primary-store
+ * rows carry neither. A foreign row cannot forge a primary origin because the
+ * loader always stamps foreign rows; a row that ships its own marker can only
+ * look MORE foreign, never less.
+ */
+export function engramOrigin(e: Engram): string {
+  const r = e as unknown as Record<string, unknown>
+  if (typeof r._pack === 'string') return `pack:${r._pack}`
+  if (typeof r._storeScope === 'string') return `store:${r._storeScope}`
+  return 'primary'
+}
+
+/** A statement that carries a measured value — a number, optionally with a unit or percent. */
+const MEASUREMENT_TOKEN = /(?<![A-Za-z])\d+(?:[.,:]\d+)*\s*%?(?![A-Za-z])/
+
+/**
+ * Whether the measured-under gate may remove this pair from the judge (#869).
+ *
+ * Three conditions, all required, because the gate is fail-open with respect
+ * to the scanner's purpose (a skipped pair is a contradiction nobody sees):
+ *
+ *   1. Same origin. `measured_under` is free-form and any writer can set it.
+ *      If the two sides came from different stores (or a pack vs the primary
+ *      store), the writer of one side could hide a contradiction with the
+ *      other by setting four garbage dimensions — the exact attack the review
+ *      of #981 reproduced. A pair that crosses a trust boundary always reaches
+ *      the judge.
+ *   2. Both statements carry a measured value. #869 is about measurements
+ *      (max_tokens 16384 vs 65536, 87% vs 43%); prose claims with a
+ *      `measured_under` block are not what the refinement rule describes.
+ *   3. The configurations differ (measuredUnderDiffers).
+ */
+export function measuredUnderGateApplies(a: Engram, b: Engram): boolean {
+  if (engramOrigin(a) !== engramOrigin(b)) return false
+  if (!MEASUREMENT_TOKEN.test(a.statement) || !MEASUREMENT_TOKEN.test(b.statement)) return false
+  return measuredUnderDiffers(a, b)
+}
+
 /**
  * True when BOTH engrams are point-in-time snapshots (their domains fall in
  * a configured temporal domain) recorded on different days — an event log,
@@ -370,6 +473,11 @@ function isSnapshotPair(a: Engram, b: Engram, temporalDomains: readonly string[]
  *     recorded on different days are skipped by default — they are an
  *     event log, not a contradiction. `snapshot_pairs: 'floor'` keeps them
  *     for the judge (scanForTensions caps their confidence instead).
+ *   - Pairs where both engrams have `measured_under` AND differ on at least
+ *     one configuration dimension (source_type, model, hardware, dataset)
+ *     are skipped (#869 / #203) — they are context-scoped refinements, not
+ *     contradictions. `date` is excluded from the dimension check: a
+ *     regression on the same config on different dates IS a real tension.
  *
  * Surviving pairs are ranked by descending shared-token overlap (#180) so
  * that the pairs most likely to be genuine contradictions are judged first
@@ -386,13 +494,29 @@ export interface CandidatePairOptions {
   exclude_pairs?: ReadonlySet<string>
 }
 
+export interface CandidatePairs {
+  pairs: Array<[Engram, Engram]>
+  /** Policy skips, so a scan can report what it did not look at (#869 review). */
+  skipped: { measured_under: number; measured_under_pairs: string[] }
+}
+
 export function getCandidatePairs(
   engrams: Engram[],
   options?: TemporalGateOptions & CandidatePairOptions,
 ): Array<[Engram, Engram]> {
+  return getCandidatePairsDetailed(engrams, options).pairs
+}
+
+/** getCandidatePairs plus the skip accounting scanForTensions reports. */
+export function getCandidatePairsDetailed(
+  engrams: Engram[],
+  options?: TemporalGateOptions & CandidatePairOptions,
+): CandidatePairs {
   const active = engrams.filter(e => e.status === 'active')
   const temporalDomains = options?.temporal_domains ?? []
   const snapshotMode = options?.snapshot_pairs ?? 'skip'
+  const measuredUnderMode = options?.measured_under_pairs ?? 'skip'
+  const skippedMeasuredUnder: string[] = []
   const now = options?.now ?? new Date().toISOString().slice(0, 10)
   const excludePairs = options?.exclude_pairs
 
@@ -432,6 +556,16 @@ export function getCandidatePairs(
       // event log, not a contradiction.
       if (snapshotMode === 'skip' && isSnapshotPair(a, b, temporalDomains)) continue
 
+      // #869 / #203: same-origin measurements taken under different
+      // configurations are refinements, not contradictions. Never silent:
+      // every skip is counted and keyed so the scan result says what it did
+      // not judge. In 'floor' mode the pair goes to the judge and
+      // scanForTensions caps its confidence instead.
+      if (measuredUnderMode === 'skip' && measuredUnderGateApplies(a, b)) {
+        skippedMeasuredUnder.push([a.id, b.id].sort().join(':'))
+        continue
+      }
+
       // Stage 3: subject-predicate pre-filter
       if (!setsIntersect(subjectTokens[i], subjectTokens[j])) continue
 
@@ -444,7 +578,10 @@ export function getCandidatePairs(
 
   // Rank: highest shared-token count first (#180).
   scored.sort((x, y) => y.overlap - x.overlap)
-  return scored.map(s => s.pair)
+  return {
+    pairs: scored.map(s => s.pair),
+    skipped: { measured_under: skippedMeasuredUnder.length, measured_under_pairs: skippedMeasuredUnder },
+  }
 }
 
 /** Options for scanForTensions. Temporal gates/adjustments are #240; pair exclusion is #181. */
@@ -491,7 +628,9 @@ export async function scanForTensions(
   const temporalDomains = options?.temporal_domains ?? []
   const discountEnabled = options?.temporal_discount === true
 
-  const candidates = getCandidatePairs(engrams, options).slice(0, maxPairs)
+  const detailed = getCandidatePairsDetailed(engrams, options)
+  const candidates = detailed.pairs.slice(0, maxPairs)
+  const measuredUnderMode = options?.measured_under_pairs ?? 'skip'
   const tensions: TensionPair[] = []
 
   const toJudgeStatement = (e: Engram): JudgeStatement => ({
@@ -549,6 +688,10 @@ export async function scanForTensions(
       if (isSnapshotPair(a, b, temporalDomains)) {
         // Only reachable in 'floor' mode ('skip' drops these at candidate stage)
         confidence = Math.min(confidence, SNAPSHOT_CONFIDENCE_CAP)
+      } else if (measuredUnderMode === 'floor' && measuredUnderGateApplies(a, b)) {
+        // Judged rather than skipped, but a differing configuration is the
+        // likelier explanation than a contradiction, so the verdict is capped.
+        confidence = Math.min(confidence, MEASURED_UNDER_CONFIDENCE_CAP)
       } else if (discountEnabled && days !== undefined) {
         confidence = confidence * temporalDiscountFactor(days)
       }
@@ -572,5 +715,6 @@ export async function scanForTensions(
     pairs_checked: candidates.length,
     new_tensions: tensions.length,
     tensions,
+    skipped: detailed.skipped,
   }
 }

@@ -11,6 +11,7 @@ import {
   parseBatchContradictionResponse,
   scanForTensions,
   engramDate,
+  measuredUnderDiffers,
 } from '../src/tensions.js'
 import type { Engram } from '../src/schemas/engram.js'
 
@@ -830,5 +831,132 @@ describe('scanForTensions batching (#180)', () => {
     const result = await scanForTensions([e1, e2, e3], llm, { max_pairs: 1, batch_size: 1 })
     expect(result.pairs_checked).toBe(1)
     expect([result.tensions[0].id_a, result.tensions[0].id_b].sort()).toEqual(['E1', 'E3'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// measuredUnderDiffers (#869 / #203)
+// ---------------------------------------------------------------------------
+
+describe('measuredUnderDiffers', () => {
+  it('returns false when both engrams lack measured_under', () => {
+    const a = makeEngram({ id: 'A', statement: 'max_tokens is 16384' })
+    const b = makeEngram({ id: 'B', statement: 'max_tokens is 65536' })
+    expect(measuredUnderDiffers(a, b)).toBe(false)
+  })
+
+  it('returns false when only one engram has measured_under', () => {
+    const a = makeEngram({ id: 'A', statement: 'max_tokens is 16384', measured_under: { source_type: 'bench' } })
+    const b = makeEngram({ id: 'B', statement: 'max_tokens is 65536' })
+    expect(measuredUnderDiffers(a, b)).toBe(false)
+    expect(measuredUnderDiffers(b, a)).toBe(false)
+  })
+
+  it('returns true when source_type differs', () => {
+    const a = makeEngram({ id: 'A', statement: 'wall-clock share is 87%', measured_under: { source_type: 'local-git' } })
+    const b = makeEngram({ id: 'B', statement: 'wall-clock share is 43%', measured_under: { source_type: 'gitlab' } })
+    expect(measuredUnderDiffers(a, b)).toBe(true)
+  })
+
+  it('returns true when model differs', () => {
+    const a = makeEngram({ id: 'A', statement: 'max_tokens is 16384', measured_under: { model: 'claude-opus-4' } })
+    const b = makeEngram({ id: 'B', statement: 'max_tokens is 65536', measured_under: { model: 'claude-sonnet-4' } })
+    expect(measuredUnderDiffers(a, b)).toBe(true)
+  })
+
+  it('returns true when hardware differs', () => {
+    const a = makeEngram({ id: 'A', statement: 'throughput is 100 tok/s', measured_under: { hardware: 'M3-Pro-36GB' } })
+    const b = makeEngram({ id: 'B', statement: 'throughput is 2000 tok/s', measured_under: { hardware: 'A100' } })
+    expect(measuredUnderDiffers(a, b)).toBe(true)
+  })
+
+  it('returns true when dataset differs', () => {
+    const a = makeEngram({ id: 'A', statement: 'hit rate is 76%', measured_under: { dataset: 'LongMemEval-S' } })
+    const b = makeEngram({ id: 'B', statement: 'hit rate is 83%', measured_under: { dataset: 'plur-bench-2026-Q2' } })
+    expect(measuredUnderDiffers(a, b)).toBe(true)
+  })
+
+  it('returns false when date differs but all config dimensions match', () => {
+    // date is NOT in the dimension list — a regression on the same config is a real tension
+    const a = makeEngram({ id: 'A', statement: 'hit rate is 76%', measured_under: { source_type: 'bench', date: '2026-01-01' } })
+    const b = makeEngram({ id: 'B', statement: 'hit rate is 60%', measured_under: { source_type: 'bench', date: '2026-06-01' } })
+    expect(measuredUnderDiffers(a, b)).toBe(false)
+  })
+
+  it('returns false when all non-null dimensions match', () => {
+    const a = makeEngram({ id: 'A', statement: 'latency p50 is 245ms', measured_under: { source_type: 'bench', model: 'claude-opus-4' } })
+    const b = makeEngram({ id: 'B', statement: 'latency p50 is 250ms', measured_under: { source_type: 'bench', model: 'claude-opus-4' } })
+    expect(measuredUnderDiffers(a, b)).toBe(false)
+  })
+
+  it('returns false when one dimension is absent on one side (unknown ≠ differs)', () => {
+    // A has hardware, B does not → we cannot conclude they differ on hardware
+    const a = makeEngram({ id: 'A', statement: 'throughput is 100 tok/s', measured_under: { source_type: 'bench', hardware: 'M3-Pro-36GB' } })
+    const b = makeEngram({ id: 'B', statement: 'throughput is 200 tok/s', measured_under: { source_type: 'bench' } })
+    expect(measuredUnderDiffers(a, b)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getCandidatePairs: measuredUnderDiffers gate (#869 / #203)
+// ---------------------------------------------------------------------------
+
+describe('getCandidatePairs — measured_under gate', () => {
+  it('excludes pairs where both have measured_under and source_type differs', () => {
+    // Motivating incident: 87% wall-clock (local-git) vs 43% wall-clock (gitlab)
+    const a = makeEngram({
+      id: 'A',
+      statement: 'git operations consume 87% of wall-clock time',
+      measured_under: { source_type: 'local-git' },
+    })
+    const b = makeEngram({
+      id: 'B',
+      statement: 'git operations consume 43% of wall-clock time',
+      measured_under: { source_type: 'gitlab' },
+    })
+    const pairs = getCandidatePairs([a, b])
+    expect(pairs).toHaveLength(0)
+  })
+
+  it('keeps pairs where only one engram has measured_under (unconditional assertion stays)', () => {
+    const a = makeEngram({
+      id: 'A',
+      statement: 'max_tokens is 16384',
+      measured_under: { source_type: 'bench' },
+    })
+    const b = makeEngram({ id: 'B', statement: 'max_tokens is 65536' })
+    const pairs = getCandidatePairs([a, b])
+    expect(pairs).toHaveLength(1)
+  })
+
+  it('keeps pairs where both have measured_under but all dimensions match (potential regression)', () => {
+    // Same config, different dates — this is a regression, not a refinement
+    const a = makeEngram({
+      id: 'A',
+      statement: 'hit rate is 76%',
+      measured_under: { source_type: 'bench', dataset: 'LongMemEval-S', date: '2026-01-01' },
+    })
+    const b = makeEngram({
+      id: 'B',
+      statement: 'hit rate is 60%',
+      measured_under: { source_type: 'bench', dataset: 'LongMemEval-S', date: '2026-06-01' },
+    })
+    const pairs = getCandidatePairs([a, b])
+    expect(pairs).toHaveLength(1)
+  })
+
+  it('excludes pairs differing on model dimension', () => {
+    const a = makeEngram({
+      id: 'A',
+      statement: 'max_tokens is 16384',
+      measured_under: { model: 'claude-opus-4' },
+    })
+    const b = makeEngram({
+      id: 'B',
+      statement: 'max_tokens is 65536',
+      measured_under: { model: 'gpt-4o' },
+    })
+    const pairs = getCandidatePairs([a, b])
+    expect(pairs).toHaveLength(0)
   })
 })
