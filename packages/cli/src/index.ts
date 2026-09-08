@@ -36,6 +36,7 @@ Commands:
   timeline [query]        Query episode timeline
   status                  System health check
   dashboard               Open the memory dashboard in a browser (alias: ui)
+                          [--port N] [--host <addr>] [--allow-host <name>]... [--no-open]
   receipt [--days N]      What your memory retrieved for you
   sync                    Cross-device sync
   packs list              List installed packs
