@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
-  isCurrentlyValid, isNotYetValid, isExpired, isExpiredBeyondGrace, pinToUtc,
+  isCurrentlyValid, isNotYetValid, isExpired, isExpiredBeyondGrace, pinToUtc, evaluationInstant,
 } from '../src/validity.js'
 import { Plur } from '../src/index.js'
 import { selectAndSpread } from '../src/inject.js'
@@ -220,3 +220,38 @@ describe('list(), recall() and injection agree, at instant granularity (#1150)',
     expect(ids).toContain('ENG-active-instant')
   })
 })
+
+describe('evaluationInstant (#1166)', () => {
+  it('returns current time when now is omitted or empty', () => {
+    const before = Date.now()
+    const instant = evaluationInstant()
+    const after = Date.now()
+    expect(instant).toBeGreaterThanOrEqual(before)
+    expect(instant).toBeLessThanOrEqual(after)
+    expect(evaluationInstant('')).toBeGreaterThanOrEqual(before)
+  })
+
+  it('resolves a date-only parameter to the end of that day UTC', () => {
+    // End-of-day semantics preserve existing behaviour for valid_until comparisons.
+    expect(evaluationInstant('2026-09-07')).toBe(Date.parse('2026-09-07T23:59:59.999Z'))
+  })
+
+  it('resolves an explicit RFC 3339 instant accurately', () => {
+    expect(evaluationInstant('2026-09-07T12:00:00Z')).toBe(Date.parse('2026-09-07T12:00:00.000Z'))
+    expect(evaluationInstant('2026-09-07T14:00:00+02:00')).toBe(Date.parse('2026-09-07T12:00:00.000Z'))
+  })
+
+  it('pins a naive timestamp to UTC', () => {
+    expect(evaluationInstant('2026-09-07T12:00:00')).toBe(Date.parse('2026-09-07T12:00:00.000Z'))
+  })
+
+  it('throws RangeError when now is unparseable (#1166)', () => {
+    // An argument-level typo or malformed date must fail fast rather than
+    // silently answering as of the present moment.
+    expect(() => evaluationInstant('not-a-date')).toThrow(RangeError)
+    expect(() => evaluationInstant('not-a-date')).toThrow(/Unparseable evaluation instant/)
+    expect(() => evaluationInstant('2026-99-99')).toThrow(RangeError)
+    expect(() => evaluationInstant('2026-09-07T99:99:99Z')).toThrow(RangeError)
+  })
+})
+
