@@ -1,0 +1,173 @@
+[H[2J[3JTalking to an assistant that remembers
+PLUR connected over MCP. Every tool call below is real.
+
+┃ You
+┃ We always run migrations before deploys, never after. Remember that.
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_learn {"statement":"Migrations run before deploys, never after","type":"behavioral"}
+   │ id: ENG-2026-08-23-001
+   │ decision: ADD
+   ╰──────────────────────────────────────────────────────────
+
+┃ Assistant
+┃ Noted.
+
+┃ You
+┃ A month later — where did that come from? Can I rely on it?
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_provenance {"search":"migrations deploys"}
+   │ Where ENG-2026-08-23-001 came from
+   │ ==================================
+   │ 
+   │   Scope         global, private
+   │   First written 2026-08-23
+   │   Licence       cc-by-sa-4.0 — reuse allowed, credit required, share alike
+   │                 Nobody chose this licence; it is the default.
+   │                 Not permission to share: this memory is marked private.
+   │   History       learn
+   │ 
+   │   Not recorded:
+   │     - who asserted it
+   │     - what kind of claim it is — whether a person stated it or a model worked it out
+   │     - what it came from
+   │     - a licence was never chosen; the default above applies
+   │ 
+   │   These are not guesses left blank — nothing recorded them.
+   ╰──────────────────────────────────────────────────────────
+
+┃ Assistant
+┃ Honestly, not much. I have the memory and when I wrote it, but nobody
+┃ recorded who said it, whether it was stated or worked out, or what it
+┃ came from. The licence is the default — nobody chose it.
+┃ 
+┃ Those are absences, not blanks. I did not lose them; they were never
+┃ recorded. If this matters, tell me and I will record it properly.
+
+┃ You
+┃ It's from the runbook. Priya on platform confirmed it. Record it properly,
+┃ and it's CC BY 4.0 so the team can reuse it.
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_learn {"statement":"Connection pools cap at 100 on the shared tier","type":"architectural","visibility":"public","source":"https://example.org/runbook","claim_class":"documented","license":"cc-by-4.0","attribution":{"asserted_by":"local:priya","runtime":{"name":"plur-mcp","version":"0.18.0"}}}
+   │ id: ENG-2026-08-23-002
+   ╰──────────────────────────────────────────────────────────
+
+┃ Assistant
+┃ Recorded.
+
+┃ You
+┃ And now?
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_provenance {"search":"connection pools"}
+   │ Where ENG-2026-08-23-002 came from
+   │ ==================================
+   │ 
+   │   Scope         global, public
+   │   Asserted by   local:priya
+   │   Written by    plur-mcp 0.18.0
+   │   Kind of claim documented — taken from prose a human wrote
+   │   First written 2026-08-23
+   │   Came from     https://example.org/runbook
+   │   Licence       cc-by-4.0 — reuse allowed, credit required
+   │   History       learn
+   │ 
+   │ nothing missing: True | complete: True
+   ╰──────────────────────────────────────────────────────────
+
+┃ Assistant
+┃ Everything is there. Priya is on record as having asserted it, it came
+┃ from the runbook, it is documented rather than inferred, and it is
+┃ CC BY 4.0 — chosen, not defaulted.
+
+┃ You
+┃ Can I put that in the deck for the customer?
+
+This is the question the feature exists for, and the one that is easy to
+answer wrongly. Reuse and sharing are different questions.
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_provenance {"search":"connection pools"}
+   │ may_leave_this_machine     True
+   │ may_reuse_commercially     True
+   │ may_redistribute           True
+   │ licence_recognised         True
+   │ licence_chosen             True
+   ╰──────────────────────────────────────────────────────────
+
+┃ Assistant
+┃ Yes. It is marked public so it may leave this machine, CC BY 4.0 permits
+┃ commercial use and redistribution, and somebody actually chose that
+┃ licence — so the answer rests on a decision, not on a default.
+┃ 
+┃ Credit is required. Attribute it to the runbook.
+
+┃ You
+┃ What about the first thing I told you — can I share that one?
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_provenance {"search":"migrations deploys"}
+   │ may_leave_this_machine     False
+   │ may_reuse_commercially     True
+   │ licence_chosen             False
+   │ 
+   │ Nobody chose this licence; it is the default.
+   ╰──────────────────────────────────────────────────────────
+
+┃ Assistant
+┃ No. That one is private — it has not been cleared to leave this machine.
+┃ 
+┃ The licence line says reuse is allowed, but that governs the content if
+┃ somebody already has it. It is not permission to pass the memory on, and
+┃ nobody chose that licence anyway.
+
+┃ You
+┃ The cap changed to 200 last week. Correct it.
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_learn {"statement":"Connection pools cap at 200 on the shared tier since August","type":"architectural","claim_class":"documented","attribution":{"asserted_by":"local:priya"},"supersedes":["ENG-2026-08-23-002"]}
+   │ id: ENG-2026-08-23-003
+   ╰──────────────────────────────────────────────────────────
+
+┃ You
+┃ If someone asks about the old one, will they know?
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_provenance {"id":"ENG-2026-08-23-002"}
+   │ SUPERSEDED    replaced by ENG-2026-08-23-003 — prefer that one
+   │ 
+   │ superseded_by: ['ENG-2026-08-23-003'] | complete: False
+   ╰──────────────────────────────────────────────────────────
+
+┃ Assistant
+┃ Yes. Asking about the old memory now leads with the fact that it was
+┃ replaced, names what replaced it, and refuses to report itself as
+┃ complete — because there is something more to know about it.
+┃ 
+┃ I have recorded the correction. What my recall does with that is PLUR's
+┃ decision, not the record's.
+
+┃ You
+┃ Show me the actual document. I want to give it to our compliance team.
+
+   ╭─ tool call ─────────────────────────────────────────────
+   │ plur_provenance {"id":"ENG-2026-08-23-003","format":"record"}
+   │ @context: prov, engram, pa, odrl, xsd
+   │ engram:claimClass        "documented"
+   │ prov:wasAttributedTo     {"@id": "engram:agent/local:priya"}
+   │ engram:license           "cc-by-sa-4.0"
+   │ engram:maySharePlainly   false
+   ╰──────────────────────────────────────────────────────────
+
+┃ Assistant
+┃ That is W3C PROV in JSON-LD, with the licence expressed as an ODRL
+┃ policy. It stands on its own — no supporting log needed — and it has
+┃ been checked against two implementations that share none of our code.
+┃ 
+┃ One thing to tell them plainly: none of this is signed. It records what
+┃ happened; it does not prove who wrote it.
+
+The throwaway store is deleted on exit.
+

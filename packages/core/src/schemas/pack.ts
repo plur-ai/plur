@@ -18,6 +18,8 @@ export const PackManifestSchema = z.object({
     domain: z.string().optional(),
     engram_count: z.number().optional()
       .describe('Declared number of engrams in the pack (advisory; loaders count the actual engrams.yaml).'),
+    provenance: z.boolean().optional()
+      .describe('The pack ships PROV records under provenance/ (ENGRAM-STANDARD-v1.md §5.1, provenance profile §5.3.1). A DECLARATION, not evidence: it is covered by the §5.5 integrity hash but written by the producer, so a reader must still verify the directory exists and the records parse. Absent means "not declared", NOT "none present".'),
   }).optional().describe('Loader metadata. Preferred forward-looking location for injection policy and matching terms.'),
   'x-datacore': z.object({
     id: z.string(),

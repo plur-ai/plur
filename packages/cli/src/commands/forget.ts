@@ -1,6 +1,21 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
+/**
+ * Flags this command accepts (#986). `forget` RETIRES a memory, and an
+ * unrecognised flag was swallowed while it went ahead — the most damaging
+ * place in the tool for a silent misunderstanding.
+ *
+ * `--scope` is here because of the merge, not despite it: #1135 added the flag
+ * and its parser while this allowlist was being written on another branch, and
+ * the dispatcher `exit(1)`s on anything unlisted. Combining the two without
+ * this line would have made `plur forget --scope` a hard failure — the flag
+ * added to unblock 73 retirements stalled behind a week-long remote outage.
+ */
+export const FLAGS_WITH_VALUES = ['--reason', '--scope']
+
+export const FLAGS = ['--search', '--reason', '--force', '--scope']
+
 const USAGE = 'Usage: plur forget <id-or-search> [--search] [--reason <reason>] [--scope <scope>]'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {

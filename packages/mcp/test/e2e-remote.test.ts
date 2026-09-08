@@ -278,7 +278,7 @@ describe('MCP config loading', () => {
 
 describe('MCP plur_scopes_discover', () => {
   it('discovers authorized-but-unregistered scopes (read-only by default)', async () => {
-    stub.setMe({ username: 'crtahlin', scopes: [REMOTE_SCOPE, 'team:e2e-other', 'team:e2e-third'] })
+    stub.setMe({ username: 'maintainer', scopes: [REMOTE_SCOPE, 'team:e2e-other', 'team:e2e-third'] })
     const { client } = await makeClient(dir)
 
     const raw = await client.callTool({ name: 'plur_scopes_discover', arguments: {} })
@@ -297,7 +297,7 @@ describe('MCP plur_scopes_discover', () => {
 
   it('surfaces per-scope description/covers from server metadata (#345 D2)', async () => {
     stub.setMe({
-      username: 'crtahlin',
+      username: 'maintainer',
       scopes: [REMOTE_SCOPE, 'team:e2e-other'],
       scope_metadata: [
         { scope: REMOTE_SCOPE, description: 'Primary team scope', covers: ['alpha', 'beta'] },
@@ -324,7 +324,7 @@ describe('MCP plur_scopes_discover', () => {
   })
 
   it('register:true registers every authorized scope under the one URL', async () => {
-    stub.setMe({ username: 'crtahlin', scopes: [REMOTE_SCOPE, 'team:e2e-other', 'team:e2e-third'] })
+    stub.setMe({ username: 'maintainer', scopes: [REMOTE_SCOPE, 'team:e2e-other', 'team:e2e-third'] })
     const { client } = await makeClient(dir)
 
     const raw = await client.callTool({ name: 'plur_scopes_discover', arguments: { register: true } })

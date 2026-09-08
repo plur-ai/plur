@@ -9,6 +9,7 @@ import { logger } from './logger.js'
 import { withAsyncLock } from './store/async-lock.js'
 import { maybeDailyBackup } from './backup.js'
 import { searchTextFrom } from './fts.js'
+import { engramContentFields } from './content-fields.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
@@ -171,12 +172,14 @@ function demoteIfSensitive(
   engram: any,
   newStatement: string,
 ): void {
-  // Scan the post-mutation statement AND the engram's (merged) tags. A dedup
+  // Scan the post-mutation statement AND the rest of the engram. A dedup
   // UPDATE/MERGE unions `context.tags` into the engram before this runs, so a
   // secret/infra value in a merged tag would otherwise ride to a shared store
-  // unguarded — the statement-only scan missed it (#409).
-  const tags = Array.isArray(engram.tags) ? engram.tags.filter((t: unknown) => typeof t === 'string') : []
-  const scanText = tags.length ? `${newStatement}\n${tags.join(' ')}` : newStatement
+  // unguarded — the statement-only scan missed it (#409). The field set is the
+  // same serialised surface every other engram-side guard reads
+  // (`engramContentFields`), not a list kept here that could drift from it.
+  const fields = engramContentFields({ ...engram, statement: newStatement } as Engram)
+  const scanText = fields ? `${newStatement}\n${JSON.stringify(fields)}` : newStatement
   const offending = deps.offendingHitsForScope(scanText, engram.scope ?? 'global')
   if (offending.length === 0) return
   const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
@@ -215,6 +218,13 @@ async function executeDedupDecision(
   decision: DedupDecision,
   targetId: string | null,
 ): Promise<LearnAsyncResult> {
+  // Name the model behind a dedup verdict (#962). A model rewrote the
+  // statement, and that rewrite became the memory. Without naming it the
+  // decision cannot be reviewed later. Omitted when the caller did not say
+  // which model it passed — we never invent one.
+  const dedupActor = context?.attribution?.model
+    ? { model: context.attribution.model }
+    : undefined
   switch (decision) {
     case 'NOOP': {
       if (targetId) {
@@ -250,6 +260,10 @@ async function executeDedupDecision(
               engram_id: targetId,
               timestamp: new Date().toISOString(),
               data: { old_statement: existing.statement, new_statement: statement, reason: 'LLM dedup UPDATE' },
+              // Which model decided this (#962). A model rewrote the statement,
+              // and that rewrite became the memory. Without naming the model the
+              // decision cannot be reviewed later.
+              ...(dedupActor ? { actor: dedupActor } : {}),
             })
             return { engram: updated as Engram, decision: 'UPDATE' as DedupDecision, existing_id: targetId }
           })
@@ -287,6 +301,7 @@ async function executeDedupDecision(
               engram_id: targetId,
               timestamp: new Date().toISOString(),
               data: { merged_statement: statement, reason: 'LLM dedup MERGE' },
+              ...(dedupActor ? { actor: dedupActor } : {}),
             })
             return { engram: merged as Engram, decision: 'MERGE' as DedupDecision, existing_id: targetId }
           })

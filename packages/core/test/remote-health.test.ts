@@ -32,7 +32,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   server.reset()
-  server.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: ['group:plur/plur-ai/engineering'] })
+  server.setMe({ username: 'maintainer', org_id: 'plur', role: 'developer', scopes: ['group:plur/plur-ai/engineering'] })
 })
 
 const writeConfig = (stores: unknown[]): Plur => {
@@ -63,7 +63,7 @@ describe('Plur.checkRemoteHealth()', () => {
   it('short-circuits to auth_expired for an already-expired JWT (no probe needed)', async () => {
     const exp = Math.floor(Date.now() / 1000) - 86_400 // yesterday
     const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
-    const expiredJwt = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'crtahlin', exp })}.sig`
+    const expiredJwt = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'maintainer', exp })}.sig`
     const plur = writeConfig([{ url: baseUrl, token: expiredJwt, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false }])
     const [h] = await plur.checkRemoteHealth()
     expect(h.status).toBe('auth_expired')
@@ -112,11 +112,11 @@ describe('Plur.checkRemoteHealth()', () => {
   })
 
   it('reports server-confirmed identity + granted scope count on ok (#587)', async () => {
-    server.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: ['group:a', 'group:b', 'group:c'] })
+    server.setMe({ username: 'maintainer', org_id: 'plur', role: 'developer', scopes: ['group:a', 'group:b', 'group:c'] })
     const plur = writeConfig([{ url: baseUrl, token: TOKEN, scope: 'group:a', shared: true, readonly: false }])
     const [h] = await plur.checkRemoteHealth()
     expect(h.status).toBe('ok')
-    expect(h.username).toBe('crtahlin')
+    expect(h.username).toBe('maintainer')
     expect(h.orgId).toBe('plur')
     expect(h.grantedScopes).toBe(3)
   })
@@ -159,7 +159,7 @@ describe('Plur.remoteTokenExpiries()', () => {
   it('decodes JWT expiry locally with no network call', () => {
     const exp = Math.floor(Date.now() / 1000) + 5 * 86_400
     const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
-    const jwt = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'crtahlin', exp })}.sig`
+    const jwt = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'maintainer', exp })}.sig`
     const plur = writeConfig([{ url: baseUrl, token: jwt, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false }])
     const [t] = plur.remoteTokenExpiries()
     expect(t.expired).toBe(false)

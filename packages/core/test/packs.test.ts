@@ -42,8 +42,7 @@ describe('pack management', () => {
     const result = exportPack([engram], outputDir, {
       name: 'my-export',
       version: '1.0.0',
-      description: 'Test export',
-    })
+      description: 'Test export', license: 'cc-by-4.0' })
     expect(result.engram_count).toBe(1)
 
     // Verify it can be re-imported
@@ -437,8 +436,8 @@ describe('pack management', () => {
       id: 'ENG-2026-0101-102', statement: 'innocent', domain: `d ${SECRET}`,
       type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
     })
-    const r1 = exportPack([inSummary], join(dir, 'exp-summary'), { name: 'exp-summary', version: '1.0.0' })
-    const r2 = exportPack([inDomain], join(dir, 'exp-domain'), { name: 'exp-domain', version: '1.0.0' })
+    const r1 = exportPack([inSummary], join(dir, 'exp-summary'), { name: 'exp-summary', version: '1.0.0', license: 'cc-by-4.0' })
+    const r2 = exportPack([inDomain], join(dir, 'exp-domain'), { name: 'exp-domain', version: '1.0.0', license: 'cc-by-4.0' })
     expect(r1.engram_count).toBe(0)
     expect(r2.engram_count).toBe(0)
   })
@@ -482,9 +481,9 @@ describe('pack management', () => {
       id: 'ENG-2026-0101-203', statement: 'innocent', contraindications: [`avoid ${SECRET}`],
       type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
     })
-    expect(exportPack([inTags], join(dir, 'exp-tags'), { name: 'exp-tags', version: '1.0.0' }).engram_count).toBe(0)
-    expect(exportPack([inStructured], join(dir, 'exp-sd'), { name: 'exp-sd', version: '1.0.0' }).engram_count).toBe(0)
-    expect(exportPack([inContra], join(dir, 'exp-contra'), { name: 'exp-contra', version: '1.0.0' }).engram_count).toBe(0)
+    expect(exportPack([inTags], join(dir, 'exp-tags'), { name: 'exp-tags', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(0)
+    expect(exportPack([inStructured], join(dir, 'exp-sd'), { name: 'exp-sd', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(0)
+    expect(exportPack([inContra], join(dir, 'exp-contra'), { name: 'exp-contra', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(0)
   })
 
   // #389 review (blocker 1): the serialized scan must not be a ReDoS vector.
@@ -518,7 +517,7 @@ describe('pack management', () => {
     const timeExport = (e: typeof evil, name: string): number => {
       const t0 = performance.now()
       expect(() =>
-        exportPack([e], join(dir, name), { name, version: '1.0.0' }),
+        exportPack([e], join(dir, name), { name, version: '1.0.0', license: 'cc-by-4.0' }),
       ).not.toThrow()
       return performance.now() - t0
     }
@@ -547,7 +546,7 @@ describe('pack management', () => {
       type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
     })
     expect(
-      exportPack([infra], join(dir, 'exp-infra'), { name: 'exp-infra', version: '1.0.0' }).engram_count,
+      exportPack([infra], join(dir, 'exp-infra'), { name: 'exp-infra', version: '1.0.0', license: 'cc-by-4.0' }).engram_count,
     ).toBe(0)
   })
 
@@ -563,7 +562,7 @@ describe('pack management', () => {
       type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
     })
     expect(
-      exportPack([huge], join(dir, 'exp-425'), { name: 'exp-425', version: '1.0.0' }).engram_count,
+      exportPack([huge], join(dir, 'exp-425'), { name: 'exp-425', version: '1.0.0', license: 'cc-by-4.0' }).engram_count,
     ).toBe(0)
   })
 
@@ -583,9 +582,9 @@ describe('pack management', () => {
       id: 'ENG-2026-0101-398c', statement: 'ping the owner', source: 'gregor.private@example.com',
       type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
     })
-    expect(exportPack([personalPath], join(dir, 'exp-pp'), { name: 'exp-pp', version: '1.0.0' }).engram_count).toBe(0)
-    expect(exportPack([privateIp], join(dir, 'exp-ip'), { name: 'exp-ip', version: '1.0.0' }).engram_count).toBe(0)
-    expect(exportPack([email], join(dir, 'exp-em'), { name: 'exp-em', version: '1.0.0' }).engram_count).toBe(0)
+    expect(exportPack([personalPath], join(dir, 'exp-pp'), { name: 'exp-pp', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(0)
+    expect(exportPack([privateIp], join(dir, 'exp-ip'), { name: 'exp-ip', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(0)
+    expect(exportPack([email], join(dir, 'exp-em'), { name: 'exp-em', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(0)
   })
 
   // BOUNDARY: a clean public engram must still export — the PII gate must not over-block.
@@ -594,7 +593,7 @@ describe('pack management', () => {
       id: 'ENG-2026-0101-398ok', statement: 'prefer composition over inheritance',
       type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
     })
-    expect(exportPack([clean], join(dir, 'exp-clean'), { name: 'exp-clean', version: '1.0.0' }).engram_count).toBe(1)
+    expect(exportPack([clean], join(dir, 'exp-clean'), { name: 'exp-clean', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(1)
   })
 
   it('install allows injection text when allowInjection override is set', async () => {
@@ -653,7 +652,7 @@ describe('pack management', () => {
       commitment: 'locked',
     })
     const outputDir = join(dir, 'exported-pinned')
-    exportPack([engram], outputDir, { name: 'pinned-export', version: '1.0.0' })
+    exportPack([engram], outputDir, { name: 'pinned-export', version: '1.0.0', license: 'cc-by-4.0' })
 
     const exported = loadEngrams(join(outputDir, 'engrams.yaml'))
     expect(exported).toHaveLength(1)

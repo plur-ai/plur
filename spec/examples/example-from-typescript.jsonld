@@ -1,0 +1,130 @@
+{
+  "@context": {
+    "prov": "http://www.w3.org/ns/prov#",
+    "engram": "https://plur.ai/ns/engram#",
+    "pa": "https://w3id.org/prov-agent#",
+    "odrl": "http://www.w3.org/ns/odrl/2/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "@graph": [
+    {
+      "@id": "engram:record/ENG-2026-08-12-002",
+      "@type": [
+        "prov:Bundle",
+        "prov:Entity"
+      ],
+      "prov:generatedAtTime": {
+        "@value": "2026-08-12T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "engram:describes": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "engram:recordIsSelfContained": true,
+      "engram:historyEvents": 2,
+      "engram:historyThrough": "2026-08"
+    },
+    {
+      "@id": "engram:ENG-2026-08-12-002",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "behavioral",
+      "engram:scope": "group:swarm",
+      "engram:status": "active",
+      "engram:visibility": "public",
+      "engram:contentHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "engram:claimClass": "documented",
+      "prov:generatedAtTime": {
+        "@value": "2026-08-12T08:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:hadPrimarySource": {
+        "@id": "https://example.org/grants/handbook"
+      },
+      "engram:license": "cc-by-4.0",
+      "engram:licenseSource": "chosen",
+      "engram:maySharePlainly": true,
+      "odrl:hasPolicy": {
+        "@type": "odrl:Set",
+        "odrl:uid": "https://creativecommons.org/licenses/by/4.0/",
+        "odrl:permission": [
+          {
+            "odrl:action": [
+              "odrl:use",
+              "odrl:reproduce",
+              "odrl:distribute",
+              "odrl:derive"
+            ],
+            "odrl:duty": [
+              {
+                "odrl:action": "odrl:attribute"
+              }
+            ]
+          }
+        ],
+        "engram:licenseRecognised": true
+      },
+      "prov:wasAttributedTo": {
+        "@id": "engram:agent/local:maintainer"
+      }
+    },
+    {
+      "@id": "engram:act/ENG-2026-08-12-002-engram_created",
+      "@type": [
+        "prov:Activity",
+        "engram:Learn"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-12T08:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-12T08:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:generated": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "prov:wasAssociatedWith": {
+        "@id": "engram:agent/software/plur-mcp@0.18.0"
+      }
+    },
+    {
+      "@id": "engram:act/ENG-2026-08-12-002-engram_updated",
+      "@type": [
+        "prov:Activity",
+        "engram:Revise"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-12T08:30:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-12T08:30:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "engram:reason": "corrected the weekday",
+      "prov:wasAssociatedWith": {
+        "@id": "engram:agent/software/plur-mcp@0.18.0"
+      }
+    },
+    {
+      "@id": "engram:agent/local:maintainer",
+      "@type": "prov:Agent"
+    },
+    {
+      "@id": "engram:agent/software/plur-mcp@0.18.0",
+      "@type": [
+        "prov:SoftwareAgent",
+        "pa:AIAgent"
+      ],
+      "engram:runtimeName": "plur-mcp",
+      "engram:runtimeVersion": "0.18.0",
+      "prov:actedOnBehalfOf": {
+        "@id": "engram:agent/local:maintainer"
+      }
+    }
+  ]
+}

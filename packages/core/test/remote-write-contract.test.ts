@@ -37,6 +37,9 @@ const TRANSMITTED = new Set([
   'commitment', 'locked_reason', 'source', 'provenance',
   // #1151.
   'measured_under', 'knowledge_anchors', 'dual_coding',
+  // #1172. `license` is absent on purpose: it travels inside
+  // `provenance.license`, so it is covered by `provenance` above.
+  'attribution', 'claim_class',
 ])
 
 /** Sent as flattened top-level keys, not as the nested object. */
@@ -204,6 +207,12 @@ describe('every TRANSMITTED field actually reaches the wire (#1158)', () => {
       measured_under: { hardware: '8-core', dataset: '100 rows', source_type: 'bench', date: '2026-09-07' },
       knowledge_anchors: [{ path: 'bench/results.json', relevance: 'primary', snippet: 'Median 18 ms.' }],
       dual_coding: { example: 'Applies to the measured dataset and machine.' },
+      // #1172 — who is answerable, and what kind of claim this is.
+      attribution: {
+        asserted_by: 'agent:bench-runner',
+        runtime: { name: 'plur-core', version: '0.19.4' },
+      },
+      claim_class: 'observed',
     })
 
     await driver.appendAndGetServerId(full as never)

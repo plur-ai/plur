@@ -1,0 +1,251 @@
+Recording where a memory came from
+A throwaway store in /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO — your own memories are untouched.
+
+1. An ordinary memory, recorded the way most people start
+──────────────────────────────────────────────────────────────
+
+# No extra flags. Just the thing you learned.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js learn 'Migrations run before deploys, never after' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json
+{"id":"ENG-2026-08-23-001","statement":"Migrations run before deploys, never after","scope":"global","type":"behavioral","domain":null}
+
+# Now ask where it came from. This is the whole feature in one command.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js provenance 'migrations deploys' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
+{
+    "found": true,
+    "engram_id": "ENG-2026-08-23-001",
+    "may_leave_this_machine": false,
+    "may_reuse_commercially": true,
+    "may_redistribute": false,
+    "licence_recognised": true,
+    "licence_chosen": false,
+    "scope": "global",
+    "visibility": "private",
+    "first_written": "2026-08-23T16:30:27.782Z",
+    "licence": {
+        "name": "cc-by-sa-4.0",
+        "chosen": false,
+        "meaning": "reuse allowed, credit required, share alike"
+    },
+    "recorded_steps": 1,
+    "not_recorded": [
+        "who asserted it",
+        "what kind of claim it is \u2014 whether a person stated it or a model worked it out",
+        "what it came from",
+        "a licence was never chosen; the default above applies"
+    ],
+    "complete": false
+}
+
+# Read the 'not_recorded' list. Those four things are genuinely unknown —
+
+# nobody wrote them down. The tool says so rather than leaving a blank,
+
+# because a blank reads as zero and 'unknown' does not.
+
+2. The same memory, recorded properly
+──────────────────────────────────────────────────────────────
+
+# Three flags say who is answerable, what kind of claim it is, and
+
+# which licence governs reuse. --source says what it came from.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js learn 'Connection pools cap at 100 on the shared tier' \
+    --asserted-by local:maintainer \
+    --claim-class documented \
+    --source https://example.org/runbook \
+    --license cc-by-4.0 \
+    --visibility public \
+    --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json
+{"id":"ENG-2026-08-23-002","statement":"Connection pools cap at 100 on the shared tier","scope":"global","type":"behavioral","domain":null}
+
+# Ask again. Nothing is missing this time.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js provenance 'connection pools' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
+{
+    "found": true,
+    "engram_id": "ENG-2026-08-23-002",
+    "may_leave_this_machine": true,
+    "may_reuse_commercially": true,
+    "may_redistribute": true,
+    "licence_recognised": true,
+    "licence_chosen": true,
+    "scope": "global",
+    "visibility": "public",
+    "asserted_by": "local:maintainer",
+    "identity_stated": true,
+    "claim_class": "documented",
+    "claim_meaning": "taken from prose a human wrote",
+    "first_written": "2026-08-23T16:30:40.063Z",
+    "came_from": {
+        "value": "https://example.org/runbook",
+        "is_link": true
+    },
+    "licence": {
+        "name": "cc-by-4.0",
+        "chosen": true,
+        "meaning": "reuse allowed, credit required"
+    },
+    "recorded_steps": 1,
+    "not_recorded": [],
+    "complete": true
+}
+
+# Note the three machine-readable answers: may_reuse_commercially,
+
+# may_redistribute, licence_recognised. They fail CLOSED — an unknown
+
+# licence yields false, never null, because a consumer written
+
+# 'if (x !== false)' would read null as permission.
+
+3. Sharing it: a pack carries provenance without being asked
+──────────────────────────────────────────────────────────────
+
+# A pack is how memories leave your machine, so this is where origin
+
+# starts to matter to somebody else. It ships by default.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js packs export team-conventions --output /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
+{
+    "path": "/var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack",
+    "engram_count": 1,
+    "integrity": "sha256:cd5792043ecf50f86605a1e5d36b7383188317b14786da4dd1be3219fd83bf5b",
+    "match_terms": [],
+    "provenance_files": [
+        "provenance/pack.jsonld",
+        "provenance/ENG-2026-08-23-002.jsonld"
+    ],
+    "privacy": {
+        "clean": false,
+        "issues": [
+            {
+                "engram_id": "ENG-2026-08-23-001",
+                "type": "private_visibility",
+                "detail": "Engram marked as private \u2014 excluded from export, still scanned"
+            }
+        ]
+    },
+    "name": "team-conventions"
+}
+
+# One record per engram, plus one for the pack as a whole.
+$ ls -1 /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack/provenance
+/var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack:
+engrams.yaml
+INTEGRITY
+provenance
+SKILL.md
+
+/var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack/provenance:
+ENG-2026-08-23-002.jsonld
+pack.jsonld
+
+4. Receiving it: what a recipient can check BEFORE installing
+──────────────────────────────────────────────────────────────
+
+# The gate belongs at the boundary. Afterwards it changes nothing.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js packs preview /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+print('integrity :', d['integrity']['status'])
+print('records   :', d['provenance']['record_count'], 'of', d['engram_count'], 'engrams')
+print('asserted  :', d['provenance']['asserted_by'])
+print('verified  :', d['provenance']['verified'])
+for l in d['provenance']['licences']:
+    print('licence   :', l['name'], '- chosen by the author:', l['chosen'])
+print()
+print(d['provenance']['verification_note'])
+"
+integrity : ok
+records   : 1 of 1 engrams
+asserted  : ['local:maintainer']
+verified  : False
+licence   : cc-by-4.0 - chosen by the author: True
+
+Nothing here has been verified. Packs are not signed yet, so every statement below is what the pack says about itself. Treat it as a claim by whoever built the pack, and weigh it the way you weigh who gave you the pack.
+
+# Read that last line twice. NOTHING here is signed, so everything the
+
+# pack says about itself is a claim by whoever built it. There is no
+
+# tick and no badge anywhere in this output, deliberately.
+
+# Tamper with the pack and the integrity check notices.
+$ sed -i '' 's/Connection pools/Connection pool/' /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack/engrams.yaml
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js packs install /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -m json.tool
+{
+    "error": "This pack does not match the integrity value it shipped.\n  shipped:  sha256:cd5792043ecf50f86605a1e5d36b7383188317b14786da4dd1be3219fd83bf5b\n  contents: sha256:778bc0861185461ee563fc9bb584a905860d8952c8f9e57fd19faf74ed69a1e0\nIt has been changed since it was built. Install it only if you know why it differs."
+}
+
+# Put it back, and it installs.
+$ sed -i '' 's/Connection pool /Connection pools /' /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack/engrams.yaml
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js packs install /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+print('installed :', d['installed'], 'engrams')
+print('integrity :', d['integrity_check']['status'])
+"
+installed : 1 engrams
+integrity : ok
+
+5. Correcting a memory
+──────────────────────────────────────────────────────────────
+
+# Record a correction that replaces the earlier one.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js learn 'Connection pools cap at 200 on the shared tier since August' \
+    --supersedes ENG-2026-08-23-002 \
+    --asserted-by local:maintainer --claim-class documented \
+    --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json 2>/dev/null | head -1
+{"id":"ENG-2026-08-23-003","statement":"Connection pools cap at 200 on the shared tier since August","scope":"global","type":"behavioral","domain":null}
+
+# Now ask about the OLD memory. It says what replaced it, in the first
+
+# line, and is never reported complete.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js provenance ENG-2026-08-23-002 --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+print('superseded_by :', d.get('superseded_by'))
+print('complete      :', d['complete'])
+"
+superseded_by : ['ENG-2026-08-23-003']
+complete      : False
+
+# Provenance RECORDS the correction. What recall and injection do with
+
+# that is PLUR's decision, not provenance's — and it is unchanged.
+
+6. The document itself, for machines
+──────────────────────────────────────────────────────────────
+
+# Everything above is a readable summary of this.
+$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js provenance ENG-2026-08-23-002 --record --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -c "
+import json,sys
+r = json.load(sys.stdin)['record']
+print(json.dumps(r['@context'], indent=2))
+sub = [n for n in r['@graph'] if n.get('@id','').startswith('engram:ENG')][0]
+for k in ('engram:claimClass','engram:license','engram:maySharePlainly',
+          'prov:wasAttributedTo','prov:hadPrimarySource','engram:supersededBy'):
+    if k in sub: print(f'{k:24}', json.dumps(sub[k]))
+pol = sub.get('odrl:hasPolicy', {})
+print('odrl permissions        ', json.dumps(pol.get('odrl:permission')))
+print('odrl prohibitions       ', json.dumps(pol.get('odrl:prohibition')))
+"
+{
+  "prov": "http://www.w3.org/ns/prov#",
+  "engram": "https://plur.ai/ns/engram#",
+  "pa": "https://w3id.org/prov-agent#",
+  "odrl": "http://www.w3.org/ns/odrl/2/",
+  "xsd": "http://www.w3.org/2001/XMLSchema#"
+}
+engram:claimClass        "documented"
+engram:license           "cc-by-4.0"
+engram:maySharePlainly   true
+prov:wasAttributedTo     {"@id": "engram:agent/local:maintainer"}
+prov:hadPrimarySource    {"@id": "https://example.org/runbook"}
+engram:supersededBy      [{"@id": "engram:ENG-2026-08-23-003"}]
+odrl permissions         [{"odrl:action": ["odrl:use", "odrl:reproduce", "odrl:distribute", "odrl:derive"], "odrl:duty": [{"odrl:action": "odrl:attribute"}]}]
+odrl prohibitions        null
+
+# Valid W3C PROV in JSON-LD, with licences expressed as ODRL policy.
+
+# Checked against two outside implementations, not only our own.
+
+Done. The throwaway store is deleted on exit.
+

@@ -1,0 +1,133 @@
+{
+  "@context": {
+    "prov": "http://www.w3.org/ns/prov#",
+    "engram": "https://plur.ai/ns/engram#",
+    "pa": "https://w3id.org/prov-agent#",
+    "odrl": "http://www.w3.org/ns/odrl/2/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "@graph": [
+    {
+      "@id": "engram:record/ENG-2026-08-12-002",
+      "@type": [
+        "prov:Bundle",
+        "prov:Entity"
+      ],
+      "prov:generatedAtTime": {
+        "@value": "2026-08-21T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "engram:describes": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "engram:recordIsSelfContained": true
+    },
+    {
+      "@id": "engram:ENG-2026-08-12-002",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "procedural",
+      "engram:scope": "group:swarm",
+      "engram:status": "active",
+      "engram:commitment": "decided",
+      "engram:contentHash": "sha256:14f51882a7cca2b83a12de817db874e8d564b72d3512bd2a5b7f552f090a5aa8",
+      "prov:generatedAtTime": {
+        "@value": "2026-08-12T06:45:51.426Z",
+        "@type": "xsd:dateTime"
+      },
+      "odrl:hasPolicy": {
+        "@type": "odrl:Set",
+        "odrl:permission": [
+          {
+            "odrl:action": "odrl:use",
+            "odrl:duty": [
+              {
+                "odrl:action": "odrl:attribute"
+              },
+              {
+                "odrl:action": "odrl:shareAlike"
+              }
+            ]
+          }
+        ]
+      },
+      "engram:tags": [
+        "swarm",
+        "grants",
+        "octant",
+        "golem",
+        "privacy",
+        "quadratic-funding",
+        "pss",
+        "act",
+        "epoch-13"
+      ],
+      "engram:validUntil": "2026-10-21",
+      "prov:hadPrimarySource": {
+        "@id": "https://octant.substack.com/p/epoch-13-the-privacy-round"
+      }
+    },
+    {
+      "@id": "engram:act/ENG-2026-08-12-002-engram_created",
+      "@type": [
+        "prov:Activity",
+        "engram:Learn"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-12T06:45:51.426Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-12T06:45:51.426Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:generated": {
+        "@id": "engram:ENG-2026-08-12-002"
+      }
+    },
+    {
+      "@id": "engram:act/INJ-1786719359846-2j0000",
+      "@type": [
+        "prov:Activity",
+        "engram:Inject"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-14T14:55:59.846Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-14T14:55:59.846Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:used": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "engram:usedAlongsideCount": 5,
+      "engram:queryHash": "aeb910b048784127",
+      "engram:session": "engram:session/94de305f-d682-4721-b0e7-34fbf588ad1f"
+    },
+    {
+      "@id": "engram:act/INJ-1786719359848-2n0000",
+      "@type": [
+        "prov:Activity",
+        "engram:Inject"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-14T14:55:59.848Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-14T14:55:59.848Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:used": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "engram:usedAlongsideCount": 5,
+      "engram:queryHash": "aeb910b048784127",
+      "engram:session": "engram:session/94de305f-d682-4721-b0e7-34fbf588ad1f"
+    }
+  ]
+}

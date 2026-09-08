@@ -256,7 +256,10 @@ describe('plur forget × namespaced ids and configured stores (#1119)', () => {
 
     const dangling = await cli(['forget', 'ENG-2026-09-01-007', '--scope'])
     expect(dangling.status).toBe(1)
-    expect(dangling.stderr).toContain('--scope requires a value')
+    // The dispatcher's flag allowlist now reports this first, because the
+    // merge put `--scope` into forget's FLAGS_WITH_VALUES (#986 + #1135).
+    // Either layer refusing is correct; assert the property, not the prose.
+    expect(dangling.stderr).toMatch(/--scope\b.*(requires|needs) a value/)
     expect(remoteStatus('ENG-2026-09-01-007')).toBe('active')
   }, TEST_TIMEOUT_MS)
 

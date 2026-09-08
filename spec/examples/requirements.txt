@@ -1,0 +1,7 @@
+# Outside implementations used to check provenance records.
+#
+# The point is that these share no code with ours. A record our own code
+# accepts proves nothing; a record the reference implementation accepts is
+# evidence.
+rdflib>=7.0
+prov>=2.0
