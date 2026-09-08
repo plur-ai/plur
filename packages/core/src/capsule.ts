@@ -121,6 +121,18 @@ export function readCapsule(buf: Buffer): ReadCapsuleResult {
   const header = CapsuleHeaderSchema.parse(parsedHeader)
 
   const isSigned = hasFlag(preamble.flags, CAPSULE_FLAGS.SIGNED)
+  // The reader mirrors the writer's §6.8 step 4 refusal: SIGNED with no signer,
+  // or a signer with SIGNED clear, is an envelope whose trailer nobody can
+  // interpret. Checked BEFORE the payload region is computed, because the
+  // flag decides where the payload ends — a capsule that lies about its
+  // signature otherwise fails as a size mismatch and the real defect is never
+  // named (spec vectors, #1022).
+  const signerPresent = header.signer !== null
+  if (isSigned !== signerPresent) {
+    throw new Error(
+      `readCapsule: SIGNED flag (${isSigned}) disagrees with header.signer (${signerPresent ? 'present' : 'null'}) — refusing ambiguous envelope`,
+    )
+  }
   const sigLen = isSigned ? ED25519_SIG_LEN : 0
   const payloadEnd = buf.length - sigLen
   if (payloadEnd < headerEnd) {

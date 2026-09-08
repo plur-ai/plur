@@ -66,6 +66,72 @@ Also in this release:
   hermes-agent** (#1120), so an upstream break arrives as a deduplicated issue
   rather than as silent drift.
 
+Pack lifecycle, from the review of #1044 (ENGRAM-STANDARD-v1 1.7, provenance
+profile 0.9):
+
+- **Install refuses a pack that declares a private engram.** `visibility:
+  private` written into a shipped `engrams.yaml` is the producer's own record
+  that the engram was not cleared to leave, shipped anyway; the pack is refused
+  with the ids named, and no option reaches past it (§5.6.1 step 2). An engram
+  that merely omits `visibility` still installs, held as private on this side
+  and reported as such — the default is the consumer's assignment, not the
+  producer's declaration. `PrivacyIssue.declared` tells the two apart.
+- **Neutralization is counted per field.** `InstallResult.neutralized`
+  reports `pinned_stripped` and `locked_downgraded`; the CLI prints both and
+  `plur_packs_install` returns both (with `integrity_check`, which it had also
+  dropped). A pack whose only host-overriding field was a locked commitment
+  used to install with no output at all. The preview warns about locked
+  commitments as it did about pinned.
+- **Provenance records are read defensively and reported fully.** A record
+  naming an engram the pack does not ship is counted as an orphan
+  (`PackProvenanceView.orphan_records`, profile §5.4.2) without being opened.
+  `engram:licenseSource` is a closed set: a value outside the four is treated
+  as absent and reported, never carried onto `licences[].sources`, which is now
+  typed `LicenseSource[]`. `plur packs preview` prints how each licence was
+  arrived at, not only whether somebody chose it.
+- **Unknown root manifest fields are preserved** (§10.3 rule 2). The Zod
+  manifest schema now passes them through at the root, matching the published
+  JSON Schema, and the manifest.yaml → SKILL.md upgrade carries them.
+  `metadata` stays closed (#1029).
+- **`readCapsule` refuses a `SIGNED` flag that disagrees with `header.signer`**
+  (§6.7 step 7, mirroring the writer's §6.8 step 4). Such a capsule used to
+  fail as a payload size mismatch, so the defect was never named.
+
+Second review round on the same branch:
+
+- **Install reports the four provenance counts** (§5.6.5). `InstallResult`
+  gains `provenance`, and both `plur packs install` and `plur_packs_install`
+  print or return it. The counts were computed by the preview the install
+  already runs and then dropped at every surface, so an installer who did not
+  separately run `plur packs preview` was told nothing — including about an
+  orphan record. The field is absent, not zeroed, when a pack ships no
+  provenance at all.
+- **An unreadable provenance record no longer refuses the pack.** Profile
+  §5.4.2 says a record a consumer cannot read MUST NOT abort the install; the
+  provenance reader complied and the file scan then flagged the same bytes as
+  unscannable, so a 17 MiB record refused the whole pack. A `provenance/`
+  record that is merely oversize or unreadable is now reported and skipped,
+  and the file does not travel into the installed copy. A symlink, a special
+  file or a truncated walk still refuses, wherever it is.
+- **`plur packs install --force` accepts an integrity mismatch.** The flag was
+  listed and wired to nothing, and `allowModified` was declared on
+  `InstallOptions` but narrowed away on `Plur.installPack`, so the standard's
+  own remedy for a false-positive scan — correct the pack, which moves its
+  hash — was unreachable through any shipped surface. `--force` does not reach
+  the three refusals §5.6.1 makes non-overridable.
+- **The scan surface is documented**, in `docs/pack-scan-surface.md`. §5.6.1
+  asks a consumer to write down what its scan matches so a producer can predict
+  a refusal; with the refusal unconditional, an undocumented surface made a
+  false positive unfixable by anyone who could not read the source.
+- **One record is one record.** Two engrams sharing an id named one file and it
+  was opened once per engram, so `record_count` double-counted and
+  `engrams_without_record` could reach zero, or go negative.
+- **A producer's manifest field named after a prototype member survives.** The
+  unknown-root-field carry-forward used `k in fm`, which walks the prototype
+  chain, so a field called `constructor`, `toString`, `valueOf` or
+  `hasOwnProperty` was dropped by the one path that rewrites a manifest. The
+  CLI's licence-source table had the mirror problem and is now a `Map`.
+
 Architecture audit (2026-09-03, `docs/audits/2026-09-03-architecture-audit.md`):
 fewer mechanisms, one drift bug fixed, no feature changes.
 

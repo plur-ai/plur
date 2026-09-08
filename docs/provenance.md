@@ -102,14 +102,31 @@ provenance:
 
 | Mode | What happens |
 |---|---|
-| `never` | Nothing is written. The default. |
-| `on_export` | A record is written when engrams leave, in a pack. **Recommended.** |
-| `always` | A record is written every time an engram is created. |
+| `never` | Nothing is written to your own store. The default. |
+| `on_export` | A record is written to your store when engrams leave in a pack. |
+| `always` | A record is written to your store every time an engram is created. |
 
 `never` is the default for two reasons. A record per engram repeats the history
 log, which already holds the same events. And a record only starts to matter when
 an engram **leaves** your machine — inside your own store it defends against
 almost nobody.
+
+> **This setting governs records kept in your own store. It does not govern what
+> a pack carries.**
+>
+> A pack ships provenance regardless of this setting, including on `never`. Turn
+> it off for one pack with `--no-provenance`.
+>
+> That is deliberate, and it follows from the same reasoning as the default. The
+> setting is `never` because a record inside your own store defends against
+> almost nobody — and a pack is the exact case where that stops being true. It is
+> the artifact that reaches somebody who was not there, so it is the one place a
+> record earns its keep. Every software supply chain settled on the same answer:
+> a bill of materials is produced as part of the build and travels inside the
+> artifact, rather than being something a publisher has to remember to ask for.
+>
+> A setting whose default is "off" should not quietly decide that packs go out
+> unattributed.
 
 ---
 
@@ -239,6 +256,13 @@ but a record distinguishes a licence somebody picked from one that arrived by
 default, and lists the unpicked one among the things nobody recorded. The
 licence is the one field here with legal weight, so it is the last one that
 should quietly look like a decision.
+
+There are four ways a licence gets there, not two — chosen for the engram,
+inherited from the pack it was exported in, the author's configured default, or
+the schema default nobody looked at — and `plur packs preview` prints which,
+under each licence line, when the pack's records say. A record that carries
+anything else in that field is read as though it said nothing: the four values
+are a closed set, and a stranger's free text does not become a fifth.
 
 **A licence is not permission to share.** It governs reuse of the content by
 somebody who already has it. Whether you may pass the memory on at all is a

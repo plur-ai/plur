@@ -2016,6 +2016,20 @@ function getAllToolDefinitions(): ToolDefinition[] {
           conflicts: result.conflicts,
           security: result.security,
           registry: result.registry,
+          // ENGRAM-STANDARD-v1 §5.6.5: what was neutralized, by field, and the
+          // integrity verdict with "shipped none" distinct from "matched". Both
+          // were computed and then dropped at this surface, so an agent
+          // installing a pack could not tell the user either.
+          neutralized: result.neutralized,
+          integrity_check: result.integrity_check,
+          // The four provenance counts §5.6.5 requires a consumer to report:
+          // records found against engrams shipped, how many were unreadable,
+          // how many name an engram the pack does not contain, and how many
+          // engrams have no record. Computed by the preview install already
+          // runs, and dropped at this surface until now — so an agent
+          // installing a pack could not tell the user any of it. Absent when
+          // the pack shipped no provenance directory at all.
+          provenance: result.provenance,
           success: true,
         }
       },

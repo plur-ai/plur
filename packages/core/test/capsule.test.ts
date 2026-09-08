@@ -196,3 +196,58 @@ describe('writeCapsule + readCapsule', () => {
     expect(verifyCapsuleIntegrity(tampered)).toBe(false)
   })
 })
+
+/**
+ * Invariant (§6.7 step 7, §6.8 step 4): the SIGNED flag and `header.signer`
+ * MUST agree. A capsule that sets one without the other has a trailer nobody
+ * can interpret, and it is refused for THAT reason — not for the size
+ * mismatch the flag happens to cause downstream, which is what the reader
+ * used to report and which a fixture could not tell from any other truncation.
+ */
+describe('SIGNED flag and header.signer must agree', () => {
+  const assemble = (flags: number, signer: unknown, trailer: Buffer = Buffer.alloc(0)) => {
+    const payload = Buffer.from('payload-bytes-for-the-signing-consistency-check')
+    const headerObj = {
+      schema: 'plur.capsule/1',
+      product_type: 'engram-pack',
+      manifest_summary: baseSummary,
+      payload: {
+        compression: 'none',
+        size_compressed: payload.length,
+        size_uncompressed: payload.length,
+        sha256: createHash('sha256').update(payload).digest('hex'),
+      },
+      created_at: '2026-04-30T20:30:00Z',
+      producer: baseProducer,
+      signer,
+    }
+    const headerJson = Buffer.from(JSON.stringify(headerObj), 'utf-8')
+    const preamble = serializeCapsulePreamble({ formatVersion: FORMAT_VERSION_V1, flags, headerLen: headerJson.length })
+    return Buffer.concat([preamble, headerJson, payload, trailer])
+  }
+
+  it('SIGNED set with signer: null is refused as an ambiguous envelope, not as a size mismatch', () => {
+    const buf = assemble(CAPSULE_FLAGS.SIGNED, null, Buffer.alloc(ED25519_SIG_LEN))
+    expect(() => readCapsule(buf)).toThrow(/SIGNED flag \(true\) disagrees with header\.signer \(null\)/)
+    expect(() => readCapsule(buf)).not.toThrow(/size mismatch/)
+  })
+
+  it('SIGNED set with signer: null and NO trailer is refused for the same reason', () => {
+    // Without the consistency check this one fails as "payload size mismatch"
+    // because the last 64 payload bytes are read as a signature.
+    const buf = assemble(CAPSULE_FLAGS.SIGNED, null)
+    expect(() => readCapsule(buf)).toThrow(/disagrees with header\.signer/)
+  })
+
+  it('a signer with SIGNED clear is refused too', () => {
+    const buf = assemble(0, { algo: 'ed25519', public_key: 'k'.repeat(44) })
+    expect(() => readCapsule(buf)).toThrow(/SIGNED flag \(false\) disagrees with header\.signer \(present\)/)
+  })
+
+  it('a signer with SIGNED set and a 64-byte trailer still reads (semantics RESERVED, bytes extracted)', () => {
+    const buf = assemble(CAPSULE_FLAGS.SIGNED, { algo: 'ed25519', public_key: 'k'.repeat(44) }, Buffer.alloc(ED25519_SIG_LEN, 7))
+    const r = readCapsule(buf)
+    expect(r.signature?.length).toBe(ED25519_SIG_LEN)
+    expect(r.header.signer?.algo).toBe('ed25519')
+  })
+})

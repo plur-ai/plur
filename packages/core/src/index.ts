@@ -254,7 +254,7 @@ export type { Engram, PreviousVersionRef } from './schemas/engram.js'
 export { ExtractionProvenanceSchema, getExtractionProvenance, type ExtractionProvenance } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
-export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView } from './packs.js'
+export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView, InstallResult, NeutralizedCounts } from './packs.js'
 export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
@@ -872,6 +872,8 @@ export {
   summariseProvenance,
   renderProvenanceSummary,
   assertDomainFields,
+  LICENSE_SOURCES,
+  type LicenseSource,
   type ProvenanceOptions,
   type DomainExtension,
   type PackProvenanceInput,
@@ -7419,7 +7421,11 @@ export class Plur {
    * and on prompt-injection text unless opts.allowInjection), clamps host-
    * overriding fields (pinned / locked), detects conflicts, records in registry.
    */
-  async installPack(source: string, opts?: { allowInjection?: boolean }): Promise<ReturnType<typeof installPack>> {
+  // `allowModified` was declared on `InstallOptions` and then narrowed away
+  // here, so no caller outside this module could ever pass it. That made the
+  // standard's own remedy for a false-positive scan — correct the pack and
+  // install it — unreachable, since correcting a pack moves the hash it shipped.
+  async installPack(source: string, opts?: { allowInjection?: boolean; allowModified?: boolean }): Promise<ReturnType<typeof installPack>> {
     const existing = await this._loadAllEngrams()
     return installPack(this.paths.packs, source, existing, opts)
   }

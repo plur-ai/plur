@@ -73,6 +73,23 @@ describe('packs CLI branches (#545)', () => {
       expect(res.stdout).toBe("Installed pack 'demo' (3 engrams)\n")
     })
 
+    it('install reports what was neutralized, per field (§5.6.5), and stays quiet when nothing was', async () => {
+      const altered = stubPlur({
+        async installPack() { return { name: 'demo', installed: 3, neutralized: { pinned_stripped: 2, locked_downgraded: 1 } } },
+      })
+      const res = await packsCommand(['install', './demo'], altered)
+      expect(res.exitCode).toBe(0)
+      expect(res.stdout).toBe(
+        "Installed pack 'demo' (3 engrams)\n"
+        + '  neutralized: pinned removed from 2 engram(s)\n'
+        + '  neutralized: commitment: locked downgraded to decided on 1 engram(s)\n',
+      )
+      const clean = stubPlur({
+        async installPack() { return { name: 'demo', installed: 3, neutralized: { pinned_stripped: 0, locked_downgraded: 0 } } },
+      })
+      expect((await packsCommand(['install', './demo'], clean)).stdout).toBe("Installed pack 'demo' (3 engrams)\n")
+    })
+
     it('uninstall', async () => {
       const res = await packsCommand(['uninstall', 'demo'], stubPlur())
       expect(res).toMatchObject({ exitCode: 0, stderr: '' })
