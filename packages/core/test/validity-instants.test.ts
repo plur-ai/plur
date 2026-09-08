@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
-  isCurrentlyValid, isNotYetValid, isExpired, isExpiredBeyondGrace,
+  isCurrentlyValid, isNotYetValid, isExpired, isExpiredBeyondGrace, pinToUtc,
 } from '../src/validity.js'
 import { Plur } from '../src/index.js'
 import { selectAndSpread } from '../src/inject.js'
@@ -76,10 +76,91 @@ describe('validity evaluator', () => {
     expect(isExpiredBeyondGrace(t, NOON, 5)).toBe(true)
   })
 
+  it('pins a zone-less timestamp to UTC, in any timezone (#1157)', () => {
+    // Asserted on the MECHANISM, not on behaviour, and deliberately so: the
+    // behavioural test below can only tell the difference when the host is not
+    // on UTC, and CI is on UTC. Left to that test alone, a reintroduction of
+    // this bug would ship green.
+    expect(pinToUtc('2026-09-07T11:00:00')).toBe('2026-09-07T11:00:00Z')
+    expect(pinToUtc('2026-09-07T11:00:00.500')).toBe('2026-09-07T11:00:00.500Z')
+    // Already zoned — must be left exactly as it is.
+    for (const zoned of [
+      '2026-09-07T11:00:00Z', '2026-09-07T11:00:00z',
+      '2026-09-07T11:00:00+02:00', '2026-09-07T11:00:00-05:00', '2026-09-07T11:00:00+0200',
+    ]) {
+      expect(pinToUtc(zoned), zoned).toBe(zoned)
+    }
+  })
+
+  it('reads a zone-less timestamp as UTC, not as host-local time (#1157)', () => {
+    // `Date.parse('2026-09-07T13:00:00')` resolves in the HOST's timezone, so
+    // the same stored engram would expire at different moments on different
+    // machines and a team sharing a store would disagree about which rules are
+    // live. TemporalSchema accepts any string and salvageRemoteRow copies
+    // server values verbatim, so naive timestamps do reach here.
+    //
+    // Asserted as an EQUIVALENCE to the explicit-Z form rather than against a
+    // hardcoded instant, so the test means the same thing in every timezone
+    // this suite runs in — including CI, which is UTC and would let the bug
+    // pass a naive assertion.
+    for (const [naive, zoned] of [
+      ['2026-09-07T13:00:00', '2026-09-07T13:00:00Z'],
+      ['2026-09-07T11:00:00', '2026-09-07T11:00:00Z'],
+      ['2026-09-07T13:00:00.500', '2026-09-07T13:00:00.500Z'],
+    ]) {
+      expect(isNotYetValid({ valid_from: naive } as never, NOON), naive)
+        .toBe(isNotYetValid({ valid_from: zoned } as never, NOON))
+      expect(isExpired({ valid_until: naive } as never, NOON), naive)
+        .toBe(isExpired({ valid_until: zoned } as never, NOON))
+    }
+  })
+
+  it('still honours an explicit offset rather than overriding it', () => {
+    // The guard must not blanket-append Z to values that already name a zone.
+    expect(isNotYetValid({ valid_from: '2026-09-07T15:00:00+02:00' } as never, NOON)).toBe(true)
+    expect(isNotYetValid({ valid_from: '2026-09-07T15:00:00+0200' } as never, NOON)).toBe(true)
+    expect(isNotYetValid({ valid_from: '2026-09-07T08:00:00-05:00' } as never, NOON)).toBe(true)
+  })
+
   it('treats an unparseable bound as absent rather than as hiding the engram', () => {
     expect(isCurrentlyValid({ valid_from: 'not-a-date' } as never, NOON)).toBe(true)
     expect(isCurrentlyValid({ valid_until: 'not-a-date' } as never, NOON)).toBe(true)
   })
+})
+
+/**
+ * The same question under a host that is NOT on UTC (#1157).
+ *
+ * Node re-reads `process.env.TZ` for each `Date` operation, so the timezone can
+ * be pinned for the duration of a test rather than only via the runner's
+ * environment. Worth doing explicitly: CI runs on UTC, where a naive timestamp
+ * and its explicit-Z twin are indistinguishable and every assertion below would
+ * pass with the defect present.
+ */
+describe('validity is host-timezone independent (#1157)', () => {
+  const REAL_TZ = process.env.TZ
+
+  afterEach(() => {
+    if (REAL_TZ === undefined) delete process.env.TZ
+    else process.env.TZ = REAL_TZ
+  })
+
+  it.each(['America/New_York', 'Asia/Tokyo', 'Pacific/Kiritimati', 'UTC'])(
+    'decides the same way in %s', (tz) => {
+      process.env.TZ = tz
+      // Sanity: the offset really did change for at least the non-UTC zones,
+      // so a green run cannot mean "TZ was ignored".
+      const shifted = new Date('2026-09-07T13:00:00').toISOString()
+      if (tz !== 'UTC') expect(shifted, tz).not.toBe('2026-09-07T13:00:00.000Z')
+
+      // 11:00 is the discriminating hour: it sits before NOON in UTC and after
+      // it in the western zones, so a host-local reading flips the answer.
+      expect(isNotYetValid({ valid_from: '2026-09-07T11:00:00' } as never, NOON), tz).toBe(false)
+      expect(isExpired({ valid_until: '2026-09-07T11:00:00' } as never, NOON), tz).toBe(true)
+      expect(isNotYetValid({ valid_from: '2026-09-07T13:00:00' } as never, NOON), tz).toBe(true)
+      expect(isExpired({ valid_until: '2026-09-07T13:00:00' } as never, NOON), tz).toBe(false)
+    },
+  )
 })
 
 describe('list(), recall() and injection agree, at instant granularity (#1150)', () => {

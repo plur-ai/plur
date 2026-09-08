@@ -193,6 +193,20 @@ const NEVER_STRIP = new Set(['visibility', 'pinned'])
 const warnedSalvages = new Set<string>()
 
 /**
+ * Thrown when a bounded request misses its deadline, at ANY phase.
+ *
+ * A distinct type rather than a message: `existsById()` has to re-word a
+ * timeout in its own terms, and matching on the text of another function's
+ * error is the kind of coupling that breaks silently when the wording changes.
+ */
+export class RemoteTimeoutError extends Error {
+  constructor(url: string, ms: number) {
+    super(`request to ${url} timed out after ${ms}ms`)
+    this.name = 'RemoteTimeoutError'
+  }
+}
+
+/**
  * A response whose body has already been read, inside the request deadline.
  *
  * `json` is present only for a 2xx (and is `undefined` when the payload would
@@ -325,7 +339,7 @@ export class RemoteStore {
     // clean; on failure the mark is refreshed.
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
-    const timedOut = () => new Error(`request to ${url} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`)
+    const timedOut = () => new RemoteTimeoutError(url, LOAD_FETCH_TIMEOUT_MS)
     try {
       let res: Response
       try {
@@ -745,25 +759,33 @@ export class RemoteStore {
    * budget is the same one `load()` uses, for the same reason.
    */
   async existsById(id: string): Promise<boolean> {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
-    let r: Response
+    // Uses the shared helper (#1155). It carried its OWN AbortController with
+    // `clearTimeout` in a `finally` around only the `fetch`, so `await
+    // r.json()` ran after the deadline was gone — the exact defect #1152 fixed
+    // everywhere else, surviving in the one method that had opted out of the
+    // helper. With headers delivered and the body stalled it had still not
+    // settled 120 seconds past its 30-second bound.
+    //
+    // That matters more here than anywhere else: both callers run this INSIDE
+    // the primary store lock, one probe per configured remote. Unbounded, it
+    // inherits undici's 300s `headersTimeout`, which exceeds the 180s
+    // `DEFAULT_ACQUIRE_TIMEOUT` — so every waiting `plur_learn` throws "Failed
+    // to acquire lock" and the engram is silently never stored. A hang here is
+    // not slow, it is lost writes.
+    let r: BoundedResponse
     try {
-      r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+      r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-        signal: ctrl.signal,
-      })
+      }, RemoteStore.readBounded)
     } catch (err) {
       // An abort is "cannot tell", not "absent" — the whole point of this
       // method — so it must surface as a throw like any other transport
       // failure, with a message that says which it was.
       throw new Error(
-        ctrl.signal.aborted
+        err instanceof RemoteTimeoutError
           ? `existence probe for ${id} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms against ${this.apiBase}`
           : `existence probe for ${id} failed against ${this.apiBase}: ${(err as Error).message}`,
       )
-    } finally {
-      clearTimeout(timer)
     }
     if (r.status === 404) return false
     if (!r.ok) throw new Error(`HTTP ${r.status} from ${this.apiBase}`)
@@ -772,7 +794,7 @@ export class RemoteStore {
     // envelope payloads on routes they do not recognise, and inferring
     // existence from the status line alone would turn that into a false
     // collision report on every forget.
-    const row = await r.json().catch(() => null) as { id?: unknown } | null
+    const row = (r.json ?? null) as { id?: unknown } | null
     return typeof row?.id === 'string' && row.id === id
   }
 
