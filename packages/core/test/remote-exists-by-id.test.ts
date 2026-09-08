@@ -6,8 +6,10 @@
  * distinction: treating an unreachable store as "not there" is how an id
  * collision goes unnoticed and the wrong engram gets retired (#831).
  *
- * It shipped with NO test of its own, including when this branch added the
- * timeout. That mattered because both callers run it INSIDE the primary store
+ * It shipped with NO test of its own, and the timeout it later grew guarded
+ * only the handshake: `clearTimeout` sat in a `finally` around the `fetch`,
+ * so the body read ran unbounded (#1155). That mattered because both callers
+ * run it INSIDE the primary store
  * lock, one probe per configured remote. Unbounded, it inherits undici's 300s
  * `headersTimeout`, which exceeds the 180s `DEFAULT_ACQUIRE_TIMEOUT` — so a
  * host that completes its handshake and then stalls makes every waiting
@@ -197,14 +199,35 @@ describe('every RemoteStore request is bounded', () => {
     await expect(settled).resolves.toMatch(/timed out after 30000ms/)
   })
 
+  it('existsById settles at the deadline when the body stalls (#1155)', async () => {
+    // The method that had opted out of the helper, and the one where a hang is
+    // worst: both callers hold the primary store lock while it runs, so an
+    // unbounded probe turns into "Failed to acquire lock" for every waiting
+    // plur_learn and the engram is silently never stored.
+    vi.useFakeTimers()
+    globalThis.fetch = stallingBody(200)
+
+    const settled = store().existsById('ENG-X-001').then(() => 'resolved', (e: Error) => e.message)
+    await vi.advanceTimersByTimeAsync(31_000)
+
+    // In this method's own words — a timeout is "cannot tell", never "absent".
+    await expect(settled).resolves.toMatch(/existence probe for ENG-X-001 timed out after 30000ms/)
+  })
+
   it('the bound is one shared helper, so a new endpoint inherits it', () => {
     // The reason this is a helper and not six call-site fixes: a rule enforced
     // by convention at N sites holds at N-1 of them. Asserted against the
     // source so a seventh bare `fetch` fails here rather than in production.
     const src = readFileSync(join(__dirname, '..', 'src', 'store', 'remote-store.ts'), 'utf8')
     const bare = [...src.matchAll(/await fetch\(/g)]
-    // Exactly two remain by design: `fetchBounded` itself, and the two paths
-    // that build their own AbortController (`load`'s pager, `existsById`).
-    expect(bare.length, 'a bare fetch was added without a timeout').toBeLessThanOrEqual(3)
+    // Exactly TWO, and now the comment and the number agree. This said "exactly
+    // two" while naming three and asserting <= 3, and the exemption it granted
+    // was wrong: `load`'s pager does read its body inside its own timer,
+    // `existsById` did not (#1155). It now uses the shared helper, so the third
+    // exemption is gone rather than documented.
+    //
+    // An equality assertion, not an upper bound: `<= 3` would have gone green
+    // for a NEW bare fetch the moment `existsById` stopped being one.
+    expect(bare.length, 'a bare fetch was added without a timeout').toBe(2)
   })
 })
