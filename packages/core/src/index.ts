@@ -5537,7 +5537,23 @@ export class Plur {
         // The justification was that `setPinned` had to keep a synchronous
         // signature. It is `async` since the 0.16 flip, so that reason is gone
         // and the honest version costs nothing.
-        const patched = await driver.patch(serverId, { pinned: pinned === true ? true : undefined })
+        // Send the BOOLEAN, including an explicit `false` (#1149).
+        //
+        // This read `pinned === true ? true : undefined`, mirroring the local
+        // branch above — but the two representations exist for opposite
+        // reasons. Locally the engram is rewritten WHOLE, so `undefined`
+        // drops the key and keeps unpinned rows out of the YAML. Here the
+        // object is a PARTIAL update, and `JSON.stringify` omits `undefined`,
+        // so the unpin left as `{}` — a server applying ordinary PATCH
+        // semantics changed nothing and returned the still-pinned row, which
+        // this method then reported as success.
+        //
+        // Measured on a loopback server against the real serializer: PATCH
+        // body `{}`, engram still pinned afterwards, no error raised. An
+        // unpin the user was told had worked had not happened on any other
+        // machine — and with the pinned set now quota-enforced at pin time,
+        // it also held budget nobody could reclaim.
+        const patched = await driver.patch(serverId, { pinned })
         if (patched) return patched
       } catch (err) {
         if (serverId !== id) throw err

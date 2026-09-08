@@ -17,6 +17,9 @@
  * It has been `async` since the 0.16 flip.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { createServer, type Server } from 'http'
+import { once } from 'events'
+import type { AddressInfo } from 'net'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -105,11 +108,21 @@ describe('setPinned() against a remote store', () => {
     expect(a).toEqual(b)
   })
 
-  it('unpinning sends pinned: undefined and returns the server engram', async () => {
+  it('unpinning sends an explicit false, and it survives JSON (#1149)', async () => {
+    // Was `expect(seen).toEqual({ pinned: undefined })` — an assertion that was
+    // true of the object and false of the request. `JSON.stringify` drops an
+    // undefined property, so the PATCH serialized to `{}`, the server applied
+    // nothing, and the still-pinned row came back reported as a successful
+    // unpin. `patch()`'s own optimistic-merge branch already says as much:
+    // "only defined update values are applied, mirroring what JSON.stringify
+    // actually sent to the server".
     let seen: Record<string, unknown> | undefined
     patchImpl = async (_id, body) => { seen = body; return serverEngram(false) }
     const res = await plur.setPinned('ENG-2026-0728-500', false)
-    expect(seen).toEqual({ pinned: undefined })
+    expect(seen).toEqual({ pinned: false })
+    // The assertion the old one could not make: it is still there after a round
+    // trip through the serializer the driver actually uses.
+    expect(JSON.parse(JSON.stringify(seen))).toEqual({ pinned: false })
     expect(res!.pinned).toBeUndefined()
   })
 })
@@ -235,5 +248,86 @@ describe('forget() when the remote refuses the delete', () => {
   it('a successful remote retire still succeeds', async () => {
     removeResult = true
     await expect(plur.forget('ENG-2026-0728-500', 'obsolete')).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * The same unpin, over a real socket through the real serializer (#1149).
+ *
+ * The suite above stubs `_getRemoteDriver`, so the body it inspects is a
+ * JavaScript object that never meets `JSON.stringify`. That is precisely the
+ * blind spot that let `{ pinned: undefined }` stand as an unpin for a release:
+ * the assertion was true of the object and false of the request, and no test
+ * looked at the request.
+ *
+ * These take the body off the wire and read the row back from the server, so a
+ * fix has to change what the server stores, not only what the caller passes.
+ */
+describe('setPinned() unpin over HTTP (#1149)', () => {
+  const ID = 'ENG-2026-0728-500'
+  const SCOPE = 'group:acme/eng'
+
+  let dir: string
+  let server: Server
+  let seen: Array<{ method: string; body: unknown }>
+  let stored: Record<string, unknown>
+  let plur: Plur
+
+  beforeEach(async () => {
+    seen = []
+    stored = { ...(serverEngram(true) as unknown as Record<string, unknown>) }
+
+    server = createServer(async (req, res) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of req) chunks.push(chunk as Buffer)
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined
+      seen.push({ method: req.method!, body })
+      res.setHeader('Content-Type', 'application/json')
+      if (req.method === 'PATCH') {
+        // Ordinary partial-update semantics: apply exactly what arrived.
+        Object.assign(stored, body)
+      }
+      res.end(JSON.stringify({ engram: { id: ID, scope: SCOPE, status: 'active', data: stored } }))
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+
+    dir = mkdtempSync(join(tmpdir(), 'plur-setpinned-http-'))
+    writeFileSync(join(dir, 'engrams.yaml'), 'engrams: []\n')
+    writeFileSync(join(dir, 'config.yaml'),
+      `stores:\n  - scope: "${SCOPE}"\n    url: "${url}"\n    token: "t"\n`)
+    plur = new Plur({ path: dir })
+    await plur.ready()
+  })
+
+  afterEach(async () => {
+    rmSync(dir, { recursive: true, force: true })
+    server.closeAllConnections()
+    await new Promise<void>(r => server.close(() => r()))
+  })
+
+  const patchBody = () => seen.find(s => s.method === 'PATCH')?.body
+
+  it('transmits pinned: false and leaves the server row unpinned', async () => {
+    await plur.setPinned(ID, false)
+    // The body was `{}` before: an unpin that asked the server for nothing.
+    expect(patchBody()).toEqual({ pinned: false })
+    expect(stored.pinned).toBe(false)
+  })
+
+  it('setPinnedAsync unpins over the wire too — the two must not drift', async () => {
+    await plur.setPinnedAsync(ID, false)
+    expect(patchBody()).toEqual({ pinned: false })
+    expect(stored.pinned).toBe(false)
+  })
+
+  it('still transmits pinned: true when pinning', async () => {
+    // The control. Without it, "send the field unconditionally" and "send the
+    // right value" are indistinguishable.
+    stored.pinned = undefined
+    await plur.setPinned(ID, true)
+    expect(patchBody()).toEqual({ pinned: true })
+    expect(stored.pinned).toBe(true)
   })
 })
