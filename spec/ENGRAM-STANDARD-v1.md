@@ -275,6 +275,27 @@ destroying any.
 | `type` | string | **R** | `behavioral` \| `terminological` \| `procedural` \| `architectural` | Top-level knowledge class. |
 | `scope` | string | **R** | free-form | Hierarchical namespace. Convention: `kind:path`, e.g. `global`, `project:my-app`, `group:plur/test`. |
 | `visibility` | string | | `private` \| `public` \| `template`, default `private` | Sharing posture. `private` engrams MUST NOT be exported (§5.4). `template` = shippable skeleton. |
+| `created_at` | string | | RFC 3339 instant | Timestamp of first mint. Immutable. |
+| `updated_at` | string | | RFC 3339 instant | Timestamp of the last mutation to content or lifecycle. |
+
+Both timestamps are OPTIONAL and deliberately **not** defaulted. An
+implementation MUST NOT synthesise `created_at` at load time for an engram that
+lacks it: a default stamps the load date onto every legacy record and destroys
+the provenance the field exists to carry. Absent means genuinely unknown.
+
+`updated_at` tracks mutation of the engram's *content or lifecycle* — statement,
+scope, commitment, relations, retirement. It MUST NOT be moved by reads, decay,
+injection, or feedback; those change `activation` and `usage`, which are
+separate state carrying their own timestamps. An implementation that bumps
+`updated_at` on read makes it indistinguishable from `activation.last_accessed`
+and useless for provenance.
+
+> **Added 2026-09-07.** Before this the object had no canonical creation time.
+> `sources[].stored_at` records a timestamp per write but is optional: a real
+> 5,477-engram store carried one on 2,765 of them, and `temporal.learned_at` on
+> 12. Consumers were left parsing the mint date out of the identifier — which is
+> date-only, is absent for any id not in the canonical form of §3.3, and is
+> wrong for a migrated or store-namespaced engram.
 
 ### 4.3 Content
 
@@ -405,7 +426,7 @@ ignore the values.
 | Field | Type | Range / enum | Semantics |
 |---|---|---|---|
 | `content_hash` | string | | Hash of normalized statement, for dedup. |
-| `commitment` | string | `exploring` \| `leaning` \| `decided` \| `locked` \| `draft` | Epistemic commitment level. `draft` marks the engram as pending human approval — core stores and recalls it normally; enforcement is left to deployments with a review queue. |
+| `commitment` | string | `exploring` \| `leaning` \| `decided` \| `locked` \| `draft` | Epistemic commitment level. `draft` marks the engram as pending human approval. A conforming implementation MUST NOT deliver a `draft` engram into an agent's context automatically; it MAY return one in response to an explicit retrieval, since reviewing an engram requires reading it. Feedback MUST NOT advance `draft` — relevance is not approval. |
 | `locked_at` | string | | When commitment became `locked`. |
 | `locked_reason` | string | | Why locked. |
 | `write_count` | integer | ≥0, default 1 | Same-scope re-learn count. Engram retires only at 0. Renamed from `reference_count` (#866); implementations MUST backfill on first parse. |
@@ -434,11 +455,18 @@ scope: project:my-app         # free-form §4.2
 All five of `id`, `statement`, `type`, `status`, `scope` are REQUIRED. Every
 other field is optional with the default given above.
 
-> **Note on `created_at`.** Some reference example documents show a top-level
-> `created_at` timestamp. It is **not** a validated field in v1 — it survives
-> only via the open-world rule (§4.1). Implementers SHOULD use `temporal.learned_at`
-> (or `sources[].stored_at`) for authoritative creation time. A future minor
-> version MAY promote a creation timestamp to a first-class field (§10.2).
+> **Note on `created_at` / `updated_at`.** Both are first-class OPTIONAL fields
+> as of 2026-09-07; see the §4.2 rows and the normative paragraph there. This
+> note previously said `created_at` was *not* a validated field and directed
+> implementers to `temporal.learned_at` instead — that text predates the change
+> and contradicted it 180 lines later in the same document.
+>
+> `temporal.learned_at` and `sources[].stored_at` remain valid and are not
+> deprecated, but neither is a substitute: on a real 5,477-engram store
+> `stored_at` was present on 2,765 records and `learned_at` on 12, so a consumer
+> relying on either sees most of the corpus as undated. Neither is defaulted,
+> and an absent `created_at` still means genuinely unknown rather than "the day
+> you loaded it".
 
 ### 4.14 Key invariants (normative)
 

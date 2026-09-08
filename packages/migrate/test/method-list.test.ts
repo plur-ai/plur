@@ -64,6 +64,11 @@ const ALWAYS_ASYNC = new Set([
   // could never have been sync; new in this release, so there is no pre-0.16
   // call site to rewrite.
   'repairContentHashes',
+  // Born async (#1142) — reports pinned-budget usage, and what a candidate pin
+  // would cost, for the quota `plur_pin` now enforces at pin time. Loads the
+  // corpus through the async PrimaryStore seam, so it could never have been
+  // sync; new in this release, so there is no pre-0.16 call site to rewrite.
+  'pinnedQuota',
 ])
 
 /** Public methods of `Plur`, mapped to whether they are declared `async`. */

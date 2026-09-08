@@ -396,6 +396,8 @@ sed -i '' "s/^version: .*/version: $VERSION/" packages/hermes/plugin.yaml
 echo "  ✓ packages/hermes/plugin.yaml"
 sed -i '' "s/^version: .*/version: $VERSION/" skills/plur-memory/SKILL.md
 echo "  ✓ skills/plur-memory/SKILL.md"
+sed -i '' "s/^version: .*/version: $VERSION/" skills/plur-create-engrams/SKILL.md
+echo "  ✓ skills/plur-create-engrams/SKILL.md"
 
 # Hermes npx-fallback CLI pin (#1) — the npx-fallback write path runs
 # @plur-ai/cli@$_NPX_CLI_VERSION; if it lags the release it runs a PRE-FIX CLI

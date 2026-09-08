@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer } from '../src/inject.js'
+import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer, assignLayer } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 import { daysSince } from '../src/decay.js'
 
@@ -49,6 +49,56 @@ describe('injection engine', () => {
     expect(result.tokens_used.directives).toBeLessThanOrEqual(500)
     expect(result.directives.length).toBeGreaterThan(0)
     expect(result.constraints).toBeDefined()
+  })
+
+  it('reserves a budget floor for constraints under heavy directive competition', () => {
+    // The 2026-09-07 regression. Selection used to be one pool split by
+    // polarity afterwards, so constraints competed with every other engram on
+    // task similarity. Long, keyword-dense directives crowded them out and a
+    // "never name a customer" rule landed 45,000 chars into the payload.
+    // Here 60 fat, perfectly on-topic directives swamp 3 short constraints.
+    const noise = Array.from({ length: 60 }, (_, i) => makeEngram({
+      id: `ENG-2026-0319-${String(i + 10).padStart(3, '0')}`,
+      statement: `Deploy runbook ${i}: always deploy carefully. ${'deploy '.repeat(60)}`,
+    }))
+    const rules = [
+      makeEngram({ id: 'ENG-2026-0319-001', statement: 'Never deploy on a Friday' }),
+      makeEngram({ id: 'ENG-2026-0319-002', statement: 'Do not deploy without a rollback' }),
+      makeEngram({ id: 'ENG-2026-0319-003', statement: 'Never deploy unreviewed code' }),
+    ]
+    const result = selectAndSpread(
+      { prompt: 'deploy the app', maxTokens: 2000 },
+      [...noise, ...rules], []
+    )
+    // Every constraint survives: they are filled first, from a reserved floor.
+    expect(result.constraints.length).toBe(3)
+    // And they lead the payload, so a head-first truncation keeps them.
+    const ids = [...result.constraints, ...result.directives].map(e => e.id)
+    expect(ids.slice(0, 3).sort()).toEqual([
+      'ENG-2026-0319-001', 'ENG-2026-0319-002', 'ENG-2026-0319-003',
+    ])
+    // The floor is a floor, not a cap — directives still get the rest.
+    expect(result.directives.length).toBeGreaterThan(0)
+    expect(result.tokens_used.directives).toBeLessThanOrEqual(2000)
+  })
+
+  it('gives unused constraint floor back to directives', () => {
+    // The reservation must cost nothing when there are few constraints.
+    const many = Array.from({ length: 40 }, (_, i) => makeEngram({
+      id: `ENG-2026-0319-${String(i + 10).padStart(3, '0')}`,
+      statement: `Rule ${i}: always deploy carefully`,
+    }))
+    const withFloor = selectAndSpread({ prompt: 'deploy the app', maxTokens: 2000 }, many, [])
+    // No constraints at all → the 40% floor must not be stranded: every
+    // directive the per-domain cap allows still gets selected.
+    //
+    // This asserted tokens_used > 60% of budget until #1145 made engrams
+    // ~4x cheaper by estimating the rendered form instead of the serialised
+    // record. Everything now fits well inside the budget, so an absolute
+    // token floor tested the old inflated cost rather than the reservation.
+    expect(withFloor.constraints.length).toBe(0)
+    expect(withFloor.directives.length).toBe(10)   // MAX_PER_DOMAIN, not the budget
+    expect(withFloor.tokens_used.directives).toBeLessThanOrEqual(2000)
   })
 
   it('splits dont-pattern engrams into constraints', () => {
@@ -203,6 +253,145 @@ describe('injection engine', () => {
       const wire = [...result.directives, ...result.constraints, ...result.consider]
         .find(e => e.id === 'ENG-2026-0347-004')!
       expect(formatWithLayer([wire], 3)).not.toContain('EXPIRED')
+    })
+  })
+
+  describe('contraindications reach the agent (#1140)', () => {
+    const qualified = () => makeEngram({
+      id: 'ENG-2026-1140-001',
+      statement: 'Retry order creation after a timeout',
+      contraindications: ['Do not replay after the idempotency retention window expires'],
+    })
+
+    const wireFor = (e: any) => {
+      const r = selectAndSpread({ prompt: 'retry order creation timeout', maxTokens: 5000 }, [e], [])
+      return [...r.directives, ...r.constraints, ...r.consider].find(x => x.id === e.id)!
+    }
+
+    // A rule delivered without its condition is not a shorter rule, it is a
+    // different and wronger one. The field existed, was populated, and no
+    // formatter read it — so a qualified record arrived as unconditional.
+    for (const layer of [2, 3] as const) {
+      it(`layer ${layer} carries the condition, not just the instruction`, () => {
+        const text = formatWithLayer([wireFor(qualified())], layer)
+        expect(text).toContain('Retry order creation after a timeout')
+        expect(text).toContain('idempotency retention window')
+      })
+    }
+
+    it('says nothing extra when there are no contraindications', () => {
+      const plain = makeEngram({ id: 'ENG-2026-1140-002', statement: 'Retry order creation after a timeout' })
+      expect(formatWithLayer([wireFor(plain)], 2)).not.toContain('Does NOT apply')
+    })
+  })
+
+  describe('recency is not a verification claim (#1139)', () => {
+    // activation.last_accessed is re-anchored by applyFeedback() on ANY signal,
+    // including negative. Rendering it as "Last verified" turned disputing a
+    // claim into evidence that the claim had just been confirmed.
+    it('labels activation recency as activity, never as verification', () => {
+      const e = makeEngram({
+        id: 'ENG-2026-1139-001',
+        statement: 'Deploy using blue-green strategy',
+        activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: '2026-09-07' },
+      })
+      const r = selectAndSpread({ prompt: 'deploy the app', maxTokens: 5000 }, [e], [])
+      const wire = [...r.directives, ...r.constraints, ...r.consider].find(x => x.id === e.id)!
+      const text = formatWithLayer([wire], 3)
+      expect(text).toContain('Last active: 2026-09-07')
+      expect(text).not.toContain('Last verified')
+    })
+  })
+
+  describe('the pinned sub-budget binds ACROSS section passes', () => {
+    // selectAndSpread splits selection into three passes over one budget:
+    // constraints floor, directives, constraints slack. Each was handed
+    // `pinnedBudgetBase = maxTokens`, so the 50% pinned cap was granted afresh
+    // per pass — three passes, 150% of the budget available to pinned.
+    //
+    // Measured A/B at maxTokens 2000 with 40 pinned and 40 unpinned candidates:
+    // main selected 5 pinned / 5 unpinned; the split selected 27 pinned and
+    // ZERO unpinned, filling 1998 of 2000 tokens. Pinned had eaten the whole
+    // injection and no relevance-scored engram reached the agent — the exact
+    // failure the sub-budget exists to prevent, arrived at from the other side.
+    //
+    // Fixed by sharing one spend ledger across the passes. Asserted on the
+    // COMBINED share, because per-pass assertions are what missed it.
+    const fat = (n: number, extra: Record<string, unknown>) => EngramSchema.parse({
+      id: `ENG-2026-0808-${String(n).padStart(3, '0')}`,
+      statement: `Never deploy on a Friday, rule ${n}. ${'deploy '.repeat(40)}`,
+      type: 'behavioral', scope: 'global', status: 'active', ...extra,
+    })
+
+    const scenario = () => {
+      const engrams = [
+        // Pinned, and phrased as prohibitions so they route to constraints.
+        ...Array.from({ length: 40 }, (_, i) => fat(i + 1, { pinned: true, polarity: 'dont' })),
+        // Unpinned, relevance-scored, matching the prompt.
+        ...Array.from({ length: 40 }, (_, i) => fat(i + 100, {})),
+      ]
+      return selectAndSpread({ prompt: 'deploy the app on friday', maxTokens: 2000 }, engrams, [])
+    }
+
+    it('never lets pinned exceed its share of the whole budget', () => {
+      const r = scenario()
+      const all = [...r.directives, ...r.constraints]
+      const pinnedCost = all
+        .filter(e => (e as { pinned?: boolean }).pinned === true)
+        .reduce((acc, e) => acc + estimateTokens(e as never), 0)
+
+      // 50% of 2000. Before the fix this reached 1998.
+      expect(pinnedCost).toBeLessThanOrEqual(2000 * 0.5)
+    })
+
+    it('still admits relevance-scored engrams — pinned must not starve recall', () => {
+      const r = scenario()
+      const all = [...r.directives, ...r.constraints]
+      const unpinned = all.filter(e => (e as { pinned?: boolean }).pinned !== true)
+
+      // This was ZERO. A budget entirely consumed by pins is not an injection,
+      // it is a fixed prompt.
+      expect(unpinned.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('omitted pinned engrams are reported (#1142)', () => {
+    // fillTokenBudget takes ScoredEngram[] = Engram + keyword_match/raw_score/
+    // score, the same shape the sub-cap test below builds. selectAndSpread
+    // stamps all three from one raw score; mirror that. estimateTokens strips
+    // them before serializing, so they do not affect the token math here.
+    const pinnedOf = (n: number, statement: string) => ({
+      ...makeEngram({
+        id: `ENG-2026-1142-${String(n).padStart(3, '0')}`,
+        statement,
+        pinned: true,
+      }),
+      keyword_match: 1.0,
+      raw_score: 1.0,
+      score: 1.0,
+    })
+
+    it('names the pinned engrams that did not fit, and why', () => {
+      // The reported repro: pinned records competing for a 50% sub-budget while
+      // overall capacity remains. Silence here is what let 36 of 46 pinned
+      // engrams vanish from a real store with nothing in the output saying so.
+      const many = Array.from({ length: 12 }, (_, i) =>
+        pinnedOf(i + 1, `Never deploy on a Friday, rule ${i}. ${'deploy '.repeat(40)}`))
+      const out = fillTokenBudget(many, 1000)
+
+      expect(out.omitted_pinned.length).toBeGreaterThan(0)
+      expect(out.selected.length + out.omitted_pinned.length).toBe(many.length)
+      for (const o of out.omitted_pinned) {
+        expect(o.id).toMatch(/^ENG-2026-1142-/)
+        expect(o.cost).toBeGreaterThan(0)
+        expect(['pinned-sub-budget', 'total-budget']).toContain(o.reason)
+      }
+    })
+
+    it('reports nothing when the whole pinned set fits', () => {
+      const out = fillTokenBudget([pinnedOf(1, 'Never force-push to main')], 5000)
+      expect(out.selected).toHaveLength(1)
+      expect(out.omitted_pinned).toEqual([])
     })
   })
 
@@ -463,5 +652,81 @@ describe('spread_drops counter', () => {
     })
     const result = selectAndSpread({ prompt: 'deploy', maxTokens: 5000 }, [e], [])
     expect(result.spread_drops).toBeUndefined()
+  })
+})
+
+describe('estimateTokens measures the rendered form (#1145)', () => {
+  const mk = (o: Record<string, unknown> = {}) => EngramSchema.parse({
+    id: 'ENG-2026-1145-001',
+    statement: 'Never force-push to a protected branch',
+    type: 'behavioral', scope: 'global', status: 'active',
+    ...o,
+  }) as never
+
+  it('does not charge for runtime state the model never receives', () => {
+    // The defect: serialising the whole record billed activation, usage,
+    // feedback_signals, injection_count and sources[] against the injection
+    // budget. None of them reach any layer. Two engrams with identical
+    // delivered text must cost the same however much history one carries.
+    const fresh = mk()
+    const veteran = mk({
+      feedback_signals: { positive: 40, negative: 3, neutral: 12 },
+      usage: { injections: 900, hits: 400, misses: 500, last_hit_at: '2026-09-07' },
+      injection_count: 900,
+      recurrence_count: 55,
+      episode_ids: Array.from({ length: 20 }, (_, i) => `EP-2026-09-07-${i}`),
+    })
+    expect(estimateTokens(veteran)).toBe(estimateTokens(fresh))
+  })
+
+  it('tracks the length of what is actually emitted', () => {
+    const short = mk()
+    const long = mk({ statement: 'Never force-push to a protected branch. '.repeat(10) })
+    expect(estimateTokens(long)).toBeGreaterThan(estimateTokens(short) * 3)
+  })
+
+  it('counts rationale and contraindications, which do render', () => {
+    const bare = mk()
+    const withRationale = mk({ rationale: 'A force-push rewrites history other clones already fetched.' })
+    const withBoth = mk({
+      rationale: 'A force-push rewrites history other clones already fetched.',
+      contraindications: ['A branch nobody else has fetched'],
+    })
+    expect(estimateTokens(withRationale)).toBeGreaterThan(estimateTokens(bare))
+    expect(estimateTokens(withBoth)).toBeGreaterThan(estimateTokens(withRationale))
+  })
+
+  it('stays within tolerance of the real rendered length', () => {
+    // The estimate and the formatter must not drift. If a formatter starts
+    // emitting a field the estimate ignores, the budget silently stops
+    // describing the context — the defect this replaced.
+    const e = mk({ rationale: 'A force-push rewrites history other clones already fetched.', domain: 'git.safety' })
+    const r = selectAndSpread({ prompt: 'force-push protected branch', maxTokens: 5000 }, [e as never], [])
+    const wire = [...r.directives, ...r.constraints, ...r.consider][0]
+    const rendered = formatWithLayer([wire], 3).length / 4
+    const estimated = estimateTokens(e)
+    expect(Math.abs(estimated - rendered) / rendered).toBeLessThan(0.35)
+  })
+})
+
+describe('constraints render with full context (#1144)', () => {
+  it('gives a prohibition the same render depth as a directive', () => {
+    // A constraint used to render at layer 2: statement only, no rationale,
+    // so the model got the rule without any account of when it stops applying.
+    expect(assignLayer('constraints')).toBe(assignLayer('directives'))
+  })
+
+  it('emits the rationale of a constraint', () => {
+    const rule = EngramSchema.parse({
+      id: 'ENG-2026-1144-001',
+      statement: 'Never deploy on a Friday',
+      rationale: 'Nobody is on call over the weekend to roll it back.',
+      type: 'behavioral', scope: 'global', status: 'active',
+    })
+    const r = selectAndSpread({ prompt: 'deploy on friday', maxTokens: 5000 }, [rule as never], [])
+    expect(r.constraints.length).toBe(1)
+    const text = formatWithLayer(r.constraints, assignLayer('constraints'))
+    expect(text).toContain('Never deploy on a Friday')
+    expect(text).toContain('Nobody is on call')
   })
 })

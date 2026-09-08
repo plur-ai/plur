@@ -11,7 +11,7 @@ import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namesp
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
-import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
+import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -2878,8 +2878,18 @@ export class Plur {
       const scored = await embeddingSearchWithScores(candidates, query, candidates.length, this.paths.root)
       if (scored.length === 0) return { mode: 'hash-only' }
 
+      // Carry the neighbour's own text, not just its id. Reporting id+score
+      // alone makes "read the neighbour first" an extra tool call, and that
+      // call does not get made (2026-09-07: four near-identical engrams in one
+      // session, every one reporting an unread 0.86-0.87 neighbour).
       const ranked = scored
-        .map(s => ({ id: s.engram.id, score: s.score }))
+        .map(s => ({
+          id: s.engram.id,
+          score: s.score,
+          statement: s.engram.statement.length > 240
+            ? `${s.engram.statement.slice(0, 240)}…`
+            : s.engram.statement,
+        }))
         .sort((a, b) => b.score - a.score)
       const top = ranked[0]
       if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
@@ -3132,6 +3142,8 @@ export class Plur {
       commitment,
       locked_at: commitment === 'locked' ? now : undefined,
       locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
+      created_at: now,
+      updated_at: now,
       write_count: 1,
       injection_count: 0,
       sources: [this._buildSourceEntry(scope, context)],
@@ -5135,6 +5147,11 @@ export class Plur {
       tokens_used: tokensUsed,
       injected_ids,
       ...(injected_packs ? { injected_packs } : {}),
+      // Pinned engrams that did not make it (#1142). Surfaced here because the
+      // internal result carried it and the public shape dropped it, so the
+      // reporting existed and never reached a caller — the same silent-omission
+      // shape the field was added to close.
+      ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     }
   }
@@ -5545,7 +5562,13 @@ export class Plur {
       // Leak guard (#353): local-resident → demote a sensitive update in place.
       // LOW-2: scan context fields too, not just the statement.
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
-      const toWrite = demote ? { ...updated, ...demote } : updated
+      // #1138 review: stamp `updated_at` on the mutation path, not only on
+      // creation and retirement. Without this it equalled `created_at` for
+      // every engram that had ever been edited — worse than an absent field,
+      // because it reads as authoritative. The spec added alongside it names
+      // statement, scope, commitment, relations and retirement as the tracked
+      // mutations, and this is where four of the five actually happen.
+      const toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
       engrams[idx] = toWrite
       // Incremental write (#740): only the updated engram row changed.
       await this._updateEngrams(engrams, [toWrite])
@@ -5621,7 +5644,12 @@ export class Plur {
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
-      const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
+      // #1138 review: pinning is a mutation, so it moves `updated_at`.
+      const updated: Engram = {
+        ...e,
+        pinned: pinned === true ? true : undefined,
+        updated_at: new Date().toISOString(),
+      }
       engrams[idx] = updated
       // Incremental write (#740): only the (un)pinned engram row changed.
       await this._updateEngrams(engrams, [updated])
@@ -5691,6 +5719,85 @@ export class Plur {
   async listPinned(): Promise<Engram[]> {
     const all = await this._loadAllEngrams()
     return all.filter(e => (e as any).pinned === true && e.status === 'active')
+  }
+
+  /**
+   * Pinned-budget accounting (#1142).
+   *
+   * The spec says `pinned` is an "always-load flag". The selector did not
+   * honour that: it capped pinned at a share of the injection budget and
+   * silently skipped the overflow, so pinning something could quietly evict
+   * something else the user had also pinned. Measured on a real store,
+   * lowering `injection_budget` from 56,000 to 12,000 dropped 36 of 46 pinned
+   * engrams with nothing in the output saying so.
+   *
+   * The fix is not a better eviction rule — it is to stop over-committing.
+   * Pinning is a deliberate act with a human present, so the quota is checked
+   * THERE, where someone can decide, instead of at injection time where nobody
+   * can. Over quota, the user unpins something or raises the limit.
+   */
+  async pinnedQuota(candidateId?: string): Promise<{
+    quota: number
+    used: number
+    free: number
+    count: number
+    over: boolean
+    /** Pinned engrams, most-expendable first — the unpin suggestion order. */
+    entries: Array<{ id: string; statement: string; cost: number; net_feedback: number; last_accessed: string | null }>
+    /** Set when `candidateId` names a not-yet-pinned engram: what pinning it would cost. */
+    candidate?: { id: string; cost: number; would_be: number; fits: boolean }
+  }> {
+    const budget = this.config.injection_budget ?? 2000
+    const ratio = this.config.injection?.pinned_ratio ?? 0.5
+    const quota = Math.floor(budget * ratio)
+    const pinned = await this.listPinned()
+
+    const entries = pinned.map(e => {
+      const fb = e.feedback_signals
+      return {
+        id: e.id,
+        statement: e.statement,
+        cost: estimateTokens(e as never),
+        net_feedback: (fb?.positive ?? 0) - (fb?.negative ?? 0),
+        last_accessed: e.activation?.last_accessed ?? null,
+      }
+    })
+
+    // Ordered by COST, largest first — "what frees the most budget", which is
+    // arithmetic. Deliberately NOT an expendability ranking.
+    //
+    // The first version sorted by net feedback ascending, on the theory that
+    // an unendorsed engram is a safe cut. Run against a real store it proposed
+    // unpinning the demo-redaction rule, "never name enterprise customers",
+    // and "customer-named work runs in a dedicated session" — the three rules
+    // whose absence had caused a live disclosure that same day. The reason is
+    // structural: only 275 of 7,920 injections were ever rated, so ~96% of
+    // engrams sit at net_feedback 0 and the sort collapses into noise.
+    //
+    // `net_feedback` and `last_accessed` are still reported per entry, because
+    // they are real signals a human can weigh. They are just not a ranking,
+    // and presenting them as one puts the system's thumb on a decision it has
+    // no basis for.
+    entries.sort((a, b) => b.cost - a.cost)
+
+    const used = entries.reduce((n, e) => n + e.cost, 0)
+
+    let candidate: { id: string; cost: number; would_be: number; fits: boolean } | undefined
+    if (candidateId) {
+      const e = await this.getById(candidateId)
+      // Already-pinned is a no-op re-pin, not a new commitment — it must not
+      // be charged twice or it would refuse itself.
+      if (e && (e as { pinned?: boolean }).pinned !== true) {
+        const cost = estimateTokens(e as never)
+        candidate = { id: e.id, cost, would_be: used + cost, fits: used + cost <= quota }
+      }
+    }
+
+    return {
+      quota, used, free: Math.max(0, quota - used),
+      count: entries.length, over: used > quota, entries,
+      ...(candidate ? { candidate } : {}),
+    }
   }
 
   /**
@@ -5968,6 +6075,7 @@ export class Plur {
 
       if (newCount === 0) {
         engram.status = 'retired'
+        engram.updated_at = new Date().toISOString()
         if (reason && !engram.rationale) {
           engram.rationale = `Retired: ${reason}`
         }
@@ -6040,6 +6148,7 @@ export class Plur {
 
         if (newCount === 0) {
           engram.status = 'retired'
+          engram.updated_at = new Date().toISOString()
           if (reason && !engram.rationale) {
             engram.rationale = `Retired: ${reason}`
           }
@@ -6509,6 +6618,7 @@ export class Plur {
       const t = fresh.find(e => e.id === id)
       if (!t) return
       t.status = 'retired'
+      t.updated_at = new Date().toISOString()
       if (!t.rationale) t.rationale = `Retired: rescoped to ${toScope} as ${newId}`
       const rel = t.relations ?? { broader: [], narrower: [], related: [], conflicts: [], supersedes: [], superseded_by: [] }
       rel.superseded_by = rel.superseded_by ?? []
@@ -8060,6 +8170,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   private async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
     const stamp = (engram: Engram): void => {
       engram.status = 'retired'
+      engram.updated_at = new Date().toISOString()
       if (!engram.rationale) engram.rationale = `Retired: ${reason}`
     }
     const foundInPrimary = await this._withStoreLock(this.paths.engrams, async () => {

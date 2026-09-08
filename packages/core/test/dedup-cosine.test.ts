@@ -110,6 +110,18 @@ describe('cosine dedup without an LLM (#854)', () => {
     expect(result.decision).toBe('ADD')
   })
 
+  it('carries the neighbour\'s own statement, not just its id and score', async () => {
+    // 2026-09-07: reporting id+score alone made "read the neighbour before you
+    // write" cost an extra tool call, so it was never made — four
+    // near-identical engrams landed in one session, each reporting an unread
+    // 0.86-0.87 neighbour. The report has to be actionable where it is read.
+    const deps = makeDeps([{ id: candidate.id, score: 0.91 }])
+
+    const result = await learnAsync(deps, restatement)
+
+    expect(result.dedup?.near_duplicates?.[0]?.statement).toBe(candidate.statement)
+  })
+
   it('reports what it found so an ADD is never silently un-deduped', async () => {
     const deps = makeDeps([{ id: candidate.id, score: 0.41 }])
 

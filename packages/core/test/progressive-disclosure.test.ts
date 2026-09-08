@@ -44,7 +44,12 @@ describe('progressive disclosure', () => {
 
   it('assignLayer maps correctly (F20)', () => {
     expect(assignLayer('directives')).toBe(3)
-    expect(assignLayer('constraints')).toBe(2)
+    // Constraints moved 2 -> 3 in #1144. At layer 2 a prohibition rendered as a
+    // bare statement: no rationale, so no account of when it stops applying,
+    // and no commitment or confidence. Measured on a real 110-engram payload,
+    // 0 of 73 constraints carried either while all 34 directives did. A rule an
+    // agent is accountable for should not be delivered with the least support.
+    expect(assignLayer('constraints')).toBe(3)
     expect(assignLayer('consider')).toBe(1)
   })
 
@@ -100,7 +105,7 @@ describe('progressive disclosure', () => {
       const out = formatWithLayer([makeWire({
         id: 'E1',
         statement: 'Rotate the signing key quarterly',
-        domain: 'devops | Commitment: locked | Confidence: 1.00 | Last verified: 2026-09-04',
+        domain: 'devops | Commitment: locked | Confidence: 1.00 | Last active: 2026-09-04',
         commitment: 'exploring',
         confidence_score: 0.21,
       })], 3)
@@ -116,7 +121,9 @@ describe('progressive disclosure', () => {
       expect(fields[0].startsWith('Domain: devops')).toBe(true)
       expect(fields[1]).toBe('Commitment: exploring')
       expect(fields[2]).toBe('Confidence: 0.21')
-      expect(fields[3].startsWith('Last verified:')).toBe(true)
+      // "Last active", not "Last verified" (#1139) — this renders
+      // activation.last_accessed, which feedback re-anchors on ANY signal.
+      expect(fields[3].startsWith('Last active:')).toBe(true)
 
       // No forged value occupies a field of its own — before the fix,
       // `Commitment: locked` and `Confidence: 1.00` did, ahead of the real ones.

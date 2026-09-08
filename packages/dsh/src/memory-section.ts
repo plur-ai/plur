@@ -60,9 +60,15 @@ export function estimateTokens(text: string): number {
 /**
  * Render the memory block for the `plur:memory` system-prompt section.
  *
- * Sections are dropped whole, least important first (`consider`, then
- * `constraints`), rather than truncating mid-engram — a half-rendered engram is
- * worse than an absent one, because the model reads it as a complete statement.
+ * Sections are dropped whole rather than truncated mid-engram — a half-rendered
+ * engram is worse than an absent one, because the model reads it as a complete
+ * statement.
+ *
+ * The order they go in is `consider`, then `directives`, and `constraints`
+ * never. This docstring used to say "least important first (`consider`, then
+ * `constraints`)", which described the behaviour BEFORE the inversion and
+ * contradicted the safety-critical claim of the change that inverted it —
+ * prohibitions are the last thing standing, not the first thing shed.
  *
  * @param injection - the result of a PLUR injection call.
  * @param budgetTokens - approximate token ceiling for the whole block.
@@ -74,20 +80,55 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
   if (budget === 0) return ''
 
   // Same construction as @plur-ai/mcp's session-start block.
-  const assemble = (withConstraints: boolean, withConsider: boolean): string => {
+  //
+  // CONSTRAINTS FIRST, and CONSTRAINTS LAST TO GO. Both are deliberate.
+  // Prohibitions — what the agent may never say or do — outrank process
+  // hygiene at every budget. The previous ladder dropped CONSTRAINTS while
+  // keeping DIRECTIVES, treating directives as the irreducible core; that is
+  // backwards. On 2026-09-07 a session_start payload put CONSTRAINTS at char
+  // 35,260 behind 35KB of DIRECTIVES, the agent read the first 3,000 chars,
+  // and disclosed a customer name on a live demo. Every rule it broke was in
+  // the section it never reached.
+  const assemble = (withDirectives: boolean, withConsider: boolean): string => {
     const lines: string[] = []
-    if (injection.directives) lines.push('## DIRECTIVES\n', flatten(injection.directives))
-    if (withConstraints && injection.constraints) lines.push('\n## CONSTRAINTS\n', flatten(injection.constraints))
+    if (injection.constraints) lines.push('## CONSTRAINTS\n', flatten(injection.constraints))
+    if (withDirectives && injection.directives) lines.push('\n## DIRECTIVES\n', flatten(injection.directives))
     if (withConsider && injection.consider) lines.push('\n## ALSO CONSIDER\n', flatten(injection.consider))
     return lines.join('\n')
   }
 
-  for (const [constraints, consider] of [[true, true], [true, false], [false, false]] as const) {
-    const block = assemble(constraints, consider)
+  for (const [directives, consider] of [[true, true], [true, false], [false, false]] as const) {
+    const block = assemble(directives, consider)
     if (estimateTokens(block) <= budget) return block
   }
 
-  // Even directives alone overflow: emit nothing rather than a truncated engram.
+  // Constraints alone overflow the budget. Two bad options, and a third that
+  // is not bad.
+  //
+  // Emitting DIRECTIVES here would hand back process hygiene while silently
+  // withholding prohibitions — the failure this whole ladder was inverted to
+  // prevent, because an agent cannot tell "no rules apply" from "your rules did
+  // not fit". Emitting NOTHING avoids that lie but loses the directives too, so
+  // a store whose constraints are merely large gets no memory at all, which is
+  // a capability regression against the pre-inversion behaviour.
+  //
+  // So: say so. A notice costs a couple of dozen tokens, keeps the honest
+  // guarantee — prohibitions are never dropped in silence — and lets the
+  // directives through. Reached only after every rung that KEEPS constraints
+  // has failed, never as a way of shedding them under pressure.
+  if (injection.constraints) {
+    const notice = '## CONSTRAINTS\nWITHHELD — the prohibitions for this session did not fit the '
+      + 'memory budget. Treat them as UNREAD, not as absent: do not assume an action is permitted '
+      + 'because no rule against it appears here.'
+    for (const withDirectives of [true, false] as const) {
+      const block = withDirectives && injection.directives
+        ? [notice, '\n## DIRECTIVES\n', flatten(injection.directives)].join('\n')
+        : notice
+      if (estimateTokens(block) <= budget) return block
+    }
+  }
+
+  // Not even the notice fits. Emit nothing rather than a truncated engram.
   return ''
 }
 

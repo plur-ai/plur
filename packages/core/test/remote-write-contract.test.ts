@@ -89,6 +89,17 @@ const NOT_MODELLED = new Set([
   'visibility', 'contraindications', 'knowledge_type', 'entities', 'episodic',
   'exchange', 'structured_data', 'insight', 'polarity', 'locked_at', 'sources',
   'summary',
+  // Added by #1138 and caught here on the merge, which is the guard working:
+  // two new schema fields could not reach `main` without someone stating what
+  // a remote write should do with them.
+  //
+  // Provenance timestamps have a real claim to being TRANSMITTED — `created_at`
+  // is an immutable first-mint record, and #1151 is precisely about provenance
+  // being dropped on a shared write. But deciding that here would mean adding
+  // them to `appendAndGetServerId` in a PR about injection ordering, which is
+  // the bundling that hid #1138's own blocking defect. Recorded as undecided,
+  // which is what this set means, and routed to #1153 with the other twelve.
+  'created_at', 'updated_at',
 ])
 
 describe('the remote write contract covers every schema field (#1151)', () => {

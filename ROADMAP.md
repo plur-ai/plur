@@ -1,3 +1,17 @@
+<!-- CANONICAL POINTER — added 2026-09-03
+     The source of truth for the PLUR roadmap is 5-plur/roadmap.yaml.
+     This file is a VIEW and is not maintained by hand.
+
+     Do not add a roadmap item here. It will not be seen by:
+       - roadmap_validate.py   (schema, definitions of done)
+       - roadmap_drift.py      (reconciliation against this repo)
+       - agent_readiness.py    (whether an agent can act on it)
+       - the task pool, which links tasks by their ROADMAP: property
+
+     New idea?     5-plur/1-tracks/product/feature-ideas.md
+     New item?     5-plur/roadmap.yaml, then let the views regenerate.
+-->
+
 # PLUR Roadmap
 
 _Last updated: 2026-05-20_

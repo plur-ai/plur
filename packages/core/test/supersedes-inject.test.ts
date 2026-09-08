@@ -18,6 +18,11 @@ describe('supersedes chain — inject scoring (#481)', () => {
   // (inject.ts:460-467). The previous versions listed `tip` first and/or used a
   // 5000-token budget where both fit, so stable-sort/order carried the assertion
   // and deleting the penalty left them green. Here the penalty is load-bearing.
+  // Budgets here must fit exactly ONE of the pair — the penalty is only
+  // load-bearing under real pressure. Sized at 30 after #1145 made
+  // estimateTokens measure the rendered form (~27 tokens for these fixtures)
+  // instead of the serialised record (~100). At the old 80 both now fit and
+  // the tests passed vacuously.
   const makePair = () => {
     const tip = makeEngram({
       id: 'ENG-2026-0101-002',
@@ -40,6 +45,16 @@ describe('supersedes chain — inject scoring (#481)', () => {
     return { tip, older }
   }
 
+  // Budget-pressure tests assert on the DIRECTIVES bucket, not on every bucket.
+  // The penalty re-ranks (score * 0.3); it never excludes. The loser therefore
+  // still lands in the DIP-0019 consider pool, and asserting its absence from
+  // the whole result only passed while estimateTokens serialised the record and
+  // an engram cost more than the 200-token consider budget. #1145 made the
+  // estimate reflect what actually renders (~27 tokens for these fixtures), so
+  // that side-effect vanished — and it was never what the penalty does.
+  const dirIdsOf = (result: ReturnType<typeof selectAndSpread>) =>
+    result.directives.map(e => e.id)
+
   const idsOf = (result: ReturnType<typeof selectAndSpread>) => [
     ...result.directives.map(e => e.id),
     ...result.constraints.map(e => e.id),
@@ -52,11 +67,11 @@ describe('supersedes chain — inject scoring (#481)', () => {
     // Tight budget admits exactly one engram. Input order [older, tip]: without
     // the demotion penalty a stable sort keeps `older` first and it would win.
     const result = selectAndSpread(
-      { prompt: 'deploy canary strategy', maxTokens: 80 },
+      { prompt: 'deploy canary strategy', maxTokens: 40 },
       [older, tip], []
     )
 
-    const ids = idsOf(result)
+    const ids = dirIdsOf(result)
     // The penalty re-ranks `tip` above `older`, so `tip` survives and the
     // superseded `older` is dropped. This assertion fails if the penalty block
     // is removed.
@@ -72,11 +87,11 @@ describe('supersedes chain — inject scoring (#481)', () => {
     // suppresses the penalty, so the stable sort keeps `older` first and it
     // survives while `tip` is dropped — the inverse of the test above.
     const result = selectAndSpread(
-      { prompt: 'deploy canary strategy previously', maxTokens: 80 },
+      { prompt: 'deploy canary strategy previously', maxTokens: 40 },
       [older, tip], []
     )
 
-    const ids = idsOf(result)
+    const ids = dirIdsOf(result)
     expect(ids).toContain(older.id)
     expect(ids).not.toContain(tip.id)
   })
@@ -120,11 +135,11 @@ describe('supersedes chain — inject scoring (#481)', () => {
     // Post-fix: word-boundary match => non-historical => penalty demotes `tip`
     // above `older`, so the current `tip` survives and `older` is dropped.
     const result = selectAndSpread(
-      { prompt: 'deploy canary strategy priority', maxTokens: 80 },
+      { prompt: 'deploy canary strategy priority', maxTokens: 40 },
       [older, tip], []
     )
 
-    const ids = idsOf(result)
+    const ids = dirIdsOf(result)
     expect(ids).toContain(tip.id)
     expect(ids).not.toContain(older.id)
   })
@@ -136,11 +151,11 @@ describe('supersedes chain — inject scoring (#481)', () => {
     // logic. Historical intent suppresses the penalty, so the stable [older, tip]
     // sort keeps `older` and it survives while `tip` is dropped.
     const result = selectAndSpread(
-      { prompt: 'the canary deploy strategy we used to prefer', maxTokens: 80 },
+      { prompt: 'the canary deploy strategy we used to prefer', maxTokens: 40 },
       [older, tip], []
     )
 
-    const ids = idsOf(result)
+    const ids = dirIdsOf(result)
     expect(ids).toContain(older.id)
     expect(ids).not.toContain(tip.id)
   })
@@ -154,11 +169,11 @@ describe('supersedes chain — inject scoring (#481)', () => {
     // the penalty was NOT suppressed, and the stale `older` was silently dropped.
     // Post-fix the gap is \s+, so this reads as historical exactly like "used to".
     const result = selectAndSpread(
-      { prompt: 'the canary deploy strategy we used\nto prefer', maxTokens: 80 },
+      { prompt: 'the canary deploy strategy we used\nto prefer', maxTokens: 40 },
       [older, tip], []
     )
 
-    const ids = idsOf(result)
+    const ids = dirIdsOf(result)
     expect(ids).toContain(older.id)
     expect(ids).not.toContain(tip.id)
   })
