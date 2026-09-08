@@ -12,14 +12,14 @@ that part should work.
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
 | **Companion to** | [The Engram Standard, version 1.6](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
-| **Date** | 2026-08-26 |
+| **Date** | 2026-09-08 |
 | **Licence** | Creative Commons BY 4.0 for the text, Apache 2.0 for any code |
 
 **Revision history**
 
 | Version | Date | What changed |
 |---|---|---|
-| 0.9 | 2026-09-04 | Review of plur-ai/plur#1044. Section 5.4.2 defines *unreadable* and *orphaned* and requires that a record a consumer cannot read never aborts the preview or install of its pack — the promise 0.6 made in the word "report", stated as the rule it is. Section 8.4 closes the `engram:licenseSource` set: four values, any other treated as absent and reported, never carried onto a typed surface. |
+| 0.9 | 2026-09-04 | Review of plur-ai/plur#1044. Section 5.4.2 defines *unreadable* and *orphaned* and requires that a record a consumer cannot read never aborts the preview or install of its pack — the promise 0.6 made in the word "report", stated as the rule it is. Section 8.4 closes the `engram:licenseSource` set: four values, any other treated as absent and reported, never carried onto a typed surface. **Second review round.** §5.4.1 said the retained directory is kept "as received, unmodified" while every implementation filters it to the files it will treat as records; it now says what is actually required — a record that IS retained is retained byte-for-byte, a file the consumer will not treat as a record MAY be left behind, and nothing is dropped silently. §5.4.2 gains the matching count. Appendix C's row for §5.4 said the reference discards the directory on install, which stopped being true when install began copying it; it now names the gap that remains, which is the `pack:<name>@<version>` origin. |
 | 0.8 | 2026-08-28 | Review corrections. §5.4.2's "none of these MUST fail the install" was ambiguous in RFC 2119 terms and said close to the opposite of what was meant; it now reads "a consumer MAY proceed despite any of these; it MUST report every one." §5.4.3 now says what becomes of the producer's own `provenance.origin` when the consumer writes `pack:<name>@<version>` — overwritten on the engram because it names the producer's store, preserved in the retained record, and optionally appended to the chain, but never silently discarded. |
 | 0.7 | 2026-08-27 | Section 4.2 rewritten, keyed on the `content_hash` test rather than on whether meaning changed — and sections 10.2 and 14.1 downgraded, following Engram Standard §4.7.1 *changing an engram*. Version-scoped identifiers were introduced because a rewritten statement is not the same thing as the one it replaced; under §4.7.1 a rewritten statement is a separate engram, so the identifier already carries the distinction. Section 10.2 *version history* is no longer required for 4.2, and 14.1's stated blocker — that the shape of a record would depend on which code path ran — is what §4.7.1 exists to prevent. |
 | 0.6 | 2026-08-27 | Section 5.4 added, "Receiving a pack's provenance". Everything before it was written from the producer's side, which is why the reference builds a record for every exported pack and its installer deletes the directory without a word — nothing told it not to. The section requires a consumer to keep the received directory as evidence rather than content, to report what it found (a tester's corrupt, missing and orphaned records all installed silently with exit code 0), and to record `pack:<name>@<version>` as the origin of anything installed. It forbids merging a received `attribution` or `claim_class` into the store unqualified — the tempting option, and the one that launders a stranger's claims — while permitting the values to be kept where the intermediary is named, exactly as section 8.4 does for an inherited licence. Also covers re-export, where forwarding and laundering are actually distinguished, and states plainly that none of this verifies anything. |
@@ -796,9 +796,15 @@ to.
 A consumer MUST NOT discard a pack's `provenance/` directory as part of
 installing it.
 
-Keep it with the artifact, as received, unmodified. It is the only copy of what
-the producer said about their own engrams, and it is the thing a later
-re-verification reads.
+Keep it with the artifact. It is the only copy of what the producer said about
+their own engrams, and it is the thing a later re-verification reads, so a record
+a consumer retains MUST be retained byte-for-byte as received.
+
+A consumer MAY decline to retain a file it will not treat as a record — one whose
+name is not the `<id>.jsonld` of §5.3.1, or one it could not check. What it MUST
+NOT do is retain a record in altered form, or drop one silently: anything not
+retained MUST be reported under §5.4.2, which is what keeps "we did not keep this"
+distinguishable from "there was nothing here".
 
 Do **not** merge received records into the store where the consumer keeps records
 of its own. Those two collections answer different questions — *what we recorded*
@@ -814,6 +820,9 @@ consumer MUST report:
 - how many were unreadable
 - how many describe an engram the pack does not contain
 - how many engrams have no record at all
+- how many were not retained (§5.4.1) — zero for a consumer that retains every
+  record it reads, and the only way a reader can tell a directory that arrived
+  incomplete from one the consumer trimmed
 
 A consumer MAY proceed despite any of these; it MUST report every one. The
 earlier phrasing here read "none of these MUST fail the install", which in
@@ -1891,11 +1900,10 @@ problem — the standard is happy either way.
 | 4.4 | agents | proposed, waiting on 10.1 |
 | 4.5 | kinds of claim | proposed |
 | 5.3 | a pack's own record | proposed, implemented in the reference |
-| 5.4 | receiving a pack's provenance | proposed; the reference discards the directory on install (plur-ai/plur#989 *installing a pack ignores the provenance it ships*) |
+| 5.4 | receiving a pack's provenance | proposed; the reference retains the directory and reports the four counts at install, but does not yet stamp `provenance.origin = pack:<name>@<version>` on an installed engram (§5.4.3) (plur-ai/plur#989 *installing a pack ignores the provenance it ships*) |
 | 6.2 | invalidation | proposed |
 | 6.4 | ways to suppress a record | background |
 | 8 | licences | proposed |
-| 9 | how to write it out | proposed |
 | 9 | how to write it out | proposed |
 | 10 | what to capture | required before any of sections 4 to 9 work |
 | 10.6 | a log that cannot be edited | deferred — see the section for why |
