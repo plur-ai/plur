@@ -2,12 +2,14 @@ name: Review Dismissal Guard
 
 # A review dismissal must say what was done.
 #
-# An empty dismissal is indistinguishable from ignoring the review. An audit on
-# 2026-09-08 of every dismissal since 2026-08-18 found that nine of twelve
-# carried itemised messages citing the commits that fixed each finding — and
-# that the three which read as negligent were simply the three with no message.
-# The work may have been done in those cases too; the record cannot say, which
-# is the problem this closes.
+# An empty dismissal is indistinguishable from ignoring the review. A full
+# paginated census of `REVIEW_DISMISSED_EVENT` in this repository since
+# 2026-08-18 found thirteen dismissals: eight carried a message and five were
+# empty. The shape matters more than the ratio — of the seven dismissals before
+# 2026-09-08, five were empty and two carried a message, and every one of the
+# six on 2026-09-08 carried one, after this problem had been raised. So the
+# habit did not exist until it was pointed at, which is the argument for
+# enforcing it rather than trusting it.
 #
 # `pull_request_review` (not `pull_request_target`) is correct here: the job
 # never checks out or executes the head ref, and it only needs read access plus
@@ -24,6 +26,11 @@ on:
 permissions:
   pull-requests: read
   contents: read
+  # `listEventsForTimeline` is an ISSUES endpoint (`GET /repos/{o}/{r}/issues/{n}/timeline`)
+  # even though it is being read for a pull request. Without this the call can
+  # 403 and the guard fails on every dismissal, well-documented ones included —
+  # which is how a guard becomes noise and then gets removed.
+  issues: read
 
 jobs:
   dismissal-message-required:
@@ -34,25 +41,93 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
-            // The dismissal message is NOT on the webhook's review object — it
-            // lives on the `review_dismissed` timeline event, so read it there.
-            const events = await github.paginate(
-              github.rest.issues.listEventsForTimeline,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-                per_page: 100,
-              }
-            );
-            const dismissals = events.filter(e => e.event === 'review_dismissed');
-            if (!dismissals.length) {
-              core.info('No review_dismissed event found on this pull request.');
+            const review = context.payload.review || {};
+            const reviewId = review.id;
+
+            // Match the review that TRIGGERED this run, not the newest dismissal
+            // on the pull request. Taking the last one let a message-less
+            // dismissal be cleared by any later dismissal that happened to carry
+            // a message, even on an unrelated review.
+            if (!reviewId) {
+              core.setFailed(
+                'Could not determine which review was dismissed: the event payload carried no review id.\n\n' +
+                'This guard cannot verify a dismissal it cannot identify, and reporting success ' +
+                'would be indistinguishable from a dismissal that was checked and passed.'
+              );
               return;
             }
-            const last = dismissals[dismissals.length - 1];
-            const msg = ((last.dismissed_review || {}).dismissal_message || '').trim();
-            const who = last.actor ? last.actor.login : 'unknown';
+
+            // The dismissal message is NOT on the webhook's review object — it
+            // lives on the `review_dismissed` timeline event, so read it there.
+            //
+            // The timeline can lag the webhook by a moment, and on at least one
+            // pull request the event never appeared at all (#1122: review
+            // 5113096768 sits in state DISMISSED with a 1,113-character message
+            // and the timeline carries no `review_dismissed` event of any kind;
+            // it is a fork pull request, which is the current suspicion but not
+            // a confirmed cause). So poll briefly, then fail rather than pass.
+            const findDismissal = async () => {
+              let events;
+              try {
+                events = await github.paginate(
+                  github.rest.issues.listEventsForTimeline,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: pr.number,
+                    per_page: 100,
+                  }
+                );
+              } catch (err) {
+                // Distinguish "I was not allowed to look" from "I looked and it
+                // was not there". Both fail, but only one of them is fixed by
+                // editing this workflow's permissions.
+                core.setFailed(
+                  `Could not read the timeline for #${pr.number}: ${err.status || ''} ${err.message}\n\n` +
+                  'The dismissal was NOT verified. If this is a 403, the workflow needs `issues: read` ' +
+                  '— `listEventsForTimeline` is an issues endpoint even for a pull request.'
+                );
+                return null;
+              }
+              return events.find(
+                e => e.event === 'review_dismissed'
+                  && e.dismissed_review
+                  && e.dismissed_review.review_id === reviewId
+              );
+            };
+
+            let found;
+            let permissionFailure = false;
+            for (let attempt = 1; attempt <= 5; attempt++) {
+              found = await findDismissal();
+              if (found === null) { permissionFailure = true; break; }
+              if (found) break;
+              if (attempt < 5) {
+                core.info(`No timeline event for review ${reviewId} yet (attempt ${attempt}/5); retrying.`);
+                await new Promise(r => setTimeout(r, 3000));
+              }
+            }
+            if (permissionFailure) return;
+
+            if (!found) {
+              // Fail closed. "I could not check" and "I checked and it was fine"
+              // must not produce the same result: an empty dismissal and an
+              // unverifiable one are the same thing from the reviewer's side —
+              // no record — and this branch is reachable in practice.
+              core.setFailed(
+                `Could not verify the dismissal of review ${reviewId} on #${pr.number}.\n\n` +
+                'No `review_dismissed` timeline event for that review appeared after 5 attempts ' +
+                'over ~12 seconds. The dismissal message could not be read, so this guard cannot ' +
+                'say whether one was given.\n\n' +
+                'If the dismissal did carry a message, re-run this check. If it keeps failing, ' +
+                'say so on the pull request — a dismissal that cannot be evidenced is the ' +
+                'situation this guard exists to surface, not one to wave through.'
+              );
+              return;
+            }
+
+            const msg = (found.dismissed_review.dismissal_message || '').trim();
+            const who = found.actor ? found.actor.login : 'unknown';
             if (!msg) {
               core.setFailed(
                 `@${who} dismissed a review without a message.\n\n` +
@@ -62,5 +137,5 @@ jobs:
                 'Re-dismiss with a message, or ask the reviewer to re-review.'
               );
             } else {
-              core.info(`Dismissal by @${who} carries a ${msg.length}-character message.`);
+              core.info(`Dismissal of review ${reviewId} by @${who} carries a ${msg.length}-character message.`);
             }
