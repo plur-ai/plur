@@ -217,12 +217,12 @@ def write_pack(
     correct = pack_integrity(hashed_manifest, engram_bytes)
 
     if integrity is True:
-        (d / "INTEGRITY").write_text(correct + "\n", encoding="utf-8", newline="")
+        (d / "INTEGRITY").write_bytes((correct + "\n").encode("utf-8"))
         shipped = correct
     elif integrity is None:
         shipped = None
     else:
-        (d / "INTEGRITY").write_text(str(integrity) + "\n", encoding="utf-8", newline="")
+        (d / "INTEGRITY").write_bytes((str(integrity) + "\n").encode("utf-8"))
         shipped = str(integrity)
 
     for rel, content in (extra_files or {}).items():
@@ -527,7 +527,7 @@ def main() -> int:
 
     PACKS.mkdir(exist_ok=True)
     vectors = build(PACKS)
-    INDEX.write_text(index_document(vectors), encoding="utf-8", newline="")
+    INDEX.write_bytes(index_document(vectors).encode("utf-8"))
     print(f"Built {len(vectors)} vectors into {PACKS}")
     return 0
 
