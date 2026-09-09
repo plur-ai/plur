@@ -39,13 +39,23 @@ from plur_langchain import PlurMemory
 chain = ConversationChain(llm=llm, memory=PlurMemory())
 ```
 
-> **Note:** `PlurMemory` uses `BaseMemory`, which was removed in `langchain-core>=0.3`. Use `PlurChatMessageHistory` for modern LangChain.
+> Requires Python 3.10+ and patched LangChain Core 0.3 (`>=0.3.85,<0.4`).
+> `PlurMemory` retains the legacy `BaseMemory` interface, deprecated in Core 0.3
+> and removed in 1.0. Use `PlurChatMessageHistory` for LCEL. The older Core 0.2
+> dependency is no longer supported because it lacks serialization security fixes.
 
 ## How it works
 
 PLUR stores learned facts (engrams) locally in `~/.plur/`. On every chain invocation, relevant engrams are retrieved via semantic search and injected as context. Self-correction patterns in AI responses are captured and persisted — so the chain learns from its own mistakes.
 
-Your data never leaves your machine.
+Storage and retrieval default to local operation. Configured PLUR remotes,
+model providers, or LangChain tracing can send data to their configured services.
+
+Text blocks in multimodal messages participate in recall and learning; image
+URLs and other non-text blocks are not sent to the memory bridge. Failed reads,
+malformed recall responses and failed learning raise `PlurMemoryError` with a
+source-free message. Callers can handle that failure explicitly; an unavailable
+store is not reported as empty memory or a successful write.
 
 ## Links
 

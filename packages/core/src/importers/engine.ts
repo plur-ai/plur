@@ -56,7 +56,6 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
   // engine misreport their duplicates as fresh imports (re-patching temporal
   // metadata on the existing engram along the way).
   const preExisting = await plur.list({ include_expired: true })
-  const knownIds = new Set(preExisting.map(e => e.id))
   const hashToId = new Map<string, string>()
   for (const e of preExisting) {
     const hash = (e as any).content_hash ?? computeContentHash(e.statement)
@@ -116,20 +115,16 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
       if (record.valid_until) context.valid_until = record.valid_until.slice(0, 10)
       if (record.pinned) context.pinned = true
 
-      const engram = await plur.learn(statement, context)
+      const conflictIds = findConflicts(statement, scope, record.domain, preExisting)
+      const { engram, created } = await plur.learnImported(statement, context, record, conflictIds, now)
 
-      if (knownIds.has(engram.id)) {
+      if (!created) {
         // learn() resolved to an existing engram (hash dedup or cross-scope
         // recurrence) — the dedup gate did its job.
         skipped++
         results.push({ statement, action: 'skipped', id: engram.id })
         continue
       }
-      knownIds.add(engram.id)
-
-      const conflictIds = findConflicts(statement, scope, record.domain, preExisting)
-      const patched = applyImportMetadata(engram, record, conflictIds, now)
-      if (patched) await plur.updateEngram(patched)
 
       imported++
       if (conflictIds.length > 0) conflicts++
@@ -173,11 +168,11 @@ function findConflicts(statement: string, scope: string | undefined, domain: str
 }
 
 /**
- * Post-learn metadata the LearnContext cannot express: source-preserved
+ * Pre-persistence metadata the LearnContext cannot express: source-preserved
  * temporal anchors, confidence, and heuristic conflict links. Returns the
  * patched engram, or null when the record adds nothing.
  */
-function applyImportMetadata(engram: Engram, record: ImportRecord, conflictIds: string[], now: string): Engram | null {
+export function applyImportMetadata(engram: Engram, record: ImportRecord, conflictIds: string[], now: string): Engram | null {
   let changed = false
   const out: Engram = { ...engram }
 

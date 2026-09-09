@@ -48,7 +48,7 @@
  */
 import * as fs from 'fs'
 import * as path from 'path'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import * as yaml from 'js-yaml'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
 import { logger } from './logger.js'
@@ -118,7 +118,7 @@ function readState(root: string): BackupState {
 function writeState(root: string, state: BackupState): void {
   const p = statePath(root)
   fs.mkdirSync(path.dirname(p), { recursive: true })
-  fs.writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8')
+  atomicWrite(p, JSON.stringify(state, null, 2) + '\n')
 }
 
 export function sha256(content: string | Buffer): string {
@@ -143,8 +143,6 @@ export function sha256(content: string | Buffer): string {
  * (c) is skipped in that case rather than guessed at.
  */
 export function validateStore(filePath: string, lastGoodCount?: number): StoreValidity {
-  const failures: string[] = []
-  const reasons: string[] = []
 
   let raw: Buffer
   try {
@@ -154,6 +152,12 @@ export function validateStore(filePath: string, lastGoodCount?: number): StoreVa
   }
 
   // (e) — size and terminator
+  return validateStoreBytes(raw, lastGoodCount)
+}
+
+function validateStoreBytes(raw: Buffer, lastGoodCount?: number): StoreValidity {
+  const failures: string[] = []
+  const reasons: string[] = []
   if (raw.length === 0) {
     return { ok: false, failures: ['empty'], reasons: ['file is 0 bytes'], count: null }
   }
@@ -256,7 +260,6 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
   if (doneThisProcess.has(key)) return { taken: false, skipped: 'already-today' }
   try {
     if (!fs.existsSync(storePath)) {
-      doneThisProcess.add(key)
       return { taken: false, skipped: 'no-store' }
     }
     const state = readState(root)
@@ -279,7 +282,8 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
       undefined,
     )
     const baseline = state.last_good_count ?? strongest
-    const validity = validateStore(storePath, baseline)
+    const bytes = fs.readFileSync(storePath)
+    const validity = validateStoreBytes(bytes, baseline)
     if (!validity.ok) {
       // Deliberately NOT marked done: if the user repairs the store later
       // today, the next write should snapshot the repaired copy.
@@ -290,7 +294,6 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
       return { taken: false, skipped: 'invalid', validity }
     }
 
-    const bytes = fs.readFileSync(storePath)
     const dest = snapshotPath(root, stamp)
     // Never replace an existing same-day snapshot with a weaker one. The
     // validity gate above compares against the last known-good count; this
@@ -305,6 +308,12 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
       )
       doneThisProcess.add(key)
       return { taken: false, skipped: 'invalid', validity }
+    }
+    // A snapshot outlives its state hint. Never overwrite it during a retry.
+    if (sameDay) {
+      const intact = sameDay.sha256 === sha256(fs.readFileSync(sameDay.path))
+      if (!intact) logger.warning(`[plur:backup] keeping unverifiable snapshot ${sameDay.path}; inspect its sidecar before restoring`)
+      return { taken: false, skipped: intact ? 'already-today' : 'invalid' }
     }
     fs.mkdirSync(path.dirname(dest), { recursive: true })
     writeFileDurable(dest, bytes)
@@ -337,33 +346,9 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
   }
 }
 
-/** fsync a file written by a non-atomic helper (copyFileSync). Best-effort. */
-function flushFileAt(filePath: string): void {
-  let fd: number | undefined
-  try {
-    fd = fs.openSync(filePath, 'r+')
-    fs.fsyncSync(fd)
-  } catch {
-    /* nothing actionable — the copy itself succeeded */
-  } finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd) } catch { /* ignore */ }
-    }
-  }
-}
-
-/**
- * Write and fsync — a backup that is only in the page cache is not a backup,
- * which is the same reasoning as the store's own atomicWrite (audit #794, F4).
- */
+/** Atomic, private, durable publication, including directory metadata. */
 function writeFileDurable(dest: string, bytes: Buffer): void {
-  const fd = fs.openSync(dest, 'w')
-  try {
-    fs.writeFileSync(fd, bytes)
-    fs.fsyncSync(fd)
-  } finally {
-    fs.closeSync(fd)
-  }
+  atomicWrite(dest, bytes)
 }
 
 export interface BackupEntry {
@@ -458,6 +443,10 @@ export interface RestorePlan {
  * lose rather than rolling them back silently.
  */
 export function planRestore(root: string, storePath: string, stamp?: string): RestorePlan {
+  return readRestoreSnapshot(root, storePath, stamp).plan
+}
+
+function readRestoreSnapshot(root: string, storePath: string, stamp?: string): { plan: RestorePlan; bytes: Buffer } {
   const all = listBackups(root)
   if (all.length === 0) throw new Error(`[plur] no backups found in ${path.join(root, BACKUP_DIR)}`)
   const backup = stamp ? all.find(b => b.stamp === stamp) : all[0]
@@ -468,13 +457,13 @@ export function planRestore(root: string, storePath: string, stamp?: string): Re
   const integrityOk = backup.sha256 === undefined ? false : backup.sha256 === actualSha256
   // No lastGoodCount here on purpose: the question is whether the BACKUP is
   // internally sound, not whether it matches today's (possibly ruined) corpus.
-  const validity = validateStore(backup.path)
+  const validity = validateStoreBytes(bytes)
 
-  const backupIds = new Set(idsIn(backup.path))
+  const backupIds = new Set(idsFromBytes(bytes))
   const currentIds = idsIn(storePath)
   const wouldLose = currentIds.filter(id => !backupIds.has(id))
 
-  return {
+  return { bytes, plan: {
     backup,
     validity,
     actualSha256,
@@ -485,12 +474,18 @@ export function planRestore(root: string, storePath: string, stamp?: string): Re
     // this field: it under-reports rather than inventing losses.
     unrecoverable: idsCreatedAfter(root, backup.takenAt ?? `${backup.stamp}T23:59:59.999Z`)
       .filter(id => !backupIds.has(id)),
-  }
+  } }
 }
 
 function idsIn(filePath: string): string[] {
   try {
-    const doc: any = yaml.load(fs.readFileSync(filePath, 'utf8'))
+    return idsFromBytes(fs.readFileSync(filePath))
+  } catch { return [] }
+}
+
+function idsFromBytes(bytes: Buffer): string[] {
+  try {
+    const doc: any = yaml.load(bytes.toString('utf8'))
     if (!doc || !Array.isArray(doc.engrams)) return []
     return doc.engrams.map((e: any) => e?.id).filter((id: unknown): id is string => typeof id === 'string')
   } catch {
@@ -575,9 +570,10 @@ export function restoreBackup(
   // The refusal checks move in with it, so a plan can never be validated
   // against one state and applied to another.
   let plan!: RestorePlan
-  const superseded = `${storePath}.superseded-${Date.now()}`
+  const superseded = `${storePath}.superseded-${Date.now()}-${randomUUID()}`
   withLock(storePath, () => {
-    plan = planRestore(root, storePath, opts.stamp)
+    const snapshot = readRestoreSnapshot(root, storePath, opts.stamp)
+    plan = snapshot.plan
     if (!opts.force) {
       const problems: string[] = []
       if (!plan.validity.ok) problems.push(...plan.validity.reasons)
@@ -598,11 +594,10 @@ export function restoreBackup(
       }
     }
     if (fs.existsSync(storePath)) {
-      fs.copyFileSync(storePath, superseded)
-      flushFileAt(superseded)
+      atomicWrite(superseded, fs.readFileSync(storePath))
     }
     // tmp + fsync + rename, rather than truncating the live file in place.
-    atomicWrite(storePath, fs.readFileSync(plan.backup.path, 'utf8'))
+    atomicWrite(storePath, snapshot.bytes)
   })
 
   if (plan.wouldLose.length > 0) {

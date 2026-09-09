@@ -20,6 +20,7 @@
  * Usage: node scripts/fix-await-scopes.mjs <tsc-command...>
  */
 import * as fs from 'fs'
+import { replaceSource } from '../packages/migrate/src/files.js'
 import { execSync } from 'child_process'
 
 const cmd = process.argv.slice(2).join(' ')
@@ -143,13 +144,14 @@ for (;;) {
 
   let fixed = 0
   for (const [file, lineSet] of byFile) {
-    const lines = fs.readFileSync(file, 'utf8').split('\n')
+    const original = fs.readFileSync(file, 'utf8')
+    const lines = original.split('\n')
     // Bottom-up so earlier edits cannot shift later line numbers.
     for (const ln of [...lineSet].sort((a, b) => b - a)) {
       const fn = enclosing(lines, ln)
       if (fn >= 0 && markAsync(lines, fn)) fixed++
     }
-    fs.writeFileSync(file, lines.join('\n'))
+    replaceSource(file, original, lines.join('\n'))
   }
   console.log(`round ${round}: ${errs.length} TS1308 -> marked ${fixed} function(s) async`)
   if (fixed === 0) { console.error('made no progress; remaining sites need a human'); process.exit(1) }

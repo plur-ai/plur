@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { atomicWrite } from '@plur-ai/core'
+import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { CLI_VERSION } from './version.js'
 import { join, dirname } from 'path'
 import { homedir, platform } from 'os'
@@ -297,7 +298,7 @@ export function readConfigForWrite(path: string): ConfigReadResult {
  */
 export function writeConfig(path: string, data: Record<string, unknown>): void {
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(data, null, 2) + '\n')
+  atomicWrite(path, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
 }
 
 /**

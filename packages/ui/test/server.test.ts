@@ -68,6 +68,15 @@ describe('startViewer', () => {
 })
 
 describe('the shared server', () => {
+  it('rejects a malformed request target and continues serving', async () => {
+    const viewer = await startViewer({ load: async () => ROWS, where: '' })
+    try {
+      const port = Number(new URL(viewer.url).port)
+      const response = await rawGet(port, '//[invalid', { host: `127.0.0.1:${port}` })
+      expect(response.status).toBe(400)
+      expect((await fetch(viewer.url)).status).toBe(200)
+    } finally { await viewer.close() }
+  })
   it('is the same implementation the CLI serves', async () => {
     // Regression guard for the split: if this drifts from the CLI's route
     // table, one of the two hosts is serving a different viewer.

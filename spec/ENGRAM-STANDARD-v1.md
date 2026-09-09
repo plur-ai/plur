@@ -511,7 +511,7 @@ engram: the spec has two mechanisms and no rule for choosing between them*.
 | `provenance.origin` | string (R within object) | | Where this engram came from. |
 | `provenance.chain` | string[] | default `[]` | Derivation/transfer chain. |
 | `provenance.signature` | string \| null | default `null` | **RESERVED.** Detached signature over the engram. Algorithm and canonicalization are NOT specified in v1 (§7). Producers MUST write `null`; consumers MUST round-trip whatever value is present without ascribing trust to it. |
-| `provenance.license` | string | default `cc-by-sa-4.0` | License of this engram's content. |
+| `provenance.license` | string | optional | Explicitly chosen license. When absent, effective policy defaults to `cc-by-sa-4.0` without recording a choice. |
 
 **Who is answerable, and what kind of claim it is — PROPOSED (#961, #963)**
 

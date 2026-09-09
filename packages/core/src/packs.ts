@@ -2,7 +2,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import * as os from 'os'
-import { execFileSync } from 'child_process'
+import { gunzipSync } from 'zlib'
+import * as tar from 'tar'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
 import { atomicWrite, fsyncDir, withLock } from './sync.js'
@@ -46,66 +47,76 @@ export function isPackUrl(source: string): boolean {
  * No auth headers are added: signed-URL delivery means the URL is the
  * credential and no Authorization header is needed.
  */
+export const MAX_PACK_DOWNLOAD_BYTES = 32 * 1024 * 1024
+export const MAX_PACK_ARCHIVE_BYTES = 64 * 1024 * 1024
+export const PACK_DOWNLOAD_TIMEOUT_MS = 30_000
+
 export async function downloadAndExtractPack(url: string): Promise<{ packDir: string; tmpRoot: string }> {
-  // Create a unique temp root for this download
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-pack-dl-'))
-
-  // Download
-  let response: Response
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), PACK_DOWNLOAD_TIMEOUT_MS)
+  // Signed URLs carry credentials in their path/query; errors must not echo them.
   try {
-    response = await fetch(url)
-  } catch (err: unknown) {
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
-    const msg = err instanceof Error ? err.message : String(err)
-    throw new Error(`Failed to fetch pack from ${url}: ${msg}`)
-  }
-
-  if (!response.ok) {
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
-    throw new Error(`Failed to fetch pack from ${url}: HTTP ${response.status} ${response.statusText}`)
-  }
-
-  // Save the response body to a .tar.gz file
-  const archivePath = path.join(tmpRoot, 'pack.tar.gz')
-  const buffer = await response.arrayBuffer()
-  fs.writeFileSync(archivePath, Buffer.from(buffer))
-
-  // Extract the archive
-  const extractDir = path.join(tmpRoot, FLAT_ARCHIVE_DIRNAME)
-  fs.mkdirSync(extractDir)
-  try {
-    execFileSync('tar', ['-xzf', archivePath, '-C', extractDir], { stdio: 'pipe' })
-  } catch (err: unknown) {
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
-    const msg = err instanceof Error ? (err as NodeJS.ErrnoException).message : String(err)
-    throw new Error(`Failed to extract pack archive from ${url}: ${msg}`)
-  }
-
-  // Find the pack directory: either a single top-level subdirectory, or the
-  // extraction root itself (for flat archives).
-  // `lstat`: a tar entry that is a symbolic link to a directory must not be
-  // taken for the pack directory, or the preview would walk wherever it points.
-  const entries = fs.readdirSync(extractDir)
-  const subdirs = entries.filter(e => fs.lstatSync(path.join(extractDir, e)).isDirectory())
-
-  let packDir: string
-  if (subdirs.length === 1) {
-    // Standard layout: archive contains a single top-level directory
-    packDir = path.join(extractDir, subdirs[0])
-  } else {
-    // Flat layout: SKILL.md / engrams.yaml at archive root
-    const hasPackFiles = entries.some(e => e === 'SKILL.md' || e === 'engrams.yaml' || e === 'manifest.yaml')
-    if (hasPackFiles) {
-      packDir = extractDir
-    } else {
-      fs.rmSync(tmpRoot, { recursive: true, force: true })
-      throw new Error(
-        `Pack archive from ${url} has an unexpected layout — expected a single top-level directory or pack files at the root (SKILL.md / engrams.yaml).`,
-      )
+    const response = await fetch(url, { signal: controller.signal })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const declared = Number(response.headers.get('content-length'))
+    if (declared > MAX_PACK_DOWNLOAD_BYTES) {
+      await response.body?.cancel()
+      throw new Error('pack download exceeds size limit')
     }
+    if (!response.body) throw new Error('empty pack response')
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.byteLength
+        if (total > MAX_PACK_DOWNLOAD_BYTES) throw new Error('pack download exceeds size limit')
+        chunks.push(value)
+      }
+    } finally {
+      await reader.cancel().catch(() => {})
+      reader.releaseLock()
+    }
+    // Bound expansion BEFORE extracting even the first archive entry. This
+    // also bounds tar metadata, padding and sparse-file payloads.
+    const archive = gunzipSync(Buffer.concat(chunks), { maxOutputLength: MAX_PACK_ARCHIVE_BYTES })
+    const archivePath = path.join(tmpRoot, 'pack.tar')
+    fs.writeFileSync(archivePath, archive, { mode: 0o600 })
+    let entries = 0
+    tar.list({ file: archivePath, sync: true, strict: true, onReadEntry(entry) {
+      if (++entries > MAX_PACK_ENTRIES) throw new Error('pack archive exceeds entry limit')
+      if (entry.type !== 'File' && entry.type !== 'OldFile' && entry.type !== 'Directory') {
+        throw new Error('pack archive contains a symbolic link, hard link, or special file')
+      }
+      const name = entry.path
+      if (name.startsWith('/') || /^[a-z]:/i.test(name) || name.includes('\\') || name.split('/').includes('..')) {
+        throw new Error('pack archive path escapes extraction directory')
+      }
+      if (name.split('/').length > 64 || entry.size > MAX_PACK_FILE_BYTES) {
+        throw new Error('pack archive entry exceeds size or depth limit')
+      }
+    } })
+    const extractDir = path.join(tmpRoot, FLAT_ARCHIVE_DIRNAME)
+    fs.mkdirSync(extractDir)
+    tar.extract({ file: archivePath, cwd: extractDir, sync: true, strict: true,
+      preservePaths: false, noChmod: true, maxDepth: 64 })
+    const names = fs.readdirSync(extractDir)
+    const subdirs = names.filter(e => fs.lstatSync(path.join(extractDir, e)).isDirectory())
+    const hasPackFiles = names.some(e => ['SKILL.md', 'engrams.yaml', 'manifest.yaml'].includes(e))
+    const packDir = hasPackFiles ? extractDir
+      : subdirs.length === 1 ? path.join(extractDir, subdirs[0]) : undefined
+    if (!packDir) throw new Error('unexpected archive layout — expected a pack directory or pack files at root')
+    return { packDir, tmpRoot }
+  } catch (err) {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+    const reason = controller.signal.aborted ? 'download timed out' : (err instanceof Error ? err.message : 'invalid archive')
+    throw new Error(`Failed to fetch or extract pack: ${reason}`)
+  } finally {
+    clearTimeout(timeout)
   }
-
-  return { packDir, tmpRoot }
 }
 
 /** Remove the temp directory created by downloadAndExtractPack. Safe to call even if the path no longer exists. */
@@ -479,11 +490,12 @@ function scanPackFiles(packDir: string): PrivacyIssue[] {
     // text file with one NUL byte in front of it cannot carry either past
     // the scan into the store.
     if (text.includes('\u0000')) {
-      const stripped = truncateToScanLimit(text.replace(/\u0000/g, ''))
-      for (const hit of detectSecrets(stripped)) {
+      const stripped = text.replace(/\u0000/g, '')
+      const hardNames = new Set(detectSecrets(truncateToScanLimit(stripped)).map(hit => hit.pattern))
+      for (const hit of detectSensitive(stripped).filter(hit => hit.pattern === 'scan_truncated' || hardNames.has(hit.pattern))) {
         issues.push({ engram_id: label, type: 'secret', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
       }
-      for (const hit of detectPromptInjection(stripped)) {
+      for (const hit of detectPromptInjection(truncateToScanLimit(stripped))) {
         issues.push({ engram_id: label, type: 'prompt_injection', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
       }
       continue
@@ -1765,6 +1777,15 @@ function serializeForSecretScan(e: Engram): string {
     // own bookkeeping keys and nothing else. A `_` prefix rule exempted any
     // key a caller cared to name (#1002 review).
     scan[k] = k === 'structured_data' ? (userStructuredData(v) ?? {}) : v
+    // Attribution is intentionally exported identity. Only an entire, bounded
+    // email value can take this path, and its own bytes still pass every
+    // credential/infra detector. Other attribution fields remain scanned.
+    if (k === 'attribution' && v && typeof v === 'object') {
+      const who = (v as { asserted_by?: unknown }).asserted_by
+      if (typeof who === 'string' && who.length <= 254 && who.match(EMAIL_RE)?.[0] === who && detectSensitive(who).length === 0) {
+        scan[k] = { ...v, asserted_by: '[declared identity]' }
+      }
+    }
   }
   return JSON.stringify(scan)
 }

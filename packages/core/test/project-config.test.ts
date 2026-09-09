@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
-import { findProjectConfigPath, readProjectConfig } from '../src/project-config.js'
+import { findProjectConfigPath, readProjectConfig, updateProjectConfig, readProjectConfigDocument } from '../src/project-config.js'
 
 /**
  * Tests for project-config — covers the .plur.yaml reader that was extracted
@@ -196,11 +196,30 @@ describe('project-config (#177)', () => {
       expect(cfg.remote_token).toBe('t')  // post-list parser correctly returns to scalar mode
     })
 
-    it('returns {} on malformed YAML (graceful)', () => {
+    it('refuses malformed YAML instead of treating unknown routing as defaults', () => {
       // Use a file we can't read by removing read perms or pointing at a dir
       writeFileSync(join(root, '.plur.yaml'), '\x00\x01\x02 binary garbage')
-      // Should not throw; returns {} or whatever was parseable
-      expect(() => readProjectConfig(root)).not.toThrow()
+      expect(() => readProjectConfig(root)).toThrow('Invalid project configuration')
+    })
+
+    it('does not promote nested or block-scalar keys into remote routing authority', () => {
+      writeFileSync(join(root, '.plur.yaml'), 'other:\n  remote_url: https://unrelated.example\n  remote_token: other-key\nnote: |\n  scope: global\n')
+      expect(readProjectConfig(root)).toEqual({})
+    })
+
+    it('preserves remote consent, unrelated nested keys and exact scalar values across partial updates', () => {
+      const path = join(root, '.plur.yaml')
+      writeFileSync(path, 'custom:\n  value: 7\nremote_url: https://example.test\nremote_token: original\n')
+      updateProjectConfig(path, { scope: 'project:test', domain: 'a: value # with punctuation' })
+      const config = readProjectConfig(root)
+      expect(config.remote_token).toBe('original')
+      expect(config.domain).toBe('a: value # with punctuation')
+      expect(readProjectConfigDocument(path).custom).toEqual({ value: 7 })
+    })
+
+    it('continues accepting legacy block-list scope syntax', () => {
+      writeFileSync(join(root, '.plur.yaml'), 'remote_scopes: |\n  - group:one\n  - group:two\n')
+      expect(readProjectConfig(root).remote_scopes).toEqual(['group:one', 'group:two'])
     })
 
     it('ignores unrelated YAML keys silently', () => {

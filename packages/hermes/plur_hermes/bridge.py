@@ -198,20 +198,36 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     """SIGTERM then SIGKILL the child's process group. Falls back to killing
     just the child if the group is already gone (or on platforms without
     killpg), so this can never raise out of a timeout handler."""
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
+    if os.name != "posix":
+        proc.kill()
         return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    # start_new_session=True fixes the group ID at creation. The parent can
+    # already be reaped while a grandchild still owns our stdout pipe.
+    pgid = proc.pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    # Do not reap the group leader until after signalling the group: reaping
+    # frees its PID for reuse and can make the next signal target another job.
+    time.sleep(0.5)
+    # Parent exit is not proof that the group exited. Descendants can ignore
+    # TERM; always finish group teardown even when wait() returned immediately.
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # macOS returns EPERM for a group containing only an unreaped zombie.
+        # Reap our exited leader, then prove the group is gone. A live group
+        # or a real permission failure still propagates; never claim cleanup.
+        if proc.poll() is None:
+            raise
         try:
-            os.killpg(pgid, sig)
-        except (ProcessLookupError, OSError):
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
             return
-        try:
-            proc.wait(timeout=2)
-            return  # died on SIGTERM; no need to escalate
-        except subprocess.TimeoutExpired:
-            continue
+        raise
 
 
 class PlurBridge:

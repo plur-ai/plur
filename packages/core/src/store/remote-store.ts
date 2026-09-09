@@ -1,8 +1,10 @@
+import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { Engram } from '../schemas/engram.js'
 import { logger } from '../logger.js'
 import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
+import { userStructuredData } from '../content-fields.js'
 
 /**
  * Lenient validation for semi-trusted remote rows (security audit 2026-06-10,
@@ -98,6 +100,8 @@ const LOAD_FETCH_TIMEOUT_MS = 30_000
  * the normalized form — the user's spelling is preserved on disk.
  */
 export function normalizeEndpointUrl(url: string): string {
+  // Match URL normalization performed by fetch (host case, default ports, dot segments).
+  try { url = new URL(url).href } catch { /* validation remains at the caller boundary */ }
   return url.replace(/\/sse\/?$/, '').replace(/\/$/, '')
 }
 
@@ -626,13 +630,31 @@ export class RemoteStore {
    * placeholder will fail — the engram only exists on the server with
    * the server's ID.
    */
-  async appendAndGetServerId(engram: Engram): Promise<{ id: string }> {
+  appendFingerprint(engram: Engram): string {
+    return createHash('sha256').update(JSON.stringify([this.apiBase, JSON.parse(RemoteStore.appendBody(engram))], (_key, value) =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value)).digest('hex')
+  }
+
+  private static appendBody(engram: Engram): string {
     // #768: transmit the full engram, not just the core four — pinned,
     // rationale, tags, commitment, validity windows and supersedes were
     // silently dropped, so team-scope pins never round-tripped. Optional
     // fields are included only when set, so older servers that ignore
     // unknown keys see no behavioral change.
     const e = engram as any
+    // These content forms have no remote representation yet. Refuse before
+    // sending, so a move keeps its original and a queued write remains visible.
+    // Silently dropping a qualifier is not a successful remote write.
+    for (const key of ['entities', 'episodic', 'exchange', 'insight', 'polarity']) {
+      const value = e[key]
+      if (value != null && (!Array.isArray(value) || value.length > 0)) {
+        throw new Error(`Remote write does not support content field: ${key}`)
+      }
+    }
+    if (userStructuredData(e.structured_data) !== undefined) {
+      throw new Error('Remote write does not support user structured_data')
+    }
     // Canonical engrams carry the validity window nested under `temporal`
     // (temporal.valid_from / temporal.valid_until, #347) and supersession
     // under `relations.supersedes` (#240) — the wire contract
@@ -644,7 +666,7 @@ export class RemoteStore {
     const supersedes  = Array.isArray(e.relations?.supersedes) && e.relations.supersedes.length > 0
       ? e.relations.supersedes
       : e.supersedes
-    const body = JSON.stringify({
+    return JSON.stringify({
       statement: e.statement,
       scope:     engram.scope,
       domain:    e.domain,
@@ -694,10 +716,19 @@ export class RemoteStore {
       // `provenance` is already above.
       ...(e.attribution != null             ? { attribution: e.attribution }   : {}),
       ...(e.claim_class != null             ? { claim_class: e.claim_class }   : {}),
+      ...(e.summary !== undefined           ? { summary: e.summary }           : {}),
+      ...(e.contraindications !== undefined ? { contraindications: e.contraindications } : {}),
+      ...(e.knowledge_type !== undefined    ? { knowledge_type: e.knowledge_type } : {}),
+      ...(e.visibility !== undefined        ? { visibility: e.visibility }     : {}),
+      ...(e.created_at !== undefined        ? { created_at: e.created_at }     : {}),
     })
+  }
+
+  async appendAndGetServerId(engram: Engram, requestId: string = randomUUID()): Promise<{ id: string; engram?: Engram }> {
+    const body = RemoteStore.appendBody(engram)
     const r = await this.fetchBounded(`${this.apiBase}/engrams`, {
       method: 'POST',
-      headers: this.headers({ 'Content-Type': 'application/json' }),
+      headers: this.headers({ 'Content-Type': 'application/json', 'Idempotency-Key': requestId }),
       body,
     }, RemoteStore.readBounded)
     if (!r.ok) throw new Error(`Remote store append failed: ${r.status} ${r.text}`)
@@ -711,20 +742,27 @@ export class RemoteStore {
       const shown = typeof id === 'string' ? `"${id.slice(0, 64).replace(/[^\w:./-]/g, '?')}"` : typeof id
       throw new Error(`Remote store append: server returned an invalid id (${shown})`)
     }
-    // Optimistic cache insert (issue #89): the POST succeeded so the server
-    // has the engram. Insert with the server-assigned id so the very next
-    // recall sees it without waiting for a background refresh. If the server
-    // transformed other fields, the next refresh corrects them.
-    const stored = { ...(engram as any), id } as Engram
-    if (this.cache) {
-      this.cache.engrams.push(stored)
-    } else {
-      // Cold cache (no prior load()): one engram is not "all engrams in
-      // this scope". Mark stale (ts: 0) so the next load() refetches
-      // from the server instead of treating the partial view as fresh.
-      this.cache = { ts: 0, engrams: [stored] }
+    // A write acknowledgement can carry server decisions (review hold,
+    // canonical content, or a retired replay). Never publish the submitted
+    // state into the read cache. Legacy ID-only replies invalidate the cache.
+    const echo = r.json as Record<string, unknown>
+    const candidate = echo.data && typeof echo.data === 'object'
+      ? { ...(echo.data as Record<string, unknown>), id: echo.id, scope: echo.scope, status: echo.status }
+      : echo
+    const hasState = Object.keys(candidate).some(key => key !== 'id')
+    let stored: Engram | undefined
+    if (hasState) {
+      if (!RemoteRowSchema.safeParse(candidate).success || candidate.scope !== this.scope) {
+        this.cache = null
+        throw new Error('Remote store append: invalid or out-of-scope acknowledgement')
+      }
+      stored = this.reshape({ id, scope: candidate.scope, status: candidate.status, data: candidate }) ?? undefined
     }
-    return { id }
+    if (!stored) this.cache = null
+    else if (this.cache) {
+      this.cache.engrams = [...this.cache.engrams.filter(row => row.id !== id), stored]
+    } else this.cache = { ts: 0, engrams: [stored] }
+    return { id, ...(stored ? { engram: stored } : {}) }
   }
 
   /**

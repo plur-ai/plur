@@ -68,7 +68,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // before exiting, and import — the one command with the largest bulk
   // write — was the one command whose instance the drain could not see.
   // createPlur honours --store by mapping it onto flags.path.
-  const plur = createPlur({ ...flags, path: store || flags.path })
+  const plur = createPlur({ ...flags, path: store })
   const report = await importFrom(plur, { from, path: file, mapping, dryRun, scope })
 
   if (shouldOutputJson(flags)) {

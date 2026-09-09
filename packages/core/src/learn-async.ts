@@ -26,8 +26,12 @@ import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResul
 export const NEAR_DUPLICATE_OBSERVATION_FLOOR = 0.75
 
 export interface LearnAsyncDeps {
+  /** Canonical product input validation before recall or model invocation. */
+  prepareLearn?: (statement: string, context?: LearnAsyncContext) => Promise<{ statement: string; context?: LearnAsyncContext }>
+  /** Canonical supplied-content invariant shared with ordinary learn. */
+  sameLearnContext?: (engram: Engram, statement: string, context?: LearnContext) => boolean
   /** Content hash dedup against all engrams. Scope-aware: only matches same scope. */
-  hashDedup: (statement: string, scope?: string) => Promise<Engram | null>
+  hashDedup: (statement: string, scope?: string, context?: LearnContext) => Promise<Engram | null>
   /** Hybrid recall for semantic similarity. */
   recallHybrid: (query: string, options?: { limit?: number }) => Promise<Engram[]>
   /** BM25 recall fallback. */
@@ -217,7 +221,17 @@ async function executeDedupDecision(
   context: LearnContext | undefined,
   decision: DedupDecision,
   targetId: string | null,
+  candidate?: Engram,
 ): Promise<LearnAsyncResult> {
+  // The model may select only a candidate actually offered. Recheck the row
+  // against that snapshot; a model response is neither authority nor a lock.
+  const matches = (row: Engram): boolean => Boolean(candidate && row.id === candidate.id
+    && row.scope === candidate.scope && row.status === 'active'
+    && row.statement === candidate.statement && row.commitment === candidate.commitment
+    && (candidate.engram_version === undefined || row.engram_version === candidate.engram_version)
+    && (!context?.scope || row.scope === context.scope)
+    && (!deps.sameLearnContext || deps.sameLearnContext(row, statement, context)))
+  if (decision !== 'ADD' && !candidate) return { engram: await deps.learn(statement, context), decision: 'ADD' }
   // Name the model behind a dedup verdict (#962). A model rewrote the
   // statement, and that rewrite became the memory. Without naming it the
   // decision cannot be reviewed later. Omitted when the caller did not say
@@ -229,7 +243,7 @@ async function executeDedupDecision(
     case 'NOOP': {
       if (targetId) {
         const existing = await deps.getById(targetId)
-        if (existing) return { engram: existing, decision: 'NOOP', existing_id: targetId }
+        if (existing && matches(existing)) return { engram: existing, decision: 'NOOP', existing_id: targetId }
       }
       return { engram: await deps.learn(statement, context), decision: 'ADD' }
     }
@@ -242,7 +256,7 @@ async function executeDedupDecision(
             const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
-            if (idx === -1) return null
+            if (idx === -1 || !matches(engrams[idx]) || engrams[idx].commitment === 'locked') return null
             const updated = { ...engrams[idx] } as any
             updated.statement = statement
             updated.content_hash = computeContentHash(statement)
@@ -281,7 +295,7 @@ async function executeDedupDecision(
             const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
-            if (idx === -1) return null
+            if (idx === -1 || !matches(engrams[idx]) || engrams[idx].commitment === 'locked') return null
             const merged = { ...engrams[idx] } as any
             merged.statement = `${merged.statement} ${statement}`
             merged.content_hash = computeContentHash(merged.statement)
@@ -326,10 +340,16 @@ export async function learnAsync(
   statement: string,
   context?: LearnAsyncContext,
 ): Promise<LearnAsyncResult> {
+  if (deps.prepareLearn) ({ statement, context } = await deps.prepareLearn(statement, context))
   // Step 1: Content hash fast-path (scope-aware — issue #136)
-  const hashMatch = await deps.hashDedup(statement, context?.scope)
+  const hashMatch = await deps.hashDedup(statement, context?.scope, context)
   if (hashMatch) {
-    return { engram: hashMatch, decision: 'NOOP', existing_id: hashMatch.id }
+    // An additional source is new provenance even when the fact is unchanged.
+    // Let the canonical writer retain it under the store lock.
+    const newSource = context?.source !== undefined && context.source !== hashMatch.source
+      && !hashMatch.sources?.some(source => source.source === context.source)
+    const engram = newSource ? await deps.learn(statement, context) : hashMatch
+    return { engram, decision: 'NOOP', existing_id: engram.id }
   }
 
   // Step 2: Check dedup config
@@ -376,6 +396,9 @@ export async function learnAsync(
   if (context?.scope) {
     candidates = candidates.filter(c => c.scope === context.scope)
   }
+  if (deps.sameLearnContext) candidates = candidates.filter(c => deps.sameLearnContext!(c, statement, context))
+  // Keep the pre-decision state even if a dependency returns mutable objects.
+  candidates = structuredClone(candidates)
 
   if (candidates.length === 0) {
     return { engram: await deps.learn(statement, context), decision: 'ADD' }
@@ -511,7 +534,7 @@ export async function learnAsync(
   }
 
   // Step 5: Execute
-  const executed = await executeDedupDecision(deps, statement, context, decision, targetId)
+  const executed = await executeDedupDecision(deps, statement, context, decision, targetId, candidates.find(c => c.id === targetId))
   return { ...executed, dedup: { mode: dedupMode, ...(nearDuplicates ? { near_duplicates: nearDuplicates } : {}) } }
 }
 

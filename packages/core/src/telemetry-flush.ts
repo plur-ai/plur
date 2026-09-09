@@ -28,10 +28,12 @@ import {
   getCounters,
   listPendingDates,
   migrateStaleCounters,
-  readPendingCounters,
+  readPendingDelivery,
+  prepareTelemetryQueue,
   type CounterSnapshot,
   type CountersOpts,
 } from './telemetry-counters.js'
+import { withAsyncLock } from './store/async-lock.js'
 
 export type HeartbeatPayload = {
   install_id: string
@@ -48,6 +50,7 @@ export type FlushOpts = CountersOpts & {
   endpoint?: string
   timeoutMs?: number
   packageVersion?: string
+  deliveryId?: string
 }
 
 const DEFAULT_ENDPOINT = 'https://plur.ai/v1/heartbeat'
@@ -108,7 +111,7 @@ export async function sendHeartbeat(
   try {
     const res = await fetchImpl(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(opts.deliveryId ? { 'Idempotency-Key': opts.deliveryId } : {}) },
       body: JSON.stringify(payload),
       signal: controller.signal,
     })
@@ -130,6 +133,14 @@ export async function flushIfNeeded(opts: FlushOpts = {}): Promise<void> {
   // pending-dir check below handles the empty case.
   if (countersPath && !existsSync(countersPath) && listPendingDates(opts).length === 0) return
 
+  const queuePath = prepareTelemetryQueue(opts)
+  // Separate from the short synchronous mutation lock: never block a counter
+  // event behind network I/O in the same event loop.
+  await withAsyncLock(`${queuePath}.flush`, () => flushPending(opts))
+}
+
+async function flushPending(opts: FlushOpts): Promise<void> {
+
   // Migrate any stale counters.json (e.g. upgrade from pre-#128, or beforeExit
   // firing after midnight on a process that never re-recorded). Adds an entry
   // to pending-dir; the drain loop below ships it.
@@ -141,22 +152,23 @@ export async function flushIfNeeded(opts: FlushOpts = {}): Promise<void> {
   if (!baseSnapshot) return
 
   for (const date of listPendingDates(opts)) {
-    const pending = readPendingCounters(date, opts)
-    if (!pending) {
-      // Malformed or already-removed; drop the file so we don't loop on it.
-      deletePending(date, opts)
-      continue
-    }
-    const snapshot: CounterSnapshot = {
+    const delivery = readPendingDelivery(date, opts, {
       installId: baseSnapshot.installId,
+      version: opts.packageVersion ?? readPackageVersion(),
+      platform: process.platform,
+    })
+    if (!delivery) continue
+    const pending = delivery.counters
+    const snapshot: CounterSnapshot = {
+      installId: delivery.identity.installId,
       date: pending.date,
       learn: pending.learn,
       recall: pending.recall,
       session: pending.session,
     }
-    const payload = buildHeartbeatPayload(snapshot, opts)
-    const ok = await sendHeartbeat(payload, opts)
-    if (ok) deletePending(date, opts)
+    const payload = { ...buildHeartbeatPayload(snapshot, { packageVersion: delivery.identity.version }), platform: delivery.identity.platform }
+    const ok = await sendHeartbeat(payload, { ...opts, deliveryId: delivery.id })
+    if (ok) deletePending(date, opts, delivery)
     // On failure, file stays on disk and is retried on next flush.
   }
 }

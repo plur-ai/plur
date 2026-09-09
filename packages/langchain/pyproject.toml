@@ -7,7 +7,7 @@ name = "plur-langchain"
 version = "0.10.0"
 description = "LangChain memory adapter for PLUR — BaseMemory + BaseChatMessageHistory"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "PLUR" }]
 keywords = ["memory", "agent-memory", "llm", "langchain", "local-first", "mcp", "ai-agents"]
@@ -16,12 +16,13 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "langchain-core>=0.2,<0.3",
+  "langchain-core>=0.3.85,<0.4",
+  "langsmith>=0.8.18,<1",
   "plur-ai>=0.10.0",
 ]
 

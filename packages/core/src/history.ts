@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import { logger } from './logger.js'
+import { withLock, fsyncDir } from './sync.js'
 import { join } from 'path'
 import { createHash } from 'crypto'
 
@@ -57,10 +58,6 @@ export interface HistoryEvent {
  */
 export function appendHistory(root: string, event: HistoryEvent): boolean {
   const historyDir = join(root, 'history')
-  if (!fs.existsSync(historyDir)) {
-    fs.mkdirSync(historyDir, { recursive: true })
-  }
-
   const date = event.timestamp.slice(0, 7) // YYYY-MM
   const filePath = join(historyDir, `${date}.jsonl`)
   const line = JSON.stringify(event) + '\n'
@@ -71,40 +68,46 @@ export function appendHistory(root: string, event: HistoryEvent): boolean {
   // restore cannot recover, so a lost record makes restore UNDER-report the
   // loss, which is the one thing it exists not to do.
   //
-  // Best-effort on the fsync itself: the append already succeeded, and failing
-  // the caller's mutation because a diagnostic log could not be flushed would
-  // trade a small durability gap for a large availability one.
-  // Best-effort on the WHOLE append, not just the fsync.
+  // History remains best-effort for the caller's primary mutation, but its
+  // acknowledgement is honest: any open/write/fsync failure returns false.
+  // The monthly lock also lets a later append delimit an interrupted tail
+  // without racing another writer. Both content and new directory entries are
+  // flushed before returning true.
   //
-  // The reasoning above — that failing a caller's mutation because a
-  // diagnostic log could not be written trades a small durability gap for a
-  // large availability one — was applied only to `fsyncSync`. `openSync` and
-  // `writeSync` were unguarded, so an unwritable history directory (disk full,
-  // permissions, a path that is not a file) propagated out and failed the
-  // learn/forget/feedback that called it. Found by a test that made the month
-  // file unreadable to check id allocation degraded safely: it did not
-  // degrade, it threw EISDIR out of `plur.learn()`.
-  //
-  // Warned rather than silently swallowed: history is load-bearing for `plur
-  // restore` (it NAMES the engrams a restore cannot recover) and, since #816,
-  // for id allocation. A store writing no history is degraded and the operator
-  // needs to know — but the write itself must still land.
+  // History names the engrams a restore cannot recover. A store writing no
+  // history is degraded and the operator needs to know. Durable ID reservations
+  // now live separately, so a diagnostic failure cannot release an identity.
   try {
-    const fd = fs.openSync(filePath, 'a')
-    try {
-      fs.writeSync(fd, line)
-      try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
-    } finally {
-      fs.closeSync(fd)
-    }
-    return true
+    if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(date)) throw new Error('Invalid history month')
+    fs.mkdirSync(historyDir, { recursive: true, mode: 0o700 })
+    return withLock(filePath, () => {
+      const fd = fs.openSync(filePath, fs.constants.O_RDWR | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600)
+      try {
+        fs.fchmodSync(fd, 0o600)
+        const size = fs.fstatSync(fd).size
+        const last = Buffer.alloc(1)
+        if (size) fs.readSync(fd, last, 0, 1, size - 1)
+        // An earlier disk-full/crash can leave a fragment without a newline.
+        // Delimit it so that it cannot consume the next valid record too.
+        const bytes = Buffer.from((size && last[0] !== 10 ? '\n' : '') + line)
+        let offset = 0
+        while (offset < bytes.length) {
+          const written = fs.writeSync(fd, bytes, offset, bytes.length - offset)
+          if (written === 0) throw new Error('Incomplete history append')
+          offset += written
+        }
+        fs.fsyncSync(fd)
+        fsyncDir(historyDir)
+      } finally { fs.closeSync(fd) }
+      return true
+    })
   } catch (err) {
     if (!warnedHistoryPaths.has(filePath)) {
       warnedHistoryPaths.add(filePath)
       logger.warning(
         `[plur] history could not be written to ${filePath}: ${(err as Error).message}. ` +
         `The operation itself succeeded. While this persists, \`plur restore\` cannot name ` +
-        `unrecoverable engrams and engram-id allocation loses its cross-compaction guarantee (#816).`,
+        `unrecoverable engrams. Durable ID reservations remain independent of this diagnostic log.`,
       )
     }
     return false

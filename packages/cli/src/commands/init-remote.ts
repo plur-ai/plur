@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
+import { readProjectConfig, updateProjectConfig, findProjectConfigPath, atomicWrite, withLock } from '@plur-ai/core'
 import { type GlobalFlags } from '../plur.js'
 import { outputText, outputInfo, outputError } from '../output.js'
 
@@ -96,70 +97,6 @@ function parseArgs(args: string[]): ParsedArgs | { error: string } {
 }
 
 /**
- * Strip the existing remote_* keys from .plur.yaml content so we can
- * append a fresh block — keeps non-remote keys (domain, scope) intact.
- *
- * Fixed (cto #1, data #EC03, dijkstra #5):
- *   - Blank lines INSIDE a remote_scopes list no longer terminate the
- *     skip. Only a non-dash, non-blank line breaks out.
- *   - Block-scalar marker (`remote_scopes: |` / `>`) also triggers list
- *     skipping, matching the parser's accepted forms.
- *   - The list-skip activates whenever the value-after-colon is empty
- *     OR is one of the block-scalar markers, regardless of trailing
- *     whitespace.
- */
-function stripRemoteKeys(content: string): string {
-  const lines = content.split('\n')
-  const out: string[] = []
-  let skippingList = false
-  const REMOTE_KEY = /^remote_(url|token|scopes)\s*:(.*)$/
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (skippingList) {
-      // Inside a previous remote_scopes list — skip dash items AND
-      // intervening blank lines. Only break out when a non-dash
-      // non-blank line appears.
-      if (trimmed === '' || trimmed.startsWith('-')) continue
-      skippingList = false
-    }
-    const m = trimmed.match(REMOTE_KEY)
-    if (m) {
-      const key = m[1]
-      const rest = m[2].trim()
-      // If remote_scopes had an empty or block-scalar value, the next
-      // lines are dash items — keep skipping.
-      if (key === 'scopes' && (rest === '' || rest === '|' || rest === '>')) {
-        skippingList = true
-      }
-      continue
-    }
-    out.push(line)
-  }
-  // Remove trailing blank lines that result from key removal
-  while (out.length > 0 && out[out.length - 1].trim() === '') out.pop()
-  return out.join('\n')
-}
-
-/**
- * Append remote_url, remote_token, and (optional) remote_scopes to the
- * existing .plur.yaml content. Returns the new file body.
- */
-function buildConfigBody(existing: string, url: string, token: string, scopes?: string[]): string {
-  const stripped = stripRemoteKeys(existing)
-  const sep = stripped.length > 0 && !stripped.endsWith('\n') ? '\n\n' : (stripped.length > 0 ? '\n' : '')
-  const block: string[] = []
-  block.push('# --- PLUR Enterprise remote (opt-in for this project) ---')
-  block.push('# remote_token is sensitive — keep .plur.yaml in .gitignore.')
-  block.push(`remote_url: ${url}`)
-  block.push(`remote_token: ${token}`)
-  if (scopes && scopes.length > 0) {
-    block.push('remote_scopes:')
-    for (const s of scopes) block.push(`  - ${s}`)
-  }
-  return stripped + sep + block.join('\n') + '\n'
-}
-
-/**
  * Add `.plur.yaml` to the project's .gitignore if not already present.
  *
  * Bounded by the .git boundary (dijkstra #2, critic #2):
@@ -191,68 +128,19 @@ function ensureGitignore(): { path: string; action: 'added' | 'already' | 'creat
 
   const PATTERN = '.plur.yaml'
 
-  if (!gitignorePath) {
-    // No .gitignore found within the project — create one alongside .plur.yaml.
-    const newPath = join(process.cwd(), '.gitignore')
-    writeFileSync(newPath, `# Added by 'plur init-remote' — .plur.yaml may hold an API token\n${PATTERN}\n`)
-    return { path: newPath, action: 'created' }
-  }
+  const target = gitignorePath ?? join(process.cwd(), '.gitignore')
+  return withLock(target, () => {
+    const exists = existsSync(target)
+    const content = exists ? readFileSync(target, 'utf8') : ''
+    // The final matching rule wins: a later !.plur.yaml must not undo the
+    // protection while an earlier occurrence makes setup report success.
+    const rules = content.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'))
+    if (rules.at(-1) === PATTERN) return { path: target, action: 'already' }
+    const sep = content && !content.endsWith('\n') ? '\n' : ''
+    atomicWrite(target, `${content}${sep}# Added by 'plur init-remote' — .plur.yaml may hold an API token\n${PATTERN}\n`, { mode: 0o644 })
+    return { path: target, action: exists ? 'added' : 'created' }
+  })
 
-  const content = readFileSync(gitignorePath, 'utf8')
-  // Crude but safe — match the literal pattern as a whole word
-  const already = content.split('\n').some(l => l.trim() === PATTERN)
-  if (already) return { path: gitignorePath, action: 'already' }
-
-  const sep = content.endsWith('\n') ? '' : '\n'
-  appendFileSync(gitignorePath, `${sep}# Added by 'plur init-remote' — .plur.yaml may hold an API token\n${PATTERN}\n`)
-  return { path: gitignorePath, action: 'added' }
-}
-
-/**
- * Walk upward from cwd to find the nearest existing .plur.yaml.
- * Mirrors hook-inject.ts findProjectConfigPath but locally scoped here
- * to avoid a cross-command import. Same boundaries: .git, home, root.
- */
-function findExistingConfigPath(): string | null {
-  const home = resolve(homedir())
-  let dir = resolve(process.cwd())
-  const MAX_DEPTH = 12
-  for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    if (dir !== home) {
-      const candidate = join(dir, '.plur.yaml')
-      if (existsSync(candidate)) return candidate
-    }
-    if (existsSync(join(dir, '.git'))) return null
-    if (dir === home || dir === '/' || dir === '.') return null
-    const parent = dirname(dir)
-    if (parent === dir) return null
-    dir = parent
-  }
-  return null
-}
-
-/**
- * Read existing .plur.yaml fields the parser cares about — minimal,
- * matches the line-by-line approach in hook-inject.ts.
- */
-interface ReadConfig {
-  url?: string
-  token?: string
-}
-function readRemoteFromConfig(path: string): ReadConfig {
-  if (!existsSync(path)) return {}
-  const content = readFileSync(path, 'utf8')
-  const out: ReadConfig = {}
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('#') || !trimmed) continue
-    const m = trimmed.match(/^(remote_url|remote_token)\s*:\s*(.+)$/)
-    if (m) {
-      if (m[1] === 'remote_url') out.url = m[2].trim()
-      if (m[1] === 'remote_token') out.token = m[2].trim()
-    }
-  }
-  return out
 }
 
 /**
@@ -331,17 +219,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // discovery so `--verify` from a project subdirectory finds the same
   // config the hook would actually use (data #EC06).
   if (opts.verify) {
-    const verifyPath = findExistingConfigPath() ?? configPath
-    const cfg = readRemoteFromConfig(verifyPath)
-    if (!cfg.url || !cfg.token) {
+    const verifyPath = findProjectConfigPath() ?? configPath
+    const cfg = readProjectConfig(process.cwd())
+    if (!cfg.remote_url || !cfg.remote_token) {
       outputError(`No remote config found (walked upward from ${process.cwd()}). Run \`plur init-remote --url <url> --token <key>\` first.`)
       process.exit(1)
     }
     outputInfo(`Using config at ${verifyPath}`, flags)
     try {
-      const me = await verifyConnectivity(cfg.url, cfg.token)
+      const me = await verifyConnectivity(cfg.remote_url, cfg.remote_token)
       // The verify result IS the requested output — never suppressed.
-      outputText(`✓ Connected to ${cfg.url} as ${me.username} (org: ${me.org_id})`)
+      outputText(`✓ Connected to ${cfg.remote_url} as ${me.username} (org: ${me.org_id})`)
       outputText(`  readable scopes: ${me.scopes.length === 0 ? '(none)' : me.scopes.join(', ')}`)
     } catch (err) {
       outputError(`✗ Connection failed: ${(err as Error).message}`)
@@ -388,18 +276,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     process.exit(2)
   }
 
-  // Write/update .plur.yaml
-  const existing = existsSync(configPath) ? readFileSync(configPath, 'utf8') : ''
-  const next = buildConfigBody(existing, opts.url, opts.token, opts.scopes)
-  writeFileSync(configPath, next)
-  outputInfo(`✓ Wrote ${configPath}`, flags)
-  if (opts.scopes && opts.scopes.length > 0) {
-    outputInfo(`  scope whitelist: ${opts.scopes.join(', ')}`, flags)
-  } else {
-    outputInfo(`  scope whitelist: (none — hook will query all readable scopes)`, flags)
-  }
-
-  // Ensure .gitignore
+  // Persist ignore protection BEFORE publishing the token-bearing config.
   if (!opts.noGitignore) {
     const gi = ensureGitignore()
     if (gi.action === 'added') outputInfo(`✓ Added .plur.yaml to ${gi.path}`, flags)
@@ -410,6 +287,16 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // never suppressed (#730).
     outputText(`⚠ Skipped .gitignore (--no-gitignore). The token in .plur.yaml is sensitive.`)
   }
+
+  // Write/update .plur.yaml
+  updateProjectConfig(configPath, { remote_url: opts.url, remote_token: opts.token, remote_scopes: opts.scopes })
+  outputInfo(`✓ Wrote ${configPath}`, flags)
+  if (opts.scopes && opts.scopes.length > 0) {
+    outputInfo(`  scope whitelist: ${opts.scopes.join(', ')}`, flags)
+  } else {
+    outputInfo(`  scope whitelist: (none — hook will query all readable scopes)`, flags)
+  }
+
 
   outputInfo(`\nDone. The UserPromptSubmit hook will now query ${opts.url} on every prompt`, flags)
   outputInfo(`from this directory tree (bounded by the nearest .git). Personal/non-project`, flags)

@@ -25,15 +25,14 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import { isTelemetryEnabled } from './telemetry.js'
+import { atomicWrite, withLock, fsyncDir } from './sync.js'
 
 export type CounterEvent = 'learn' | 'recall' | 'session'
 
@@ -76,40 +75,54 @@ function gateOpts(opts: CountersOpts): { env?: NodeJS.ProcessEnv; configPath?: s
 
 function ensureParentDir(path: string): void {
   const dir = dirname(path)
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-  }
-}
-
-// Unique per call, not just per process (#188): pid-only tmp names collide
-// when two writes to the same path interleave in async contexts — the second
-// write clobbers the first tmp file before its rename.
-function tmpPath(path: string): string {
-  return `${path}.tmp.${process.pid}.${randomUUID()}`
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // Also retry an earlier failed directory sync: existence is not durability.
+  fsyncDir(dir)
 }
 
 function atomicWriteJson(path: string, data: unknown): void {
-  ensureParentDir(path)
-  const tmp = tmpPath(path)
-  writeFileSync(tmp, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 })
-  renameSync(tmp, path)
+  const dir = dirname(path)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // The canonical writer syncs the complete ancestry after replacement.
+  atomicWrite(path, JSON.stringify(data), { mode: 0o600 })
 }
 
-function atomicWriteString(path: string, data: string): void {
+export function telemetryQueuePath(opts: CountersOpts): string {
+  return join(opts.pendingDir ?? defaultPendingDir(), '.queue')
+}
+
+export function prepareTelemetryQueue(opts: CountersOpts): string {
+  const path = telemetryQueuePath(opts)
   ensureParentDir(path)
-  const tmp = tmpPath(path)
-  writeFileSync(tmp, data, { encoding: 'utf8', mode: 0o600 })
-  renameSync(tmp, path)
+  return path
+}
+
+function withTelemetryLock<T>(opts: CountersOpts, fn: () => T): T {
+  const path = telemetryQueuePath(opts)
+  const dir = dirname(path)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+  return withLock(path, fn)
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+function validDate(date: unknown): date is string {
+  return typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && !date.startsWith('0000')
+    && Number.isFinite(Date.parse(date)) && new Date(date).toISOString().slice(0, 10) === date
 }
 
 export function readOrCreateInstallId(path: string): string {
-  if (existsSync(path)) {
-    const raw = readFileSync(path, 'utf8').trim()
-    if (raw.length > 0) return raw
-  }
-  const id = randomUUID()
-  atomicWriteString(path, id)
-  return id
+  ensureParentDir(path)
+  return withLock(path, () => {
+    let raw: string
+    try { raw = readFileSync(path, 'utf8').trim() } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const id = randomUUID()
+      atomicWrite(path, id, { mode: 0o600 })
+      return id
+    }
+    if (!UUID.test(raw)) throw new Error('Invalid telemetry install identity; existing data preserved')
+    return raw
+  })
 }
 
 type StoredCounters = {
@@ -117,26 +130,44 @@ type StoredCounters = {
   learn: number
   recall: number
   session: number
+  _rolloverId?: string
+  _applied?: string[]
+  _deliveryId?: string
+  _wireIdentity?: DeliveryIdentity
+  _deliveryCounters?: Pick<StoredCounters, 'date' | 'learn' | 'recall' | 'session'>
 }
 
+type DeliveryIdentity = { installId: string; version: string; platform: NodeJS.Platform }
+
 function readStoredCounters(path: string): StoredCounters | null {
-  if (!existsSync(path)) return null
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8'))
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      typeof parsed.date === 'string' &&
-      typeof parsed.learn === 'number' &&
-      typeof parsed.recall === 'number' &&
-      typeof parsed.session === 'number'
-    ) {
-      return parsed as StoredCounters
-    }
-    return null
-  } catch {
-    return null
+  let raw: string
+  try { raw = readFileSync(path, 'utf8') } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw new Error('Cannot read telemetry counters; existing data preserved')
   }
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !validDate(parsed.date)
+      || !['learn', 'recall', 'session'].every(key => Number.isSafeInteger(parsed[key]) && parsed[key] >= 0)
+      || ['_rolloverId', '_deliveryId'].some(key => parsed[key] !== undefined && (typeof parsed[key] !== 'string' || !UUID.test(parsed[key])))
+      || (parsed._applied !== undefined && (!Array.isArray(parsed._applied) || !parsed._applied.every((v: unknown) => typeof v === 'string' && UUID.test(v))))
+      || (parsed._deliveryCounters !== undefined && (!parsed._deliveryCounters
+        || parsed._deliveryCounters.date !== parsed.date
+        || !['_deliveryId', '_wireIdentity'].every(key => parsed[key] !== undefined)
+        || !['learn', 'recall', 'session'].every(key => Number.isSafeInteger(parsed._deliveryCounters[key])
+          && parsed._deliveryCounters[key] >= 0 && parsed._deliveryCounters[key] <= parsed[key])))
+      || (parsed._wireIdentity !== undefined && (!parsed._wireIdentity || !UUID.test(parsed._wireIdentity.installId)
+        || typeof parsed._wireIdentity.version !== 'string' || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(parsed._wireIdentity.version)
+        || !['linux', 'darwin', 'win32'].includes(parsed._wireIdentity.platform)))) throw new Error('invalid')
+    return parsed as StoredCounters
+  } catch {
+    throw new Error('Invalid telemetry counters; existing data preserved')
+  }
+}
+
+function countsOnly(stored: StoredCounters): StoredCounters {
+  const { date, learn, recall, session } = stored
+  return { date, learn, recall, session }
 }
 
 function freshCounters(date: string): StoredCounters {
@@ -151,25 +182,36 @@ function viewAsToday(stored: StoredCounters | null, today: string): StoredCounte
   return stored
 }
 
-function moveToPending(stored: StoredCounters, pendingDir: string): void {
+function moveToPending(stored: StoredCounters, pendingDir: string, countersPath: string): void {
+  // Persist a stable transfer identity BEFORE touching the destination. A
+  // retry after either replacement reuses it instead of summing twice.
+  if (!stored._rolloverId) {
+    stored = { ...stored, _rolloverId: randomUUID() }
+    atomicWriteJson(countersPath, stored)
+  }
   const path = join(pendingDir, `${stored.date}.json`)
-  // If a pending file already exists for this date (e.g. multiple processes
-  // each detected the same rollover), merge counts so we don't double-count
-  // OR drop the smaller snapshot.
   const existing = readStoredCounters(path)
-  const merged: StoredCounters =
-    existing && existing.date === stored.date
-      ? {
-          date: stored.date,
-          learn: existing.learn + stored.learn,
-          recall: existing.recall + stored.recall,
-          session: Math.max(existing.session, stored.session),
-        }
-      : stored
+  if (existing && existing.date !== stored.date) throw new Error('Telemetry pending date mismatch')
+  if (existing?._applied?.includes(stored._rolloverId!)) return
+  const merged: StoredCounters = {
+    ...existing,
+    date: stored.date,
+    learn: (existing?.learn ?? 0) + stored.learn,
+    recall: (existing?.recall ?? 0) + stored.recall,
+    session: Math.max(existing?.session ?? 0, stored.session),
+    _applied: [...(existing?._applied ?? []), stored._rolloverId!],
+    _deliveryId: existing?._deliveryId ?? randomUUID(),
+  }
+  if (![merged.learn, merged.recall, merged.session].every(Number.isSafeInteger)) throw new Error('Telemetry counter limit exceeded')
   atomicWriteJson(path, merged)
 }
 
 export function recordEvent(event: CounterEvent, opts: CountersOpts = {}): boolean {
+  if (!isTelemetryEnabled(gateOpts(opts))) return false
+  return withTelemetryLock(opts, () => recordEventLocked(event, opts))
+}
+
+function recordEventLocked(event: CounterEvent, opts: CountersOpts = {}): boolean {
   if (!isTelemetryEnabled(gateOpts(opts))) return false
 
   const countersPath = opts.countersPath ?? defaultCountersPath()
@@ -183,17 +225,18 @@ export function recordEvent(event: CounterEvent, opts: CountersOpts = {}): boole
   const stored = readStoredCounters(countersPath)
   let current: StoredCounters
   let rolledOver = false
-  if (stored && stored.date !== today) {
+  if (stored && (stored.date !== today || stored._rolloverId)) {
     // Rollover: preserve yesterday's snapshot in pending-dir BEFORE overwriting
     // counters.json with today's fresh state. This is the load-bearing fix for
     // #128 — without it, a long-lived process emitting an event after midnight
     // would silently discard yesterday's counts.
-    moveToPending(stored, pendingDir)
+    moveToPending(stored, pendingDir, countersPath)
     current = freshCounters(today)
     rolledOver = true
   } else {
     current = stored ?? freshCounters(today)
   }
+  if (current._rolloverId) throw new Error('Telemetry rollover is incomplete; retry using the later date before recording')
   const sessionAlreadyCounted = current.session > 0
 
   if (event === 'learn') current.learn += 1
@@ -204,6 +247,7 @@ export function recordEvent(event: CounterEvent, opts: CountersOpts = {}): boole
     current.session += 1
   }
 
+  if (![current.learn, current.recall, current.session].every(Number.isSafeInteger)) throw new Error('Telemetry counter limit exceeded')
   atomicWriteJson(countersPath, current)
   return rolledOver
 }
@@ -213,29 +257,64 @@ export function recordEvent(event: CounterEvent, opts: CountersOpts = {}): boole
 
 export function listPendingDates(opts: CountersOpts = {}): string[] {
   const pendingDir = opts.pendingDir ?? defaultPendingDir()
-  if (!existsSync(pendingDir)) return []
   try {
-    return readdirSync(pendingDir)
-      .filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f))
-      .map((f) => f.slice(0, -5))
-      .sort()
-  } catch {
-    return []
+    return readdirSync(pendingDir).filter(f => /^\d{4}-\d{2}-\d{2}\.json$/.test(f)).map(f => f.slice(0, -5)).sort()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw new Error('Cannot list pending telemetry; existing data preserved')
   }
+}
+
+function pendingPath(date: string, opts: CountersOpts): string {
+  if (!validDate(date)) throw new Error('Invalid pending telemetry date')
+  return join(opts.pendingDir ?? defaultPendingDir(), `${date}.json`)
 }
 
 export function readPendingCounters(date: string, opts: CountersOpts = {}): StoredCounters | null {
-  const pendingDir = opts.pendingDir ?? defaultPendingDir()
-  return readStoredCounters(join(pendingDir, `${date}.json`))
+  const stored = readStoredCounters(pendingPath(date, opts))
+  if (stored && stored.date !== date) throw new Error('Telemetry pending date mismatch')
+  return stored && countsOnly(stored)
 }
 
-export function deletePending(date: string, opts: CountersOpts = {}): void {
-  const pendingDir = opts.pendingDir ?? defaultPendingDir()
-  try {
-    unlinkSync(join(pendingDir, `${date}.json`))
-  } catch {
-    /* ignore — already gone */
-  }
+export type PendingDelivery = { counters: StoredCounters; id: string; identity: DeliveryIdentity }
+export function readPendingDelivery(date: string, opts: CountersOpts, identity: DeliveryIdentity): PendingDelivery | null {
+  return withTelemetryLock(opts, () => {
+    const path = pendingPath(date, opts)
+    const stored = readStoredCounters(path)
+    if (!stored) return null
+    if (stored.date !== date) throw new Error('Telemetry pending date mismatch')
+    if (!stored._deliveryId || !stored._wireIdentity || !stored._deliveryCounters) {
+      stored._deliveryId ??= randomUUID()
+      stored._wireIdentity ??= identity
+      // Freeze the exact acknowledged prefix before sending. New counts can
+      // arrive while a response is lost, or before local acknowledgement.
+      stored._deliveryCounters ??= countsOnly(stored)
+      atomicWriteJson(path, stored)
+    }
+    return { counters: countsOnly(stored._deliveryCounters), id: stored._deliveryId, identity: stored._wireIdentity }
+  })
+}
+
+export function deletePending(date: string, opts: CountersOpts, sent: PendingDelivery): void {
+  withTelemetryLock(opts, () => {
+    const path = pendingPath(date, opts)
+    const current = readStoredCounters(path)
+    if (!current) return
+    if (current._deliveryId !== sent.id) throw new Error('Pending telemetry identity changed; data preserved')
+    if ((['learn', 'recall', 'session'] as const).every(key => current[key] === sent.counters[key])) {
+      unlinkSync(path)
+      fsyncDir(dirname(path))
+      return
+    }
+    // New rollover counts arrived during the request. Remove only the
+    // acknowledged prefix and give the retained remainder a new identity.
+    const next = { ...current, _deliveryId: randomUUID(), _deliveryCounters: undefined, _wireIdentity: undefined }
+    for (const key of ['learn', 'recall', 'session'] as const) {
+      if (next[key] < sent.counters[key]) throw new Error('Pending telemetry changed incompatibly; data preserved')
+      next[key] -= sent.counters[key]
+    }
+    atomicWriteJson(path, next)
+  })
 }
 
 // Migration helper: if counters.json holds a stale date (e.g. upgrade from a
@@ -243,18 +322,28 @@ export function deletePending(date: string, opts: CountersOpts = {}): void {
 // Returns true when migration ran.
 export function migrateStaleCounters(opts: CountersOpts = {}): boolean {
   if (!isTelemetryEnabled(gateOpts(opts))) return false
+  return withTelemetryLock(opts, () => migrateStaleCountersLocked(opts))
+}
+
+function migrateStaleCountersLocked(opts: CountersOpts): boolean {
+  if (!isTelemetryEnabled(gateOpts(opts))) return false
   const countersPath = opts.countersPath ?? defaultCountersPath()
   const pendingDir = opts.pendingDir ?? defaultPendingDir()
   const now = (opts.now ?? (() => new Date()))()
   const today = utcDate(now)
   const stored = readStoredCounters(countersPath)
-  if (!stored || stored.date >= today) return false
-  moveToPending(stored, pendingDir)
+  if (!stored || (stored.date >= today && !stored._rolloverId)) return false
+  moveToPending(stored, pendingDir, countersPath)
   atomicWriteJson(countersPath, freshCounters(today))
   return true
 }
 
 export function getCounters(opts: CountersOpts = {}): CounterSnapshot | null {
+  if (!isTelemetryEnabled(gateOpts(opts))) return null
+  return withTelemetryLock(opts, () => getCountersLocked(opts))
+}
+
+function getCountersLocked(opts: CountersOpts): CounterSnapshot | null {
   if (!isTelemetryEnabled(gateOpts(opts))) return null
 
   const countersPath = opts.countersPath ?? defaultCountersPath()
@@ -275,6 +364,11 @@ export function getCounters(opts: CountersOpts = {}): CounterSnapshot | null {
 }
 
 export function resetCounters(opts: CountersOpts = {}): CounterSnapshot | null {
+  if (!isTelemetryEnabled(gateOpts(opts))) return null
+  return withTelemetryLock(opts, () => resetCountersLocked(opts))
+}
+
+function resetCountersLocked(opts: CountersOpts): CounterSnapshot | null {
   if (!isTelemetryEnabled(gateOpts(opts))) return null
 
   const countersPath = opts.countersPath ?? defaultCountersPath()

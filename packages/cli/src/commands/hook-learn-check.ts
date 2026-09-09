@@ -1,4 +1,5 @@
-import { readSync, readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync, renameSync, unlinkSync } from 'fs'
+import { atomicWrite } from '@plur-ai/core'
+import { readSync, readFileSync, mkdirSync, existsSync, appendFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
@@ -93,20 +94,8 @@ function writeCheckpoint(count: number, cwd: string): void {
     observation_file: `${dateStr}.jsonl`,
   }
 
-  // Atomic write: temp file + rename, so a concurrent reader (hook-session-end,
-  // the deferred wrap-up in hook-inject) never observes a mid-write PARTIAL
-  // file. A plain writeFileSync here made a partial read indistinguishable from
-  // genuine corruption, which hook-session-end then used to justify DESTROYING
-  // a live session's only durable record (#217). renameSync is atomic on POSIX
-  // when src and dst are on the same filesystem (they share this dir).
-  const tmpPath = `${path}.${process.pid}.tmp`
-  writeFileSync(tmpPath, JSON.stringify(checkpoint, null, 2) + '\n')
-  try {
-    renameSync(tmpPath, path)
-  } catch (err) {
-    try { unlinkSync(tmpPath) } catch { /* best-effort temp cleanup */ }
-    throw err
-  }
+  // Checkpoints share the private, durable atomic writer with primary state.
+  atomicWrite(path, JSON.stringify(checkpoint, null, 2) + '\n', { mode: 0o600 })
 }
 
 function readStdinRaw(): string {

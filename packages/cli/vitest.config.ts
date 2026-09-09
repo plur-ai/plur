@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from 'node:fs'
 import { defineConfig } from 'vitest/config'
 
 // The spawn-heavy suites are EXCLUDED here and run as a separate serial project
@@ -24,21 +25,15 @@ import { defineConfig } from 'vitest/config'
 // means something again. A known-flaky baseline is worse than a slow one:
 // today a real 55-test breakage was nearly attributed to the change under test
 // because the suite's noise floor was not zero.
-export const SPAWN_SUITES = [
-  'test/hook-learn-check.test.ts',
-  'test/hook-session-guard.test.ts',
-  'test/list.test.ts',
-  'test/tensions-lifecycle.test.ts',
-  // Added 2026-08-18: the next members of the same family, observed blowing
-  // their 5s spawn budgets across two release-gate runs and one review run,
-  // each passing in isolation. Same remedy as #793/#889, for the same reason.
-  'test/import.test.ts',
-  'test/readonly-commands.test.ts',
-  'test/recall.test.ts',
-  'test/rescope.test.ts',
-  'test/sync.test.ts',
-  'test/timeline.test.ts',
-]
+// Classify integration suites from their subprocess boundary, so newly added
+// built-CLI tests cannot silently miss the serial project. Mocked subprocess
+// suites may also land here; they still execute, with all assertions intact.
+export const SPAWN_SUITES = readdirSync(new URL('./test/', import.meta.url))
+  .filter(name => name.endsWith('.test.ts'))
+  .filter(name => /from ['"](?:node:)?child_process['"]|from ['"]\.\/helpers\/built-cli(?:\.js)?['"]/.test(
+    readFileSync(new URL(`./test/${name}`, import.meta.url), 'utf8'),
+  ))
+  .map(name => `test/${name}`)
 
 export default defineConfig({
   test: {

@@ -1,3 +1,4 @@
+import { atomicWrite } from '@plur-ai/core'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -110,18 +111,20 @@ export function plurConfigPath(baseDir?: string): string {
 
 export function readPlurConfig(baseDir?: string): PlurConfig {
   const path = plurConfigPath(baseDir)
-  if (!existsSync(path)) return {}
   try {
-    return JSON.parse(readFileSync(path, 'utf8'))
-  } catch {
-    return {}
+    const parsed = JSON.parse(readFileSync(path, 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('mapping required')
+    return parsed
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw new Error('Cannot read login configuration; repair it before signing in')
   }
 }
 
 export function writePlurConfig(config: PlurConfig, baseDir?: string): void {
   const path = plurConfigPath(baseDir)
   mkdirSync(join(path, '..'), { recursive: true })
-  writeFileSync(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
+  atomicWrite(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
 }
 
 // ── Reload signal ─────────────────────────────────────────────────────────────

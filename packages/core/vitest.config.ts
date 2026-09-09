@@ -1,4 +1,16 @@
 import { defineConfig } from 'vitest/config'
+import { readdirSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+// A worker that launches more processes is not one unit of CPU/I/O load.
+// Run these after the ordinary projects; concurrency inside each test remains
+// unchanged (including the four independent counter/lock writers).
+const testDirectory = new URL('./test/', import.meta.url)
+export const CORE_PROCESS_SUITES = readdirSync(testDirectory)
+  .filter(name => name.endsWith('.test.ts') && /(?:from\s*|import\(\s*|require\(\s*)['"](?:node:)?child_process['"]/.test(
+    readFileSync(fileURLToPath(new URL(name, testDirectory)), 'utf8'),
+  ))
+  .map(name => `test/${name}`)
 
 // The PGLite suites are EXCLUDED here and run as a separate serial project
 // (see the root vitest.config.ts). They are not excluded from the test run —
@@ -34,6 +46,7 @@ export const PGLITE_SUITES = [
   // to a real database and boots PGLite alongside it for the cross-adapter
   // parity check. Skips entirely unless PLUR_TEST_POSTGRES_URL is set.
   'test/postgres-*.test.ts',
+  'test/audit-postgres-*.test.ts',
 ]
 
 // testTimeout raised from the 5s default: the BGE embedder (@huggingface/
@@ -47,7 +60,7 @@ export default defineConfig({
     globals: true,
     testTimeout: 30000,
     hookTimeout: 30000,
-    exclude: ['**/node_modules/**', '**/dist/**', ...PGLITE_SUITES],
+    exclude: ['**/node_modules/**', '**/dist/**', ...PGLITE_SUITES, ...CORE_PROCESS_SUITES],
     // The #1069 host breaker is process-global by design; without a per-test
     // reset it leaks "host down" verdicts across test files (see the helper).
     setupFiles: ['test/helpers/reset-remote-breaker-setup.ts'],

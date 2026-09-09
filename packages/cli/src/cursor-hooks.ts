@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { atomicWrite } from '@plur-ai/core'
+import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 
 /**
@@ -97,7 +98,7 @@ export function mergeCursorHooks(config: CursorHooksConfig, additions: Record<st
   for (const [event, entries] of Object.entries(additions)) {
     hooks[event] = [...(hooks[event] ?? []), ...entries]
   }
-  return { version: clean.version ?? 1, hooks }
+  return { ...clean, version: clean.version ?? 1, hooks }
 }
 
 export function readCursorHooksConfig(path: string): CursorHooksConfig {
@@ -115,5 +116,5 @@ export function readCursorHooksConfig(path: string): CursorHooksConfig {
 
 export function writeCursorHooksConfig(path: string, config: CursorHooksConfig): void {
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(config, null, 2) + '\n')
+  atomicWrite(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
 }

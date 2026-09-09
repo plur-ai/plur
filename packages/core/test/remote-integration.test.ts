@@ -595,6 +595,7 @@ describe('Plur integration with stub server', () => {
     // through appendAndGetServerId. The wire body must carry the fields FLAT
     // (enterprise#627 contract); reading them at the engram top level would
     // silently drop them (the original #768 review finding).
+    server.seedEngram({ id: 'ENG-2026-0101-001', scope: 'group:test', status: 'active', data: { statement: 'The existing remote rule' } })
     const plur = new Plur({ path: primaryDir })
     await plur.learn('team rule with expiry — wire shape test', {
       scope: 'group:test',

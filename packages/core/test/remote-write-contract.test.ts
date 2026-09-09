@@ -39,7 +39,7 @@ const TRANSMITTED = new Set([
   'measured_under', 'knowledge_anchors', 'dual_coding',
   // #1172. `license` is absent on purpose: it travels inside
   // `provenance.license`, so it is covered by `provenance` above.
-  'attribution', 'claim_class',
+  'attribution', 'claim_class', 'summary', 'contraindications', 'knowledge_type', 'visibility', 'created_at',
 ])
 
 /** Sent as flattened top-level keys, not as the nested object. */
@@ -73,61 +73,37 @@ const LOCAL = new Map([
   ['pack', 'local pack membership'],
   ['abstract', 'local abstraction bookkeeping'],
   ['derived_from', 'local derivation bookkeeping'],
+  ['sources', 'local write/session history; source and provenance carry portable attribution'],
+  ['locked_at', 'the server owns the time of its state transition'],
+  ['updated_at', 'the destination owns its mutation timestamp'],
 ])
 
-/**
- * Not modelled by the wire contract, and not yet argued either way — tracked,
- * not decided.
- *
- * Being in this set is NOT a claim that losing the field is correct. Two of
- * them are rendered straight to the model: `summary` is the entire payload of a
- * layer-1 entry, and `contraindications` is the "does NOT apply when" clause a
- * constraint is qualified by. Losing those on a shared store is the same class
- * of defect as #1151, reached through a different field.
- *
- * They are separated from LOCAL so the distinction stays visible: LOCAL says
- * "we decided", this says "we have not".
- */
-const NOT_MODELLED = new Set([
-  'visibility', 'contraindications', 'knowledge_type', 'entities', 'episodic',
-  'exchange', 'structured_data', 'insight', 'polarity', 'locked_at', 'sources',
-  'summary',
-  // Added by #1138 and caught here on the merge, which is the guard working:
-  // two new schema fields could not reach `main` without someone stating what
-  // a remote write should do with them.
-  //
-  // Provenance timestamps have a real claim to being TRANSMITTED — `created_at`
-  // is an immutable first-mint record, and #1151 is precisely about provenance
-  // being dropped on a shared write. But deciding that here would mean adding
-  // them to `appendAndGetServerId` in a PR about injection ordering, which is
-  // the bundling that hid #1138's own blocking defect. Recorded as undecided,
-  // which is what this set means, and routed to #1153 with the other twelve.
-  'created_at', 'updated_at',
-])
+/** Unsupported content is refused before a send, never silently dropped. */
+const REFUSED = new Set(['entities', 'episodic', 'exchange', 'structured_data', 'insight', 'polarity'])
 
 describe('the remote write contract covers every schema field (#1151)', () => {
   const fields = Object.keys(EngramSchema.shape)
 
   it('classifies every field of EngramSchema', () => {
     const unclassified = fields.filter(f =>
-      !TRANSMITTED.has(f) && !FLATTENED.has(f) && !LOCAL.has(f) && !NOT_MODELLED.has(f))
+      !TRANSMITTED.has(f) && !FLATTENED.has(f) && !LOCAL.has(f) && !REFUSED.has(f))
 
     expect(unclassified,
       'a field was added to EngramSchema without deciding whether a remote write should carry it. '
-      + 'Add it to TRANSMITTED (and to appendAndGetServerId\'s body), or to LOCAL / NOT_MODELLED with a reason. '
+      + 'Add it to TRANSMITTED (and to appendAndGetServerId\'s body), or to LOCAL / REFUSED with a reason. '
       + 'This is the check that #768 and #1151 both needed and neither had.',
     ).toEqual([])
   })
 
   it('classifies each field exactly once', () => {
     const dupes = fields.filter(f =>
-      [TRANSMITTED.has(f), FLATTENED.has(f), LOCAL.has(f), NOT_MODELLED.has(f)].filter(Boolean).length > 1)
+      [TRANSMITTED.has(f), FLATTENED.has(f), LOCAL.has(f), REFUSED.has(f)].filter(Boolean).length > 1)
     expect(dupes).toEqual([])
   })
 
   it('names no field that the schema does not have', () => {
     const known = new Set(fields)
-    const stale = [...TRANSMITTED, ...FLATTENED.keys(), ...LOCAL.keys(), ...NOT_MODELLED]
+    const stale = [...TRANSMITTED, ...FLATTENED.keys(), ...LOCAL.keys(), ...REFUSED]
       .filter(f => !known.has(f))
     expect(stale, 'a classified field is gone from the schema — drop it from this list').toEqual([])
   })
@@ -213,6 +189,8 @@ describe('every TRANSMITTED field actually reaches the wire (#1158)', () => {
         runtime: { name: 'plur-core', version: '0.19.4' },
       },
       claim_class: 'observed',
+      created_at: '2026-09-08T00:00:00Z', summary: 'A measured baseline', contraindications: ['Does not apply on a different dataset'],
+      knowledge_type: { memory_class: 'semantic', cognitive_level: 'understand' }, visibility: 'public',
     })
 
     await driver.appendAndGetServerId(full as never)

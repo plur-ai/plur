@@ -30,7 +30,7 @@ function generateEpisodeId(): string {
  *
  * `withLock` is the synchronous variant because this function is synchronous
  * and has synchronous callers. That is safe HERE specifically because no async
- * holder ever takes this path's lock, so the busy-wait cannot starve one out
+ * holder ever takes this path's lock, so the synchronous wait cannot block one in the same event loop
  * (the failure mode measured as F10 on the store lock).
  */
 export function captureEpisode(path: string, summary: string, context?: CaptureContext): Episode {

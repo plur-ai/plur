@@ -17,6 +17,7 @@
  * Usage: node scripts/await-local-helpers.mjs <root...> [--dry]
  */
 import * as fs from 'fs'
+import { replaceSource } from '../packages/migrate/src/files.js'
 import * as path from 'path'
 
 const args = process.argv.slice(2)
@@ -85,7 +86,7 @@ for (const root of roots) {
       }
       if (done) break
     }
-    if (src !== before) { files++; if (!DRY) fs.writeFileSync(f, src) }
+    if (src !== before) { files++; if (!DRY) replaceSource(f, before, src) }
   }
 }
 console.log(`${DRY ? '[dry] ' : ''}awaited ${sites} local-helper call(s) across ${files} file(s)`)

@@ -87,6 +87,10 @@ export interface SaveOptions {
  * that satisfies neither is outside what the engine can defend.
  */
 export interface PrimaryStore {
+  /** Queue background work until the current transaction commits. Stores
+   * without transactions may omit this capability. */
+  afterCommit?(callback: () => void): void
+
   /** Backing medium — for diagnostics and `status()` reporting. */
   readonly kind: PrimaryStoreKind
 
@@ -321,6 +325,11 @@ export interface PrimaryStore {
    * @see findActiveByContentHash — the other half of the `learn()` seam.
    */
   nextEngramId?(datePrefix: string): Promise<string>
+
+  /** Reserve a monotonically increasing ID at least as high as minimumId.
+   * Must survive corpus deletion and be atomic across all store clients.
+   * Independent of the optional scope-query delegation seam above. */
+  reserveEngramId?(minimumId: string): Promise<string>
 
   /**
    * Cheap, approximate size of the store — for choosing a backend, never for

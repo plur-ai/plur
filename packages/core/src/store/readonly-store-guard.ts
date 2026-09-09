@@ -94,6 +94,7 @@ export class ReadonlyStoreGuard implements PrimaryStore {
    * from a read-only guard would burn ids on a path that can never write one.
    */
   readonly nextEngramId?: (datePrefix: string) => Promise<string>
+  readonly reserveEngramId?: (minimumId: string) => Promise<string>
 
   /**
    * Query-adapter surface (#830). All READS, all delegating unchanged.
@@ -142,6 +143,7 @@ export class ReadonlyStoreGuard implements PrimaryStore {
       this.findActiveByContentHash = (hash, scope) => _inner.findActiveByContentHash!(hash, scope)
     }
     if (_inner.nextEngramId) this.nextEngramId = () => Promise.reject(new ReadonlyStoreError())
+    if (_inner.reserveEngramId) this.reserveEngramId = () => Promise.reject(new ReadonlyStoreError())
 
     // Query-adapter surface (#830) — reads, forwarded verbatim like loadByIds.
     const inner = _inner as unknown as {

@@ -6,9 +6,10 @@
  * codemods that did this migration inside PLUR itself were wrong in ways no
  * test caught before they were right. See `scan.ts` for the specific hazards.
  */
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, lstatSync } from 'node:fs'
 import { join, relative, extname } from 'node:path'
 import { scanSource, applyFixes, NEWLY_ASYNC, type Finding } from './scan.js'
+import { replaceSource } from './files.js'
 
 const HELP = `plur-migrate — find PLUR calls left un-awaited by the 0.16 async migration
 
@@ -30,6 +31,9 @@ OPTIONS
   --write        apply fixes (default: report only)
   --ext .ts,.js  file extensions to scan (default: .ts,.tsx,.js,.mjs,.cjs)
   --help         this
+
+Run --write on a quiet working tree. Symlinks and hard-linked source files
+are refused; an incomplete scan or failed replacement exits non-zero.
 `
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', '.next'])
@@ -44,14 +48,14 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', 
 const PREFILTER = new RegExp(String.raw`\.\s*(?:${NEWLY_ASYNC.join('|')})\s*\(`)
 
 function walk(dir: string, exts: Set<string>, out: string[] = []): string[] {
-  let entries
-  try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return out }
+  const entries = readdirSync(dir, { withFileTypes: true })
   for (const e of entries) {
     const p = join(dir, e.name)
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue
       walk(p, exts, out)
     } else if (exts.has(extname(e.name))) {
+      if (!e.isFile()) throw new Error('Source is not a regular file')
       out.push(p)
     }
   }
@@ -74,7 +78,9 @@ export function run(argv: string[]): number {
 
   let files: string[]
   try {
-    files = statSync(root).isDirectory() ? walk(root, exts) : [root]
+    const entry = lstatSync(root)
+    if (!entry.isDirectory() && !entry.isFile()) throw new Error('Source is not a regular file')
+    files = entry.isDirectory() ? walk(root, exts) : [root]
   } catch {
     process.stderr.write(`plur-migrate: cannot read ${root}\n`)
     return 1
@@ -82,9 +88,17 @@ export function run(argv: string[]): number {
 
   const all: Finding[] = []
   let changed = 0
+  let failed = false
   for (const f of files) {
     let src: string
-    try { src = readFileSync(f, 'utf8') } catch { continue }
+    try {
+      if (!lstatSync(f).isFile()) throw new Error('Source is not a regular file')
+      src = readFileSync(f, 'utf8')
+    } catch {
+      process.stderr.write(`plur-migrate: cannot read source ${f}\n`)
+      failed = true
+      continue
+    }
     // Cheap pre-filter, DERIVED from the method table rather than hand-written.
     //
     // It used to list ten names while `NEWLY_ASYNC` held twenty-eight, so a file
@@ -102,12 +116,21 @@ export function run(argv: string[]): number {
     if (write) {
       const { src: next, applied } = applyFixes(src, findings)
       if (applied > 0) {
-        writeFileSync(f, next)
-        changed++
+        try {
+          replaceSource(f, src, next)
+          changed++
+        } catch {
+          process.stderr.write(`plur-migrate: rewrite failed for ${f}; inspect source before retrying\n`)
+          failed = true
+        }
       }
     }
   }
 
+  if (failed) {
+    process.stderr.write('plur-migrate: incomplete scan or rewrite; no clean result.\n')
+    return 1
+  }
   if (all.length === 0) {
     process.stdout.write('plur-migrate: no un-awaited PLUR calls found.\n')
     return 0

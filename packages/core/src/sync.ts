@@ -1,9 +1,12 @@
 import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, chmodSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, fchmodSync } from 'fs'
+import { randomUUID } from 'crypto'
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
-import { DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken } from './store/async-lock.js'
+import { DEFAULT_STALE_THRESHOLD } from './store/async-lock.js'
+import { makeToken, tryFileLock, releaseFileLock } from './store/file-lock.js'
+import { directoryAncestry } from './store/durability.js'
 
 export interface SyncStatus {
   initialized: boolean
@@ -54,6 +57,10 @@ embeddings/
 *.sqlite
 store.pglite/
 exchange/
+cache/
+
+# PLUR — durable machine-local receipts (include in operational backups)
+state/
 
 # PLUR — local backups (#799). Machine-local by design: a snapshot is a
 # whole-corpus copy INCLUDING scope:local engrams, so pushing one would leak
@@ -168,6 +175,10 @@ function stageStoreFiles(root: string): number {
   for (const secret of SECRET_PATHS) {
     gitSafe(['rm', '--cached', '--ignore-unmatch', '--quiet', '--', secret], root)
   }
+  // git commit includes the caller's existing index, not only paths we add.
+  // Refuse foreign staged content without unstaging or deleting the user's
+  // work. Deletions may proceed so previously tracked private data can be removed.
+  assertOnlyStoreContentStaged(root)
   // Root store files (allowlist), EXCEPT `packs` which is staged by its own
   // file-level allowlist below — never as a whole force-added directory (#428).
   const present = SYNC_PATHS.filter((p) => p !== 'packs' && existsSync(join(root, p)))
@@ -177,8 +188,20 @@ function stageStoreFiles(root: string): number {
     // no secret file (root or nested in a pack) can ever ride along.
     git(['add', '-A', '-f', '--', ...pathspecs], root)
   }
+  assertOnlyStoreContentStaged(root)
   const staged = gitSafe(['diff', '--cached', '--name-only'], root)
   return staged ? staged.split('\n').filter(Boolean).length : 0
+}
+
+function assertOnlyStoreContentStaged(root: string): void {
+  const paths = execFileSync('git', ['diff', '--cached', '--diff-filter=ACMRTUXB', '--name-only', '-z'], { cwd: root, encoding: 'utf8', timeout: 30_000 })
+    .split('\0').filter(Boolean)
+  const allowedRoot = new Set<string>(SYNC_PATHS.filter(p => p !== 'packs'))
+  const allowedPack = new Set<string>(PACK_ALLOW_NAMES)
+  if (paths.some(path => !allowedRoot.has(path) &&
+    !(path.startsWith('packs/') && allowedPack.has(path.split('/').pop() ?? '')))) {
+    throw new Error('Refusing to sync: non-store files are staged. Unstage them or commit them separately after review; files and staged work have been preserved.')
+  }
 }
 
 /**
@@ -727,53 +750,12 @@ export interface LockOptions {
  * legitimate hold.
  *
  * The retry budget is deliberately NOT raised, because this implementation
- * busy-waits on `Date.now()` — it blocks the event loop for the whole delay
+ * waits synchronously — it blocks the event loop for the whole delay
  * (F10). Waiting longer here would make a long-lived MCP server less responsive,
  * not more correct. Callers that need to wait out a slow holder belong on
  * `withAsyncLock`; this variant exists for the remaining synchronous callers
  * (tensions, config, episode capture), whose holds are short.
  */
-/**
- * Remove a lock believed abandoned — by CLAIMING it first (audit 2026-08-03,
- * finding 1). Synchronous twin of `stealLock` in `store/async-lock.ts`; see the
- * reasoning there.
- *
- * Read-compare-unlink left a window between the compare and the `unlink`: two
- * contenders judging the same lock stale can both pass the compare, the first
- * unlinks and acquires, and the second then unlinks the pathname — the first
- * one's LIVE lock — and acquires too. Both run the critical section.
- *
- * `rename` is atomic and single-winner, so a contender can only ever delete a
- * file it has already moved aside, never a lock another process created at
- * `lockPath`. Losing the claim is normal: the caller loops and takes the usual
- * O_EXCL path, which is what actually decides who holds the lock.
- */
-function stealLockSync(lockPath: string, expected: string, token: string): void {
-  const claim = `${lockPath}.steal.${token.replace(/[^\w.-]/g, '_')}`
-  try {
-    renameSync(lockPath, claim)
-  } catch {
-    return // another contender claimed it, or the holder released — re-evaluate
-  }
-  try {
-    const current = readFileSync(claim, 'utf8').trim()
-    if (current === expected) {
-      unlinkSync(claim) // confirmed the one we judged stale
-      return
-    }
-    // A live holder's lock, not the stale one. Put it back — but never over a
-    // lock someone has since acquired, so create exclusively and accept EEXIST.
-    try {
-      const fd = openSync(lockPath, 'wx')
-      try { writeFileSync(fd, current) } finally { closeSync(fd) }
-    } catch { /* someone acquired meanwhile — theirs wins */ }
-    try { unlinkSync(claim) } catch { /* already gone */ }
-  } catch {
-    // The claim file is uniquely named; nothing else would ever clean it up.
-    try { unlinkSync(claim) } catch { /* already gone */ }
-  }
-}
-
 export function withLock<T>(
   filePath: string,
   fn: () => T,
@@ -799,61 +781,33 @@ export function withLock<T>(
   // attempt the final one.
   let acquired = false
 
+  let lastHolder = ''
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      writeFileSync(lockPath, token, { flag: 'wx' })
-      acquired = true
-      break
-    } catch (err: any) {
-      if (err.code !== 'EEXIST') throw err
-      try {
-        const stat = statSync(lockPath)
-        // Liveness is what pays for the raised stale threshold, and it has to
-        // be here as well as on the async lock. Raising the threshold to 60s
-        // without it would take crash recovery on THESE paths (episodes,
-        // tensions, config) from 10s to 60s.
-        const holder = readFileSync(lockPath, 'utf8').trim()
-        const alive = holderIsAlive(holder)
-        // Age is consulted ONLY when liveness is unknown — another host, or the
-        // bare pid an older client wrote. A confirmed-live holder is never
-        // stolen from for being slow: that corrupts the artifact it is midway
-        // through writing, whereas waiting on a wedged holder surfaces as a
-        // loud failure the operator can act on.
-        const steal = alive === false
-          || (alive === undefined && Date.now() - stat.mtimeMs > staleThreshold)
-        if (steal) {
-          stealLockSync(lockPath, holder, token)
-          continue
-        }
-      } catch {
-        continue
-      }
-      if (attempt === maxRetries) {
-        throw new Error(`Failed to acquire lock on ${filePath} after ${maxRetries} retries`)
-      }
-      const delay = baseDelay * Math.pow(2, attempt)
-      const end = Date.now() + delay
-      while (Date.now() < end) { /* busy wait — sync context */ }
-    }
+    const result = tryFileLock(lockPath, token, staleThreshold)
+    if (result.acquired) { acquired = true; break }
+    lastHolder = result.holder
+    if (result.retryNow) continue
+    if (attempt === maxRetries) break
+    // Yield the CPU to the process holding the lock. Spinning here makes
+    // simultaneous writers starve the owner while spending their own budget.
+    const delay = Math.min(baseDelay * Math.pow(2, attempt), 5000)
+    if (Number.isFinite(delay) && delay > 0) Atomics.wait(syncLockWaiter, 0, 0, delay)
   }
 
   if (!acquired) {
     throw new Error(
-      `Failed to acquire lock on ${filePath} after ${maxRetries} retries (contended throughout)`,
+      `Failed to acquire lock on ${filePath} after ${maxRetries} retries (held by ${lastHolder})`,
     )
   }
 
   try {
     return fn()
   } finally {
-    // Only ours to remove. Without the token comparison, a holder whose lock
-    // was stolen deletes the THIEF's lock on its way out and a third writer
-    // walks in mid-write — the cascade fixed on the async lock (audit #794 F9).
-    try {
-      if (readFileSync(lockPath, 'utf8').trim() === token) unlinkSync(lockPath)
-    } catch { /* already gone */ }
+    releaseFileLock(lockPath, token)
   }
 }
+
+const syncLockWaiter = new Int32Array(new SharedArrayBuffer(4))
 
 /**
  * Mode for files that carry credentials — `config.yaml` holds remote bearer
@@ -864,14 +818,9 @@ export const CONFIG_FILE_MODE = 0o600
 /** Options for {@link atomicWrite}. */
 export interface AtomicWriteOptions {
   /**
-   * Mode for a file this write CREATES. Ignored when the destination already
-   * exists — an existing file's mode is preserved instead, which is the more
-   * important half (audit 2026-08-03, finding 7).
-   *
-   * Pass `0o600` for anything credential-bearing. Without it a new
-   * `config.yaml` — bearer tokens, Postgres DSNs — is born world-readable under
-   * the default umask, and the preservation path then faithfully keeps it that
-   * way forever.
+   * New files default to private `0o600`; explicit modes support public
+   * artifacts. Existing permissions are preserved when omitted. An explicit
+   * mode can tighten existing permissions but can never broaden them.
    */
   mode?: number
   /**
@@ -883,9 +832,6 @@ export interface AtomicWriteOptions {
    */
   durable?: boolean
 }
-
-/** Counter making each tmp name unique within a process (pid makes it unique across them). */
-let tmpCounter = 0
 
 /**
  * Atomic write: write to a temp file, flush it, then rename over the target.
@@ -915,53 +861,48 @@ let tmpCounter = 0
  * already been renamed away. Unique names make concurrent writers independent;
  * the last rename wins cleanly instead of publishing a half-written blend.
  */
-export function atomicWrite(filePath: string, content: string, opts: AtomicWriteOptions = {}): void {
+export function atomicWrite(filePath: string, content: string | Buffer, opts: AtomicWriteOptions = {}): void {
   const durable = opts.durable !== false
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const tmp = `${filePath}.${process.pid}.${tmpCounter++}.tmp`
+  const tmp = `${filePath}.${randomUUID()}.tmp`
   // Preserve the destination's permissions (audit 2026-08-03, finding 7).
   //
   // A replace-by-rename creates a NEW inode, so the result carries the tmp
-  // file's mode — `0666 & ~umask`, i.e. 0644 under the common umask 022 — not
-  // the mode the file had. `config.yaml` holds remote bearer tokens and
+  // file's mode, not the mode the file had. `config.yaml` holds remote bearer tokens and
   // Postgres DSNs and is expected to be 0600; every config writer now routes
   // through here, so store registration, scope persistence and migrations were
   // each quietly widening it to world-readable on POSIX.
   //
   // Read the mode BEFORE writing, and apply it to the tmp file BEFORE the
   // rename, so the file is never briefly visible at the wrong mode at its final
-  // path. A missing destination means there is nothing to preserve — a first
-  // write keeps the platform default, which is what created it today.
-  let destMode: number | undefined = opts.mode
+  // path. A missing destination uses the explicit mode or private default.
+  let destMode = opts.mode ?? 0o600
   try {
-    // An EXISTING file's own mode wins over opts.mode: the operator may have
-    // tightened it further, and a write must never loosen what it found.
-    if (existsSync(filePath)) destMode = statSync(filePath).mode & 0o7777
-  } catch { /* unreadable stat — fall through and keep opts.mode/default */ }
+    // An explicit mode can tighten an existing file but never loosen it.
+    destMode = (statSync(filePath).mode & 0o777) & (opts.mode ?? 0o777)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  let created = false
   try {
-    if (durable) {
-      const fd = openSync(tmp, 'w')
-      try {
-        writeFileSync(fd, content)
-        fsyncSync(fd)
-      } finally {
-        closeSync(fd)
-      }
-    } else {
-      writeFileSync(tmp, content)
-    }
-    if (destMode !== undefined) {
-      // Best-effort: a filesystem without POSIX modes (some Windows/network
-      // mounts) must not fail an otherwise good write over cosmetics.
-      try { chmodSync(tmp, destMode) } catch { /* not a mode-bearing filesystem */ }
+    // Exclusive creation rejects symlinks/collisions. Start private, then set
+    // the final mode before writing any sensitive bytes (including temp files).
+    const fd = openSync(tmp, 'wx', 0o600)
+    created = true
+    try {
+      fchmodSync(fd, destMode)
+      writeFileSync(fd, content)
+      if (durable) fsyncSync(fd)
+    } finally {
+      closeSync(fd)
     }
     renameSync(tmp, filePath)
     if (durable) fsyncDir(dir)
   } catch (err) {
     // Never leave the tmp behind on a failed write — it would accumulate, and
     // with a unique name nothing would ever clean it up.
-    try { unlinkSync(tmp) } catch { /* already gone, or never created */ }
+    if (created) try { unlinkSync(tmp) } catch { /* already gone */ }
     throw err
   }
 }
@@ -969,18 +910,23 @@ export function atomicWrite(filePath: string, content: string, opts: AtomicWrite
 /**
  * fsync a directory so a rename into it is durable.
  *
- * Best-effort by design: directory fds cannot be opened for sync on Windows,
- * and some filesystems reject the fsync outright. A failure here means the
- * rename may not survive power loss — it does NOT mean the write failed, and
- * throwing would turn a working write into a spurious error.
+ * Tolerates only unsupported directory sync. A real I/O failure means the
+ * replacement may be visible without durable metadata, so it must not be
+ * acknowledged as durable. File contents are not rolled back after rename.
  */
 export function fsyncDir(dir: string): void {
+  for (const directory of directoryAncestry(dir)) fsyncDirectoryEntry(directory)
+}
+
+function fsyncDirectoryEntry(dir: string): void {
   let fd: number | undefined
   try {
     fd = openSync(dir, 'r')
     fsyncSync(fd)
-  } catch {
-    /* platform does not support it — the file's own fsync still happened */
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (!['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(code ?? '') &&
+        !(process.platform === 'win32' && ['EPERM', 'EACCES', 'EISDIR'].includes(code ?? ''))) throw err
   } finally {
     if (fd !== undefined) {
       try { closeSync(fd) } catch { /* ignore */ }

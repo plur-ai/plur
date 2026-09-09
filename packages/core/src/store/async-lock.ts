@@ -19,7 +19,7 @@
  * process and could simply have taken turns.
  *
  * The backoff is an async sleep, never a busy-wait: the synchronous
- * `withLock()` in `sync.ts` spins on `Date.now()`, which blocks the event loop
+ * `withLock()` in `sync.ts` uses an OS wait, which blocks the event loop
  * for the whole delay. In a deployment serving concurrent sessions that stalls
  * every other in-flight request, not just the contending one.
  *
@@ -27,9 +27,8 @@
  * mutex would wait on a lock its own caller is holding. Nesting on a
  * *different* path works but is a lock-ordering hazard; don't.
  */
-import { writeFile, unlink, stat, readFile, rename, open } from 'fs/promises'
-import { constants } from 'fs'
-import { hostname } from 'os'
+import { makeToken, tryFileLock, releaseFileLock } from './file-lock.js'
+export { makeToken, holderIsAlive } from './file-lock.js'
 import * as path from 'path'
 import { KeyedAsyncMutex } from '../async-mutex.js'
 
@@ -99,8 +98,8 @@ export const DEFAULT_STALE_THRESHOLD = 60_000
  * hold, not merely the typical one.
  *
  * The cost is bounded, and paid only by a waiter behind a LIVE holder — a dead
- * one is stolen from immediately by the liveness check, and a wedged one is
- * stolen after `DEFAULT_STALE_THRESHOLD`. Anything that raises git's per-command
+ * one is stolen from immediately by the liveness check, and a live or foreign-host owner is
+ * never reclaimed merely because time passed. Anything that raises git's per-command
  * timeout must raise this too, or reopen the same hole.
  */
 export const DEFAULT_ACQUIRE_TIMEOUT = 180_000
@@ -123,54 +122,6 @@ export function activeLockCount(): number {
 /** Sleep for the given number of milliseconds. */
 function sleep(ms: number): Promise<void> {
   return new Promise(res => setTimeout(res, ms))
-}
-
-/** Monotonic counter making each token unique within a process. */
-let tokenCounter = 0
-
-/**
- * Contents written into the lock file: who holds it, and which acquisition.
- *
- * The nonce is what makes release safe. Before this, release was an
- * unconditional `unlink`, so once a waiter stole a lock the ORIGINAL holder's
- * `finally` deleted the *thief's* lock on its way out — and a third process
- * walked straight in while the thief was still writing (audit #794, F9;
- * measured by probe p05b). A holder now removes the lock only if the file still
- * carries its own token.
- *
- * The hostname is what makes the liveness check safe: a pid is only meaningful
- * on the machine that owns it, and `~/.plur` on a synced or networked volume can
- * hold a lock written by a different host.
- */
-export function makeToken(): string {
-  return `${hostname()}:${process.pid}:${Date.now()}:${tokenCounter++}`
-}
-
-/**
- * Is the process that wrote this token still alive?
- *
- * `undefined` means "cannot tell" — a token from another host, or an
- * unparseable one — and callers must treat that as "assume alive". Guessing
- * "dead" would steal a lock from a live writer, which is the corpus-corruption
- * outcome the whole mechanism exists to prevent.
- */
-export function holderIsAlive(token: string): boolean | undefined {
-  const parts = token.split(':')
-  if (parts.length < 2) return undefined
-  const [host, pidRaw] = parts
-  if (host !== hostname()) return undefined
-  const pid = Number(pidRaw)
-  if (!Number.isInteger(pid) || pid <= 0) return undefined
-  try {
-    // Signal 0 performs the permission and existence checks without delivering
-    // a signal: it throws ESRCH when no such process exists.
-    process.kill(pid, 0)
-    return true
-  } catch (err: any) {
-    // EPERM means it exists but belongs to another user — alive, not ours.
-    if (err?.code === 'EPERM') return true
-    return false
-  }
 }
 
 /** Take the cross-process lock file, run `fn`, release. */
@@ -223,57 +174,11 @@ async function withFileLock<T>(
         )
       }
     }
-    try {
-      await writeFile(lockPath, token, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL })
-      acquired = true
-      break
-    } catch (err: any) {
-      if (err.code !== 'EEXIST') throw err
-
-      // Is the incumbent abandoned? Two independent reasons to say yes.
-      let abandoned = false
-      let holder = ''
-      try {
-        const [s, contents] = await Promise.all([
-          stat(lockPath),
-          readFile(lockPath, 'utf8').catch(() => ''),
-        ])
-        holder = contents.trim()
-        const alive = holderIsAlive(holder)
-        // (1) The holder's process is gone. Definitive, and immediate — this is
-        //     what keeps crash recovery fast despite the long stale threshold.
-        if (alive === false) abandoned = true
-        // (2) We cannot probe this holder — another host, or a pid we cannot
-        //     reason about — so age is the only signal left.
-        //
-        //     Age is deliberately NOT consulted when liveness came back TRUE.
-        //     An `else if` here would steal from a writer we have just
-        //     confirmed is running, purely for being slow, and a 50k-engram
-        //     save legitimately holds the lock for seconds. Stealing from a
-        //     live writer corrupts the corpus; waiting on a wedged one is a
-        //     visible error after `acquireTimeout` that names the lock file.
-        //     A loud stall beats silent corruption.
-        else if (alive === undefined && Date.now() - s.mtimeMs > staleThreshold) abandoned = true
-      } catch {
-        // Vanished between the EEXIST and the check — the holder released.
-        // Retry immediately; there is nothing to steal.
-        continue
-      }
-
-      if (abandoned) {
-        // Remove only the file we just inspected. If the holder released and a
-        // third party re-locked in between, this deletes the newcomer's lock —
-        // so re-read and compare before unlinking.
-        await stealLock(lockPath, holder)
-        continue
-      }
-
-      // The incumbent is alive and recently active, so waiting is the only
-      // correct move — stealing from a live writer corrupts the store. The
-      // deadline check at the top of the next iteration decides when to stop.
-      lastHolder = holder
-      await sleep(Math.min(baseDelay * Math.pow(2, attempt), 5000))
-    }
+    const result = tryFileLock(lockPath, token, staleThreshold)
+    if (result.acquired) { acquired = true; break }
+    lastHolder = result.holder
+    if (result.retryNow) continue
+    await sleep(Math.min(baseDelay * Math.pow(2, attempt), 5000, Math.max(0, acquireTimeout - (Date.now() - start))))
   }
 
   try {
@@ -283,67 +188,7 @@ async function withFileLock<T>(
     // holder's file; the token comparison stops US deleting a THIEF's file
     // after our lock was stolen, which is what turned one stale-lock steal into
     // a cascade (F9).
-    if (acquired) await releaseIfOurs(lockPath, token)
-  }
-}
-
-/**
- * Remove a lock believed abandoned — by CLAIMING it first (audit 2026-08-03,
- * finding 1).
- *
- * The previous shape was read-compare-unlink, which closed the case where the
- * holder released and a third party acquired between the inspection and the
- * steal (F9), but left a narrower window open: between the compare and the
- * `unlink` itself. Two contenders that both judge the same lock stale can both
- * pass the compare; the first unlinks and acquires, the second then unlinks the
- * pathname — now the FIRST one's live lock — and acquires too. Both run the
- * critical section, and on a whole-corpus writer that is a lost update.
- *
- * `rename` is the atomic primitive that fixes it. Only one process can
- * successfully rename a given path; the loser gets ENOENT. So a contender can
- * only ever delete a file it has already moved out of the way, and can never
- * delete a lock another process created at `lockPath` — because the file it
- * deletes is not at `lockPath` any more.
- *
- * Losing the claim is not a failure: the caller loops, finds either a fresh
- * lock or none, and takes the normal `O_EXCL` path. Mutual exclusion is still
- * decided by that create, not by this function.
- */
-async function stealLock(lockPath: string, expected: string): Promise<void> {
-  const claim = `${lockPath}.steal.${makeToken().replace(/[^\w.-]/g, '_')}`
-  try {
-    await rename(lockPath, claim)
-  } catch {
-    return // another contender claimed it, or the holder released — re-evaluate
-  }
-  try {
-    const current = (await readFile(claim, 'utf8')).trim()
-    if (current === expected) {
-      await unlink(claim) // confirmed the one we judged stale
-      return
-    }
-    // Not the lock we judged stale — a live holder's. Put it back, but never on
-    // top of a lock someone has since acquired: `wx` fails rather than clobber.
-    try {
-      const fd = await open(lockPath, 'wx')
-      try { await fd.writeFile(current) } finally { await fd.close() }
-    } catch { /* someone acquired meanwhile — theirs wins, drop ours */ }
-    await unlink(claim).catch(() => {})
-  } catch {
-    // Never leave the claim file behind: it is uniquely named, so nothing else
-    // would ever clean it up.
-    await unlink(claim).catch(() => {})
-  }
-}
-
-/** Release the lock iff the file still carries our token. */
-async function releaseIfOurs(lockPath: string, token: string): Promise<void> {
-  try {
-    const current = (await readFile(lockPath, 'utf8')).trim()
-    if (current !== token) return
-    await unlink(lockPath)
-  } catch {
-    /* already gone */
+    if (acquired) releaseFileLock(lockPath, token)
   }
 }
 

@@ -9,8 +9,10 @@
  * separate step, and the Swarm provenance toolkit already covers it.
  */
 import * as fs from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { join, resolve, relative, sep } from 'node:path'
 import { logger } from './logger.js'
+import { atomicWrite } from './sync.js'
+import { withAsyncLock } from './store/async-lock.js'
 
 export interface ProvenanceStore {
   /** Save a record for an engram. Returns a reference that `get` accepts. */
@@ -90,7 +92,16 @@ export class FileProvenanceStore implements ProvenanceStore {
 
   async put(engramId: string, record: unknown): Promise<string> {
     const dir = this.dirFor(engramId)
-    fs.mkdirSync(dir, { recursive: true })
+    let cursor = resolve(this.root)
+    for (const part of relative(cursor, dir).split(sep)) {
+      cursor = join(cursor, part)
+      try { fs.mkdirSync(cursor, { mode: 0o700 }) } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      }
+      if (!fs.lstatSync(cursor).isDirectory()) throw new Error('Provenance directory must not be a symbolic link')
+    }
+    this.assertContained(dir)
+    return withAsyncLock(join(dir, 'records'), async () => {
     const body = JSON.stringify(record, null, 2) + '\n'
 
     // Records are kept as a timestamped series, because a record made before an
@@ -107,27 +118,47 @@ export class FileProvenanceStore implements ProvenanceStore {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     let path = join(dir, `${stamp}.jsonld`)
     for (let n = 2; fs.existsSync(path); n++) path = join(dir, `${stamp}-${n}.jsonld`)
-    fs.writeFileSync(path, body, 'utf8')
+    atomicWrite(path, body, { mode: 0o600 })
     return path
+    })
+  }
+
+  private assertContained(reference: string): void {
+    const root = fs.realpathSync(this.root)
+    const actual = fs.realpathSync(reference)
+    if (!actual.startsWith(root + sep)) throw new Error('Provenance reference must remain inside the store')
+    const base = fs.realpathSync(this.base)
+    if (actual !== base && !actual.startsWith(base + sep)) throw new Error('Provenance reference must remain inside provenance storage')
+  }
+
+  private orderedIn(dir: string): string[] {
+    this.assertContained(dir)
+    return fs.readdirSync(dir).filter(f => f.endsWith('.jsonld'))
+      .sort((a, b) => {
+        const parts = (name: string) => /^(.*?)(?:-(\d+))?\.jsonld$/.exec(name)!
+        // The timestamp has fixed width (ISO's 24 characters). A same-time
+        // suffix is a numeric sequence; the original unsuffixed file is 1.
+        const stampA = a.slice(0, 24), stampB = b.slice(0, 24)
+        if (stampA !== stampB) return stampB.localeCompare(stampA)
+        const seq = (name: string) => Number(parts(name.slice(24))?.[2] ?? 1)
+        return seq(b) - seq(a)
+      })
+      .map(f => join(dir, f))
   }
 
   /** Newest record already on disk for this engram, by filename. */
   private newestIn(dir: string): string | undefined {
     if (!fs.existsSync(dir)) return undefined
-    // Filenames are ISO timestamps, so a plain sort is chronological — except
-    // for the "-2", "-3" suffixes added on a same-millisecond collision, which
-    // sort correctly among themselves but ahead of the unsuffixed name. Compare
-    // on modification time, which is right in every case.
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonld'))
-    if (!files.length) return undefined
-    return files
-      .map(f => join(dir, f))
-      .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs)
-      .pop()
+    // Share the same timestamp/sequence ordering as list and dedup, including
+    // more than nine records created in one millisecond.
+    const newest = this.orderedIn(dir)[0]
+    if (newest) this.assertContained(newest)
+    return newest
   }
 
   async get(reference: string): Promise<unknown | undefined> {
     try {
+      this.assertContained(reference)
       return JSON.parse(fs.readFileSync(reference, 'utf8'))
     } catch (err) {
       logger.debug?.(`provenance record unreadable at ${reference}: ${String(err)}`)
@@ -138,12 +169,7 @@ export class FileProvenanceStore implements ProvenanceStore {
   async list(engramId: string): Promise<string[]> {
     const dir = this.dirFor(engramId)
     if (!fs.existsSync(dir)) return []
-    return fs
-      .readdirSync(dir)
-      .filter(f => f.endsWith('.jsonld'))
-      .sort()
-      .reverse()
-      .map(f => join(dir, f))
+    return this.orderedIn(dir)
   }
 }
 

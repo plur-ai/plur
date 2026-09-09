@@ -24,6 +24,7 @@
  * Usage: node scripts/fix-throw-assertions.mjs --methods a,b,c <root...> [--dry]
  */
 import * as fs from 'fs'
+import { replaceSource } from '../packages/migrate/src/files.js'
 import * as path from 'path'
 
 const args = process.argv.slice(2)
@@ -93,7 +94,7 @@ for (const root of roots) {
       }
     }
     src = src.replace(/expectSKIP\(/g, 'expect(')
-    if (src !== before) { files++; if (!DRY) fs.writeFileSync(f, src) }
+    if (src !== before) { files++; if (!DRY) replaceSource(f, before, src) }
   }
 }
 console.log(`${DRY ? '[dry] ' : ''}converted ${pos} toThrow + ${neg} not.toThrow across ${files} file(s)`)

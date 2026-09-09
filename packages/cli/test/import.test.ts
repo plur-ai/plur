@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { execSync } from 'child_process'
+import { execSync, execFileSync } from 'child_process'
 import { createRequire } from 'module'
 import { Plur } from '@plur-ai/core'
 import { builtCliPath } from './helpers/built-cli.js'
@@ -37,6 +37,37 @@ describe('plur import', () => {
       timeout: 20000,
     }).trim()
   }
+
+  it.each(['--path', '--file'])('uses PLUR_PATH for the destination when %s supplies the input', async flag => {
+    const input = join(work, 'source with spaces.json')
+    const bytes = JSON.stringify([{ statement: 'Environment-selected import destination', created_at: '2025-01-02T03:04:05Z' }])
+    writeFileSync(input, bytes)
+    writeFileSync(join(store, 'config.yaml'), 'index: false\n')
+    const report = JSON.parse(execFileSync(process.execPath, [CLI, 'import', '--from', 'generic', flag, input, '--json'], {
+      cwd: work, encoding: 'utf8', timeout: 20000,
+      env: { ...process.env, PLUR_PATH: store, PLUR_AUTO_DISCOVER: '0' },
+    }))
+    expect(report.imported).toBe(1)
+    expect(report.errors).toBe(0)
+    expect(readFileSync(input, 'utf8')).toBe(bytes)
+    const plur = new Plur({ path: store, autoDiscover: false })
+    expect((await plur.list())[0].temporal?.learned_at).toBe('2025-01-02T03:04:05Z')
+  })
+
+  it('keeps an explicit --store override separate from the input and environment default', async () => {
+    const input = join(work, 'source.json')
+    const bytes = JSON.stringify([{ statement: 'Explicit import destination wins' }])
+    writeFileSync(input, bytes)
+    writeFileSync(join(store, 'config.yaml'), 'index: false\n')
+    const report = JSON.parse(execFileSync(process.execPath, [CLI, 'import', '--from', 'generic', '--path', input, '--store', store, '--json'], {
+      cwd: work, encoding: 'utf8', timeout: 20000,
+      env: { ...process.env, PLUR_PATH: join(work, 'unused-store'), PLUR_AUTO_DISCOVER: '0' },
+    }))
+    expect(report.imported).toBe(1)
+    expect(readFileSync(input, 'utf8')).toBe(bytes)
+    const plur = new Plur({ path: store, autoDiscover: false })
+    expect(await plur.list()).toHaveLength(1)
+  })
 
   it('imports a generic JSON file and prints a migration report', async () => {
     const input = join(work, 'memories.json')

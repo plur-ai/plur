@@ -17,6 +17,7 @@
   "dependencies": {
     "@electric-sql/pglite": "^0.4.6",
     "js-yaml": "^4.3.1",
+    "tar": "7.5.21",
     "zod": "^3.23.0"
   },
   "optionalDependencies": {

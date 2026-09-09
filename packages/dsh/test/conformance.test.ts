@@ -89,14 +89,14 @@ describe('the real Plur satisfies PlurClient', () => {
     expect(typeof (injection as { count?: unknown }).count).toBe('number')
   })
 
-  it('feedback takes the signal WORD — a number is silently ignored, not rejected', async () => {
+  it('feedback accepts the signal word and rejects a numeric signal without mutation', async () => {
     const stored = await plur.learn!('Conformance: feedback takes a word.', { scope: SCOPE }) as { id: string }
     await expect(plur.feedback!(stored.id, 'positive', SCOPE)).resolves.not.toThrow()
-    // The regression this suite exists for: an earlier contract passed 1 / -1.
-    // Core does NOT reject that — it no-ops. So the bug would have shipped as a
-    // feature that quietly never trained anything, which is why a type-level
-    // contract alone was not enough and this suite exists.
-    await expect(plur.feedback!(stored.id, 1 as never, SCOPE)).resolves.not.toThrow()
+    // The earlier numeric contract silently failed to train. Runtime validation
+    // now refuses it, and the accepted positive feedback must remain intact.
+    const before = await plur.list!()
+    await expect(plur.feedback!(stored.id, 1 as never, SCOPE)).rejects.toThrow(/signal/)
+    expect(await plur.list!()).toEqual(before)
   })
 
   it('capture accepts a positional summary plus a context object', async () => {

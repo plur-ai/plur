@@ -81,7 +81,7 @@ function revealFolder(path: string): void {
     : 'xdg-open'
   try {
     // The path is the store root the host resolved, never request input.
-    spawn(command, [path], { stdio: 'ignore', detached: true }).unref()
+    spawn(command, [path], { stdio: 'ignore', detached: true }).on('error', () => { /* optional desktop integration unavailable */ }).unref()
   } catch {
     // No file manager. The path is on screen either way.
   }
@@ -314,7 +314,14 @@ export function createUiServer(opts: UiServerOptions): Server {
         'referrer-policy': 'no-referrer',
       }
 
-      const url = new URL(req.url ?? '/', 'http://localhost')
+      let url: URL
+      try {
+        url = new URL(req.url ?? '/', 'http://localhost')
+      } catch {
+        res.writeHead(400, headers)
+        res.end(errorPage('Invalid request URL.'))
+        return
+      }
 
       // Rebinding check: catches a DNS-rebound request whose `Host` header
       // carries the attacker's domain. ALWAYS applied — a widened bind adds

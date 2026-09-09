@@ -34,6 +34,7 @@
  *   node scripts/async-codemod.mjs <file> [--seed name,name] [--dry]
  */
 import * as fs from 'fs'
+import { replaceSource } from '../packages/migrate/src/files.js'
 
 const [, , file, ...rest] = process.argv
 if (!file) { console.error('usage: async-codemod.mjs <file> [--seed a,b] [--dry]'); process.exit(1) }
@@ -41,6 +42,7 @@ const DRY = rest.includes('--dry')
 const seedArg = rest.includes('--seed') ? rest[rest.indexOf('--seed') + 1] : ''
 
 let src = fs.readFileSync(file, 'utf8')
+const original = src
 
 /** Class members are declared at exactly two spaces of indent in this codebase. */
 const MEMBER = /^ {2}(?:(private|public|protected|readonly)\s+)*(?:(async)\s+)?(?:(get|set)\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\(/
@@ -150,6 +152,6 @@ src = src.replace(/await (this\.[\w$]+\([^()]*\))\s*\./g, '(await $1).')
 src = src.replace(/await (this\._primaryStore\.\w+\([^()]*\))\s*\./g, '(await $1).')
 
 if (DRY) { console.log(`[dry] rounds=${round} asyncSet=${asyncSet.size}`); process.exit(0) }
-fs.writeFileSync(file, src)
+replaceSource(file, original, src)
 console.log(`rounds=${round}  async methods now: ${asyncSet.size}`)
 console.log([...asyncSet].sort().join(', '))

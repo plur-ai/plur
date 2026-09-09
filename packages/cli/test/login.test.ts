@@ -82,6 +82,15 @@ describe('login helpers — config read/write', () => {
     expect(cfg).toEqual({})
   })
 
+  it.each(['{broken', '[]', 'null'])('refuses existing invalid login state without exposing it: %s', async bytes => {
+    const { plurConfigPath, readPlurConfig } = await import('../src/commands/login.js')
+    const path = plurConfigPath(tmpHome)
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, bytes)
+    expect(() => readPlurConfig(tmpHome)).toThrow('Cannot read login configuration')
+    expect(readFileSync(path, 'utf8')).toBe(bytes)
+  })
+
   it('writePlurConfig creates parent directory and writes JSON', async () => {
     const { plurConfigPath, writePlurConfig } = await import('../src/commands/login.js')
     const configPath = plurConfigPath(tmpHome)

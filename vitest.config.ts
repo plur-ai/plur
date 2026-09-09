@@ -1,4 +1,6 @@
 import { defineConfig } from 'vitest/config'
+import { SPAWN_SUITES } from './packages/cli/vitest.config.js'
+import { PGLITE_SUITES, CORE_PROCESS_SUITES } from './packages/core/vitest.config.js'
 
 // Replaces vitest.workspace.ts (audit fix, 2026-07-09): that file was being
 // silently ignored by this vitest version (4.1.1) — confirmed empirically by
@@ -34,6 +36,19 @@ export default defineConfig({
       'packages/migrate',
       {
         test: {
+          name: 'core-process',
+          root: 'packages/core',
+          globals: true,
+          include: CORE_PROCESS_SUITES,
+          fileParallelism: false,
+          sequence: { groupOrder: 1 },
+          setupFiles: ['test/helpers/reset-remote-breaker-setup.ts'],
+          testTimeout: 30000,
+          hookTimeout: 30000,
+        },
+      },
+      {
+        test: {
           // Same shape as core-pglite, same reason: contention, not defects.
           // These four spawn real CLI processes and wait on their exit against
           // fixed 5s/30s budgets. In the fully-parallel pool the spawns starve
@@ -49,19 +64,7 @@ export default defineConfig({
           name: 'cli-spawn',
           root: 'packages/cli',
           globals: true,
-          // Keep in sync with SPAWN_SUITES in packages/cli/vitest.config.ts.
-          include: [
-            'test/hook-learn-check.test.ts',
-            'test/hook-session-guard.test.ts',
-            'test/list.test.ts',
-            'test/tensions-lifecycle.test.ts',
-            'test/import.test.ts',
-            'test/readonly-commands.test.ts',
-            'test/recall.test.ts',
-            'test/rescope.test.ts',
-            'test/sync.test.ts',
-            'test/timeline.test.ts',
-          ],
+          include: SPAWN_SUITES,
           // The whole point: one file at a time, so no two batches of CLI
           // processes are spawning concurrently.
           fileParallelism: false,
@@ -77,14 +80,7 @@ export default defineConfig({
           name: 'core-pglite',
           root: 'packages/core',
           globals: true,
-          // Keep in sync with PGLITE_SUITES in packages/core/vitest.config.ts.
-          include: [
-            'test/pglite-*.test.ts',
-            'test/sync-index-error.test.ts',
-            'test/postgres-*.test.ts',
-            'test/embedding-staleness-812.test.ts',
-            'test/packs-url.test.ts',
-          ],
+          include: PGLITE_SUITES,
           // The whole point: one file at a time, so no two WASM Postgres
           // instances are booting concurrently.
           fileParallelism: false,

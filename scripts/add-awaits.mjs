@@ -28,6 +28,7 @@
  *   node scripts/add-awaits.mjs --methods a,b,c <glob-root> [--dry]
  */
 import * as fs from 'fs'
+import { replaceSource } from '../packages/migrate/src/files.js'
 import * as path from 'path'
 
 const args = process.argv.slice(2)
@@ -153,7 +154,7 @@ for (const root of roots) {
       }
       if (done) break
     }
-    if (src !== before0) { files++; if (!DRY) fs.writeFileSync(file, src) }
+    if (src !== before0) { files++; if (!DRY) replaceSource(file, before0, src) }
   }
 }
 console.log(`${DRY ? '[dry] ' : ''}rewrote ${sites} call site(s) across ${files} file(s)`)

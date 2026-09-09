@@ -19,14 +19,28 @@ import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from server import validate, UUID_RE
 
 DATA_DIR = Path(os.environ.get("HEARTBEAT_DATA_DIR", "/var/lib/plur-heartbeat"))
 METRICS_DIR = Path(os.environ.get("METRICS_DIR", "/var/lib/plur-metrics"))
 
 
-def load_records(since: date, until: date) -> list[dict]:
+class LoadedRecords(list):
+    def __init__(self, records, invalid_lines, conflicts):
+        super().__init__(records)
+        self.quality = {
+            "status": "partial" if invalid_lines or conflicts else "complete",
+            "invalid_lines": invalid_lines,
+            "conflicting_deliveries": conflicts,
+        }
+
+
+def load_records(since: date, until: date) -> LoadedRecords:
     """Load all records from JSONL files in date range [since, until]."""
     records = []
+    deliveries = {}
+    conflicts = set()
+    invalid_lines = 0
     current = since
     while current <= until:
         path = DATA_DIR / f"{current.isoformat()}.jsonl"
@@ -36,11 +50,35 @@ def load_records(since: date, until: date) -> list[dict]:
                     line = line.strip()
                     if line:
                         try:
-                            records.append(json.loads(line))
+                            record = json.loads(line)
                         except json.JSONDecodeError:
-                            pass
+                            invalid_lines += 1
+                            continue
+                        if not isinstance(record, dict):
+                            invalid_lines += 1
+                            continue
+                        delivery_id = record.get("_delivery_id")
+                        payload = {key: value for key, value in record.items() if key != "_delivery_id"}
+                        if validate(payload) or (delivery_id is not None and (not isinstance(delivery_id, str) or not UUID_RE.fullmatch(delivery_id))):
+                            invalid_lines += 1
+                            continue
+                        # A queued heartbeat may arrive long after its activity.
+                        # Arrival today must not make old/future activity current.
+                        if not since <= date.fromisoformat(record["date"]) <= until:
+                            continue
+                        if delivery_id:
+                            key = (record.get("install_id"), delivery_id)
+                            if key in deliveries:
+                                if deliveries[key] != record:
+                                    conflicts.add(key)
+                                continue
+                            deliveries[key] = record
+                        records.append(record)
         current += timedelta(days=1)
-    return records
+    return LoadedRecords(
+        [record for record in records if (record.get("install_id"), record.get("_delivery_id")) not in conflicts],
+        invalid_lines, len(conflicts),
+    )
 
 
 def weekly_active_count(days: int = 7) -> dict:
@@ -48,7 +86,7 @@ def weekly_active_count(days: int = 7) -> dict:
     Count distinct install_ids with any activity in the last N days.
     This is the primary H004/H005 metric.
     """
-    until = date.today()
+    until = datetime.now(timezone.utc).date()
     since = until - timedelta(days=days - 1)
     records = load_records(since, until)
 
@@ -60,6 +98,7 @@ def weekly_active_count(days: int = 7) -> dict:
 
     return {
         "window_days": days,
+        "data_quality": records.quality,
         "since": since.isoformat(),
         "until": until.isoformat(),
         "weekly_active_count": len(active_installs),
@@ -70,7 +109,7 @@ def weekly_active_count(days: int = 7) -> dict:
 
 def summary_stats(days: int = 7) -> dict:
     """Full summary: active installs, learn/recall rates, version distribution."""
-    until = date.today()
+    until = datetime.now(timezone.utc).date()
     since = until - timedelta(days=days - 1)
     records = load_records(since, until)
 
@@ -107,6 +146,7 @@ def summary_stats(days: int = 7) -> dict:
 
     return {
         "window_days": days,
+        "data_quality": records.quality,
         "since": since.isoformat(),
         "until": until.isoformat(),
         "total_opted_in_installs": active,
@@ -117,9 +157,9 @@ def summary_stats(days: int = 7) -> dict:
         "strong_signal_pct": round(strong_pct, 1),
         "any_activity_installs": any_activity,
         "any_activity_pct": round(any_pct, 1),
-        "h004_threshold_strong": ">=30% strong signal → PASS" if strong_pct >= 30 else f"{strong_pct:.1f}% < 30% → NOT YET",
-        "h004_threshold_mixed": ">=50% any activity → mixed signal" if any_pct >= 50 else f"{any_pct:.1f}% < 50%",
-        "h004_threshold_invalidation": "<20% any activity → INVALIDATED" if any_pct < 20 and active >= 30 else "not invalidated",
+        "h004_threshold_strong": "UNAVAILABLE: partial input" if records.quality["status"] != "complete" else ">=30% strong signal → PASS" if strong_pct >= 30 else f"{strong_pct:.1f}% < 30% → NOT YET",
+        "h004_threshold_mixed": "UNAVAILABLE: partial input" if records.quality["status"] != "complete" else ">=50% any activity → mixed signal" if any_pct >= 50 else f"{any_pct:.1f}% < 50%",
+        "h004_threshold_invalidation": "UNAVAILABLE: partial input" if records.quality["status"] != "complete" else "<20% any activity → INVALIDATED" if any_pct < 20 and active >= 30 else "not invalidated",
         "sample_floor_met": active >= 30,
         "sample_floor_note": f"{active}/30 required installs — {'FLOOR MET' if active >= 30 else 'below floor, no threshold calls yet'}",
     }
@@ -131,7 +171,7 @@ def mau_stats() -> dict:
     Single pass over 30d of records; computes MAU/WAU/DAU from distinct install_ids.
     Output written to METRICS_DIR/YYYY-MM-DD.json when --write is used.
     """
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
     since_30d = today - timedelta(days=29)
     records = load_records(since_30d, today)
 
@@ -158,6 +198,7 @@ def mau_stats() -> dict:
 
     return {
         "date": today.isoformat(),
+        "data_quality": records.quality,
         "mau_30d": len(ids_30d),
         "wau_7d": len(ids_7d),
         "dau_1d": len(ids_1d),
@@ -190,7 +231,7 @@ def main():
         days = args.days
         if args.since:
             since = date.fromisoformat(args.since)
-            days = (date.today() - since).days + 1
+            days = (datetime.now(timezone.utc).date() - since).days + 1
         result = weekly_active_count(days)
         print(json.dumps(result, indent=2))
 

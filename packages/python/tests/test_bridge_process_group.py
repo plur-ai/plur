@@ -98,3 +98,31 @@ def test_timeout_reaps_grandchild(tmp_path, monkeypatch):
         )
     finally:
         _force_kill(gc_pid)  # never leak a real 600s sleeper
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+@pytest.mark.parametrize("parent_exits", [False, True])
+def test_timeout_kills_term_ignoring_pipe_owner(tmp_path, parent_exits):
+    import subprocess
+    script = tmp_path / "parent.py"
+    pidfile = tmp_path / "gc.pid"
+    child_code = "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    script.write_text(
+        "import subprocess,sys,time\n"
+        + f"p = subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+        + "open(sys.argv[1], 'w').write(str(p.pid))\n"
+        + ("time.sleep(0.2)\n" if parent_exits else "time.sleep(60)\n")
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            from plur_ai.bridge import _run_in_process_group
+            _run_in_process_group([sys.executable, str(script), str(pidfile)], env=dict(os.environ), timeout=1)
+        assert time.monotonic() - started < 4
+        gc_pid = int(pidfile.read_text())
+        for _ in range(50):
+            if _is_reaped(gc_pid): break
+            time.sleep(0.02)
+        assert _is_reaped(gc_pid)
+    finally:
+        if pidfile.exists(): _force_kill(int(pidfile.read_text()))

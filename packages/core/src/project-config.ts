@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, realpathSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
+import yaml from 'js-yaml'
+import { atomicWrite, withLock } from './sync.js'
 
 /**
  * Same #521 canonicalization as the CLI's `isPlurConfigured` guard:
@@ -87,90 +89,53 @@ export function findProjectConfigPath(startDir: string = process.cwd()): string 
   return null
 }
 
-/**
- * Strip balanced single or double quotes around a YAML scalar value.
- * Defensive: a user (or editor auto-format) may quote values.
- */
-function unquoteYamlValue(v: string): string {
-  return v.replace(/^(['"])(.*)\1$/, '$2')
+/** Parse the full document so nested keys cannot become top-level routing
+ * authority. Errors deliberately omit parser excerpts containing tokens. */
+export function readProjectConfigDocument(path: string): Record<string, unknown> {
+  let content: string
+  try { content = readFileSync(path, 'utf8') } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw new Error('Cannot read project configuration')
+  }
+  try {
+    const document = yaml.load(content)
+    if (!document || typeof document !== 'object' || Array.isArray(document)) throw new Error('mapping required')
+    return document as Record<string, unknown>
+  } catch { throw new Error('Invalid project configuration; expected a YAML mapping') }
 }
 
-/**
- * Read `.plur.yaml` from the nearest enclosing project directory.
- * Returns `{}` if not found or unparseable.
- *
- * The parser is intentionally minimal (line-by-line) rather than pulling
- * js-yaml into the CLI bundle — config files are short, fields are flat,
- * and dependency-free keeps the CLI bundle tiny. Arrays use comma-
- * separated values OR YAML-style `- item` lines.
- *
- * Accepts an optional `startDir` so callers (notably the MCP server,
- * which lives in core and gets the dir from `process.cwd()`) can override
- * the walk root.
- */
+/** Merge under one lock, retaining every unrelated key. Serialize values as
+ * YAML scalars and replace privately/durably; never truncate the live file. */
+export function updateProjectConfig(path: string, patch: Partial<ProjectConfig>): void {
+  withLock(path, () => {
+    const document = readProjectConfigDocument(path)
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) delete document[key]
+      else document[key] = value
+    }
+    atomicWrite(path, yaml.dump(document, { lineWidth: 120, noRefs: true }), { mode: 0o600 })
+  })
+}
+
+/** Read only top-level routing keys. Preserve legacy comma-separated and block
+ * list scope forms, while refusing malformed existing configuration. */
 export function readProjectConfig(startDir: string = process.cwd()): ProjectConfig {
-  const configPath = findProjectConfigPath(startDir)
-  if (!configPath) return {}
-  try {
-    // Strip UTF-8 BOM — some Windows editors prepend it and the first
-    // key would otherwise be read as `﻿domain` and silently dropped.
-    const content = readFileSync(configPath, 'utf8').replace(/^﻿/, '')
-    const config: ProjectConfig = {}
-    let inListKey: 'remote_scopes' | null = null
-    let listAcc: string[] = []
-    const finishList = () => {
-      if (inListKey === 'remote_scopes') {
-        // Always commit — even an empty list is a valid user intent
-        // (the difference between "no whitelist" and "explicitly empty"
-        // is downstream's problem, not ours).
-        config.remote_scopes = listAcc
-      }
-      inListKey = null
-      listAcc = []
-    }
-
-    for (const rawLine of content.split('\n')) {
-      const line = rawLine.replace(/\r$/, '')
-      const trimmed = line.trim()
-      if (trimmed.startsWith('#') || !trimmed) continue
-
-      // List continuation: ONLY active while we're inside remote_scopes.
-      // A `- foo` value on an unrelated key like remote_token would
-      // otherwise be silently swallowed into listAcc.
-      if (inListKey === 'remote_scopes' && trimmed.startsWith('-')) {
-        listAcc.push(unquoteYamlValue(trimmed.slice(1).trim()))
-        continue
-      }
-      // Any non-dash line ends the previous list
-      if (inListKey) finishList()
-
-      const colonIdx = trimmed.indexOf(':')
-      if (colonIdx < 0) continue
-      const key = trimmed.slice(0, colonIdx).trim()
-      const value = unquoteYamlValue(trimmed.slice(colonIdx + 1).trim())
-
-      switch (key) {
-        case 'domain':       config.domain = value; break
-        case 'scope':        config.scope = value; break
-        case 'remote_url':   config.remote_url = value; break
-        case 'remote_token': config.remote_token = value; break
-        case 'remote_scopes':
-          // Multi-line YAML list form: `remote_scopes:` (empty) OR
-          // `remote_scopes: |` (block scalar marker) — both trigger list
-          // accumulation.
-          if (value === '' || value === '|' || value === '>') {
-            inListKey = 'remote_scopes'
-            listAcc = []
-          } else {
-            // Inline comma-separated form
-            config.remote_scopes = value.split(',').map(s => unquoteYamlValue(s.trim())).filter(Boolean)
-          }
-          break
-      }
-    }
-    finishList()
-    return config
-  } catch {
-    return {}
+  const path = findProjectConfigPath(startDir)
+  if (!path) return {}
+  const document = readProjectConfigDocument(path)
+  const config: ProjectConfig = {}
+  for (const key of ['domain', 'scope', 'remote_url', 'remote_token'] as const) {
+    const value = document[key]
+    if (value === undefined) continue
+    if (typeof value !== 'string') throw new Error(`Invalid project configuration field: ${key}`)
+    config[key] = value
   }
+  const scopes = document.remote_scopes
+  if (scopes !== undefined) {
+    if (scopes === null) config.remote_scopes = []
+    else if (Array.isArray(scopes) && scopes.every(scope => typeof scope === 'string')) config.remote_scopes = scopes
+    else if (typeof scopes === 'string') config.remote_scopes = scopes.split(/[,\n]/).map(scope => scope.trim().replace(/^-\s+/, '')).filter(Boolean)
+    else throw new Error('Invalid project configuration field: remote_scopes')
+  }
+  return config
 }

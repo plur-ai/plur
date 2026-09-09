@@ -188,6 +188,17 @@ describe('#828 learn() write-path seams', () => {
     expect(store.nextIdCalls).toBe(2)
   })
 
+  it('searches sibling contexts when the legacy hash seam returns a different one', async () => {
+    const store = new CountingStore()
+    const plur = new Plur({ path: tempDir(), store, autoDiscover: false }); await plur.ready()
+    const write = (hardware: string) => plur.learn('A measured assertion', { scope: 'global', measured_under: { hardware } })
+    const first = await write('cpu'); const second = await write('gpu'); const third = await write('gpu')
+    expect(first.id).not.toBe(second.id)
+    expect(third.id).toBe(second.id)
+    expect(store.peek()).toHaveLength(2)
+    expect(store.peek().find(e => e.id === first.id)?.measured_under?.hardware).toBe('cpu')
+  })
+
   it('deduplicates through the store and persists the write_count increment', async () => {
     const store = new CountingStore()
     const plur = new Plur({ path: tempDir(), store, autoDiscover: false })

@@ -63,7 +63,8 @@ function canaryContext(mark: string): { context: LearnContext; canaries: Record<
   const canaries: Record<string, string> = {}
   let context: LearnContext = {}
   for (const field of LEARN_CONTENT_FIELDS) {
-    const v = `${mark}-${field}-7f3a`
+    // The canary must itself be valid for a content-bearing enum.
+    const v = field === 'claim_class' ? 'observed' : `${mark}-${field}-7f3a`
     canaries[field] = v
     context = { ...context, ...contextWith(field, v) }
   }

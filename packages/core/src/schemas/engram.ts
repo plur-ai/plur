@@ -55,7 +55,9 @@ export const ProvenanceSchema = z.object({
   chain: z.array(z.string()).default([]),
   signature: z.string().nullable().default(null)
     .describe('RESERVED. Detached signature over the engram. Algorithm and canonicalization not yet specified — see ENGRAM-STANDARD-v1.md §7.'),
-  license: z.string().default('cc-by-sa-4.0'),
+  // Absence is evidence that nobody chose a licence. Effective policy may use
+  // its documented default, but parsing must not turn that into an assertion.
+  license: z.string().optional(),
 }).describe('Origin and signing chain. STABLE for origin/chain/license; signature is RESERVED (see ENGRAM-STANDARD-v1.md §7).')
 
 /**
@@ -482,6 +484,7 @@ export const EngramSchema = z.object({
   sources: z.array(z.object({
     scope: z.string(),
     session_id: z.string().nullable().default(null),
+    source: z.string().optional().describe('Caller-supplied origin of this write; retained across duplicate absorption.'),
     stored_at: z.string().describe('ISO 8601 timestamp of this write.'),
   })).default([]).describe('Provenance of each write attempt; one entry per write.'),
 

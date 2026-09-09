@@ -1,9 +1,9 @@
 import * as fs from 'fs'
-import * as path from 'path'
+import { createHash, randomUUID } from 'node:crypto'
 import * as yaml from 'js-yaml'
 import { join } from 'path'
 import { loadEngrams, saveEngrams } from '../engrams.js'
-import { atomicWrite, withLock, CONFIG_FILE_MODE } from '../sync.js'
+import { atomicWrite, withLock, fsyncDir, CONFIG_FILE_MODE } from '../sync.js'
 import { logger } from '../logger.js'
 import type { Migration } from './types.js'
 
@@ -29,13 +29,24 @@ export interface MigrationResult {
 
 /** Read schema_version from config.yaml. Defaults to 0 if not present. */
 export function getSchemaVersion(configPath: string): number {
-  if (!fs.existsSync(configPath)) return 0
+  let raw: unknown
   try {
-    const raw = yaml.load(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown> | null
-    if (!raw || typeof raw.schema_version !== 'number') return 0
-    return raw.schema_version
-  } catch {
-    return 0
+    raw = yaml.load(fs.readFileSync(configPath, 'utf8'))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0
+    throw new Error('Cannot read or parse migration configuration')
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Cannot read migration schema version: config must be a mapping')
+  }
+  const version = Object.hasOwn(raw, 'schema_version') ? (raw as Record<string, unknown>).schema_version : 0
+  assertVersion(version)
+  return version
+}
+
+function assertVersion(version: unknown): asserts version is number {
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 0 || version > CURRENT_SCHEMA_VERSION) {
+    throw new Error(`Invalid schema version: expected a non-negative integer from 0 to ${CURRENT_SCHEMA_VERSION}`)
   }
 }
 
@@ -57,13 +68,16 @@ export function getSchemaVersion(configPath: string): number {
  * matching `persistStores`, which rethrows for exactly this reason.
  */
 export function setSchemaVersion(configPath: string, version: number): void {
+  assertVersion(version)
   withLock(configPath, () => {
     let configData: Record<string, unknown> = {}
     try {
       const raw = fs.readFileSync(configPath, 'utf8')
-      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+      const parsed: unknown = yaml.load(raw)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Migration config must be a mapping')
+      configData = parsed as Record<string, unknown>
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw new Error('Cannot read or parse migration configuration')
     }
     configData.schema_version = version
     // Atomic + fsynced for the same reason persistStores is: loadConfig turns a
@@ -84,50 +98,60 @@ function createBackup(engramsPath: string, version: number): string | null {
   // rollback target was gone. An existing backup is by definition from an
   // earlier, better state; keep it.
   if (fs.existsSync(backupPath)) return backupPath
-  fs.copyFileSync(engramsPath, backupPath)
-  // A backup that is not on disk is not a backup. copyFileSync leaves the copy
-  // in the page cache, so a power cut during a migration could take the corpus
-  // AND the rollback target with it (audit #794, F4).
-  flushFile(backupPath)
-  // The rename/create is directory metadata: without flushing the directory a
-  // crash can lose the backup's PATHNAME even when its blocks reached disk.
-  flushDir(path.dirname(backupPath))
+  atomicWrite(backupPath, fs.readFileSync(engramsPath))
   return backupPath
 }
 
-/** fsync a directory so a file created in it survives a crash. Best-effort. */
-function flushDir(dir: string): void {
-  let fd: number | undefined
-  try {
-    fd = fs.openSync(dir, 'r')
-    fs.fsyncSync(fd)
-  } catch {
-    /* not supported on this platform/filesystem — the file's own fsync stands */
-  } finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd) } catch { /* ignore */ }
-    }
+const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
+function corpusHash(file: string): string | null {
+  try { return digest(fs.readFileSync(file)) } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
   }
 }
 
-/** fsync a path that was just written by a non-atomic helper. Best-effort — see atomicWrite. */
-function flushFile(filePath: string): void {
-  let fd: number | undefined
-  try {
-    fd = fs.openSync(filePath, 'r+')
-    fs.fsyncSync(fd)
-  } catch {
-    /* nothing actionable — the copy itself succeeded */
-  } finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd) } catch { /* ignore */ }
-    }
+/** Resolve an interrupted two-file commit without replaying transformations
+ * or restoring stale bytes. Unrelated intervening edits require reconciliation.
+ * Caller holds the corpus lock. */
+function recoverMigration(engramsPath: string, configPath: string): void {
+  const journalPath = `${engramsPath}.migration.json`
+  let text: string
+  try { text = fs.readFileSync(journalPath, 'utf8') } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw err
   }
+  const journal = JSON.parse(text)
+  if (!journal || journal.config !== configPath || typeof journal.after !== 'string' ||
+      !(journal.before === null || typeof journal.before === 'string')) throw new Error('Invalid migration recovery journal')
+  assertVersion(journal.version)
+  const current = corpusHash(engramsPath)
+  if (current === journal.after) setSchemaVersion(configPath, journal.version)
+  else if (current !== journal.before) throw new Error('Interrupted migration followed by other writes; preserve the corpus and reconcile the migration journal manually')
+  fs.unlinkSync(journalPath)
+  fsyncDir(join(engramsPath, '..'))
 }
 
-/** Restore engrams.yaml from backup. */
-function restoreBackup(engramsPath: string, backupPath: string): void {
-  fs.copyFileSync(backupPath, engramsPath)
+/** Stage/validate exact bytes, persist intent, replace corpus, stamp config.
+ * A retry can finish stamping after a crash at any commit boundary. */
+function commitMigration(engramsPath: string, configPath: string, engrams: ReturnType<typeof loadEngrams>, version: number): void {
+  const staged = `${engramsPath}.${randomUUID()}.migration-stage`
+  let bytes: Buffer
+  try {
+    if (fs.existsSync(engramsPath)) {
+      atomicWrite(staged, fs.readFileSync(engramsPath))
+      loadEngrams(staged) // retain quarantined rows through the serializer
+    }
+    saveEngrams(staged, engrams, { allowShrink: true })
+    bytes = fs.readFileSync(staged)
+  } finally {
+    try { fs.unlinkSync(staged) } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err }
+  }
+  const journalPath = `${engramsPath}.migration.json`
+  atomicWrite(journalPath, JSON.stringify({ config: configPath, before: corpusHash(engramsPath), after: digest(bytes), version }))
+  atomicWrite(engramsPath, bytes)
+  setSchemaVersion(configPath, version)
+  fs.unlinkSync(journalPath)
+  fsyncDir(join(engramsPath, '..'))
 }
 
 /**
@@ -135,7 +159,7 @@ function restoreBackup(engramsPath: string, backupPath: string): void {
  * - Checks schema_version in config
  * - Creates backup before running
  * - Applies each pending migration in order
- * - Rolls back to backup if any migration fails
+ * - Leaves the live corpus untouched if any transformation fails
  * - Updates schema_version after success
  */
 export function runMigrations(
@@ -171,18 +195,15 @@ export function runMigrations(
    * lock for the duration.
    */
   withLock(engramsPath, () => {
+    if (options?.dryRun && fs.existsSync(`${engramsPath}.migration.json`)) throw new Error('Interrupted migration needs recovery before a dry run')
+    if (!options?.dryRun) recoverMigration(engramsPath, configPath)
     currentVersion = getSchemaVersion(configPath)
     const pending = ALL_MIGRATIONS.slice(currentVersion)
     if (pending.length === 0) return
 
-    // The backup is taken inside the lock too. Outside it, a write could land
-    // between `createBackup` and `loadEngrams`, so the file restored on failure
-    // would not be the file that was migrated — a rollback to a state that
-    // never existed.
-    backupPath = options?.dryRun ? null : createBackup(engramsPath, currentVersion)
-
     // Load engrams as raw objects (passthrough mode — we use the passthrough schema)
     let engrams = loadEngrams(engramsPath)
+    backupPath = options?.dryRun ? null : createBackup(engramsPath, currentVersion)
 
     for (const migration of pending) {
       logger.info(`Running migration: ${migration.id} — ${migration.description}`)
@@ -191,12 +212,9 @@ export function runMigrations(
         applied.push(migration.id)
       } catch (err) {
         logger.error(`Migration ${migration.id} failed: ${err}`)
-        // Restore from backup
-        if (backupPath) {
-          restoreBackup(engramsPath, backupPath)
-          logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
-        }
-        throw new Error(`Migration ${migration.id} failed: ${err}. Engrams restored from backup.`)
+        // Only memory changed. A version backup may predate successful writes;
+        // restoring it here would destroy those newer records.
+        throw new Error(`Migration ${migration.id} failed: ${err}. Live engrams unchanged.`)
       }
     }
 
@@ -204,10 +222,7 @@ export function runMigrations(
       // Migrations rewrite the entire corpus by design, and a migration that
       // legitimately drops records would otherwise trip the save-side shrink
       // guard (#801). Declaring it here keeps the guard armed everywhere else.
-      saveEngrams(engramsPath, engrams, { allowShrink: true })
-      // Inside the corpus lock: the corpus and the version it claims to be at
-      // must become visible together, or they can disagree.
-      setSchemaVersion(configPath, currentVersion + applied.length)
+      commitMigration(engramsPath, configPath, engrams, currentVersion + applied.length)
     }
   })
 
@@ -230,6 +245,7 @@ export function rollbackMigrations(
   if (targetVersion < 0) {
     throw new Error('Target version cannot be negative')
   }
+  assertVersion(targetVersion)
 
   const rolledBack: string[] = []
   let currentVersion = 0
@@ -242,14 +258,15 @@ export function rollbackMigrations(
   // concurrent write, since the operator is already recovering from something.
   let backupPath: string | null = null
   withLock(engramsPath, () => {
+    recoverMigration(engramsPath, configPath)
     currentVersion = getSchemaVersion(configPath)
     if (targetVersion >= currentVersion) { noop = true; return }
 
     // Apply down() in reverse order
     const toRollback = ALL_MIGRATIONS.slice(targetVersion, currentVersion).reverse()
 
-    backupPath = createBackup(engramsPath, currentVersion)
     let engrams = loadEngrams(engramsPath)
+    backupPath = createBackup(engramsPath, currentVersion)
 
     for (const migration of toRollback) {
       logger.info(`Rolling back migration: ${migration.id}`)
@@ -258,18 +275,13 @@ export function rollbackMigrations(
         rolledBack.push(migration.id)
       } catch (err) {
         logger.error(`Rollback of ${migration.id} failed: ${err}`)
-        if (backupPath) {
-          restoreBackup(engramsPath, backupPath)
-          logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
-        }
-        throw new Error(`Rollback of ${migration.id} failed: ${err}. Engrams restored from backup.`)
+        throw new Error(`Rollback of ${migration.id} failed: ${err}. Live engrams unchanged.`)
       }
     }
 
     // A down() migration legitimately removes fields and can remove records;
     // the shrink guard must not veto a deliberate rollback.
-    saveEngrams(engramsPath, engrams, { allowShrink: true })
-    setSchemaVersion(configPath, targetVersion)
+    commitMigration(engramsPath, configPath, engrams, targetVersion)
   })
 
   if (noop) {

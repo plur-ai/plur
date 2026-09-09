@@ -89,6 +89,20 @@ describe('sync', () => {
     const TOKEN = 'eyJSECRETtokenABC123'
     const configWithToken = `stores:\n  - url: https://plur.datafund.io\n    token: ${TOKEN}\n    scope: group:plur/plur-ai/engineering\n`
 
+    it.each(['.env', 'backups/private.yaml', 'state/outbox-id-map.json', 'packs/example/private.json', 'odd\nname.txt', ' engrams.yaml'])(
+      'refuses already staged non-store content without discarding it: %s', file => {
+        sync(dir)
+        const before = git('rev-parse HEAD', dir)
+        mkdirSync(join(dir, file, '..'), { recursive: true })
+        writeFileSync(join(dir, file), 'private-content')
+        execSync('git add -f -- "$PLUR_AUDIT_STAGED_FILE"', { cwd: dir, env: { ...process.env, PLUR_AUDIT_STAGED_FILE: file } })
+        expect(() => sync(dir)).toThrow('non-store files are staged')
+        expect(git('rev-parse HEAD', dir)).toBe(before)
+        expect(readFileSync(join(dir, file), 'utf8')).toBe('private-content')
+        expect(execSync('git diff --cached --name-only -z', { cwd: dir, encoding: 'utf8' }).split('\0')).toContain(file)
+      },
+    )
+
     it('never commits config.yaml even when it holds a Bearer token', () => {
       writeFileSync(join(dir, 'config.yaml'), configWithToken)
       sync(dir)

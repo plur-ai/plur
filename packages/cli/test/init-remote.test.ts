@@ -10,12 +10,13 @@
  * we never touch the developer's real .plur.yaml.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, statSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { spawn } from 'child_process'
+import { spawn, execFileSync } from 'child_process'
 import { createServer, type Server } from 'http'
 import type { AddressInfo } from 'net'
+import { readProjectConfig } from '@plur-ai/core'
 import { builtCliPath } from './helpers/built-cli.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
@@ -28,17 +29,18 @@ const CLI = builtCliPath(join(__dirname, '..'))
  * spawn + Promise lets the parent keep processing the server event loop
  * while the child runs.
  */
-function runCli(args: string, cwd: string, home: string): Promise<{ stdout: string; status: number }> {
+function runCli(args: string | string[], cwd: string, home: string): Promise<{ stdout: string; status: number }> {
   return new Promise(resolve => {
-    const child = spawn('node', [CLI, ...args.split(' ').filter(s => s.length > 0)], {
+    const child = spawn('node', [CLI, ...(Array.isArray(args) ? args : args.split(' ').filter(s => s.length > 0))], {
       cwd,
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: join(home, '.plur'), PLUR_AUTO_DISCOVER: '0' },
     })
     let out = ''
     child.stdout.on('data', c => { out += c.toString() })
     child.stderr.on('data', c => { out += c.toString() })
-    child.on('close', code => resolve({ stdout: out, status: code ?? 0 }))
-    setTimeout(() => { child.kill(); resolve({ stdout: out + '\n[test-timeout]', status: 124 }) }, 8000)
+    const timer = setTimeout(() => { child.kill('SIGKILL') }, 8000)
+    child.on('error', error => { clearTimeout(timer); resolve({ stdout: out + error.message, status: 1 }) })
+    child.on('close', code => { clearTimeout(timer); resolve({ stdout: out, status: code ?? 124 }) })
   })
 }
 
@@ -47,13 +49,16 @@ describe('plur init-remote', () => {
   let cwd: string
   let server: Server
   let serverUrl: string
+  let projectRoot: string
   let lastRequest: { auth?: string; body?: any; path?: string } = {}
   let nextResponse: (req: { path: string }) => { status: number; body: any } =
     () => ({ status: 200, body: { username: 'test-user', org_id: 'test-org', scopes: ['user:test'] } })
 
   beforeEach(async () => {
     home = mkdtempSync(join(tmpdir(), 'plur-init-remote-home-'))
-    cwd  = mkdtempSync(join(tmpdir(), 'plur-init-remote-proj-'))
+    projectRoot = mkdtempSync(join(tmpdir(), 'plur-init-remote-proj-'))
+    cwd = join(projectRoot, 'project'); mkdirSync(cwd)
+    nextResponse = () => ({ status: 200, body: { username: 'test-user', org_id: 'test-org', scopes: ['user:test'] } })
     // Mark cwd as a git project so the .gitignore walk stops there
     mkdirSync(join(cwd, '.git'))
 
@@ -80,14 +85,14 @@ describe('plur init-remote', () => {
 
   afterEach(async () => {
     rmSync(home, { recursive: true, force: true })
-    rmSync(cwd, { recursive: true, force: true })
+    rmSync(projectRoot, { recursive: true, force: true })
     await new Promise<void>(resolve => server.close(() => resolve()))
   })
 
-  it.skip('writes .plur.yaml and updates .gitignore on success [spawn/event-loop flake]', async () => {
+  it('writes .plur.yaml and updates .gitignore on success', async () => {
     const r = await runCli(`init-remote --url ${serverUrl} --token test-token`, cwd, home)
     expect(r.status).toBe(0)
-    expect(r.stdout).toContain(`Wrote ${join(cwd, '.plur.yaml')}`)
+    expect(r.stdout).toContain(`Wrote ${join(realpathSync(cwd), '.plur.yaml')}`)
     expect(r.stdout).toContain('Token sensitivity')   // cloud-sync warning
     const yaml = readFileSync(join(cwd, '.plur.yaml'), 'utf8')
     expect(yaml).toContain(`remote_url: ${serverUrl}`)
@@ -110,12 +115,46 @@ describe('plur init-remote', () => {
   })
 
   it('refuses to write when --token has a newline character', async () => {
-    const r = await runCli(`init-remote --url ${serverUrl} --token "ab\\nc"`, cwd, home)
-    // Newline in shell-quoted string becomes literal \n in the arg
-    // (no actual newline) — instead test by writing directly via env
-    // since shell escaping is annoying. The newline test is enforced in
-    // the validator path; trust the impl for this surface.
-    expect([0, 1]).toContain(r.status)
+    const r = await runCli(['init-remote', '--url', serverUrl, '--token', 'ab\nc'], cwd, home)
+    expect(r.status).toBe(1)
+    expect(existsSync(join(cwd, '.plur.yaml'))).toBe(false)
+    expect(lastRequest.path).toBeUndefined()
+  })
+
+  it('round-trips quoted tokens and preserves nested non-remote keys in private config', async () => {
+    writeFileSync(join(cwd, '.plur.yaml'), 'custom:\n  remote_url: https://preserve.example\n  values: [one, two]\n', { mode: 0o644 })
+    const token = "a'quoted # token: value"
+    const r = await runCli(['init-remote', '--url', serverUrl, '--token', token], cwd, home)
+    expect(r.status).toBe(0)
+    expect(readProjectConfig(cwd).remote_token).toBe(token)
+    expect(readFileSync(join(cwd, '.plur.yaml'), 'utf8')).toContain('https://preserve.example')
+    expect(statSync(join(cwd, '.plur.yaml')).mode & 0o777).toBe(0o600)
+    expect((await runCli('init-remote --verify', cwd, home)).status).toBe(0)
+    expect(lastRequest.auth).toBe(`Bearer ${token}`)
+  })
+
+  it('preserves malformed existing project config and omits its contents from diagnostics', async () => {
+    const bytes = 'custom: [sensitive-example'; writeFileSync(join(cwd, '.plur.yaml'), bytes)
+    const r = await runCli(['init-remote', '--url', serverUrl, '--token', 'new-token'], cwd, home)
+    expect(r.status).not.toBe(0)
+    expect(readFileSync(join(cwd, '.plur.yaml'), 'utf8')).toBe(bytes)
+    expect(r.stdout).not.toContain('sensitive-example')
+  })
+
+  it('does not publish credentials when ignore protection cannot be installed', async () => {
+    mkdirSync(join(cwd, '.gitignore'))
+    const r = await runCli(['init-remote', '--url', serverUrl, '--token', 'new-token'], cwd, home)
+    expect(r.status).not.toBe(0)
+    expect(existsSync(join(cwd, '.plur.yaml'))).toBe(false)
+  })
+
+  it('does not mistake an earlier ignore rule for protection when a later rule negates it', async () => {
+    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    execFileSync('git', ['init'], { cwd, env, stdio: 'pipe' })
+    writeFileSync(join(cwd, '.gitignore'), '.plur.yaml\n!.plur.yaml\n')
+    const r = await runCli(['init-remote', '--url', serverUrl, '--token', 'new-token'], cwd, home)
+    expect(r.status).toBe(0)
+    expect(execFileSync('git', ['check-ignore', '--', '.plur.yaml'], { cwd, env, encoding: 'utf8' }).trim()).toBe('.plur.yaml')
   })
 
   it('refuses a non-http/https URL scheme', async () => {
@@ -124,7 +163,7 @@ describe('plur init-remote', () => {
     expect(r.stdout).toContain('must be http')
   })
 
-  it.skip('refuses to write a broken config when connectivity fails [flake]', async () => {
+  it('refuses to write a broken config when connectivity fails', async () => {
     nextResponse = () => ({ status: 401, body: { error: 'bad token' } })
     const r = await runCli(`init-remote --url ${serverUrl} --token bad`, cwd, home)
     expect(r.status).toBe(2)
@@ -156,7 +195,7 @@ describe('plur init-remote', () => {
     expect(yaml).not.toContain('group:plur/eng')       // old list dropped
   })
 
-  it.skip('stops the .gitignore walk at .git boundary [flake]', async () => {
+  it('stops the .gitignore walk at .git boundary', async () => {
     // Project at cwd, parent-of-parent has another .gitignore (monorepo root)
     const monorepo = join(cwd, '..')
     const monorepoGitignore = join(monorepo, '.gitignore.tmp-monorepo')
@@ -197,7 +236,7 @@ describe('plur init-remote --verify', () => {
     await new Promise<void>(resolve => server.close(() => resolve()))
   })
 
-  it.skip('reports success when config + connectivity are valid [flake]', async () => {
+  it('reports success when config + connectivity are valid', async () => {
     writeFileSync(join(cwd, '.plur.yaml'),
       `remote_url: ${serverUrl}\nremote_token: valid-token\n`)
     const r = await runCli(`init-remote --verify`, cwd, home)
