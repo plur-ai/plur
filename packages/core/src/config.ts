@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import yaml from 'js-yaml'
 import { PlurConfigSchema, StoreEntrySchema, type PlurConfig } from './schemas/config.js'
 import { SENSITIVITY_CATEGORIES } from './schemas/scope-metadata.js'
@@ -22,13 +22,17 @@ import { logger } from './logger.js'
  * most the malformed entries, never the whole file.
  */
 export function loadConfig(configPath: string): PlurConfig {
-  if (!existsSync(configPath)) return PlurConfigSchema.parse({})
   let raw: Record<string, unknown>
   try {
-    raw = (yaml.load(readFileSync(configPath, 'utf8')) as Record<string, unknown>) ?? {}
+    raw = yaml.load(readFileSync(configPath, 'utf8')) as Record<string, unknown>
   } catch (err) {
-    logger.warning(`[plur:config] cannot parse YAML at ${configPath}: ${(err as Error).message} — falling back to defaults`)
-    return PlurConfigSchema.parse({})
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return PlurConfigSchema.parse({})
+    // YAML parser errors can include the source line, including tokens. Do
+    // not render them, and never enable default capture/routing after failure.
+    throw new Error(`[plur:config] cannot read or parse configuration at ${configPath}; repair it before continuing`)
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`[plur:config] configuration at ${configPath} must be a mapping`)
   }
   // Validate each store entry independently before the top-level parse so
   // a single bad entry can't take the whole file down.
@@ -40,11 +44,7 @@ export function loadConfig(configPath: string): PlurConfig {
       if (parsed.success) {
         validStores.push(entry)
       } else {
-        const label = (entry as { url?: string; path?: string; scope?: string })?.scope
-          ?? (entry as { url?: string; path?: string })?.url
-          ?? (entry as { path?: string })?.path
-          ?? `index ${i}`
-        logger.warning(`[plur:config] dropping invalid stores[${i}] (${label}) from ${configPath}: ${parsed.error.issues.map(it => it.message).join('; ')}`)
+        logger.warning(`[plur:config] dropping invalid stores[${i}] from ${configPath}: ${parsed.error.issues.map(it => `${it.path.join('.')}: ${it.code}`).join('; ')}`)
       }
     }
     raw.stores = validStores
@@ -53,8 +53,7 @@ export function loadConfig(configPath: string): PlurConfig {
   try {
     parsed = PlurConfigSchema.parse(raw)
   } catch (err) {
-    logger.warning(`[plur:config] top-level config invalid at ${configPath}: ${(err as Error).message} — falling back to defaults`)
-    return PlurConfigSchema.parse({})
+    throw new Error(`[plur:config] invalid configuration at ${configPath}; repair it before continuing`)
   }
   // PR-3 (#353) scope-naming pass. ScopeSensitivitySchema.forbid now preprocesses
   // unknown categories away (non-fatal), but the field-level preprocess can't

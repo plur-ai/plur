@@ -19,6 +19,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import time
 from typing import Any, Sequence
 
 # @plur-ai/cli pin for the npx fallback. Keep >= the published CLI that carries
@@ -86,23 +87,33 @@ def _kill_process_group(proc: "subprocess.Popen[str]") -> None:
     if os.name != "posix":
         proc.kill()
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except ProcessLookupError:
-        return
+    # start_new_session=True fixes the group ID at creation. The parent can
+    # already be reaped while a grandchild still owns our stdout pipe.
+    pgid = proc.pid
     try:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    try:
-        proc.wait(timeout=0.5)  # brief grace for SIGTERM before escalating
-        return
-    except subprocess.TimeoutExpired:
-        pass
+    # Do not reap the group leader until after signalling the group: reaping
+    # frees its PID for reuse and can make the next signal target another job.
+    time.sleep(0.5)
+    # Parent exit is not proof that the group exited. Descendants can ignore
+    # TERM; always finish group teardown even when wait() returned immediately.
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # macOS returns EPERM for a group containing only an unreaped zombie.
+        # Reap our exited leader, then prove the group is gone. A live group
+        # or a real permission failure still propagates; never claim cleanup.
+        if proc.poll() is None:
+            raise
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        raise
 
 
 def _run_in_process_group(
@@ -134,7 +145,10 @@ def _run_in_process_group(
             stdout, stderr = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-            stdout, stderr = proc.communicate()
+            proc.wait(timeout=5)
+            if proc.stdout: proc.stdout.close()
+            if proc.stderr: proc.stderr.close()
+            stdout, stderr = "", ""
         raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 

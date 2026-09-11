@@ -368,7 +368,7 @@ function writeRemoteHealth(path: string, file: RemoteHealthFile): void {
 
 /** Lock options for remote-health.json — the critical section is a
  *  read+merge+rename of a small JSON file (milliseconds), and withLock's
- *  retry delay is a synchronous busy-wait, so keep the worst-case wait small
+ *  retry delay is a synchronous OS wait, so keep the worst-case wait small
  *  (25+50+100 = 175 ms) rather than the 3.1 s engrams.yaml default. */
 const HEALTH_LOCK_OPTS = { maxRetries: 3, baseDelay: 25 }
 

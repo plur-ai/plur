@@ -48,6 +48,8 @@ const ALWAYS_ASYNC = new Set([
   'checkRemoteHealth', 'discoverRemoteScopes', 'registerDiscoveredScopes',
   'registerScope', 'offerableScopes', 'warmRemoteCaches', 'waitForIndex',
   'reportFailure', 'ready',
+  // New async import entry point; it never had synchronous callers.
+  'learnImported',
   // Born async (#676) — never had a sync form, so there is no pre-0.16
   // call site for the migrate tool to rewrite.
   'rescope',

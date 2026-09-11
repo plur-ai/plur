@@ -10,6 +10,11 @@ import {
   hasPlurCursorHooks,
 } from '../src/cursor-hooks.js'
 
+it('preserves unrelated top-level settings when merging PLUR hooks', () => {
+  const existing = { version: 1, hooks: {}, custom: { enabled: false, names: ['first', 'second'] } }
+  expect(mergeCursorHooks(existing, buildCursorHooks('plur-hook'))).toMatchObject({ custom: existing.custom })
+})
+
 describe('cursor-hooks', () => {
   let dir: string
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-cursor-hooks-')) })

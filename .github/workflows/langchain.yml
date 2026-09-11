@@ -19,14 +19,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.9', '3.10', '3.11', '3.12']
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+        dependencies: ['minimum', 'latest']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
       # Install plur-ai from local source — avoids PyPI dependency before first publish.
       # plur-langchain's pyproject.toml requires plur-ai>=0.10.0; pip finds it here.
       - run: pip install -e packages/python
       - run: pip install -e "packages/langchain[dev]"
+      - if: matrix.dependencies == 'minimum'
+        run: pip install 'langchain-core==0.3.85' 'langsmith==0.8.18'
       - run: pytest packages/langchain -q

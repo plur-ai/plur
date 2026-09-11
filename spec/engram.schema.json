@@ -361,8 +361,7 @@
           "description": "RESERVED. Detached signature over the engram. Algorithm and canonicalization not yet specified — see ENGRAM-STANDARD-v1.md §7."
         },
         "license": {
-          "type": "string",
-          "default": "cc-by-sa-4.0"
+          "type": "string"
         }
       },
       "required": [
@@ -763,6 +762,10 @@
               "null"
             ],
             "default": null
+          },
+          "source": {
+            "type": "string",
+            "description": "Caller-supplied origin of this write; retained across duplicate absorption."
           },
           "stored_at": {
             "type": "string",

@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import { createHash, randomUUID } from 'node:crypto'
 import { tmpdir } from 'os'
 import { join, dirname, basename } from 'path'
 import yaml from 'js-yaml'
@@ -9,6 +10,7 @@ import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
+import { legacyAllocatedIds, reserveLocalEngramId } from './store/id-allocation.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens } from './inject.js'
@@ -23,6 +25,8 @@ import { checkRerankerFit, type FitCheckResult } from './rerankers/fit-check.js'
 import { runRerankerSelfEval, loadRerankerEvalCache, saveRerankerEvalResult, isRerankerEvalStale, logRerankerEvalAdvisory, type RerankerEvalResult } from './reranker-eval.js'
 import { _resetCrossEncoderCaches } from './rerankers/transformers-cross-encoder.js'
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, rewriteLexicalQuery, isQueryRewriteDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
+import { applyImportMetadata } from './importers/engine.js'
+import type { ImportRecord } from './importers/types.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
@@ -31,18 +35,19 @@ import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
 import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack, containsEmail } from './packs.js'
 import type { ExportOptions } from './packs.js'
-import { learnContextContent, engramContentFields } from './content-fields.js'
+import { learnContextContent, engramContentFields, LEARN_CONTEXT_FIELD_ROLES } from './content-fields.js'
 export { LEARN_CONTEXT_FIELD_ROLES, LEARN_CONTENT_FIELDS, learnContextContent, engramContentFields } from './content-fields.js'
 // SP5 imports (deferred — vault-export, registry not yet merged)
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
-import { atomicWrite, CONFIG_FILE_MODE, sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
+import { atomicWrite, fsyncDir, CONFIG_FILE_MODE, sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
 import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
-import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
+import { appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
+import { validateLearnContext, validateEngramWrite } from './learn-context-validation.js'
 import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
 import { loadTensions, loadTensionsWithQuarantine, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
@@ -93,7 +98,7 @@ export { computeConfidence, computeMetaConfidence, confidenceBand } from './conf
 export { SessionBreadcrumbs } from './session-state.js'
 export { SessionScopeRegistry } from './session-scopes.js'
 export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
-export { findProjectConfigPath, readProjectConfig, type ProjectConfig } from './project-config.js'
+export { findProjectConfigPath, readProjectConfig, readProjectConfigDocument, updateProjectConfig, type ProjectConfig } from './project-config.js'
 export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
@@ -629,7 +634,6 @@ function stableJson(v: unknown): string {
  */
 const REMOTE_GUARD_BUDGET_MS = 45_000
 
-const OUTBOX_ID_MAP_MAX = 5000
 
 const LLM_BREAKER_THRESHOLD = 3
 const LLM_BREAKER_WINDOW_MS = 5 * 60 * 1000
@@ -1645,49 +1649,16 @@ export class Plur {
     }
   }
 
-  /**
-   * Ids this store has minted today that are no longer in the corpus (#816).
-   *
-   * Read from the append-only history log, which — unlike the corpus — never
-   * forgets. See `mintedIdsWithPrefix` for why an incomplete answer is safe.
-   */
-  private _mintedTodayIds(): string[] {
-    const day = new Date().toISOString().slice(0, 10)
-    // Cached per process, per day.
-    //
-    // Without this, every learn() re-read and re-parsed a month of
-    // history.jsonl — on the hottest write path, to answer a question whose
-    // answer this process already knows. The cache is keyed on the DAY so it
-    // self-invalidates across midnight (allocation is per-day, so yesterday's
-    // ids are irrelevant to today's suffix).
-    //
-    // Staleness is safe in the one direction that matters: ids minted by
-    // ANOTHER process after this cache was filled are missing from it, which
-    // degrades to the pre-fix corpus-only behaviour rather than introducing a
-    // new hazard — and the corpus scan, which is always fresh, still sees any
-    // engram that other process actually wrote. Ids minted by THIS process are
-    // added below without a re-read, so a burst of writes in one session stays
-    // monotonic without touching disk again.
-    if (this._mintedCache?.day !== day) {
-      this._mintedCache = {
-        day,
-        ids: new Set(mintedIdsWithPrefix(this.paths.root, day.slice(0, 7), [
-          `ENG-${day}-`,
-          `ENG-${day.slice(0, 4)}-${day.slice(5, 7)}${day.slice(8, 10)}-`,
-        ])),
-      }
+  /** Called under the primary store lock. The store owns shared allocation;
+   * local stores reserve privately before publishing a row. */
+  private async _allocateEngramId(existing: Engram[]): Promise<string> {
+    if (this._primaryStore.reserveEngramId) {
+      const now = new Date()
+      const minimum = generateEngramId(existing, legacyAllocatedIds(this.paths.root, now), now)
+      return this._primaryStore.reserveEngramId(minimum)
     }
-    return [...this._mintedCache.ids]
+    return reserveLocalEngramId(this.paths.root, existing)
   }
-
-  /** Record an id this process just minted, so the next allocation sees it
-   *  without re-reading history (#816). */
-  private _rememberMintedId(id: string): void {
-    const day = new Date().toISOString().slice(0, 10)
-    if (this._mintedCache?.day === day) this._mintedCache.ids.add(id)
-  }
-
-  private _mintedCache: { day: string; ids: Set<string> } | null = null
 
   private _storeAt(path: string): AsyncPrimaryStore {
     if (path === this.paths.engrams) return this._primaryStore
@@ -1826,12 +1797,35 @@ export class Plur {
    * normalizer no longer produces that for real prose; this is the belt to its
    * braces, and it fails in the safe direction (a missed dedup costs a
    * duplicate row, a false dedup costs the memory). */
-  private _hashDedup(statement: string, engrams: Engram[], scope?: string): Engram | null {
+  /** A repeated sentence cannot absorb a different supplied meaning or policy.
+   * Omitted fields preserve historical dedup semantics; session provenance is
+   * recorded separately in sources[]. Compare the same shape the writer builds.
+   */
+  private _sameLearnContext(engram: Engram, statement: string, context?: LearnContext): boolean {
+    // Explicitly private input requires a local record with no pending export.
+    // A matching sentence in a remote, pack, or outbox cannot satisfy that write.
+    if (context?.visibility === 'private' && ((engram as any)._storeScope || (engram as any)._pack || engram.structured_data?._outbox)) return false
+    const keys = (Object.keys(LEARN_CONTEXT_FIELD_ROLES) as Array<keyof LearnContext>)
+      .filter(key => !['scope', 'session', 'session_episode_id'].includes(key) && context?.[key] !== undefined)
+      .filter(key => key !== 'source' || Boolean((engram as any)._storeScope || (engram as any)._pack || engram.structured_data?._outbox))
+    if (!keys.length) return true
+    const expected = this._buildEngramShape(statement, engram.scope, context, new Date().toISOString())
+    const value = (row: Engram, key: keyof LearnContext): unknown => {
+      if (key === 'valid_from' || key === 'valid_until') return row.temporal?.[key] ?? (row as any)[key]
+      if (key === 'supersedes') return row.relations?.supersedes ?? (row as any).supersedes ?? []
+      if (key === 'license') return row.provenance?.license
+      if (key === 'memory_class') return row.knowledge_type?.memory_class
+      return (row as any)[key]
+    }
+    return keys.every(key => stableJson(value(engram, key)) === stableJson(value(expected, key)))
+  }
+
+  private _hashDedup(statement: string, engrams: Engram[], scope?: string, context?: LearnContext): Engram | null {
     if (!isHashable(statement)) return null
     const hash = computeContentHash(statement)
     for (const e of engrams) {
       if (e.status === 'active' && (e as any).content_hash === hash) {
-        if (scope === undefined || e.scope === scope) return e
+        if ((scope === undefined || e.scope === scope) && this._sameLearnContext(e, statement, context)) return e
       }
     }
     return null
@@ -1958,15 +1952,9 @@ export class Plur {
    */
   setIdentity(identity: string | null): { identity: string; stated: boolean; warning?: string } {
     const value = typeof identity === 'string' ? identity.trim() : ''
-    // An email address is the most natural identity to type and the one that
-    // silently breaks sharing: the export privacy scan flags email addresses,
-    // so every memory attributed this way is dropped from every pack (#999).
-    // Accept it — it is the user's decision — but say so at the moment they
-    // choose it rather than at the first empty export.
+    // Declared email identities are intentionally included in exported packs.
     const warning = value && containsEmail(value)
-      ? `"${value}" is an email address. The pack export privacy scan flags email addresses, so memories `
-        + 'attributed to it are held back from every pack until #999 lands. Prefer a local name '
-        + '(local:yourname) or a DID if you intend to share.'
+      ? 'This email address will be included when attributed memories are exported in packs. Use a public identity if you intend to share.'
       : undefined
     if (warning) logger.warning(`[plur:identity] ${warning}`)
     // Same read-modify-write discipline as every other config mutation here:
@@ -2012,19 +2000,27 @@ export class Plur {
    * Never throws — provenance is a description, and failing to write one must
    * not fail the learn that prompted it.
    */
+  private _afterStoreCommit(callback: () => void): void {
+    if (this._primaryStore.afterCommit) this._primaryStore.afterCommit(callback)
+    else callback()
+  }
+
   private _maybeWriteProvenance(engramId: string): void {
     if (provenanceMode(this.config) !== 'always') return
-    void this.writeProvenance(engramId).catch(err => {
-      logger.warning(`[plur:provenance] could not write a record for ${engramId}: ${(err as Error).message}`)
+    this._afterStoreCommit(() => {
+      void this.writeProvenance(engramId).catch(err => {
+        logger.warning(`[plur:provenance] could not write a record for ${engramId}: ${(err as Error).message}`)
+      })
     })
   }
 
   private _buildSourceEntry(scope: string, context?: LearnContext): {
-    scope: string; session_id: string | null; stored_at: string
+    scope: string; session_id: string | null; stored_at: string; source?: string
   } {
     return {
       scope,
       session_id: context?.session_episode_id ?? null,
+      ...(context?.source !== undefined ? { source: context.source } : {}),
       stored_at: new Date().toISOString(),
     }
   }
@@ -2102,6 +2098,7 @@ export class Plur {
     statement: string,
     engrams: Engram[],
     currentScope: string,
+    context?: LearnContext,
   ): Engram | null {
     // Same guard as `_hashDedup` (#896): an unhashable statement would report
     // every other unhashable statement as the same fact recurring, and this
@@ -2112,7 +2109,7 @@ export class Plur {
     for (const e of engrams) {
       if (e.status === 'active'
           && (e as any).content_hash === hash
-          && e.scope !== currentScope) {
+          && e.scope !== currentScope && this._sameLearnContext(e, statement, context)) {
         return e
       }
     }
@@ -2844,10 +2841,26 @@ export class Plur {
         throw new Error(`Secret detected in statement or context: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
+    validateLearnContext(context)
     return statement
   }
 
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
+    return this._learn(statement, context)
+  }
+
+  /** Import through the canonical learn gates, with metadata present at the
+   * first durable write. Existing duplicates retain their original metadata. */
+  async learnImported(statement: string, context: LearnContext, record: ImportRecord, conflictIds: string[], now: string): Promise<{ engram: Engram; created: boolean }> {
+    let created = false
+    const engram = await this._learn(statement, context, engram => {
+      created = true
+      return applyImportMetadata(engram, record, conflictIds, now) ?? engram
+    })
+    return { engram, created }
+  }
+
+  private async _learn(statement: string, context?: LearnContext, initialize?: (engram: Engram) => Engram): Promise<Engram> {
     this._assertWritable()
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
@@ -2898,10 +2911,16 @@ export class Plur {
       // Unhashable statements skip the store lookup entirely (#896) — the
       // delegated query has the same collapse the in-memory scan does, and
       // this is the branch a Postgres/PGLite install actually takes.
-      const primaryHashMatch = canDelegate && isHashable(statement)
+      let primaryHashMatch = canDelegate && isHashable(statement)
         ? await ps.findActiveByContentHash!(computeContentHash(statement), scope)
         : null
-      const hashMatch = primaryHashMatch ?? this._hashDedup(statement, allEngrams, scope)
+      if (primaryHashMatch && !this._sameLearnContext(primaryHashMatch, statement, context)) {
+        // Older adapters expose only a sentence-hash lookup. A different
+        // context may have another matching row; search those rows before
+        // creating a new record. The normal same-context path stays targeted.
+        primaryHashMatch = this._hashDedup(statement, await ps.load(), scope, context)
+      }
+      const hashMatch = primaryHashMatch ?? this._hashDedup(statement, allEngrams, scope, context)
       if (hashMatch) {
         // `_recordDuplicate` persists only when the hit is IN the array it is
         // given — a match from a secondary store or a pack is counted in
@@ -2928,7 +2947,7 @@ export class Plur {
       // statement becomes its own engram, and a deployment that wants
       // graduation declines the seam and keeps the corpus scan.
       // See `PrimaryStore.findActiveByContentHash`.
-      const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
+      const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope, context)
       // `engrams` is empty under delegation, so `_recordCrossScopeRecurrence`
       // takes its secondary-store branch — which is where every match it can
       // still see actually lives.
@@ -2936,17 +2955,17 @@ export class Plur {
 
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
-        : generateEngramId(allEngrams, this._mintedTodayIds())
-      // Claim it in-process immediately (#816). The history record is written
-      // later and best-effort; without this, two writes in the same tick — or
-      // one whose history append fails — could both take the same suffix.
-      this._rememberMintedId(id)
+        : await this._allocateEngramId(allEngrams)
       const now = new Date().toISOString()
       // One constructor for every write path: `_buildEngramShape` is what the
       // remote route posts, so a field added there is a field added here.
-      const engram: Engram = {
+      let engram: Engram = {
         ...this._buildEngramShape(statement, scope, context, now, validity, id => this._ancestorsOf(engrams, id)),
         id,
+      }
+      if (initialize) {
+        engram = initialize(engram)
+        validateEngramWrite(engram)
       }
 
       // #240: supersedes is a graph edge, not a temporality enum — write the
@@ -3037,70 +3056,13 @@ export class Plur {
         }
         await this._syncIndex()
 
-        // Fire-and-forget: attempt immediate push, clean up on success.
-        //
-        // The push and the local bookkeeping are caught SEPARATELY. Wrapping
-        // both in one try meant a failure while removing the local copy — after
-        // the remote had already accepted the engram — was recorded as a failed
-        // push, so the outbox retried it and the remote ended up with a
-        // duplicate. "The write did not land" and "the write landed but I could
-        // not tidy up" are different facts and must not share a handler.
-        //
-        // The trailing `.catch()` is load-bearing: the error path below itself
-        // awaits a store write, and if THAT throws the IIFE's promise rejects
-        // with nothing attached — an unhandled rejection, which terminates the
-        // process on modern Node. A background task must not be able to take
-        // the host down.
-        void (async () => {
-          let pushed = false
-          try {
-            await remoteDriver.append(engram)
-            pushed = true
-          } catch (err) {
-            // Already saved locally with outbox metadata — will be retried.
-            logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
-            await this._withStoreLock(this.paths.engrams, async () => {
-              // Targeted read (#827): only this engram's outbox bookkeeping.
-              const fresh = await this._loadTargeted([engram.id])
-              const target = fresh.find(e => e.id === engram.id) as any
-              if (target?.structured_data?._outbox) {
-                target.structured_data._outbox.last_error = (err as Error).message
-                target.structured_data._outbox.attempt_count = 1
-                // Incremental write (#740): only the outbox bookkeeping changed.
-                await this._updateEngrams(fresh, [target as Engram])
-              }
-            })
-            return
-          }
-
-          if (!pushed) return
-          // Remote has it. Remove the local copy — and if this fails, say so
-          // rather than re-queueing something already accepted.
-          try {
-            await this._withStoreLock(this.paths.engrams, async () => {
-              // NOT `_loadTargeted` (#827): this REMOVES a row, and the only
-              // removal primitive `PrimaryStore` has is a whole-corpus save of
-              // the array without it. A one-row targeted read here would be a
-              // full replace by an empty array — the corpus, deleted. It stays
-              // a full load until there is a `remove`/`deleteMany` seam.
-              const fresh = await this._primaryStore.load()
-              const idx = fresh.findIndex(e => e.id === engram.id)
-              if (idx !== -1) {
-                fresh.splice(idx, 1)
-                // Deliberate removal: the remote accepted this engram, so the
-                // local copy is redundant by design (audit #794 shrink guard).
-                await this._writeEngrams(this.paths.engrams, fresh, { allowShrink: true })
-                await this._syncIndex()
-              }
-            })
-          } catch (err) {
-            logger.warning(
-              `[plur:outbox] ${engram.id} was accepted by the remote but its local copy could not be removed: `
-              + `${(err as Error).message}. It will be retried, which may create a duplicate on the remote.`,
-            )
-          }
-        })().catch(err => {
-          logger.warning(`[plur:outbox] background push for ${engram.id} failed unexpectedly: ${(err as Error).message}`)
+        // One durable outbox protocol for background sends and explicit
+        // flushes. The upload lock spans the network operation; the corpus
+        // lock only spans local changes, so learning can continue meanwhile.
+        this._afterStoreCommit(() => {
+          void this._flushOutbox(new Set([engram.id])).catch(err => {
+            logger.warning(`[plur:outbox] background flush failed: ${(err as Error).message}`)
+          })
         })
 
         this._appendHistory({
@@ -3254,7 +3216,7 @@ export class Plur {
     // #347: fail fast on malformed valid_from/valid_until (pure validation),
     // mirroring learn() — before dedup can short-circuit the write.
     resolveValidity(statement, context)
-    const remoteDriver = this._resolveRemoteStoreForScope(scope)
+    const remoteDriver = context?.visibility === 'private' ? null : this._resolveRemoteStoreForScope(scope)
     if (!remoteDriver) {
       // Local route — sync learn() owns dedup, build, write, history. learn()'s
       // own guard sees the already-demoted (local) context and no-ops, so the
@@ -3282,7 +3244,7 @@ export class Plur {
     // representation we hand back to the caller. On failure, save to
     // local outbox for retry (issue #26).
     const allEngrams = await this._loadAllEngrams()
-    const hashMatch = this._hashDedup(statement, allEngrams, scope)
+    const hashMatch = this._hashDedup(statement, allEngrams, scope, context)
     if (hashMatch) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
       return await this._withStoreLock(this.paths.engrams, async () => {
@@ -3291,7 +3253,7 @@ export class Plur {
       })
     }
     // #176: cross-scope recurrence (same semantics as the local learn() path).
-    const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
+    const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope, context)
     if (crossMatch) {
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
@@ -3309,9 +3271,10 @@ export class Plur {
       }
     }
     let serverEngram: Engram
+    const requestId = randomUUID()
     try {
-      const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder)
-      serverEngram = { ...localPlaceholder, id: serverId }
+      const { id: serverId, engram: confirmed } = await remoteDriver.appendAndGetServerId(localPlaceholder, requestId)
+      serverEngram = { ...localPlaceholder, ...confirmed, id: serverId }
     } catch (err) {
       // Remote failed — save locally with outbox metadata for retry.
       // Audit iter-1 fix (Dijkstra): defensive lookup; the catch is the
@@ -3322,8 +3285,7 @@ export class Plur {
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
         // Replace placeholder ID with a real local ID
-        localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], this._mintedTodayIds())
-        this._rememberMintedId(localPlaceholder.id)
+        localPlaceholder.id = await this._allocateEngramId([...engrams, ...allEngrams])
         if (storeEntry) {
           ;(localPlaceholder as any).structured_data = {
             ...((localPlaceholder as any).structured_data ?? {}),
@@ -3333,6 +3295,7 @@ export class Plur {
               queued_at: now,
               last_attempt: now,
               attempt_count: 1,
+              request_id: requestId,
               last_error: (err as Error).message,
               // #295: flag auth failures distinctly so the queue isn't read as a
               // transient network blip — a 401/403 means the token needs reauth,
@@ -3522,7 +3485,17 @@ export class Plur {
   /** Build deps for learn-async module. */
   private async _learnAsyncDeps() {
     return {
-      hashDedup: async (statement: string, scope?: string) => this._hashDedup(statement, await this._loadAllEngrams(), scope),
+      prepareLearn: async (statement: string, context?: LearnAsyncContext) => {
+        statement = this._validateLearnInput('learn', statement, context)
+        resolveValidity(statement, context)
+        // An unscoped semantic decision may select any offered local candidate.
+        // ADD uses canonical routing; mutations guard the selected row's scope.
+        return { statement, context }
+      },
+      sameLearnContext: (engram: Engram, statement: string, context?: LearnContext) =>
+        this._sameLearnContext(engram, statement, context)
+        && (context?.source === undefined || context.source === engram.source || Boolean(engram.sources?.some(source => source.source === context.source))),
+      hashDedup: async (statement: string, scope?: string, context?: LearnContext) => this._hashDedup(statement, await this._loadAllEngrams(), scope, context),
       // remote:false (#776) — dedup queries are DERIVED FROM STATEMENTS. With
       // the remote leg on, every plur_learn would fire statement-derived POSTs
       // to all hosts, and a namespaced remote row could silently suppress a
@@ -4175,7 +4148,7 @@ export class Plur {
       if (typeof adapter.listEngramsMissingEmbeddings === 'function') {
         const gap = await adapter.listEngramsMissingEmbeddings(1)
         if (gap.length > 0) {
-          this._kickPrimaryAutoEmbed(adapter)
+          this._afterStoreCommit(() => this._kickPrimaryAutoEmbed(adapter))
           return fallback()
         }
       }
@@ -4363,48 +4336,81 @@ export class Plur {
    * measured three consecutive flushes producing the same unfollowable
    * warning.
    *
-   * Derived state, not truth: losing this file costs a supersedes edge on a
-   * pathological ordering, never an engram. Every read and write is
-   * best-effort for that reason.
+   * This is authoritative retry and relationship state. Keep it outside the
+   * disposable cache directory, include it in local operational backups, and
+   * fail closed if it cannot be read or persisted.
    */
   outboxIdMapPath(): string {
-    return join(this.paths.root, 'cache', 'outbox-id-map.json')
+    return join(this.paths.root, 'state', 'outbox-id-map.json')
   }
 
-  /** Read the persisted local→server map. Never throws; `{}` on any problem. */
-  private _readOutboxIdMap(): Record<string, { server_id: string; url: string; at: number }> {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.outboxIdMapPath(), 'utf8')) as unknown
-      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        return raw as Record<string, { server_id: string; url: string; at: number }>
+  /** A persisted operation key lets an explicit remote move survive an
+   * ambiguous response or a failure retiring its local source. */
+  private async _remoteRequestId(identity: string): Promise<string> {
+    const path = join(this.paths.root, 'state', 'remote-write-requests.json')
+    return withAsyncLock(join(this.paths.root, 'remote-write-requests'), async () => {
+      let entries: Record<string, string> = {}
+      try {
+        const raw: unknown = JSON.parse(fs.readFileSync(path, 'utf8'))
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.entries(raw).some(([k, v]) =>
+          !/^[a-f0-9]{64}$/.test(k) || typeof v !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(v))) {
+          throw new Error('Invalid remote operation journal')
+        }
+        entries = raw as Record<string, string>
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot read durable remote operation journal')
       }
-    } catch { /* absent or corrupt — a cache miss, not an error */ }
-    return {}
+      const key = createHash('sha256').update(identity).digest('hex')
+      if (entries[key]) return entries[key]
+      const requestId = randomUUID()
+      entries[key] = requestId
+      if (fs.mkdirSync(dirname(path), { recursive: true, mode: 0o700 })) fsyncDir(this.paths.root)
+      atomicWrite(path, JSON.stringify(entries), { mode: 0o600 })
+      return requestId
+    })
   }
 
-  /**
-   * Persist local→server mappings recorded during a flush. Never throws.
-   *
-   * Bounded at {@link OUTBOX_ID_MAP_MAX} entries, oldest dropped first: this
-   * grows by one row per remote write forever otherwise, and an unbounded
-   * cache file in the store root is its own defect. Dropping the oldest is
-   * safe because the edges that need it are queued corrections, which are
-   * resolved within a flush or two of the target.
+  /** Read under the outbox-flush lock. Promote a legacy cache before any send;
+   * leave its bytes intact, and never replace newer durable state with it. */
+  private _readOutboxIdMap(): Record<string, { server_id?: string; url: string; at: number; fingerprint?: string; request_id?: string }> {
+    try {
+      let bytes: string
+      let legacy = false
+      try {
+        bytes = fs.readFileSync(this.outboxIdMapPath(), 'utf8')
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+        try {
+          bytes = fs.readFileSync(join(this.paths.root, 'cache', 'outbox-id-map.json'), 'utf8')
+          legacy = true
+        } catch (legacyError) {
+          if ((legacyError as NodeJS.ErrnoException).code === 'ENOENT') return {}
+          throw legacyError
+        }
+      }
+      const raw = JSON.parse(bytes) as unknown
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.values(raw).some(v =>
+        !v || typeof v !== 'object' || (typeof v.server_id !== 'string' && !(v.server_id === undefined && typeof v.request_id === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(v.request_id))) || typeof v.url !== 'string' ||
+        (v.server_id !== undefined && (typeof v.server_id !== 'string' || v.server_id.length === 0 || v.server_id.length > 128 || !/^[\w:./-]+$/.test(v.server_id))) ||
+        (v.request_id !== undefined && (typeof v.request_id !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(v.request_id))) ||
+        typeof v.at !== 'number' || !Number.isFinite(v.at) || (v.fingerprint !== undefined && typeof v.fingerprint !== 'string'))) {
+        throw new Error('Invalid outbox receipt data')
+      }
+      const entries = raw as Record<string, { server_id?: string; url: string; at: number; fingerprint?: string; request_id?: string }>
+      if (legacy) this._writeOutboxIdMap(entries)
+      return entries
+    } catch {
+      throw new Error('Cannot read durable outbox receipts; repair the receipt file before retrying')
+    }
+  }
+
+  /** Durable remote receipts, retained for retry and later relationship repair.
+   * A receipt is authoritative state, so corruption and failed writes must be
+   * visible and old relationships cannot be evicted like a rebuildable cache.
    */
-  private _writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: number }>): void {
-    try {
-      const ids = Object.keys(entries)
-      if (ids.length > OUTBOX_ID_MAP_MAX) {
-        const keep = ids
-          .sort((a, b) => (entries[b].at ?? 0) - (entries[a].at ?? 0))
-          .slice(0, OUTBOX_ID_MAP_MAX)
-        const trimmed: typeof entries = {}
-        for (const id of keep) trimmed[id] = entries[id]
-        entries = trimmed
-      }
-      fs.mkdirSync(dirname(this.outboxIdMapPath()), { recursive: true })
-      fs.writeFileSync(this.outboxIdMapPath(), JSON.stringify(entries), 'utf8')
-    } catch { /* derived state — a failed write must never fail a flush */ }
+  private _writeOutboxIdMap(entries: Record<string, { server_id?: string; url: string; at: number; fingerprint?: string; request_id?: string }>): void {
+    if (fs.mkdirSync(dirname(this.outboxIdMapPath()), { recursive: true, mode: 0o700 })) fsyncDir(this.paths.root)
+    atomicWrite(this.outboxIdMapPath(), JSON.stringify(entries), { mode: 0o600 })
   }
 
   /**
@@ -5518,6 +5524,7 @@ export class Plur {
    */
   async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string): Promise<void> {
     this._assertWritable()
+    if (!['positive', 'negative', 'neutral'].includes(signal)) throw new TypeError('Invalid feedback signal')
 
     if (scope !== undefined && (typeof scope !== 'string' || scope.trim() === '')) {
       throw new TypeError('plur.feedback: scope must be a non-empty string')
@@ -5822,6 +5829,7 @@ export class Plur {
    */
   async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
     this._assertWritable()
+    for (const meta of metas) validateEngramWrite(meta)
     return await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
       const existingIds = new Set(engrams.map(e => e.id))
@@ -5868,6 +5876,7 @@ export class Plur {
           }
         }
         engrams.push(meta)
+        existingIds.add(meta.id)
         saved++
       }
       if (saved > 0) {
@@ -5910,6 +5919,9 @@ export class Plur {
       const engrams = await this._loadTargeted([updated.id])
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
+      // Remote records have a different activation shape; only the local
+      // replacement is required to satisfy the local persistence schema.
+      validateEngramWrite(updated)
       // Leak guard (#353): local-resident → demote a sensitive update in place.
       // LOW-2: scan context fields too, not just the statement.
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
@@ -5988,6 +6000,7 @@ export class Plur {
    */
   async setPinned(id: string, pinned: boolean): Promise<Engram | null> {
     this._assertWritable()
+    if (typeof pinned !== 'boolean') throw new TypeError('pinned must be a boolean')
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.
@@ -6852,10 +6865,12 @@ export class Plur {
       }
       let serverId: string
       try {
-        ;({ id: serverId } = await remoteDriver!.appendAndGetServerId(copy))
+        ;({ id: serverId } = await remoteDriver!.appendAndGetServerId(copy, await this._remoteRequestId(
+          stableJson({ source: id, target, fingerprint: remoteDriver!.appendFingerprint(copy) }),
+        )))
       } catch (err) {
-        // Atomic semantics (#676 constraint 2): the push did not land, so the
-        // source stays exactly as it was. Deliberately NO outbox fallback — an
+        // The remote outcome may be unknown. Preserve the operation key and the
+        // source exactly as it was. An
         // explicit move reports failure instead of becoming a maybe-later.
         const msg = (err as Error).message
         const authHint = /\b40[13]\b/.test(msg)
@@ -7290,7 +7305,7 @@ export class Plur {
     const primary = this._primaryQueryAdapter()
     if (primary && typeof primary.listEngramsMissingEmbeddings === 'function') {
       this._lastIndexError = null // new pass — stale failures cleared on success
-      this._kickPrimaryAutoEmbed(primary)
+      this._afterStoreCommit(() => this._kickPrimaryAutoEmbed(primary))
       return
     }
     if (this.indexedStorage) {
@@ -7602,6 +7617,14 @@ export class Plur {
    * After 7 days: includes warning in expired_warnings.
    */
   async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
+    return this._flushOutbox()
+  }
+
+  private async _flushOutbox(onlyIds?: Set<string>): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
+    return withAsyncLock(join(this.paths.root, 'outbox-flush'), () => this._flushOutboxLocked(onlyIds))
+  }
+
+  private async _flushOutboxLocked(onlyIds?: Set<string>): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
     this._assertWritable()
     const engrams = await this._primaryStore.load()
     // #766: skip retired engrams — a retired engram must not be pushed to the
@@ -7612,6 +7635,20 @@ export class Plur {
       (e as any).structured_data?._outbox && e.status !== 'retired'
     )
     if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
+    // Network awaits invalidate every local snapshot, including the rows we
+    // intend to remove. Compare the original version under the write lock.
+    if (onlyIds) {
+      // Background delivery owns the newly queued row and its prerequisites;
+      // unrelated old failures should not be retried on every new learn.
+      for (let changed = true; changed;) {
+        changed = false
+        for (const e of pending) if (onlyIds.has(e.id)) {
+          for (const id of e.relations?.supersedes ?? []) if (!onlyIds.has(id)) { onlyIds.add(id); changed = true }
+        }
+      }
+      for (let i = pending.length - 1; i >= 0; i--) if (!onlyIds.has(pending[i].id)) pending.splice(i, 1)
+    }
+    const pendingSnapshots = new Map(pending.map(e => [e.id, stableJson(e)]))
 
     // #863: push supersedes TARGETS before the engrams that supersede them.
     //
@@ -7645,11 +7682,10 @@ export class Plur {
      * Seeded from the PERSISTED map so an edge whose target left in an earlier
      * flush still resolves; a mapping is only trusted for the host that
      * produced it, since server ids are per-store. Grown as this flush
-     * proceeds, and written back at the end.
+     * proceeds, and durably written before removing each acknowledged row.
      */
     const persistedIdMap = this._readOutboxIdMap()
     const localToServer = new Map<string, string>()
-    let idMapDirty = false
 
     let flushed = 0
     let failed = 0
@@ -7674,7 +7710,7 @@ export class Plur {
     for (const engram of pending) {
       const outbox = (engram as any).structured_data._outbox as {
         target_url: string; target_scope: string; queued_at: string
-        last_attempt: string; attempt_count: number; last_error: string
+        last_attempt: string; attempt_count: number; last_error: string; request_id?: string
       }
 
       // Check TTL warning
@@ -7796,7 +7832,7 @@ export class Plur {
         let refuse: string | null = null
         for (const t of targets) {
           const server = localToServer.get(t)
-            ?? (persistedIdMap[t]?.url === storeEntry.url ? persistedIdMap[t].server_id : undefined)
+            ?? (persistedIdMap[t] && normalizeEndpointUrl(persistedIdMap[t].url) === normalizeEndpointUrl(storeEntry.url!) ? persistedIdMap[t].server_id : undefined)
           if (server) { remapped.push(server); continue }
           const localTarget = engrams.find(e => e.id === t)
           if (localTarget && !pendingIds.has(t)) {
@@ -7805,6 +7841,16 @@ export class Plur {
               + `represented on ${storeEntry.url} and was dropped from the pushed copy. The local record keeps it.`,
             )
             continue
+          }
+          if (!localTarget && !pendingIds.has(t)) {
+            // A canonical remote ID needs no local receipt, but its spelling
+            // is not proof of ownership. Resolve it on this destination and
+            // require the exact target scope before preserving the edge.
+            const remoteTarget = await driver.getById(t)
+            if (remoteTarget?.id === t && remoteTarget.scope === outbox.target_scope) {
+              remapped.push(t)
+              continue
+            }
           }
           refuse = t
           break
@@ -7824,13 +7870,33 @@ export class Plur {
       }
 
       try {
-        const pushed = await driver.appendAndGetServerId(cleanEngram)
+        const legacyFingerprint = createHash('sha256').update(stableJson({
+          ...engram, structured_data: { ...engram.structured_data, _outbox: undefined },
+        })).digest('hex')
+        const fingerprint = driver.appendFingerprint(cleanEngram)
+        const receipt = persistedIdMap[engram.id]
+        const matches = receipt && normalizeEndpointUrl(receipt.url) === normalizeEndpointUrl(storeEntry.url!)
+          && (receipt.fingerprint === fingerprint || receipt.fingerprint === legacyFingerprint)
+        const requestId = matches && receipt.request_id ? receipt.request_id
+          : !receipt && typeof outbox.request_id === 'string' ? outbox.request_id : randomUUID()
+        let pushed: { id: string }
+        if (matches && receipt.server_id) pushed = { id: receipt.server_id }
+        else {
+          // Persist the operation identity BEFORE sending. A crash, lost
+          // response, or failed receipt write must retry the same operation.
+          persistedIdMap[engram.id] = { url: storeEntry.url!, at: Date.now(), fingerprint, request_id: requestId }
+          this._writeOutboxIdMap(persistedIdMap)
+          pushed = await driver.appendAndGetServerId(cleanEngram, requestId)
+        }
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
         if (pushed?.id) {
           localToServer.set(engram.id, pushed.id)
-          persistedIdMap[engram.id] = { server_id: pushed.id, url: storeEntry.url!, at: Date.now() }
-          idMapDirty = true
+          persistedIdMap[engram.id] = { server_id: pushed.id, url: storeEntry.url!, at: Date.now(), fingerprint, request_id: requestId }
+          // Record the acknowledgement BEFORE removing the only local copy.
+          // A retry after local cleanup failure consumes this receipt and does
+          // not upload again. If the receipt cannot be saved, retain the row.
+          this._writeOutboxIdMap(persistedIdMap)
         }
         // #785: a write success clears the host's failure count for BOTH legs.
         recordWriteOutcome(storeEntry.url!, true, Date.now(), this.remoteHealthStatePath())
@@ -7887,10 +7953,18 @@ export class Plur {
         const fresh = await this._storeAt(this.paths.engrams).load()
         const merged = fresh
           // Drop the ones this flush successfully pushed (remote now owns them).
-          .filter(e => !(consideredIds.has(e.id) && !survivorsById.has(e.id)))
+          .filter(e => {
+            if (!consideredIds.has(e.id) || survivorsById.has(e.id)) return true
+            if (stableJson(e) === pendingSnapshots.get(e.id)) return false
+            expired_warnings.push(`${e.id}: changed during upload; newer local state preserved`)
+            return true
+          })
           .map(e => {
             const survivor = survivorsById.get(e.id)
             if (!survivor) return e
+            // In particular, never put _outbox back after a concurrent cancel,
+            // retirement, or rescope. A retry can reconsider the new state.
+            if (stableJson(e) !== pendingSnapshots.get(e.id)) return e
             const sSd = (survivor as any).structured_data as Record<string, unknown> | undefined
             const fSd = { ...((e as any).structured_data as Record<string, unknown> | undefined ?? {}) }
             // `_outbox` and `_demoted` are the flush's own bookkeeping: copy
@@ -7916,11 +7990,6 @@ export class Plur {
       await this._syncIndex()
     }
 
-    // Persist the id map LAST, and only if something was pushed. Writing it
-    // before the store write-back would leave a mapping for an engram whose
-    // local removal had not landed; writing it unconditionally would rewrite
-    // the file on every no-op flush.
-    if (idMapDirty) this._writeOutboxIdMap(persistedIdMap)
 
     return { flushed, failed, expired_warnings }
   }

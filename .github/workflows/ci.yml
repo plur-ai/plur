@@ -63,7 +63,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Tags, so packages/migrate/test/method-list.test.ts can read the
           # 0.15.0 source and actually verify its sync -> async claim. Without
@@ -71,13 +71,14 @@ jobs:
           # vacuously — which is how a wrong claim about the past reached the
           # CHANGELOG in the first place.
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
+      - run: python3 scripts/check-workflow-pins.py
       - run: pnpm install --frozen-lockfile
       - run: git config --global user.email "ci@plur.ai"
       - run: git config --global user.name "PLUR CI"
@@ -199,7 +200,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history: the comparison below needs the PR base commit, which a
           # shallow clone does not have.
@@ -233,13 +234,13 @@ jobs:
             echo "SKIPPING: no change to the embedder, the enrichment fields, or the bar."
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         if: steps.relevant.outputs.run == 'true'
         with:
           # Required: package.json carries no `packageManager` key, so the
           # action cannot infer it. Same pin as the other two jobs.
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.relevant.outputs.run == 'true'
         with:
           node-version: 22
@@ -271,7 +272,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history so this job builds the same artefacts a release build
           # would see (release.sh runs from a full clone with tags). The
@@ -279,10 +280,10 @@ jobs:
           # apply here — this job never runs vitest; the comment used to be a
           # copy-paste of that one, claiming a reason that was not this job's.
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm

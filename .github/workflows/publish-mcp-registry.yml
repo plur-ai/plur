@@ -19,7 +19,7 @@ jobs:
       contents: read
       id-token: write          # required for GitHub OIDC auth to the registry
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Sync server.json version to the release tag
         run: |
@@ -38,10 +38,13 @@ jobs:
 
       - name: Install mcp-publisher
         run: |
-          url=$(curl -s https://api.github.com/repos/modelcontextprotocol/registry/releases/latest \
-            | grep -o '"browser_download_url": *"[^"]*linux_amd64.tar.gz"' | head -1 | cut -d'"' -f4)
-          echo "Downloading $url"
-          curl -L "$url" | tar xz mcp-publisher
+          # Immutable release and digest, verified from the upstream release.
+          curl --fail --show-error --silent --location --proto '=https' --max-time 60 \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz \
+            --output mcp-publisher.tar.gz
+          echo 'a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz' > mcp-publisher.sha256
+          sha256sum --check --strict mcp-publisher.sha256
+          tar xzf mcp-publisher.tar.gz mcp-publisher
           chmod +x mcp-publisher
 
       - name: Login (GitHub OIDC) and publish

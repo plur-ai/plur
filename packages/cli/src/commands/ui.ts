@@ -19,7 +19,7 @@ function openBrowser(url: string): void {
   try {
     // Detached and fully ignored: a browser that writes to our stdout would
     // corrupt --json output, and one that outlives us must not hold the pipe.
-    spawn(command, args, { stdio: 'ignore', detached: true }).unref()
+    spawn(command, args, { stdio: 'ignore', detached: true }).on('error', () => { /* optional desktop integration unavailable */ }).unref()
   } catch {
     // A headless box has no browser. The URL is printed either way.
   }

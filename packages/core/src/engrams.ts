@@ -639,8 +639,8 @@ export function engramIdDatePrefix(now: Date = new Date()): string {
   return `ENG-${now.toISOString().slice(0, 10)}-`
 }
 
-export function generateEngramId(existing: Engram[], alsoAllocated: Iterable<string> = []): string {
-  const day = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
+export function generateEngramId(existing: Engram[], alsoAllocated: Iterable<string> = [], now: Date = new Date()): string {
+  const day = now.toISOString().slice(0, 10) // YYYY-MM-DD
   const prefix = `ENG-${day}-`
   // Legacy compact form minted by earlier releases: ENG-YYYYMMDD → ENG-YYYY-MMDD-
   const legacyPrefix = `ENG-${day.slice(0, 4)}-${day.slice(5, 7)}${day.slice(8, 10)}-`
@@ -672,5 +672,6 @@ export function generateEngramId(existing: Engram[], alsoAllocated: Iterable<str
     const n = suffixOf(id)
     if (n !== null && n > max) max = n
   }
+  if (!Number.isSafeInteger(max + 1)) throw new Error('Engram ID allocation sequence is exhausted')
   return `${prefix}${String(max + 1).padStart(3, '0')}`
 }

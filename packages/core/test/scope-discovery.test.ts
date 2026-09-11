@@ -475,6 +475,7 @@ describe('endpoint URL identity normalization (scope-audit 2026-07-24)', () => {
     expect(normalizeEndpointUrl('https://x.com/')).toBe('https://x.com')
     expect(normalizeEndpointUrl('https://x.com/sse')).toBe('https://x.com')
     expect(normalizeEndpointUrl('https://x.com/sse/')).toBe('https://x.com')
+    expect(normalizeEndpointUrl('https://X.com:443/sse/')).toBe('https://x.com')
     // A genuine path prefix is NOT a spelling variant — must stay distinct.
     expect(normalizeEndpointUrl('https://x.com/api')).toBe('https://x.com/api')
     expect(normalizeEndpointUrl('https://x.com/ssex')).toBe('https://x.com/ssex')

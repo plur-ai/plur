@@ -5,8 +5,7 @@ from typing import Any, Optional
 
 from langchain_core.memory import BaseMemory  # type: ignore[import]
 
-from ._utils import inject_to_text, make_bridge
-from .learner import extract_learning_patterns
+from ._utils import inject_to_text, learn_from_text, make_bridge, message_text
 
 
 class PlurMemory(BaseMemory):
@@ -43,8 +42,8 @@ class PlurMemory(BaseMemory):
         return [self.memory_key]
 
     def load_memory_variables(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        task = inputs.get(self.input_key, "") or " ".join(str(v) for v in inputs.values())
-        context = inject_to_text(self._bridge, str(task), budget=self.inject_budget)
+        task = message_text(inputs.get(self.input_key, "")) or " ".join(message_text(v) for v in inputs.values())
+        context = inject_to_text(self._bridge, task, budget=self.inject_budget)
         if not context:
             return {self.memory_key: ""}
         return {self.memory_key: f"[Relevant memory]\n{context}"}
@@ -52,19 +51,13 @@ class PlurMemory(BaseMemory):
     def save_context(self, inputs: dict[str, Any], outputs: dict[str, Any]) -> None:
         if not self.auto_learn:
             return
-        response = outputs.get(self.output_key, "") or " ".join(str(v) for v in outputs.values())
+        response = message_text(outputs.get(self.output_key, "")) or " ".join(message_text(v) for v in outputs.values())
         if not response:
             return
-        learnings = extract_learning_patterns(str(response))
-        for statement in learnings:
-            try:
-                self._bridge.learn(
-                    statement,
-                    source="langchain:PlurMemory",
-                    rationale="Auto-extracted from LangChain chain output",
-                )
-            except Exception:
-                pass
+        learn_from_text(
+            self._bridge, response, source="langchain:PlurMemory",
+            rationale="Auto-extracted from LangChain chain output",
+        )
 
     def clear(self) -> None:
         pass

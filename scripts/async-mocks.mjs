@@ -23,6 +23,7 @@
  * Usage: node scripts/async-mocks.mjs --members a,b,c <root...> [--dry]
  */
 import * as fs from 'fs'
+import { replaceSource } from '../packages/migrate/src/files.js'
 import * as path from 'path'
 
 const args = process.argv.slice(2)
@@ -63,7 +64,7 @@ for (const root of roots) {
       hits++
       return `${indent}async ${name}${rest}`
     })
-    if (out !== src) { files++; if (!DRY) fs.writeFileSync(f, out) }
+    if (out !== src) { files++; if (!DRY) replaceSource(f, src, out) }
   }
 }
 console.log(`${DRY ? '[dry] ' : ''}made ${hits} member(s) async across ${files} file(s)`)

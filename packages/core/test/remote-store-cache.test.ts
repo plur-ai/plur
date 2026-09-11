@@ -34,7 +34,7 @@ describe('RemoteStore — optimistic cache insert (issue #89)', () => {
       if (method === 'POST') {
         return {
           ok: true, status: 201,
-          json: async () => ({ id: 'ENG-SERVER-001' }),
+          json: async () => ({ id: 'ENG-SERVER-001', scope: 'user:plur:tester', status: 'active', statement: 'optimistic insert test', type: 'behavioral' }),
           text: async () => '',
         } as Response
       }

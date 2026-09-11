@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { atomicWrite } from '@plur-ai/core'
+import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 
 /**
@@ -118,5 +119,5 @@ export function readAgyHooksConfig(path: string): AgyHooksConfig {
 
 export function writeAgyHooksConfig(path: string, config: AgyHooksConfig): void {
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(config, null, 2) + '\n')
+  atomicWrite(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
 }

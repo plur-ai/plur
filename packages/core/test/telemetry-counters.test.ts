@@ -153,13 +153,11 @@ describe('telemetry counters (#51 slice D-2a)', () => {
     })
   })
 
-  it('env-on malformed counters file: parse-fails treated as missing, fresh write', () => {
+  it('env-on malformed counters file: refuses and preserves the existing bytes', () => {
     writeFileSync(countersPath, '{ this is not json')
     const fixedNow = () => new Date('2026-05-02T18:00:00Z')
-    recordEvent('learn', onOpts({ now: fixedNow }))
-
-    const counters = JSON.parse(readFileSync(countersPath, 'utf8'))
-    expect(counters).toEqual({ date: '2026-05-02', learn: 1, recall: 0, session: 1 })
+    expect(() => recordEvent('learn', onOpts({ now: fixedNow }))).toThrow(/existing data preserved/)
+    expect(readFileSync(countersPath, 'utf8')).toBe('{ this is not json')
   })
 
   it('env-on install-id stable across recordEvent calls', () => {

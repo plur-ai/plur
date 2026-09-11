@@ -47,8 +47,14 @@ def test_target_exposes_register():
     )
 
 
-def test_register_registers_a_provider():
+def test_register_registers_a_provider(monkeypatch, tmp_path):
     """Mimics Hermes' _ProviderCollector: register_memory_provider() just assigns."""
+    from plur_hermes.bridge import PlurBridge
+    # Discovery must not execute an installed CLI against the developer's
+    # personal store or contact configured remote services. CLI roundtrips
+    # have separate tests; this one exercises real entry-point registration.
+    monkeypatch.setenv("PLUR_PATH", str(tmp_path))
+    monkeypatch.setattr(PlurBridge, "status", lambda self: {"engram_count": 0})
     class Collector:
         def __init__(self):
             self.provider = None

@@ -141,19 +141,9 @@ describe('attribution is an identity, not a leaked credential', () => {
     expect(result.engram_count).toBe(1)
   })
 
-  it.fails('exports a memory attributed by an email address', () => {
-    // KNOWN BUG, deliberately recorded as failing rather than deleted (#999).
-    //
-    // An email in `asserted_by` trips the privacy scan twice — as a web address
-    // carrying a password, and as personal information — so the engram is
-    // dropped from every pack. Two reviewers called this the reason not to
-    // ship: naming a colleague is the most natural provenance act the tool
-    // offers, and it makes the memory unshareable.
-    //
-    // I fixed it once by exempting the whole attribution block from the scan,
-    // and a reviewer walked a GitHub token through the hole within the hour.
-    // That was worse: a usability bug is loud, a silent credential channel is
-    // not. Reverted, and the narrow fix is designed in #999.
+  it('exports a memory attributed by an email address', () => {
+    // A declared email identity is shareable; credentials anywhere in the
+    // attribution block are still forbidden (including in the email value).
     const result = exportPack([engram({ attribution: { asserted_by: 'alice@acme.example' } })], dir,
       { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
     expect(result.engram_count).toBe(1)
@@ -174,6 +164,19 @@ describe('attribution is an identity, not a leaked credential', () => {
       rationale: 'we found AKIAIOSFODNN7EXAMPLE in the old config',
     })], dir, { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
     expect(result.engram_count).toBe(0)
+  })
+
+  it.each(['AKIAIOSFODNN7EXAMPLE@acme.example', 'alice@acme.example AWS=AKIAIOSFODNN7EXAMPLE'])('does not disguise credentials as declared email identity: %s', who => {
+    expect(exportPack([engram({ attribution: { asserted_by: who } })], dir,
+      { name: 'p', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(0)
+  })
+
+  it('exports and previews a declared email while keeping adjacent fields scanned', async () => {
+    exportPack([engram({ attribution: { asserted_by: 'alice@acme.example' } })], dir,
+      { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
+    expect((await previewPack(dir)).security.clean).toBe(true)
+    expect(exportPack([{ ...engram({}), attribution: { asserted_by: 'alice@acme.example', extra: 'AKIAIOSFODNN7EXAMPLE' } } as any], dir,
+      { name: 'p', version: '1.0.0', license: 'cc-by-4.0' }).engram_count).toBe(0)
   })
 })
 
@@ -302,6 +305,14 @@ describe('files the scan cannot read block the install rather than slipping past
     const { security } = await previewPack(dir)
     expect(security.clean).toBe(false)
     expect(security.issues.some(i => i.engram_id === 'long.md' && /scan_truncated/.test(i.detail))).toBe(true)
+  })
+
+  it('adding a NUL byte cannot hide an oversized unscanned tail', async () => {
+    writeFileSync(join(dir, 'binary.md'), '\0' + 'x'.repeat(1024 * 1024 + 10) + `\n${AWS}\n`)
+    const { security } = await previewPack(dir)
+    expect(security.clean).toBe(false)
+    expect(security.issues.some(i => i.engram_id === 'binary.md' && /scan_truncated/.test(i.detail))).toBe(true)
+    await expect(installPack(packs, dir)).rejects.toThrow()
   })
 
   it.skipIf(process.platform === 'win32')('flags a special file, and install refuses it', async () => {

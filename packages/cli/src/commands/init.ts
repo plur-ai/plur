@@ -1,3 +1,4 @@
+import { updateProjectConfig, atomicWrite } from '@plur-ai/core'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join, dirname } from 'path'
@@ -524,12 +525,7 @@ function installProjectConfig(args: string[]): string | null {
   if (!domain && !scope) return null
 
   const configPath = join(process.cwd(), '.plur.yaml')
-  const lines: string[] = ['# PLUR project defaults — read by hooks for automatic scoping']
-  if (domain) lines.push(`domain: ${domain}`)
-  if (scope) lines.push(`scope: ${scope}`)
-  lines.push('')
-
-  writeFileSync(configPath, lines.join('\n'))
+  updateProjectConfig(configPath, { ...(domain ? { domain } : {}), ...(scope ? { scope } : {}) })
   return configPath
 }
 
@@ -1035,7 +1031,7 @@ function installAntigravity(cmd: string): string {
 
 function writeSettings(path: string, settings: Settings): void {
   mkdirSync(join(path, '..'), { recursive: true })
-  writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
+  atomicWrite(path, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
 }
 
 // ── Telemetry opt-in prompt ─────────────────────────────────────────────────
@@ -1052,7 +1048,7 @@ function telemetryConfigPath(): string {
 function writeTelemetryConfig(enabled: boolean, configPath?: string): void {
   const target = configPath ?? telemetryConfigPath()
   mkdirSync(dirname(target), { recursive: true })
-  writeFileSync(target, JSON.stringify({ enabled }, null, 2) + '\n')
+  atomicWrite(target, JSON.stringify({ enabled }, null, 2) + '\n', { mode: 0o600 })
 }
 
 /**

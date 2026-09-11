@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from typing import Any, List, Sequence
+from threading import RLock
 
 from langchain_core.chat_history import BaseChatMessageHistory  # type: ignore[import]
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage  # type: ignore[import]
 
-from ._utils import inject_to_text, make_bridge
-from .learner import extract_learning_patterns
+from ._utils import inject_to_text, learn_from_text, make_bridge, message_text
 
 
 class PlurChatMessageHistory(BaseChatMessageHistory):
@@ -41,43 +41,54 @@ class PlurChatMessageHistory(BaseChatMessageHistory):
         self.inject_budget = inject_budget
         self.auto_learn = auto_learn
         self._bridge = make_bridge(plur_path)
+        self._lock = RLock()
         self._messages: list[BaseMessage] = []
         self._last_human_input: str = ""
 
     @property
     def messages(self) -> list[BaseMessage]:
-        if not self._last_human_input:
-            return list(self._messages)
-        context = inject_to_text(self._bridge, self._last_human_input, budget=self.inject_budget)
+        with self._lock:
+            last_input = self._last_human_input
+            snapshot = list(self._messages)
+        if not last_input:
+            return snapshot
+        context = inject_to_text(self._bridge, last_input, budget=self.inject_budget)
         if not context:
-            return list(self._messages)
+            return snapshot
         system_msg = SystemMessage(content=f"[Relevant memory]\n{context}")
-        return [system_msg] + list(self._messages)
+        return [system_msg] + snapshot
 
     def add_message(self, message: BaseMessage) -> None:
-        from langchain_core.messages import HumanMessage  # type: ignore[import]
-        if isinstance(message, HumanMessage):
-            self._last_human_input = message.content or ""
-        elif isinstance(message, AIMessage) and self.auto_learn:
-            self._learn_from_ai(str(message.content or ""))
-        self._messages.append(message)
+        self.add_messages([message])
 
     def add_messages(self, messages: Sequence[BaseMessage]) -> None:
-        for message in messages:
-            self.add_message(message)
+        from langchain_core.messages import HumanMessage  # type: ignore[import]
+        batch = list(messages)
+        last_input = None
+        learning_texts = []
+        for message in batch:
+            if not isinstance(message, BaseMessage):
+                raise TypeError("Chat history requires BaseMessage instances")
+            if isinstance(message, HumanMessage):
+                last_input = message_text(message)
+            elif isinstance(message, AIMessage) and self.auto_learn:
+                learning_texts.append(message_text(message))
+        # Complete fallible work before committing transcript state. Successful
+        # learn calls are individually durable; PLUR deduplicates them on retry.
+        for text in learning_texts:
+            self._learn_from_ai(text)
+        with self._lock:
+            self._messages.extend(batch)
+            if last_input is not None:
+                self._last_human_input = last_input
 
     def _learn_from_ai(self, text: str) -> None:
-        learnings = extract_learning_patterns(text)
-        for statement in learnings:
-            try:
-                self._bridge.learn(
-                    statement,
-                    source="langchain:PlurChatMessageHistory",
-                    rationale="Auto-extracted from LangChain AI message",
-                )
-            except Exception:
-                pass
+        learn_from_text(
+            self._bridge, text, source="langchain:PlurChatMessageHistory",
+            rationale="Auto-extracted from LangChain AI message",
+        )
 
     def clear(self) -> None:
-        self._messages.clear()
-        self._last_human_input = ""
+        with self._lock:
+            self._messages.clear()
+            self._last_human_input = ""

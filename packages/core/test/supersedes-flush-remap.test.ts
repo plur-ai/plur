@@ -23,6 +23,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
+import { recordWriteOutcome } from '../src/remote-recall.js'
 
 const REMOTE = 'https://plur.example.com/sse'
 const SCOPE = 'group:acme/team'
@@ -191,6 +192,9 @@ describe('supersedes ordering for chains and across flushes (#863 follow-up)', (
 
   const down = () => { globalThis.fetch = vi.fn(async () => { throw new Error('fetch failed') }) as never }
   const up = () => {
+    // Background sends now feed the same breaker as explicit flushes. This
+    // fixture transitions the host to reachable before testing edge remapping.
+    recordWriteOutcome(REMOTE, true, Date.now(), join(dir, 'cache', 'remote-health.json'))
     const res = (status: number, body: unknown): Response => ({
       ok: true, status,
       json: async (): Promise<unknown> => body,

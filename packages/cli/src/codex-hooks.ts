@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { atomicWrite } from '@plur-ai/core'
+import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 
 /**
@@ -192,5 +193,5 @@ export function writeCodexHooksConfig(path: string, config: CodexHooksConfig): v
     description: config.description
       ?? 'Hook configuration (PLUR memory hooks managed by `plur init --codex`)',
   }
-  writeFileSync(path, JSON.stringify(out, null, 2) + '\n')
+  atomicWrite(path, JSON.stringify(out, null, 2) + '\n', { mode: 0o600 })
 }

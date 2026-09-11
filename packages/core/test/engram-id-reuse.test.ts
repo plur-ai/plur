@@ -19,14 +19,15 @@
  * so an incomplete log degrades to the old behaviour and can never manufacture
  * a collision the old behaviour would have avoided.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync } from 'fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import { generateEngramId } from '../src/engrams.js'
 import { mintedIdsWithPrefix, readHistoryForEngram } from '../src/history.js'
 import type { Engram } from '../src/schemas/engram.js'
+import * as syncFiles from '../src/sync.js'
 
 describe('engram ids are never reused after compaction (#816)', () => {
   let dir: string
@@ -108,6 +109,50 @@ describe('engram ids are never reused after compaction (#816)', () => {
       plur.learn('the other of two simultaneous facts', { scope: 'global', type: 'behavioral' }),
     ])
     expect(x.id).not.toBe(y.id)
+  })
+
+  it('does not reuse an ID created and compacted by another instance after its cache was filled', async () => {
+    const first = await plur.learn('Initial allocator cache seed', { scope: 'global' })
+    const other = new Plur({ path: dir, autoDiscover: false }); await other.ready()
+    const removed = await other.learn('Independent temporary record', { scope: 'global' })
+    await other.forget(removed.id, 'remove after independent allocation', { scope: 'primary', force: true })
+    await other.compact()
+    const next = await plur.learn('Distinct later record from stale allocator', { scope: 'global' })
+    expect(new Set([first.id, removed.id, next.id]).size).toBe(3)
+  })
+
+  it('preserves allocations through restart after history loss and compaction', async () => {
+    const removed = await plur.learn('An identity that must not be recycled', { scope: 'global' })
+    await plur.forget(removed.id, 'removed', { scope: 'primary', force: true })
+    await plur.compact()
+    rmSync(join(dir, 'history'), { recursive: true, force: true })
+    const restarted = new Plur({ path: dir, autoDiscover: false }); await restarted.ready()
+    const next = await restarted.learn('A new identity after diagnostic history loss', { scope: 'global' })
+    expect(next.id).not.toBe(removed.id)
+  })
+
+  it('fails closed on corrupt durable allocation state without changing the corpus', async () => {
+    const first = await plur.learn('A record before allocation state corruption', { scope: 'global' })
+    const allocations = join(dir, 'state', 'id-allocations')
+    mkdirSync(allocations, { recursive: true })
+    writeFileSync(join(allocations, `${new Date().toISOString().slice(0, 10)}.json`), '{broken')
+    const before = await plur.getById(first.id)
+    await expect(plur.learn('Must not be saved without an allocation', { scope: 'global' })).rejects.toThrow('allocation')
+    expect(await plur.getById(first.id)).toEqual(before)
+  })
+
+  it('does not publish a record when its reservation cannot be persisted', async () => {
+    await plur.ready()
+    const before = await plur.list()
+    const original = syncFiles.atomicWrite
+    const fault = vi.spyOn(syncFiles, 'atomicWrite').mockImplementation((path, data, options) => {
+      if (path.includes('id-allocations')) throw new Error('injected allocation disk failure')
+      return original(path, data, options)
+    })
+    try {
+      await expect(plur.learn('A record whose allocation cannot persist', { scope: 'global' })).rejects.toThrow('allocation disk failure')
+      expect(await plur.list()).toEqual(before)
+    } finally { fault.mockRestore() }
   })
 
   describe('the allocator itself', () => {

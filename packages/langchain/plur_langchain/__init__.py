@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from .chat_history import PlurChatMessageHistory
 from .memory import PlurMemory
+from ._utils import PlurMemoryError
 
 __version__ = "0.10.0"
-__all__ = ["PlurMemory", "PlurChatMessageHistory", "__version__"]
+__all__ = ["PlurMemory", "PlurChatMessageHistory", "PlurMemoryError", "__version__"]
