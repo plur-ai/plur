@@ -401,6 +401,14 @@ describe('getCandidatePairs', () => {
     expect(getCandidatePairs([a, b], { now: '2026-09-07' })).toHaveLength(1)
   })
 
+  it('fails fast when options.now is unparseable (#1166)', () => {
+    // A caller-provided now parameter with a typo must throw rather than
+    // silently answering as of the present moment.
+    const a = makeEngram({ id: 'E1', statement: 'plur search uses BM25.', scope: 'global' })
+    const b = makeEngram({ id: 'E2', statement: 'plur search uses embeddings.', scope: 'global' })
+    expect(() => getCandidatePairs([a, b], { now: 'not-a-date' })).toThrow(RangeError)
+  })
+
   it('skips inactive engrams', () => {
     const a = makeEngram({ id: 'E1', statement: 'plur search uses BM25.', scope: 'global' })
     const b = makeEngram({ id: 'E2', statement: 'plur search uses embeddings.', scope: 'global', status: 'retired' as any })

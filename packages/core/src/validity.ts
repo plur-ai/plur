@@ -159,18 +159,28 @@ export function isCurrentlyValid(temporal: Temporal, nowMs: number): boolean {
 /**
  * Interpret an "evaluate as of" parameter as an instant.
  *
- * Callers that expose a `now` option take a `YYYY-MM-DD` string. A whole day is
- * not an instant, so it has to be resolved to one, and the END of the day is
- * the resolution that preserves existing behaviour: under the old lexical
- * comparison a date-only `valid_until` equal to `now` was NOT expired (the
- * strings compared equal), which is the same answer end-of-day gives. Resolving
- * to midnight instead would expire everything a day early.
+ * Callers that expose a `now` option take a `YYYY-MM-DD` string or an RFC 3339
+ * instant. A whole day is not an instant, so it has to be resolved to one, and
+ * the END of the day is the resolution that preserves existing behaviour:
+ * under the old lexical comparison a date-only `valid_until` equal to `now` was
+ * NOT expired (the strings compared equal), which is the same answer end-of-day
+ * gives. Resolving to midnight instead would expire everything a day early.
+ *
+ * The sibling functions treat an unparseable bound as ABSENT, because stored
+ * engrams have their fields validated by `TemporalSchema` and hiding content
+ * over a data error is the worse outcome. A caller-supplied evaluation instant
+ * is not that case: it is an explicit argument, so an unparseable value throws
+ * a `RangeError` rather than silently answering as of the present moment (#1166).
  *
  * @param now - `YYYY-MM-DD`, or an RFC 3339 instant, or nothing for the
  *   current moment.
+ * @throws {RangeError} When `now` is provided but cannot be parsed as a date or instant.
  */
 export function evaluationInstant(now?: string): number {
   if (!now) return Date.now()
   const ms = closesAt(now)
-  return ms === null ? Date.now() : ms
+  if (ms === null) {
+    throw new RangeError(`Unparseable evaluation instant: "${now}". Expected YYYY-MM-DD or an RFC 3339 timestamp.`)
+  }
+  return ms
 }
