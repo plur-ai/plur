@@ -1,8 +1,45 @@
 # Changelog
 
-## Unreleased
+## 0.20.0
 
-**Nothing is silently dropped.**
+**The engram-authoring skill now reaches the people who install PLUR.**
+
+`skills/plur-create-engrams/` has existed, been maintained, and been
+version-stamped by the release script on every release — while shipping to
+nobody. Two independent gaps, each invisible on its own:
+
+- `packages/cli/package.json` declares `files: ["dist"]`, and `skills/` lives at
+  the **repo root**. `files[]` is package-relative, so no manifest entry could
+  ever have reached it — adding `"skills"` there ships nothing at all.
+- `plur init` had no skill-installation leg. Its single `Skill` reference is a
+  `PreToolUse` matcher that fires *when* a skill is invoked, which is a different
+  thing, and reads as coverage at a glance.
+
+So `npm install -g @plur-ai/cli` delivered no engram-authoring guidance, and the
+version bump each release made it look shipped. Engram quality degraded
+accordingly — the guidance that says what earns a place in memory, and how to
+write a statement, rationale and boundary that still make sense months later, was
+not present when engrams were being written.
+
+Both halves are closed (#1190):
+
+- **The build copies the skill tree into `dist/`**, which `files: ["dist"]`
+  already ships. All of it travels — `SKILL.md` plus the `references/` the skill
+  tells the agent to read before serialising, which are the part that actually
+  carries the format.
+- **`plur init` installs them** to `skills/` beside the `settings.json` it is
+  already writing, so it follows init's existing scope choice: `--global` lands
+  in `~/.claude/skills/`, project mode in `./.claude/skills/`. No new flag. The
+  leg is idempotent, is contained like the harness legs so an unwritable
+  directory cannot abort the hooks and MCP registration, and says so when it
+  overwrites a skill you had changed locally rather than clobbering in silence.
+- **Tests hold both halves down** — that the built package contains the tree, and
+  that `init` lands it, re-runs clean, and reports an overwrite. They fail if
+  either half is removed.
+
+`plur-memory` and `plur-session-end` ride the same path and are installed too.
+
+### Nothing is silently dropped
 
 An injection payload is read head-first. Until now it led with `DIRECTIVES` —
 process hygiene — and placed `CONSTRAINTS`, the prohibitions, behind it; under
@@ -10,7 +47,7 @@ budget pressure it then shed `CONSTRAINTS` *first*, and a test enforced that
 order. Measured on a real store, the constraints section began 35,260 characters
 in, behind 34 directive engrams: far enough that any partially-read payload
 reliably contained none of it. The ordering is inverted, and the guarantee with
-it.
+it (#1138).
 
 - **`CONSTRAINTS` is emitted first, and is never dropped in silence.** In the
   dsh block, where whole sections are shed, constraints are the last section
@@ -34,6 +71,11 @@ it.
 - **Engrams that a budget omitted are named.** `inject()` returns
   `omitted_pinned`: each id, its cost, and whether it lost to the pinned
   sub-budget or to the total.
+- **A pinned engram cannot be displaced by an installed pack.** `pinned` bypasses
+  the relevance gate, so pinned rows are ranked by origin — your primary store
+  first, then `stores:`/remote, then packs — reading loader-stamped markers so a
+  row cannot claim an origin it does not have. Once a pin is skipped for budget,
+  no lower-origin pin is admitted behind it.
 - **`created_at` and `updated_at` carry provenance.** Both optional and never
   defaulted — absent means genuinely unknown, and synthesising a timestamp
   destroys the record it exists to keep.
@@ -45,26 +87,24 @@ it.
 - **`.plur.yaml`'s `domain` is honoured and surfaced at session start** (#1147),
   so an engram written inside a project routes by that project's domain instead
   of falling to `global`.
+- **Spreading-activation drop counters are instrumented** (#1113), so what the
+  activation pass discards is measurable rather than inferred.
 
-Also in this release:
+### The pack format, specified and independently checkable
 
-- **`plur ui --host` keeps its DNS-rebinding check on a widened bind** (#939,
-  #946). The flag used to switch the check off, leaving the store reachable under
-  any `Host` header a browser could be induced to send. The allowlist is widened
-  instead: the literal `--host` value is allowed, IPv6 URLs are bracketed, a
-  flag-shaped or unspecified host is refused, and `--allow-host` covers what the
-  default policy should not.
-- **Tensions skips pairs measured under differing configurations** (#869, #981).
-  Two measurements taken under different conditions are not a contradiction.
-  Known gaps remain tracked in #1008 and #1009.
-- **Recall returns ids that `plur forget` accepts** (#1119, #1122). Namespaced
-  ids were displayed but not operable, and the CLI aborted before any remote
-  dispatch could happen. Thanks to
-  **[@amasen02](https://github.com/amasen02)** (Ama Senevirathne) for this, their
-  first contribution to PLUR.
-- **A monthly canary runs the plur-hermes suite against the published
-  hermes-agent** (#1120), so an upstream break arrives as a deduplicated issue
-  rather than as silent drift.
+- **Conformance vectors: golden packs and capsule fixtures** (#1022, #1043).
+  Thirteen golden pack vectors and thirteen capsule fixtures, with
+  `spec/vectors/verify.py` — a checker written in
+  nothing but the Python standard library, so a third party can run it against
+  their own producer's output and get the same answers the reference does. Every
+  vector asserts its outcome, and three gates keep it honest (#1043 review): the
+  declarations in `index.json` are checked against the fixture bytes, so a count
+  edited by hand or a fixture that no longer shows what it claims is a failure,
+  not a note. Capsule fixtures are checked by size and SHA-256, catching a binary
+  edit that review could not see. The fixtures are committed and the gate can no
+  longer be skipped (#1022).
+- **The pack lifecycle is specified** (#1044) — how an engram changes, and what
+  provenance means on import.
 
 Pack lifecycle, from the review of #1044 (ENGRAM-STANDARD-v1 1.7, provenance
 profile 0.9):
@@ -131,15 +171,164 @@ Second review round on the same branch:
   chain, so a field called `constructor`, `toString`, `valueOf` or
   `hasOwnProperty` was dropped by the one path that rewrites a manifest. The
   CLI's licence-source table had the mirror problem and is now a `Map`.
+- **A licence source the table does not know prints as unrecognised, never
+  verbatim** (#1044 review).
 
-Architecture audit (2026-09-03, `docs/audits/2026-09-03-architecture-audit.md`):
-fewer mechanisms, one drift bug fixed, no feature changes.
+### Provenance — experimental, and off by default
+
+**Where an engram came from.** Present in 0.20 but dormant: record generation
+defaults to `never`, every CLI flag is opt-in, and `plur_provenance` sits behind
+`plur_admin` rather than in the lean tool surface. The profile itself is version
+0.9 (draft) and **OPTIONAL** — an implementation that ignores it is still fully
+conformant to the Engram Standard. Treat it as experimental; it is not the
+headline of this release.
+
+Two parts of it are **not** dormant, and are behaviour changes:
+
+- **`plur packs export` now refuses to run without a chosen licence.** Previously
+  the schema filled in a share-alike grant nobody agreed to. This breaks any
+  script that exports a pack without `--license`.
+- **A credential in `rationale`, `source`, an anchor snippet or `attribution` is
+  refused at write time even at local scope** (`allow_secrets` still overrides).
+  The leak guard used to read a hand-kept field list that had drifted three times.
+
+The rest only acts when you turn it on.
+
+A memory that cannot say where it came from is a rumour. Until now PLUR stored
+statements and nothing else: who asserted a thing, whether a person said it or a
+model inferred it, what it was drawn from, and whether you are allowed to reuse
+it were all unrecorded. 0.20 records them, and writes the record in a format
+other software can read — JSON-LD using [W3C PROV](https://www.w3.org/TR/prov-o/),
+so a tool that has never heard of PLUR can still read it.
+
+A provenance record answers five questions about one engram: who made it, how,
+when, what it came from, and whether you may reuse it. **It does not say the
+statement is true** — it says where the statement came from, and those are
+different things. Leave a field out and the record says so rather than guessing.
+
+- **Record it as you learn** (#959, #960). `plur learn --asserted-by
+  local:maintainer --claim-class asserted --source https://example.org/runbook
+  --license cc-by-4.0`. Engrams link to the session that produced them, and a
+  retired engram records why it was retired.
+- **Who asserted it, and what kind of claim it is** (#961, #963). `attribution`
+  names the agent; `claim_class` distinguishes a thing a person stated from a
+  thing a model inferred. The class is visible at injection, not only in a record
+  nobody asks for mid-session.
+- **An identity comes from configuration, never from the operating system
+  account** (#961). With nobody configured the record carries an `unidentified`
+  marker, which counts as unanswered — a memory nobody is accountable for cannot
+  report itself complete.
+- **The default licence grants nothing** (#961, #958). Section 8 now fails closed
+  on the schema default: engram-level copyright is opt-in, and `unlicensed` is a
+  decision somebody made rather than a field nobody filled. `provenance.path` is
+  wired through.
+- **Records are built, stored, and written on a schedule you choose**
+  (#962, #964, #965, #966). Building a record and deciding when to persist it are
+  separate; neither happens behind your back.
+- **Provenance travels with a pack** (#967, #972, #973). Pack-level provenance,
+  and the fields a particular field of work needs. `plur packs export --provenance`.
+- **It is reachable from both surfaces** (#979, #980). `plur provenance <id|search>`
+  on the command line (`--record` for the JSON-LD, `--write` to save it), and the
+  `plur_provenance` MCP tool, which is **read-only and local** — it never reaches
+  a remote store, and it never writes.
+- **Attribution and claim_class survive a remote write** (#1172). They used to be
+  dropped on the way out, which silently converted an attributed claim into an
+  anonymous one.
+- **Attribution is scanned as content** (#999). Reverted back in after being
+  briefly removed. A credential in
+  `attribution.asserted_by`, `attribution.model.prompt_id` or `license` is refused
+  at write time, blocked on rescope, and demoted on update — the leak guard reads
+  every content field, not a hand-kept list that had drifted three times.
+
+See [`docs/provenance.md`](docs/provenance.md) to try it on memories you already
+have — `pnpm --filter @plur-ai/core try:provenance` reads your store, writes
+nothing, and tells you whether a stranger receiving the record could answer the
+five questions. Expect some "NO" answers on older memories; nothing recorded who
+asserted them, and the record does not guess. That gap is what this closes going
+forward.
+
+The normative text is [the provenance profile](spec/ENGRAM-PROVENANCE-PROFILE.md)
+(version 0.9), a companion to [the Engram Standard](spec/ENGRAM-STANDARD-v1.md)
+(version 1.7). The profile is **OPTIONAL**: an implementation that ignores it is
+still fully conformant to the standard. One that writes provenance must follow
+it, so that two such implementations agree.
+
+**Hardened by people using it cold.**
+
+Four rounds with testers who had not seen it before, and the review of #1002.
+
+- **What testers found using it cold** (#970, #986, #987, #991, #996). The
+  ship-blocker, flags that wrote to the wrong store, two licence counts that
+  disagreed, a fuzzy match that hid how fuzzy it was, worked examples that could
+  go stale, and API keys whose prefix carries structure. Round four covered data
+  loss, fail-closed permissions, and non-English text.
+- **A pack's integrity is actually checked, and the verdict reaches the terminal**
+  (#986, #987). Flags were being swallowed; the integrity verdict — and its caveat
+  — are now printed rather than computed and dropped.
+- **Every file a pack ships is scanned, and the destructive commands are guarded**
+  (#986, #996).
+- **A replaced memory says what replaced it** (#992), and statements are clipped
+  by display width, never mid-character (#995).
+- **Records stay inside the store, and name nothing the recipient cannot resolve**
+  (#1002). The privacy scan reads one content surface on every write path,
+  symlinks are refused before any read, and what the scan cannot read is flagged
+  rather than skipped.
+- **A declared flag is never mistaken for a `--path` typo** (#1002).
+  Typo detection is edit-distance 1, and a sweep test parses every `'--flag'`
+  literal in the CLI source.
+
+### Correctness and security
+
+- **`plur ui --host` keeps its DNS-rebinding check on a widened bind** (#939, #946).
+  The flag used to switch the check off, leaving the store reachable under any
+  `Host` header a browser could be induced to send. The allowlist is widened
+  instead: the literal `--host` value is allowed, IPv6 URLs are bracketed, a
+  flag-shaped or unspecified host is refused, and `--allow-host` covers what the
+  default policy should not.
+- **The two render-boundary forgery sites are closed** (#940, #1167). Text a
+  store returned could impersonate PLUR's own framing in a rendered payload.
+- **Four defects from the 2026-09-07 audit** (#1149, #1150, #1151, #1152, #1154),
+  and the follow-ups that review raised (#1163): `existsById` is bounded, the
+  fifth validity site is covered, naive timestamps are UTC-pinned, and the
+  write-contract guard actually bites.
+- **An unparseable evaluation instant throws `RangeError`** (#1166, #1176)
+  instead of silently becoming a date.
+- **Tensions skips pairs measured under differing configurations** (#869, #981).
+  Two measurements taken under different conditions are not a contradiction.
+  Known gaps remain tracked in #1008 and #1009.
+- **Line terminators are stripped in `Plur.learn()`** (#952, #953).
+- **Cross-process dedup for `co_injection` events** (#975, #1017).
+
+### Fixes
+
+- **Recall returns ids that `plur forget` accepts** (#1119, #1122, #1135).
+  Namespaced ids were displayed but not operable, and the CLI aborted before any
+  remote dispatch could happen. Thanks to
+  **[@amasen02](https://github.com/amasen02)** (Ama Senevirathne) for this, their
+  first contribution to PLUR.
+- **`plur_learn_batch` returns per-item namespaced ids** (#854, #930, #950).
+- **`readIdFor` is applied in the `learn` catch-block, and a namespaced-id remote
+  miss throws** (#1109, #1114).
+- **`dsh` logs load failures in `loadEngine`** (#941) instead of swallowing them.
+- **Three 0.18.0 release-script defects** (#947, #949) — swallowed errors, a
+  missing `twine check`, and a silently skipped website step.
+- **`typecheck:tests` passes, so the test job can run at all** (#1090).
+- **A monthly canary runs the plur-hermes suite against the published
+  hermes-agent** (#1120), so an upstream break arrives as a deduplicated issue
+  rather than as silent drift.
+
+### Architecture audit (2026-09-03)
+
+From `docs/audits/2026-09-03-architecture-audit.md`: fewer mechanisms, one drift
+bug fixed, no feature changes.
 
 - **claw heartbeats reach the live endpoint again.** claw carried copies of core's
   three telemetry modules; #562 pointed the copy at `heartbeat.plur-ai.org`, which
   does not resolve, while core (MCP, CLI) kept `plur.ai/v1/heartbeat`, which does.
   claw now imports core's modules and passes its own `packageVersion`; the copies
-  and their duplicated tests are gone.
+  and their duplicated tests are gone. **This fix reaches npm for the first time
+  in `@plur-ai/claw@0.20.0`** — claw is on an independent version track and was
+  last published at 0.17.1.
 - **`learnRouted()` refuses an empty statement** before dialing a remote store, as
   `learn()` always did — both now run one input gate.
 - **`updateEngramAsync()` / `setPinnedAsync()`** are the same implementation as
@@ -147,14 +336,17 @@ fewer mechanisms, one drift bug fixed, no feature changes.
   refuses a PATCH is now skipped in favour of the next writable store on the
   deprecated names too, instead of throwing.
 
-**Removed from `@plur-ai/core`** (breaking for anyone importing them; nothing in
-this repo did): `YamlStore`, `SqliteStore`, `createStore`, `migrateStore`,
-`EngramStore`, `StorageBackend`, `StorageConfig` — the pre-ADR-0003 persistence
-seam. `YamlStore.save()` was a second whole-corpus YAML writer that had shipped
-without the shrink guard (#824), and `SqliteStore` made SQLite a primary store
-against the documented invariant. `saveEngrams` is now the only whole-corpus YAML
-writer. The unread `storage:` config key that only fed the deleted factory is
-gone too (unknown keys are ignored, so existing `config.yaml` files still load).
+### Removed from `@plur-ai/core`
+
+Breaking for anyone importing them; nothing in this repo did. `YamlStore`,
+`SqliteStore`, `createStore`, `migrateStore`, `EngramStore`, `StorageBackend`,
+`StorageConfig` — the pre-ADR-0003 persistence seam. `YamlStore.save()` was a
+second whole-corpus YAML writer that had shipped without the shrink guard (#824),
+and `SqliteStore` made SQLite a primary store against the documented invariant.
+`saveEngrams` is now the only whole-corpus YAML writer. The unread `storage:`
+config key that only fed the deleted factory is gone too (unknown keys are
+ignored, so existing `config.yaml` files still load).
+
 Also removed: `rebuildJsonCache`, `COMMITMENT_MULTIPLIER`, `BoundedRecallResult`,
 `computePackChecksum`/`verifyPackChecksum` (never exported), `computeQualityScore`
 (no caller), the embedder dim-check module (the doctor grew its own).
@@ -162,6 +354,31 @@ Also removed: `rebuildJsonCache`, `COMMITMENT_MULTIPLIER`, `BoundedRecallResult`
 Internal: one cross-encoder module builds both rerankers; the rerankers import
 cycle is gone; `mcp`, `cli` and `claw` each show their version from one constant
 (`release.sh` bumps 15 places, not 17; claw bumps one source file, not two).
+
+### Not in this release — the pinned two-tier model
+
+**The pinned two-tier model (hard-cap + priority eviction) is not in 0.20.**
+#1082 and its successor #1121 are both closed unmerged, deliberately, after a
+measurement changed the premise they rested on.
+
+`estimateTokens` had been charging the injection budget for `activation`,
+`feedback_signals`, `usage`, `sources[]` and `provenance` — 68% of the cost, none
+of it ever rendered (#1145). Estimating the rendered form instead made engrams
+roughly four times cheaper, and on a real store the pinned set went from 18,290
+tokens against a 6,000 quota to 3,663 with room to spare; engrams omitted at
+injection went from 26 to zero. Eviction machinery exists to decide what to drop
+when the set does not fit. It now fits, so a second tier and a priority field
+would rank a set that no longer overflows.
+
+The pressure that remains is handled at pin time instead (#1142): a pin that
+would exceed the quota is refused, with current usage and unpin candidates, so
+the set cannot become over-committed in the first place. What the closed work got
+right was lifted into #1138 with credit — origin ranking for pinned rows, and the
+greedy-selection defect from #1124 scoped to origin.
+
+If priority ordering is wanted later it should be reopened against the corrected
+cost basis; the numbers that motivated it are no longer the numbers. The branch
+`review/1082-pinned` is retained.
 
 ## 0.19.4
 

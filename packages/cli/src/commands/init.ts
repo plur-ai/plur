@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, readdirSync, statSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -550,6 +550,71 @@ function installClaudeMd(): string {
 
   writeFileSync(claudeMdPath, `# CLAUDE.md\n\n${CLAUDE_MD_SECTION}`)
   return `created ${claudeMdPath}`
+}
+
+/**
+ * Ship the bundled skills to the harness that reads them (#1190).
+ *
+ * `skills/` lives at the REPO root, and `files[]` in package.json is
+ * package-relative, so no manifest entry can reach it — the build copies the
+ * tree into `dist/skills/`, which `files: ["dist"]` already covers, and this
+ * leg installs it. Before both halves existed, the skills were version-stamped
+ * by release.sh on every release and delivered to nobody: `npm i -g
+ * @plur-ai/cli` carried no engram-authoring guidance at all, and `plur init`
+ * had no skill leg (its one `Skill` reference is a PreToolUse matcher that
+ * fires WHEN a skill runs — a different thing).
+ *
+ * Target is `<dir of settings.json>/skills/`, so this follows init's existing
+ * scope decision: --global lands in ~/.claude/skills, project mode in
+ * ./.claude/skills. No new flag, and one place decides scope.
+ */
+function bundledSkillsDir(): string | null {
+  // import.meta.url -> .../dist/commands/init.js, so skills are ../skills.
+  const fromDist = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills')
+  if (existsSync(fromDist)) return fromDist
+  // Running from source (tsx): fall back to the repo-root tree the build copies.
+  const fromRepo = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'skills')
+  return existsSync(fromRepo) ? fromRepo : null
+}
+
+function installSkills(settingsPath: string): string {
+  const src = bundledSkillsDir()
+  if (!src) return 'skipped (no bundled skills found in this install)'
+
+  const names = readdirSync(src).filter(n => existsSync(join(src, n, 'SKILL.md')))
+  if (names.length === 0) return 'skipped (bundle contains no */SKILL.md)'
+
+  const destRoot = join(dirname(settingsPath), 'skills')
+  mkdirSync(destRoot, { recursive: true })
+
+  const added: string[] = []
+  const updated: string[] = []
+  const modified: string[] = []
+  for (const name of names) {
+    const from = join(src, name)
+    const to = join(destRoot, name)
+    const marker = join(to, 'SKILL.md')
+    if (!existsSync(marker)) {
+      added.push(name)
+    } else {
+      // A local edit and an older shipped version are indistinguishable from
+      // the bytes alone, so say the file changed rather than claim which.
+      const before = readFileSync(marker, 'utf8')
+      const after = readFileSync(join(from, 'SKILL.md'), 'utf8')
+      if (before === after) continue
+      ;(statSync(marker).mtimeMs > statSync(join(from, 'SKILL.md')).mtimeMs ? modified : updated).push(name)
+    }
+    cpSync(from, to, { recursive: true, dereference: true })
+  }
+
+  if (added.length === 0 && updated.length === 0 && modified.length === 0) {
+    return `already current in ${destRoot} (${names.length})`
+  }
+  const parts: string[] = []
+  if (added.length) parts.push(`added ${added.join(', ')}`)
+  if (updated.length) parts.push(`updated ${updated.join(', ')}`)
+  if (modified.length) parts.push(`overwrote locally-changed ${modified.join(', ')}`)
+  return `${parts.join('; ')} in ${destRoot}`
 }
 
 function findSettingsPath(_flags: GlobalFlags, args: string[]): string {
@@ -1325,6 +1390,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     ? containLeg('Cursor', () => installCursor(cmd))
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
 
+  // Contained like the harness legs: an unwritable skills dir must not abort
+  // the hooks and MCP registration that are the point of `plur init`.
+  const skillsStatus = containLeg('Skills', () => installSkills(injectionPath))
+
   // Write project config if --domain or --scope provided
   const projectConfigPath = installProjectConfig(args)
 
@@ -1337,6 +1406,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo('', flags)
   outputInfo('Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped.', flags)
   outputInfo('Multi-project scoping via domain/scope fields on engrams, not separate installs.', flags)
+  outputInfo('', flags)
+  outputInfo(`Skills: ${skillsStatus}`, flags)
   outputInfo('', flags)
   outputInfo(`MCP server (plur): ${mcpStatus}`, flags)
   outputInfo(`  command: ${entry.command} ${entry.args.join(' ')}`, flags)

@@ -10,7 +10,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-skills.mjs",
     "test": "vitest run",
     "pretest": "npm run build"
   },
