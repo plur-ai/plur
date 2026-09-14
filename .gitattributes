@@ -1,0 +1,11 @@
+# Auto-detect text files and normalize line endings to LF on commit and checkout
+* text=auto eol=lf
+
+# Conformance vector fixtures must preserve exact byte stability across
+# platforms. Scope -text to the generated corpus only (packs/, capsules/,
+# and the two JSON indexes) so the Python gates and README that enforce
+# that stability stay under LF normalization themselves.
+spec/vectors/packs/** -text
+spec/vectors/capsules/** -text
+spec/vectors/index.json -text
+spec/vectors/capsules.json -text
