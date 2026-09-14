@@ -12,7 +12,7 @@
  * These tests fail if either half is removed.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, utimesSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -76,20 +76,40 @@ describe('plur init installs skills', () => {
     expect(readFileSync(installed('plur-create-engrams'), 'utf-8')).toBe(first)
   })
 
-  it('says so when it overwrites a locally-changed skill, rather than clobbering in silence', () => {
+  it('says so when it replaces a changed skill, rather than clobbering in silence', () => {
     runInit()
     const path = installed('plur-memory')
     writeFileSync(path, readFileSync(path, 'utf-8') + '\nLOCAL EDIT\n')
     const out = runInit()
-    expect(out).toMatch(/overwrote locally-changed[^\n]*plur-memory/)
+    expect(out).toMatch(/replaced[^\n]*plur-memory/)
+    expect(out).toMatch(/local edits overwritten/)
   })
 
-  it('does not abort the rest of init when the skills leg fails', () => {
-    // The leg is contained like the harness legs: hooks and MCP registration
-    // are the point of `plur init` and must survive a skills failure.
+  it('treats identical bytes as current even when the timestamps disagree', () => {
+    // Guards the contract, not the bug that prompted it: npm normalises every
+    // mtime in a published tarball to 1985-10-26, so the bundled copy is always
+    // OLDER than anything on disk. Any future fast path that compares
+    // timestamps before bytes would copy on every run and mis-report it; this
+    // fails if one is introduced.
+    runInit()
+    const path = installed('plur-create-engrams')
+    utimesSync(path, new Date('1985-10-26T08:15:00Z'), new Date('1985-10-26T08:15:00Z'))
+    expect(runInit()).toMatch(/Skills: already current/)
+  })
+
+  it('does not abort the rest of init when the skills leg actually fails', () => {
+    // Induce a real failure rather than asserting the happy path: a FILE where
+    // the skills directory belongs makes mkdirSync throw. Hooks and MCP
+    // registration are the point of `plur init` and must survive it.
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'skills'), 'not a directory')
+
     const out = runInit()
+
+    expect(out).toMatch(/^Skills: FAILED/m)
     expect(out).toContain('PLUR installed')
     const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf-8'))
     expect(settings.mcpServers?.plur).toBeDefined()
+    expect(settings.hooks?.UserPromptSubmit).toBeDefined()
   })
 })

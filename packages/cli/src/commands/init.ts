@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, readdirSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -579,17 +579,16 @@ function bundledSkillsDir(): string | null {
 
 function installSkills(settingsPath: string): string {
   const src = bundledSkillsDir()
-  if (!src) return 'skipped (no bundled skills found in this install)'
+  if (!src) return 'Skills: skipped (no bundled skills found in this install)'
 
   const names = readdirSync(src).filter(n => existsSync(join(src, n, 'SKILL.md')))
-  if (names.length === 0) return 'skipped (bundle contains no */SKILL.md)'
+  if (names.length === 0) return 'Skills: skipped (bundle contains no */SKILL.md)'
 
   const destRoot = join(dirname(settingsPath), 'skills')
   mkdirSync(destRoot, { recursive: true })
 
   const added: string[] = []
-  const updated: string[] = []
-  const modified: string[] = []
+  const replaced: string[] = []
   for (const name of names) {
     const from = join(src, name)
     const to = join(destRoot, name)
@@ -597,24 +596,26 @@ function installSkills(settingsPath: string): string {
     if (!existsSync(marker)) {
       added.push(name)
     } else {
-      // A local edit and an older shipped version are indistinguishable from
-      // the bytes alone, so say the file changed rather than claim which.
-      const before = readFileSync(marker, 'utf8')
-      const after = readFileSync(join(from, 'SKILL.md'), 'utf8')
-      if (before === after) continue
-      ;(statSync(marker).mtimeMs > statSync(join(from, 'SKILL.md')).mtimeMs ? modified : updated).push(name)
+      // Byte comparison only. Do NOT use mtime to guess whether the difference
+      // is a local edit or a newer shipped version: npm normalises every mtime
+      // in a published tarball to 1985-10-26, so the bundled copy is ALWAYS
+      // older than anything on disk and every ordinary upgrade would be
+      // reported as clobbering a local edit. A local edit and an older shipped
+      // version are indistinguishable from what we have, so the message says
+      // what happened — replaced — and does not claim which it was.
+      if (readFileSync(marker, 'utf8') === readFileSync(join(from, 'SKILL.md'), 'utf8')) continue
+      replaced.push(name)
     }
     cpSync(from, to, { recursive: true, dereference: true })
   }
 
-  if (added.length === 0 && updated.length === 0 && modified.length === 0) {
-    return `already current in ${destRoot} (${names.length})`
+  if (added.length === 0 && replaced.length === 0) {
+    return `Skills: already current in ${destRoot} (${names.length})`
   }
   const parts: string[] = []
   if (added.length) parts.push(`added ${added.join(', ')}`)
-  if (updated.length) parts.push(`updated ${updated.join(', ')}`)
-  if (modified.length) parts.push(`overwrote locally-changed ${modified.join(', ')}`)
-  return `${parts.join('; ')} in ${destRoot}`
+  if (replaced.length) parts.push(`replaced ${replaced.join(', ')} (any local edits overwritten)`)
+  return `Skills: ${parts.join('; ')} in ${destRoot}`
 }
 
 function findSettingsPath(_flags: GlobalFlags, args: string[]): string {
@@ -1407,7 +1408,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo('Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped.', flags)
   outputInfo('Multi-project scoping via domain/scope fields on engrams, not separate installs.', flags)
   outputInfo('', flags)
-  outputInfo(`Skills: ${skillsStatus}`, flags)
+  outputInfo(skillsStatus, flags)
   outputInfo('', flags)
   outputInfo(`MCP server (plur): ${mcpStatus}`, flags)
   outputInfo(`  command: ${entry.command} ${entry.args.join(' ')}`, flags)
