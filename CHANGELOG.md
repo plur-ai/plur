@@ -9,7 +9,7 @@
 - Guidance reaches your agent.
 - Covered by tests.
 
-Both halves of this were missing (#1190).
+Both halves of this were missing (#1190, #1191).
 
 Until now `npm i -g @plur-ai/cli` carried no engram-authoring guidance at all,
 and `plur init` never installed any. `skills/plur-create-engrams/` had existed,
