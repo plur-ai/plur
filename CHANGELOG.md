@@ -2,40 +2,43 @@
 
 ## 0.20.0
 
-**The engram-authoring skill now reaches the people who install PLUR.**
+**The engram-authoring skill now ships.**
 
-`skills/plur-create-engrams/` has existed, been maintained, and been
-version-stamped by the release script on every release — while shipping to
-nobody. Two independent gaps, each invisible on its own:
+- `plur init` installs the skills.
+- `@plur-ai/cli` ships the tree.
+- Guidance reaches your agent.
+- Covered by tests.
 
-- `packages/cli/package.json` declares `files: ["dist"]`, and `skills/` lives at
-  the **repo root**. `files[]` is package-relative, so no manifest entry could
-  ever have reached it — adding `"skills"` there ships nothing at all.
-- `plur init` had no skill-installation leg. Its single `Skill` reference is a
-  `PreToolUse` matcher that fires *when* a skill is invoked, which is a different
-  thing, and reads as coverage at a glance.
+Both halves of this were missing (#1190).
 
-So `npm install -g @plur-ai/cli` delivered no engram-authoring guidance, and the
-version bump each release made it look shipped. Engram quality degraded
-accordingly — the guidance that says what earns a place in memory, and how to
-write a statement, rationale and boundary that still make sense months later, was
-not present when engrams were being written.
+Until now `npm i -g @plur-ai/cli` carried no engram-authoring guidance at all,
+and `plur init` never installed any. `skills/plur-create-engrams/` had existed,
+been maintained, and been version-stamped by the release script on every release
+— while shipping to nobody.
 
-Both halves are closed (#1190):
+Two independent gaps, each invisible on its own. `packages/cli/package.json`
+declares `files: ["dist"]` while `skills/` lives at the **repo root**, and
+`files[]` is package-relative, so no manifest entry could ever have reached it —
+adding `"skills"` there ships nothing at all. And `plur init` had no
+skill-installation leg; its single `Skill` reference is a `PreToolUse` matcher
+that fires *when* a skill is invoked, a different thing that reads as coverage at
+a glance. Meanwhile the per-release version bump made the skill look shipped in
+every diff.
 
-- **The build copies the skill tree into `dist/`**, which `files: ["dist"]`
-  already ships. All of it travels — `SKILL.md` plus the `references/` the skill
-  tells the agent to read before serialising, which are the part that actually
-  carries the format.
-- **`plur init` installs them** to `skills/` beside the `settings.json` it is
-  already writing, so it follows init's existing scope choice: `--global` lands
-  in `~/.claude/skills/`, project mode in `./.claude/skills/`. No new flag. The
-  leg is idempotent, is contained like the harness legs so an unwritable
-  directory cannot abort the hooks and MCP registration, and says so when it
-  overwrites a skill you had changed locally rather than clobbering in silence.
-- **Tests hold both halves down** — that the built package contains the tree, and
-  that `init` lands it, re-runs clean, and reports an overwrite. They fail if
-  either half is removed.
+Engram quality degraded accordingly: the guidance on what earns a place in
+memory, and how to write a statement, rationale and boundary that still hold
+months later, was not present while engrams were being written.
+
+How it works now. The build copies the tree into `dist/`, which `files: ["dist"]`
+already ships, so no manifest change — and all of it travels, `SKILL.md` plus the
+`references/` the skill tells the agent to read before serialising, which are the
+part that actually carries the format. `plur init` installs to `skills/` beside
+the `settings.json` it is already writing, so it follows init's existing scope
+choice: `--global` lands in `~/.claude/skills/`, project mode in
+`./.claude/skills/`. No new flag. The leg is idempotent, is contained like the
+harness legs so an unwritable directory cannot abort the hooks and MCP
+registration, and says so when it overwrites a skill you had changed locally
+rather than clobbering in silence.
 
 `plur-memory` and `plur-session-end` ride the same path and are installed too.
 
