@@ -1134,12 +1134,15 @@ function installOpencode(cliVersion: string): string {
 
   if (!result.ok) {
     // Same refusal shape as every other host leg (#1059 class): a config
-    // that exists but doesn't parse as plain JSON — most likely an
-    // opencode.jsonc file using comments, which this writer does not
-    // understand — must never be coerced to {} and written back over.
-    return `Opencode: skipped — ${configPath} exists but could not be parsed as JSON ` +
-      '(JSONC comments/trailing commas are not supported here); add the plugin and mcp ' +
-      `entries by hand, then re-run \`plur init --opencode\`:\n` +
+    // PLUR cannot safely merge into — either it doesn't parse (most likely
+    // an opencode.jsonc file using comments), its top level parses but isn't
+    // a plain object (e.g. a top-level array — valid JSON, wrong shape), or
+    // an existing `plugin`/`mcp` field is already the wrong shape to extend
+    // — must never be coerced to {}/[] and written back over.
+    return `Opencode: skipped — ${configPath} exists but PLUR could not safely write into it ` +
+      '(either invalid JSON — JSONC comments/trailing commas are not supported here — or a ' +
+      'valid JSON document whose top level, or existing `plugin`/`mcp` field, is not the ' +
+      `expected shape); add the entries by hand, then re-run \`plur init --opencode\`:\n` +
       `    "plugin": ["@plur-ai/opencode"]\n` +
       `    "mcp": { "plur": { "type": "local", "command": ["npx", "-y", "@plur-ai/mcp@${cliVersion}"], "enabled": true } }`
   }

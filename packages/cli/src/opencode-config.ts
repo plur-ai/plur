@@ -42,15 +42,41 @@ export interface WriteOpencodeConfigResult {
   created: boolean
   changed: boolean
   /**
-   * False when `configPath` exists but could not be parsed as JSON — most
-   * commonly an `opencode.jsonc` file using comments or trailing commas,
-   * which a plain `JSON.parse` rejects. The file is left completely
-   * untouched in that case: coercing it to `{}` and writing back would
+   * False, and the file left completely untouched, when `configPath` exists
+   * but isn't safely writable as PLUR's two keys:
+   *
+   *   - it doesn't parse as JSON at all — most commonly an `opencode.jsonc`
+   *     file using comments or trailing commas, which a plain `JSON.parse`
+   *     rejects;
+   *   - it parses, but the top-level value isn't a plain object (a
+   *     top-level array is syntactically valid JSON and parses fine, but
+   *     every property this function would set on it — `plugin`, `mcp` — is
+   *     a non-index property that `JSON.stringify` silently drops. Without
+   *     this check that reads back as an inert success: nothing throws,
+   *     `changed` computes `false` because the serialized array never
+   *     visibly differs, and the caller reports "already up to date" while
+   *     PLUR was never written);
+   *   - `plugin` or `mcp` is already present but the wrong shape (`plugin`
+   *     not an array; `mcp` not a plain object) — coercing either to a
+   *     fresh empty value would silently discard whatever the user had
+   *     there, the exact same silent-loss failure the checks above exist to
+   *     prevent, just one level down.
+   *
+   * Never coerce any of the above to `{}`/`[]` and write back — that would
    * discard whatever config the user already has (the same failure mode
    * `readConfigForWrite` in `mcp-config.ts` refuses for every other host).
    * True for every other outcome, including a fresh install.
    */
   ok: boolean
+}
+
+/**
+ * True for a JSON *object* — not an array, not `null`, not a primitive.
+ * Same shape test `readConfigForWrite` in `mcp-config.ts` uses to decide a
+ * parsed config is safe to merge into and write back.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -92,27 +118,47 @@ export function writeOpencodeConfig(
   cliVersion: string,
 ): WriteOpencodeConfigResult {
   const created = !existsSync(configPath)
-  let cfg: any
+  let cfg: Record<string, unknown>
   if (created) {
     cfg = { $schema: 'https://opencode.ai/config.json' }
   } else {
+    let parsed: unknown
     try {
-      cfg = JSON.parse(readFileSync(configPath, 'utf8'))
+      parsed = JSON.parse(readFileSync(configPath, 'utf8'))
     } catch {
       return { created: false, changed: false, ok: false }
     }
+    // Valid JSON, wrong shape (most commonly `[]`) — refuse rather than let
+    // every property set below land as a silently-dropped non-index prop.
+    // See WriteOpencodeConfigResult.ok for the full failure mode this closes.
+    if (!isPlainObject(parsed)) return { created: false, changed: false, ok: false }
+    cfg = parsed
   }
+
+  // Same refuse-don't-coerce stance for the two fields this function owns:
+  // a PRESENT value of the wrong shape is the user's data, not a blank slate
+  // to silently overwrite. Absent (`undefined`) is the normal case and is
+  // NOT refused — that's every fresh/untouched config.
+  if (cfg.plugin !== undefined && !Array.isArray(cfg.plugin)) {
+    return { created: false, changed: false, ok: false }
+  }
+  if (cfg.mcp !== undefined && cfg.mcp !== null && !isPlainObject(cfg.mcp)) {
+    return { created: false, changed: false, ok: false }
+  }
+
   const before = JSON.stringify(cfg)
 
-  cfg.plugin = Array.isArray(cfg.plugin) ? cfg.plugin : []
-  if (!cfg.plugin.includes(PLUGIN)) cfg.plugin.push(PLUGIN)
+  const plugins = Array.isArray(cfg.plugin) ? cfg.plugin as unknown[] : []
+  if (!plugins.includes(PLUGIN)) plugins.push(PLUGIN)
+  cfg.plugin = plugins
 
-  cfg.mcp = cfg.mcp ?? {}
-  cfg.mcp.plur = {
+  const mcp: Record<string, unknown> = isPlainObject(cfg.mcp) ? cfg.mcp : {}
+  mcp.plur = {
     type: 'local',
     command: ['npx', '-y', `@plur-ai/mcp@${cliVersion}`],
     enabled: true,
   }
+  cfg.mcp = mcp
 
   const changed = JSON.stringify(cfg) !== before
   if (created || changed) {
