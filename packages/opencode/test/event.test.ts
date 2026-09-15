@@ -165,4 +165,28 @@ describe('fallback end-to-end — the RenderPath latch actually injects', () => 
     expect(part.messageID).toBe('msg_2')
     expect(part.type).toBe('text')
   })
+
+  // I5: opencode rejects the ENTIRE user message when a pushed part's
+  // messageID is undefined ("invalid user part before save" — spec's Known
+  // Gotcha #1), and turn.ts's exclusion check short-circuits on a falsy
+  // messageID, so an injected block with no messageID would also get
+  // harvested as junk self-reported learnings. Degrading to no-injection is
+  // strictly better than either.
+  it('skips the fallback injection rather than pushing a part with messageID undefined', async () => {
+    const plur = fakePlur()
+    const hooks = await PlurPlugin({ directory: '/tmp/p', _plur: plur } as any)
+
+    // Turn 1: latch the fallback, same as above.
+    const output1 = { message: { id: 'msg_1' }, parts: [] }
+    await hooks['chat.message']!({ sessionID: 'ses_1', messageID: 'msg_1' } as any, output1 as any)
+    await hooks['event']!(sessionIdle('ses_1') as any)
+
+    // Turn 2: neither input.messageID nor output.message.id resolves to a
+    // string — the shape opencode can hit when the message id is genuinely
+    // unavailable at this point in the turn.
+    const output2 = { message: { id: undefined }, parts: [] }
+    await hooks['chat.message']!({ sessionID: 'ses_1', messageID: undefined } as any, output2 as any)
+
+    expect(output2.parts).toHaveLength(0)
+  })
 })
