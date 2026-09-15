@@ -183,6 +183,31 @@ export function agyMcpConfigPath(): string {
   return join(agyConfigDir(), 'mcp_config.json')
 }
 
+/**
+ * opencode's global config directory. Everything `plur init --opencode`
+ * touches lives here — no per-project variant, same reasoning as agy's
+ * config dir: one global engram store, one place to register it.
+ */
+export function opencodeConfigDir(): string {
+  return join(homedir(), '.config', 'opencode')
+}
+
+/**
+ * The opencode config file `plur init --opencode` targets. opencode accepts
+ * both `opencode.json` and `opencode.jsonc` (JSON-with-comments) as its
+ * config file. If the user already has a `.jsonc` and no `.json`, target
+ * THAT file — writing a second, competing `opencode.json` the user never
+ * asked for would either be ignored or fork their config in two directions.
+ * `.json` is the target when neither exists (a fresh install) or both do.
+ */
+export function opencodeConfigPath(): string {
+  const dir = opencodeConfigDir()
+  const jsonPath = join(dir, 'opencode.json')
+  const jsoncPath = join(dir, 'opencode.jsonc')
+  if (!existsSync(jsonPath) && existsSync(jsoncPath)) return jsoncPath
+  return jsonPath
+}
+
 /** Locate the static PLUR rules file `plur init --cursor` writes once, at install time. */
 export function cursorRulesPath(cwd: string = process.cwd()): string {
   return join(cwd, '.cursor', 'rules', 'plur-memory.mdc')

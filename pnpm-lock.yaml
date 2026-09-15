@@ -78,6 +78,9 @@ importers:
       '@plur-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@plur-ai/opencode':
+        specifier: workspace:*
+        version: link:../opencode
     devDependencies:
       '@plur-ai/ui':
         specifier: workspace:*

@@ -15,7 +15,8 @@
     "pretest": "npm run build"
   },
   "dependencies": {
-    "@plur-ai/core": "workspace:*"
+    "@plur-ai/core": "workspace:*",
+    "@plur-ai/opencode": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

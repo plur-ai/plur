@@ -24,7 +24,10 @@ import {
   agyConfigDir,
   agyHooksConfigPath,
   agyMcpConfigPath,
+  opencodeConfigDir,
+  opencodeConfigPath,
 } from '../mcp-config.js'
+import { writeOpencodeConfig } from '@plur-ai/opencode/setup'
 import {
   buildCursorHooks,
   readCursorHooksConfig,
@@ -71,6 +74,7 @@ import {
  *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
  *   plur init --antigravity | --agy / --no-antigravity
  *                             # force / skip Antigravity (auto: ~/.gemini/antigravity-cli exists)
+ *   plur init --opencode / --no-opencode      # force / skip opencode (auto: ~/.config/opencode exists)
  *   plur init --no-prompt     # never ask interactive questions (telemetry opt-in)
  *   plur init --domain X      # set default domain for this project (.plur.yaml)
  *   plur init --scope Y       # set default scope for this project (.plur.yaml)
@@ -1099,6 +1103,49 @@ function installAntigravity(cmd: string): string {
   ].join('\n')
 }
 
+// ── opencode ─────────────────────────────────────────────────────────────
+
+function shouldSetupOpencode(args: string[]): boolean {
+  if (args.includes('--no-opencode')) return false
+  if (args.includes('--opencode')) return true
+  return existsSync(opencodeConfigDir())
+}
+
+/**
+ * Wire PLUR into opencode by writing BOTH layers into its config file
+ * (`writeOpencodeConfig` — see packages/opencode/src/setup.ts):
+ *
+ *   - `plugin: ["@plur-ai/opencode"]` — the automatic layer (recall injected
+ *     each turn, learning harvested after it), which needs no tool calls.
+ *   - `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`,
+ *     for when the user wants to query or teach memory directly.
+ *
+ * Same three-layer strategy PLUR already commits to everywhere else
+ * (context files + hooks/plugins + MCP tools), pinned to CLI_VERSION for the
+ * same reason every other npx-fallback MCP entry is pinned (#1069): an
+ * unpinned spec re-resolves on every publish and races the npx cache
+ * rewrite.
+ */
+function installOpencode(cliVersion: string): string {
+  const configPath = opencodeConfigPath()
+  const result = writeOpencodeConfig(configPath, cliVersion)
+
+  if (!result.ok) {
+    // Same refusal shape as every other host leg (#1059 class): a config
+    // that exists but doesn't parse as plain JSON — most likely an
+    // opencode.jsonc file using comments, which this writer does not
+    // understand — must never be coerced to {} and written back over.
+    return `Opencode: skipped — ${configPath} exists but could not be parsed as JSON ` +
+      '(JSONC comments/trailing commas are not supported here); add the plugin and mcp ' +
+      `entries by hand, then re-run \`plur init --opencode\`:\n` +
+      `    "plugin": ["@plur-ai/opencode"]\n` +
+      `    "mcp": { "plur": { "type": "local", "command": ["npx", "-y", "@plur-ai/mcp@${cliVersion}"], "enabled": true } }`
+  }
+
+  const status = result.created ? 'created' : result.changed ? 'updated' : 'already up to date'
+  return `Opencode: config ${status} (${configPath})`
+}
+
 function writeSettings(path: string, settings: Settings): void {
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
@@ -1391,6 +1438,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     ? containLeg('Cursor', () => installCursor(cmd))
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
 
+  const opencodeStatus = shouldSetupOpencode(args)
+    ? containLeg('Opencode', () => installOpencode(CLI_VERSION))
+    : 'skipped (no ~/.config/opencode found — pass --opencode to force, --no-opencode to silence this)'
+
   // Contained like the harness legs: an unwritable skills dir must not abort
   // the hooks and MCP registration that are the point of `plur init`.
   const skillsStatus = containLeg('Skills', () => installSkills(injectionPath))
@@ -1434,6 +1485,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo(codexStatus, flags)
   outputInfo(agyStatus, flags)
   outputInfo(cursorStatus, flags)
+  outputInfo(opencodeStatus, flags)
   if (shouldSetupCursor(args)) {
     // Audit fix (user evaluator): the 11-tools-instead-of-39 tradeoff and
     // plur_admin indirection were previously only discoverable by reading
