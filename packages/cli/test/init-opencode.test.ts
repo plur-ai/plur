@@ -92,6 +92,16 @@ describe('writeOpencodeConfig', () => {
     expect(readFileSync(p, 'utf8')).toBe(original)
   })
 
+  it('treats an explicit null plugin/mcp as unset, not malformed', () => {
+    const p = join(dir, 'opencode.json')
+    writeFileSync(p, JSON.stringify({ plugin: null, mcp: null }))
+    const r = writeOpencodeConfig(p, '0.20.0')
+    expect(r.ok).toBe(true)
+    const cfg = JSON.parse(readFileSync(p, 'utf8'))
+    expect(cfg.plugin).toEqual(['@plur-ai/opencode'])
+    expect(cfg.mcp.plur.type).toBe('local')
+  })
+
   it('creates the parent directory when it does not exist yet', () => {
     const p = join(dir, 'nested', 'opencode.json')
     const r = writeOpencodeConfig(p, '0.20.0')

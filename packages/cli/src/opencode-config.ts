@@ -137,9 +137,11 @@ export function writeOpencodeConfig(
 
   // Same refuse-don't-coerce stance for the two fields this function owns:
   // a PRESENT value of the wrong shape is the user's data, not a blank slate
-  // to silently overwrite. Absent (`undefined`) is the normal case and is
-  // NOT refused — that's every fresh/untouched config.
-  if (cfg.plugin !== undefined && !Array.isArray(cfg.plugin)) {
+  // to silently overwrite. `undefined` OR `null` is treated as "not set" for
+  // both fields, consistently — that's every fresh/untouched config, plus
+  // the (uncommon but real) case of a user writing `null` to mean "nothing
+  // here yet." Neither is refused.
+  if (cfg.plugin !== undefined && cfg.plugin !== null && !Array.isArray(cfg.plugin)) {
     return { created: false, changed: false, ok: false }
   }
   if (cfg.mcp !== undefined && cfg.mcp !== null && !isPlainObject(cfg.mcp)) {
