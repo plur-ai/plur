@@ -160,6 +160,7 @@ passed:
 |---|---|---|
 | `@plur-ai/claw` | `--claw <ver>` | ClawHub publish + plugin lifecycle; lockstep bumps would regress its npm version |
 | `@plur-ai/dsh` | `--dsh <ver>` | Pinned to a pre-1.0 DeepSeek Harness line; moves on that ecosystem's cadence |
+| `@plur-ai/opencode` | `--opencode <ver>` | opencode plugin lifecycle, currently 0.1.0; lockstep bumps would churn its npm version for releases that don't touch it |
 | `plur-langchain` | (manual) | Ships on its own schedule |
 
 Each track's files are listed in `CLAUDE.md` under "Version bumps". A partial bump

@@ -42,6 +42,41 @@ rather than clobbering in silence.
 
 `plur-memory` and `plur-session-end` ride the same path and are installed too.
 
+### A new PLUR integration: `@plur-ai/opencode`
+
+**opencode agents now get persistent memory too, with no tool call required.**
+A new package, `@plur-ai/opencode`, adds automatic recall, automatic learning,
+and learn-before-compaction to the [opencode](https://opencode.ai) agent
+harness. It ships on its own version track (`--opencode <ver>`), starting at
+0.1.0, independent of this release's version — the same arrangement as
+`@plur-ai/claw` and `@plur-ai/dsh`.
+
+Structurally this is the same integration shape as `@plur-ai/claw` — an
+in-process TypeScript plugin driven by lifecycle hooks rather than a subprocess
+bridge or JSON hook shim — and the second example toward extracting a shared
+`HarnessAdapter` interface (#1034).
+
+- Recall runs once per user turn (`chat.message`) and caches a rendered memory
+  block; the system prompt is rebuilt from that cache once per model request
+  (`experimental.chat.system.transform`) without recalling again.
+- That split exists because injecting at `chat.message` persists into session
+  history and **accretes**: measured against a real opencode 1.18.30 binary,
+  one stale memory block landed in the transcript per turn, forever — 1, 2, 3
+  across three turns. Rendering into the system prompt instead measured 0, 0,
+  0. A live acceptance gate (`packages/opencode/test/e2e.manual.mjs` — not part
+  of `pnpm test`, needs a real binary and network) drives an actual opencode
+  session and asserts the accretion count stays at 0.
+- Two learning paths, mirroring claw: the model's own `🧠 I learned:`
+  self-report, and user corrections/preferences detected at confidence ≥ 0.7.
+- `plur init --opencode` writes both layers opencode needs: the `plugin` entry
+  (automatic, this package) and an `mcp.plur` entry (`@plur-ai/mcp`, explicit
+  tools) — the same three-layer strategy PLUR already commits to elsewhere.
+- **Not yet published to npm.** opencode resolves a bare plugin name by
+  fetching it from the npm registry at load time; until `@plur-ai/opencode` is
+  published, that entry silently resolves to nothing, with no error anywhere
+  in opencode's log. `plur init --opencode` writes a config that looks correct
+  and does nothing until the package is on npm. See `packages/opencode/README.md`.
+
 ### Nothing is silently dropped
 
 An injection payload is read head-first. Until now it led with `DIRECTIVES` —
