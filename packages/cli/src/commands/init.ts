@@ -47,6 +47,10 @@ import {
   hasPlurAgyHooks,
   AGY_HOOK_SET_NAME,
 } from '../antigravity-hooks.js'
+import {
+  writeOpencodeConfig,
+  opencodeConfigPath,
+} from '../opencode-config.js'
 
 /**
  * plur init — install Claude Code hooks AND register the plur MCP server.
@@ -71,6 +75,11 @@ import {
  *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
  *   plur init --antigravity | --agy / --no-antigravity
  *                             # force / skip Antigravity (auto: ~/.gemini/antigravity-cli exists)
+ *   plur init --opencode / --no-opencode      # enable / skip opencode — OPT-IN ONLY, no
+ *                             # auto-detection like the legs above: @plur-ai/opencode is not
+ *                             # yet on npm, and opencode resolves a bare plugin name from the
+ *                             # registry silently on a miss, so auto-enabling would write a
+ *                             # dead plugin entry into every opencode user's config
  *   plur init --no-prompt     # never ask interactive questions (telemetry opt-in)
  *   plur init --domain X      # set default domain for this project (.plur.yaml)
  *   plur init --scope Y       # set default scope for this project (.plur.yaml)
@@ -1099,6 +1108,58 @@ function installAntigravity(cmd: string): string {
   ].join('\n')
 }
 
+// ── opencode ─────────────────────────────────────────────────────────────
+
+function shouldSetupOpencode(args: string[]): boolean {
+  // Opt-in ONLY — unlike --cursor/--codex/--antigravity, this leg never
+  // auto-detects from existsSync(opencodeConfigDir()). @plur-ai/opencode is
+  // not yet published to npm (see scripts/release.sh --opencode); opencode
+  // resolves a bare plugin name from the registry with no error on a miss,
+  // so auto-enabling here would silently write a dead `plugin` entry into
+  // every opencode user's config the day this CLI ships, before the package
+  // exists to resolve. `--no-opencode` still works as an explicit no-op.
+  if (args.includes('--no-opencode')) return false
+  return args.includes('--opencode')
+}
+
+/**
+ * Wire PLUR into opencode by writing BOTH layers into its config file
+ * (`writeOpencodeConfig` — see packages/cli/src/opencode-config.ts):
+ *
+ *   - `plugin: ["@plur-ai/opencode"]` — the automatic layer (recall injected
+ *     each turn, learning harvested after it), which needs no tool calls.
+ *   - `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`,
+ *     for when the user wants to query or teach memory directly.
+ *
+ * Same three-layer strategy PLUR already commits to everywhere else
+ * (context files + hooks/plugins + MCP tools), pinned to CLI_VERSION for the
+ * same reason every other npx-fallback MCP entry is pinned (#1069): an
+ * unpinned spec re-resolves on every publish and races the npx cache
+ * rewrite.
+ */
+function installOpencode(cliVersion: string): string {
+  const configPath = opencodeConfigPath()
+  const result = writeOpencodeConfig(configPath, cliVersion)
+
+  if (!result.ok) {
+    // Same refusal shape as every other host leg (#1059 class): a config
+    // PLUR cannot safely merge into — either it doesn't parse (most likely
+    // an opencode.jsonc file using comments), its top level parses but isn't
+    // a plain object (e.g. a top-level array — valid JSON, wrong shape), or
+    // an existing `plugin`/`mcp` field is already the wrong shape to extend
+    // — must never be coerced to {}/[] and written back over.
+    return `Opencode: skipped — ${configPath} exists but PLUR could not safely write into it ` +
+      '(either invalid JSON — JSONC comments/trailing commas are not supported here — or a ' +
+      'valid JSON document whose top level, or existing `plugin`/`mcp` field, is not the ' +
+      `expected shape); add the entries by hand, then re-run \`plur init --opencode\`:\n` +
+      `    "plugin": ["@plur-ai/opencode"]\n` +
+      `    "mcp": { "plur": { "type": "local", "command": ["npx", "-y", "@plur-ai/mcp@${cliVersion}"], "enabled": true } }`
+  }
+
+  const status = result.created ? 'created' : result.changed ? 'updated' : 'already up to date'
+  return `Opencode: config ${status} (${configPath})`
+}
+
 function writeSettings(path: string, settings: Settings): void {
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
@@ -1391,6 +1452,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     ? containLeg('Cursor', () => installCursor(cmd))
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
 
+  const opencodeStatus = shouldSetupOpencode(args)
+    ? containLeg('Opencode', () => installOpencode(CLI_VERSION))
+    : 'skipped (opt-in only — pass --opencode to enable once @plur-ai/opencode is installed/published)'
+
   // Contained like the harness legs: an unwritable skills dir must not abort
   // the hooks and MCP registration that are the point of `plur init`.
   const skillsStatus = containLeg('Skills', () => installSkills(injectionPath))
@@ -1434,6 +1499,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo(codexStatus, flags)
   outputInfo(agyStatus, flags)
   outputInfo(cursorStatus, flags)
+  outputInfo(opencodeStatus, flags)
   if (shouldSetupCursor(args)) {
     // Audit fix (user evaluator): the 11-tools-instead-of-39 tradeoff and
     // plur_admin indirection were previously only discoverable by reading

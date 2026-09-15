@@ -1,0 +1,20 @@
+{
+  "name": "@plur-ai/opencode",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": { "build": "tsup", "test": "vitest run" },
+  "dependencies": { "@plur-ai/core": "workspace:*" },
+  "peerDependencies": { "@opencode-ai/plugin": ">=1.18.0" },
+  "peerDependenciesMeta": { "@opencode-ai/plugin": { "optional": true } },
+  "devDependencies": { "@opencode-ai/plugin": "1.18.30", "@types/node": "^22.0.0" },
+  "license": "Apache-2.0",
+  "description": "PLUR memory plugin for opencode — persistent learning across sessions",
+  "keywords": ["ai", "memory", "opencode", "plugin", "agent", "learning"],
+  "homepage": "https://plur.ai",
+  "repository": { "type": "git", "url": "https://github.com/plur-ai/plur", "directory": "packages/opencode" },
+  "author": "PLUR <info@plur.ai>",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } }
+}

@@ -6,12 +6,13 @@ Persistent memory for AI agents. An agent corrected on Monday remembers on Tuesd
 
 Knowledge is stored as **engrams** — small assertions that strengthen with use and decay when irrelevant, modeled on human memory (ACT-R activation). Storage is plain YAML on disk. Search is fully local: BM25 + BGE embeddings + Reciprocal Rank Fusion. Zero API calls, zero cloud.
 
-Seven packages (four npm, three Python/PyPI):
+Eight packages (five npm, three Python/PyPI):
 
 ```
 @plur-ai/core        — engram engine (learn, recall, inject, search, decay, sync)
 @plur-ai/mcp         — MCP server (Claude Code, Cursor, Windsurf)
 @plur-ai/claw        — OpenClaw ContextEngine plugin
+@plur-ai/opencode    — opencode plugin (recall + render hooks, no tool call)
 @plur-ai/cli         — CLI (plur learn / recall / inject / status)
 plur-hermes          — Hermes Agent plugin (Python, via CLI bridge)
 plur-ai              — Python SDK (LangChain, llama.cpp, scripts)
@@ -82,6 +83,15 @@ pnpm --filter @plur-ai/core build
 `packages/dsh/test/manifest.test.ts` asserts these two agree, so a half-done bump
 fails the suite rather than shipping. dsh is pinned to a pre-1.0 DeepSeek Harness
 dependency line (`0.1.0-rc.6`) and moves on that ecosystem's cadence, not core's.
+
+**opencode track** (independent — only bumped when `--opencode <ver>` is passed to release.sh):
+
+- `packages/opencode/package.json`
+- `packages/opencode/src/version.ts` — `OPENCODE_PLUGIN_VERSION` (index.ts imports it; version-parity.test.ts guards the pair)
+
+Currently `0.1.0`, independent of core/mcp/cli's `0.19.4` — the same reasoning
+as claw and dsh: lockstep bumps would churn its npm version for releases that
+don't touch it.
 
 **ui — no track, not published.** `packages/ui` is `private: true`. The memory
 viewer is the pages behind `plur ui` and `/plur-memory`, not a library anyone

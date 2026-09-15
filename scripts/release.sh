@@ -1,6 +1,6 @@
 #!/bin/bash
 # PLUR Release Script
-# Usage: ./scripts/release.sh <version> [--claw <claw-version>] [--dsh <dsh-version>] [--dry-run] [--skip-tweet] [--preview-tweet]
+# Usage: ./scripts/release.sh <version> [--claw <claw-version>] [--dsh <dsh-version>] [--opencode <opencode-version>] [--dry-run] [--skip-tweet] [--preview-tweet]
 #
 # Modes:
 #   default          Full release (bump, build, test, commit, tag, push,
@@ -17,6 +17,11 @@
 #                    version track: it is pinned to a pre-1.0 DeepSeek Harness
 #                    dependency line and moves on that ecosystem's cadence, not
 #                    core's. Specify explicitly when dsh should ride along.
+#   --opencode <ver> Also bump @plur-ai/opencode at <ver>. Like claw and dsh, it
+#                    has its own version track (currently 0.1.0, independent of
+#                    core/mcp/cli's 0.19.4) — bumping it in lockstep would churn
+#                    its npm version for releases that do not touch it. Specify
+#                    explicitly when opencode should ride along.
 #   --dry-run        Bump + build + test + tweet preview, then stop before commit.
 #                    Files ARE mutated (versions bumped) — revert with git.
 #   --preview-tweet  Print the tweet that would be posted for <version>, exit.
@@ -95,6 +100,7 @@ PREVIEW_TWEET=false
 NO_WEBSITE=false
 CLAW_VERSION=""
 DSH_VERSION=""
+OPENCODE_VERSION=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -112,7 +118,12 @@ while [ $# -gt 0 ]; do
       shift
       DSH_VERSION="${1:-}"
       [ -n "$DSH_VERSION" ] && shift
-  
+
+      ;;
+    --opencode)
+      shift
+      OPENCODE_VERSION="${1:-}"
+      [ -n "$OPENCODE_VERSION" ] && shift
       ;;
     --*)
       echo "Unknown flag: $1" >&2
@@ -362,6 +373,29 @@ if [ -n "$DSH_VERSION" ]; then
 else
   CURRENT_DSH=$(node -e "console.log(require('./packages/dsh/package.json').version)")
   echo "  (dsh stays at $CURRENT_DSH — pass --dsh <version> to bump and publish)"
+fi
+
+# opencode is on an independent version track — only bump if --opencode was
+# provided. Like dsh, bumping it in lockstep with core would churn its npm
+# version for releases that do not touch it.
+if [ -n "$OPENCODE_VERSION" ]; then
+  echo "  --- opencode bumps (independent track: $OPENCODE_VERSION) ---"
+  node -e "
+    const fs = require('fs');
+    const path = './packages/opencode/package.json';
+    const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+    pkg.version = '$OPENCODE_VERSION';
+    fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+  "
+  echo "  ✓ packages/opencode/package.json"
+
+  # index.ts imports OPENCODE_PLUGIN_VERSION from here;
+  # opencode/test/version-parity.test.ts guards the pair.
+  sed -i '' "s/export const OPENCODE_PLUGIN_VERSION = '.*'/export const OPENCODE_PLUGIN_VERSION = '$OPENCODE_VERSION'/" packages/opencode/src/version.ts
+  echo "  ✓ packages/opencode/src/version.ts"
+else
+  CURRENT_OPENCODE=$(node -e "console.log(require('./packages/opencode/package.json').version)")
+  echo "  (opencode stays at $CURRENT_OPENCODE — pass --opencode <version> to bump and publish)"
 fi
 
 # MCP Registry / ClawHub listing — both the top-level version and the package
@@ -735,6 +769,9 @@ fi
 if [ -n "$DSH_VERSION" ]; then
   preflight_check dsh "$DSH_VERSION" || PREFLIGHT_OK=false
 fi
+if [ -n "$OPENCODE_VERSION" ]; then
+  preflight_check opencode "$OPENCODE_VERSION" || PREFLIGHT_OK=false
+fi
 if [ "$PREFLIGHT_OK" != true ]; then
   echo ""
   echo "✗ Pre-flight failed — nothing committed, tagged, or published."
@@ -862,6 +899,12 @@ if [ -n "$DSH_VERSION" ]; then
   pnpm --filter "@plur-ai/dsh" publish --access public --no-git-checks --tag next 2>&1 | tail -1
 else
   echo "  @plur-ai/dsh: skipped (no --dsh flag)"
+fi
+if [ -n "$OPENCODE_VERSION" ]; then
+  echo -n "  @plur-ai/opencode@$OPENCODE_VERSION → @next..."
+  pnpm --filter "@plur-ai/opencode" publish --access public --no-git-checks --tag next 2>&1 | tail -1
+else
+  echo "  @plur-ai/opencode: skipped (no --opencode flag)"
 fi
 echo ""
 
@@ -1056,6 +1099,10 @@ fi
 if [ -n "$CLAW_VERSION" ]; then
   echo -n "  @plur-ai/claw@$CLAW_VERSION → @latest..."
   npm dist-tag add "@plur-ai/claw@$CLAW_VERSION" latest 2>&1 | tail -1
+fi
+if [ -n "$OPENCODE_VERSION" ]; then
+  echo -n "  @plur-ai/opencode@$OPENCODE_VERSION → @latest..."
+  npm dist-tag add "@plur-ai/opencode@$OPENCODE_VERSION" latest 2>&1 | tail -1
 fi
 echo ""
 
