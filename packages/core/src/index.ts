@@ -95,6 +95,10 @@ export { SessionScopeRegistry } from './session-scopes.js'
 export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
 export { findProjectConfigPath, readProjectConfig, type ProjectConfig } from './project-config.js'
 export { generateGuardrails } from './guardrails.js'
+// Shared memory system-prompt renderer (opencode plugin's task 1): one
+// implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
+// memory block byte-identically instead of each vendoring a copy.
+export { renderMemoryBlock, PLUR_MEMORY_INSTRUCTIONS } from './memory-block.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText, termMatches, computeIdf, type CorpusStats } from './fts.js'
