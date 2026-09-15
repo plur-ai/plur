@@ -53,7 +53,7 @@ export const PlurProbe = async ({ project, client, $, directory, worktree }) => 
       }
       if (event.type === "message.part.updated" && event.properties?.part?.type === "text") {
         const p = event.properties.part
-        log(`part.updated role-part text len=${(p.text || "").length} preview=${JSON.stringify((p.text || "").slice(0, 80))}`)
+        log(`STREAM part=${p.id} msg=${p.messageID} len=${(p.text || "").length} head=${JSON.stringify((p.text || "").slice(0, 24))} tail=${JSON.stringify((p.text || "").slice(-24))}`)
       }
     },
 
