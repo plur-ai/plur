@@ -24,10 +24,7 @@ import {
   agyConfigDir,
   agyHooksConfigPath,
   agyMcpConfigPath,
-  opencodeConfigDir,
-  opencodeConfigPath,
 } from '../mcp-config.js'
-import { writeOpencodeConfig } from '@plur-ai/opencode/setup'
 import {
   buildCursorHooks,
   readCursorHooksConfig,
@@ -50,6 +47,11 @@ import {
   hasPlurAgyHooks,
   AGY_HOOK_SET_NAME,
 } from '../antigravity-hooks.js'
+import {
+  writeOpencodeConfig,
+  opencodeConfigDir,
+  opencodeConfigPath,
+} from '../opencode-config.js'
 
 /**
  * plur init — install Claude Code hooks AND register the plur MCP server.
@@ -1113,7 +1115,7 @@ function shouldSetupOpencode(args: string[]): boolean {
 
 /**
  * Wire PLUR into opencode by writing BOTH layers into its config file
- * (`writeOpencodeConfig` — see packages/opencode/src/setup.ts):
+ * (`writeOpencodeConfig` — see packages/cli/src/opencode-config.ts):
  *
  *   - `plugin: ["@plur-ai/opencode"]` — the automatic layer (recall injected
  *     each turn, learning harvested after it), which needs no tool calls.

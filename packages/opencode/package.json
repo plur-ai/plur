@@ -16,8 +16,5 @@
   "homepage": "https://plur.ai",
   "repository": { "type": "git", "url": "https://github.com/plur-ai/plur", "directory": "packages/opencode" },
   "author": "PLUR <info@plur.ai>",
-  "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./setup": { "types": "./dist/setup.d.ts", "import": "./dist/setup.js" }
-  }
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } }
 }
