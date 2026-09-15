@@ -29,6 +29,12 @@ export const PlurPlugin = async (ctx: any) => {
     // accreting path beats memory silently vanishing.
     'chat.message': async (input: any, output: any) => {
       await safe('chat.message', async () => {
+        // Record this turn's user messageID so the event handler below can
+        // exclude its parts from the turn buffer — message.part.updated
+        // fires for the user's own submitted message too, not just the
+        // assistant's streamed reply (confirmed against the real binary).
+        turns.markUserMessage(input.sessionID, output.message?.id)
+
         const query = (output?.parts ?? [])
           .filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
           .map((p: any) => p.text).join('\n')
@@ -78,7 +84,11 @@ export const PlurPlugin = async (ctx: any) => {
     event: async ({ event }: any) => {
       await safe('event', async () => {
         if (event.type === 'message.part.updated' && event.properties?.part?.type === 'text') {
-          turns.append(event.properties.part.sessionID, event.properties.part.text ?? '')
+          const part = event.properties.part
+          // Cumulative snapshot per part id, latest wins — TurnBuffer.append
+          // also excludes parts whose messageID is this session's recorded
+          // user message (see markUserMessage above and turn.ts's docstring).
+          turns.append(part.sessionID, part.id, part.messageID, part.text ?? '')
         }
         if (event.type === 'session.idle') {
           const sessionID = event.properties?.sessionID

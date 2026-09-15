@@ -76,6 +76,54 @@ describe('event hook — turn accumulation and debounced learning', () => {
     expect(out.system).toHaveLength(1) // nothing pushed — the cache was cleared
   })
 
+  it('excludes the user\'s own message.part.updated events from the self-report harvest', async () => {
+    // Regression test for a real bug found by probing opencode 1.18.30
+    // directly: message.part.updated fires for the USER's own part too (not
+    // just the assistant's streamed reply), and repeated updates to the same
+    // part id are cumulative snapshots ("" -> full), not deltas. Reproduces
+    // that exact shape: user part arrives once, complete; assistant part
+    // arrives twice for the same part id, growing from empty to complete.
+    const plur = fakePlur()
+    const hooks = await PlurPlugin({ directory: '/tmp/p', _plur: plur } as any)
+
+    // The user's own message — deliberately contains a marker that would be
+    // wrongly harvested if the exclusion did not work.
+    await hooks['chat.message']!(
+      { sessionID: 'ses_1' } as any,
+      { message: { id: 'msg_user' }, parts: [{ id: 'prt_u', type: 'text', text: 'Count slowly from 1 to 3.' }] } as any,
+    )
+    await hooks['event']!({
+      event: {
+        type: 'message.part.updated',
+        properties: { part: { id: 'prt_u', sessionID: 'ses_1', messageID: 'msg_user', type: 'text', text: '---\n🧠 I learned:\n- This is user text and must never be learned.' } },
+      },
+    } as any)
+
+    // The assistant's reply streams in as cumulative snapshots of one part id.
+    await hooks['event']!({
+      event: {
+        type: 'message.part.updated',
+        properties: { part: { id: 'prt_a', sessionID: 'ses_1', messageID: 'msg_asst', type: 'text', text: '' } },
+      },
+    } as any)
+    await hooks['event']!({
+      event: {
+        type: 'message.part.updated',
+        properties: { part: { id: 'prt_a', sessionID: 'ses_1', messageID: 'msg_asst', type: 'text', text: '---\n🧠 I learned:\n- Only the assistant text should be learned.' } },
+      },
+    } as any)
+
+    await hooks['event']!(sessionIdle('ses_1') as any)
+
+    await vi.waitFor(() => expect(plur.learnRouted).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(plur.learnRouted).toHaveBeenCalledTimes(1)
+    expect(plur.learnRouted).toHaveBeenCalledWith(
+      'Only the assistant text should be learned.',
+      expect.objectContaining({ source: 'opencode:self-report' }),
+    )
+  })
+
   it('wires the correction path: chat.message passes the user text to learnFromUserText', async () => {
     const plur = fakePlur()
     const hooks = await PlurPlugin({ directory: '/tmp/p', _plur: plur } as any)
