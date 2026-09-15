@@ -50,7 +50,7 @@ If you'd rather edit the config by hand, or `plur init` reports your config is i
   "mcp": {
     "plur": {
       "type": "local",
-      "command": ["npx", "-y", "@plur-ai/mcp"],
+      "command": ["npx", "-y", "@plur-ai/mcp@<version>"],
       "enabled": true
     }
   }

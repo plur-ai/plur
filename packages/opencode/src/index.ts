@@ -133,7 +133,11 @@ export const PlurPlugin = async (ctx: any) => {
       })
     },
 
-    dispose: async () => { blocks.clearAll() },
+    dispose: async () => {
+      await safe('dispose', async () => {
+        blocks.clearAll()
+      })
+    },
   }
 }
 
