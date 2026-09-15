@@ -348,6 +348,22 @@ export default PlurE2EObserver
       const out = runOpencode('assertion-3-accretion', turns[i])
       console.log(`turn ${i + 1} model output: ${out.trim()}`)
       const obsLog = readObserverLog()
+
+      // M1: a 0-block count on its own is ambiguous — it's exactly what "not
+      // accreting" looks like, but it's also exactly what "not injecting at
+      // all" looks like. Liveness was previously only proven by assertion 2,
+      // on a DIFFERENT session, in the PRECEDING invocation. Require the
+      // injection to still be live on THIS turn too, so 0 can only ever mean
+      // "not accreting."
+      const systemLines = obsLog.split('\n').filter((l) => l.includes('SYSTEM '))
+      if (!systemLines.some((l) => l.includes('present=true'))) {
+        fail(
+          'assertion-3-accretion',
+          `turn ${i + 1}: observer did not report the PLUR header present in system[] — ` +
+          `a 0 accretion count here would be indistinguishable from injection having stopped.\n${obsLog}`,
+        )
+      }
+
       const msgLines = obsLog.split('\n').filter((l) => l.includes('MESSAGES '))
       if (msgLines.length === 0) {
         fail(
@@ -389,6 +405,9 @@ export default PlurE2EObserver
     step('Cleanup')
     if (process.env.PLUR_E2E_KEEP_TMP) {
       console.log(`PLUR_E2E_KEEP_TMP set — leaving ${root} in place for inspection`)
+      // M2: this directory holds a COPY of your opencode provider credentials
+      // (xdg-data/opencode/auth.json) — see the README's env-knob table.
+      console.log(`  note: ${join(root, 'xdg-data', 'opencode', 'auth.json')} is a copy of your provider credentials — remove ${root} when done inspecting it`)
     } else {
       try {
         rmSync(root, { recursive: true, force: true })

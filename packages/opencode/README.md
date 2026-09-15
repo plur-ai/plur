@@ -111,7 +111,7 @@ Environment knobs:
 |---|---|---|
 | `PLUR_E2E_MODEL` | `openai/gpt-5.5` | Model to drive the gate with. |
 | `PLUR_E2E_FULL` | unset (BM25-only) | Set to `1` to exercise the hybrid/embedding recall path. Local embeddings load inside the opencode process and can OOM a loaded machine; the default runs BM25-only, which is sufficient for all three assertions since the seeded fact uses distinctive tokens. |
-| `PLUR_E2E_KEEP_TMP` | unset | Set to `1` to keep the temporary harness directory (packed tarballs, isolated XDG dirs, observer log) after the run for inspection. |
+| `PLUR_E2E_KEEP_TMP` | unset | Set to `1` to keep the temporary harness directory (packed tarballs, isolated XDG dirs, observer log) after the run for inspection. **The preserved directory contains a copy of your opencode provider credentials** (`xdg-data/opencode/auth.json`, copied from `~/.local/share/opencode/auth.json` so the harness can authenticate) — the OS still restricts it to your user (`mkdtemp` default `0700`), but treat the kept directory itself as sensitive and remove it when you're done inspecting it. |
 
 ## Related packages
 
