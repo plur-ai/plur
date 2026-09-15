@@ -49,7 +49,6 @@ import {
 } from '../antigravity-hooks.js'
 import {
   writeOpencodeConfig,
-  opencodeConfigDir,
   opencodeConfigPath,
 } from '../opencode-config.js'
 
@@ -76,7 +75,11 @@ import {
  *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
  *   plur init --antigravity | --agy / --no-antigravity
  *                             # force / skip Antigravity (auto: ~/.gemini/antigravity-cli exists)
- *   plur init --opencode / --no-opencode      # force / skip opencode (auto: ~/.config/opencode exists)
+ *   plur init --opencode / --no-opencode      # enable / skip opencode — OPT-IN ONLY, no
+ *                             # auto-detection like the legs above: @plur-ai/opencode is not
+ *                             # yet on npm, and opencode resolves a bare plugin name from the
+ *                             # registry silently on a miss, so auto-enabling would write a
+ *                             # dead plugin entry into every opencode user's config
  *   plur init --no-prompt     # never ask interactive questions (telemetry opt-in)
  *   plur init --domain X      # set default domain for this project (.plur.yaml)
  *   plur init --scope Y       # set default scope for this project (.plur.yaml)
@@ -1108,9 +1111,15 @@ function installAntigravity(cmd: string): string {
 // ── opencode ─────────────────────────────────────────────────────────────
 
 function shouldSetupOpencode(args: string[]): boolean {
+  // Opt-in ONLY — unlike --cursor/--codex/--antigravity, this leg never
+  // auto-detects from existsSync(opencodeConfigDir()). @plur-ai/opencode is
+  // not yet published to npm (see scripts/release.sh --opencode); opencode
+  // resolves a bare plugin name from the registry with no error on a miss,
+  // so auto-enabling here would silently write a dead `plugin` entry into
+  // every opencode user's config the day this CLI ships, before the package
+  // exists to resolve. `--no-opencode` still works as an explicit no-op.
   if (args.includes('--no-opencode')) return false
-  if (args.includes('--opencode')) return true
-  return existsSync(opencodeConfigDir())
+  return args.includes('--opencode')
 }
 
 /**
@@ -1445,7 +1454,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const opencodeStatus = shouldSetupOpencode(args)
     ? containLeg('Opencode', () => installOpencode(CLI_VERSION))
-    : 'skipped (no ~/.config/opencode found — pass --opencode to force, --no-opencode to silence this)'
+    : 'skipped (opt-in only — pass --opencode to enable once @plur-ai/opencode is installed/published)'
 
   // Contained like the harness legs: an unwritable skills dir must not abort
   // the hooks and MCP registration that are the point of `plur init`.

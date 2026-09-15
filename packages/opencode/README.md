@@ -37,7 +37,7 @@ This writes two things into opencode's global config (`~/.config/opencode/openco
 - `plugin: ["@plur-ai/opencode"]` — the automatic layer described above.
 - `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`, for when you want the agent to query or teach memory on demand.
 
-`plur init` auto-detects opencode (it runs this step whenever `~/.config/opencode` already exists) — you don't need the flag if opencode is already installed. Pass `--no-opencode` to skip it.
+Unlike `--cursor`/`--codex`/`--antigravity`, `plur init` does **not** auto-detect opencode from `~/.config/opencode` existing — you must pass `--opencode` explicitly. That's deliberate: until this package is published on npm, auto-enabling it would write a `plugin` entry that silently resolves to nothing (see the warning above) into every opencode user's config. `--no-opencode` is accepted too, as an explicit no-op.
 
 ### Manual `opencode.json`
 
