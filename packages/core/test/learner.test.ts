@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractLearnings } from '../src/learner.js'
+import { extractLearnings, extractSelfReportedLearnings } from '../src/learner.js'
 
 describe('extractLearnings', () => {
   it('extracts a decision as an architectural candidate with confidence 0.8', () => {
@@ -92,5 +92,64 @@ describe('extractLearnings', () => {
     ])
     expect(learnings.length).toBeGreaterThanOrEqual(1)
     expect(learnings.some(l => l.statement.toLowerCase().includes('meta'))).toBe(false)
+  })
+})
+
+describe('extractSelfReportedLearnings', () => {
+  it('extracts bullet points from a well-formed 🧠 I learned: block', () => {
+    const statements = extractSelfReportedLearnings({
+      role: 'assistant',
+      content: 'Here is my response.\n\n---\n🧠 I learned:\n- The deploy script needs sudo access.\n- Tests must run before merging.',
+    })
+    expect(statements).toEqual([
+      'The deploy script needs sudo access.',
+      'Tests must run before merging.',
+    ])
+  })
+
+  it('returns an empty array when there is no self-report marker', () => {
+    const statements = extractSelfReportedLearnings({
+      role: 'assistant',
+      content: 'Just a normal response with no learning block.',
+    })
+    expect(statements).toEqual([])
+  })
+
+  it('strips -, •, and * bullet markers and trims whitespace', () => {
+    const statements = extractSelfReportedLearnings({
+      role: 'assistant',
+      content: '---\n🧠 I learned:\n* First lesson learned here.\n• Second lesson learned here.\n-   Third lesson learned here.',
+    })
+    expect(statements).toEqual([
+      'First lesson learned here.',
+      'Second lesson learned here.',
+      'Third lesson learned here.',
+    ])
+  })
+
+  it('filters out lines under the 10-character floor', () => {
+    const statements = extractSelfReportedLearnings({
+      role: 'assistant',
+      content: '---\n🧠 I learned:\n- ok\n- This one is definitely long enough to keep.',
+    })
+    expect(statements).toEqual(['This one is definitely long enough to keep.'])
+  })
+
+  it('handles array-of-blocks content the same as string content', () => {
+    const statements = extractSelfReportedLearnings({
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '---\n🧠 I learned:\n- Something learned from array blocks.' },
+      ],
+    })
+    expect(statements).toEqual(['Something learned from array blocks.'])
+  })
+
+  it('does not filter by role — the caller decides which message to pass', () => {
+    const statements = extractSelfReportedLearnings({
+      role: 'user',
+      content: '---\n🧠 I learned:\n- Role filtering happens at the call site.',
+    })
+    expect(statements).toEqual(['Role filtering happens at the call site.'])
   })
 })

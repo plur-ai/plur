@@ -46,6 +46,50 @@ export interface LearnCandidate {
   confidence: number // 0-1, how confident we are this is a real learning
 }
 
+/**
+ * Extract text from message content — handles string and array-of-blocks
+ * formats. Deliberately distinct from `extractText` above: that one strips
+ * OpenClaw's metadata-wrapper prefixes for the correction-pattern path. This
+ * one is the verbatim `extractMessageText` helper that
+ * `extractSelfReportedLearnings` used in `@plur-ai/claw`'s
+ * `context-engine.ts`, unchanged, so self-report extraction behaviour stays
+ * identical post-extraction — claw is a shipped package.
+ */
+function extractMessageText(message: LearnableMessage): string {
+  const content = message.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return (content as any[])
+      .filter((block: any) => block?.type === 'text' && typeof block?.text === 'string')
+      .map((block: any) => block.text)
+      .join('\n')
+  }
+  return ''
+}
+
+/**
+ * Extract self-reported learnings from a message.
+ * Looks for the 🧠 I learned: section and parses bullet points.
+ *
+ * Extracted from `@plur-ai/claw`'s `context-engine.ts` (2026-09, opencode
+ * plugin task 6b) so `@plur-ai/opencode` can harvest the assistant's own
+ * self-report block instead of vendoring a second copy. The caller decides
+ * which message to pass (claw passes only the last assistant message) —
+ * this function does not filter by role. Behaviour must stay identical to
+ * claw's pre-extraction implementation — claw is a shipped package.
+ */
+export function extractSelfReportedLearnings(message: LearnableMessage): string[] {
+  const content = extractMessageText(message)
+  // Match the learning section: ---\n🧠 I learned:\n- item\n- item
+  const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)/)
+  if (!match) return []
+
+  return match[1]
+    .split('\n')
+    .map(line => line.replace(/^[-•*]\s*/, '').trim())
+    .filter(line => line.length >= 10) // skip empty or trivial lines
+}
+
 // Patterns that indicate corrections or preferences.
 // Applied per-sentence (not per-message) to handle long conversational messages.
 
