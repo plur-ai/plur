@@ -47,7 +47,7 @@ rather than clobbering in silence.
 **opencode agents now get persistent memory too, with no tool call required.**
 A new package, `@plur-ai/opencode`, adds automatic recall, automatic learning,
 and learn-before-compaction to the [opencode](https://opencode.ai) agent
-harness. It ships on its own version track (`--opencode <ver>`), starting at
+harness (#1195). It ships on its own version track (`--opencode <ver>`), starting at
 0.1.0, independent of this release's version — the same arrangement as
 `@plur-ai/claw` and `@plur-ai/dsh`.
 
