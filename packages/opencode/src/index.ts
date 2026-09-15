@@ -1,5 +1,6 @@
 import { Plur, renderMemoryBlock } from '@plur-ai/core'
 import { BlockCache } from './block.js'
+import { RenderPath } from './capability.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
@@ -12,6 +13,7 @@ async function safe(label: string, fn: () => Promise<void>): Promise<void> {
 export const PlurPlugin = async (ctx: any) => {
   const plur = ctx?._plur ?? new Plur({})
   const blocks = new BlockCache()
+  const path = new RenderPath()
   void OPENCODE_PLUGIN_VERSION
 
   return {
@@ -25,6 +27,25 @@ export const PlurPlugin = async (ctx: any) => {
         const injection = await plur.injectHybrid(query, {})
         blocks.set(input.sessionID, renderMemoryBlock({ injection }))
         log(`recall for ${input.sessionID}: ${injection?.count ?? 0} engrams`)
+
+        // Safety net: system.transform is the preferred, non-accreting path.
+        // If a full turn has gone by without it firing (see RenderPath),
+        // opencode no longer supports it — fall back to injecting here so
+        // memory keeps working instead of silently vanishing.
+        if (path.shouldFallback()) {
+          const block = blocks.get(input.sessionID)
+          if (block) {
+            output.parts.push({
+              id: `prt_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+              sessionID: input.sessionID,
+              messageID: input.messageID ?? output.message?.id,
+              type: 'text',
+              text: block,
+              synthetic: true,
+            })
+            log('system.transform unavailable — using chat.message fallback (accretes)')
+          }
+        }
       })
     },
 
@@ -35,6 +56,7 @@ export const PlurPlugin = async (ctx: any) => {
       await safe('system.transform', async () => {
         const block = input.sessionID ? blocks.get(input.sessionID) : undefined
         if (block) output.system.push(block)
+        path.markRendered()
       })
     },
 
