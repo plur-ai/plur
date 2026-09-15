@@ -4,6 +4,7 @@ import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
+import { resolveScopeRoot } from './scope.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
 
@@ -13,7 +14,9 @@ async function safe(label: string, fn: () => Promise<void>): Promise<void> {
 }
 
 export const PlurPlugin = async (ctx: any) => {
-  const plur = ctx?._plur ?? new Plur({})
+  const scopeRoot = resolveScopeRoot(ctx ?? {})
+  const plur = ctx?._plur ?? new Plur({ path: process.env.PLUR_PATH, cwd: scopeRoot })
+  log(`scope root: ${scopeRoot}`)
   const blocks = new BlockCache()
   const path = new RenderPath()
   const turns = new TurnBuffer()
