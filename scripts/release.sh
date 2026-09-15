@@ -769,6 +769,9 @@ fi
 if [ -n "$DSH_VERSION" ]; then
   preflight_check dsh "$DSH_VERSION" || PREFLIGHT_OK=false
 fi
+if [ -n "$OPENCODE_VERSION" ]; then
+  preflight_check opencode "$OPENCODE_VERSION" || PREFLIGHT_OK=false
+fi
 if [ "$PREFLIGHT_OK" != true ]; then
   echo ""
   echo "✗ Pre-flight failed — nothing committed, tagged, or published."
@@ -896,6 +899,12 @@ if [ -n "$DSH_VERSION" ]; then
   pnpm --filter "@plur-ai/dsh" publish --access public --no-git-checks --tag next 2>&1 | tail -1
 else
   echo "  @plur-ai/dsh: skipped (no --dsh flag)"
+fi
+if [ -n "$OPENCODE_VERSION" ]; then
+  echo -n "  @plur-ai/opencode@$OPENCODE_VERSION → @next..."
+  pnpm --filter "@plur-ai/opencode" publish --access public --no-git-checks --tag next 2>&1 | tail -1
+else
+  echo "  @plur-ai/opencode: skipped (no --opencode flag)"
 fi
 echo ""
 
@@ -1090,6 +1099,10 @@ fi
 if [ -n "$CLAW_VERSION" ]; then
   echo -n "  @plur-ai/claw@$CLAW_VERSION → @latest..."
   npm dist-tag add "@plur-ai/claw@$CLAW_VERSION" latest 2>&1 | tail -1
+fi
+if [ -n "$OPENCODE_VERSION" ]; then
+  echo -n "  @plur-ai/opencode@$OPENCODE_VERSION → @latest..."
+  npm dist-tag add "@plur-ai/opencode@$OPENCODE_VERSION" latest 2>&1 | tail -1
 fi
 echo ""
 
