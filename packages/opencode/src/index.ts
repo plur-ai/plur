@@ -3,7 +3,7 @@ import { Plur, renderMemoryBlock, readProjectConfig, type ProjectConfig } from '
 // is an optional peerDependency and this import must never become a runtime
 // require. Typechecking the hook map against it turns a renamed/changed
 // `experimental.` hook into a build failure instead of a silent no-op.
-import type { Plugin } from '@opencode-ai/plugin'
+import type { Plugin, Hooks } from '@opencode-ai/plugin'
 import { BlockCache } from './block.js'
 import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
@@ -40,7 +40,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
     // once a full turn has passed with system.transform never firing, this
     // DOES push a part, accepting the accretion because a working-but-
     // accreting path beats memory silently vanishing.
-    'chat.message': async (input: any, output: any) => {
+    'chat.message': async (input, output) => {
       await safe('chat.message', async () => {
         // Record this turn's user messageID so the event handler below can
         // exclude its parts from the turn buffer — message.part.updated
@@ -96,7 +96,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
     // Renderer — once per model request (3x in a tool-calling turn). O(1):
     // reads the cache, never recalls. `system` is rebuilt by the host each
     // request, so this never accumulates.
-    'experimental.chat.system.transform': async (input: any, output: any) => {
+    'experimental.chat.system.transform': async (input, output) => {
       await safe('system.transform', async () => {
         const block = input.sessionID ? blocks.get(input.sessionID) : undefined
         if (block) output.system.push(block)
@@ -105,7 +105,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
     },
 
     // Turn accumulation + debounced self-report learning.
-    event: async ({ event }: any) => {
+    event: async ({ event }) => {
       await safe('event', async () => {
         if (event.type === 'message.part.updated' && event.properties?.part?.type === 'text') {
           const part = event.properties.part
@@ -140,7 +140,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
     // Context is about to be dropped. Carry memory across the cut, and learn
     // from what is being discarded. Never set `output.prompt` — that replaces
     // the host's compaction prompt entirely.
-    'experimental.session.compacting': async (input: any, output: any) => {
+    'experimental.session.compacting': async (input, output) => {
       await safe('compacting', async () => {
         const block = blocks.get(input.sessionID)
         if (block) output.context.push(block)
@@ -155,7 +155,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
         blocks.clearAll()
       })
     },
-  }
+  } satisfies Hooks
 }
 
 export default PlurPlugin
