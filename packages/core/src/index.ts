@@ -99,6 +99,10 @@ export { generateGuardrails } from './guardrails.js'
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
 // memory block byte-identically instead of each vendoring a copy.
 export { renderMemoryBlock, PLUR_MEMORY_INSTRUCTIONS } from './memory-block.js'
+// Shared learning-extraction heuristics (opencode plugin's task 6a): one
+// implementation so @plur-ai/claw and @plur-ai/opencode derive learning
+// candidates identically instead of each vendoring a copy.
+export { extractLearnings, type LearnCandidate, type LearnableMessage } from './learner.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText, termMatches, computeIdf, type CorpusStats } from './fts.js'
