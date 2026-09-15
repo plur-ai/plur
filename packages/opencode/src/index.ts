@@ -112,6 +112,19 @@ export const PlurPlugin = async (ctx: any) => {
       })
     },
 
+    // Context is about to be dropped. Carry memory across the cut, and learn
+    // from what is being discarded. Never set `output.prompt` — that replaces
+    // the host's compaction prompt entirely.
+    'experimental.session.compacting': async (input: any, output: any) => {
+      await safe('compacting', async () => {
+        const block = blocks.get(input.sessionID)
+        if (block) output.context.push(block)
+        const texts = turns.takeIfFresh(input.sessionID)
+        if (texts) void learnFromTurn(plur, texts).catch((e) =>
+          log(`learn (compacting) failed: ${(e as Error).message}`))
+      })
+    },
+
     dispose: async () => { blocks.clearAll() },
   }
 }
