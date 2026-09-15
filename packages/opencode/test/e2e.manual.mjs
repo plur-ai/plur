@@ -39,9 +39,14 @@ class GateFailure extends Error {}
 function fail(label, detail) { throw new GateFailure(`FAIL [${label}]: ${detail}`) }
 function step(msg) { console.log(`\n=== ${msg} ===`) }
 
-/** Run a command with stdio inherited (build output streams live). */
+/**
+ * Run a command with stdio inherited (build output streams live). Defaults to
+ * a 3-minute timeout, same reasoning as the `opencode run` calls below (120s):
+ * a stalled build or a hung `npm install` fetch would otherwise block the
+ * gate indefinitely instead of failing it.
+ */
 function runInherit(cmd, args, opts = {}) {
-  execFileSync(cmd, args, { cwd: REPO_ROOT, stdio: 'inherit', ...opts })
+  execFileSync(cmd, args, { cwd: REPO_ROOT, stdio: 'inherit', timeout: 180_000, ...opts })
 }
 
 /** Run a command and capture output, failing the gate with context on error. */
@@ -64,18 +69,21 @@ function packOne(pkgName, destDir) {
 }
 
 async function main() {
-  step('Checking prerequisites')
-  const realAuthPath = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
-  if (!existsSync(realAuthPath)) {
-    fail('setup', `No opencode auth found at ${realAuthPath} — run \`opencode auth login\` first.`)
-  }
-  console.log(`Using model: ${MODEL}`)
-  console.log(`Repo root: ${REPO_ROOT}`)
-
   const root = mkdtempSync(join(tmpdir(), 'plur-oc-e2e-'))
   console.log(`Temp root: ${root}`)
 
   try {
+    // Inside the try/finally: a failure here is a GateFailure like any other
+    // and must go through the same catch below (and print via the script's
+    // own formatting) rather than surfacing as an unhandled rejection.
+    step('Checking prerequisites')
+    const realAuthPath = join(homedir(), '.local', 'share', 'opencode', 'auth.json')
+    if (!existsSync(realAuthPath)) {
+      fail('setup', `No opencode auth found at ${realAuthPath} — run \`opencode auth login\` first.`)
+    }
+    console.log(`Using model: ${MODEL}`)
+    console.log(`Repo root: ${REPO_ROOT}`)
+
     const harness = join(root, 'harness')
     const work = join(harness, 'work')
     const pluginsDir = join(harness, 'plugins')
@@ -126,7 +134,7 @@ async function main() {
     }
     console.log(`PASS: workspace:* rewritten to concrete version ${coreDepVersion}`)
 
-    step('Step 4: Create harness dir, write package.json, install tarballs')
+    step('Step 4: Write package.json, install tarballs')
     writeFileSync(
       join(harness, 'package.json'),
       JSON.stringify({
@@ -246,6 +254,12 @@ export default PlurE2EObserver
     // exploring — a blanket env spread would hand every ambient secret in
     // the calling shell (API keys, session tokens) to a model tool call.
     // Only what opencode/npm-installed-binaries need to run is forwarded.
+    // Real HOME is one of those forwarded values, and that is still safe:
+    // every directory a real HOME would make opencode read or write from
+    // (~/.config/opencode, ~/.local/share, ~/.local/state) is independently
+    // overridden below via the XDG_* vars, which opencode prefers over
+    // deriving those paths from HOME. HOME itself is just needed by some
+    // npm-installed binaries and shell tooling to resolve at all.
     const SAFE_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'USER', 'LOGNAME']
     const baseEnv = {}
     for (const k of SAFE_ENV_KEYS) if (process.env[k] !== undefined) baseEnv[k] = process.env[k]
