@@ -1,4 +1,4 @@
-import { extractLearnings, extractSelfReportedLearnings } from '@plur-ai/core'
+import { extractLearnings, extractSelfReportedLearnings, type ProjectConfig } from '@plur-ai/core'
 
 /**
  * Primary learning path: harvest the assistant's own `🧠 I learned:`
@@ -14,11 +14,13 @@ import { extractLearnings, extractSelfReportedLearnings } from '@plur-ai/core'
  * actually uses for assistant self-reports; it does not filter by role, so
  * the caller decides what to pass in.
  */
-export async function learnFromTurn(plur: any, texts: string[]): Promise<void> {
+export async function learnFromTurn(plur: any, texts: string[], projectConfig?: ProjectConfig): Promise<void> {
   const statements = extractSelfReportedLearnings({ role: 'assistant', content: texts.join('\n') })
   for (const statement of statements) {
     await plur.learnRouted(statement, {
       type: 'behavioral',
+      scope: projectConfig?.scope,
+      domain: projectConfig?.domain,
       source: 'opencode:self-report',
       rationale: 'self-reported by agent via learning section',
       tags: ['self-report'],
@@ -32,13 +34,15 @@ export async function learnFromTurn(plur: any, texts: string[]): Promise<void> {
  * recall query from. Mirrors claw's `afterTurn` fallback path
  * (`extractLearnings` over user messages, persisted at confidence >= 0.7).
  */
-export async function learnFromUserText(plur: any, text: string): Promise<void> {
+export async function learnFromUserText(plur: any, text: string, projectConfig?: ProjectConfig): Promise<void> {
   if (!text) return
   const candidates = extractLearnings([{ role: 'user', content: text }])
   for (const candidate of candidates) {
     if (candidate.confidence < 0.7) continue
     await plur.learnRouted(candidate.statement, {
       type: candidate.type,
+      scope: projectConfig?.scope,
+      domain: projectConfig?.domain,
       source: 'opencode:chat.message',
       rationale: 'extracted from conversation via pattern matching',
       tags: [candidate.type],

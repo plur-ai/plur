@@ -1,4 +1,4 @@
-import { Plur, renderMemoryBlock } from '@plur-ai/core'
+import { Plur, renderMemoryBlock, readProjectConfig, type ProjectConfig } from '@plur-ai/core'
 import { BlockCache } from './block.js'
 import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
@@ -16,7 +16,10 @@ async function safe(label: string, fn: () => Promise<void>): Promise<void> {
 export const PlurPlugin = async (ctx: any) => {
   const scopeRoot = resolveScopeRoot(ctx ?? {})
   const plur = ctx?._plur ?? new Plur({ path: process.env.PLUR_PATH, cwd: scopeRoot })
+  const projectConfig = readProjectConfig(scopeRoot)
   log(`scope root: ${scopeRoot}`)
+  if (projectConfig.scope) log(`project scope: ${projectConfig.scope}`)
+  if (projectConfig.domain) log(`project domain: ${projectConfig.domain}`)
   const blocks = new BlockCache()
   const path = new RenderPath()
   const turns = new TurnBuffer()
@@ -41,14 +44,16 @@ export const PlurPlugin = async (ctx: any) => {
         const query = (output?.parts ?? [])
           .filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
           .map((p: any) => p.text).join('\n')
-        const injection = await plur.injectHybrid(query, {})
+        const injection = await plur.injectHybrid(query, {
+          scope: projectConfig.scope,
+        })
         blocks.set(input.sessionID, renderMemoryBlock({ injection }))
         log(`recall for ${input.sessionID}: ${injection?.count ?? 0} engrams`)
 
         // Secondary learning path: corrections/preferences from the user's
         // own text — the same text the recall query above was built from.
         // Fire-and-forget: never stall the turn on a slow store.
-        void learnFromUserText(plur, query).catch((e) =>
+        void learnFromUserText(plur, query, projectConfig).catch((e) =>
           log(`learn (user) failed: ${(e as Error).message}`))
 
         // Safety net: system.transform is the preferred, non-accreting path.
@@ -104,7 +109,7 @@ export const PlurPlugin = async (ctx: any) => {
           // Fire-and-forget: never stall the turn on a slow store. One-shot
           // takeIfFresh already guards against session.idle's double-fire —
           // this only runs once per turn.
-          void learnFromTurn(plur, texts).catch((e) =>
+          void learnFromTurn(plur, texts, projectConfig).catch((e) =>
             log(`learn (turn) failed: ${(e as Error).message}`))
         }
         if (event.type === 'session.deleted') {
@@ -123,7 +128,7 @@ export const PlurPlugin = async (ctx: any) => {
         const block = blocks.get(input.sessionID)
         if (block) output.context.push(block)
         const texts = turns.takeIfFresh(input.sessionID)
-        if (texts) void learnFromTurn(plur, texts).catch((e) =>
+        if (texts) void learnFromTurn(plur, texts, projectConfig).catch((e) =>
           log(`learn (compacting) failed: ${(e as Error).message}`))
       })
     },
