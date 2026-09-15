@@ -126,8 +126,10 @@ hooks/plugins + MCP tools.
    `invalid user part before save`. `input.messageID` **is `undefined`** in
    `chat.message` — the id must come from `output.message.id`. This only
    matters for the fallback path, but it is a hard failure when wrong.
-2. **`worktree` is unreliable for scope.** It was `/` in a non-git directory,
-   with `projectID=global`. Scope resolution must use `directory`.
+2. **`worktree` degenerates outside a git repo.** It was `/` in a non-git
+   directory, with `projectID=global`. Scope resolution prefers a real
+   `worktree` and falls back to `directory` — it must never trust the
+   degenerate `"/"` value.
 3. **`session.idle` fires more than once per turn.** Debounce, or the learner
    runs twice on the same transcript.
 

@@ -1,5 +1,16 @@
 # `@plur-ai/opencode` Implementation Plan
 
+> **SUPERSEDED where it conflicts with the shipped code.** This plan is the
+> pre-implementation design record, not the current source of truth — for that,
+> read `packages/opencode/ARCHITECTURE.md` and
+> `docs/specs/2026-09-15-opencode-plugin-design.md`. Several code samples below
+> were found defective during execution and corrected in the implementation:
+> a learn-path sample that fed `role: 'assistant'` into `extractLearnings`
+> (which skips everything where `role !== 'user'`, so it would have learned
+> nothing), an `InjectOptions.cwd` option that does not exist, and a config
+> writer placed in the wrong package. The corrections live in a gitignored
+> ledger, not here.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship `@plur-ai/opencode`, an in-process opencode plugin that gives every opencode session automatic PLUR memory — recall injected into the system prompt once per turn, learnings extracted after it — with no accretion in the transcript.
@@ -32,7 +43,7 @@
 | `packages/opencode/src/capability.ts` | Runtime detection of `system.transform`; picks render path vs fallback. |
 | `packages/opencode/src/turn.ts` | Per-session assistant-text accumulation + `session.idle` debounce. |
 | `packages/opencode/src/learn.ts` | Turn transcript → `learnRouted()` calls. Wraps core/claw learner. |
-| `packages/opencode/src/scope.ts` | Session scope from `directory` (never `worktree`). |
+| `packages/opencode/src/scope.ts` | Session scope: prefers a real `worktree`, falls back to `directory` (never trusts the degenerate `worktree = "/"`). |
 | `packages/opencode/src/setup.ts` | Writes `plugin` + `mcp` entries into `opencode.json`. |
 | `packages/opencode/src/version.ts` | `OPENCODE_PLUGIN_VERSION` — the one place the version is written. |
 
@@ -892,11 +903,12 @@ git commit -m "feat(opencode): carry memory across compaction and learn before t
 
 ---
 
-### Task 8: Session scope from `directory`
+### Task 8: Session scope — prefer `worktree`, fall back to `directory`
 
 The probe measured `worktree = "/"` in a non-git directory with
-`projectID = "global"`. Scoping memory by `worktree` would put every such
-session in one bucket.
+`projectID = "global"`. Scoping memory by that degenerate value would put
+every such session in one bucket, so the guard falls back to `directory`
+only in that case — a real `worktree` is used when one is available.
 
 **Files:**
 - Create: `packages/opencode/src/scope.ts`
