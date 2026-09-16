@@ -51,11 +51,22 @@ export async function learnFromTurn(plur: any, texts: string[], projectConfig?: 
  * message, persisted at confidence >= 0.7, gated behind two checks claw
  * applies before ever calling `extractLearnings`:
  *
- * - `auto_learn`: the same `config.yaml` key claw's `ContextEngine` option
- *   is named after (`packages/core/src/schemas/config.ts`, default true).
- *   Read directly off the live `Plur` instance's already-loaded config
- *   (`plur.config`) rather than re-reading the file, so a user who already
- *   set this expects — and gets — the same behaviour in both hosts.
+ * - `auto_learn`: read directly off the live `Plur` instance's already-loaded
+ *   config (`plur.config`, from `~/.plur/config.yaml` —
+ *   `packages/core/src/schemas/config.ts`, default true).
+ *
+ *   E4 (2026-09 audit) correction: this is NOT the same switch claw's
+ *   `ContextEngine` honors, despite sharing a name. Claw's `auto_learn` is a
+ *   CONSTRUCTOR OPTION (`packages/claw/src/context-engine.ts`,
+ *   `this.options.auto_learn`, default `true`) — claw never reads
+ *   `config.yaml` at all (`grep -rn plur.config packages/claw/src` returns
+ *   nothing). A user who sets `auto_learn: false` in `~/.plur/config.yaml`
+ *   gets it honored HERE, in opencode, and silently IGNORED in claw — the
+ *   opposite of the "expects and gets the same behaviour in both hosts"
+ *   this comment used to (incorrectly) claim. That mismatch is a real gap,
+ *   tracked separately; fixing it means changing claw's behaviour (reading
+ *   `config.yaml` there too, or exposing the option some other way), which
+ *   is out of scope for this plugin and not done here.
  * - `isCorrection`: claw's real-time-ingest matcher, moved to
  *   `@plur-ai/core` (`packages/core/src/learner.ts`) so both hosts share it.
  *   Far tighter than "some pattern matched" — it requires an explicit
