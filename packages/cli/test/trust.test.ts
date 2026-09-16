@@ -99,4 +99,45 @@ describe('plur trust / untrust (D2)', () => {
     const parsed = JSON.parse(out)
     expect(parsed.trusted).toBe(target)
   })
+
+  // E3 (2026-09 audit): `plur untrust <subdir>` used to print "was not
+  // trusted" for a subdirectory of a trusted repo — true of the exact-match
+  // removal, false of the actual security question (it is still trusted,
+  // via the ancestor).
+  describe('untrust <subdir-of-a-trusted-repo> (E3)', () => {
+    it('reports still_trusted + the covering ancestor instead of a bare false removal', () => {
+      run(`trust ${target}`)
+      const sub = join(target, 'packages', 'inner')
+      mkdirSync(sub, { recursive: true })
+
+      const out = JSON.parse(run(`untrust ${sub}`))
+      expect(out.removed).toBe(false)
+      expect(out.still_trusted).toBe(true)
+      expect(out.covering_ancestor).toBe(target)
+
+      // The ancestor grant is untouched — the subdirectory is still trusted.
+      const list = JSON.parse(run('trust --list'))
+      expect(list.trusted).toContain(target)
+    })
+
+    it('untrusting the named covering ancestor actually revokes coverage', () => {
+      run(`trust ${target}`)
+      const sub = join(target, 'packages', 'inner')
+      mkdirSync(sub, { recursive: true })
+
+      const first = JSON.parse(run(`untrust ${sub}`))
+      const revoked = JSON.parse(run(`untrust ${first.covering_ancestor}`))
+      expect(revoked.removed).toBe(true)
+
+      const list = JSON.parse(run('trust --list'))
+      expect(list.trusted).not.toContain(target)
+    })
+
+    it('reports still_trusted: false with no covering_ancestor when truly untrusted', () => {
+      const out = JSON.parse(run(`untrust ${target}`))
+      expect(out.removed).toBe(false)
+      expect(out.still_trusted).toBe(false)
+      expect(out).not.toHaveProperty('covering_ancestor')
+    })
+  })
 })

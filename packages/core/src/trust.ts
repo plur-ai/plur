@@ -106,3 +106,25 @@ export function untrustDirectory(dir: string, root: string): boolean {
 export function listTrustedDirectories(root: string): string[] {
   return loadTrustFile(root).trusted
 }
+
+/**
+ * Find the trusted entry that COVERS `dir` — either `dir` itself (an exact
+ * grant) or an ancestor directory whose grant is hierarchical over it.
+ * Returns `null` when nothing covers `dir` at all.
+ *
+ * E3 (2026-09 audit): `untrustDirectory` is an exact-match removal (by
+ * design — trust is hierarchical, grants are not, so there is nothing to
+ * "walk" for a subdirectory that was never its own entry). But that made
+ * `plur untrust <subdir-of-a-trusted-repo>` print "was not trusted" —
+ * true of the exact string, false of the actual security question ("is this
+ * directory still trusted after this command?", answer: yes) — on a
+ * revocation command for a security primitive, telling the user the
+ * opposite of the truth. This lets the caller name the covering ancestor and
+ * the command that actually revokes it, instead of silently doing nothing
+ * while claiming success.
+ */
+export function coveringTrustedAncestor(dir: string, root: string): string | null {
+  const target = canonicalize(dir)
+  const { trusted } = loadTrustFile(root)
+  return trusted.find(t => target === t || target.startsWith(t + sep)) ?? null
+}

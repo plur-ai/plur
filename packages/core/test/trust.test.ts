@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, symlinkSyn
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
-  isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirectories,
+  isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirectories, coveringTrustedAncestor,
 } from '../src/trust.js'
 
 /**
@@ -118,6 +118,36 @@ describe('trust.ts (D2)', () => {
     writeFileSync(join(root, 'trust.yaml'), ': this is not valid yaml: [[[')
     expect(isDirectoryTrusted(dir, root)).toBe(false)
     expect(listTrustedDirectories(root)).toEqual([])
+  })
+
+  describe('coveringTrustedAncestor (E3)', () => {
+    it('returns null when nothing covers the directory', () => {
+      expect(coveringTrustedAncestor(dir, root)).toBeNull()
+    })
+
+    it('returns the exact entry when the directory itself is trusted', () => {
+      trustDirectory(dir, root)
+      expect(coveringTrustedAncestor(dir, root)).toBe(realpathSync(dir))
+    })
+
+    it('returns the covering ancestor for an untrusted subdirectory of a trusted repo', () => {
+      trustDirectory(dir, root)
+      const sub = join(dir, 'packages', 'inner')
+      mkdirSync(sub, { recursive: true })
+      expect(coveringTrustedAncestor(sub, root)).toBe(realpathSync(dir))
+    })
+
+    it('untrusting a covered subdirectory does not remove the ancestor grant, and coveringTrustedAncestor still names it', () => {
+      trustDirectory(dir, root)
+      const sub = join(dir, 'packages', 'inner')
+      mkdirSync(sub, { recursive: true })
+      // The subdirectory was never its own entry — nothing to remove.
+      expect(untrustDirectory(sub, root)).toBe(false)
+      // But it is still trusted, via the ancestor, and isDirectoryTrusted must
+      // agree with what coveringTrustedAncestor reports.
+      expect(isDirectoryTrusted(sub, root)).toBe(true)
+      expect(coveringTrustedAncestor(sub, root)).toBe(realpathSync(dir))
+    })
   })
 
   it('lives under a caller-supplied root, never a hardcoded home path', () => {

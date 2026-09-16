@@ -71,6 +71,7 @@ import {
   trustDirectory as _trustDirectory,
   untrustDirectory as _untrustDirectory,
   listTrustedDirectories as _listTrustedDirectories,
+  coveringTrustedAncestor as _coveringTrustedAncestor,
 } from './trust.js'
 import type { Engram } from './schemas/engram.js'
 import { ATTRIBUTION_UNIDENTIFIED, MeasuredUnderSchema, type MeasuredUnder } from './schemas/engram.js'
@@ -104,7 +105,7 @@ export { findProjectConfigPath, readProjectConfig, readProjectConfigFromPath, ca
 // (`plur trust`) an adapter should require before adopting behaviour-changing
 // configuration it finds on disk (a `.plur.yaml` scope, say) from a directory
 // the user opened but never explicitly vetted. See trust.ts for the model.
-export { isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirectories } from './trust.js'
+export { isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirectories, coveringTrustedAncestor } from './trust.js'
 export { generateGuardrails } from './guardrails.js'
 // Shared memory system-prompt renderer (opencode plugin's task 1): one
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
@@ -9175,6 +9176,17 @@ Generate an improved version of the procedure that prevents this failure. Return
   /** List every directory this user has explicitly trusted. */
   listTrustedDirectories(): string[] {
     return _listTrustedDirectories(this.paths.root)
+  }
+
+  /**
+   * Find the trusted entry — `dir` itself or a covering ancestor — that
+   * makes `isDirectoryTrusted(dir)` true. `null` when nothing covers it.
+   * See trust.ts's `coveringTrustedAncestor` (E3, 2026-09 audit): this is
+   * what `plur untrust` uses to avoid claiming a directory is untrusted
+   * when an ancestor's grant still covers it.
+   */
+  coveringTrustedAncestor(dir: string): string | null {
+    return _coveringTrustedAncestor(dir, this.paths.root)
   }
 
   autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
