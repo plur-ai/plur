@@ -144,6 +144,31 @@ worth knowing about even if you never touch opencode.
   opts out of explicitly (`autoDiscover: false`) rather than something every
   adapter inherits by default without knowing it.
 
+### Team memory now reaches every harness, not just Claude Code
+
+**If you use PLUR Enterprise from Codex, Cursor or Antigravity, your team memory
+was silently never arriving** (#1198, #1199).
+
+`.plur.yaml`'s `remote_url`/`remote_token` were read by exactly one integration.
+Every other adapter picked up the project `scope` and dropped the remote
+settings, so recall served local memory only — with no error and nothing to
+explain the absence. Following the documented `plur init-remote` setup gave you
+working team memory in Claude Code and silence everywhere else.
+
+All four adapters now dial: the two Codex hooks, Cursor, and Antigravity.
+Cursor needed more than wiring — it used the local-only injection path, which
+never contacts a remote store at all, and now uses the same bounded-deadline
+hybrid path as the others.
+
+One helper decides this for every adapter, so the trust gate above travels with
+the capability rather than being reimplemented per harness — an adapter cannot
+adopt a project's remote settings without the gate coming with it.
+
+**If you already have a `.plur.yaml` with remote settings**, run
+`plur trust <project-dir>` once: it predates the automatic grant that
+`plur init-remote` now makes. Until you do, those harnesses serve local memory
+and say why.
+
 ### Security: a cloned repo could send your prompts to a host it named
 
 **A repository you cloned could exfiltrate your prompt text**, on every prompt,
