@@ -144,7 +144,7 @@ worth knowing about even if you never touch opencode.
   opts out of explicitly (`autoDiscover: false`) rather than something every
   adapter inherits by default without knowing it.
 
-### Team memory now reaches every harness, not just Claude Code
+### Team memory now reaches Codex and Antigravity (Cursor still pending)
 
 **If you use PLUR Enterprise from Codex or Antigravity, your team memory was
 silently never arriving** (#1198, #1199). Cursor was affected too and is not yet
