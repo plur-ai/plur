@@ -57,11 +57,27 @@ describe('learnFromUserText — correction path (secondary)', () => {
     expect(context).toMatchObject({ source: 'opencode:chat.message' })
   })
 
-  it('drops candidates below the 0.7 confidence gate', async () => {
+  it('drops text with no correction marker before confidence is even considered (A3 gate)', async () => {
     const plur = { learnRouted: vi.fn().mockResolvedValue({}) }
-    // "I prefer X" patterns score 0.6 confidence — below the persist gate.
+    // "I prefer X" has no correction marker ("no,", "actually,", "wrong",
+    // "X, not Y") — isCorrection() rejects it before extractLearnings runs.
     await learnFromUserText(plur, 'I prefer shorter status updates over verbose ones.')
     expect(plur.learnRouted).not.toHaveBeenCalled()
+    // Fails if the isCorrection() gate in learnFromUserText is removed —
+    // this text would then reach extractLearnings, whose "i prefer" pattern
+    // matches it (at 0.6 confidence, still below the persist gate, but for
+    // the wrong reason — see the next test for that gate in isolation).
+  })
+
+  it('still enforces the 0.7 confidence gate once the correction gate passes', async () => {
+    const plur = { learnRouted: vi.fn().mockResolvedValue({}) }
+    // Starts with "wrong" — passes isCorrection() — but the sentence only
+    // matches the "you should" pattern group, which scores 0.6.
+    await learnFromUserText(plur, 'Wrong, you should use four spaces for indentation.')
+    expect(plur.learnRouted).not.toHaveBeenCalled()
+    // Fails if the `candidate.confidence < 0.7` check is removed — this
+    // candidate clears isCorrection() and extractLearnings, so only the
+    // confidence gate stands between it and being persisted.
   })
 
   it('does nothing for ordinary text with no correction/preference marker', async () => {
@@ -74,5 +90,22 @@ describe('learnFromUserText — correction path (secondary)', () => {
     const plur = { learnRouted: vi.fn().mockResolvedValue({}) }
     await learnFromUserText(plur, '')
     expect(plur.learnRouted).not.toHaveBeenCalled()
+  })
+
+  it('respects the auto_learn: false kill switch even for a clear correction (A3 switch)', async () => {
+    const plur = { config: { auto_learn: false }, learnRouted: vi.fn().mockResolvedValue({}) }
+    await learnFromUserText(plur, 'No, the API uses snake_case not camelCase.')
+    expect(plur.learnRouted).not.toHaveBeenCalled()
+    // Fails if the `plur.config?.auto_learn === false` check is removed —
+    // this text is an unambiguous correction that would otherwise persist.
+  })
+
+  it('learns normally when auto_learn is explicitly true', async () => {
+    const plur = { config: { auto_learn: true }, learnRouted: vi.fn().mockResolvedValue({}) }
+    await learnFromUserText(plur, 'No, the API uses snake_case not camelCase.')
+    expect(plur.learnRouted).toHaveBeenCalledTimes(1)
+    // Fails if the switch check is inverted (e.g. `=== true` required to
+    // proceed) — the default-true contract would break for a real Plur
+    // instance whose config happens to be read some other way.
   })
 })

@@ -5,8 +5,10 @@
  * identical to claw's pre-extraction implementation — claw is a shipped
  * package.
  *
- * `isCorrection` did not move: `extractLearnings` does not depend on it, and
- * it stays in `@plur-ai/claw` as claw-local real-time-ingest logic.
+ * `isCorrection` moved here too (2026-09, opencode plugin task — A3 parity
+ * fix), so `@plur-ai/opencode`'s user-text learning path can be gated by the
+ * same real-time correction matcher claw's `ingest()` uses. See its
+ * docstring below for the rest of that history.
  */
 
 /**
@@ -68,6 +70,23 @@ function extractMessageText(message: LearnableMessage): string {
 }
 
 /**
+ * A bullet that is WHOLLY a bracketed placeholder (`[...]`, nothing else on
+ * the line) is never a genuine learning — it is template scaffolding. The
+ * injected instruction block (`memory-block.ts`'s `PLUR_MEMORY_INSTRUCTIONS`)
+ * contains exactly this shape as literal example text:
+ *
+ *   - [concise statement of what you learned]
+ *   - [another if applicable]
+ *
+ * Both placeholders are well over the 10-character floor below, so without
+ * this filter, any turn that echoes or quotes that block (the model repeats
+ * it, a user pastes it, a test fixture reuses it) gets its instructional
+ * placeholders harvested by `learnFromTurn` as permanent engrams. Audit
+ * finding A2.
+ */
+const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
+
+/**
  * Extract self-reported learnings from a message.
  * Looks for the 🧠 I learned: section and parses bullet points.
  *
@@ -87,7 +106,7 @@ export function extractSelfReportedLearnings(message: LearnableMessage): string[
   return match[1]
     .split('\n')
     .map(line => line.replace(/^[-•*]\s*/, '').trim())
-    .filter(line => line.length >= 10) // skip empty or trivial lines
+    .filter(line => line.length >= 10 && !PLACEHOLDER_BULLET_RE.test(line)) // skip empty, trivial, or placeholder lines
 }
 
 // Patterns that indicate corrections or preferences.
@@ -100,8 +119,17 @@ const DECISION_PATTERNS = [
 
 const PREFERENCE_PATTERNS = [
   { re: /(?:i prefer|i like)\s+(.+?)(?:\s+(?:for|over|instead|rather)\s+.+)?$/i, type: 'behavioral' as const, confidence: 0.6 },
-  { re: /(?:always|never)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.7 },
-  { re: /(?:you should|you must|don't|do not)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.6 },
+  // A1 fix: the capturing group used to start AFTER the directive word
+  // (`(?:always|never)\s+(.+)`), so only the tail was stored — "never
+  // commit the API key" became the standing instruction "commit the API
+  // key". `always`/`never` and `don't`/`do not` are polarity-bearing:
+  // dropping the word doesn't just lose color, it inverts (or for the
+  // positive words, defangs) the instruction. Wrapping the whole match in
+  // the capturing group keeps the directive word attached to its tail, so
+  // the stored statement is a complete, correctly-signed instruction when
+  // rendered under memory-block.ts's "should apply" header.
+  { re: /((?:always|never)\s+.+)/i, type: 'behavioral' as const, confidence: 0.7 },
+  { re: /((?:you should|you must|don't|do not)\s+.+)/i, type: 'behavioral' as const, confidence: 0.6 },
   { re: /(?:your purpose is|you are)\s+(.{15,})/i, type: 'behavioral' as const, confidence: 0.6 },
   { re: /(?:i want you to)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.6 },
   { re: /(?:remember that)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.7 },
@@ -130,6 +158,47 @@ function splitSentences(text: string): string[] {
     .split(/(?<=[.!?])\s+|\n+/)
     .map(s => s.trim())
     .filter(s => s.length >= 10)
+}
+
+/**
+ * Check if a single message contains a correction. Used for real-time
+ * gating before extraction runs — claw's `ingest()` and (A3 audit fix)
+ * `@plur-ai/opencode`'s `learnFromUserText` both call this before running
+ * `extractLearnings`, so a plain preference or decision doesn't get treated
+ * as an urgent real-time write. Much tighter than the pattern groups below:
+ * it requires an explicit correction shape ("no,", "actually,", "wrong", or
+ * an "X, not Y" construction), not just any learning-shaped sentence.
+ *
+ * Moved from `@plur-ai/claw`'s `learner.ts` (2026-09, opencode plugin task —
+ * A3 parity fix) so `@plur-ai/opencode` can share the exact same real-time
+ * correction gate instead of running its user-text learning path ungated.
+ * `packages/claw/src/learner.ts` re-exports this — behaviour is unchanged,
+ * claw is a shipped package.
+ */
+export function isCorrection(message: LearnableMessage): boolean {
+  if (message.role !== 'user') return false
+  const content = extractText(message.content)
+
+  // Check per-sentence for multi-line or long messages
+  const sentences = (content.includes('\n') || content.length > 200) ? splitSentences(content) : [content]
+
+  for (const sentence of sentences) {
+    const lower = sentence.toLowerCase().trim()
+    if (
+      lower.startsWith('no,') ||
+      lower.startsWith('no.') ||
+      lower.startsWith('actually,') ||
+      lower.startsWith('actually ') ||
+      lower.startsWith('wrong') ||
+      lower.startsWith("that's wrong") ||
+      lower.startsWith("that's incorrect") ||
+      /\buse\s+\w+[,.]?\s+not\s+\w+/i.test(lower) ||
+      /\bit(?:'s| is)\s+\w+[,.]?\s+not\s+\w+/i.test(lower)
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 /**
