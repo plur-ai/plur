@@ -61,7 +61,7 @@ Commands:
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
   init-remote             Opt this project into recall from a PLUR Enterprise server
   login --status          Enterprise token validity per host (probe + expiry) (#587)
-  doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity integration
+  doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
   tensions [--scan]       List or scan for engram contradictions

@@ -2,6 +2,7 @@ import { spawn } from 'child_process'
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
 import { join, extname } from 'path'
 import { homedir, platform } from 'os'
+import { createRequire } from 'module'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputInfo, outputJson, shouldOutputJson } from '../output.js'
 import {
@@ -19,6 +20,7 @@ import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome } from '../mcp-config.js'
+import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig } from '@plur-ai/core'
 
 /**
@@ -149,7 +151,62 @@ interface DoctorReport {
    * only: does not fail the overall check.
    */
   pgliteOrphan: { path: string } | null
+  /**
+   * opencode leg. Owner-approved pre-publish requirement (2026-09-16): until
+   * `@plur-ai/opencode` is published, opencode's `plugin: ["@plur-ai/opencode"]`
+   * resolves a bare name from the npm registry at startup and fails with NO
+   * error anywhere on a miss — the config looks correct, opencode starts
+   * normally, and the plugin simply never loads (verified against opencode
+   * 1.18.30). This is the compensating control: the only channel that can
+   * tell a user their memory silently isn't working.
+   *
+   * `null` when opencode isn't in use on this machine at all — mirrors
+   * `codexDetected`/`agyDetected`'s "not applicable" treatment (a global,
+   * machine-level config directory absent entirely is not a failure to warn
+   * about). Like Codex/Antigravity, and unlike Cursor, this is deliberately
+   * NOT folded into `overall`: `~/.config/opencode` existing says the user
+   * has opencode installed somewhere, not that this project depends on it.
+   */
+  opencode: OpencodeReport | null
   overall: 'ok' | 'fail'
+}
+
+interface OpencodeReport {
+  /** The config file doctor read — `opencodeConfigPath()`'s result (.json, or .jsonc when only that exists). */
+  configPath: string
+  /** Whether `configPath` itself exists (the directory can exist without it — see buildOpencodeReport). */
+  exists: boolean
+  /**
+   * False when the file exists but PLUR's declarations can't be safely read
+   * out of it (invalid JSON, wrong top-level shape, or a malformed
+   * `plugin`/`mcp` field) — mirrors `OpencodeConfigSnapshot.ok` /
+   * `WriteOpencodeConfigResult.ok` one-for-one.
+   */
+  ok: boolean
+  /** `plugin: [...]` includes `@plur-ai/opencode` — the automatic memory layer. */
+  pluginDeclared: boolean
+  /** `mcp.plur` is present — the explicit `plur_*` tool surface. */
+  mcpPlurDeclared: boolean
+  /**
+   * Whether the declared plugin will actually resolve when opencode starts.
+   * This is the load-bearing check — a `pluginDeclared: true` entry that
+   * cannot resolve is worthless and, worse, invisible to the user.
+   *
+   *  - 'not-declared': `pluginDeclared` is false — nothing to check.
+   *  - 'yes': confirmed resolvable, either via a local install
+   *    (`resolvedVia: 'local install'`) or because the npm registry
+   *    currently serves the package (`resolvedVia: 'npm registry'`).
+   *  - 'no': confirmed NOT resolvable — no local install found, and the npm
+   *    registry has no such package (a definitive 404). opencode's bare-name
+   *    resolution has nothing to fetch; the plugin will not load.
+   *  - 'unknown': could not be determined either way (offline, DNS failure,
+   *    timeout, or a registry response that is neither a clean hit nor a
+   *    clean miss) — deliberately never coerced to 'yes' or 'no'. Also the
+   *    result when the network check is skipped (`--no-handshake`).
+   */
+  pluginResolvable: 'not-declared' | 'yes' | 'no' | 'unknown'
+  /** Where a 'yes' verdict came from. `null` for every other `pluginResolvable` value. */
+  resolvedVia: 'local install' | 'npm registry' | null
 }
 
 function hasAnyPlurHook(config: Record<string, unknown>): boolean {
@@ -646,6 +703,131 @@ async function checkEmbedder(_flags: GlobalFlags, timeoutMs = resolveProbeTimeou
   })
 }
 
+/**
+ * Best-effort check for whether `pkg` is resolvable via Node's own module
+ * resolution, without spawning opencode or Bun. Tries a handful of plausible
+ * install roots — the current working directory, opencode's own config
+ * directory, and the user's home directory — the way a `require()` from any
+ * of those locations would resolve it.
+ *
+ * Deliberately narrow: it does NOT see a Bun-only global install
+ * (`bun add -g`) or Bun's own internal package cache — that layout is
+ * opaque, undocumented, and version-dependent, and hard-coding it risks
+ * reporting confidently wrong answers as Bun's internals shift. A `false`
+ * here is not proof the plugin can't resolve; it just means this particular
+ * check didn't find it, and the registry check below carries the actual
+ * verdict. A `true` here IS confident — Node found a real, loadable package.
+ */
+function opencodePluginLocallyResolvable(pkg: string): boolean {
+  const req = createRequire(import.meta.url)
+  const candidateDirs = [process.cwd(), opencodeConfigDir(), homedir()]
+  for (const dir of candidateDirs) {
+    try {
+      req.resolve(pkg, { paths: [dir] })
+      return true
+    } catch {
+      // Not found from this root — try the next one.
+    }
+  }
+  return false
+}
+
+/**
+ * Bounded npm-registry lookup for whether `pkg` is published at all. This is
+ * the load-bearing question for the opencode leg: opencode resolves a bare
+ * `plugin` name by having Bun fetch it from the npm registry at startup,
+ * with zero error output on a miss (see `OpencodeReport.pluginResolvable`'s
+ * doc comment). A 200 here does not *guarantee* the runtime fetch succeeds
+ * (this machine could be offline, or behind a different registry) — but a
+ * 404 DOES guarantee it fails: the registry has never heard of the package,
+ * so there is nothing for Bun to fetch. Every other outcome (timeout, DNS
+ * failure, 5xx, abort) is folded into 'unknown' rather than asserted either
+ * way — see the file's "report the uncertainty" requirement.
+ *
+ * Same technique (fetch + AbortController timeout against
+ * `registry.npmjs.org/<pkg>/latest`) as `@plur-ai/core`'s
+ * `checkForUpdate` — not reused directly because that function's return
+ * shape collapses "confirmed absent" (404) and "couldn't tell" (network
+ * error) into the same `latest: null`, which is exactly the distinction this
+ * check exists to preserve.
+ *
+ * 3s timeout: long enough for a live network, short enough that `plur
+ * doctor` never visibly hangs on a dead connection (doctor is a diagnostic —
+ * see the file's "keep it fast and side-effect free" requirement). Exported
+ * for tests.
+ */
+export async function checkOpencodePluginPublished(
+  pkg: string = PLUR_OPENCODE_PLUGIN,
+  timeoutMs = 3000,
+): Promise<'published' | 'not-published' | 'unknown'> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(`https://registry.npmjs.org/${pkg}/latest`, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    })
+    if (res.status === 404) return 'not-published'
+    if (res.ok) return 'published'
+    return 'unknown'
+  } catch {
+    return 'unknown'
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+/**
+ * Build the opencode leg of the report. Returns `null` when opencode isn't
+ * in use on this machine at all (item 1 of the spec: don't warn a non-user
+ * about a tool they don't have) — neither its global config directory nor
+ * its config file exists.
+ *
+ * `skipNetworkCheck` (wired to `--no-handshake`, the flag that already means
+ * "skip live/network verification" for the MCP handshake) skips the npm
+ * registry lookup so tests — and any offline run — get a deterministic
+ * 'unknown' instead of a real network call, never a silently wrong 'no'.
+ */
+async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeReport | null> {
+  const dirExists = existsSync(opencodeConfigDir())
+  const configPath = opencodeConfigPath()
+  const snapshot = readOpencodeConfig(configPath)
+
+  if (!dirExists && !snapshot.exists) return null
+
+  let pluginResolvable: OpencodeReport['pluginResolvable'] = 'not-declared'
+  let resolvedVia: OpencodeReport['resolvedVia'] = null
+
+  if (snapshot.pluginDeclared) {
+    if (opencodePluginLocallyResolvable(PLUR_OPENCODE_PLUGIN)) {
+      pluginResolvable = 'yes'
+      resolvedVia = 'local install'
+    } else if (skipNetworkCheck) {
+      pluginResolvable = 'unknown'
+    } else {
+      const registry = await checkOpencodePluginPublished(PLUR_OPENCODE_PLUGIN)
+      if (registry === 'published') {
+        pluginResolvable = 'yes'
+        resolvedVia = 'npm registry'
+      } else if (registry === 'not-published') {
+        pluginResolvable = 'no'
+      } else {
+        pluginResolvable = 'unknown'
+      }
+    }
+  }
+
+  return {
+    configPath,
+    exists: snapshot.exists,
+    ok: snapshot.ok,
+    pluginDeclared: snapshot.pluginDeclared,
+    mcpPlurDeclared: snapshot.mcpPlurDeclared,
+    pluginResolvable,
+    resolvedVia,
+  }
+}
+
 function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<DoctorReport> {
   const configs = inspectConfigs()
   const hooksInstalled = configs.some((c) => c.hasPlurHooks)
@@ -738,7 +920,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
 
-  return Promise.all([handshakePromise, checkEmbedder(flags)]).then(async ([handshake, embedder]) => {
+  return Promise.all([handshakePromise, checkEmbedder(flags), buildOpencodeReport(skipHandshake)]).then(async ([handshake, embedder, opencode]) => {
     // Probe the cursor tool profile too, so the report shows both tool
     // counts side by side instead of guessing which one a given config
     // file's env is actually wired to (see mcpHandshake's doc comment).
@@ -815,7 +997,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, opencode, overall,
     }
   })
 }
@@ -832,7 +1014,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
 export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
-  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor / Codex / Antigravity diagnostic', flags)
+  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode diagnostic', flags)
   outputInfo('', flags)
   outputText('Config files:')
   for (const c of report.configs) {
@@ -901,6 +1083,36 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  Note: wired ≠ running. Codex skips hooks it has not been told to trust,')
       outputText('  silently. If memory never loads, open Codex, run /hooks, and trust the')
       outputText('  PLUR entries.')
+    }
+  }
+
+  if (report.opencode) {
+    const oc = report.opencode
+    outputText(`${tick(oc.pluginDeclared)} opencode: plugin declared (${oc.configPath})`)
+    outputText(`${tick(oc.mcpPlurDeclared)} opencode: mcp.plur declared`)
+    if (!oc.ok) {
+      outputText('  Config exists but PLUR could not safely read it — invalid JSON (JSONC comments')
+      outputText('  and trailing commas are not supported here) or a `plugin`/`mcp` field in an')
+      outputText('  unexpected shape. Run `plur init --opencode` after fixing it by hand.')
+    }
+    if (oc.pluginDeclared) {
+      if (oc.pluginResolvable === 'yes') {
+        outputText(`  ✓ ${PLUR_OPENCODE_PLUGIN} resolves (${oc.resolvedVia}) — the plugin will load.`)
+      } else if (oc.pluginResolvable === 'no') {
+        outputText(`  ✗ ${PLUR_OPENCODE_PLUGIN} does NOT resolve — the npm registry has no such package.`)
+        outputText('    The plugin entry is present but opencode will fail to load it SILENTLY: no error')
+        outputText('    appears anywhere in opencode\'s log, it starts normally, and PLUR memory simply')
+        outputText('    never activates for opencode sessions.')
+        outputText('    Fix: wait for the package to be published, then restart opencode — until then')
+        outputText('    this entry does nothing.')
+      } else {
+        outputText(`  ? Could not verify whether ${PLUR_OPENCODE_PLUGIN} resolves (network unreachable,`)
+        outputText('    timed out, or the check was skipped with --no-handshake). This is NOT a clean')
+        outputText('    bill of health — re-run doctor with network access to confirm either way.')
+      }
+    } else if (oc.ok) {
+      outputText('  opencode is configured but the plugin entry is not declared — memory is not')
+      outputText('  automatic here. Run `plur init --opencode` to add it.')
     }
   }
 

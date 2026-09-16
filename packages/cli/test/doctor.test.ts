@@ -683,4 +683,109 @@ describe('plur doctor', () => {
     // Advisory only — must not drive overall to fail on its own.
     expect(report.overall).toBe('ok')
   })
+
+  // ── opencode leg (0.20.0, B4) ─────────────────────────────────────────────
+  // opencode resolves a bare `plugin` name from the npm registry at startup
+  // and logs NO error whatsoever on a miss (verified against opencode
+  // 1.18.30) — `plur doctor` is the only channel that can tell a user their
+  // memory silently isn't working. --no-handshake (used by runDoctor()
+  // throughout this file) also gates the opencode leg's network probe, so
+  // these tests never make a real request and a declared-but-unresolvable-
+  // locally plugin always lands on 'unknown', never a network-dependent
+  // 'yes'/'no'.
+
+  function writeOpencodeConfigFile(content: object, filename = 'opencode.json'): void {
+    const dir = join(home, '.config', 'opencode')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, filename), JSON.stringify(content, null, 2))
+  }
+
+  it('reports opencode: null (not applicable) when opencode is not installed at all', () => {
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.opencode).toBeNull()
+  })
+
+  it('reports plugin and mcp.plur declarations separately — plugin only', () => {
+    writeOpencodeConfigFile({ plugin: ['@plur-ai/opencode'] })
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.opencode).not.toBeNull()
+    expect(report.opencode.pluginDeclared).toBe(true)
+    expect(report.opencode.mcpPlurDeclared).toBe(false)
+  })
+
+  it('reports plugin and mcp.plur declarations separately — mcp.plur only', () => {
+    writeOpencodeConfigFile({ mcp: { plur: { type: 'local', command: ['npx', '-y', '@plur-ai/mcp@0.20.0'] } } })
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.opencode).not.toBeNull()
+    expect(report.opencode.pluginDeclared).toBe(false)
+    expect(report.opencode.mcpPlurDeclared).toBe(true)
+    // Nothing to resolve when the plugin itself isn't declared.
+    expect(report.opencode.pluginResolvable).toBe('not-declared')
+  })
+
+  it('reports pluginResolvable: unknown (never a false "yes"/"no") when it cannot verify resolvability', () => {
+    // Plugin declared, but not locally installed anywhere doctor looks, and
+    // the network probe is skipped by --no-handshake — doctor must say it
+    // could not tell, not assert a clean bill of health.
+    writeOpencodeConfigFile({ plugin: ['@plur-ai/opencode'] })
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.opencode.pluginDeclared).toBe(true)
+    expect(report.opencode.pluginResolvable).toBe('unknown')
+    expect(report.opencode.resolvedVia).toBeNull()
+  })
+
+  it('reports pluginResolvable: yes (local install) when the package resolves from a candidate dir', () => {
+    writeOpencodeConfigFile({ plugin: ['@plur-ai/opencode'] })
+    // runDoctor() runs with cwd: home — one of buildOpencodeReport's
+    // candidate resolution roots — so a node_modules install there is
+    // exactly what a real local install of the plugin would look like.
+    const pkgDir = join(home, 'node_modules', '@plur-ai', 'opencode')
+    mkdirSync(pkgDir, { recursive: true })
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@plur-ai/opencode', version: '0.1.0', main: 'index.js' }))
+    writeFileSync(join(pkgDir, 'index.js'), 'module.exports = {}\n')
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.opencode.pluginResolvable).toBe('yes')
+    expect(report.opencode.resolvedVia).toBe('local install')
+  })
+
+  it('reports ok:false and does not crash on an unparseable (JSONC) opencode config', () => {
+    writeOpencodeConfigFile({}, 'opencode.jsonc')
+    // Overwrite with real JSONC (comments) — a plain JSON.parse target.
+    const dir = join(home, '.config', 'opencode')
+    writeFileSync(join(dir, 'opencode.jsonc'), '{\n  // a comment\n  "model": "x"\n}\n')
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.opencode).not.toBeNull()
+    expect(report.opencode.ok).toBe(false)
+    expect(report.opencode.pluginDeclared).toBe(false)
+    expect(report.opencode.mcpPlurDeclared).toBe(false)
+  })
+
+  it('opencode leg is reported even though overall stays fail on a fresh environment — never folded into overall', () => {
+    // Mirrors codexDetected/agyDetected: a machine-level opencode detection
+    // must not itself flip a project-level pass/fail verdict.
+    writeOpencodeConfigFile({ plugin: ['@plur-ai/opencode'], mcp: { plur: { type: 'local', command: ['npx', '-y', '@plur-ai/mcp@0.20.0'] } } })
+    const { stdout, status } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.opencode).not.toBeNull()
+    expect(report.opencode.pluginDeclared).toBe(true)
+    expect(report.opencode.mcpPlurDeclared).toBe(true)
+    // Still fails overall — no hooks/MCP registered for Claude Code/Cursor.
+    expect(status).toBe(1)
+    expect(report.overall).toBe('fail')
+  })
 })
