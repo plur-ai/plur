@@ -37,7 +37,6 @@ interface Adapter {
 const ADAPTERS: Adapter[] = [
   { name: 'codex inject', hook: 'hook-codex-inject', input: () => ({ session_id: 's1', prompt: 'how do we deploy' }) },
   { name: 'codex session-start', hook: 'hook-codex-session-start', input: () => ({ session_id: 's1' }) },
-  { name: 'cursor session-start', hook: 'hook-cursor-session-start', input: () => ({ conversation_id: 'c1' }) },
   { name: 'antigravity', hook: 'hook-agy-pre-invocation', input: (repo) => ({ conversationId: 'c1', invocationNum: 0, workspacePaths: [repo] }) },
 ]
 
@@ -103,6 +102,18 @@ describe('adapters reach PLUR Enterprise, gated on directory trust (#1198)', () 
       await new Promise(r => setTimeout(r, 100))
     }
   }
+
+  // Cursor is deliberately absent from ADAPTERS. Its only injecting hook is
+  // bounded at 10s with no async option, so it stays BM25-only (PR #502), and
+  // the remote leg rides inside injectHybrid — so Cursor cannot reach a remote
+  // store today. Asserted below as the known gap rather than left to look like
+  // an oversight. Tracked in #1200.
+  it('cursor: does not dial, because its hook must stay BM25-only (#1200)', async () => {
+    trustDirectory(repo, join(dir, '.plur'))
+    run('hook-cursor-session-start', { conversation_id: 'c1' })
+    await new Promise(r => setTimeout(r, 1500))
+    expect(hits).toHaveLength(0)
+  })
 
   for (const a of ADAPTERS) {
     it(`${a.name}: dials the enterprise host when the directory is trusted`, async () => {

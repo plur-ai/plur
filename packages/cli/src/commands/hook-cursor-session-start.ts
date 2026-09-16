@@ -2,9 +2,6 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
-// injectWithFallback lives in codex-hook-io but is harness-agnostic — the agy
-// hooks import it from there through a re-export for the same reason.
-import { injectWithFallback } from '../lib/codex-hook-io.js'
 
 /**
  * plur hook-cursor-session-start — Cursor `sessionStart` hook.
@@ -71,31 +68,32 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   let fullContext: string
   try {
     const plur = createPlur(flags)
-    // #1198: carry the project's remote settings so Enterprise team memory
-    // reaches Cursor. The helper carries #1196's trust gate with it.
     const projectRemote = resolveProjectRemote(plur)
     const projectConfig = projectRemote.config
-    const injectOpts = {
-      budget: 3000,
-      ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
-      ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
-    }
+    const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
-    // `inject()` is local-only by design and never dials, so this hook could
-    // not see a remote store no matter what it was passed (#1198).
-    // `injectWithFallback` runs hybrid — which carries the remote leg — behind a
-    // bounded deadline and falls back to BM25 if it is missed. Safe here in a
-    // way it would not be on a blocking hook: Cursor documents sessionStart as
-    // fire-and-forget, and this writes to the rules file rather than gating the
-    // composer.
-    const { result, mode } = await injectWithFallback(plur, 'general session start', injectOpts)
+    // NOT hybrid, and therefore NOT remote — see the BM25-only note in this
+    // file's header (PR #502's lesson). Cursor's hook schema has no
+    // async/fire-and-forget option, this hook is bounded at 10s, and hybrid
+    // loads the BGE embedder (~20s cold on a few thousand engrams). Trying
+    // hybrid here reintroduces exactly the failure #502 fixed.
+    //
+    // The consequence, stated plainly (#1198): PLUR Enterprise team memory does
+    // NOT reach Cursor. The remote leg rides inside injectHybrid, so the only
+    // path to it today also loads the local embedder — which this hook cannot
+    // afford. Note the remote leg itself does not need the embedder at all: it
+    // sends query TEXT and the server embeds. A remote-with-BM25 mode in core
+    // would fix Cursor without touching the deadline. Tracked in #1200.
+    const result = await plur.inject('general session start', injectOpts)
     const count = result.count
     const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 
-    const header = `[PLUR Memory — session started, ${count} engrams injected via ${mode}]` +
+    const header = `[PLUR Memory — session started, ${count} engrams injected]` +
       (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
 
-    // Never silent: a refused remote leg is reported, not just dropped.
+    // A refused .plur.yaml is still worth saying: the user's scope routing is
+    // unaffected, but they should know the remote settings were not honoured —
+    // for the trust reason here, and for #1200 regardless.
     const refusal = projectRemote.refusedFrom
       ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
       : ''
