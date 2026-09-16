@@ -1157,7 +1157,15 @@ function installOpencode(cliVersion: string): string {
   }
 
   const status = result.created ? 'created' : result.changed ? 'updated' : 'already up to date'
-  return `Opencode: config ${status} (${configPath})`
+  const mcpNote = result.mcpPlurPreserved
+    // B2 (0.20.0 audit): an existing mcp.plur (possibly a non-default
+    // PLUR_PATH, or an enterprise remote store with bearer headers) is left
+    // completely untouched rather than overwritten with PLUR's own local
+    // entry. Say so explicitly — the user should know this from the init
+    // output, not discover it later from where their memory writes landed.
+    ? '\n  mcp.plur: left as-is (an entry already existed — not overwritten)'
+    : ''
+  return `Opencode: config ${status} (${configPath})${mcpNote}`
 }
 
 function writeSettings(path: string, settings: Settings): void {
