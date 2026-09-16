@@ -29,7 +29,15 @@ export const PlurProbe = async ({ project, client, $, directory, worktree }) => 
 
     // --- Injection candidate B: push into the system prompt array ---
     "experimental.chat.system.transform": async (input, output) => {
+      // Logged on entry regardless of which branch runs below, so a run can
+      // measure system[] length directly — the array accretion would happen
+      // in, as opposed to the message-history meter below, which cannot see
+      // system[] content by construction (see scripts/probes/README.md).
       const before = output.system.length
+      if (process.env.PLUR_PROBE_NO_SYSTEM) {
+        log(`system.transform FIRED (inject skipped) session=${input.sessionID} model=${input.model?.id} system.length-at-entry=${before}`)
+        return
+      }
       output.system.push(`## PLUR MEMORY\n\nMARKER-SYSTEM-${N}\n`)
       log(`system.transform FIRED session=${input.sessionID} model=${input.model?.id} system ${before}->${output.system.length}`)
     },
@@ -43,7 +51,7 @@ export const PlurProbe = async ({ project, client, $, directory, worktree }) => 
           if (p?.type === "text" && typeof p.text === "string" && p.text.includes("PLUR MEMORY")) blocks++
         }
       }
-      log(`ACCRETION messages=${msgs} plur-blocks-in-history=${blocks} no_part=${!!process.env.PLUR_PROBE_NO_PART}`)
+      log(`ACCRETION messages=${msgs} plur-blocks-in-history=${blocks} no_part=${!!process.env.PLUR_PROBE_NO_PART} no_system=${!!process.env.PLUR_PROBE_NO_SYSTEM}`)
     },
 
     // --- afterTurn learning path: can we read the assistant's output? ---

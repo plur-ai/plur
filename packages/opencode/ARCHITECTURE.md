@@ -72,11 +72,22 @@ receives the exact message array sent to the model) across a 3-turn session:
 | 2 | 2 blocks in history | 0 blocks in history |
 | 3 | 3 blocks in history | 0 blocks in history |
 
-Injecting at `chat.message` grows the transcript linearly and permanently, and
-every block after the first is *stale* — rendered against an earlier turn's
-recall query, not the current one. `system.transform` receives a freshly built
-`system` array on every request, so nothing it pushes ever survives past that
-one request.
+The first column is the soundly-measured half: injecting at `chat.message`
+grows the transcript linearly and permanently, and every block after the
+first is *stale* — rendered against an earlier turn's recall query, not the
+current one.
+
+The second column is a weaker instrument than the table implies. It was
+measured with `chat.message` injection switched off, so no `Part` was ever
+pushed onto any message to begin with — a message-history meter reading `0`
+there is close to tautological. It shows only that `system[]` content isn't
+copied into message history; it does not by itself show that `system[]`
+stays flat across the three calls within one turn. That is established
+separately: the probe logged the `system[]` array's length going `1->2` on
+every one of the three model calls in a tool-calling turn, never `2->3`. A
+freshly-built array every request — not the `0, 0, 0` column above — is what
+proves `system.transform` receives a rebuilt array rather than an
+accumulating one.
 
 This reproduces the conclusion `@plur-ai/dsh`'s design reached independently
 (`docs/specs/2026-08-14-dsh-plugin-design.md` §1) on a different harness: tail

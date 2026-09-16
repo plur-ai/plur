@@ -62,10 +62,16 @@ bridge or JSON hook shim — and the second example toward extracting a shared
 - That split exists because injecting at `chat.message` persists into session
   history and **accretes**: measured against a real opencode 1.18.30 binary,
   one stale memory block landed in the transcript per turn, forever — 1, 2, 3
-  across three turns. Rendering into the system prompt instead measured 0, 0,
-  0. A live acceptance gate (`packages/opencode/test/e2e.manual.mjs` — not part
-  of `pnpm test`, needs a real binary and network) drives an actual opencode
-  session and asserts the accretion count stays at 0.
+  across three turns. That half is soundly measured. The system-prompt half is
+  not shown by the matching 0, 0, 0 message-history count — that run had
+  `chat.message` injection off, so nothing was ever available to land in
+  message history regardless of what the system prompt did. What actually
+  shows `system.transform` doesn't accrete: the `system[]` array's length
+  measured `1->2` on every model call of a tool-calling turn, never `2->3` — a
+  rebuilt array each request, not a growing one. A live acceptance gate
+  (`packages/opencode/test/e2e.manual.mjs` — not part of `pnpm test`, needs a
+  real binary and network) drives an actual opencode session and asserts the
+  accretion count stays at 0.
 - Two learning paths, mirroring claw: the model's own `🧠 I learned:`
   self-report, and user corrections/preferences detected at confidence ≥ 0.7.
 - `plur init --opencode` writes both layers opencode needs: the `plugin` entry

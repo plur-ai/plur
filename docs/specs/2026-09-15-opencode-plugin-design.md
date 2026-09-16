@@ -25,8 +25,14 @@ config.
 
 The acceptance instrument was a marker-echo test: inject
 `MARKER-<PATH>-7Q4X` down each candidate path, then ask the model to echo every
-`MARKER-` token it can see. A never-injected `MARKER-CONTROL-7Q4X` served as
-the control and was **not** echoed, so the positives are not hallucination.
+`MARKER-` token it can see. A `MARKER-CONTROL-7Q4X` was also minted, but never
+injected anywhere and never shown to the model — so it was **not** echoed, and
+that non-echo is the default expectation, not a discriminating result. What it
+rules out is gross pattern-completion of the marker family (the model
+inventing a plausible `MARKER-` token it never saw, having just seen two that
+fit the pattern), not hallucination in general. A real per-path negative
+control — the same path, injection switched off, model asked for markers,
+answer `NONE` — was not run here; see `scripts/probes/README.md`.
 
 | Capability | Hook | Verified result |
 |---|---|---|
@@ -55,11 +61,23 @@ sent to the model) counted PLUR blocks across a three-turn session:
 | 2 | 2 blocks in history | 0 blocks in history |
 | 3 | 3 blocks in history | 0 blocks in history |
 
-Injection via `chat.message` grows the transcript linearly and permanently,
+The `chat.message` column is the headline result and is soundly established
+by this meter: injection there grows the transcript linearly and permanently,
 and every block after the first is *stale* memory — recalled against an older
-turn's query. `system.transform` receives a freshly-built `system` array on
-every request (the probe logged `system 1->2` on every one of three calls in a
-tool-calling turn, never `2->3`).
+turn's query.
+
+The `system.transform only` column is weaker than it reads. That arm was run
+with `chat.message` injection disabled (`PLUR_PROBE_NO_PART`), so nothing ever
+pushes a `Part` onto any message in the first place — a message-array meter
+reading `0` there is close to tautological. It establishes only that
+system-array content does not get copied into message history; it says
+nothing about whether the `system[]` array itself grows turn over turn, which
+is the actual claim this section needs. That claim rests on a different,
+correctly-targeted observation: the probe logged the `system[]` array's length
+going `1->2` on all three model calls of a tool-calling turn, and never
+`2->3`. That is the evidence that `system.transform` receives a freshly-built
+array on every request rather than one that accumulates — not the `0, 0, 0`
+column above.
 
 This reproduces the conclusion the `@plur-ai/dsh` design reached in its
 revision 2 (`docs/specs/2026-08-14-dsh-plugin-design.md` §1): tail injection
