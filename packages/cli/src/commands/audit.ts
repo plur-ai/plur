@@ -3,6 +3,7 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { scanForInversions } from '@plur-ai/core'
 
 /**
  * plur audit — content-layer health check.
@@ -16,6 +17,11 @@ import { homedir } from 'os'
  *   plur audit --source claude-code     # ~/.claude/projects/<...>/memory/
  *   plur audit --source claw            # stub — OpenClaw working-memory schema not stable yet
  *   plur audit --source hermes          # stub — see packages/hermes/plur_hermes/audit_adapter.py
+ *   plur audit --source engrams         # scan the ENGRAM STORE itself for negation-inversion
+ *                                        # truncation fragments (E2, 2026-09) — a different axis
+ *                                        # than the other sources, which compare auto-memory
+ *                                        # FILES against engrams. Heuristic, read-only, never
+ *                                        # rewrites anything: see scanForInversions' docstring.
  *   plur audit --json
  *   plur audit --limit 5                # recall depth per entry
  */
@@ -273,17 +279,69 @@ function printText(report: AuditReport, flags?: GlobalFlags): void {
   outputInfo('  DURABLE   → leave alone (active project state OR unique to auto-memory)', flags)
 }
 
+/**
+ * `plur audit --source engrams` (E2, 2026-09): unlike the other sources,
+ * this one scans the LOCAL engram store's own statements, not an external
+ * memory file cross-referenced against engrams — so it bypasses the
+ * MemoryEntry/`classify()` pipeline entirely rather than bending that
+ * data model to fit.
+ */
+async function runEngramInversionScan(flags: GlobalFlags, scope?: string, domain?: string): Promise<void> {
+  const plur = createPlur(flags, { readonly: true })
+  const engrams = await plur.list({ scope, domain })
+  const suspects = scanForInversions(engrams.map(e => ({ id: e.id, statement: e.statement })))
+
+  if (shouldOutputJson(flags)) {
+    outputJson({
+      source: 'engrams',
+      scanned: engrams.length,
+      suspects,
+      heuristic: true,
+      note: 'Heuristic pattern-matching on surviving text, not proof of inversion — every result needs a human look. See scanForInversions() docs.',
+    })
+    return
+  }
+
+  outputInfo('plur audit --source engrams — negation-inversion truncation scan (heuristic, read-only)', flags)
+  outputInfo('', flags)
+  outputText(`Scanned: ${engrams.length} active engram(s)`)
+  outputText(`Suspects: ${suspects.length}`)
+  outputText('')
+  if (suspects.length === 0) {
+    outputText('No suspects found. This is a heuristic scan — absence of a finding is not proof the store is clean.')
+    return
+  }
+  for (const s of suspects) {
+    outputText(`── [${s.id}] (${s.shapes.join(', ')}) ──`)
+    outputText(`  "${s.statement}"`)
+    outputText(`  ${s.reason}`)
+    outputText('')
+  }
+  outputInfo('Every suspect above is a heuristic guess, not a verdict — review each by hand.', flags)
+  outputInfo('Nothing is rewritten automatically: a truncated fragment cannot be reliably reconstructed.', flags)
+  outputInfo('For each: fix the statement (plur_learn a corrected replacement + retire this one), or confirm it is a false positive and move on.', flags)
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let source = 'claude-code'
   let limit = 5
   let fromJson: string | undefined
+  let scope: string | undefined
+  let domain: string | undefined
   let i = 0
   while (i < args.length) {
     const arg = args[i]
     if (arg === '--source' && i + 1 < args.length) { source = args[++i]; i++ }
     else if (arg === '--limit' && i + 1 < args.length) { limit = parseInt(args[++i], 10); i++ }
     else if (arg === '--from-json' && i + 1 < args.length) { fromJson = args[++i]; i++ }
+    else if (arg === '--scope' && i + 1 < args.length) { scope = args[++i]; i++ }
+    else if (arg === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
     else { i++ }
+  }
+
+  if (source === 'engrams') {
+    await runEngramInversionScan(flags, scope, domain)
+    return
   }
 
   let entries: MemoryEntry[]
@@ -304,7 +362,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       case 'claude-code': entries = loadClaudeCodeMemory(); break
       case 'claw':        entries = loadClawMemory(); break
       case 'hermes':      entries = loadHermesMemory(); break
-      default: exit(1, `Unknown --source: ${source}. Use claude-code | claw | hermes, or --from-json <path>.`); return
+      default: exit(1, `Unknown --source: ${source}. Use claude-code | claw | hermes | engrams, or --from-json <path>.`); return
     }
   }
 
