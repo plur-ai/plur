@@ -112,18 +112,34 @@ while [ $# -gt 0 ]; do
     --claw)
       shift
       CLAW_VERSION="${1:-}"
-      [ -n "$CLAW_VERSION" ] && shift
+      # Bug class (0.20.0 audit, B1): consuming the next argv slot
+      # unconditionally means `--claw --dry-run` silently swallows --dry-run
+      # as the "version" and DRY_RUN stays false — a real release runs when
+      # the operator asked for a dry run. Reject an empty value or one that
+      # looks like another flag, at parse time, before it can propagate.
+      if [ -z "$CLAW_VERSION" ] || [[ "$CLAW_VERSION" == --* ]]; then
+        echo "FAIL: --claw requires a version argument (e.g. --claw 0.5.0), got '${CLAW_VERSION:-<nothing>}'" >&2
+        exit 1
+      fi
+      shift
       ;;
     --dsh)
       shift
       DSH_VERSION="${1:-}"
-      [ -n "$DSH_VERSION" ] && shift
-
+      if [ -z "$DSH_VERSION" ] || [[ "$DSH_VERSION" == --* ]]; then
+        echo "FAIL: --dsh requires a version argument (e.g. --dsh 0.1.0-rc.7), got '${DSH_VERSION:-<nothing>}'" >&2
+        exit 1
+      fi
+      shift
       ;;
     --opencode)
       shift
       OPENCODE_VERSION="${1:-}"
-      [ -n "$OPENCODE_VERSION" ] && shift
+      if [ -z "$OPENCODE_VERSION" ] || [[ "$OPENCODE_VERSION" == --* ]]; then
+        echo "FAIL: --opencode requires a version argument (e.g. --opencode 0.2.0), got '${OPENCODE_VERSION:-<nothing>}'" >&2
+        exit 1
+      fi
+      shift
       ;;
     --*)
       echo "Unknown flag: $1" >&2
@@ -148,10 +164,27 @@ fi
 # sed-written into version constants and interpolated into a `/bin/sh -lc`
 # config command. The parity tests check equality, not shape — a malformed
 # value would pass them and land verbatim in user configs.
-if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
-  echo "FAIL: '$VERSION' is not a release-shaped version (expected e.g. 0.19.1)"
-  exit 1
-fi
+#
+# Applied to VERSION and to every independent track version (--claw, --dsh,
+# --opencode) that was actually provided: the 0.20.0 audit (B1) found the
+# parse loop for those three flags would swallow a following flag (e.g.
+# `--opencode --dry-run`) as the version string. The parse-time guard above
+# now rejects an empty or flag-shaped value outright, but a value that is
+# non-empty and doesn't start with `--` (garbage like "latest" or a
+# not-quite-semver typo) would still slip through without this shape check —
+# it is what gets sed-written into version.ts/package.json and interpolated
+# downstream, same as VERSION.
+validate_version_shape() {
+  local label="$1" ver="$2"
+  if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+    echo "FAIL: '$ver' is not a release-shaped version for $label (expected e.g. 0.19.1)"
+    exit 1
+  fi
+}
+validate_version_shape "VERSION" "$VERSION"
+[ -n "$CLAW_VERSION" ] && validate_version_shape "--claw" "$CLAW_VERSION"
+[ -n "$DSH_VERSION" ] && validate_version_shape "--dsh" "$DSH_VERSION"
+[ -n "$OPENCODE_VERSION" ] && validate_version_shape "--opencode" "$OPENCODE_VERSION"
 
 # Load env
 ENV_FILE="$HOME/Data/.datacore/env/.env"
