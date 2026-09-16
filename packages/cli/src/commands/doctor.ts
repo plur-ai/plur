@@ -706,11 +706,20 @@ async function checkEmbedder(_flags: GlobalFlags, timeoutMs = resolveProbeTimeou
 /**
  * Best-effort check for whether `pkg` is resolvable via Node's own module
  * resolution, without spawning opencode or Bun. Tries a handful of plausible
- * install roots — the current working directory, opencode's own config
- * directory, and the user's home directory — the way a `require()` from any
- * of those locations would resolve it.
+ * install roots — opencode's own config directory and the user's home
+ * directory — the way a `require()` from either of those locations would
+ * resolve it.
  *
- * Deliberately narrow: it does NOT see a Bun-only global install
+ * `process.cwd()` is deliberately NOT one of these roots (D8, 2026-09
+ * audit): `plur doctor` inherits whatever directory the OPERATOR happens to
+ * be running it from, which has no relationship to where the user's actual
+ * `opencode` process resolves its plugins from. Including it produced a
+ * false "resolves (local install)" for anyone who ran `plur doctor` inside
+ * this very monorepo (or any repo that happens to carry
+ * `node_modules/@plur-ai/opencode` as a transitive dependency) — a confident
+ * answer about a directory opencode itself never looks in.
+ *
+ * Deliberately narrow otherwise: it does NOT see a Bun-only global install
  * (`bun add -g`) or Bun's own internal package cache — that layout is
  * opaque, undocumented, and version-dependent, and hard-coding it risks
  * reporting confidently wrong answers as Bun's internals shift. A `false`
@@ -720,7 +729,7 @@ async function checkEmbedder(_flags: GlobalFlags, timeoutMs = resolveProbeTimeou
  */
 function opencodePluginLocallyResolvable(pkg: string): boolean {
   const req = createRequire(import.meta.url)
-  const candidateDirs = [process.cwd(), opencodeConfigDir(), homedir()]
+  const candidateDirs = [opencodeConfigDir(), homedir()]
   for (const dir of candidateDirs) {
     try {
       req.resolve(pkg, { paths: [dir] })

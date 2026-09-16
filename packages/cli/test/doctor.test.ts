@@ -759,6 +759,46 @@ describe('plur doctor', () => {
     expect(report.opencode.resolvedVia).toBe('local install')
   })
 
+  it('does NOT report "local install" from a node_modules install under the OPERATOR\'s cwd (D8, 2026-09 audit)', () => {
+    // A package under the directory `plur doctor` happens to be run FROM
+    // (this monorepo, say) says nothing about whether the user's actual
+    // `opencode` process — which resolves plugins from ITS OWN config dir /
+    // home, never from whichever directory happened to invoke `plur doctor`
+    // — could load it. HOME and cwd are deliberately DIFFERENT directories
+    // here so a resolution root of `process.cwd()` (the pre-fix behaviour)
+    // is the only thing that could produce a "yes".
+    writeOpencodeConfigFile({ plugin: ['@plur-ai/opencode'] })
+    const operatorCwd = mkdtempSync(join(tmpdir(), 'plur-doctor-cwd-'))
+    try {
+      const pkgDir = join(operatorCwd, 'node_modules', '@plur-ai', 'opencode')
+      mkdirSync(pkgDir, { recursive: true })
+      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@plur-ai/opencode', version: '0.1.0', main: 'index.js' }))
+      writeFileSync(join(pkgDir, 'index.js'), 'module.exports = {}\n')
+
+      let stdout: string
+      try {
+        stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
+          encoding: 'utf-8',
+          timeout: 15000,
+          env: { ...process.env, HOME: home, USERPROFILE: home },
+          cwd: operatorCwd, // NOT `home` — the package is invisible from every real resolution root
+        })
+      } catch (err: any) {
+        // doctor exits non-zero on an incomplete setup (a fresh HOME here) —
+        // that's expected and orthogonal to what this test checks.
+        stdout = err.stdout?.toString() ?? ''
+      }
+      const report = JSON.parse(stdout)
+
+      // Would FAIL (report 'yes' / 'local install') if `process.cwd()` were
+      // still one of `opencodePluginLocallyResolvable`'s candidate dirs.
+      expect(report.opencode.pluginResolvable).toBe('unknown')
+      expect(report.opencode.resolvedVia).toBeNull()
+    } finally {
+      rmSync(operatorCwd, { recursive: true, force: true })
+    }
+  })
+
   it('reports ok:false and does not crash on an unparseable (JSONC) opencode config', () => {
     writeOpencodeConfigFile({}, 'opencode.jsonc')
     // Overwrite with real JSONC (comments) — a plain JSON.parse target.
