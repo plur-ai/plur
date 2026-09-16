@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
-import { type GlobalFlags } from '../plur.js'
+import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputInfo, outputError } from '../output.js'
 
 /**
@@ -393,6 +393,27 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const next = buildConfigBody(existing, opts.url, opts.token, opts.scopes)
   writeFileSync(configPath, next)
   outputInfo(`✓ Wrote ${configPath}`, flags)
+
+  // #1196: hook-inject refuses a project's remote_url/remote_token unless the
+  // directory is trusted, because a CLONED repo could otherwise name its own
+  // host and supply its own token and have every prompt POSTed to it. Running
+  // `plur init-remote` here IS the explicit act that grant represents — the
+  // user typed it, in this directory, with this URL — so record it now rather
+  // than making them run `plur trust` immediately afterwards for a file they
+  // just created themselves. A `.plur.yaml` that arrives any other way (git
+  // clone, copy) still has to be trusted deliberately.
+  try {
+    const trusted = createPlur(flags).trustDirectory(process.cwd())
+    outputInfo(`✓ Trusted ${trusted} for remote memory`, flags)
+  } catch (err: unknown) {
+    // Never fail the setup over this — the config is written and valid; the
+    // user can grant trust by hand. Say so, because silent absence would look
+    // like remote recall is simply broken.
+    outputText(
+      `⚠ Could not record directory trust (${(err as Error)?.message ?? 'unknown error'}). ` +
+      `Remote memory stays off for this project until you run: plur trust ${process.cwd()}`,
+    )
+  }
   if (opts.scopes && opts.scopes.length > 0) {
     outputInfo(`  scope whitelist: ${opts.scopes.join(', ')}`, flags)
   } else {

@@ -84,7 +84,7 @@ const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 // so both this hook AND the MCP server's session_start handler can use it
 // (the original duplication was the root cause of #177 — session_start
 // ignored .plur.yaml because the reader lived in this CLI-only file).
-import { readProjectConfig, claimHookDegradationLines, type Plur } from '@plur-ai/core'
+import { readProjectConfig, readProjectConfigFromPath, findProjectConfigPath, claimHookDegradationLines, type Plur } from '@plur-ai/core'
 
 /**
  * #776: the former `tryRemoteInject` remote-first POST /api/v1/inject path
@@ -373,7 +373,32 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   try { writeFileSync(injectLock, ''); injectLockAcquired = true } catch { /* fail-open */ }
 
   const input = readStdinSync()
-  const projectConfig = readProjectConfig()
+  // Resolve the config path ONCE and read from it — a second, independent
+  // findProjectConfigPath() walk would be a TOCTOU: the file we read and the
+  // directory we trust-check could resolve differently if the filesystem
+  // changed between the two walks.
+  const projectConfigPath = findProjectConfigPath()
+  const projectConfig = readProjectConfigFromPath(projectConfigPath)
+
+  // #1196 — a cloned repo's `.plur.yaml` must not be able to route this
+  // prompt off-box. `remote_url`/`remote_token`/`remote_scopes` name a
+  // destination AND supply the credential, so a committed file is a
+  // prompt-exfiltration primitive: clone, open, and every prompt is POSTed to
+  // a host the repo chose. The comment below already states the principle for
+  // `dial: always` ("not something a project can turn on"); this applies it to
+  // the project fields themselves.
+  //
+  // The gate is on the DIRECTORY the config was read from, granted once with
+  // `plur trust` — the direnv / git safe.directory / workspace-trust shape. A
+  // file inside a repo can never vouch for itself.
+  //
+  // Only evaluated when the remote fields are actually present, so the common
+  // case pays nothing. Fails CLOSED: any error checking trust drops the
+  // remote leg rather than dialing.
+  const hasProjectRemote = Boolean(projectConfig.remote_url && projectConfig.remote_token)
+  const projectConfigDir = projectConfigPath ? dirname(projectConfigPath) : null
+  // Evaluated against the store root once the Plur instance exists, below.
+  let remoteRefusedFrom: string | null = null
 
   // Get task description from hook input
   let task: string
@@ -404,6 +429,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // now — not later where it's only used for the label — so the injection is
   // attributed to this session on the co_injection event the receipt reads.
   const plur = createPlur(flags)
+
+  // #1196 gate, evaluated here because it needs the store root the instance
+  // resolves. Fails CLOSED: any error drops the remote leg rather than dialing.
+  if (hasProjectRemote) {
+    let trusted = false
+    try {
+      trusted = projectConfigDir !== null && plur.isDirectoryTrusted(projectConfigDir)
+    } catch {
+      trusted = false
+    }
+    if (!trusted) remoteRefusedFrom = projectConfigDir ?? '(unknown directory)'
+  }
+
   let injectSessionId: string | undefined
   try { injectSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
   // #776: the remote leg rides INSIDE injectHybrid — at most one remote call
@@ -421,7 +459,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     remote_timeout_ms: REMOTE_TIMEOUT_MS,
     ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
     ...(injectSessionId ? { session_id: injectSessionId } : {}),
-    ...(projectConfig.remote_url && projectConfig.remote_token
+    ...(projectConfig.remote_url && projectConfig.remote_token && !remoteRefusedFrom
       ? {
           remote_project: {
             url: projectConfig.remote_url,
@@ -485,6 +523,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // A4′ (#776): degradation header — one line per (host, state) change.
   for (const line of degradationLines) parts.push(line)
+
+  // #1196: say so. A remote leg that silently stops working is the regression
+  // this gate could otherwise introduce — the user must be able to tell
+  // "refused, here is the one command" from "quietly broken".
+  if (remoteRefusedFrom) {
+    parts.push(
+      `[PLUR] Ignored remote memory settings in this project's .plur.yaml — ` +
+      `${remoteRefusedFrom} is not a trusted directory, and those settings would send ` +
+      `prompt text to the host they name. If this project is yours, run: plur trust ${remoteRefusedFrom}`,
+    )
+  }
 
   if (context) {
     parts.push('')
