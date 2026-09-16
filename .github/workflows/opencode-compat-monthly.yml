@@ -1,0 +1,179 @@
+name: opencode plugin compat
+
+# Monthly canary: install the LATEST published @opencode-ai/plugin (not the
+# pinned devDependency) and re-typecheck + retest packages/opencode against
+# it. Modeled directly on hermes-compat-monthly.yml — same schedule shape,
+# same dedup mechanism, same failure reporting, same shell-safety hardening.
+#
+# WHY THIS EXISTS:
+# @plur-ai/opencode pins @opencode-ai/plugin at 1.18.30 as a devDependency,
+# but only depends on it via a peerDependency range (">=1.18.0", no upper
+# bound) — a real user's opencode install can be running any later 1.x on the
+# day their plugin loads. Both hooks this package depends on (`chat.message`,
+# `experimental.chat.system.transform`) carry opencode's `experimental.`
+# prefix on a package that ships close to daily. `packages/opencode/src/index.ts`
+# already has a build-time guard for exactly this — the hook map is declared
+# `} satisfies Hooks` against the imported `Hooks` type — but that guard is
+# only ever evaluated against the PINNED devDependency version. It protects
+# the developer at commit time and never fires again for a user whose opencode
+# moves underneath a `dist/` that was built months ago. This job re-runs that
+# same guard against whatever is on npm right now, monthly, so a moved
+# contract is caught here instead of in a support thread.
+#
+# WHY A TYPECHECK, NOT JUST THE TEST SUITE:
+# `pnpm --filter @plur-ai/opencode test` transpiles via esbuild (vitest),
+# which strips types without checking them — a renamed or removed hook key
+# would not fail a single test, since the hook tests call hooks by string
+# literal and never import the `Hooks` type. Only `tsc --noEmit` re-evaluates
+# `} satisfies Hooks` against whatever `@opencode-ai/plugin` is installed, so
+# that step is what actually detects a moved contract; running the test suite
+# on top is a second, weaker signal, not a substitute for it.
+#
+# RETIREMENT / RESPONSE SIGNAL:
+# If this job goes red on a hook rename, that is the canary working, not a
+# flake: re-verify against a live binary (scripts/probes/opencode-plugin-probe.mjs,
+# scripts/probes/README.md), update packages/opencode/src/index.ts for the new
+# contract, bump the pinned devDependency, and record the newly verified
+# version in packages/opencode/README.md and
+# docs/specs/2026-09-15-opencode-plugin-design.md.
+
+on:
+  schedule:
+    # 1st of each month at 09:00 UTC — same slot as the hermes-agent canary.
+    - cron: '0 9 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  opencode-compat:
+    name: opencode-compat / @opencode-ai/plugin@latest
+    runs-on: ubuntu-latest
+    # The third-party package's install, typecheck, and test code runs with
+    # this job's token; keep the permissions above minimal and the job bounded.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install workspace dependencies (pinned)
+        run: pnpm install --frozen-lockfile
+
+      # @plur-ai/opencode imports @plur-ai/core's built dist, and tsc resolves
+      # @plur-ai/core's types the same way (package.json "types" -> dist/*.d.ts)
+      # — the typecheck below is meaningless against a stale or absent dist.
+      - name: Build @plur-ai/core
+        run: pnpm --filter @plur-ai/core build
+
+      # Scoped to packages/opencode and not saved: this replaces only that
+      # package's local resolution of @opencode-ai/plugin for this job, and
+      # never touches the committed package.json or lockfile.
+      - name: Install the latest published @opencode-ai/plugin (packages/opencode only, not committed)
+        run: pnpm add -D @opencode-ai/plugin@latest --filter @plur-ai/opencode --no-save
+
+      - name: Show installed @opencode-ai/plugin version
+        working-directory: packages/opencode
+        run: node -p "require('@opencode-ai/plugin/package.json').version"
+
+      # The load-bearing step. `} satisfies Hooks` in src/index.ts only fails a
+      # build when the compiler actually re-reads the `Hooks` type — vitest's
+      # esbuild transpile does not. A renamed, removed, or reshaped hook shows
+      # up here as a type error, not as a quietly passing suite.
+      - name: Type-check @plur-ai/opencode against latest @opencode-ai/plugin types
+        id: typecheck
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm --filter @plur-ai/opencode exec tsc --noEmit 2>&1 | tee typecheck-output.txt
+
+      # A second, weaker signal on top of the typecheck: does the existing
+      # runtime behavior still hold against whatever ships as "latest" today.
+      # Runs even if the typecheck above failed, so a failure issue carries
+      # both signals rather than only whichever one happened to run first.
+      - name: Run @plur-ai/opencode test suite against latest @opencode-ai/plugin
+        id: test
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm --filter @plur-ai/opencode test 2>&1 | tee test-output.txt
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            // Guard: a step's output file may not exist if the failure happened
+            // before it ran (e.g. install or build failed first).
+            const readOutput = (path, fallback) =>
+              fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : fallback;
+            const typecheckOutput = readOutput('typecheck-output.txt', '(no typecheck output captured — failure occurred before it ran)');
+            const testOutput = readOutput('test-output.txt', '(no test output captured — failure occurred before it ran)');
+            const now = new Date();
+            const month = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+            const title = `@opencode-ai/plugin compat failure — ${month}`;
+
+            // Avoid duplicate issues — paginate to handle repos with many open
+            // issues; the label filter keeps the page count small in practice.
+            let existing = [];
+            for await (const page of github.paginate.iterator(
+              github.rest.issues.listForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'opencode-compat', per_page: 100 }
+            )) {
+              existing = existing.concat(page.data);
+            }
+            const duplicate = existing.find(i => i.title === title);
+            if (duplicate) {
+              console.log(`Issue already exists: #${duplicate.number}`);
+              return;
+            }
+
+            const body = [
+              `## @opencode-ai/plugin compatibility failure`,
+              ``,
+              `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `### typecheck output (tsc --noEmit against latest @opencode-ai/plugin)`,
+              ``,
+              '```',
+              typecheckOutput.slice(0, 40000),  // GH issue body cap
+              '```',
+              ``,
+              `### test output (packages/opencode, against latest @opencode-ai/plugin)`,
+              ``,
+              '```',
+              testOutput.slice(0, 20000),
+              '```',
+              ``,
+              `---`,
+              '> A failing typecheck here almost always means the `Hooks` contract',
+              '> moved upstream (a hook renamed, removed, or reshaped) while',
+              '> `@plur-ai/opencode` still pins an older `@opencode-ai/plugin` as its',
+              '> devDependency. Re-verify against a live binary',
+              '> (`scripts/probes/opencode-plugin-probe.mjs`,',
+              '> `scripts/probes/README.md`), update',
+              '> `packages/opencode/src/index.ts` for the new contract, bump the',
+              '> pinned devDependency, and record the newly verified version in',
+              '> `packages/opencode/README.md` and',
+              '> `docs/specs/2026-09-15-opencode-plugin-design.md`.',
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['opencode-compat', 'bug'],
+            });
