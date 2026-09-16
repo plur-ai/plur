@@ -14,7 +14,7 @@ import {
   lastUserInput,
   emitInjectSteps,
 } from '../lib/agy-hook-io.js'
-import { readProjectConfig } from '@plur-ai/core'
+import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 
 /**
  * plur hook-agy-pre-invocation — Antigravity `PreInvocation` hook.
@@ -122,10 +122,16 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // never succeed — cwd here would silently strip project scoping from
     // every agy recall AND from the scope line the model is told to learn
     // under (evaluator audit B1).
-    const projectConfig = readProjectConfig(workspace ?? process.cwd())
+    // #1198: pass the project's remote settings so Enterprise team memory
+    // reaches Antigravity. Same workspace root as before — cwd here is the
+    // hooks.json directory, where the `.plur.yaml` walk can never succeed.
+    // The helper carries #1196's trust gate with the capability.
+    const projectRemote = resolveProjectRemote(plur, workspace ?? process.cwd())
+    const projectConfig = projectRemote.config
     const injectOpts = {
       budget: isFirst ? 3000 : 2000,
       ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
+      ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
     }
     const task = user?.text ?? 'general session start'
 
@@ -139,7 +145,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         ? `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
           (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
         : `[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]`
-      message = body ? `${header}\n\n${body}` : (isFirst ? header : '')
+      const refusal = projectRemote.refusedFrom && isFirst
+        ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
+        : ''
+      // Only on the FIRST turn: the refusal persists until the user acts on it,
+      // so repeating it every turn would be noise rather than information.
+      message = refusal + (body ? `${header}\n\n${body}` : (isFirst ? header : ''))
     } catch (err: unknown) {
       // Only worth a message on the FIRST turn — an honest "memory is broken"
       // beats silence there. Mid-session, stderr is enough.

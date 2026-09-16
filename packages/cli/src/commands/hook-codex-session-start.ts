@@ -1,7 +1,7 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
-import { readProjectConfig } from '@plur-ai/core'
+import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 
 /**
  * plur hook-codex-session-start — Codex `SessionStart` hook.
@@ -42,8 +42,16 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     let context: string
     try {
       const plur = createPlur(flags)
-      const projectConfig = readProjectConfig()
-      const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
+      // #1198: carry the project's remote settings so Enterprise team memory
+      // reaches Codex at session start too. The helper carries #1196's trust
+      // gate, so this cannot reintroduce the exfiltration path.
+      const projectRemote = resolveProjectRemote(plur)
+      const projectConfig = projectRemote.config
+      const injectOpts = {
+        budget: 3000,
+        ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
+        ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
+      }
 
       const { result, mode } = await injectWithFallback(plur, 'general session start', injectOpts)
       const body = result.count > 0
@@ -53,7 +61,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const header = `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
         (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
 
-      context = body ? `${header}\n\n${body}` : header
+      // Never silent (#1198): if the project declared remote settings we
+      // refused, say so here — this is the only model-visible surface.
+      const refusal = projectRemote.refusedFrom
+        ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
+        : ''
+      context = refusal + (body ? `${header}\n\n${body}` : header)
     } catch (err: unknown) {
       context = '[PLUR Memory — injection FAILED at session start] ' +
         `(${(err as Error)?.message ?? 'unknown error'}). Recalled memory is unavailable; run ` +

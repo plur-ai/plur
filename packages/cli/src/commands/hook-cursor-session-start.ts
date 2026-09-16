@@ -1,7 +1,10 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
-import { readProjectConfig } from '@plur-ai/core'
+import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+// injectWithFallback lives in codex-hook-io but is harness-agnostic — the agy
+// hooks import it from there through a re-export for the same reason.
+import { injectWithFallback } from '../lib/codex-hook-io.js'
 
 /**
  * plur hook-cursor-session-start — Cursor `sessionStart` hook.
@@ -68,17 +71,35 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   let fullContext: string
   try {
     const plur = createPlur(flags)
-    const projectConfig = readProjectConfig()
-    const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
+    // #1198: carry the project's remote settings so Enterprise team memory
+    // reaches Cursor. The helper carries #1196's trust gate with it.
+    const projectRemote = resolveProjectRemote(plur)
+    const projectConfig = projectRemote.config
+    const injectOpts = {
+      budget: 3000,
+      ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
+      ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
+    }
 
-    const result = await plur.inject('general session start', injectOpts)
+    // `inject()` is local-only by design and never dials, so this hook could
+    // not see a remote store no matter what it was passed (#1198).
+    // `injectWithFallback` runs hybrid — which carries the remote leg — behind a
+    // bounded deadline and falls back to BM25 if it is missed. Safe here in a
+    // way it would not be on a blocking hook: Cursor documents sessionStart as
+    // fire-and-forget, and this writes to the rules file rather than gating the
+    // composer.
+    const { result, mode } = await injectWithFallback(plur, 'general session start', injectOpts)
     const count = result.count
     const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 
-    const header = `[PLUR Memory — session started, ${count} engrams injected]` +
+    const header = `[PLUR Memory — session started, ${count} engrams injected via ${mode}]` +
       (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
 
-    fullContext = context ? `${header}\n\n${context}` : header
+    // Never silent: a refused remote leg is reported, not just dropped.
+    const refusal = projectRemote.refusedFrom
+      ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
+      : ''
+    fullContext = refusal + (context ? `${header}\n\n${context}` : header)
   } catch (err: unknown) {
     // Audit fix (evaluator review — user lens, iteration 4, 2026-07-09):
     // `plur_doctor` (an MCP tool, in this session's own 11-tool surface)

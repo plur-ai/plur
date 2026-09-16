@@ -57,6 +57,19 @@ vi.mock('@plur-ai/core', async (importOriginal) => {
       projectConfigCalls.push(startDir ?? '(default)')
       return stubbedScope ? { scope: stubbedScope } : {}
     },
+    // The hook now reaches project config through resolveProjectRemote
+    // (lib/project-remote.ts), which resolves the path ONCE and reads from it
+    // rather than calling readProjectConfig — a second walk would be a TOCTOU
+    // between the file read and the directory trust-checked (#1196). So the
+    // workspace-root invariant (evaluator audit B1) is observed here, at the
+    // boundary the helper actually uses. Stubbed rather than delegated so a
+    // `.plur.yaml` elsewhere on the machine cannot influence these tests.
+    findProjectConfigPath: (startDir?: string) => {
+      projectConfigCalls.push(startDir ?? '(default)')
+      return stubbedScope ? join(startDir ?? '', '.plur.yaml') : null
+    },
+    readProjectConfigFromPath: (configPath: string | null) =>
+      (configPath && stubbedScope ? { scope: stubbedScope } : {}),
   }
 })
 

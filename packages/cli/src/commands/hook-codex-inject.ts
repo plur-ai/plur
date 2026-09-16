@@ -1,7 +1,7 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
-import { readProjectConfig } from '@plur-ai/core'
+import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 
 /**
  * plur hook-codex-inject — Codex `UserPromptSubmit` hook.
@@ -39,18 +39,37 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
     try {
       const plur = createPlur(flags)
-      const projectConfig = readProjectConfig()
-      const injectOpts = { budget: 2000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
+      // #1198: pass the project's remote settings so PLUR Enterprise team
+      // memory actually reaches Codex — this hook read `.plur.yaml` for `scope`
+      // and dropped the remote fields, so a customer following the documented
+      // `plur init-remote` onboarding got memory on Claude Code and silence
+      // here. The helper carries #1196's trust gate with the capability, so
+      // adding it cannot reintroduce the exfiltration path.
+      const projectRemote = resolveProjectRemote(plur)
+      const injectOpts = {
+        budget: 2000,
+        ...(projectRemote.config.scope ? { scope: projectRemote.config.scope } : {}),
+        ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
+      }
 
       const { result, mode } = await injectWithFallback(plur, prompt, injectOpts)
-      if (result.count === 0) return
 
       const body = [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
-      if (!body) return
+      // A refusal is emitted even with nothing recalled: silence is exactly the
+      // failure mode this is meant to end.
+      if (result.count === 0 || !body) {
+        if (projectRemote.refusedFrom) {
+          emitContext('UserPromptSubmit', projectRemoteRefusalNotice(projectRemote.refusedFrom))
+        }
+        return
+      }
 
+      const notice = projectRemote.refusedFrom
+        ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
+        : ''
       emitContext(
         'UserPromptSubmit',
-        `[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]\n\n${body}`,
+        `${notice}[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]\n\n${body}`,
       )
     } catch (err: unknown) {
       // Diagnostics go to stderr: Codex parses stdout as the hook result, and
