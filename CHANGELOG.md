@@ -2,7 +2,7 @@
 
 ## 0.20.0
 
-opencode agents get persistent memory!
+@opencode agents now remember.
 - plur init --opencode
 - Engram creation upgraded
 - Team memory fixed for Codex
