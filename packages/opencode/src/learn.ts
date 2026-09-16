@@ -13,8 +13,22 @@ import { extractLearnings, extractSelfReportedLearnings, isCorrection, type Proj
  * every turn, forever. `extractSelfReportedLearnings` is the function claw
  * actually uses for assistant self-reports; it does not filter by role, so
  * the caller decides what to pass in.
+ *
+ * Gated on `auto_learn` (D3, 2026-09 audit) — the same kill switch
+ * `learnFromUserText` already respects. This is the path an attacker
+ * actually has to write through: the assistant's own text is exactly the
+ * text it echoes back after reading a hostile file/webpage/tool output, so
+ * a self-report block ("🧠 I learned: ...") quoted FROM that content reaches
+ * `learnRouted` unconditionally unless this checks first. Claw gates both of
+ * its equivalent paths the same way (`packages/claw/src/context-engine.ts`,
+ * `this.options.auto_learn`) — this plugin had gated only the OTHER path.
+ * `claim_class: 'inferred'` (#963, D5) marks every statement this path
+ * writes as the agent's own extraction rather than something a person
+ * stated outright — `formatLayer3` renders that distinction
+ * (`(inferred)` / `Kind: inferred`) so it never reads as user-taught.
  */
 export async function learnFromTurn(plur: any, texts: string[], projectConfig?: ProjectConfig): Promise<void> {
+  if (plur?.config?.auto_learn === false) return
   const statements = extractSelfReportedLearnings({ role: 'assistant', content: texts.join('\n') })
   for (const statement of statements) {
     await plur.learnRouted(statement, {
@@ -24,6 +38,7 @@ export async function learnFromTurn(plur: any, texts: string[], projectConfig?: 
       source: 'opencode:self-report',
       rationale: 'self-reported by agent via learning section',
       tags: ['self-report'],
+      claim_class: 'inferred',
     })
   }
 }
@@ -65,6 +80,12 @@ export async function learnFromUserText(plur: any, text: string, projectConfig?:
       source: 'opencode:chat.message',
       rationale: 'extracted from conversation via pattern matching',
       tags: [candidate.type],
+      // #963, D5: the STATEMENT is this plugin's own regex extraction from
+      // the user's text, not a verbatim quote of what they typed — the same
+      // "I worked this out" reading `claim_class: 'inferred'` exists for.
+      // Renders as `(inferred)` / `Kind: inferred` in formatLayer3 so it is
+      // never mistaken for something explicitly taught (e.g. via plur_learn).
+      claim_class: 'inferred',
     })
   }
 }

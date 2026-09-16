@@ -20,6 +20,42 @@ describe('learnFromTurn — self-report path (primary)', () => {
     )
   })
 
+  // D3 (2026-09 audit): learnFromUserText already gated on auto_learn;
+  // learnFromTurn — the path an attacker can actually write through, since
+  // it harvests the ASSISTANT's own text, which can quote a hostile
+  // file/webpage the agent was asked to summarize — did not. Claw gates
+  // both of its equivalent paths (context-engine.ts) the same way.
+  it('respects the auto_learn: false kill switch (D3)', async () => {
+    const plur = { config: { auto_learn: false }, learnRouted: vi.fn().mockResolvedValue({}) }
+    await learnFromTurn(plur, ['---\n🧠 I learned:\n- Something worth remembering here.'])
+    expect(plur.learnRouted).not.toHaveBeenCalled()
+    // Fails if the `plur.config?.auto_learn === false` check is removed —
+    // this is an unambiguous self-report that would otherwise persist.
+  })
+
+  it('learns normally when auto_learn is explicitly true or unset', async () => {
+    const plur = { config: { auto_learn: true }, learnRouted: vi.fn().mockResolvedValue({}) }
+    await learnFromTurn(plur, ['---\n🧠 I learned:\n- Something worth remembering here.'])
+    expect(plur.learnRouted).toHaveBeenCalledTimes(1)
+
+    const plurNoConfig = { learnRouted: vi.fn().mockResolvedValue({}) }
+    await learnFromTurn(plurNoConfig, ['---\n🧠 I learned:\n- Something worth remembering here.'])
+    expect(plurNoConfig.learnRouted).toHaveBeenCalledTimes(1)
+  })
+
+  // D5 (#963, 2026-09 audit): every statement this path writes is the
+  // agent's own extraction, not a verbatim human assertion — mark it so
+  // (formatLayer3 renders `(inferred)` / `Kind: inferred`), so it can never
+  // be mistaken for something explicitly taught via plur_learn.
+  it('marks every self-reported statement claim_class: inferred (D5)', async () => {
+    const plur = { learnRouted: vi.fn().mockResolvedValue({}) }
+    await learnFromTurn(plur, ['---\n🧠 I learned:\n- The deploy script needs sudo access.'])
+    expect(plur.learnRouted).toHaveBeenCalledWith(
+      'The deploy script needs sudo access.',
+      expect.objectContaining({ claim_class: 'inferred' }),
+    )
+  })
+
   it('does not read a context field off the candidate (LearnCandidate has none)', async () => {
     // Regression guard for the brief's Step 5 defect: LearnCandidate is
     // {statement, type, confidence} with no `context` field. Self-report
@@ -107,5 +143,18 @@ describe('learnFromUserText — correction path (secondary)', () => {
     // Fails if the switch check is inverted (e.g. `=== true` required to
     // proceed) — the default-true contract would break for a real Plur
     // instance whose config happens to be read some other way.
+  })
+
+  // D5 (#963, 2026-09 audit): the STATEMENT is this plugin's own regex
+  // extraction from the user's text, not a verbatim quote — mark it inferred
+  // the same as the self-report path, so it renders as `(inferred)` rather
+  // than reading like something explicitly taught.
+  it('marks every extracted correction claim_class: inferred (D5)', async () => {
+    const plur = { learnRouted: vi.fn().mockResolvedValue({}) }
+    await learnFromUserText(plur, 'No, the API uses snake_case not camelCase.')
+    expect(plur.learnRouted).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ claim_class: 'inferred' }),
+    )
   })
 })
