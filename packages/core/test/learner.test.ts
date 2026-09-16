@@ -133,6 +133,131 @@ describe('extractLearnings — negation polarity (A1)', () => {
   })
 })
 
+describe('extractLearnings — the third inverting pattern (E1)', () => {
+  const stmt = (text: string) => extractLearnings([{ role: 'user', content: text }])[0]?.statement
+
+  // These three are the exact inputs measured against the pre-fix built
+  // dist: CORRECTION_PATTERNS[1] (`/(.+?),?\s+not\s+(.+)/i`, confidence 0.8)
+  // matched any sentence containing " not " — not just a deliberate "X, not
+  // Y" contrast — and the extraction code only ever read `match[1]`, the
+  // text BEFORE "not". Every one of the five pre-existing A1 tests above
+  // avoids the word "not" entirely, which is why they stayed green while
+  // this ran unfixed in the shipped package.
+  it('does not invert "You should not commit the API key to the repo."', () => {
+    // Before the fix: stored "You should" (0.8 conf) — CORRECTION_PATTERNS[1]
+    // fired first and swallowed the whole sentence up to "not". Fails if the
+    // comma requirement is removed from CORRECTION_PATTERNS[1], OR if
+    // PREFERENCE_PATTERNS' "you should" branch (A1) stops capturing the
+    // whole match.
+    expect(stmt('You should not commit the API key to the repo.'))
+      .toBe('You should not commit the API key to the repo')
+  })
+
+  it('does not invert "Deploying straight to production is not allowed here."', () => {
+    // Before the fix: stored "Deploying straight to production is" (0.8
+    // conf) — read under memory-block.ts's "should apply" header, this is
+    // the literal opposite of what the user said. No pattern anchors on a
+    // bare "is not allowed" construction, so the correct, safe outcome is no
+    // candidate at all rather than a guess. Fails if CORRECTION_PATTERNS[1]
+    // goes back to matching a bare " not " with no comma required.
+    expect(extractLearnings([{ role: 'user', content: 'Deploying straight to production is not allowed here.' }]))
+      .toHaveLength(0)
+  })
+
+  it('does not invert "That is wrong. The staging database is not a safe place for real customer data."', () => {
+    // Before the fix: stored "The staging database is" (0.8 conf) from the
+    // second sentence. Fails the same way as the case above.
+    expect(extractLearnings([{
+      role: 'user',
+      content: 'That is wrong. The staging database is not a safe place for real customer data.',
+    }])).toHaveLength(0)
+  })
+
+  it('preserves the full contrast for a genuine "X, not Y" correction', () => {
+    // The pattern's legitimate job, unbroken by the comma requirement:
+    // "use pnpm, not npm" has a comma directly before "not". Storing the
+    // FULL sentence (not just "use pnpm") is the chosen fix — a fragment
+    // reading as an instruction on its own is exactly this bug class. Fails
+    // if the capturing group reverts to only the text before "not", or if
+    // the comma requirement is tightened further and stops matching this.
+    expect(stmt('use pnpm, not npm')).toBe('use pnpm, not npm')
+  })
+
+  it('still extracts a bare comma-separated correction with no anchor keyword', () => {
+    // Regression guard for the pre-existing "port" test below: the comma
+    // discriminator must not be narrowed to isCorrection's anchored
+    // "use …"/"it's …" keyword shapes, or a plain "X, not Y" contrast with
+    // no keyword anchor (this one) would stop matching entirely.
+    expect(stmt('The port is 5433, not 5432.')).toBe('The port is 5433, not 5432')
+  })
+
+  // Property-style: no prohibition phrasing in this list may ever produce a
+  // statement that reads as the PERMITTED action (the inverted reading).
+  // `expected` is either the correctly-signed full statement, or `null` when
+  // the safe outcome is "no candidate at all" (no pattern anchors this
+  // shape, and guessing would risk an inversion).
+  const PROHIBITIONS: Array<{ text: string; expected: string | null; breaksIf: string }> = [
+    {
+      text: 'never commit the API key to the repo',
+      expected: 'never commit the API key to the repo',
+      breaksIf: 'PREFERENCE_PATTERNS\' always/never pattern (A1) reverts to capturing only the tail after the directive word',
+    },
+    {
+      text: "don't push directly to main",
+      expected: "don't push directly to main",
+      breaksIf: 'PREFERENCE_PATTERNS\' you-should/must/don\'t/do-not pattern (A1) reverts to capturing only the tail',
+    },
+    {
+      text: 'do not delete the production database',
+      expected: 'do not delete the production database',
+      breaksIf: 'PREFERENCE_PATTERNS\' you-should/must/don\'t/do-not pattern (A1) reverts to capturing only the tail',
+    },
+    {
+      text: 'You must not deploy on Friday',
+      expected: 'You must not deploy on Friday',
+      breaksIf: 'PREFERENCE_PATTERNS\' you-should/must/don\'t/do-not pattern (A1) reverts to capturing only the tail (this one used to survive by string-length accident, not by a correct pattern)',
+    },
+    {
+      text: 'You should not commit the API key to the repo.',
+      expected: 'You should not commit the API key to the repo',
+      breaksIf: 'CORRECTION_PATTERNS[1] (E1) drops the comma requirement and matches this bare "is not" sentence first, before PREFERENCE_PATTERNS gets a turn',
+    },
+    {
+      text: 'Deploying straight to production is not allowed here.',
+      expected: null,
+      breaksIf: 'CORRECTION_PATTERNS[1] (E1) drops the comma requirement and matches this bare "is not" sentence',
+    },
+    {
+      text: 'The staging database is not a safe place for real customer data.',
+      expected: null,
+      breaksIf: 'CORRECTION_PATTERNS[1] (E1) drops the comma requirement and matches this bare "is not" sentence',
+    },
+    {
+      text: 'use pnpm, not npm',
+      expected: 'use pnpm, not npm',
+      breaksIf: 'CORRECTION_PATTERNS[1] (E1) reverts to capturing only the text before "not" instead of the whole match',
+    },
+  ]
+
+  for (const { text, expected, breaksIf } of PROHIBITIONS) {
+    it(`"${text}" never reads as the permitted action (breaks if: ${breaksIf})`, () => {
+      const candidates = extractLearnings([{ role: 'user', content: text }])
+      if (expected === null) {
+        expect(candidates).toHaveLength(0)
+      } else {
+        expect(candidates[0]?.statement).toBe(expected)
+      }
+      // Whether or not a candidate was produced, none of them may equal a
+      // reading with the negation word removed — the literal inversion this
+      // whole bug class produces.
+      const inverted = text.replace(/\b(?:never|not|don't|do not)\s+/gi, '').trim()
+      for (const c of candidates) {
+        expect(c.statement.toLowerCase()).not.toBe(inverted.toLowerCase())
+      }
+    })
+  }
+})
+
 describe('extractSelfReportedLearnings', () => {
   it('extracts bullet points from a well-formed 🧠 I learned: block', () => {
     const statements = extractSelfReportedLearnings({

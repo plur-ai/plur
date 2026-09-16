@@ -137,7 +137,44 @@ const PREFERENCE_PATTERNS = [
 
 const CORRECTION_PATTERNS = [
   { re: /(?:no[,.]|actually[,.])\s+(.+)/i, type: 'behavioral' as const, confidence: 0.7 },
-  { re: /(.+?),?\s+not\s+(.+)/i, type: 'behavioral' as const, confidence: 0.8 },
+  // E1 fix (a third inverting pattern, found after the A1 fix to
+  // PREFERENCE_PATTERNS above): this used to be `/(.+?),?\s+not\s+(.+)/i`
+  // with an OPTIONAL comma, and — worse — the code below only ever reads
+  // `match[1]`, the text BEFORE "not". That combination matched any sentence
+  // containing the bare word " not " anywhere, not just a deliberate "X, not
+  // Y" contrast, and then stored only the half before "not":
+  // "Deploying straight to production is not allowed here" became the
+  // standing instruction "Deploying straight to production is" — the exact
+  // inversion class the A1 fix was raised to kill, at a HIGHER confidence
+  // (0.8) than the patterns A1 fixed, and positioned to run BEFORE them in
+  // ALL_PATTERN_GROUPS — so a prohibition shaped like "you should not …" or
+  // "… is not …" never reached A1's negation-safe patterns at all; this one
+  // claimed the sentence first.
+  //
+  // This pattern's legitimate job is the corrective "X, not Y" shape — the
+  // user naming the right thing against the wrong one ("use pnpm, not
+  // npm"). That shape reliably has a comma directly before "not"; a plain
+  // prohibition ("is not allowed", "should not commit", "is not a safe
+  // place") does not. Requiring the comma is the discriminator: it keeps
+  // "The port is 5433, not 5432" and "use pnpm, not npm" (both intentional
+  // contrasts) while refusing every prohibition sentence in the audit's
+  // table, none of which contain a comma before "not". `isCorrection` below
+  // reaches the same "X, not Y" shape via anchored keywords ("use …, not
+  // …" / "it's …, not …") with an OPTIONAL comma — that gate only has to
+  // decide yes/no, so it can afford to also catch the no-comma phrasing;
+  // this pattern also has to decide WHAT TEXT TO STORE, and a bare "not"
+  // with no comma gives no reliable place to cut the sentence without
+  // risking the same truncation this fix exists to close. Refusing to match
+  // is always safe here — extractLearnings simply returns no candidate for
+  // that sentence, which beats storing an inverted one.
+  //
+  // The whole match is captured (one group spanning the full sentence, the
+  // same shape as A1's fix to PREFERENCE_PATTERNS), not just the text before
+  // "not" — storing "use pnpm" alone drops the very half of the sentence
+  // that says npm was wrong. Preserving the full contrast is the safer
+  // choice across this whole bug class: a fragment can read as an
+  // instruction it was never meant to be, where the full sentence cannot.
+  { re: /(.+,\s+not\s+.+)/i, type: 'behavioral' as const, confidence: 0.8 },
 ]
 
 const IDENTITY_PATTERNS = [
@@ -146,8 +183,20 @@ const IDENTITY_PATTERNS = [
   { re: /(?:we are building|we built|I built)\s+(.{15,})/i, type: 'architectural' as const, confidence: 0.7 },
 ]
 
-// All pattern groups in priority order (most specific first)
-const ALL_PATTERN_GROUPS = [IDENTITY_PATTERNS, DECISION_PATTERNS, CORRECTION_PATTERNS, PREFERENCE_PATTERNS]
+// All pattern groups in priority order (most specific first).
+//
+// E1 fix: PREFERENCE_PATTERNS now runs before CORRECTION_PATTERNS. Every
+// polarity-bearing pattern in both groups captures its FULL match (never
+// just the tail after a directive word), so which of the two matches first
+// no longer changes what gets stored — but PREFERENCE_PATTERNS' keyword
+// anchors (`never`, `always`, `you should`, `you must`, `don't`, `do not`)
+// are the narrower, more deliberately-reasoned-about shapes, and
+// CORRECTION_PATTERNS' comma-based "X, not Y" is the broader net. Trying the
+// narrower group first is the structural fix for what let a broad,
+// high-confidence pattern preempt a careful one twice: a future pattern
+// added to either group inherits "narrow before broad" instead of having to
+// remember it.
+const ALL_PATTERN_GROUPS = [IDENTITY_PATTERNS, DECISION_PATTERNS, PREFERENCE_PATTERNS, CORRECTION_PATTERNS]
 
 /**
  * Split a message into sentences for per-sentence pattern matching.
