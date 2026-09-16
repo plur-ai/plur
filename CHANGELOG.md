@@ -2,14 +2,15 @@
 
 ## 0.20.0
 
-**The engram-authoring skill now ships.**
+opencode agents get persistent memory!
+- plur init --opencode
+- Engram creation upgraded
+- Team memory fixed for Codex
+- Bug fixes and security upgrades
 
-- `plur init` installs the skills.
-- `@plur-ai/cli` ships the tree.
-- Guidance reaches your agent.
-- Covered by tests.
-
-Both halves of this were missing (#1190, #1191).
+`@plur-ai/opencode` (#1195) is covered in full below. The other headline of this
+release is that the engram-authoring skill finally reaches users — both halves of
+that were missing (#1190, #1191).
 
 Until now `npm i -g @plur-ai/cli` carried no engram-authoring guidance at all,
 and `plur init` never installed any. `skills/plur-create-engrams/` had existed,
@@ -143,6 +144,24 @@ worth knowing about even if you never touch opencode.
   the user's GLOBAL `~/.plur/config.yaml`) is now something `@plur-ai/opencode`
   opts out of explicitly (`autoDiscover: false`) rather than something every
   adapter inherits by default without knowing it.
+
+### A runbook for hook timeouts
+
+**If a hook times out and your agent starts with no memory, there is now a page
+that says what to do** — [`docs/runbooks/hook-timeouts.md`](docs/runbooks/hook-timeouts.md).
+
+Codex, Antigravity and Cursor hooks are synchronous and therefore bounded (25s,
+20s, 10s). They cannot be async: an async hook's context is delivered at the
+harness's next safe point, which is not the turn that asked for it. Claude
+Code's 90s async hook absorbs a slow first recall; the others have to fit.
+
+The tuning knobs existed but were documented nowhere a user hitting a timeout
+would look. The runbook names them, and separates two failures that look
+identical and want opposite fixes: a missed hybrid deadline (memory arrived,
+keyword-only — raise the deadline) versus a hook killed at the harness budget
+(nothing arrived — *lower* it, so the fallback starts sooner, or take the local
+embedder out of the hot path). The existing stderr hint advises raising, which
+is right for the first and wrong for the second.
 
 ### Team memory now reaches Codex and Antigravity (Cursor still pending)
 

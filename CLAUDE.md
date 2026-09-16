@@ -211,6 +211,7 @@ current scores. If your PR improves any of these, mention it in the PR descripti
 | [docs/test-pyramid.md](docs/test-pyramid.md) | Test architecture — when to write unit vs integration vs smoke tests, why there are no Docker integration tests |
 | [docs/adr/README.md](docs/adr/README.md) | ADR index — architecture decisions (ADR-0001: YAML-as-truth, ADR-0002: derived-state provenance) |
 | [docs/runbooks/store-consolidation.md](docs/runbooks/store-consolidation.md) | Runbook for destructive store merges — read before touching `plur sync --consolidate` |
+| [docs/runbooks/hook-timeouts.md](docs/runbooks/hook-timeouts.md) | Why synchronous hooks are bounded, what consumes the budget, and the two timeout failures that want opposite fixes |
 | [docs/telemetry-design.md](docs/telemetry-design.md) | Opt-in telemetry design — what is collected, what is not, the no-external-calls-in-core invariant |
 | [docs/provenance.md](docs/provenance.md) | Recording where a memory came from — turning it on, where records go, what they do and do not prove |
 | [ROADMAP.md](ROADMAP.md) | Prioritized feature roadmap |
