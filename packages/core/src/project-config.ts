@@ -14,7 +14,7 @@ import { homedir } from 'os'
  * spelling. (#778 — this mismatch also let the hook test's HOME==cwd setup
  * pass on macOS while failing on Linux CI, where /tmp has no symlink.)
  */
-function canonicalize(p: string): string {
+export function canonicalize(p: string): string {
   try { return realpathSync(p) } catch { return resolve(p) }
 }
 

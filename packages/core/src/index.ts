@@ -37,7 +37,7 @@ export { LEARN_CONTEXT_FIELD_ROLES, LEARN_CONTENT_FIELDS, learnContextContent, e
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { atomicWrite, CONFIG_FILE_MODE, sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
-import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
+import { detectSecrets, detectSensitive, detectPromptInjection, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
@@ -66,6 +66,12 @@ import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isScopeWithin, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
+import {
+  isDirectoryTrusted as _isDirectoryTrusted,
+  trustDirectory as _trustDirectory,
+  untrustDirectory as _untrustDirectory,
+  listTrustedDirectories as _listTrustedDirectories,
+} from './trust.js'
 import type { Engram } from './schemas/engram.js'
 import { ATTRIBUTION_UNIDENTIFIED, MeasuredUnderSchema, type MeasuredUnder } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -93,7 +99,12 @@ export { computeConfidence, computeMetaConfidence, confidenceBand } from './conf
 export { SessionBreadcrumbs } from './session-state.js'
 export { SessionScopeRegistry } from './session-scopes.js'
 export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
-export { findProjectConfigPath, readProjectConfig, type ProjectConfig } from './project-config.js'
+export { findProjectConfigPath, readProjectConfig, canonicalize, type ProjectConfig } from './project-config.js'
+// Directory trust (2026-09 audit, D2) — a one-time per-directory grant
+// (`plur trust`) an adapter should require before adopting behaviour-changing
+// configuration it finds on disk (a `.plur.yaml` scope, say) from a directory
+// the user opened but never explicitly vetted. See trust.ts for the model.
+export { isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirectories } from './trust.js'
 export { generateGuardrails } from './guardrails.js'
 // Shared memory system-prompt renderer (opencode plugin's task 1): one
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
@@ -143,7 +154,7 @@ export { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
 export { orderBySupersedes } from './outbox-order.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
-export { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
+export { detectSecrets, detectSensitive, detectPromptInjection, sensitivityCategory } from './secrets.js'
 export { ScopeMetadataSchema, ScopeSensitivitySchema, SENSITIVITY_CATEGORIES, type ScopeMetadata, type ScopeSensitivity, type SensitivityCategory } from './schemas/scope-metadata.js'
 export { rankScopes, SCOPE_MATCH_THRESHOLD, WEIGHT_TAG, SUGGEST_DISPLAY_MIN_CONFIDENCE, type ScopeSignals, type ScopeCandidate, type RankScopesOptions } from './scope-routing.js'
 
@@ -2850,6 +2861,35 @@ export class Plur {
       const secrets = detectSecrets(this._hardScanText(statement, context))
       if (secrets.length > 0) {
         throw new Error(`Secret detected in statement or context: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+      }
+    }
+    // D4 (2026-09 audit): `detectPromptInjection` (secrets.ts) was wired only
+    // to pack installs, on the premise "a third-party pack is untrusted, my
+    // own conversation is trusted." An adapter that auto-harvests engrams
+    // from text an agent merely READ (a webpage it summarized, a file it was
+    // asked to quote, tool output) breaks that premise: the "conversation"
+    // can itself carry attacker-authored content the agent never asserted on
+    // its own account.
+    //
+    // The signal that distinguishes the two is `claim_class: 'inferred'`
+    // (#963) — "I worked this out", set by every automatic harvester
+    // (opencode's self-report/user-text paths; `@plur-ai/mcp`'s
+    // `plur_session_end` engram_suggestions) and never set by a human calling
+    // `plur_learn` directly. Gating on it rather than on `source` (free text,
+    // one string per adapter, easy to add a new harvester without updating an
+    // allowlist) means a human-invoked write is untouched by construction —
+    // nobody types `claim_class: 'inferred'` to describe their own assertion.
+    // Refuses (does not quarantine) on a hit, mirroring the secret check just
+    // above: there is no queued-for-review path for engram writes yet, and a
+    // caller can still write the statement as `asserted`/omitted if it
+    // genuinely came from the user.
+    if (context?.claim_class === 'inferred') {
+      const injections = detectPromptInjection(this._hardScanText(statement, context))
+      if (injections.length > 0) {
+        throw new Error(
+          `Prompt injection pattern detected in an auto-harvested (claim_class: 'inferred') statement or context: `
+          + `${injections[0].pattern}. Refusing the write.`,
+        )
       }
     }
     return statement
@@ -9102,6 +9142,39 @@ Generate an improved version of the procedure that prevents this failure. Return
   /** Whether this instance ran (and would re-run) cwd store discovery. */
   autoDiscoveryEnabled(): boolean {
     return this._autoDiscover
+  }
+
+  /**
+   * True when `dir` (or an ancestor of it) has been explicitly trusted via
+   * `trustDirectory` / `plur trust` (D2, 2026-09 audit).
+   *
+   * This is the gate an ADAPTER (opencode, claw, ...) should check before
+   * adopting behaviour-changing configuration it finds on disk — a
+   * `.plur.yaml` `scope`/`domain`, for instance — from a directory it did not
+   * create and the user may not have vetted. It is deliberately NOT about
+   * whether the scope is local or remote: a remote/team store is the
+   * legitimate reason a project declares a scope at all, so the gate is on
+   * the DIRECTORY, the same way `direnv allow` / `git config safe.directory`
+   * / VS Code workspace trust gate on the directory rather than on what the
+   * config inside it says.
+   */
+  isDirectoryTrusted(dir: string): boolean {
+    return _isDirectoryTrusted(dir, this.paths.root)
+  }
+
+  /** Grant trust to `dir` (`plur trust`). Returns the canonicalized path recorded. */
+  trustDirectory(dir: string): string {
+    return _trustDirectory(dir, this.paths.root)
+  }
+
+  /** Revoke trust from `dir` (`plur untrust`). Returns whether an entry was removed. */
+  untrustDirectory(dir: string): boolean {
+    return _untrustDirectory(dir, this.paths.root)
+  }
+
+  /** List every directory this user has explicitly trusted. */
+  listTrustedDirectories(): string[] {
+    return _listTrustedDirectories(this.paths.root)
   }
 
   autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
