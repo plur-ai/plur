@@ -52,6 +52,8 @@ Commands:
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
+  trust [dir]             Trust a directory's .plur.yaml scope/domain (default: cwd) [--list]
+  untrust [dir]           Revoke a directory's trust grant (default: cwd)
   scopes                  List authorized-but-unregistered shared scopes (#647)
   scopes register <scope> Register one; scopes dismiss <scope>; scopes --reoffer
   outbox                  Show team-scoped writes queued for an unreachable store
@@ -137,6 +139,8 @@ const COMMANDS: Record<string, string> = {
   rescope: './commands/rescope.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
+  trust: './commands/trust.js',
+  untrust: './commands/untrust.js',
   scopes: './commands/scopes.js',
   outbox: './commands/outbox.js',
   'reindex-tokens': './commands/reindex-tokens.js',
