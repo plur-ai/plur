@@ -155,13 +155,37 @@ else `process.cwd()`. `worktree` is measured as `"/"` outside a git repository
 (opencode 1.18.30) — using it unconditionally would scope every non-repo
 session to the filesystem root.
 
-That root is passed to `readProjectConfig()` — the same `.plur.yaml` walk
-`@plur-ai/mcp` uses — and its `scope`/`domain`, if present, become the default
-for recall and for both learning paths. It is also passed as `cwd` to the
-`Plur` constructor, which drives store auto-discovery (adding a store when a
-`.plur/engrams.yaml` already exists between the scope root and the git root)
-— that alone does not create a per-project store or filter recall; `.plur.yaml`
-is the mechanism that does.
+That root is passed as `cwd` to the `Plur` constructor with **`autoDiscover:
+false`** (D1, 2026-09 audit). The default constructor behaviour — still the
+default for every OTHER `@plur-ai/core` consumer — walks `cwd` looking for a
+`.plur/engrams.yaml` and, if found, registers it as a store in the user's
+**global** `~/.plur/config.yaml`: silently (a `logger.info`, suppressed at the
+default `warning` threshold), permanently (the registration outlives the
+session and is read by every other PLUR adapter — Claude Code, claw, dsh —
+too), and at whatever scope the discovered directory's own `.plur.yaml`
+names, including `global` and `pinned`. `cwd` here is the session's git
+root — exactly where a cloned repo shipping both `.plur/engrams.yaml` and
+`.plur.yaml` would put them, meaning merely opening such a repo in opencode,
+with no prompt typed, registered it as the user's global memory store (proved
+end to end, audit finding D1). This plugin turns that off.
+
+That same root is also passed to `readProjectConfig()` — the same
+`.plur.yaml` walk `@plur-ai/mcp` uses — but its `scope`/`domain` are **not**
+adopted automatically (D2, 2026-09 audit). A `.plur.yaml` can redirect
+`injectHybrid`'s recall leg and `learnRouted`'s write leg to a REMOTE store
+the user configured for a different context — proved against a stub host:
+the user's prompt text POSTed under their own bearer token, and an
+attacker-chosen statement written into a shared team scope, entirely off the
+local store. Remote/team stores are not the bug — an enterprise user's own
+repo declaring `scope: group:acme/eng` so recall reaches their team's store
+is the product working as intended — so the fix is not "refuse a
+remote-resolving scope", it is `resolveTrustedScope()` (`scope.ts`) requiring
+the user to have explicitly trusted the DIRECTORY the `.plur.yaml` lives in
+(`plur trust <dir>` — `direnv allow` / `git config safe.directory` / VS Code
+workspace-trust shape). Untrusted, the scope/domain are dropped and a
+`warning`-level log names the file, the scope, and the exact `plur trust`
+command to run; trusted, they are adopted exactly as before. See
+[README.md#scope](README.md#scope) for the user-facing version.
 
 ## What's NOT here
 

@@ -75,11 +75,36 @@ Logs one line per hook invocation to stderr — scope root resolution, project s
 
 ## What leaves your machine
 
-Nothing. `@plur-ai/core` makes no external network calls — search is local BM25 (optionally + local embeddings), storage is YAML on disk at `~/.plur/` (override with `PLUR_PATH`). This plugin wires no telemetry of its own.
+Not nothing — two things do, both on default paths this plugin exercises every session (D6, 2026-09 audit):
+
+- **A one-time embedding model download.** `injectHybrid`'s hybrid search uses local embeddings when available; the first call fetches the (~100MB+) model from huggingface.co. Set `PLUR_DISABLE_EMBEDDINGS=1` to stay BM25-only and skip this entirely.
+- **Recall/write traffic to a REMOTE store, once one is configured.** `injectHybrid` dials `@plur-ai/core`'s remote-recall leg on every turn, and `learnRouted` posts to a remote store on the write path — POSTing your prompt text and taught statements under your token to whatever host that store's URL names. This is the [PLUR Enterprise](https://plur.ai) team-store feature working as intended for a store *you* configured. What must NOT happen — and, after the D2 fix below, does not — is a project's own `.plur.yaml` picking a scope that reaches a remote store on your behalf without you having vetted that project directory first; see [Scope](#scope).
+
+`plur doctor`'s opencode leg also makes a bounded npm-registry lookup (whether `@plur-ai/opencode` is published) unless run with `--no-handshake`.
+
+Beyond those: search falls back to local BM25 when embeddings are off, storage is YAML on disk at `~/.plur/` (override with `PLUR_PATH`), and this plugin wires no telemetry of its own.
 
 ## Scope
 
-Project scoping mirrors `@plur-ai/mcp`: if a `.plur.yaml` file is found walking up from the resolved scope root, its `scope` and `domain` become the default for recall and for anything this plugin learns. The `cwd` passed to the underlying `Plur` constructor drives store auto-discovery only — it does not by itself create a per-project store or filter what is recalled; `.plur.yaml` is what does that.
+Project scoping mirrors `@plur-ai/mcp`: if a `.plur.yaml` file is found walking up from the resolved scope root, its `scope` and `domain` become the default for recall and for anything this plugin learns — **but only in a directory you have explicitly trusted.**
+
+**Trusting a directory.** Run this once per repo:
+
+```sh
+plur trust .        # trust the current directory (and everything below it)
+plur trust --list   # see what's trusted
+plur untrust .      # revoke
+```
+
+This is the same shape as `direnv allow`, `git config safe.directory`, and VS Code's workspace trust: a project file that changes behaviour requires a one-time, explicit, per-directory grant — stored under your PLUR home (`~/.plur/trust.yaml`, never inside the project, so a repo cannot grant itself trust). Trusting a directory also trusts everything below it, so trusting a repo's root covers a `.plur.yaml` anywhere in that repo.
+
+**Enterprise flow:** clone the company repo (whose `.plur.yaml` says `scope: group:acme/eng`), run `plur trust .` once, and recall/writes reach your team's store from then on — exactly as if you had configured the scope yourself.
+
+**Untrusted directory:** the plugin ignores the `.plur.yaml`'s `scope`/`domain` entirely and falls back to the local default, logging a `warning`-level line (visible by default, no `PLUR_DEBUG` needed) naming the file, the scope it declared, and the exact `plur trust` command to run if you meant to honor it. This closes an attack proved end to end during the 2026-09 audit: a repo you merely clone and open — no prompt typed — could otherwise redirect your recall queries and taught statements to a scope of the attacker's choosing, including one of *your own* team's remote stores if the attacker guessed or knew its name.
+
+The plugin never reads `.plur.yaml`'s `remote_url`/`remote_token`/`remote_scopes` fields (honored by the CLI's `hook-inject` for other integrations) — trusted directory or not.
+
+The `cwd` passed to the underlying `Plur` constructor is `autoDiscover: false` (2026-09 audit) — it never performs cwd-derived store discovery at all, so it cannot create a per-project store as a side effect of merely loading.
 
 The scope root itself prefers opencode's `worktree`, but falls back to `directory` — `worktree` was measured as `"/"` outside a git repository (opencode 1.18.30), which would otherwise scope every non-repo session to the filesystem root.
 

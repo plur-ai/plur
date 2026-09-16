@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { resolveScopeRoot } from '../src/scope.js'
+import { resolveScopeRoot, resolveTrustedScope } from '../src/scope.js'
 import { PlurPlugin } from '../src/index.js'
 
 describe('resolveScopeRoot', () => {
@@ -32,6 +32,11 @@ describe('PlurPlugin project config integration', () => {
     mockPlur = {
       injectHybrid: vi.fn().mockResolvedValue({ count: 0, directives: '', constraints: '', consider: '', injected_ids: [], tokens_used: 0 }),
       learnRouted: vi.fn().mockResolvedValue(undefined),
+      // D2 (2026-09 audit): the plugin now gates `.plur.yaml` scope adoption
+      // on directory trust. Default to trusted here — these fixtures are
+      // about scope/domain PROPAGATION once adopted; the untrusted-gate
+      // behaviour itself is covered by its own describe block below.
+      isDirectoryTrusted: vi.fn().mockReturnValue(true),
     }
   })
 
@@ -167,5 +172,116 @@ domain: cwd-test-domain
     } finally {
       rmSync(emptyDir, { recursive: true, force: true })
     }
+  })
+})
+
+// D2 (2026-09 audit): a `.plur.yaml` scope must only be adopted from a
+// directory the user has explicitly trusted (`plur trust`) — see scope.ts's
+// `resolveTrustedScope` docstring for the full reasoning (remote/team stores
+// are the legitimate use, so the gate is on the DIRECTORY, not on whether
+// the scope happens to resolve to a remote store).
+describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
+  let tempDir: string
+
+  beforeEach(() => {
+    tempDir = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-trust-test-')))
+    writeFileSync(join(tempDir, '.plur.yaml'), 'scope: group:acme/eng\ndomain: acme.eng.build\n')
+  })
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  it('does NOT adopt scope/domain from an untrusted directory', async () => {
+    const plur = {
+      injectHybrid: vi.fn().mockResolvedValue({ count: 0 }),
+      learnRouted: vi.fn().mockResolvedValue(undefined),
+      isDirectoryTrusted: vi.fn().mockReturnValue(false),
+    }
+    const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
+    await plugin['chat.message']!({ sessionID: 's1' } as any, {
+      message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
+    } as any)
+
+    expect(plur.isDirectoryTrusted).toHaveBeenCalledWith(tempDir)
+    const callArgs = plur.injectHybrid.mock.calls[0]
+    expect(callArgs[1].scope).toBeUndefined()
+    // Would FAIL if: the plugin adopted projectConfig.scope directly instead
+    // of routing it through resolveTrustedScope()/isDirectoryTrusted first.
+  })
+
+  it('DOES adopt scope/domain from a trusted directory', async () => {
+    const plur = {
+      injectHybrid: vi.fn().mockResolvedValue({ count: 0 }),
+      learnRouted: vi.fn().mockResolvedValue(undefined),
+      isDirectoryTrusted: vi.fn().mockReturnValue(true),
+    }
+    const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
+    await plugin['chat.message']!({ sessionID: 's1' } as any, {
+      message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
+    } as any)
+
+    const callArgs = plur.injectHybrid.mock.calls[0]
+    expect(callArgs[1].scope).toBe('group:acme/eng')
+  })
+
+  it('never reads remote_url/remote_token/remote_scopes into the effective scope, trusted or not (regression)', async () => {
+    // hook-inject (CLI) honors these fields; this plugin never has and must
+    // never start to — see ARCHITECTURE.md/README.md's Scope sections.
+    writeFileSync(
+      join(tempDir, '.plur.yaml'),
+      'scope: group:acme/eng\nremote_url: https://evil.example\nremote_token: SHOULD-NEVER-APPEAR\nremote_scopes:\n  - group:acme/eng\n',
+    )
+    for (const trusted of [true, false]) {
+      const plur = {
+        injectHybrid: vi.fn().mockResolvedValue({ count: 0 }),
+        learnRouted: vi.fn().mockResolvedValue(undefined),
+        isDirectoryTrusted: vi.fn().mockReturnValue(trusted),
+      }
+      const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
+      await plugin['chat.message']!({ sessionID: `s-${trusted}` } as any, {
+        message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
+      } as any)
+      const opts = plur.injectHybrid.mock.calls[0][1]
+      expect(opts).not.toHaveProperty('remote_url')
+      expect(opts).not.toHaveProperty('remote_token')
+      expect(opts).not.toHaveProperty('remote_scopes')
+      expect(JSON.stringify(opts)).not.toContain('evil.example')
+      expect(JSON.stringify(opts)).not.toContain('SHOULD-NEVER-APPEAR')
+    }
+  })
+})
+
+describe('resolveTrustedScope (pure function)', () => {
+  const warn = () => {}
+
+  it('returns {} when the project config has neither scope nor domain', () => {
+    const plur = { isDirectoryTrusted: () => { throw new Error('must not be called') } }
+    expect(resolveTrustedScope(plur, {}, '/repo/.plur.yaml', warn)).toEqual({})
+  })
+
+  it('returns {} and warns when configPath is trusted but null (defensive — should not happen in practice)', () => {
+    const messages: string[] = []
+    const plur = { isDirectoryTrusted: () => true }
+    const result = resolveTrustedScope(plur, { scope: 'global' }, null, (m) => messages.push(m))
+    expect(result).toEqual({})
+    expect(messages.length).toBe(1)
+  })
+
+  it('adopts scope/domain when the config file\'s directory is trusted', () => {
+    const plur = { isDirectoryTrusted: vi.fn().mockReturnValue(true) }
+    const result = resolveTrustedScope(plur, { scope: 'group:acme/eng', domain: 'acme.eng' }, '/repo/.plur.yaml', warn)
+    expect(result).toEqual({ scope: 'group:acme/eng', domain: 'acme.eng' })
+    expect(plur.isDirectoryTrusted).toHaveBeenCalledWith('/repo')
+  })
+
+  it('drops scope/domain and warns (naming the file, scope, and trust command) when untrusted', () => {
+    const messages: string[] = []
+    const plur = { isDirectoryTrusted: () => false }
+    const result = resolveTrustedScope(plur, { scope: 'group:acme/eng' }, '/repo/.plur.yaml', (m) => messages.push(m))
+    expect(result).toEqual({})
+    expect(messages[0]).toContain('/repo/.plur.yaml')
+    expect(messages[0]).toContain('group:acme/eng')
+    expect(messages[0]).toContain('plur trust /repo')
   })
 })

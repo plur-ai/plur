@@ -1,4 +1,4 @@
-import { Plur, renderMemoryBlock, readProjectConfig, type ProjectConfig } from '@plur-ai/core'
+import { Plur, renderMemoryBlock, readProjectConfig, findProjectConfigPath } from '@plur-ai/core'
 // Type-only: the host contract is untyped at runtime — `@opencode-ai/plugin`
 // is an optional peerDependency and this import must never become a runtime
 // require. Typechecking the hook map against it turns a renamed/changed
@@ -9,9 +9,13 @@ import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
-import { resolveScopeRoot } from './scope.js'
+import { resolveScopeRoot, resolveTrustedScope } from './scope.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
+// Unconditional — unlike `log` above. A `.plur.yaml` scope the plugin refuses
+// to adopt (untrusted directory, D2) is exactly the kind of thing a user
+// needs to see without having to already know to set PLUR_DEBUG=1 first.
+const warn = (msg: string) => { console.error(`[plur:opencode] warning: ${msg}`) }
 
 /** Never let a memory failure break the agent's turn. */
 async function safe(label: string, fn: () => Promise<void>): Promise<void> {
@@ -22,8 +26,39 @@ export const PlurPlugin: Plugin = async (ctx) => {
   const scopeRoot = resolveScopeRoot(ctx ?? {})
   // `_plur` is a test-only injection seam, not part of the host contract —
   // narrowly typed here rather than widening `ctx` itself.
-  const plur = (ctx as { _plur?: Plur })?._plur ?? new Plur({ path: process.env.PLUR_PATH, cwd: scopeRoot })
-  const projectConfig = readProjectConfig(scopeRoot)
+  //
+  // `autoDiscover: false` (D1, 2026-09 audit): the default constructor
+  // behaviour walks `cwd` looking for a `.plur/engrams.yaml` and, if found,
+  // registers it as a STORE in the user's GLOBAL `~/.plur/config.yaml` —
+  // silently (a `logger.info` suppressed at the default `warning`
+  // threshold), permanently (it outlives the session and is read by every
+  // other PLUR adapter too), and with the scope the discovered file's own
+  // `.plur.yaml` names, including `global`. `cwd` here is the session's git
+  // root — exactly where a cloned, hostile repo would ship both files. A
+  // plugin loaded into someone else's agent host must not perform a
+  // cwd-derived disk side effect that writes the user's global config as a
+  // side effect of merely being loaded.
+  //
+  // Everything through `projectConfig` below is wrapped (D7, 2026-09 audit):
+  // this whole block sits BEFORE the plugin has returned its hook map, so
+  // there is no `safe()` wrapper reachable yet, and `new Plur()` can throw
+  // (e.g. a hostile `.plur.yaml` naming a scope that collides with one the
+  // user already registered — proofD). A throw here used to reject this
+  // factory's promise, which fails opencode's PLUGIN LOAD, not just memory —
+  // the whole host degrades because its memory layer couldn't build. Catch
+  // it and return an all-no-op hook map instead: no memory this session,
+  // but the agent's turn is never at risk.
+  let plur: Plur
+  let projectConfig: ReturnType<typeof resolveTrustedScope>
+  try {
+    plur = (ctx as { _plur?: Plur })?._plur
+      ?? new Plur({ path: process.env.PLUR_PATH, cwd: scopeRoot, autoDiscover: false })
+    const rawProjectConfig = readProjectConfig(scopeRoot)
+    projectConfig = resolveTrustedScope(plur, rawProjectConfig, findProjectConfigPath(scopeRoot), warn)
+  } catch (err) {
+    warn(`memory layer failed to initialize — running this session with no memory: ${(err as Error).message}`)
+    return {} satisfies Hooks
+  }
   log(`scope root: ${scopeRoot}`)
   if (projectConfig.scope) log(`project scope: ${projectConfig.scope}`)
   if (projectConfig.domain) log(`project domain: ${projectConfig.domain}`)
