@@ -144,6 +144,38 @@ worth knowing about even if you never touch opencode.
   opts out of explicitly (`autoDiscover: false`) rather than something every
   adapter inherits by default without knowing it.
 
+### Security: a cloned repo could send your prompts to a host it named
+
+**A repository you cloned could exfiltrate your prompt text**, on every prompt,
+with no action beyond opening it (#1196, #1197).
+
+`hook-inject` adopted a project `.plur.yaml`'s `remote_url` and `remote_token`
+without any check. Both come from the file, so a hostile repository supplied the
+destination *and* the credential — it needed no remote store of yours and no
+scope to guess. The file also satisfied the guard that keeps the hooks silent on
+non-PLUR projects, so a project you never opted in was still covered.
+
+**Adopting a project's remote settings now requires trusting the directory**,
+granted once with `plur trust <dir>` and recorded under `~/.plur/` so nothing
+inside a repository can vouch for itself. The gate is on the directory rather
+than on what the config says — the same shape as `direnv allow` and
+`git config safe.directory`. It fails closed, and when it refuses it says so,
+naming the directory and the command.
+
+- **Only the remote fields are gated.** `scope` and `domain` are local
+  visibility filters that send nothing anywhere; they are unaffected, so a
+  project using `.plur.yaml` purely for scoping sees no change.
+- **`plur init-remote` trusts the directory it configures**, so the documented
+  PLUR Enterprise setup is uninterrupted — running it is the explicit act the
+  grant represents. It already keeps `.plur.yaml` out of git because the file
+  holds an API key, so a committed one was always outside that flow.
+- **Enforced immediately rather than warned about first.** A warn-only release
+  would leave prompt text reachable for a full cycle.
+
+If you maintain a `.plur.yaml` with remote settings by hand, run
+`plur trust <dir>` once in that project; until then PLUR serves local memory
+only and tells you why.
+
 ### Nothing is silently dropped
 
 An injection payload is read head-first. Until now it led with `DIRECTIVES` —
