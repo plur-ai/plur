@@ -1200,7 +1200,7 @@ git commit -m "test(opencode): live acceptance gate for injection and accretion"
 **Files:**
 - Create: `packages/opencode/README.md`, `packages/opencode/ARCHITECTURE.md`
 - Modify: `scripts/release.sh`, `CLAUDE.md`, `README.md`
-- Modify: `/Users/gregor/Data/5-plur/roadmap.yaml`
+- Modify: `~/Data/5-plur/roadmap.yaml`
 
 - [ ] **Step 1: Write README.md**
 
@@ -1243,9 +1243,9 @@ gh issue create --title "opencode adapter — probe done, contract verified" \
 ```
 
 Then add the new issue number to `E-15.children` in
-`/Users/gregor/Data/5-plur/roadmap.yaml` (alongside `1033`) and validate:
+`~/Data/5-plur/roadmap.yaml` (alongside `1033`) and validate:
 
-Run: `python3 /Users/gregor/Data/.datacore/lib/roadmap_validate.py`
+Run: `python3 ~/Data/.datacore/lib/roadmap_validate.py`
 Expected: no errors
 
 - [ ] **Step 7: Commit**

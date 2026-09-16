@@ -5,11 +5,11 @@ A throwaway store in /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxK
 ──────────────────────────────────────────────────────────────
 
 # No extra flags. Just the thing you learned.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js learn 'Migrations run before deploys, never after' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json
+$ plur learn 'Migrations run before deploys, never after' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json
 {"id":"ENG-2026-08-23-001","statement":"Migrations run before deploys, never after","scope":"global","type":"behavioral","domain":null}
 
 # Now ask where it came from. This is the whole feature in one command.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js provenance 'migrations deploys' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
+$ plur provenance 'migrations deploys' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
 {
     "found": true,
     "engram_id": "ENG-2026-08-23-001",
@@ -48,7 +48,7 @@ $ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js prove
 # Three flags say who is answerable, what kind of claim it is, and
 
 # which licence governs reuse. --source says what it came from.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js learn 'Connection pools cap at 100 on the shared tier' \
+$ plur learn 'Connection pools cap at 100 on the shared tier' \
     --asserted-by local:maintainer \
     --claim-class documented \
     --source https://example.org/runbook \
@@ -58,7 +58,7 @@ $ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js learn
 {"id":"ENG-2026-08-23-002","statement":"Connection pools cap at 100 on the shared tier","scope":"global","type":"behavioral","domain":null}
 
 # Ask again. Nothing is missing this time.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js provenance 'connection pools' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
+$ plur provenance 'connection pools' --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
 {
     "found": true,
     "engram_id": "ENG-2026-08-23-002",
@@ -102,7 +102,7 @@ $ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js prove
 # A pack is how memories leave your machine, so this is where origin
 
 # starts to matter to somebody else. It ships by default.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js packs export team-conventions --output /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
+$ plur packs export team-conventions --output /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -m json.tool
 {
     "path": "/var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack",
     "engram_count": 1,
@@ -141,7 +141,7 @@ pack.jsonld
 ──────────────────────────────────────────────────────────────
 
 # The gate belongs at the boundary. Afterwards it changes nothing.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js packs preview /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -c "
+$ plur packs preview /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
 print('integrity :', d['integrity']['status'])
@@ -169,14 +169,14 @@ Nothing here has been verified. Packs are not signed yet, so every statement bel
 
 # Tamper with the pack and the integrity check notices.
 $ sed -i '' 's/Connection pools/Connection pool/' /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack/engrams.yaml
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js packs install /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -m json.tool
+$ plur packs install /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -m json.tool
 {
     "error": "This pack does not match the integrity value it shipped.\n  shipped:  sha256:cd5792043ecf50f86605a1e5d36b7383188317b14786da4dd1be3219fd83bf5b\n  contents: sha256:778bc0861185461ee563fc9bb584a905860d8952c8f9e57fd19faf74ed69a1e0\nIt has been changed since it was built. Install it only if you know why it differs."
 }
 
 # Put it back, and it installs.
 $ sed -i '' 's/Connection pool /Connection pools /' /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack/engrams.yaml
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js packs install /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -c "
+$ plur packs install /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/pack --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/recipient --json | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
 print('installed :', d['installed'], 'engrams')
@@ -189,7 +189,7 @@ integrity : ok
 ──────────────────────────────────────────────────────────────
 
 # Record a correction that replaces the earlier one.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js learn 'Connection pools cap at 200 on the shared tier since August' \
+$ plur learn 'Connection pools cap at 200 on the shared tier since August' \
     --supersedes ENG-2026-08-23-002 \
     --asserted-by local:maintainer --claim-class documented \
     --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json 2>/dev/null | head -1
@@ -198,7 +198,7 @@ $ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js learn
 # Now ask about the OLD memory. It says what replaced it, in the first
 
 # line, and is never reported complete.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js provenance ENG-2026-08-23-002 --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -c "
+$ plur provenance ENG-2026-08-23-002 --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
 print('superseded_by :', d.get('superseded_by'))
@@ -215,7 +215,7 @@ complete      : False
 ──────────────────────────────────────────────────────────────
 
 # Everything above is a readable summary of this.
-$ node /Users/crtah/Data/3-plur/2-projects/plur/packages/cli/dist/index.js provenance ENG-2026-08-23-002 --record --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -c "
+$ plur provenance ENG-2026-08-23-002 --record --path /var/folders/ky/ms6htv7j6sv5q43hw0gt0bbm0000gn/T/tmp.peavxKzUCO/store --json | python3 -c "
 import json,sys
 r = json.load(sys.stdin)['record']
 print(json.dumps(r['@context'], indent=2))
