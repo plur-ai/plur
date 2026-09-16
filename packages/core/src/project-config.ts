@@ -96,20 +96,21 @@ function unquoteYamlValue(v: string): string {
 }
 
 /**
- * Read `.plur.yaml` from the nearest enclosing project directory.
- * Returns `{}` if not found or unparseable.
+ * Read `.plur.yaml` from an already-resolved path. `null` (not found) short-
+ * circuits to `{}` without touching the filesystem again.
  *
- * The parser is intentionally minimal (line-by-line) rather than pulling
- * js-yaml into the CLI bundle — config files are short, fields are flat,
- * and dependency-free keeps the CLI bundle tiny. Arrays use comma-
- * separated values OR YAML-style `- item` lines.
- *
- * Accepts an optional `startDir` so callers (notably the MCP server,
- * which lives in core and gets the dir from `process.cwd()`) can override
- * the walk root.
+ * E5 (2026-09 audit) split this out of `readProjectConfig` so a caller that
+ * also needs the path for something else (opencode's `resolveTrustedScope`
+ * check, which trusts against the directory the file lives in) can resolve
+ * it ONCE with `findProjectConfigPath` and pass the same path to both — two
+ * independent `find...` walks were a TOCTOU: the file `readProjectConfig()`
+ * read and the path a second, separate `findProjectConfigPath()` call
+ * returned could, in principle, resolve to different files if the
+ * filesystem changed between the two walks (a symlink swapped, a `.plur.yaml`
+ * created/removed), silently breaking the assumption that trust was being
+ * checked against the file that was actually read.
  */
-export function readProjectConfig(startDir: string = process.cwd()): ProjectConfig {
-  const configPath = findProjectConfigPath(startDir)
+export function readProjectConfigFromPath(configPath: string | null): ProjectConfig {
   if (!configPath) return {}
   try {
     // Strip UTF-8 BOM — some Windows editors prepend it and the first
@@ -173,4 +174,28 @@ export function readProjectConfig(startDir: string = process.cwd()): ProjectConf
   } catch {
     return {}
   }
+}
+
+/**
+ * Read `.plur.yaml` from the nearest enclosing project directory.
+ * Returns `{}` if not found or unparseable.
+ *
+ * The parser is intentionally minimal (line-by-line) rather than pulling
+ * js-yaml into the CLI bundle — config files are short, fields are flat,
+ * and dependency-free keeps the CLI bundle tiny. Arrays use comma-
+ * separated values OR YAML-style `- item` lines.
+ *
+ * Accepts an optional `startDir` so callers (notably the MCP server,
+ * which lives in core and gets the dir from `process.cwd()`) can override
+ * the walk root.
+ *
+ * A thin wrapper: resolves the path once (`findProjectConfigPath`) and reads
+ * it (`readProjectConfigFromPath`). A caller that ALSO needs the path (to
+ * check trust against the directory the file lives in, say) should call
+ * those two directly instead of this — see `readProjectConfigFromPath`'s
+ * docstring (E5, 2026-09 audit) for why calling `readProjectConfig` and
+ * `findProjectConfigPath` separately is a TOCTOU.
+ */
+export function readProjectConfig(startDir: string = process.cwd()): ProjectConfig {
+  return readProjectConfigFromPath(findProjectConfigPath(startDir))
 }

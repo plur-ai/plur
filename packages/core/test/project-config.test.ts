@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
-import { findProjectConfigPath, readProjectConfig } from '../src/project-config.js'
+import { findProjectConfigPath, readProjectConfig, readProjectConfigFromPath } from '../src/project-config.js'
 
 /**
  * Tests for project-config — covers the .plur.yaml reader that was extracted
@@ -209,6 +209,32 @@ describe('project-config (#177)', () => {
         'scope: project:test\nunrelated_key: value\nanother: thing\n',
       )
       expect(readProjectConfig(root)).toEqual({ scope: 'project:test' })
+    })
+  })
+
+  describe('readProjectConfigFromPath (E5, 2026-09 audit)', () => {
+    it('returns {} for a null path without touching the filesystem', () => {
+      expect(readProjectConfigFromPath(null)).toEqual({})
+    })
+
+    it('reads the exact file at the given path', () => {
+      writeFileSync(join(root, '.plur.yaml'), 'scope: project:test\ndomain: testing\n')
+      expect(readProjectConfigFromPath(join(root, '.plur.yaml'))).toEqual({ scope: 'project:test', domain: 'testing' })
+    })
+
+    it('resolving the path once and reading from it matches readProjectConfig(startDir) — the one-walk fix', () => {
+      // E5: `readProjectConfig(scopeRoot)` and `findProjectConfigPath(scopeRoot)`
+      // used to be called as two INDEPENDENT filesystem walks by
+      // opencode's index.ts, then assumed to agree on the same file. The fix
+      // is to resolve the path once and read from THAT path — this pins the
+      // two forms as equivalent for the caller that now does exactly that.
+      writeFileSync(join(root, '.plur.yaml'), 'scope: project:test\ndomain: testing\n')
+      const path = findProjectConfigPath(root)
+      expect(readProjectConfigFromPath(path)).toEqual(readProjectConfig(root))
+    })
+
+    it('returns {} for a nonexistent path (defensive, mirrors readProjectConfig)', () => {
+      expect(readProjectConfigFromPath(join(root, 'does-not-exist.yaml'))).toEqual({})
     })
   })
 })

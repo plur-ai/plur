@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, realpathSync } from 'fs'
+import { mkdtempSync, rmSync, realpathSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -64,6 +64,32 @@ describe('plur trust / untrust (D2)', () => {
 
     const u2 = JSON.parse(run(`untrust ${target}`))
     expect(u2.removed).toBe(false)
+  })
+
+  // E7 (2026-09 audit, minor): `plur trust` used to print only `Trusted:
+  // <path>`, never showing what a `.plur.yaml` at that path actually
+  // authorizes — the one moment a human is in the loop, and they were shown
+  // nothing.
+  describe('trust discloses what a .plur.yaml at the target authorizes (E7)', () => {
+    it('prints scope/domain/remote_url when the directory has a .plur.yaml', () => {
+      mkdirSync(join(target, '.git'), { recursive: true })
+      writeFileSync(
+        join(target, '.plur.yaml'),
+        'scope: group:acme/eng\ndomain: acme.engineering\nremote_url: https://plur.acme.example.com\n',
+      )
+      const out = JSON.parse(run(`trust ${target}`))
+      expect(out.scope).toBe('group:acme/eng')
+      expect(out.domain).toBe('acme.engineering')
+      expect(out.remote_url).toBe('https://plur.acme.example.com')
+      expect(out.config_path).toBe(join(target, '.plur.yaml'))
+    })
+
+    it('omits scope/domain/remote_url when no .plur.yaml declares any', () => {
+      const out = JSON.parse(run(`trust ${target}`))
+      expect(out).not.toHaveProperty('scope')
+      expect(out).not.toHaveProperty('domain')
+      expect(out).not.toHaveProperty('remote_url')
+    })
   })
 
   it('bare "plur trust" with no argument trusts the CURRENT directory', () => {

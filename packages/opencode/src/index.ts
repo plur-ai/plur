@@ -1,4 +1,4 @@
-import { Plur, renderMemoryBlock, readProjectConfig, findProjectConfigPath } from '@plur-ai/core'
+import { Plur, renderMemoryBlock, readProjectConfigFromPath, findProjectConfigPath } from '@plur-ai/core'
 // Type-only: the host contract is untyped at runtime — `@opencode-ai/plugin`
 // is an optional peerDependency and this import must never become a runtime
 // require. Typechecking the hook map against it turns a renamed/changed
@@ -53,8 +53,15 @@ export const PlurPlugin: Plugin = async (ctx) => {
   try {
     plur = (ctx as { _plur?: Plur })?._plur
       ?? new Plur({ path: process.env.PLUR_PATH, cwd: scopeRoot, autoDiscover: false })
-    const rawProjectConfig = readProjectConfig(scopeRoot)
-    projectConfig = resolveTrustedScope(plur, rawProjectConfig, findProjectConfigPath(scopeRoot), warn)
+    // E5 (2026-09 audit): resolve the path ONCE and read from that resolved
+    // path, rather than `readProjectConfig(scopeRoot)` +
+    // `findProjectConfigPath(scopeRoot)` as two independent filesystem
+    // walks that were then assumed to refer to the same file — a TOCTOU
+    // between the file trust is checked against and the file whose
+    // scope/domain actually get adopted.
+    const configPath = findProjectConfigPath(scopeRoot)
+    const rawProjectConfig = readProjectConfigFromPath(configPath)
+    projectConfig = resolveTrustedScope(plur, rawProjectConfig, configPath, warn)
   } catch (err) {
     warn(`memory layer failed to initialize — running this session with no memory: ${(err as Error).message}`)
     return {} satisfies Hooks

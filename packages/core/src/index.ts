@@ -99,7 +99,7 @@ export { computeConfidence, computeMetaConfidence, confidenceBand } from './conf
 export { SessionBreadcrumbs } from './session-state.js'
 export { SessionScopeRegistry } from './session-scopes.js'
 export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
-export { findProjectConfigPath, readProjectConfig, canonicalize, type ProjectConfig } from './project-config.js'
+export { findProjectConfigPath, readProjectConfig, readProjectConfigFromPath, canonicalize, type ProjectConfig } from './project-config.js'
 // Directory trust (2026-09 audit, D2) — a one-time per-directory grant
 // (`plur trust`) an adapter should require before adopting behaviour-changing
 // configuration it finds on disk (a `.plur.yaml` scope, say) from a directory
