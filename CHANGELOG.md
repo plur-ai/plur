@@ -5,7 +5,7 @@
 ### opencode reaches PLUR Enterprise
 
 **If you use PLUR Enterprise from opencode, your team memory was silently never
-arriving** (#1207) — the same failure 0.20.0 fixed for Codex and Antigravity,
+arriving** (#1207, #1208) — the same failure 0.20.0 fixed for Codex and Antigravity,
 in the one adapter that fix did not reach.
 
 `@plur-ai/opencode` merged 25 minutes before the directory-trust gate that
