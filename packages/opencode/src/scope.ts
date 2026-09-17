@@ -53,12 +53,15 @@ export interface EffectiveProjectScope {
  * hierarchical (`isDirectoryTrusted` covers descendants), so trusting the
  * repo root once covers every `.plur.yaml` at or below it.
  *
- * Deliberately narrow: `readProjectConfig` also returns `remote_url` /
- * `remote_token` / `remote_scopes` (honored by the CLI's `hook-inject`), and
- * this function's return type does not have those fields at all — the
- * plugin never reads them, trusted directory or not. See
- * `packages/core/src/project-config.ts` for the wider exposure that leaves
- * open (tracked separately, not an opencode-plugin concern).
+ * Deliberately narrow: this function decides `scope`/`domain` and nothing
+ * else. The same `.plur.yaml` also carries `remote_url` / `remote_token` /
+ * `remote_scopes`, which are a different grant — they send prompt text
+ * off-box rather than filtering what is read — and go through core's
+ * `resolveProjectRemoteFromConfig`, the one gate every adapter shares
+ * (#1196/#1198). `index.ts` calls both against the SAME single read, so the
+ * file trust is checked against stays the file whose fields are adopted.
+ * Until #1207 the plugin read no remote fields at all, and an enterprise
+ * user's team memory silently never arrived here.
  */
 export function resolveTrustedScope(
   plur: TrustCheck,

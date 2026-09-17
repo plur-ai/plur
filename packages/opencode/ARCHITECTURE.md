@@ -187,6 +187,21 @@ workspace-trust shape). Untrusted, the scope/domain are dropped and a
 command to run; trusted, they are adopted exactly as before. See
 [README.md#scope](README.md#scope) for the user-facing version.
 
+The same file's `remote_url` / `remote_token` / `remote_scopes` are a second,
+stronger grant — they route prompt text to the host the file names, under the
+credential the file carries — and go through core's
+`resolveProjectRemoteFromConfig`, the gate shared with every CLI adapter
+(#1196/#1198). `index.ts` calls it against the SAME read the scope decision
+used, so the file trust is checked against stays the file whose fields are
+adopted, and passes the result to `injectHybrid` as `remote_project`.
+
+This plugin originally read none of those fields. It merged 25 minutes before
+that gate existed (#1195 at 15:31, #1196 at 15:56, both 2026-09-16) and the
+follow-up that spread the gate to Codex and Antigravity did not come back
+here, so an enterprise user following the documented `plur init-remote`
+onboarding got team memory in every other harness and local-only recall in
+opencode — with no error to explain it (#1207).
+
 ## What's NOT here
 
 - **No native `tool` definitions.** They work (verified against the real

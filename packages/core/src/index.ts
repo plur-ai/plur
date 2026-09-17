@@ -101,6 +101,18 @@ export { SessionBreadcrumbs } from './session-state.js'
 export { SessionScopeRegistry } from './session-scopes.js'
 export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
 export { findProjectConfigPath, readProjectConfig, readProjectConfigFromPath, canonicalize, type ProjectConfig } from './project-config.js'
+// The trust gate a project's REMOTE settings must pass before an adapter may
+// route prompt text to the host they name (#1196/#1198). Lives here, not in
+// the CLI, so out-of-package adapters (@plur-ai/opencode) can take the
+// capability and the gate together rather than copying one without the other
+// (#1207). See project-remote.ts.
+export {
+  resolveProjectRemote,
+  resolveProjectRemoteFromConfig,
+  projectRemoteRefusalNotice,
+  type ProjectRemote,
+  type TrustChecker,
+} from './project-remote.js'
 // Directory trust (2026-09 audit, D2) — a one-time per-directory grant
 // (`plur trust`) an adapter should require before adopting behaviour-changing
 // configuration it finds on disk (a `.plur.yaml` scope, say) from a directory

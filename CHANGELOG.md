@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### opencode reaches PLUR Enterprise
+
+**If you use PLUR Enterprise from opencode, your team memory was silently never
+arriving** (#1207) — the same failure 0.20.0 fixed for Codex and Antigravity,
+in the one adapter that fix did not reach.
+
+`@plur-ai/opencode` merged 25 minutes before the directory-trust gate that
+makes a project's `remote_url`/`remote_token` safe to adopt, and the follow-up
+that spread that gate across the other adapters never came back to it. So the
+plugin picked up your `.plur.yaml`'s `scope` and dropped its remote settings.
+Recall served local memory only — while explicit `plur_*` MCP tool calls still
+reached the server, which reads as half-working rather than broken.
+
+**The plugin now dials**, behind the same gate as everything else: a
+`.plur.yaml` from a directory you have run `plur trust` on gets its remote
+settings honored; from a directory you have not, they are dropped and a warning
+names the directory and the command. Those two fields are a stronger grant than
+`scope` — they send prompt text to the host the file names, under the
+credential the file carries — so the gate is not optional, and a repo you
+merely cloned cannot supply both.
+
+**If you already have a `.plur.yaml` with remote settings**, run
+`plur trust <project-dir>` once. `plur init-remote` has made that grant
+automatically since 0.20.0, but a file written before then predates it.
+
+The gate itself moved from `@plur-ai/cli` into `@plur-ai/core`, where an
+adapter outside the CLI package can take the capability and the gate together
+instead of copying one without the other. No CLI call site moved.
+
+Ships as `@plur-ai/opencode` 0.1.1, alongside the core release that carries the
+shared gate.
+
 ## 0.20.0
 
 opencode agents get persistent memory!

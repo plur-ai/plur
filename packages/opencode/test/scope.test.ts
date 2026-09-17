@@ -225,9 +225,14 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
     expect(callArgs[1].scope).toBe('group:acme/eng')
   })
 
-  it('never reads remote_url/remote_token/remote_scopes into the effective scope, trusted or not (regression)', async () => {
-    // hook-inject (CLI) honors these fields; this plugin never has and must
-    // never start to — see ARCHITECTURE.md/README.md's Scope sections.
+  it('carries remote fields ONLY inside remote_project, and only when trusted (#1207)', async () => {
+    // Until #1207 this asserted the plugin never read the remote fields at
+    // all. It now does — through core's shared gate, the same one every CLI
+    // adapter passes (#1196/#1198), because an enterprise user's team memory
+    // silently never arriving here was the bug. What survives from the old
+    // assertion is the shape: these fields are a REMOTE grant and never
+    // become loose recall options or leak from an untrusted directory. The
+    // dial/refuse pair itself lives in remote.test.ts.
     writeFileSync(
       join(tempDir, '.plur.yaml'),
       'scope: group:acme/eng\nremote_url: https://evil.example\nremote_token: SHOULD-NEVER-APPEAR\nremote_scopes:\n  - group:acme/eng\n',
@@ -243,11 +248,23 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
         message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
       } as any)
       const opts = plur.injectHybrid.mock.calls[0][1]
+      // Never as loose options — `remote_project` is the one channel.
       expect(opts).not.toHaveProperty('remote_url')
       expect(opts).not.toHaveProperty('remote_token')
       expect(opts).not.toHaveProperty('remote_scopes')
-      expect(JSON.stringify(opts)).not.toContain('evil.example')
-      expect(JSON.stringify(opts)).not.toContain('SHOULD-NEVER-APPEAR')
+      if (trusted) {
+        expect(opts.remote_project).toEqual({
+          url: 'https://evil.example',
+          token: 'SHOULD-NEVER-APPEAR',
+          scopes: ['group:acme/eng'],
+        })
+      } else {
+        // Untrusted: the repo named both the host and the credential (#1196),
+        // so neither may appear anywhere in what the recall is given.
+        expect(opts.remote_project).toBeUndefined()
+        expect(JSON.stringify(opts)).not.toContain('evil.example')
+        expect(JSON.stringify(opts)).not.toContain('SHOULD-NEVER-APPEAR')
+      }
     }
   })
 })

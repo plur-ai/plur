@@ -1,4 +1,12 @@
-import { Plur, renderMemoryBlock, readProjectConfigFromPath, findProjectConfigPath } from '@plur-ai/core'
+import {
+  Plur,
+  renderMemoryBlock,
+  readProjectConfigFromPath,
+  findProjectConfigPath,
+  resolveProjectRemoteFromConfig,
+  projectRemoteRefusalNotice,
+  type ProjectRemote,
+} from '@plur-ai/core'
 // Type-only: the host contract is untyped at runtime — `@opencode-ai/plugin`
 // is an optional peerDependency and this import must never become a runtime
 // require. Typechecking the hook map against it turns a renamed/changed
@@ -50,6 +58,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
   // but the agent's turn is never at risk.
   let plur: Plur
   let projectConfig: ReturnType<typeof resolveTrustedScope>
+  let projectRemote: ProjectRemote | null = null
   try {
     plur = (ctx as { _plur?: Plur })?._plur
       ?? new Plur({ path: process.env.PLUR_PATH, cwd: scopeRoot, autoDiscover: false })
@@ -62,6 +71,13 @@ export const PlurPlugin: Plugin = async (ctx) => {
     const configPath = findProjectConfigPath(scopeRoot)
     const rawProjectConfig = readProjectConfigFromPath(configPath)
     projectConfig = resolveTrustedScope(plur, rawProjectConfig, configPath, warn)
+    // A project's REMOTE settings (#1207) — the enterprise half of the same
+    // file, resolved from the SAME read as the scope above rather than a
+    // second walk (E5's TOCTOU rule applies to both). The gate is core's, the
+    // one every other adapter passes through (#1196/#1198): a cloned repo
+    // supplies both the host and the token, so adopting these requires an
+    // explicit `plur trust <dir>` and fails closed.
+    projectRemote = resolveProjectRemoteFromConfig(plur, rawProjectConfig, configPath)
   } catch (err) {
     warn(`memory layer failed to initialize — running this session with no memory: ${(err as Error).message}`)
     return {} satisfies Hooks
@@ -69,6 +85,13 @@ export const PlurPlugin: Plugin = async (ctx) => {
   log(`scope root: ${scopeRoot}`)
   if (projectConfig.scope) log(`project scope: ${projectConfig.scope}`)
   if (projectConfig.domain) log(`project domain: ${projectConfig.domain}`)
+  // Refusal is unconditional like the scope one: team memory that silently
+  // never arrives is indistinguishable from a broken remote leg, which is the
+  // failure #1198 was filed about.
+  if (projectRemote?.refusedFrom) warn(projectRemoteRefusalNotice(projectRemote.refusedFrom))
+  // Host only, never the token — this line exists so a user can see WHICH
+  // store the session will dial, not to echo the credential that reaches it.
+  if (projectRemote?.remoteProject) log(`project remote: ${projectRemote.remoteProject.url}`)
   const blocks = new BlockCache()
   const path = new RenderPath()
   const turns = new TurnBuffer()
@@ -95,6 +118,12 @@ export const PlurPlugin: Plugin = async (ctx) => {
           .map((p: any) => p.text).join('\n')
         const injection = await plur.injectHybrid(query, {
           scope: projectConfig.scope,
+          // Without this the remote leg dials only when the session scope
+          // happens to match a store already registered in the user's global
+          // config — so an enterprise user following the documented
+          // `plur init-remote` onboarding got local-only recall here while
+          // every other adapter reached their team store (#1207).
+          ...(projectRemote?.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
         })
         blocks.set(input.sessionID, renderMemoryBlock({ injection }))
         log(`recall for ${input.sessionID}: ${injection?.count ?? 0} engrams`)
