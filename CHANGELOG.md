@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.1
 
 ### opencode reaches PLUR Enterprise
 
@@ -33,6 +33,14 @@ instead of copying one without the other. No CLI call site moved.
 
 Ships as `@plur-ai/opencode` 0.1.1, alongside the core release that carries the
 shared gate.
+
+Verified live, not just in unit tests: a real opencode session against
+`plur.datafund.io`, with the local store holding zero engrams and zero
+configured stores, pulled 7 team engrams into the injected block and answered
+from them. `packages/opencode/test/e2e-enterprise.manual.mjs` is that run, kept
+as a manual gate — it asserts on the injected block and on the breaker's own
+per-host dial state, and reads the token from stdin because the agent under
+test can run `env`.
 
 ## 0.20.0
 

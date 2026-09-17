@@ -138,6 +138,24 @@ Environment knobs:
 | `PLUR_E2E_FULL` | unset (BM25-only) | Set to `1` to exercise the hybrid/embedding recall path. Local embeddings load inside the opencode process and can OOM a loaded machine; the default runs BM25-only, which is sufficient for all three assertions since the seeded fact uses distinctive tokens. |
 | `PLUR_E2E_KEEP_TMP` | unset | Set to `1` to keep the temporary harness directory (packed tarballs, isolated XDG dirs, observer log) after the run for inspection. **The preserved directory contains a copy of your opencode provider credentials** (`xdg-data/opencode/auth.json`, copied from `~/.local/share/opencode/auth.json` so the harness can authenticate) — the OS still restricts it to your user (`mkdtemp` default `0700`), but treat the kept directory itself as sensitive and remove it when you're done inspecting it. |
 
+### Enterprise gate
+
+`test/e2e-enterprise.manual.mjs` is the sibling gate for the other half: does a project's `.plur.yaml` remote config actually deliver **team** memory into a real session (#1207)? Same harness shape, two differences that carry the point — the local store is left with zero engrams and zero configured stores, so a pass cannot be explained by local memory, and the work repo's `.plur.yaml` is written by the real `plur init-remote`, trust grant included, rather than by hand.
+
+It asserts on the **injected block** (via the observer) rather than the model's prose, and then on the breaker's own `cache/remote-health.json` — a real `POST /api/v1/recall` outcome per host, which a pass from any other source cannot fake.
+
+The token is read from **stdin**, never argv or env, because the agent under test can run `env`:
+
+```sh
+PLUR_E2E_REMOTE_URL=https://plur.example.io \
+PLUR_E2E_REMOTE_SCOPE=group:acme/eng \
+PLUR_E2E_QUESTION='Is prod deployed with Docker or over SSH?' \
+PLUR_E2E_EXPECT='git pull,NOT Docker' \
+  your-secret-broker | node packages/opencode/test/e2e-enterprise.manual.mjs
+```
+
+`PLUR_E2E_QUESTION` must be answerable only from the remote store, and `PLUR_E2E_EXPECT` lists phrases from those engrams. One opencode invocation, one model call. Note that an engram written through the REST API lands in the server's policy review queue (`commitment: draft`) and is excluded from recall until approved — so pick phrases from engrams that are already live, rather than seeding a fixture.
+
 ## Related packages
 
 | Package | For |
