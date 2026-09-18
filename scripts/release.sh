@@ -25,6 +25,11 @@
 #   --dry-run        Bump + build + test + tweet preview, then stop before commit.
 #                    Files ARE mutated (versions bumped) — revert with git.
 #   --preview-tweet  Print the tweet that would be posted for <version>, exit.
+#   --tweet-only     Post the release tweet for <version> and exit. Publishes
+#                    NOTHING and touches no files — for re-posting after a
+#                    deleted or reworded announcement, where re-running the
+#                    release is impossible because its versions are already
+#                    published (step 3.7 would correctly refuse).
 #                    No file mutations, no network. Use to iterate CHANGELOG
 #                    copy until the tweet fits 280 chars.
 #   --skip-tweet     Full release but don't post to X.
@@ -97,6 +102,7 @@ DRY_RUN=false
 TRUST_CI=false
 SKIP_TWEET=false
 PREVIEW_TWEET=false
+TWEET_ONLY=false
 NO_WEBSITE=false
 CLAW_VERSION=""
 DSH_VERSION=""
@@ -108,6 +114,7 @@ while [ $# -gt 0 ]; do
     --skip-tweet) SKIP_TWEET=true; shift ;;
     --trust-ci) TRUST_CI=true; shift ;;
     --preview-tweet) PREVIEW_TWEET=true; shift ;;
+    --tweet-only) TWEET_ONLY=true; shift ;;
     --no-website) NO_WEBSITE=true; shift ;;
     --claw)
       shift
@@ -155,7 +162,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$VERSION" ] || [[ "$VERSION" == --* ]]; then
-  echo "Usage: ./scripts/release.sh <version> [--dry-run] [--skip-tweet] [--preview-tweet]"
+  echo "Usage: ./scripts/release.sh <version> [--dry-run] [--skip-tweet] [--preview-tweet] [--tweet-only]"
   echo "Example: ./scripts/release.sh 0.9.4"
   exit 1
 fi
@@ -241,6 +248,119 @@ pip install --upgrade plur-hermes"
   TWEET_LEN=${#TWEET}
   return 0
 }
+
+
+# --- Post the generated tweet pair to X (OAuth 1.0a, API v2) ---
+# Extracted from step 9 so `--tweet-only` and the release path share ONE
+# implementation. A second copy would drift, and the copy that drifts is the
+# one nobody exercises until a release night.
+post_tweet_pair() {
+  # Post main + reply via X API v2 (OAuth 1.0a)
+  node -e "
+    const crypto = require('crypto');
+    const https = require('https');
+
+    const apiKey = process.env.PLUR_X_API_KEY;
+    const apiSecret = process.env.PLUR_X_API_SECRET;
+    const accessToken = process.env.PLUR_X_ACCESS_TOKEN;
+    const accessSecret = process.env.PLUR_X_ACCESS_TOKEN_SECRET;
+
+    if (!apiKey || !apiSecret || !accessToken || !accessSecret) {
+      console.error('Missing X API credentials (PLUR_X_*)');
+      process.exit(1);
+    }
+
+    function postTweet(text, replyToId) {
+      return new Promise((resolve, reject) => {
+        const method = 'POST';
+        const url = 'https://api.x.com/2/tweets';
+        const bodyObj = { text };
+        if (replyToId) {
+          bodyObj.reply = { in_reply_to_tweet_id: replyToId };
+        }
+        const body = JSON.stringify(bodyObj);
+
+        const timestamp = Math.floor(Date.now() / 1000).toString();
+        const nonce = crypto.randomBytes(16).toString('hex');
+
+        const params = {
+          oauth_consumer_key: apiKey,
+          oauth_nonce: nonce,
+          oauth_signature_method: 'HMAC-SHA1',
+          oauth_timestamp: timestamp,
+          oauth_token: accessToken,
+          oauth_version: '1.0',
+        };
+
+        const paramString = Object.keys(params).sort()
+          .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
+          .join('&');
+
+        const baseString = method + '&' + encodeURIComponent(url) + '&' + encodeURIComponent(paramString);
+        const signingKey = encodeURIComponent(apiSecret) + '&' + encodeURIComponent(accessSecret);
+        const signature = crypto.createHmac('sha1', signingKey).update(baseString).digest('base64');
+
+        const authHeader = 'OAuth ' + Object.entries({...params, oauth_signature: signature})
+          .map(([k, v]) => encodeURIComponent(k) + '=\"' + encodeURIComponent(v) + '\"')
+          .join(', ');
+
+        const req = https.request(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader,
+          },
+        }, (res) => {
+          let data = '';
+          res.on('data', c => data += c);
+          res.on('end', () => {
+            if (res.statusCode === 201) {
+              const json = JSON.parse(data);
+              resolve(json.data.id);
+            } else {
+              reject(new Error('Tweet failed (' + res.statusCode + '): ' + data));
+            }
+          });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      });
+    }
+
+    (async () => {
+      try {
+        const mainId = await postTweet(process.argv[1], null);
+        console.log('Main tweet posted: https://x.com/plur_ai/status/' + mainId);
+        const replyId = await postTweet(process.argv[2], mainId);
+        console.log('Reply posted: https://x.com/plur_ai/status/' + replyId);
+      } catch (err) {
+        console.error(err.message);
+        process.exit(1);
+      }
+    })();
+  " "$TWEET" "$REPLY"
+}
+
+# --- Tweet-only mode: generate and POST, then exit. Publishes nothing else. ---
+# A release cannot be re-run to re-post: its versions are already on npm and
+# step 3.7 refuses, correctly. This is the path for a deleted or reworded
+# announcement.
+if [ "$TWEET_ONLY" = true ]; then
+  if ! generate_tweet; then
+    echo "ERROR: CHANGELOG.md has no section for $VERSION."
+    exit 1
+  fi
+  if [ "$TWEET_LEN" -gt "$TWEET_MAX" ]; then
+    echo "✗ Tweet is $TWEET_LEN chars, over the $TWEET_MAX budget by $((TWEET_LEN - TWEET_MAX))."
+    echo "  Tighten the '## $VERSION' section's headline or first four bullets."
+    exit 1
+  fi
+  echo "=== Posting tweet for $VERSION ($TWEET_LEN / $TWEET_MAX chars) ==="
+  echo ""
+  post_tweet_pair
+  exit 0
+fi
 
 # --- Preview-tweet mode: generate, print, exit. No file mutations. ---
 if [ "$PREVIEW_TWEET" = true ]; then
@@ -1292,91 +1412,7 @@ else
   echo "$REPLY"
   echo ""
 
-  # Post main + reply via X API v2 (OAuth 1.0a)
-  node -e "
-    const crypto = require('crypto');
-    const https = require('https');
-
-    const apiKey = process.env.PLUR_X_API_KEY;
-    const apiSecret = process.env.PLUR_X_API_SECRET;
-    const accessToken = process.env.PLUR_X_ACCESS_TOKEN;
-    const accessSecret = process.env.PLUR_X_ACCESS_TOKEN_SECRET;
-
-    if (!apiKey || !apiSecret || !accessToken || !accessSecret) {
-      console.error('Missing X API credentials (PLUR_X_*)');
-      process.exit(1);
-    }
-
-    function postTweet(text, replyToId) {
-      return new Promise((resolve, reject) => {
-        const method = 'POST';
-        const url = 'https://api.x.com/2/tweets';
-        const bodyObj = { text };
-        if (replyToId) {
-          bodyObj.reply = { in_reply_to_tweet_id: replyToId };
-        }
-        const body = JSON.stringify(bodyObj);
-
-        const timestamp = Math.floor(Date.now() / 1000).toString();
-        const nonce = crypto.randomBytes(16).toString('hex');
-
-        const params = {
-          oauth_consumer_key: apiKey,
-          oauth_nonce: nonce,
-          oauth_signature_method: 'HMAC-SHA1',
-          oauth_timestamp: timestamp,
-          oauth_token: accessToken,
-          oauth_version: '1.0',
-        };
-
-        const paramString = Object.keys(params).sort()
-          .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
-          .join('&');
-
-        const baseString = method + '&' + encodeURIComponent(url) + '&' + encodeURIComponent(paramString);
-        const signingKey = encodeURIComponent(apiSecret) + '&' + encodeURIComponent(accessSecret);
-        const signature = crypto.createHmac('sha1', signingKey).update(baseString).digest('base64');
-
-        const authHeader = 'OAuth ' + Object.entries({...params, oauth_signature: signature})
-          .map(([k, v]) => encodeURIComponent(k) + '=\"' + encodeURIComponent(v) + '\"')
-          .join(', ');
-
-        const req = https.request(url, {
-          method,
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': authHeader,
-          },
-        }, (res) => {
-          let data = '';
-          res.on('data', c => data += c);
-          res.on('end', () => {
-            if (res.statusCode === 201) {
-              const json = JSON.parse(data);
-              resolve(json.data.id);
-            } else {
-              reject(new Error('Tweet failed (' + res.statusCode + '): ' + data));
-            }
-          });
-        });
-        req.on('error', reject);
-        req.write(body);
-        req.end();
-      });
-    }
-
-    (async () => {
-      try {
-        const mainId = await postTweet(process.argv[1], null);
-        console.log('Main tweet posted: https://x.com/plur_ai/status/' + mainId);
-        const replyId = await postTweet(process.argv[2], mainId);
-        console.log('Reply posted: https://x.com/plur_ai/status/' + replyId);
-      } catch (err) {
-        console.error(err.message);
-        process.exit(1);
-      }
-    })();
-  " "$TWEET" "$REPLY"
+  post_tweet_pair
 fi
 
 # --- 9b. Post-release pin verification ---
