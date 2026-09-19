@@ -112,13 +112,13 @@ describe('forget() — namespaced-id walk order with shared prefix (#1126)', () 
     await expect(plur.forget(NAMESPACED_ID, 'no longer needed', { force: true })).resolves.toBeUndefined()
 
     // RemoteStore sends DELETE to /api/v1/..., not /sse — filter by hostname.
-    const deleteCalls = fetchMock.mock.calls.filter(
+    const deleteCalls = (fetchMock.mock.calls as [string, any][]).filter(
       ([url, init]: [string, any]) => (init?.method ?? 'GET') === 'DELETE' && String(url).includes(REACHABLE_HOST),
     )
     expect(deleteCalls.length, 'exactly one DELETE against the reachable store').toBe(1)
     expect(String(deleteCalls[0][0]), 'DELETE targets the bare server-side id').toContain(BARE_ID)
 
-    const wrongDeletes = fetchMock.mock.calls.filter(
+    const wrongDeletes = (fetchMock.mock.calls as [string, any][]).filter(
       ([url, init]: [string, any]) => (init?.method ?? 'GET') === 'DELETE' && String(url).includes(UNREACHABLE_HOST),
     )
     expect(wrongDeletes.length, 'no DELETE to the unreachable store').toBe(0)
