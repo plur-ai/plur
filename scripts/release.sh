@@ -1,6 +1,7 @@
 #!/bin/bash
 # PLUR Release Script
 # Usage: ./scripts/release.sh <version> [--claw <claw-version>] [--dsh <dsh-version>] [--opencode <opencode-version>] [--dry-run] [--skip-tweet] [--preview-tweet]
+#        ./scripts/release.sh <version> --tweet-only
 #
 # Modes:
 #   default          Full release (bump, build, test, commit, tag, push,
@@ -27,6 +28,14 @@
 #   --preview-tweet  Print the tweet that would be posted for <version>, exit.
 #                    No file mutations, no network. Use to iterate CHANGELOG
 #                    copy until the tweet fits 280 chars.
+#   --tweet-only     POSTS PUBLICLY to X: the release tweet and reply for
+#                    <version>, then exits. Publishes no packages and touches
+#                    no files — for re-posting after a deleted or reworded
+#                    announcement, where re-running the release is impossible
+#                    because its versions are already published (step 3.7
+#                    would correctly refuse). Requires the v<version> tag on
+#                    origin, and must be the only flag. Iterate the copy with
+#                    --preview-tweet first; this mode is not for that.
 #   --skip-tweet     Full release but don't post to X.
 #   --trust-ci       Replace the LOCAL test suite (step 3) with a verification
 #                    that HEAD equals origin/main and that the five required CI
@@ -70,6 +79,10 @@
 #   8.  Website deploy (rsync + curl verify softwareVersion)
 #   9.  Post tweet
 #
+#   --preview-tweet and --tweet-only exit before step 0. --tweet-only runs only
+#   its own gates (released tag on origin, tweet and reply within budget) and
+#   step 9's poster, and never reaches step 1.
+#
 # Environment overrides:
 #   WEBSITE_DIR     Path to website repo (default: ../website relative to plur)
 #   DEPLOY_KEY      Path to SSH deploy key (default: ~/Data/.datacore/env/credentials/deploy_key)
@@ -97,6 +110,7 @@ DRY_RUN=false
 TRUST_CI=false
 SKIP_TWEET=false
 PREVIEW_TWEET=false
+TWEET_ONLY=false
 NO_WEBSITE=false
 CLAW_VERSION=""
 DSH_VERSION=""
@@ -108,6 +122,7 @@ while [ $# -gt 0 ]; do
     --skip-tweet) SKIP_TWEET=true; shift ;;
     --trust-ci) TRUST_CI=true; shift ;;
     --preview-tweet) PREVIEW_TWEET=true; shift ;;
+    --tweet-only) TWEET_ONLY=true; shift ;;
     --no-website) NO_WEBSITE=true; shift ;;
     --claw)
       shift
@@ -155,9 +170,31 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$VERSION" ] || [[ "$VERSION" == --* ]]; then
-  echo "Usage: ./scripts/release.sh <version> [--dry-run] [--skip-tweet] [--preview-tweet]"
+  echo "Usage: ./scripts/release.sh <version> [--dry-run] [--skip-tweet] [--preview-tweet] [--tweet-only]"
   echo "Example: ./scripts/release.sh 0.9.4"
   exit 1
+fi
+
+# --tweet-only posts publicly, and its block runs before anything reads the
+# other flags — so a combined flag would be silently ignored while the post
+# still happens. `--tweet-only --skip-tweet` would post despite saying "do not
+# post"; `--tweet-only --dry-run` would post despite asking for a rehearsal.
+# Refuse every combination at parse time rather than guess which one was meant.
+if [ "$TWEET_ONLY" = true ]; then
+  CONFLICTS=""
+  [ "$DRY_RUN" = true ] && CONFLICTS="$CONFLICTS --dry-run"
+  [ "$SKIP_TWEET" = true ] && CONFLICTS="$CONFLICTS --skip-tweet"
+  [ "$PREVIEW_TWEET" = true ] && CONFLICTS="$CONFLICTS --preview-tweet"
+  [ "$TRUST_CI" = true ] && CONFLICTS="$CONFLICTS --trust-ci"
+  [ "$NO_WEBSITE" = true ] && CONFLICTS="$CONFLICTS --no-website"
+  [ -n "$CLAW_VERSION" ] && CONFLICTS="$CONFLICTS --claw"
+  [ -n "$DSH_VERSION" ] && CONFLICTS="$CONFLICTS --dsh"
+  [ -n "$OPENCODE_VERSION" ] && CONFLICTS="$CONFLICTS --opencode"
+  if [ -n "$CONFLICTS" ]; then
+    echo "FAIL: --tweet-only posts to X and must be used alone; also got:$CONFLICTS" >&2
+    echo "      To see the copy without posting: ./scripts/release.sh $VERSION --preview-tweet" >&2
+    exit 1
+  fi
 fi
 
 # Version SHAPE gate (0.19.1 adversarial audit, finding 3): this string is
@@ -199,7 +236,7 @@ fi
 TWEET_MAX=270
 
 # --- Tweet generation (deterministic; called from multiple places) ---
-# Reads CHANGELOG.md for $VERSION, sets globals: TWEET, REPLY, TWEET_LEN.
+# Reads CHANGELOG.md for $VERSION, sets globals: TWEET, REPLY, TWEET_LEN, REPLY_LEN.
 # Returns 0 on success, 1 if CHANGELOG section is empty.
 generate_tweet() {
   local section features headline
@@ -227,10 +264,17 @@ $features
 Tell your agent to update.
 github.com/plur-ai/plur/releases/tag/v$VERSION"
 
+  # One line per harness this repo actually integrates with. Windsurf is not
+  # listed: it has no integration here (generic MCP only), and naming it beside
+  # harnesses that ship hooks implies a parity that does not exist. Codex and
+  # Antigravity ship hooks through @plur-ai/cli; opencode has its own package.
   REPLY="Manual update:
 
-Claude Code / Cursor / Windsurf:
+Claude Code / Cursor / Codex / Antigravity:
 npm update -g @plur-ai/mcp @plur-ai/cli
+
+opencode:
+npm i -g @plur-ai/opencode && plur init --opencode
 
 OpenClaw:
 openclaw plugins install @plur-ai/claw
@@ -239,8 +283,162 @@ Hermes:
 pip install --upgrade plur-hermes"
 
   TWEET_LEN=${#TWEET}
+  REPLY_LEN=${#REPLY}
   return 0
 }
+
+# The reply is posted AFTER the main tweet, so an over-long reply fails with
+# the main tweet already public and, on a release, everything else published.
+# It gets the same budget and the same pre-flight as the main tweet.
+check_reply_budget() {
+  if [ "$REPLY_LEN" -gt "$TWEET_MAX" ]; then
+    echo "✗ Reply is $REPLY_LEN chars, over the $TWEET_MAX budget by $((REPLY_LEN - TWEET_MAX))."
+    echo "  Shorten REPLY in generate_tweet() in scripts/release.sh."
+    return 1
+  fi
+  return 0
+}
+
+
+# --- Post the generated tweet pair to X (OAuth 1.0a, API v2) ---
+# Extracted from step 9 so `--tweet-only` and the release path share ONE
+# implementation. A second copy would drift, and the copy that drifts is the
+# one nobody exercises until a release night.
+post_tweet_pair() {
+  # Post main + reply via X API v2 (OAuth 1.0a)
+  node -e "
+    const crypto = require('crypto');
+    const https = require('https');
+
+    const apiKey = process.env.PLUR_X_API_KEY;
+    const apiSecret = process.env.PLUR_X_API_SECRET;
+    const accessToken = process.env.PLUR_X_ACCESS_TOKEN;
+    const accessSecret = process.env.PLUR_X_ACCESS_TOKEN_SECRET;
+
+    if (!apiKey || !apiSecret || !accessToken || !accessSecret) {
+      console.error('Missing X API credentials (PLUR_X_*)');
+      process.exit(1);
+    }
+
+    function postTweet(text, replyToId) {
+      return new Promise((resolve, reject) => {
+        const method = 'POST';
+        const url = 'https://api.x.com/2/tweets';
+        const bodyObj = { text };
+        if (replyToId) {
+          bodyObj.reply = { in_reply_to_tweet_id: replyToId };
+        }
+        const body = JSON.stringify(bodyObj);
+
+        const timestamp = Math.floor(Date.now() / 1000).toString();
+        const nonce = crypto.randomBytes(16).toString('hex');
+
+        const params = {
+          oauth_consumer_key: apiKey,
+          oauth_nonce: nonce,
+          oauth_signature_method: 'HMAC-SHA1',
+          oauth_timestamp: timestamp,
+          oauth_token: accessToken,
+          oauth_version: '1.0',
+        };
+
+        const paramString = Object.keys(params).sort()
+          .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
+          .join('&');
+
+        const baseString = method + '&' + encodeURIComponent(url) + '&' + encodeURIComponent(paramString);
+        const signingKey = encodeURIComponent(apiSecret) + '&' + encodeURIComponent(accessSecret);
+        const signature = crypto.createHmac('sha1', signingKey).update(baseString).digest('base64');
+
+        const authHeader = 'OAuth ' + Object.entries({...params, oauth_signature: signature})
+          .map(([k, v]) => encodeURIComponent(k) + '=\"' + encodeURIComponent(v) + '\"')
+          .join(', ');
+
+        const req = https.request(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader,
+          },
+        }, (res) => {
+          let data = '';
+          res.on('data', c => data += c);
+          res.on('end', () => {
+            if (res.statusCode === 201) {
+              const json = JSON.parse(data);
+              resolve(json.data.id);
+            } else if (res.statusCode === 403 && /duplicate/i.test(data)) {
+              // Re-running --tweet-only for the same version re-posts the same
+              // copy; X's duplicate check is the only guard, so say so plainly.
+              reject(new Error('X rejected this as a duplicate of an existing post (403). '
+                + 'Delete the earlier post or change the copy, then re-run. ' + data));
+            } else {
+              reject(new Error('Tweet failed (' + res.statusCode + '): ' + data));
+            }
+          });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      });
+    }
+
+    (async () => {
+      try {
+        const mainId = await postTweet(process.argv[1], null);
+        console.log('Main tweet posted: https://x.com/plur_ai/status/' + mainId);
+        const replyId = await postTweet(process.argv[2], mainId);
+        console.log('Reply posted: https://x.com/plur_ai/status/' + replyId);
+      } catch (err) {
+        console.error(err.message);
+        process.exit(1);
+      }
+    })();
+  " "$TWEET" "$REPLY"
+}
+
+# --- Tweet-only mode: generate and POST, then exit. Publishes nothing else. ---
+# A release cannot be re-run to re-post: its versions are already on npm and
+# step 3.7 refuses, correctly. This is the path for a deleted or reworded
+# announcement.
+if [ "$TWEET_ONLY" = true ]; then
+  # A CHANGELOG section is not proof of a release: an in-progress section or a
+  # typo would announce a version that does not exist, linking to a tag that
+  # was never pushed. The tweet links to the tag on origin, so that is what is
+  # checked — a local-only tag from an aborted release does not count.
+  TAG_RC=0
+  git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null || TAG_RC=$?
+  if [ "$TAG_RC" -eq 2 ]; then
+    echo "✗ v$VERSION is not a tag on origin, so $VERSION was never released. Nothing posted."
+    exit 1
+  elif [ "$TAG_RC" -ne 0 ]; then
+    echo "✗ Could not reach origin to confirm v$VERSION was released (git ls-remote exit $TAG_RC). Nothing posted."
+    exit 1
+  fi
+  if ! generate_tweet; then
+    echo "ERROR: CHANGELOG.md has no section for $VERSION."
+    exit 1
+  fi
+  if [ "$TWEET_LEN" -gt "$TWEET_MAX" ]; then
+    echo "✗ Tweet is $TWEET_LEN chars, over the $TWEET_MAX budget by $((TWEET_LEN - TWEET_MAX))."
+    echo "  Tighten the '## $VERSION' section's headline or first four bullets."
+    exit 1
+  fi
+  check_reply_budget || exit 1
+  # Show the exact copy before it goes public, as step 9 does. This is the
+  # path used while the copy is being reworked, so it is the one that most
+  # needs the operator to see what is about to be posted.
+  echo "=== Posting to X for $VERSION ==="
+  echo ""
+  echo "--- Main tweet ($TWEET_LEN / $TWEET_MAX chars) ---"
+  echo "$TWEET"
+  echo ""
+  echo "--- Reply ($REPLY_LEN / $TWEET_MAX chars) ---"
+  echo "$REPLY"
+  echo ""
+  post_tweet_pair
+  exit 0
+fi
 
 # --- Preview-tweet mode: generate, print, exit. No file mutations. ---
 if [ "$PREVIEW_TWEET" = true ]; then
@@ -254,7 +452,7 @@ if [ "$PREVIEW_TWEET" = true ]; then
   echo "--- Main tweet ($TWEET_LEN / $TWEET_MAX chars) ---"
   echo "$TWEET"
   echo ""
-  echo "--- Reply ---"
+  echo "--- Reply ($REPLY_LEN / $TWEET_MAX chars) ---"
   echo "$REPLY"
   echo ""
   if [ "$TWEET_LEN" -gt "$TWEET_MAX" ]; then
@@ -262,7 +460,8 @@ if [ "$PREVIEW_TWEET" = true ]; then
     echo "  Tighten the first 4 bullets in CHANGELOG.md '## $VERSION' section."
     exit 2
   fi
-  echo "✓ Tweet fits within $TWEET_MAX-char budget."
+  check_reply_budget || exit 2
+  echo "✓ Tweet and reply fit within the $TWEET_MAX-char budget."
   exit 0
 fi
 
@@ -667,6 +866,8 @@ if [ "$SKIP_TWEET" != true ]; then
     echo "$TWEET"
     exit 1
   fi
+  echo "Reply length: $REPLY_LEN / $TWEET_MAX chars"
+  check_reply_budget || exit 1
   echo "✓ Tweet fits. Preview:"
   echo ""
   echo "$TWEET"
@@ -1292,91 +1493,7 @@ else
   echo "$REPLY"
   echo ""
 
-  # Post main + reply via X API v2 (OAuth 1.0a)
-  node -e "
-    const crypto = require('crypto');
-    const https = require('https');
-
-    const apiKey = process.env.PLUR_X_API_KEY;
-    const apiSecret = process.env.PLUR_X_API_SECRET;
-    const accessToken = process.env.PLUR_X_ACCESS_TOKEN;
-    const accessSecret = process.env.PLUR_X_ACCESS_TOKEN_SECRET;
-
-    if (!apiKey || !apiSecret || !accessToken || !accessSecret) {
-      console.error('Missing X API credentials (PLUR_X_*)');
-      process.exit(1);
-    }
-
-    function postTweet(text, replyToId) {
-      return new Promise((resolve, reject) => {
-        const method = 'POST';
-        const url = 'https://api.x.com/2/tweets';
-        const bodyObj = { text };
-        if (replyToId) {
-          bodyObj.reply = { in_reply_to_tweet_id: replyToId };
-        }
-        const body = JSON.stringify(bodyObj);
-
-        const timestamp = Math.floor(Date.now() / 1000).toString();
-        const nonce = crypto.randomBytes(16).toString('hex');
-
-        const params = {
-          oauth_consumer_key: apiKey,
-          oauth_nonce: nonce,
-          oauth_signature_method: 'HMAC-SHA1',
-          oauth_timestamp: timestamp,
-          oauth_token: accessToken,
-          oauth_version: '1.0',
-        };
-
-        const paramString = Object.keys(params).sort()
-          .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
-          .join('&');
-
-        const baseString = method + '&' + encodeURIComponent(url) + '&' + encodeURIComponent(paramString);
-        const signingKey = encodeURIComponent(apiSecret) + '&' + encodeURIComponent(accessSecret);
-        const signature = crypto.createHmac('sha1', signingKey).update(baseString).digest('base64');
-
-        const authHeader = 'OAuth ' + Object.entries({...params, oauth_signature: signature})
-          .map(([k, v]) => encodeURIComponent(k) + '=\"' + encodeURIComponent(v) + '\"')
-          .join(', ');
-
-        const req = https.request(url, {
-          method,
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': authHeader,
-          },
-        }, (res) => {
-          let data = '';
-          res.on('data', c => data += c);
-          res.on('end', () => {
-            if (res.statusCode === 201) {
-              const json = JSON.parse(data);
-              resolve(json.data.id);
-            } else {
-              reject(new Error('Tweet failed (' + res.statusCode + '): ' + data));
-            }
-          });
-        });
-        req.on('error', reject);
-        req.write(body);
-        req.end();
-      });
-    }
-
-    (async () => {
-      try {
-        const mainId = await postTweet(process.argv[1], null);
-        console.log('Main tweet posted: https://x.com/plur_ai/status/' + mainId);
-        const replyId = await postTweet(process.argv[2], mainId);
-        console.log('Reply posted: https://x.com/plur_ai/status/' + replyId);
-      } catch (err) {
-        console.error(err.message);
-        process.exit(1);
-      }
-    })();
-  " "$TWEET" "$REPLY"
+  post_tweet_pair
 fi
 
 # --- 9b. Post-release pin verification ---
