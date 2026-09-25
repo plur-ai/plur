@@ -1,0 +1,187 @@
+name: Review Dismissal Guard
+
+# A dismissed changes-requested review must say what was done.
+#
+# What the record shows. A census of every `review_dismissed` event in this
+# repository between 2026-08-18 and 2026-09-11 found fourteen. Grouped by the
+# state the review had before it was dismissed:
+#
+#   approved            empty     6
+#   approved            message   2
+#   changes requested   message   6
+#   changes requested   empty     0
+#
+# Every empty dismissal was of an approval. That is consistent with the
+# `dismiss_stale_reviews` branch-protection rule, which removes an approval when
+# new commits are pushed and records it as an ordinary `review_dismissed` event
+# with the pusher as actor and no message. However an approval was removed,
+# removing one never bypasses review. Every visible dismissal of a
+# changes-requested review carried a message.
+#
+# So this guard does not correct an observed habit. It keeps the one dismissal
+# that can bypass a review — setting aside a request for changes — from ever
+# happening without a record of why. That is also why it enforces only when the
+# dismissed review had requested changes: enforcing on approvals would put a red
+# check against whoever pushed, including an external contributor who cannot
+# dismiss anything.
+#
+# Some manual dismissals of changes-requested reviews have produced no
+# `review_dismissed` timeline event at all (#1122, #1138, and one of the two on
+# #1017). The cause is not known. It is not the stale-review rule, which never
+# touches changes-requested reviews, and it is not specific to forks. When the
+# event cannot be found this guard fails rather than passes, because an
+# unverifiable dismissal and an empty one leave the same record behind.
+#
+# `pull_request_review` (not `pull_request_target`) is correct here: the job
+# never checks out or executes the head ref, and it only needs read access plus
+# the ability to report a check result.
+#
+# ADVISORY, and not suitable as a required status check in this form. The job
+# runs only when a review is dismissed, so a pull request with no dismissal never
+# reports it at all. Its result attaches to whatever commit was the head at the
+# moment of dismissal, so the next push leaves it behind. A merge gate would need
+# a `pull_request` trigger that re-evaluates every dismissal on the pull request.
+
+on:
+  pull_request_review:
+    types: [dismissed]
+
+permissions:
+  pull-requests: read
+  contents: read
+  # `listEventsForTimeline` is an ISSUES endpoint (`GET /repos/{o}/{r}/issues/{n}/timeline`)
+  # even though it is being read for a pull request. Without this the call can
+  # 403 and the guard fails on every dismissal, well-documented ones included —
+  # which is how a guard becomes noise and then gets removed.
+  issues: read
+
+jobs:
+  dismissal-message-required:
+    name: dismissal message required
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const review = context.payload.review || {};
+            const reviewId = review.id;
+
+            // A dismissed review cannot be dismissed again, so every failure
+            // below points at the two things that actually clear it.
+            const remedy =
+              'A dismissed review cannot be dismissed again. To clear this, ask the ' +
+              'reviewer to re-review, or push a commit.';
+
+            // Match the review that TRIGGERED this run, not the newest dismissal
+            // on the pull request. Taking the last one let a message-less
+            // dismissal be cleared by any later dismissal that happened to carry
+            // a message, even on an unrelated review.
+            if (!reviewId) {
+              core.setFailed(
+                'Could not determine which review was dismissed: the event payload carried no review id.\n\n' +
+                'This guard cannot verify a dismissal it cannot identify, and reporting success ' +
+                'would be indistinguishable from a dismissal that was checked and passed.'
+              );
+              return;
+            }
+
+            // The dismissal message and the review's state before dismissal are
+            // NOT on the webhook's review object — they live on the
+            // `review_dismissed` timeline event, so read them there. The timeline
+            // can lag the webhook by a moment, so poll briefly before concluding.
+            const findDismissal = async () => {
+              let events;
+              try {
+                events = await github.paginate(
+                  github.rest.issues.listEventsForTimeline,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: pr.number,
+                    per_page: 100,
+                  }
+                );
+              } catch (err) {
+                // Distinguish "I was not allowed to look" from "I looked and it
+                // was not there". Both fail, but only one of them is fixed by
+                // editing this workflow's permissions.
+                core.setFailed(
+                  `Could not read the timeline for #${pr.number}: ${err.status || ''} ${err.message}\n\n` +
+                  'The dismissal was NOT verified. If this is a 403, the workflow needs `issues: read` ' +
+                  '— `listEventsForTimeline` is an issues endpoint even for a pull request.'
+                );
+                return null;
+              }
+              return events.find(
+                e => e.event === 'review_dismissed'
+                  && e.dismissed_review
+                  && e.dismissed_review.review_id === reviewId
+              );
+            };
+
+            let found;
+            let permissionFailure = false;
+            for (let attempt = 1; attempt <= 5; attempt++) {
+              found = await findDismissal();
+              if (found === null) { permissionFailure = true; break; }
+              if (found) break;
+              if (attempt < 5) {
+                core.info(`No timeline event for review ${reviewId} yet (attempt ${attempt}/5); retrying.`);
+                await new Promise(r => setTimeout(r, 3000));
+              }
+            }
+            if (permissionFailure) return;
+
+            if (!found) {
+              // Fail closed. "I could not check" and "I checked and it was fine"
+              // must not produce the same result. Every observed missing-event
+              // case was a manual dismissal of a changes-requested review, which
+              // is exactly the case this guard exists for.
+              core.setFailed(
+                `Could not verify the dismissal of review ${reviewId} on #${pr.number}.\n\n` +
+                'No `review_dismissed` timeline event for that review appeared after 5 attempts ' +
+                'over ~12 seconds, so this guard cannot read the dismissal message or say whether ' +
+                'one was given. This has happened before on manual dismissals of changes-requested ' +
+                'reviews, and the cause is not known.\n\n' +
+                remedy + ' If the dismissal did carry a message, say so on the pull request so the ' +
+                'record shows it.'
+              );
+              return;
+            }
+
+            // Enforce only where a dismissal can bypass review. The state here is
+            // the review's state BEFORE it was dismissed. An approval is removed
+            // automatically on every push by the stale-review rule, with the
+            // pusher as actor and no message; failing on that would blame the
+            // wrong person for something nobody chose to do. An unknown state is
+            // enforced rather than waved through.
+            const prior = String(found.dismissed_review.state || '').toLowerCase();
+            const who = found.actor ? found.actor.login : 'unknown';
+            if (prior && prior !== 'changes_requested') {
+              core.info(
+                `Review ${reviewId} was ${prior} before it was dismissed; not enforced. ` +
+                'Only setting aside a request for changes can bypass review.'
+              );
+              return;
+            }
+
+            // Invisible characters are not a message. `trim()` leaves zero-width
+            // spaces, byte-order marks and directional-control characters in
+            // place, so a dismissal consisting of one U+200B would otherwise pass
+            // as a one-character message. The class below is written with
+            // backslash-u escapes on purpose: a literal U+2028 or U+2029 is a line
+            // terminator, and breaks both this script and the YAML around it.
+            const raw = found.dismissed_review.dismissal_message || '';
+            const visible = raw.replace(/[\s\u200B-\u200F\u202A-\u202E\u2028\u2029\u2060\u2066-\u2069\uFEFF]/g, '');
+            if (!visible) {
+              core.setFailed(
+                `@${who} dismissed a changes-requested review without a message.\n\n` +
+                'Setting aside a request for changes must state what was done, citing the ' +
+                'commits that addressed the review. An empty dismissal is indistinguishable ' +
+                'from ignoring the review, whether or not the work was actually done.\n\n' +
+                remedy
+              );
+            } else {
+              core.info(`Dismissal of changes-requested review ${reviewId} by @${who} carries a message (${visible.length} visible characters).`);
+            }
