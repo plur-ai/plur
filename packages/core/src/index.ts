@@ -6698,6 +6698,13 @@ export class Plur {
      *  contract (`forget handles remote server error gracefully`, #84) is that
      *  a degraded fleet must not stop a retire, and that is worth keeping. */
     const unreachedStores: string[] = []
+    // Deferred throw for unreachable stores whose prefix matched the id (#1126).
+    // storePrefix() is a lossy 3-char derivation — two distinct scopes can produce
+    // the same prefix, so a prefix match does not prove this store is the unique
+    // owner. Throwing immediately aborts the walk and prevents a later reachable
+    // store (same prefix, actual owner) from retiring the engram. Record and defer:
+    // fire only after the walk completes without a retirement.
+    let pendingUnreachableError: string | null = null
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -6722,10 +6729,12 @@ export class Plur {
       // stops claiming knowledge it does not have. Same resolution `feedback`
       // already uses.
       //
-      // For namespaced IDs (ENG-GPL-...), the prefix was stripped above — meaning
-      // we KNOW this store is the intended target. An unreachable store is not
-      // absence; continuing and reporting "not found" is actively misleading
-      // (#1109). Throw immediately so the caller gets the scope to retry with.
+      // For namespaced IDs (ENG-GPL-...) the prefix was stripped above, so this
+      // store likely is the intended target — but storePrefix() is lossy, so
+      // two scopes can share a prefix (#1126). Throwing immediately here aborts
+      // the walk before a later reachable store (same prefix, actual owner) gets
+      // a chance to retire the engram. Defer instead: record the error and
+      // continue; fire it only once the walk completes without a retirement.
       // Optional capability: a driver without `probeById` (an injected stub, a
       // third-party implementation) keeps the previous two-state behaviour
       // rather than crashing. Absence of the capability is not a reason to
@@ -6736,11 +6745,14 @@ export class Plur {
       if (ownership === 'unknown') {
         const isNamespaced = id !== serverId
         if (isNamespaced) {
-          throw new Error(
+          // Record and continue — do not throw yet (#1126). If a subsequent
+          // store retires the engram, this error is silently discarded.
+          pendingUnreachableError = (
             `Cannot reach "${entry.scope ?? entry.url}" to retire "${id}" — `
             + `the token may be expired or the server unavailable. `
-            + `Retry once access is restored, or pass scope: "${entry.scope ?? entry.url}" to target this store directly.`,
+            + `Retry once access is restored, or pass scope: "${entry.scope ?? entry.url}" to target this store directly.`
           )
+          continue
         }
         unreachedStores.push(entry.scope ?? entry.url!)
         logger.warning(
@@ -6767,6 +6779,12 @@ export class Plur {
         refusedBy = entry.scope ?? 'a remote store'
       }
     }
+
+    // Namespaced-id unreachable: fire now that the walk is complete and nothing
+    // was retired (#1126). Sits above "Engram not found" because "cannot reach"
+    // is actionable — the engram may exist — while "not found" falsely claims
+    // absence. Sits below `refusedBy` because a refused DELETE proves presence.
+    if (pendingUnreachableError) throw new Error(pendingUnreachableError)
 
     // A refused DELETE is not a missing engram and must not be reported as one.
     // Both used to fall through to "Engram not found", so a user whose token
