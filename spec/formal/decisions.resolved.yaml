@@ -1,0 +1,35 @@
+# Owner decisions, 2026-09-26. Given as four principles (the 27-row board was
+# too granular to answer without guessing); each row below is derived from them.
+principles:
+  egress: "Auto-route may reach the user's OWN personal remote store, never a team store. Untrusted repo settings are ignored."
+  default_visibility: "A team-scope write with no visibility stays shared with the team; only the MCP description is corrected."
+  formats: "Changes to saved or published formats become separate GitHub issues, not part of this branch."
+  rest: "Coordinator's suggested answer for every internal engineering row, each listed in the PR."
+rows:
+  E1_auto_route_remote_personal: me-only        # principle: egress (differs from suggestion 'refuse')
+  E2_default_private: reword                    # principle: default_visibility
+  E3_untrusted_plur_yaml: opencode              # principle: egress
+  E4_project_local_only: config                 # rest
+  E5_scope_case: fold                           # rest
+  E6_provenance_withheld: keep                  # rest — suggested "leaves" proved unsafe at apply (pack provenance would forbid distribution); reverted, follow-up issue
+  E7_multi_session_no_id: ignore                # principle: egress — an ambiguous session default may be a team scope
+  D1_remote_copy_after_forget: queue-retire     # rest
+  D2_two_process_flush: accept                  # principle: formats (lease deferred to an issue)
+  D3_recurrence_on_queued: no-widen             # rest
+  D4_update_scope_queued: like-rescope          # rest
+  I1_injection_budget: cap-sum                  # rest
+  I2_memory_block: drop                         # rest
+  I3_miss_floor: move                           # rest
+  I4_pglite_topscore: rrf                       # rest
+  I5_miss_domain: first                         # rest
+  I6_sub_floor_decay: above-floor               # rest
+  I7_shouldInject: delete                       # rest
+  P1_cross_host_lock: heartbeat                 # rest
+  P2_backup_rebaseline: last-written            # rest
+  P3_unrecoverable_events: "yes"                # rest
+  P4_pack_hash: defer-issue                     # principle: formats
+  P5_pack_registry: defer-issue                 # principle: formats
+  S1_scopes_register_exit: exit1                # rest
+  S2_engram_suggestions_string: single          # rest
+  S3_dsh_timeout: hard-cap                      # rest
+  S4_blocked_fixes: apply                       # rest

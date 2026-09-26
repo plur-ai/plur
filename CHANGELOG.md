@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### PGLite recall reports its fusion score
+
+With `PLUR_BACKEND=pglite`, hybrid recall returned no top score, and the opt-in
+miss signal read "results but no score" as *no results* — every recall that
+found something was reported as a miss. It now reports the same RRF fusion
+score the default backend does. (Decision I4.)
+
+### A queued team write keeps the scope its queue entry names
+
+Two paths changed the scope of an engram still waiting to be delivered to a
+team store, leaving the queue entry naming the old store (the flush then held
+it back with a warning, so the team never received it). Cross-scope recurrence
+no longer widens such an engram to `global` — the recurrence is still recorded
+(decision D3). `updateEngram` changing its scope now behaves like `rescope`:
+to a local scope the pending delivery is cancelled; to a scope with a writable
+remote store the delivery is retargeted there, after the leak guard ran against
+the new scope; to anything else it is cancelled with a warning (decision D4).
+
+### A remote copy that lands after you forgot it is now retired for you
+
+If you forgot or locally rescoped an engram while its push to a team store was
+on the wire, and the store accepted it anyway, the local record was kept and a
+warning named the server id — but the remote copy stayed live. The server id is
+now kept, and a durable "retire on remote" entry is queued on the local record;
+the next `plur_sync` / outbox flush deletes that copy on the store, retrying
+like any queued write (a 404 counts as done, it never re-sends the engram, and
+it survives a restart and `compact`). (Decision D1.)
+
+### Auto-route reaches a remote personal store only when it is yours
+
+An unscoped write could still auto-route into a **url-backed personal scope**
+(`user:*`, `agent:*`) whose `covers` the server declared — so the remote partly
+decided where your unscoped writes went, and the copy left the machine. Now an
+unscoped write routes into a remote-backed personal scope only when the
+remote's `/me` identity says it is **your own namespace** (`user:<username>` or
+`user:<org>:<username>`, or below it). Any other remote personal scope is
+refused and reported exactly like a shared one; if `/me` has not answered in
+this process (never fetched, offline, token rejected) it is refused too — fail
+closed. Path-backed personal routing is unchanged, `allow_shared_auto_route`
+still governs shared scopes only, and `plur_suggest_scope` reports the same
+decision. (Decision E1 of the formal verification run.)
+
+### `NO_SESSION`: a write that knows it has no session
+
+`@plur-ai/core` exports `NO_SESSION`. Pass it as `session` (learn, learnRouted,
+recall) or `session_id` (inject) and no session default applies — neither a
+keyed registration nor the process-default slot — so an unscoped write takes the
+genuinely unscoped path (auto-route / `unscoped_default`). Registering a scope
+under it throws. (Decision E7.)
+
+### Local-only scope targets: case-folded, and config-aware for `project:*`
+
+`forget` / `feedback` with a local scope never reach a remote (#855). That test
+now folds case like the shared-scope test (`GLOBAL`, `Project:x`), and a
+`project:*` scope counts as local only when no configured url store's scope
+equals or contains it (segment-aware) — so naming a project scope that a url
+store covers reaches that store instead of being refused as "local".
+(Decisions E4, E5.)
+
 ### An unscoped write can no longer land in a team store
 
 **If you wrote an engram without a scope, it could be auto-routed into a shared
@@ -46,6 +105,137 @@ That is why the leak above could not be answered on the server side. Every propo
 Writes now carry `scope_source`: `explicit` (named on the call), `session` (a session or `.plur.yaml` scope was in effect), `default` (nothing named it) or `routed` (the router chose it). It is produced by the one constructor both write paths share, so the shape a server receives and the shape written locally cannot drift, and it is omitted when absent so an older outbox entry sends nothing rather than claiming something it cannot vouch for.
 
 Nothing about routing changes. The decision was always made; it was simply not legible to the other side of the wire.
+
+### Injection budget, miss telemetry, decay, locks and backups (formal verification, 2026-09)
+
+Owner decisions from the formal-verification run, applied with a failing test first and a
+Lean model (`spec/formal/PlurSpec/ScopeInject.lean`, `Persistence.lean`) for each.
+
+- **Decay no longer raises a strength** (I6). Feedback can floor `retrieval_strength` at
+  0.0, below decay's floor of 0.05, and decay then lifted it back toward 0.05 with time
+  (0 → 0.039 after 30 days): an engram voted down to zero regained strength by being
+  left alone. `decayedStrength` now returns a strength at or below the floor unchanged.
+- **Removed `shouldInject`** (I7) from `packages/core/src/decay.ts`. It was exported from
+  the module (not from the package entry point), had no caller, and matched scope by
+  family prefix (`project:a` admitted `project:b`), contrary to `isScopeWithin` (#383).
+- **The miss-signal `low_score` reason can now fire** (I3; opt-in telemetry only). The
+  default floor was 0.015, below 1/61 ≈ 0.0164, the lowest top score any non-empty recall
+  can have, so `low_score` was never produced. It is now 0.025: a top hit that only one
+  retrieval leg found (BM25 or embeddings) counts as `low_score`; one both legs found is a
+  hit. With embeddings off there is one leg, so every non-empty recall's top hit reports as
+  `low_score`. `PLUR_MISS_SCORE_THRESHOLD` still overrides it.
+- **The miss-signal sends only the first segment of `domain`** (I5; opt-in telemetry
+  only): `trading.client-foo` is sent as `trading`. Domains are user-defined and can carry
+  the same private project or client names that #312 removed from scopes.
+- **The memory block respects its token budget** (I2). `renderMemoryBlock` (used by claw
+  and opencode) appended a section whenever any budget remained, whatever its size
+  (replayed: a 499-token budget rendered 5469 tokens). A section that does not fit what
+  remains is now dropped whole; a later, smaller one can still be included. Without a
+  budget nothing changes.
+- **`injection_budget` now bounds the whole injection** (I1). The consider pool (up to
+  200 tokens) and spreading activation (`spread_budget`, 480) were added on top of it, so
+  `tokens_used` could exceed the budget (replayed: 823 at a budget of 500). Directives and
+  constraints still take their share first; consider, then spreading, get what is left.
+  `tokens_used` is the total and never exceeds the budget. At a tight budget you may see
+  fewer "consider" entries than before.
+- **Daily backups resume after a legitimate large removal** (P2). The backup refused any
+  store more than 10% smaller than the last good snapshot, and only a snapshot could move
+  that baseline — so after one deliberate forget of more than 10% of the store, backups
+  stopped for good. PLUR now records how many engrams it last wrote
+  (`backups/.last-written.json`, machine-local) and the gate compares against that: a
+  removal PLUR made re-baselines automatically, while a file that shrank without PLUR
+  writing it is still refused.
+- **`plur restore` names fewer false losses** (P3). Its "history records N engram(s)
+  created after this backup" warning counted every history event after the snapshot; it now
+  counts only `engram_created` events, minus engrams retired since.
+- **A lock held from another machine is no longer stolen mid-write** (P1). When
+  `~/.plur` is shared between hosts, a waiter cannot check whether the holder's process
+  is alive, so it steals a lock older than 60 seconds — and `plur sync` legitimately holds
+  the store lock for up to ~90 seconds (three git commands with 30-second timeouts). The
+  holder now re-touches its lock every 20 seconds (a third of the stale threshold), and
+  before every git command, so only a holder that has stopped is judged stale. The
+  heartbeat stops when the lock is released, including on error.
+
+### `plur scopes register --json` exits 1 when the registration is refused
+
+A refused registration already exited 1 in text mode but exited 0 with `--json`
+(or when piped), so a script checking `$?` saw success. It now exits 1 in both
+modes; the JSON body on stdout is unchanged (`success: false`, `error`).
+
+### A single session-end suggestion containing a comma is no longer split
+
+`plur_session_end` with `engram_suggestions: "Use pnpm, not npm"` (one plain
+string instead of an array) stored two engrams, one of them the inverted
+"not npm". A plain string sent for `engram_suggestions` is now one suggestion.
+To send several as a string, send a JSON array string (`'["a", "b"]'`). Tag-like
+lists such as `tags: "a, b"` are still split on commas.
+
+### The `visibility` description no longer promises the default keeps a memory local
+
+`plur_learn` described `visibility` as "whether this memory may leave this
+machine", default `private`. For a write to a team scope that was not true: with
+`visibility` omitted, the write still goes to the team store, and only an
+explicit `visibility: "private"` keeps it local. Behaviour is unchanged; the
+description (and `plur_learn_batch`'s, whose items take the default) now says
+exactly this: the default excludes a memory from packs and shared git sync, and
+an explicit `"private"` is what keeps a team-scope write on this machine.
+
+### A statement that starts with `-` is stored as written
+
+`plur learn -- "<statement>"` stored the literal `--` instead of the statement,
+and global flags were still parsed after `--`, so a statement containing
+`--path=…` could select, and create, a different store. `--` now ends option
+parsing for every command: the token after it is the statement, verbatim, and
+nothing after it is read as a global flag. Put global flags before `--`:
+`plur learn --scope global -- "--dry-run is required for deploys"`.
+
+The Python client (`plur-ai`) sends a statement that starts with `-` on stdin,
+where the CLI reads it verbatim (the same rule as the Hermes bridge);
+`run_json` gains an `input` parameter for this. `plur doctor` now recognises a
+PLUR hook installed through the Windows shim (`…\.plur\bin\plur-hook.cmd`),
+where it reported "no hooks" for a working install.
+
+### dsh: a slow memory write no longer lets the next one overlap it
+
+In `@plur-ai/dsh`, an auto-learn or episode-capture write that ran past
+`timeoutMs` gave up its place in the write queue while it was still running,
+so the next write started alongside it. A write now keeps its place until it
+finishes, or until a hard cap of 60 seconds (or `timeoutMs`, if larger) passes;
+then the queue moves on, logs a warning and counts it under `errors_swallowed`,
+so one hung write cannot block every later write. A tool call still answers
+"unavailable" at `timeoutMs`.
+
+### A cloned repository's `.plur.yaml` no longer picks your scope until you trust it
+
+A `.plur.yaml` can declare `scope:` and `domain:`. The MCP server, the Claude
+Code / Codex / Cursor / Antigravity hooks and the DeepSeek Harness plugin adopted
+them from any directory, so a repository you cloned could make its
+`scope: group:acme/eng` your session default. An unscoped personal note then
+landed in that scope and, if you had registered it, in that team's store.
+Only the opencode plugin checked.
+
+Every adapter now follows the opencode rule. A `.plur.yaml` scope or domain is
+used only from a directory you have trusted with `plur trust <dir>` (trusting a
+repository root covers everything below it). Otherwise it is ignored, the
+default scope applies, and a warning names the file and the command to run.
+`plur_session_start` returns it as `project_config_warning` and puts it at the
+top of `guide`. Trusted directories behave as before. The DeepSeek Harness
+plugin also never adopts `scope: global` from a workspace file.
+
+**If your own projects use `.plur.yaml`**, run `plur trust <repo root>` once
+per checkout, or their scope stops applying.
+
+### With several sessions open, an MCP write without `session_id` no longer takes another session's scope
+
+When several MCP sessions were open (often a stale one from a client that
+restarted without `plur_session_end`), a `plur_learn`, `plur_learn_batch`,
+`plur_session_end` or `plur_inject` call without `session_id` used the default
+scope of whichever session had started last, which could be a team scope. It
+now uses no session default at all, unless exactly one session is open. An
+explicit `scope` still wins, and an unscoped write takes the ordinary unscoped
+path (auto-route or the unscoped default). The same applies when no session is
+open. `plur_session_scope` says so when it is used with no session open.
+Pass `session_id` from `plur_session_start` to keep a session's default.
 
 ## 0.20.1
 

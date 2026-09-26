@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputInfo, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputInfo, outputError, exit } from '../output.js'
 
 const VALID_SIGNALS = ['positive', 'negative', 'neutral'] as const
 type Signal = (typeof VALID_SIGNALS)[number]
@@ -35,11 +35,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
     }
 
+    // Exit 0 iff every requested feedback was recorded — the rule
+    // `plur rescope` already follows (success = no item errored), in both
+    // output modes. A batch whose items ALL failed used to exit 0 (formal
+    // Adapters #5, cli#5).
+    const failed = results.filter(r => !r.success)
     if (shouldOutputJson(flags)) {
-      outputJson({ mode: 'batch', results, summary })
+      outputJson({ mode: 'batch', success: failed.length === 0, results, summary })
     } else {
       outputInfo(`Batch feedback: ${summary.positive} positive, ${summary.negative} negative, ${summary.neutral} neutral`, flags)
+      for (const f of failed) outputError(`  failed: ${f.id} (${f.signal}) — ${f.error}`)
     }
+    if (failed.length > 0) process.exitCode = 1
     return
   }
 

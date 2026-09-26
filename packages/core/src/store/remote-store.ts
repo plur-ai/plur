@@ -3,6 +3,10 @@ import type { Engram } from '../schemas/engram.js'
 import { logger } from '../logger.js'
 import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
+import type { ScopeSource } from '../scope-routing.js'
+
+/** The values `scope_source` may carry on the wire (#1221); anything else is omitted. */
+const SCOPE_SOURCES: ReadonlySet<string> = new Set<ScopeSource>(['explicit', 'session', 'default', 'routed'])
 
 /**
  * Lenient validation for semi-trusted remote rows (security audit 2026-06-10,
@@ -650,7 +654,14 @@ export class RemoteStore {
     // typed from one the router picked out of `covers`. Omitted when absent, so
     // an engram written by an older path, or replayed from an outbox predating
     // this, sends nothing rather than claiming `explicit` it cannot vouch for.
-    const scope_source = e.structured_data?._scopeSource as string | undefined
+    //
+    // `structured_data` is caller-settable on update, so the value is checked
+    // against the four `ScopeSource` values rather than trusted: anything else
+    // is omitted, the same answer as an engram written before #1221.
+    const rawScopeSource: unknown = e.structured_data?._scopeSource
+    const scope_source = typeof rawScopeSource === 'string' && SCOPE_SOURCES.has(rawScopeSource)
+      ? rawScopeSource
+      : undefined
     const body = JSON.stringify({
       statement: e.statement,
       scope:     engram.scope,
@@ -854,6 +865,23 @@ export class RemoteStore {
   }
 
   /** Remove → DELETE /api/v1/engrams/:id (server soft-retires). */
+  /**
+   * Retire `id` on the server, idempotently (decision D1, the queued
+   * "retire on remote" entry). `'removed'` on 2xx; `'absent'` on 404/410 —
+   * the row is already gone, which is the goal, so the entry is done. Any
+   * other status throws (the caller keeps the entry queued and retries);
+   * a network failure throws from `fetchBounded` as usual.
+   */
+  async removeIdempotent(id: string): Promise<'removed' | 'absent'> {
+    const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: this.headers(),
+    }, RemoteStore.readBounded)
+    if (r.ok) { this.cache = null; return 'removed' }
+    if (r.status === 404 || r.status === 410) return 'absent'
+    throw new Error(`Remote delete failed: ${r.status} ${r.text}`)
+  }
+
   async remove(id: string): Promise<boolean> {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',

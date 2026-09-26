@@ -162,7 +162,8 @@ provider** — for a default DeepSeek Harness install, that is DeepSeek's hosted
 API at `api.deepseek.com`.
 
 **Writes** go to the scope belonging to the workspace you are in — your
-project's own `.plur.yaml` scope if it declares one, otherwise `project:<directory name>-<short path digest>` — the digest keeps two
+project's own `.plur.yaml` scope if it declares one and you have trusted its
+directory (`plur trust <dir>`), otherwise `project:<directory name>-<short path digest>` — the digest keeps two
 checkouts that happen to share a directory name apart. Nothing this plugin learns is written to `global`.
 
 **Reads** are that same scope *plus your global engrams*. That is PLUR's own
@@ -178,12 +179,15 @@ Two details worth knowing:
   `project:acme` does not read `project:acme:api`. This plugin's own derivation
   is flat so it never creates those, but a store populated through the CLI or
   MCP with hierarchical child scopes will not surface them here.
-- A workspace's `.plur.yaml` is trusted as written. A repository you clone can
-  declare a scope, and this plugin will use it for both reads and writes — the
-  same as `@plur-ai/core` itself. Check it the way you would check any other
-  file you are about to run.
+- A workspace's `.plur.yaml` scope is used only from a directory you have
+  trusted with `plur trust <dir>` (trusting a repository root covers everything
+  below it). A repository you clone can declare a scope — possibly a team store
+  you have registered — so until you trust it the declaration is ignored, a
+  warning names the file and the command, and the workspace default applies.
+  This is the same rule `@plur-ai/opencode`, the MCP server and the CLI hooks
+  follow. `scope: global` in a workspace file is never used.
 
-A workspace's own `.plur.yaml` scope wins. The `scope` setting below applies
+A trusted workspace's own `.plur.yaml` scope wins. The `scope` setting below applies
 when the workspace declares none — set it, or turn injection off entirely:
 
 ```yaml
@@ -207,7 +211,7 @@ All settings live under the `plur` namespace in `$DSH_HOME/settings.yaml`
 | `refreshIntervalMs` | `0` | Floor between recalls; `0` means once per turn |
 | `autoLearn` | `true` | Detect corrections in your messages and store them |
 | `autoCapture` | `true` | Record an episode summary at turn end |
-| `timeoutMs` | `5000` | Hard bound on any single memory call |
+| `timeoutMs` | `5000` | How long a memory call is waited for. A tool answers "unavailable" at this bound; a write keeps running and keeps the write queue until it finishes or 60 s (or `timeoutMs`, if larger) pass, then the queue moves on with a warning |
 | `viewerEnabled` | `true` | Register the `/plur-memory` command |
 | `includeGlobal` | `true` | Whether global engrams accompany the workspace scope |
 

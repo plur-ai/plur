@@ -30,10 +30,13 @@ class Plur:
         self.binary = binary
         self.timeout = timeout
 
-    def _run(self, args: list[str], *, timeout: float | None = None) -> Any:
+    def _run(
+        self, args: list[str], *, timeout: float | None = None, input: str | None = None
+    ) -> Any:
         return run_json(
             args, binary=self.binary, path=self.path,
             timeout=self.timeout if timeout is None else timeout,
+            input=input,
         )
 
     def learn(
@@ -47,8 +50,14 @@ class Plur:
         source: str | None = None,
         rationale: str | None = None,
     ) -> dict:
-        """Store a correction, preference, or convention. Returns the engram."""
-        args = ["learn", statement]
+        """Store a correction, preference, or convention. Returns the engram.
+
+        The statement is stored verbatim. One that starts with ``-`` (for example
+        ``"--dry-run is required"``) is sent on stdin: in argv the CLI would read
+        it as a flag.
+        """
+        on_stdin = statement.startswith("-")
+        args = ["learn"] if on_stdin else ["learn", statement]
         if type:
             args += ["--type", type]
         if scope:
@@ -61,7 +70,7 @@ class Plur:
             args += ["--rationale", rationale]
         if tags:
             args += ["--tags", ",".join(tags)]
-        return self._run(args) or {}
+        return self._run(args, input=statement if on_stdin else None) or {}
 
     def recall(self, query: str, *, limit: int | None = None) -> list[dict]:
         """Fast lexical-only search. Returns engrams most relevant first.

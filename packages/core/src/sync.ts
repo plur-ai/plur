@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkS
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
-import { DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken } from './store/async-lock.js'
+import { DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken, startHeartbeat, heartbeatHeldLocks } from './store/async-lock.js'
 
 export interface SyncStatus {
   initialized: boolean
@@ -94,6 +94,10 @@ const SECRET_PATHS = ['config.yaml', 'secrets.yaml', 'agent-keystore.json'] as c
 const PACK_ALLOW_NAMES = ['SKILL.md', 'engrams.yaml', 'INTEGRITY', 'metadata.json'] as const
 
 function git(args: string[], cwd: string): string {
+  // A git command blocks the event loop for up to its 30 s timeout, so a lock
+  // held around sync (Plur.sync holds the store lock) cannot heartbeat from a
+  // timer. Touch it here, before each command (decision P1).
+  heartbeatHeldLocks()
   return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000 }).trim()
 }
 
@@ -567,7 +571,114 @@ function hasConflictMarkers(root: string): boolean {
   return result !== null && result.length > 0
 }
 
+/**
+ * A store file whose working-tree copy holds records the push set withholds
+ * (scope:local engrams; on a `shared` remote also personal/private engrams and
+ * derived sibling records). Kept in memory across the pull.
+ */
+interface WithheldFile {
+  file: string
+  /** Working-tree bytes before the hold — restored verbatim when the pull left the file alone. */
+  saved: string
+  /** The index blob the working tree was reset to (== HEAD after commitChanges). */
+  staged: string
+  /** Records present in the working tree but never committed. */
+  held: unknown[]
+}
+
+/**
+ * Formal-verification finding (spec/formal/findings/persistence.md, candidate 1).
+ *
+ * HEAD holds strip(W) by design, so whenever the working tree W holds a record
+ * the push set withholds, W differs from HEAD in a tracked file — permanently.
+ * `git pull` refuses to touch a dirty tracked file, so every remote change to
+ * engrams.yaml was refused for as long as one scope:local engram existed, and
+ * every later push failed non-fast-forward.
+ *
+ * Hold the withheld records aside instead: reset each such file to its staged
+ * (= committed, stripped) blob so the tree is clean, pull, then put the held
+ * records back. Nothing withheld reaches a commit — it is only ever in memory
+ * and the working tree — and nothing is lost: see `restoreWithheld`.
+ */
+function holdWithheld(root: string, remoteType: SyncRemoteType): WithheldFile[] {
+  const files: WithheldFile[] = []
+  const parsed = readEngramList(root)
+  const candidates: Array<{ file: string; held: unknown[] }> = []
+  if (parsed) {
+    candidates.push({ file: 'engrams.yaml', held: parsed.list.filter(e => !pushKeep(remoteType)(e)) })
+  }
+  if (remoteType === 'shared') {
+    const keep = siblingKeep(sharedPushIds(root))
+    for (const file of SIBLING_STRIP_FILES) {
+      const records = readSiblingList(root, file)
+      if (records) candidates.push({ file, held: records.filter(r => !keep(r)) })
+    }
+  }
+  for (const { file, held } of candidates) {
+    if (held.length === 0) continue
+    const staged = gitSafe(['show', `:${file}`], root)
+    if (staged === null) continue // untracked: pull cannot be blocked by it
+    const saved = readFileSync(join(root, file), 'utf8')
+    // gitSafe trims; compare on trimmed content.
+    if (saved.trim() === staged) continue
+    files.push({ file, saved, staged, held })
+    git(['checkout', '--', file], root)
+  }
+  return files
+}
+
+/**
+ * Put held records back after a pull (successful or not).
+ *
+ * - The pull did not change the file → write the saved bytes back verbatim.
+ * - The pull changed it → the new file plus every held record, appended. Held
+ *   records were never committed, so the pulled file cannot already carry them
+ *   (a same-id record from another machine is a distinct engram; both are kept).
+ * - The new file is unreadable (should not happen: conflicts abort) → saved bytes
+ *   verbatim, so the only possible outcome of a bad pull is "not pulled", never
+ *   "lost".
+ */
+function restoreWithheld(root: string, files: WithheldFile[]): void {
+  for (const f of files) {
+    const path = join(root, f.file)
+    const current = existsSync(path) ? readFileSync(path, 'utf8') : null
+    if (current === null || current.trim() === f.staged) {
+      atomicWrite(path, f.saved)
+      continue
+    }
+    let raw: unknown
+    try {
+      raw = yaml.load(current)
+    } catch {
+      atomicWrite(path, f.saved)
+      continue
+    }
+    if (f.file === 'engrams.yaml') {
+      if (Array.isArray(raw)) {
+        atomicWrite(path, yaml.dump([...raw, ...f.held], YAML_DUMP_OPTS))
+      } else if (raw && typeof raw === 'object' && Array.isArray((raw as any).engrams)) {
+        atomicWrite(path, yaml.dump({ ...(raw as object), engrams: [...(raw as any).engrams, ...f.held] }, YAML_DUMP_OPTS))
+      } else {
+        atomicWrite(path, f.saved)
+      }
+    } else if (Array.isArray(raw)) {
+      atomicWrite(path, yaml.dump([...raw, ...f.held], SIBLING_DUMP_OPTS))
+    } else {
+      atomicWrite(path, f.saved)
+    }
+  }
+}
+
 function pullRebase(root: string, remoteType: SyncRemoteType): boolean {
+  const held = holdWithheld(root, remoteType)
+  try {
+    return pullRebaseClean(root, remoteType)
+  } finally {
+    restoreWithheld(root, held)
+  }
+}
+
+function pullRebaseClean(root: string, remoteType: SyncRemoteType): boolean {
   const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
   const result = gitSafe(['pull', '--rebase', 'origin', branch], root)
   if (result !== null) return true
@@ -693,7 +804,11 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
   if (pullFailed || behindAfter > 0) {
     parts.push(`NOT pulled — still ${behindAfter} commit(s) behind the remote; resolve locally and retry`)
   }
-  if (aheadAfter === 0 && aheadBefore > 0) parts.push('pushed')
+  // Formal-verification finding (persistence.md, candidate 1): this used to test
+  // `aheadAfter === 0 && aheadBefore > 0`, but `aheadAfter` is measured BEFORE
+  // the push, so a successful push never said so and the line only fired when
+  // there was nothing to push.
+  if (aheadAfter > 0 && !pushError) parts.push('pushed')
   // Say it in the message too — a caller reading only the text still sees it.
   if (pushError) parts.push('NOT pushed — the commit is local only')
 
@@ -749,6 +864,33 @@ export interface LockOptions {
  * O_EXCL path, which is what actually decides who holds the lock.
  */
 function stealLockSync(lockPath: string, expected: string, token: string): void {
+  // Serialized by a guard file and re-read under it — the same fix, for the same
+  // replayed double-holder interleaving, as `stealLock` in store/async-lock.ts
+  // (formal-verification finding, spec/formal/findings/persistence.md candidate 3).
+  const guard = `${lockPath}.steal`
+  try {
+    writeFileSync(guard, token, { flag: 'wx' })
+  } catch (err: any) {
+    if (err?.code === 'EEXIST') {
+      try {
+        const g = readFileSync(guard, 'utf8').trim()
+        const alive = holderIsAlive(g)
+        if (alive === false || (alive === undefined && Date.now() - statSync(guard).mtimeMs > 10_000)) unlinkSync(guard)
+      } catch { /* gone already */ }
+    }
+    return
+  }
+  try {
+    let now: string | null = null
+    try { now = readFileSync(lockPath, 'utf8').trim() } catch { now = null }
+    if (now !== expected) return
+    claimAndRemoveSync(lockPath, expected, token)
+  } finally {
+    try { if (readFileSync(guard, 'utf8').trim() === token) unlinkSync(guard) } catch { /* gone */ }
+  }
+}
+
+function claimAndRemoveSync(lockPath: string, expected: string, token: string): void {
   const claim = `${lockPath}.steal.${token.replace(/[^\w.-]/g, '_')}`
   try {
     renameSync(lockPath, claim)
@@ -843,9 +985,14 @@ export function withLock<T>(
     )
   }
 
+  // Heartbeat while held (decision P1). `fn` is synchronous, so the timer only
+  // fires if it yields; the synchronous touch points (heartbeatHeldLocks, called
+  // before every git command) cover long blocking work. Stopped on return or throw.
+  const stopHeartbeat = startHeartbeat(lockPath, token, staleThreshold)
   try {
     return fn()
   } finally {
+    stopHeartbeat()
     // Only ours to remove. Without the token comparison, a holder whose lock
     // was stolen deletes the THIEF's lock on its way out and a third writer
     // walks in mid-write — the cascade fixed on the async lock (audit #794 F9).

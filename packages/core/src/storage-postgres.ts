@@ -1080,20 +1080,39 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // is the honest price of holding a session lock across arbitrary work.
     const pool = await this.getLockPool()
     const client = await this.acquire(pool)
+    // Set when the session may still hold the advisory lock; the session is then
+    // DESTROYED (`release(err)`) instead of returned to idle.
+    //
+    // Formal-verification finding (spec/formal/findings/persistence.md,
+    // candidate 5): this used to be a bare `client.release()`, under a comment
+    // saying a failed unlock "discards" the connection. It does not — without an
+    // argument pg returns the session to the pool, and a session advisory lock
+    // lives as long as the SESSION. The next `pg_advisory_lock` from any other
+    // session (no timeout) then waited forever; the same session, being
+    // re-entrant, would take it again without anyone noticing. Replayed with a
+    // mock pool (formal-persistence-pg-unlock.test.ts).
+    let poisoned: Error | undefined
     try {
-      await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [`plur:${this.schema}`])
+      try {
+        await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [`plur:${this.schema}`])
+      } catch (err) {
+        // Unknown whether the server granted it before the error surfaced.
+        poisoned = err as Error
+        throw err
+      }
       try {
         return await fn()
       } finally {
-        // Release on the same session, even if `fn` threw. If THIS throws the
-        // connection is broken; releasing it below discards it from the pool,
-        // and Postgres drops session advisory locks when the session ends, so
-        // the lock cannot leak.
+        // Release on the same session, even if `fn` threw. If THIS throws, the
+        // lock may still be held: destroy the session below, and Postgres drops
+        // session advisory locks when the session ends.
         await client.query(`SELECT pg_advisory_unlock(hashtext($1))`, [`plur:${this.schema}`])
-          .catch(() => { /* session is going away; the lock dies with it */ })
+          .catch((err: unknown) => {
+            poisoned = err instanceof Error ? err : new Error(String(err))
+          })
       }
     } finally {
-      client.release()
+      client.release(poisoned)
     }
   }
 

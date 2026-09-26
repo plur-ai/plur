@@ -125,17 +125,23 @@ function flushFile(filePath: string): void {
   }
 }
 
-/** Restore engrams.yaml from backup. */
-function restoreBackup(engramsPath: string, backupPath: string): void {
-  fs.copyFileSync(backupPath, engramsPath)
-}
+/*
+ * There is deliberately no "restore from backup" on failure (formal-verification
+ * finding, spec/formal/findings/persistence.md candidate 2). `up()`/`down()` run
+ * on an in-memory copy and nothing is written until every one has succeeded, so
+ * when one throws the live engrams.yaml is still exactly what it was. The backup,
+ * by contrast, is never refreshed (the no-clobber rule above keeps the FIRST copy
+ * taken for a version), so copying it back replaced the live store with an older
+ * one — measured: 3 engrams -> 1 after a rollback and a failing re-run. The backup
+ * stays on disk for manual recovery; the failure path simply writes nothing.
+ */
 
 /**
  * Run pending migrations on engrams.yaml.
  * - Checks schema_version in config
  * - Creates backup before running
  * - Applies each pending migration in order
- * - Rolls back to backup if any migration fails
+ * - If any migration fails, writes nothing (the live file is left as it was)
  * - Updates schema_version after success
  */
 export function runMigrations(
@@ -191,12 +197,9 @@ export function runMigrations(
         applied.push(migration.id)
       } catch (err) {
         logger.error(`Migration ${migration.id} failed: ${err}`)
-        // Restore from backup
-        if (backupPath) {
-          restoreBackup(engramsPath, backupPath)
-          logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
-        }
-        throw new Error(`Migration ${migration.id} failed: ${err}. Engrams restored from backup.`)
+        // Nothing has been written yet: the live file is untouched. Do NOT copy
+        // the (possibly older) backup over it — see the note above createBackup.
+        throw new Error(`Migration ${migration.id} failed: ${err}. engrams.yaml was not modified.`)
       }
     }
 
@@ -258,11 +261,7 @@ export function rollbackMigrations(
         rolledBack.push(migration.id)
       } catch (err) {
         logger.error(`Rollback of ${migration.id} failed: ${err}`)
-        if (backupPath) {
-          restoreBackup(engramsPath, backupPath)
-          logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
-        }
-        throw new Error(`Rollback of ${migration.id} failed: ${err}. Engrams restored from backup.`)
+        throw new Error(`Rollback of ${migration.id} failed: ${err}. engrams.yaml was not modified.`)
       }
     }
 

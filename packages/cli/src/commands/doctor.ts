@@ -214,12 +214,17 @@ function hasAnyPlurHook(config: Record<string, unknown>): boolean {
   for (const entries of Object.values(hooks)) {
     for (const entry of entries) {
       for (const h of entry.hooks ?? []) {
-        if (h.command && (h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'))) return true
+        // Backslashes normalised: the Windows shim is `…\.plur\bin\plur-hook.cmd`
+        // (decision S4; same test as init.ts isPlurHookSpec).
+        if (typeof h.command === 'string' && (h.command.includes('@plur-ai/cli') || h.command.replace(/\\/g, '/').includes('.plur/bin/plur-hook'))) return true
       }
     }
   }
   return false
 }
+
+/** Test seam (formal apply S4.2). */
+export const _hasAnyPlurHook = hasAnyPlurHook
 
 function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
   const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>

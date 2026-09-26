@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, _setCachedReranker, _resetRerankerCache, resetRerankerStatus, rerankerStatus } from '@plur-ai/core'
 import type { RerankerAdapter } from '@plur-ai/core'
-import { getToolDefinitions, composeHints } from '../src/tools.js'
+import { getToolDefinitions, composeHints, _resetSessionTelemetry } from '../src/tools.js'
 
 describe('MCP tools', () => {
   let plur: Plur
@@ -203,7 +203,10 @@ describe('MCP tools', () => {
       // land there WITHOUT an explicit args.scope by setting a session default,
       // so explicitScope is false and the hint must fire (the old hardcoded
       // {local,global} set would have stayed silent on user:alice).
-      plur.setSessionScope('user:alice')
+      // Decision E7 (2026-09-26): an id-less write takes a session default only
+      // when exactly ONE session is open, so the default comes from a session.
+      _resetSessionTelemetry()
+      await callTool('plur_session_start', { task: 'tabs', default_scope: 'user:alice' })
       try {
         const result = await callTool('plur_learn', { statement: 'team prefers tabs over spaces' }) as any
         expect(result.scope).toBe('user:alice')
@@ -211,6 +214,7 @@ describe('MCP tools', () => {
         expect(result.scope_hint).toContain('group:acme/engineering')
       } finally {
         plur.setSessionScope(null)
+        _resetSessionTelemetry()
       }
     })
 
@@ -1178,6 +1182,9 @@ describe('.plur.yaml domain default (#1148)', () => {
     writeFileSync(join(projDir, '.plur.yaml'), 'domain: plur.engineering.search\n')
     projPlur = new Plur({ path: projDir })
     await projPlur.ready()
+    // Decision E3 (2026-09-26): the project domain is adopted only from a
+    // `plur trust`ed directory.
+    projPlur.trustDirectory(projDir)
     cwd = process.cwd()
     // readProjectConfig() resolves from process.cwd() by default.
     process.chdir(projDir)

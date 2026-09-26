@@ -9,13 +9,17 @@ import { CLI_VERSION as VERSION } from './version.js'
 
 // --- Main ---
 const argv = process.argv.slice(2)
+// `--` ends option parsing (formal verification S4, 2026-09-26): a statement
+// such as `plur learn -- "--help"` is data, not a request for help.
+const sep = argv.indexOf('--')
+const options = sep === -1 ? argv : argv.slice(0, sep)
 
-if (argv.includes('--version') || argv.includes('-v')) {
+if (options.includes('--version') || options.includes('-v')) {
   console.log(VERSION)
   process.exit(0)
 }
 
-if (argv.includes('--help') || argv.includes('-h') || argv.length === 0) {
+if (options.includes('--help') || options.includes('-h') || argv.length === 0) {
   console.log(`plur v${VERSION} — persistent memory for AI agents
 
 Usage: plur <command> [options]

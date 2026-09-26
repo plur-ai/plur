@@ -44,13 +44,26 @@ Guidelines for the learning section:
 
 /**
  * Render the shared memory system-prompt section: the PLUR memory
- * instructions, plus a "## Your Memories" block with injected engrams when
- * present and within the token budget.
+ * instructions, plus a "## Your Memories" block with the injected sections
+ * (directives, constraints, consider) that fit the token budget.
+ *
+ * Budget (owner decision I2, formal run 2026-09-26): with a `tokenBudget`, the
+ * room left after `usedTokens` and the fixed instructions is `remaining`. Each
+ * section is appended WHOLE only if the block with it still fits `remaining`
+ * (tokens = ceil(chars / 4), the same estimate as the rest of this function);
+ * a section that does not fit is dropped whole, and a later, smaller one may
+ * still be appended. The heading is emitted only if it fits too. So the
+ * returned text never exceeds `tokenBudget - usedTokens` tokens whenever the
+ * instructions alone fit; the instructions are always rendered. Previously a
+ * section was appended whenever SOME budget remained, whatever its size
+ * (replayed: budget 499 → 5469 tokens rendered). The existing slack gates
+ * (constraints and consider need > 100 tokens left before them) still apply.
+ * Without a `tokenBudget`, every present section is rendered, as before.
  *
  * Extracted from `@plur-ai/claw`'s `assembleContext` so `@plur-ai/opencode`
  * can render byte-identical output instead of vendoring a second copy of
- * this logic. Behaviour must stay identical to claw's pre-extraction
- * implementation — claw is a shipped package.
+ * this logic. claw and opencode both call this function, so they share the
+ * budget rule by construction.
  */
 export function renderMemoryBlock(params: {
   injection: InjectionResult | null
@@ -64,30 +77,32 @@ export function renderMemoryBlock(params: {
     const lines: string[] = ['## Your Memories', '']
     const instructionTokens = Math.ceil(PLUR_MEMORY_INSTRUCTIONS.length / 4)
     const remainingBudget = tokenBudget ? tokenBudget - usedTokens - instructionTokens : Infinity
+    // Tokens the block costs in the output, including the '\n' that joins it
+    // to the instructions.
+    const blockTokens = (ls: string[]) => Math.ceil(('\n' + ls.join('\n')).length / 4)
+    const fits = (extra: string[]) => blockTokens([...lines, ...extra]) <= remainingBudget
 
     if (injection.directives && remainingBudget > 0) {
-      lines.push('These are things you have learned and should apply:', '')
-      lines.push(injection.directives)
-      lines.push('')
+      const add = ['These are things you have learned and should apply:', '', injection.directives, '']
+      if (fits(add)) lines.push(...add)
     }
 
     if (injection.constraints) {
       const usedLineTokens = Math.ceil(lines.join('\n').length / 4)
       if ((remainingBudget - usedLineTokens) > 100) {
-        lines.push(injection.constraints)
-        lines.push('')
+        const add = [injection.constraints, '']
+        if (fits(add)) lines.push(...add)
       }
     }
 
     // Only include "consider" section if we have budget for it
     const directiveTokens = Math.ceil(lines.join('\n').length / 4)
     if (injection.consider && (remainingBudget - directiveTokens) > 100) {
-      lines.push('These may also be relevant:', '')
-      lines.push(injection.consider)
-      lines.push('')
+      const add = ['These may also be relevant:', '', injection.consider, '']
+      if (fits(add)) lines.push(...add)
     }
 
-    sections.push(lines.join('\n'))
+    if (fits([])) sections.push(lines.join('\n'))
   }
 
   return sections.join('\n')

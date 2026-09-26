@@ -179,19 +179,36 @@ describe('vector recall applies the scope restriction in-query, not after', () =
     // path on every query. (In `recallSemantic` there is no such rescue, and
     // the mutation there does fail the test above.)
     //
-    // `topScore` is what separates them: the pushdown branch returns null,
-    // `hybridSearchWithMeta` returns a real RRF score.
-    const meta = await plur.recallHybridWithMeta(QUERY, {
-      limit: WANTED,
-      scopes: ['project:alpha'],
-    })
+    // What separates them: whether the vector leg returned any PERMITTED row.
+    // The fallback happens exactly when it returned none (all dropped by the
+    // intersection). This used to read `topScore === null` (the pushdown
+    // branch reported no score); decision I4 (2026-09-26) made that branch
+    // report a real RRF top score, so the probe now watches the leg itself.
+    const adapter = (plur as any).pgliteAdapter
+    const searchVector = adapter.searchVector.bind(adapter)
+    let permittedVectorHits = 0
+    adapter.searchVector = async (...args: unknown[]) => {
+      const hits = await searchVector(...args)
+      permittedVectorHits += hits.filter((h: any) => h.engram.scope === 'project:alpha').length
+      return hits
+    }
+    let meta
+    try {
+      meta = await plur.recallHybridWithMeta(QUERY, {
+        limit: WANTED,
+        scopes: ['project:alpha'],
+      })
+    } finally {
+      adapter.searchVector = searchVector
+    }
     expect(meta.engrams.length).toBe(WANTED)
     expect(meta.engrams.every(e => e.scope === 'project:alpha')).toBe(true)
     expect(
-      meta.topScore,
+      permittedVectorHits,
       'fell back to the in-memory hybrid — the vector leg returned nothing usable, '
       + 'which is what an unrestricted k-NN does when the permitted scope is a small share of the corpus',
-    ).toBeNull()
+    ).toBeGreaterThan(0)
+    expect(meta.topScore, 'decision I4: the pushdown branch reports its RRF top score').not.toBeNull()
   }, TIMEOUT)
 
   it('an empty allow-list still returns nothing', async (ctx) => {

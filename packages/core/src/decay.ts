@@ -4,39 +4,40 @@ const DECAY_RATE = 0.05
 const FLOOR = 0.05
 const MS_PER_DAY = 86_400_000
 
-/** Core decay formula — exponential decay with floor. Never reaches zero. */
+/**
+ * Core decay formula — exponential decay toward FLOOR (0.05), from above only.
+ *
+ * A strength above the floor decays toward it and never below it. A strength
+ * AT or BELOW the floor is returned unchanged: decay never raises a strength
+ * (owner decision I6, formal run 2026-09-26). Feedback can floor a strength at
+ * 0.0, below this floor; the formula `FLOOR + (r − FLOOR)·e^{−λd}` used to lift
+ * such an engram back toward 0.05 with time (0 → 0.039 after 30 days), so an
+ * engram voted down to zero regained strength by being left alone.
+ */
 export function decayedStrength(
   retrievalStrength: number,
   daysSinceAccess: number,
   lambda: number = DECAY_RATE,
 ): number {
+  if (retrievalStrength <= FLOOR) return retrievalStrength
   return FLOOR + (retrievalStrength - FLOOR) * Math.exp(-lambda * daysSinceAccess)
 }
 
-/** Calculate days since last access from ISO date string */
+/**
+ * Calculate days since last access from ISO date string.
+ *
+ * An unparseable date counts as 0 days — "no known elapsed time" (formal run
+ * 2026-09-23). It used to return NaN (`Math.max(0, NaN)` is NaN), which made
+ * `decayedStrength` NaN, the engram's injection score NaN, and `raw > 0`
+ * false — so an engram with a malformed timestamp (the schema accepts any
+ * string) was silently never injected.
+ */
 export function daysSince(lastAccessed: string, now?: Date): number {
   const last = new Date(lastAccessed)
   const current = now || new Date()
-  return Math.max(0, Math.floor((current.getTime() - last.getTime()) / MS_PER_DAY))
-}
-
-/** Should this engram be auto-injected into context? Scope-matched always inject. */
-export function shouldInject(
-  engram: { retrieval_strength: number; scope: string; last_accessed?: string },
-  context: { task?: string; scope?: string },
-  threshold: number = 0.15,
-): boolean {
-  const scope = engram.scope || 'global'
-  const contextScope = context.scope || ''
-
-  // Scope-matched engrams ALWAYS inject (ignore decay)
-  if (contextScope && scope === contextScope) return true
-  if (contextScope && scope !== 'global' && scope.startsWith(contextScope.split(':')[0] + ':')) return true
-
-  // Global engrams: apply decay threshold
-  const days = engram.last_accessed ? daysSince(engram.last_accessed) : 0
-  const effective = decayedStrength(engram.retrieval_strength, days)
-  return effective >= threshold
+  const elapsed = current.getTime() - last.getTime()
+  if (!Number.isFinite(elapsed)) return 0
+  return Math.max(0, Math.floor(elapsed / MS_PER_DAY))
 }
 
 /**
@@ -123,6 +124,10 @@ export function confidenceDecay(
   } else {
     return retrievalStrength
   }
+  // An unparseable reference is no reference (formal run 2026-09-23): it used
+  // to yield NaN, and `Math.max(FLOOR, NaN)` is NaN — breaking the documented
+  // "Floor at 0.1" and poisoning the injection score downstream.
+  if (!Number.isFinite(referenceDate.getTime()) || !Number.isFinite(current.getTime())) return retrievalStrength
 
   const daysSinceRef = Math.max(0, Math.floor((current.getTime() - referenceDate.getTime()) / MS_PER_DAY))
   if (daysSinceRef <= GRACE_PERIOD_DAYS) return retrievalStrength

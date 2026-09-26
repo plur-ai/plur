@@ -103,6 +103,8 @@ export function learnContextContent(context: LearnContext | undefined): Record<s
  */
 export const PLUR_BOOKKEEPING_KEYS: ReadonlySet<string> = new Set([
   '_outbox', '_routed', '_demoted', '_rescoped_from', '_expiry_extracted',
+  // Decision D1: the queued "retire on remote" entry (server id + target url/scope).
+  '_retireRemote',
 ])
 
 /** `structured_data` with PLUR's own bookkeeping removed, or undefined if nothing else is in it. */

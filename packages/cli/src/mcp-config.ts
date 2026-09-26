@@ -386,7 +386,10 @@ export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { en
     ...existing,
     command: recommended.command,
     args: recommended.args,
-    ...(recommended.env ? { env: recommended.env } : {}),
+    // env is MERGED too: a caller-supplied env (the Cursor leg passes
+    // PLUR_TOOL_PROFILE) sets its keys, but the user's other keys —
+    // PLUR_PATH above all — are theirs (formal Adapters #4, cli#3).
+    ...(recommended.env ? { env: { ...(existing.env ?? {}), ...recommended.env } } : {}),
   }
   config.mcpServers = servers as Record<string, unknown>
   return true
