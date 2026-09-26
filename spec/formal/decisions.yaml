@@ -1,0 +1,282 @@
+slug: plur-formal-verification-2026-09-23
+title: "PLUR formal verification \u2014 owner decisions"
+eyebrow: plur-ai/plur · formal verification · 2026-09-23
+lede: >-
+  Places where the Lean models, the replays and the code disagree on policy. Every row was
+  replayed against the real code; the clear bugs are already fixed on branch verify/formal-lean.
+  These are the calls only you can make. Nothing is applied until you save and say "apply the decisions".
+sources: [spec/formal/DECISIONS.md, spec/formal/findings/]
+sections:
+  - key: egress
+    prefix: E
+    label: What leaves the machine
+    hint: Scope routing, visibility and trust — the rules that decide whether an engram reaches a remote.
+    rows:
+      - area: "Auto-route"
+        title: "May an unscoped write auto-route into a remote-backed personal scope (user:*/agent:* with a url)?"
+        context: "#1115 refuses only shared scopes, but a url-backed user: scope also leaves the machine, and its covers can come from the server's /me. Raised independently by two clusters (WP-Q4, SI-Q3c)."
+        ref: findings/writepath.md, findings/scopeinject.md
+        suggested: "refuse"
+        options:
+          - {value: "keep", label: "Keep routing there", consequence: "Unscoped writes can still be pushed off-machine by a covers match."}
+          - {value: "refuse", label: "Refuse unless opted in", consequence: "New `allow_remote_auto_route` flag; same rule as #1115 for anything that leaves the machine."}
+          - {value: "me-only", label: "Only the user's own /me namespace", consequence: "Server-declared covers for other namespaces never route."}
+          - {value: "confirm", label: "Route but ask first", consequence: "Needs a confirmation round-trip in every client."}
+      - area: "Visibility"
+        title: "What does the default `private` visibility mean for a team-scope write?"
+        context: "The store write path pushes it; shared git sync excludes it; the MCP schema says private never leaves the machine. Explicit private is now fixed to stay local on both paths."
+        ref: findings/writepath.md
+        suggested: "reword"
+        options:
+          - {value: "keep", label: "Only explicit private stays local", consequence: "Current behaviour; the MCP description stays wrong."}
+          - {value: "honour-default", label: "Honour the default too", consequence: "Every team write would need visibility public."}
+          - {value: "public-default", label: "Default public for shared/remote scopes", consequence: "Changes the default engrams are written with."}
+          - {value: "reword", label: "Keep behaviour, reword the MCP description", consequence: "Docs match reality; sync/store difference stays."}
+      - area: "Trust"
+        title: "Should adapters adopt a `.plur.yaml` scope from an untrusted directory?"
+        context: "Replayed \u2014 the MCP server adopted a cloned repo's `scope group:acme/eng` as the session default and unscoped writes landed there. opencode already refuses; MCP, dsh and CLI hooks adopt."
+        ref: findings/adapters.md
+        suggested: "opencode"
+        options:
+          - {value: "opencode", label: "All follow opencode (ignore + warn)", consequence: "A cloned repo cannot steer writes until `plur trust <dir>`."}
+          - {value: "narrow-reads", label: "May narrow reads, never set a shared/remote write default", consequence: "Keeps project filtering, closes the write path."}
+          - {value: "keep", label: "Keep the split", consequence: "Three adapters adopt, one refuses."}
+      - area: "Scope family"
+        title: "Is every `project:*` scope local-only?"
+        context: "isLocalOnlyScope says yes; remote-recall dials project:plur/\u2026 scopes; a sub-scope under a url project store fails closed with a misleading error."
+        ref: findings/scopeinject.md
+        suggested: "config"
+        options:
+          - {value: "keep", label: "Keep", consequence: "Misleading error on url-backed project sub-scopes."}
+          - {value: "drop", label: "Drop project from the local family", consequence: "project scopes treated like other shared scopes everywhere."}
+          - {value: "config", label: "Decide by config", consequence: "Local only if no url store's scope contains it."}
+      - area: "Scope family"
+        title: "How should scope case be handled?"
+        context: "isSharedScope case-folds, the local family does not \u2014 `Project:x` is shared but not local-only. It fails closed."
+        ref: findings/scopeinject.md
+        suggested: "fold"
+        options:
+          - {value: "fold", label: "Case-fold the local family", consequence: "Smallest change; predicates agree."}
+          - {value: "lower", label: "Lower-case scopes at the API boundary", consequence: "Stored scopes normalised; touches existing data."}
+          - {value: "keep", label: "Keep", consequence: "Fails closed; the drift stays."}
+      - area: "Provenance"
+        title: "What should provenance `withheld` test?"
+        context: "It checks `scope === 'local'` only, so global/user:/agent: engrams report maySharePlainly true."
+        ref: findings/scopeinject.md
+        suggested: "leaves"
+        options:
+          - {value: "localonly", label: "isLocalOnly and not remote-backed", consequence: "Aligns with scope-target."}
+          - {value: "leaves", label: "The shared \"does not leave the machine\" predicate", consequence: "One predicate for guard and provenance."}
+          - {value: "keep", label: "Keep", consequence: "Summary over-states what may be shared."}
+      - area: "MCP sessions"
+        title: "Unscoped writes with several MCP sessions open and no session_id?"
+        context: "Replayed \u2014 the write takes the last-started session's scope. plur_session_scope already refuses this ambiguity."
+        ref: findings/adapters.md
+        suggested: "ignore"
+        options:
+          - {value: "keep", label: "Keep", consequence: "One session's writes can land in another's (possibly team) scope."}
+          - {value: "refuse", label: "Refuse", consequence: "Hookless clients break for up to 8h after one missed session_end."}
+          - {value: "ignore", label: "Ignore all session defaults", consequence: "Falls to the unscoped default; needs a core no-session sentinel."}
+
+  - key: delivery
+    prefix: D
+    label: Outbox and remote delivery
+    hint: What happens to queued pushes when the engram changes underneath them.
+    rows:
+      - area: "Outbox"
+        title: "A forget/rescope lands while the push is in flight \u2014 what about the remote copy?"
+        context: "The remote accepts the engram anyway. It is now kept locally and reported with its server id; the remote copy remains."
+        ref: findings/writepath.md
+        suggested: "queue-retire"
+        options:
+          - {value: "report", label: "Report only", consequence: "Current; the team store keeps a copy the user retired."}
+          - {value: "remove", label: "Remove it on the remote immediately", consequence: "learn() must keep the server id; fails if the remote is down."}
+          - {value: "queue-retire", label: "Queue a retire-on-remote outbox entry", consequence: "Durable and retried like any other push."}
+      - area: "Outbox"
+        title: "Two processes flushing the same store can both push"
+        context: "The fix is per process. Closing it fully needs a lease stored on the outbox row."
+        ref: findings/writepath.md
+        suggested: "accept"
+        options:
+          - {value: "accept", label: "Accept", consequence: "Rare duplicates remain possible across processes."}
+          - {value: "lease", label: "On-disk lease on outbox rows", consequence: "Persisted-format change."}
+      - area: "Outbox"
+        title: "Cross-scope recurrence on a row still queued for a team store"
+        context: "Recurrence widens the scope to global; the queued team delivery is now held back with a warning."
+        ref: findings/writepath.md
+        suggested: "no-widen"
+        options:
+          - {value: "hold", label: "Hold back with a warning", consequence: "Current; the team never gets it until someone rescopes."}
+          - {value: "no-widen", label: "Never widen a queued row", consequence: "Same rule as a remote-resident hit."}
+          - {value: "widen-cancel", label: "Widen and cancel team delivery", consequence: "Team loses the engram."}
+          - {value: "widen-deliver", label: "Widen locally, deliver under the original scope", consequence: "Local and remote copies disagree on scope."}
+      - area: "Outbox"
+        title: "updateEngram changes the scope of a queued row"
+        context: "Now held back at the flush with a warning."
+        ref: findings/writepath.md
+        suggested: "like-rescope"
+        options:
+          - {value: "hold", label: "Hold back with a warning", consequence: "Current."}
+          - {value: "like-rescope", label: "Behave like rescope", consequence: "Cancel for local-family scopes, retarget for a writable url store."}
+          - {value: "reject", label: "Reject scope changes in updateEngram", consequence: "Callers must use rescope; MCP update/promote paths change."}
+
+  - key: injection
+    prefix: I
+    label: Injection budget and telemetry
+    hint: How much memory reaches the prompt, and what usage data says.
+    rows:
+      - area: "Budget"
+        title: "What does `injection_budget` cover?"
+        context: "Replayed 823 tokens used against a 500 budget \u2014 consider (\u2264200) and spread (\u2264480) sit outside it."
+        ref: findings/scopeinject.md
+        suggested: "cap-sum"
+        options:
+          - {value: "cover-all", label: "Budget covers consider and spread", consequence: "Fewer directives at the same setting."}
+          - {value: "document", label: "Document it as directives+constraints", consequence: "Report that part against it; total can exceed."}
+          - {value: "cap-sum", label: "Cap the sum by shrinking consider/spread", consequence: "Directives keep priority; total never exceeds."}
+      - area: "Budget"
+        title: "renderMemoryBlock appends whole sections regardless of size"
+        context: "Replayed budget 499, output 5469 tokens. Must stay identical to claw."
+        ref: findings/scopeinject.md
+        suggested: "drop"
+        options:
+          - {value: "drop", label: "Drop sections that do not fit", consequence: "Simple; a big section disappears whole."}
+          - {value: "cut", label: "Cut per entry", consequence: "Partial sections; more code in two places."}
+          - {value: "keep", label: "Keep, fix the docstring", consequence: "Host budgets can still be exceeded."}
+      - area: "Telemetry"
+        title: "The miss floor 0.015 makes `low_score` unreachable"
+        context: "A lone weak match scores 1/61 \u2248 0.0164, above the floor, so it counts as a hit."
+        ref: findings/scopeinject.md
+        suggested: "move"
+        options:
+          - {value: "keep", label: "Keep", consequence: "low_score effectively off."}
+          - {value: "move", label: "Move it between 1/61 and 2/61", consequence: "A single-leg top hit counts as a weak match."}
+          - {value: "drop", label: "Drop low_score", consequence: "Only zero-result misses are reported."}
+      - area: "Telemetry"
+        title: "PGLite recalls report `topScore null` and every non-empty one counts as a miss"
+        context: "Pinned on purpose by telemetry-miss-signal.test.ts:60."
+        ref: findings/scopeinject.md
+        suggested: "rrf"
+        options:
+          - {value: "rrf", label: "Return an RRF score from _pgliteHybridRecall", consequence: "Same classification on both backends."}
+          - {value: "no-signal", label: "Null-with-results means no signal", consequence: "Changes the pinned test."}
+          - {value: "keep", label: "Keep", consequence: "Every PGLite recall ships a miss fingerprint."}
+      - area: "Telemetry"
+        title: "Miss-signal `domain` is sent verbatim"
+        context: "The #312 rationale for reducing scope to its kind applies to domain too."
+        ref: findings/scopeinject.md
+        suggested: "first"
+        options:
+          - {value: "keep", label: "Keep", consequence: "Private domain labels leave the machine (opt-in telemetry)."}
+          - {value: "first", label: "First segment only", consequence: "Enough for demand data."}
+          - {value: "omit", label: "Omit", consequence: "No topic signal."}
+      - area: "Decay"
+        title: "A strength voted down to 0 climbs back toward the 0.05 floor over time"
+        context: "Feedback floors at 0.0, decay floors at 0.05."
+        ref: findings/scopeinject.md
+        suggested: "above-floor"
+        options:
+          - {value: "above-floor", label: "Decay only from above the floor", consequence: "Rejected engrams stay rejected."}
+          - {value: "feedback-floor", label: "Raise feedback's floor to 0.05", consequence: "Minimum strength rises for everyone."}
+          - {value: "keep", label: "Keep", consequence: "Time slowly rehabilitates rejected engrams."}
+      - area: "Decay"
+        title: "`shouldInject` — exported, unused, matches scope by family prefix (against #383)"
+        ref: findings/scopeinject.md
+        context: "No src caller; a third-party caller would get project:b under project:a."
+        suggested: "delete"
+        options:
+          - {value: "delete", label: "Delete", consequence: "Breaking only for external importers."}
+          - {value: "rebuild", label: "Rebuild on isScopeWithin", consequence: "Keeps the export, correct rule."}
+          - {value: "deprecate", label: "Deprecate", consequence: "Warn now, remove later."}
+
+  - key: persistence
+    prefix: P
+    label: Persistence and packs
+    hint: Locks, backups and pack integrity.
+    rows:
+      - area: "Locks"
+        title: "A live lock holder on another host is stolen after 60 s; sync holds up to ~90 s"
+        context: "Replayed \u2014 stolen 57 ms after its mtime passed 61 s. The same-host race is fixed and proved."
+        ref: findings/persistence.md
+        suggested: "heartbeat"
+        options:
+          - {value: "heartbeat", label: "Holder re-touches its lock every threshold/3", consequence: "Local change, no format change."}
+          - {value: "raise", label: "Raise the stale threshold (e.g. 150 s)", consequence: "Crashed holders block longer."}
+          - {value: "unsupported", label: "Declare cross-host ~/.plur unsupported", consequence: "Document it."}
+      - area: "Backups"
+        title: "Daily backups stop forever after one legitimate >10% removal"
+        context: "Replayed \u2014 days 2\u201340 all refused as \"shrunk\". Only a success updates the baseline."
+        ref: findings/persistence.md
+        suggested: "last-written"
+        options:
+          - {value: "last-written", label: "Compare against the count PLUR last wrote", consequence: "Needs engrams.ts; legitimate shrinks re-baseline automatically."}
+          - {value: "stable-days", label: "Re-baseline after N stable days", consequence: "Gap of N days without backups."}
+          - {value: "accept-flag", label: "`plur backup --accept-shrink`", consequence: "Manual step; users won't know to run it."}
+          - {value: "history", label: "Re-baseline when history explains the drop", consequence: "Depends on history completeness."}
+      - area: "Backups"
+        title: "Unrecoverable list \u2014 count only engram_created events?"
+        context: "Non-engram ids are already filtered by shape. Full fix changes an invented event name in backup.test.ts."
+        ref: findings/persistence.md
+        suggested: "yes"
+        options:
+          - {value: "yes", label: "Only engram_created", consequence: "Exact; one test fixture changes."}
+          - {value: "keep", label: "Keep the id-shape filter", consequence: "Created-then-forgotten ids still listed."}
+      - area: "Packs"
+        title: "The pack integrity hash is not injective"
+        context: "Bytes moved across the SKILL.md/engrams.yaml boundary give the same sha256; a missing file hashes like an empty one. Defined by ENGRAM-STANDARD-v1 \u00a75.5."
+        ref: findings/persistence.md
+        suggested: "v2"
+        options:
+          - {value: "v2", label: "Versioned sha256:v2 over length-prefixed named parts", consequence: "Verify accepts both; spec change."}
+          - {value: "docs", label: "Keep the hash, correct docs and standard", consequence: "Not a content-addressable id."}
+          - {value: "v2-rebaseline", label: "v2 plus re-baseline installed packs", consequence: "One-time migration."}
+      - area: "Packs"
+        title: "What identifies a pack in the registry?"
+        context: "Replayed \u2014 an untouched pack reads modified, and uninstalling one leaves another unverified."
+        ref: findings/persistence.md
+        suggested: "dir"
+        options:
+          - {value: "dir", label: "Directory name (additive dir field)", consequence: "Legacy fallback to name."}
+          - {value: "manifest", label: "Manifest name, refuse a duplicate install", consequence: "Two sources with one name cannot coexist."}
+          - {value: "dir-warn", label: "Key by directory, warn on duplicate manifest name", consequence: "Like dir, noisier."}
+
+  - key: surface
+    prefix: S
+    label: CLI and tool surface
+    hint: Exit codes, coercion, timeouts and the fixes blocked only on file ownership.
+    rows:
+      - area: "CLI"
+        title: "`scopes register --json` exits 0 on a refused registration"
+        context: "Text mode exits 1. Changing it means updating scopes.test.ts:45."
+        ref: findings/adapters.md
+        suggested: "exit1"
+        options:
+          - {value: "exit1", label: "Exit 1 like text mode", consequence: "Scripts see the failure."}
+          - {value: "keep", label: "Keep", consequence: "Failure only in the JSON body."}
+      - area: "MCP"
+        title: "A bare string sent for engram_suggestions"
+        context: "Replayed \u2014 \"Use pnpm, not npm\" became two engrams, one of them \"not npm\". Pinned by server.test.ts:196."
+        ref: findings/adapters.md
+        suggested: "single"
+        options:
+          - {value: "split", label: "Comma-split", consequence: "Current; prohibitions get cut into fragments."}
+          - {value: "single", label: "Treat as one suggestion", consequence: "Changes the pinned test."}
+          - {value: "refuse", label: "Refuse with the #297 hint", consequence: "Clients must send an array."}
+      - area: "dsh"
+        title: "A dsh write exceeds its timeout"
+        context: "Replayed \u2014 the slot is released while the write keeps running (A start, B start, B end, A end)."
+        ref: findings/adapters.md
+        suggested: "hard-cap"
+        options:
+          - {value: "serialise", label: "Keep serialising", consequence: "One hung write wedges every later write."}
+          - {value: "release", label: "Release on timeout", consequence: "Current; overlap bounded by core's store lock."}
+          - {value: "hard-cap", label: "Wait up to a larger hard cap, then release", consequence: "Bounded wedge, rare overlap."}
+      - area: "Blocked fixes"
+        title: "Apply the three fixes blocked only on file ownership?"
+        context: "CLI `learn` ignores `--` and `--path=…` inside a statement creates a store there (learn.ts, plur.ts); doctor reports no hooks on Windows (doctor.ts:217); the Python client cannot send flag-like statements (bridge.py). Exact changes in findings/adapters.md."
+        ref: findings/adapters.md
+        suggested: "apply"
+        options:
+          - {value: "apply", label: "Apply all three", consequence: "Test first, as with the other fixes."}
+          - {value: "cli-only", label: "Only the CLI `--` fix", consequence: "Doctor and Python stay as they are."}
+          - {value: "defer", label: "Defer", consequence: "Leave for a later run."}

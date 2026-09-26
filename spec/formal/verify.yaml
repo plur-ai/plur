@@ -1,0 +1,57 @@
+# Which source files each Lean model describes. Read by formal_check.py.
+# `model` is relative to this directory, `covers` to the repository root.
+libraries: [PlurSpec]
+allowed_axioms: [propext, Classical.choice, Quot.sound]
+strict_drift: false   # true: a stale model fails CI instead of warning
+models:
+  - model: PlurSpec/WritePath.lean
+    covers:
+      - packages/core/src/session-scopes.ts
+      - packages/core/src/scope-routing.ts
+      - packages/core/src/index.ts
+      - packages/core/src/store/remote-store.ts
+  - model: PlurSpec/ScopeInject.lean
+    covers:
+      - packages/core/src/scope-util.ts
+      - packages/core/src/scope-target.ts
+      - packages/core/src/scope-routing.ts
+      - packages/core/src/inject.ts
+      - packages/core/src/memory-block.ts
+      - packages/core/src/telemetry-miss-signal.ts
+      - packages/core/src/learner.ts
+      - packages/core/src/decay.ts
+  - model: PlurSpec/Persistence.lean
+    covers:
+      - packages/core/src/engrams.ts
+      - packages/core/src/sync.ts
+      - packages/core/src/migrations/runner.ts
+      - packages/core/src/store/async-lock.ts
+      - packages/core/src/storage-postgres.ts
+      - packages/core/src/backup.ts
+      - packages/core/src/outbox-order.ts
+      - packages/core/src/learn-async.ts
+      - packages/core/src/packs.ts
+  - model: PlurSpec/Adapters.lean
+    covers:
+      - packages/python/plur_ai/client.py
+      - packages/python/plur_ai/bridge.py
+      - packages/cli/src/commands/hook-agy-pre-invocation.ts
+      - packages/cli/src/commands/hook-cursor-session-start.ts
+      - packages/cli/src/commands/hook-codex-inject.ts
+      - packages/cli/src/commands/hook-inject.ts
+      - packages/cli/src/commands/learn.ts
+      - packages/cli/src/commands/scopes.ts
+      - packages/cli/src/commands/doctor.ts
+      - packages/cli/src/plur.ts
+      - packages/dsh/src/workspace-scope.ts
+      - packages/mcp/src/tools.ts
+      - packages/cli/src/commands/init.ts
+      - packages/cli/src/commands/feedback.ts
+      - packages/cli/src/commands/forget.ts
+      - packages/cli/src/commands/init-remote.ts
+      - packages/cli/src/cursor-hooks.ts
+      - packages/cli/src/mcp-config.ts
+      - packages/dsh/src/guard.ts
+      - packages/dsh/src/tools.ts
+      - packages/dsh/src/learn.ts
+      - packages/hermes/plur_hermes/bridge.py
