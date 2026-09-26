@@ -115,8 +115,27 @@ def skill_md(manifest: dict, prose: str) -> str:
 
 
 def pack_integrity(skill_bytes: bytes, engram_bytes: bytes) -> str:
-    """§5.5: SHA-256 over bytes(SKILL.md) followed by bytes(engrams.yaml)."""
+    """§5.5 v1 (legacy): SHA-256 over bytes(SKILL.md) followed by bytes(engrams.yaml)."""
     return "sha256:" + hashlib.sha256(skill_bytes + engram_bytes).hexdigest()
+
+
+V2_PARTS = ("SKILL.md", "manifest.yaml", "engrams.yaml")
+
+
+def pack_integrity_v2(parts: dict[str, bytes]) -> str:
+    """§5.5 v2: SHA-256 over named, length-prefixed parts; an absent part is `-`.
+
+    part(n) = n 0x00 decimal(len) 0x00 bytes   when present
+            = n 0x00 "-" 0x00                  when absent
+    """
+    h = hashlib.sha256()
+    for name in V2_PARTS:
+        if name in parts:
+            h.update(name.encode("ascii") + b"\0" + str(len(parts[name])).encode("ascii") + b"\0")
+            h.update(parts[name])
+        else:
+            h.update(name.encode("ascii") + b"\0-\0")
+    return "sha256:v2:" + h.hexdigest()
 
 
 # --- vector content ----------------------------------------------------------
@@ -185,11 +204,18 @@ def write_pack(
     manifest_filename: str = "SKILL.md",
     extra_files: dict[str, str] | None = None,
     root: Path | None = None,
+    integrity_version: int = 1,
+    shift_boundary: int = 0,
 ) -> dict:
     """Write one vector. Returns its index entry.
 
     `integrity=True` writes the correct value, a string writes that value
     verbatim (for negative cases), and None writes no INTEGRITY file at all.
+    `integrity_version` picks which §5.5 form `integrity=True` writes: 1 (the
+    legacy `sha256:<hex>`, which every pre-v2 vector carries) or 2
+    (`sha256:v2:<hex>`). `shift_boundary=k` writes the correct value for the
+    pack as built, then moves the last k bytes of SKILL.md to the front of
+    engrams.yaml — which v1 cannot see and v2 must.
     """
     root = root or PACKS
     d = root / slug
@@ -208,17 +234,28 @@ def write_pack(
         manifest_text = skill_md(manifest, prose).split("---")[1].strip() + "\n"
     manifest_bytes = manifest_text.encode("utf-8")
 
+    # What the producer hashed: the pack as built, before any shift.
+    built_v2 = pack_integrity_v2({manifest_filename: manifest_bytes, "engrams.yaml": engram_bytes})
+
+    if shift_boundary:
+        assert manifest_filename == "SKILL.md" and 0 < shift_boundary <= len(manifest_bytes)
+        engram_bytes = manifest_bytes[-shift_boundary:] + engram_bytes
+        manifest_bytes = manifest_bytes[:-shift_boundary]
+
     (d / manifest_filename).write_bytes(manifest_bytes)
     (d / "engrams.yaml").write_bytes(engram_bytes)
 
-    # §5.5 hashes SKILL.md ‖ engrams.yaml. A pack shipping only manifest.yaml
-    # has no SKILL.md byte contribution, which is exactly what the spec says.
+    # §5.5 v1 hashes SKILL.md ‖ engrams.yaml. A pack shipping only manifest.yaml
+    # has no SKILL.md byte contribution, which is exactly what v1 says. v2 names
+    # every part, so a manifest.yaml IS covered.
     hashed_manifest = manifest_bytes if manifest_filename == "SKILL.md" else b""
     correct = pack_integrity(hashed_manifest, engram_bytes)
+    correct_v2 = pack_integrity_v2({manifest_filename: manifest_bytes, "engrams.yaml": engram_bytes})
 
     if integrity is True:
-        (d / "INTEGRITY").write_bytes((correct + "\n").encode("utf-8"))
-        shipped = correct
+        value = correct if integrity_version == 1 else built_v2
+        (d / "INTEGRITY").write_bytes((value + "\n").encode("utf-8"))
+        shipped = value
     elif integrity is None:
         shipped = None
     else:
@@ -234,6 +271,7 @@ def write_pack(
         "pack": slug,
         "engram_count": len(engrams),
         "computed_integrity": correct,
+        "computed_integrity_v2": correct_v2,
         "shipped_integrity": shipped,
     }
 
@@ -307,6 +345,16 @@ def build(root: Path) -> list[dict]:
         expect="load",
         integrity_status="ok",
         note="The ordinary case. Recomputing over raw bytes must reproduce the shipped value (§5.5).",
+    )
+
+    add(
+        write_pack("with-integrity-v2", base_manifest("with-integrity-v2"), BASE_ENGRAMS,
+                   integrity_version=2, root=root),
+        expect="load",
+        integrity_status="ok",
+        note="§5.5 v2: the shipped value is `sha256:v2:` over named, length-prefixed "
+             "parts, and recomputing over raw bytes must reproduce it. What every new "
+             "export writes.",
     )
 
     add(
@@ -458,6 +506,17 @@ def build(root: Path) -> list[dict]:
         note="§5.5: a receiver MUST treat a mismatch as a failed integrity check; "
              "§5.6.1 step 1: the install MUST abort unless the installer explicitly "
              "overrides it for this pack.",
+    )
+
+    add(
+        write_pack("boundary-shift-v2", base_manifest("boundary-shift-v2"), BASE_ENGRAMS,
+                   integrity_version=2, shift_boundary=1, root=root),
+        expect="reject",
+        integrity_status="modified",
+        note="§5.5 v2: SKILL.md's last byte moved to the front of engrams.yaml after the "
+             "value was computed. Both files still parse, and the v1 hash of the shipped "
+             "bytes is unchanged — so v1 cannot see this edit. v2 frames each part with "
+             "its name and length and MUST report it as modified.",
     )
 
     add(

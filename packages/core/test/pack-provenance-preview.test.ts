@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import * as yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
-import { installPack, previewPack, computePackHash, listPacks } from '../src/packs.js'
+import { installPack, previewPack, computePackHash, computePackIntegrity, listPacks } from '../src/packs.js'
 
 describe('previewing what a pack says about its origins', () => {
   let home: string
@@ -135,7 +135,7 @@ describe('previewing what a pack says about its origins', () => {
     const hash = readFileSync(join(out, 'INTEGRITY'), 'utf8').trim()
     const { verifyPackIntegrity } = await import('../src/packs.js')
     expect(verifyPackIntegrity(out).status).toBe('ok')
-    expect(hash).toMatch(/^sha256:[0-9a-f]{64}$/)
+    expect(hash).toMatch(/^sha256:v2:[0-9a-f]{64}$/) // §5.5 v2, what export writes
   })
 
   it('does not declare provenance on a pack built without it', async () => {
@@ -425,10 +425,10 @@ describe('provenance travels through install', () => {
     await exportOne()
     const result = await installPack(packs, out)
     const installed = join(packs, basename(out))
-    // The §5.5 hash covers SKILL.md and engrams.yaml only, so the records
-    // change nothing about it — and the value recorded is the value the
+    // The §5.5 hash covers the manifest and engrams.yaml only, so the records
+    // change nothing about it — and the value recorded is the (v2) value the
     // installed directory hashes to.
-    expect(result.registry.integrity).toBe(`sha256:${computePackHash(installed)}`)
+    expect(result.registry.integrity).toBe(computePackIntegrity(installed))
     const listed = listPacks(packs).find(p => p.name === 'demo-pack')!
     expect(listed.integrity_ok).toBe(true)
   })

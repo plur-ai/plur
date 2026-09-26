@@ -422,5 +422,29 @@ Use 'plur packs list' to see installed packs.`)
     return
   }
 
-  exit(1, `Unknown packs subcommand: "${subcommand}". Use: list, preview, install, uninstall, export`)
+  if (subcommand === 'migrate-integrity') {
+    // Re-baseline installed packs' registry integrity from v1 to sha256:v2:
+    // (ENGRAM-STANDARD-v1 §5.5). A DRY RUN unless --yes is given: the flag
+    // list is shared by every packs subcommand, and a mistyped flag must never
+    // turn a report into a write (#986).
+    const apply = args.includes('--yes')
+    const report = plur.migratePackIntegrity({ dryRun: !apply })
+    if (shouldOutputJson(flags)) {
+      outputJson(report)
+    } else {
+      for (const p of report.packs) {
+        outputText(`${p.dir}${p.name && p.name !== p.dir ? ` (${p.name})` : ''}: ${p.action}`)
+      }
+      outputText(report.dry_run
+        ? `Dry run: ${report.migrated} pack(s) would be re-baselined to sha256:v2:. Re-run with --yes to apply.`
+        : `${report.migrated} pack(s) re-baselined to sha256:v2:.`)
+      if (report.packs.some(p => p.action === 'skipped-modified')) {
+        outputText('Packs marked skipped-modified no longer match their recorded value and keep it — '
+          + 're-hashing them would hide the change. Reinstall them from a trusted source.')
+      }
+    }
+    return
+  }
+
+  exit(1, `Unknown packs subcommand: "${subcommand}". Use: list, preview, install, uninstall, export, migrate-integrity`)
 }

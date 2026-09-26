@@ -1,8 +1,8 @@
 # The Open Engram Standard
 
-**Version:** 1.7 (draft)
+**Version:** 1.8 (draft)
 **Status:** Working Draft
-**Date:** 2026-09-08
+**Date:** 2026-09-26
 **Editors:** PLUR.ai (plur-ai)
 **License:** This specification is licensed under CC-BY-4.0. Reference code is Apache-2.0.
 **Companion profiles:** [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md)
@@ -706,8 +706,8 @@ an integrity file.
 - A standalone **`manifest.yaml`** is **DEPRECATED**. The reference loader still
   reads a `manifest.yaml`-only pack (emitting a deprecation warning) and
   **auto-upgrades it to `SKILL.md` frontmatter on install**; new packs MUST be
-  published with a `SKILL.md`. `manifest.yaml` does not contribute to the
-  integrity hash (§5.5).
+  published with a `SKILL.md`. `manifest.yaml` is covered by the v2 integrity
+  value and not by the legacy v1 value (§5.5).
 - `engrams.yaml` is a §2.1 store document.
 - `INTEGRITY` is OPTIONAL on disk but RECOMMENDED for distribution; the
   authoritative integrity record at install time is the registry entry (§5.5).
@@ -715,7 +715,8 @@ an integrity file.
   where the pack and its engrams came from; its layout and contents are
   specified in §5.3 of the [provenance profile](./ENGRAM-PROVENANCE-PROFILE.md).
   These files are **not** covered by the §5.5 integrity hash, which is defined
-  over `SKILL.md` ‖ `engrams.yaml` only. A pack SHOULD declare their presence
+  over `SKILL.md`, `manifest.yaml` and `engrams.yaml` only (v1: `SKILL.md` ‖
+  `engrams.yaml`). A pack SHOULD declare their presence
   via `metadata.provenance` (§5.2) so a reader need not probe for the directory.
 
 ### 5.2 Manifest fields
@@ -810,30 +811,66 @@ would have failed the conformance vectors while believing itself conformant.)
 
 ### 5.5 Pack integrity — STABLE
 
-Pack integrity is a **SHA-256** over the pack's `SKILL.md` followed by its
-engrams file:
+Pack integrity is a **SHA-256** over the pack's hashed parts. There are two
+forms. **v2** is current; **v1** is legacy and remains valid to verify.
+
+**v2** (`sha256:v2:`) hashes each part as a name, a byte length and the bytes,
+in this fixed order — `SKILL.md`, `manifest.yaml`, `engrams.yaml`:
 
 ```
-H = SHA256( bytes(SKILL.md)  ||  bytes(engrams.yaml) )
+H2 = SHA256( part(SKILL.md) || part(manifest.yaml) || part(engrams.yaml) )
+
+part(n) = ASCII(n) || 0x00 || ASCII(decimal byte length) || 0x00 || bytes(n)   if n exists
+        = ASCII(n) || 0x00 || "-" || 0x00                                      if it does not
 ```
 
-- `SKILL.md` is REQUIRED (§5.1) and is always hashed; `engrams.yaml` bytes are
-  appended if present. A deprecated `manifest.yaml`, if any, does **not**
-  contribute to `H` (the reference auto-upgrades it to `SKILL.md` on install, so
-  the recorded integrity is over `SKILL.md` + `engrams.yaml`).
-- The hash is recorded as the string `sha256:<64-lowercase-hex>` — in the
-  `INTEGRITY` file (single line, trailing newline) and/or in the consumer's
-  install registry.
-- A receiver verifies by recomputing `H` over the received bytes and comparing
-  to the recorded `sha256:` value. Mismatch MUST be treated as a failed
-  integrity check.
+The length is the file's size in bytes, written in decimal ASCII digits with no
+sign, padding or leading zeros (`0` for an empty file). Because every part is
+named and length-prefixed, and an absent part is spelled differently from an
+empty one, the input to SHA-256 can be parsed back unambiguously: two packs with
+the same `H2` have byte-identical `SKILL.md`, `manifest.yaml` and `engrams.yaml`
+(up to SHA-256 collisions). `H2` is therefore usable as a content-addressable
+identifier for those parts.
 
-> **Implementation note.** The reference exposes a single §5.5 construction:
-> `computePackHash` (`packs.ts`, used for the registry/`INTEGRITY`) and
-> `computePackChecksum` (`trust.ts`, used for trust verification) compute the
-> identical hash — `computePackChecksum` delegates to `computePackHash` — so they
-> cannot diverge. Hashing is over **raw file bytes**, so producers and consumers
-> MUST NOT re-serialize before hashing.
+**v1** (`sha256:`, legacy) is the unframed concatenation:
+
+```
+H1 = SHA256( bytes(SKILL.md)  ||  bytes(engrams.yaml) )
+```
+
+v1 is **not injective**: bytes moved across the file boundary leave `H1`
+unchanged (so, for example, a trailing instruction in `SKILL.md` can move into
+`engrams.yaml` and still verify), a missing `SKILL.md` hashes the same as an
+empty one, and a deprecated `manifest.yaml` is not covered at all. These were
+found by the formal verification of the reference (plur-ai/plur#1228); v2
+exists to close them.
+
+- A producer SHOULD record v2. A producer that records v1 is conformant but
+  ships a value that cannot detect the edits above.
+- The value is recorded as the string `sha256:v2:<64-lowercase-hex>` (v2) or
+  `sha256:<64-lowercase-hex>` (v1) — in the `INTEGRITY` file (single line,
+  trailing newline) and/or in the consumer's install registry.
+- A receiver MUST accept both forms. It verifies by recomputing, over the
+  received bytes, **the form the recorded value is in** — `H2` for a
+  `sha256:v2:` value, `H1` for a `sha256:` value — and comparing. A mismatch,
+  or a recorded value in neither form, MUST be treated as a failed integrity
+  check. A receiver MUST NOT treat a v1 match as evidence against the v1
+  weaknesses above.
+- `SKILL.md` is REQUIRED (§5.1), so a conformant pack always has that part
+  present; the absent spelling exists so that a non-conformant pack cannot
+  collide with a conformant one.
+- A consumer MAY re-baseline a v1 value it recorded itself (its install
+  registry, §5.6.4) to v2, but only for a pack that still verifies under v1 at
+  that moment: re-hashing a pack that no longer matches would certify the
+  change. A shipped `INTEGRITY` value is the producer's and is never rewritten
+  by a consumer (§5.5.1).
+
+> **Implementation note.** The reference computes v2 with `computePackIntegrity`
+> and v1 with `computePackHash` (`packs.ts`); `packIntegrityMatches` dispatches on
+> the recorded form. Export and install record v2. `migratePackIntegrity`
+> (`plur packs migrate-integrity`, a dry run unless `--yes`) re-baselines v1
+> registry rows under the rule above. Hashing is over **raw file bytes**, so
+> producers and consumers MUST NOT re-serialize before hashing.
 
 #### 5.5.1 Two hashes, two questions
 
@@ -1012,7 +1049,7 @@ A registry entry MUST carry:
 | `name` | The installed pack's manifest `name`. Unique within a registry. |
 | `version` | The manifest `version` as shipped. REQUIRED — §5.7 cannot order without it. |
 | `installed_at` | RFC 3339 instant. |
-| `integrity_shipped` | The `sha256:` value the pack shipped, verbatim, or explicitly absent if it shipped none. This is what a later re-verification compares against (§5.5.1). |
+| `integrity_shipped` | The §5.5 value (`sha256:v2:` or legacy `sha256:`) the pack shipped, verbatim, or explicitly absent if it shipped none. This is what a later re-verification compares against (§5.5.1). |
 | `source` | Where the pack came from, in a form the consumer can act on — a path, a URL, or an explicit "no longer resolvable". REQUIRED, because §5.8 makes removal reversible only if it survives. |
 
 A registry entry SHOULD carry `integrity_installed` (§5.5.1), `creator`, the
@@ -1383,17 +1420,20 @@ Integrity (the payload is intact and unmodified) is **separate** from
 authenticity (who produced it). v1 delivers integrity; authenticity is §7.
 
 - **Hash:** SHA-256.
-- **Pack integrity:** §5.5 — `sha256:` over `SKILL.md` bytes ‖ `engrams.yaml`
-  bytes, recorded in `INTEGRITY` / registry.
+- **Pack integrity:** §5.5 — `sha256:v2:` over named, length-prefixed
+  `SKILL.md`, `manifest.yaml` and `engrams.yaml` (legacy `sha256:` over
+  `SKILL.md` ‖ `engrams.yaml` still verifies), recorded in `INTEGRITY` /
+  registry.
 - **Capsule integrity:** §6.4/§6.7 step 10 — `header.payload.sha256` over the
   payload bytes, checked on every read; plus the structural checks (magic,
   version, size, flag consistency, declared sizes).
 - A receiver MUST refuse to act on a pack or capsule whose recomputed hash does
   not match the recorded value.
 
-Content addressing: because the pack hash is deterministic over raw bytes, it
-doubles as a content-addressable identifier (and is the bridge to the Swarm
-anchor in §9).
+Content addressing: because the v2 pack hash is deterministic over raw bytes
+and its input is unambiguously framed (§5.5), it doubles as a content-addressable
+identifier for the pack's hashed parts (and is the bridge to the Swarm anchor in
+§9). The legacy v1 hash is deterministic but not injective, so it is not one.
 
 ---
 
@@ -1542,6 +1582,7 @@ they are holding and what changed. Version numbers follow §10.2.
 
 | Version | Date | Change class | What changed |
 |---|---|---|---|
+| 1.8 | 2026-09-26 | **Minor, but one behaviour break for consumers** | **§5.5 gains a v2 integrity value**, `sha256:v2:<hex>`: SHA-256 over `SKILL.md`, `manifest.yaml` and `engrams.yaml`, each framed as name, decimal byte length and bytes, with an absent part spelled `-`. The v1 value (`sha256:` over `SKILL.md` ‖ `engrams.yaml`) is not injective — bytes moved across the file boundary keep it, a missing `SKILL.md` equals an empty one, and a deprecated `manifest.yaml` was outside it — as the formal verification of the reference showed (plur-ai/plur#1228). Producers SHOULD record v2; receivers MUST accept both, recomputing in the recorded form. The break: a consumer that accepts only v1 now refuses packs from producers that follow the SHOULD, so a released consumer needs to add v2 before its producers switch. A consumer MAY re-baseline its own v1 registry values to v2, only for packs that still verify under v1. §5.1 and §8 follow. Conformance vectors `with-integrity-v2` and `boundary-shift-v2` added; every vector now declares `computed_integrity_v2`. |
 | 1.7 | 2026-09-08 | **Minor, but one behaviour break for consumers** | Review of plur-ai/plur#1044. **§5.6.1 step 2 is no longer overridable**: a pack that trips a secret scan, or ships an engram declaring `visibility: private`, MUST be refused with no per-install override — the 1.5 text had required an override the reference never offered, and fail-closed is the specified posture; an engram with no `visibility` at all is held as private and reported, not refused, because the default is the consumer's assignment rather than the producer's declaration. **§5.4** now says MUST where it said SHOULD for enforcing neutralization on import, matching §5.6.1 step 3 (plur-ai/plur#1092). **§5.6.5** requires the neutralization count *per field* and restates the four provenance counts in this document rather than importing them from an OPTIONAL profile. §5.6.1's ordering rationale now says what it governs — which verdict a consumer acts on, not the order it reads bytes in. §5.7.3 no longer calls §5.4's SHOULD a requirement. **§5.9** gains a row for the bundled hand-authored pack, which ships `pinned` and `locked` engrams. **§6.7 step 7** states the `SIGNED`/`header.signer` agreement a reader checks, mirroring §6.8 step 4. **Second review round.** The change class above was *Minor (additive)* and is corrected here: making the declared-private refusal unconditional refuses packs that installed before, which is a break for a consumer even though no field, constraint or default on engram *data* changed — a released consumer needs a migration note. **§5.6.3** no longer restates §5.6.5's reporting obligation with a weaker keyword; it said SHOULD where §5.6.5 says MUST, which is the same contradiction class as plur-ai/plur#1092 and left a consumer conformant by one section and not the other. **§5.6.1 step 2** now says what a recipient does when the producer cannot be reached: correcting the pack yourself moves its hash, so it installs by overriding step 1, and a consumer offering no such path has made this paragraph's remedy unreachable. **§5.9** gains the row it was missing for §5.6.5. |
 | 1.6 | 2026-08-28 | Minor (additive) | **§4.12.1 added**: `content_hash` detects corruption, not tampering. `content_hash` is stored in the same file as the statement `content_hash` covers, so anybody who edits the statement recomputes `content_hash` in the same write. The distinction was easy to lose because §4.7.1 makes `content_hash` the authority on whether an edit changed a claim — a reliable authority when the producer is the party being asked, and no defence at all against a party who does not want the change seen. §4.3's and §4.12's descriptions of `content_hash` now point at §4.12.1. Raised in the provenance-ladder design note. |
 | 1.5 | 2026-08-28 | Minor (additive) | Review corrections to 1.4, before it was ever merged. **§4.7.1 is scoped to a live store**, resolving a contradiction with §5.7: as written, a compliant producer could never emit the changed-statement carry-over that §5.7.3 was built around, and when it complied by minting a new id, §5.4 stripped the supersedes edge so the correction reached the recipient as an unlinked stranger. **§5.7.2 now keys correspondence on the `(id, content_hash)` pair** — in a pack an id is a stable *name*, so identity binds to the id and judgement binds to the hash. The rule reads "an **edit to `statement`** that moves the hash", and renormalization is explicitly not an edit: the normalizer is versioned and already on its second version, so the earlier phrasing would have turned a maintenance migration into thousands of spurious supersessions. The empty-normalization and punctuation blind spots are stated. §5.6.1 step 1 covers a **missing** `INTEGRITY` as a third outcome; step 2's secret refusal becomes **overridable**, since an unconditional refusal on a test this document does not define would permanently lock out a pack that legitimately teaches credential handling. §5.6.3 uses **write** authorization, not read — placing engrams is a write. §5.7.1 requires a consumer to assume SemVer, since it cannot discover a scheme documented where it cannot read. §5.8.1 states the floor for a consumer with no retired state. Corrected a factual error in §4.7.1's non-compliance table: the dedup paths **do** retain the previous statement, in the history log's `old_statement`. |

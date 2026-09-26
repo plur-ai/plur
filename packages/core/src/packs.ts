@@ -1276,8 +1276,8 @@ function _installPackDir(
   // Auto-upgrade a deprecated manifest.yaml pack to SKILL.md in the installed
   // copy (#325). manifest.yaml still LOADS (loadPack reads it with a deprecation
   // warning), but the managed copy is normalized to the canonical SKILL.md so
-  // the integrity hash below is computed over SKILL.md + engrams.yaml. Done
-  // before computePackHash so the recorded integrity reflects the upgrade.
+  // the integrity value below covers the SKILL.md that is actually installed.
+  // Done before computePackIntegrity so the recorded integrity reflects the upgrade.
   const destSkillMd = path.join(staging, 'SKILL.md')
   const destManifestYaml = path.join(staging, 'manifest.yaml')
   if (!fs.existsSync(destSkillMd) && fs.existsSync(destManifestYaml)) {
@@ -1318,7 +1318,7 @@ function _installPackDir(
   // Compute integrity over the STAGED, sanitized content — the bytes that are
   // about to become the pack. Hashing the live directory before the swap would
   // record the hash of the previous install.
-  const integrity = `sha256:${computePackHash(staging)}`
+  const integrity = computePackIntegrity(staging)
 
   // Make the staged content durable BEFORE it becomes the live pack (audit
   // 2026-08-03, finding 11). Every file was copied with plain writes and the
@@ -1557,18 +1557,21 @@ export function listPacks(packsDir: string): PackInfo[] {
 
     try {
       const pack = loadPack(packDir)
-      const currentIntegrity = `sha256:${computePackHash(packDir)}`
       const reg = registryMap.get(pack.manifest.name)
+      // Compared in the version the registry recorded: a v1 row from before
+      // `sha256:v2:` still verifies as it did (§5.5). The reported value is
+      // always v2, the current form.
+      const integrityOk = reg ? packIntegrityMatches(reg.integrity, packDir) : undefined
       result.push({
         name: pack.manifest.name,
         path: packDir,
         engram_count: pack.engrams.length,
         manifest: pack.manifest,
-        integrity: currentIntegrity,
+        integrity: computePackIntegrity(packDir),
         installed_at: reg?.installed_at,
         source: reg?.source,
-        integrity_ok: reg ? reg.integrity === currentIntegrity : undefined,
-        integrity_status: reg ? (reg.integrity === currentIntegrity ? 'ok' : 'modified') : 'unverified',
+        integrity_ok: integrityOk,
+        integrity_status: reg ? (integrityOk ? 'ok' : 'modified') : 'unverified',
       })
     } catch (manifestErr) {
       // Per-pack fallback: the manifest would not load, so report what can
@@ -2007,7 +2010,7 @@ export function exportPack(
   //
   // `metadata.provenance` is written BEFORE the integrity hash is computed, so
   // the declaration is inside the hash even though the records it points at are
-  // not (the §5.5 hash covers SKILL.md and engrams.yaml only). That is the most
+  // not (the §5.5 hash covers the manifest and engrams.yaml only). That is the most
   // a manifest can offer here: a reader learns the directory should be there
   // without probing, and learns it from bytes that cannot be altered without
   // breaking the pack's integrity value. It is still a producer's claim, so
@@ -2134,13 +2137,13 @@ export function exportPack(
   fs.writeFileSync(path.join(outputDir, 'engrams.yaml'), content)
 
   // Compute and write integrity hash
-  const integrity = computePackHash(outputDir)
-  fs.writeFileSync(path.join(outputDir, 'INTEGRITY'), `sha256:${integrity}\n`)
+  const integrity = computePackIntegrity(outputDir)
+  fs.writeFileSync(path.join(outputDir, 'INTEGRITY'), `${integrity}\n`)
 
   // Provenance (#972), written after the integrity hash so the pack record can
   // carry it.
   //
-  // The hash covers SKILL.md and engrams.yaml only, per the standard, so these
+  // The hash covers the manifest and engrams.yaml only, per the standard, so these
   // files are NOT covered by it. The dependency therefore runs the other way:
   // the record commits to the pack. Change the pack and the hash inside the
   // record stops matching.
@@ -2158,7 +2161,7 @@ export function exportPack(
         version: manifest.version,
         creator: manifest.creator,
         license: packLicense,
-        integrity: `sha256:${integrity}`,
+        integrity,
       },
       safeEngrams,
     )
@@ -2192,7 +2195,7 @@ export function exportPack(
     engram_count: safeEngrams.length,
     privacy: allPrivacy,
     match_terms: matchTerms,
-    integrity: `sha256:${integrity}`,
+    integrity,
     ...(shipsProvenance ? { provenance_files: provenanceFiles } : {}),
   }
 }
@@ -2232,19 +2235,22 @@ export interface IntegrityCheck {
  * together — nothing here is signed. Say that plainly wherever this is shown.
  */
 export function verifyPackIntegrity(packDir: string): IntegrityCheck {
-  const computed = `sha256:${computePackHash(packDir)}`
   const file = path.join(packDir, 'INTEGRITY')
 
   if (!fs.existsSync(file)) {
     return {
       status: 'absent',
-      computed,
+      computed: computePackIntegrity(packDir),
       note: 'This pack shipped no integrity value, so there was nothing to check it against.',
     }
   }
 
   const shipped = fs.readFileSync(file, 'utf8').trim()
-  if (shipped === computed) {
+  // Recompute in the version the pack shipped (§5.5): a v1 value from a pack
+  // built before `sha256:v2:` verifies exactly as it always did, and `computed`
+  // stays comparable with `shipped` when both are shown.
+  const computed = computePackIntegrityLike(shipped, packDir)
+  if (packIntegrityMatches(shipped, packDir)) {
     return {
       status: 'ok',
       shipped,
@@ -2265,15 +2271,17 @@ export function verifyPackIntegrity(packDir: string): IntegrityCheck {
 }
 
 /**
- * Compute SHA256 hash of pack contents per ENGRAM-STANDARD-v1.md §5.5:
- *   H = SHA256( bytes(SKILL.md) || bytes(engrams.yaml) )
- * Deterministic — same content always produces same hash; usable as a
- * content-addressable identifier (like a Swarm hash).
+ * The v1 pack hash (ENGRAM-STANDARD-v1.md §5.5, legacy form):
+ *   H1 = SHA256( bytes(SKILL.md) || bytes(engrams.yaml) )
+ * recorded as `sha256:<hex>`. Returns the bare hex.
  *
- * SKILL.md is the canonical pack manifest. `manifest.yaml` is deprecated (#325)
- * and does NOT contribute to the hash; installPack auto-upgrades a manifest.yaml
- * pack to SKILL.md before this is computed over the installed copy, so the
- * integrity hash always reflects SKILL.md + engrams.yaml.
+ * Kept so that every pack shipped and every registry row written before v2
+ * still verifies (`packIntegrityMatches`). Do NOT use it for new values: the
+ * concatenation is unframed, so it is not injective. Bytes moved across the
+ * file boundary keep the hash, a missing SKILL.md hashes like an empty one, and
+ * a deprecated `manifest.yaml` is not covered at all (formal verification run,
+ * spec/formal/findings/persistence.md candidate 10). New values are v2 —
+ * `computePackIntegrity`.
  */
 export function computePackHash(packDir: string): string {
   const hash = crypto.createHash('sha256')
@@ -2291,4 +2299,144 @@ export function computePackHash(packDir: string): string {
   }
 
   return hash.digest('hex')
+}
+
+/** The parts the v2 hash covers, in the order it covers them (§5.5). */
+export const PACK_INTEGRITY_V2_PARTS = ['SKILL.md', 'manifest.yaml', 'engrams.yaml'] as const
+
+/**
+ * The v2 pack integrity value (ENGRAM-STANDARD-v1.md §5.5), as the string it is
+ * recorded as: `sha256:v2:<64 lowercase hex>`.
+ *
+ *   H2 = SHA256( part(SKILL.md) || part(manifest.yaml) || part(engrams.yaml) )
+ *   part(n) = n || 0x00 || decimal(byte length) || 0x00 || bytes   if the file exists
+ *           = n || 0x00 || "-" || 0x00                              if it does not
+ *
+ * Every part is named and length-prefixed, and an absent part is spelled
+ * differently from an empty one, so the input can be parsed back unambiguously:
+ * two packs with the same value have byte-identical parts. That is what makes
+ * it usable as a content-addressable identifier for a pack's hashed parts,
+ * which v1 (`computePackHash`) was documented as and was not.
+ *
+ * `provenance/` and `INTEGRITY` are not covered, as in v1. Raw file bytes; never
+ * re-serialize before hashing.
+ */
+export function computePackIntegrity(packDir: string): string {
+  const hash = crypto.createHash('sha256')
+  for (const name of PACK_INTEGRITY_V2_PARTS) {
+    const p = path.join(packDir, name)
+    if (fs.existsSync(p)) {
+      const bytes = fs.readFileSync(p)
+      hash.update(`${name}\0${bytes.length}\0`)
+      hash.update(bytes)
+    } else {
+      hash.update(`${name}\0-\0`)
+    }
+  }
+  return `sha256:v2:${hash.digest('hex')}`
+}
+
+const INTEGRITY_V1_RE = /^sha256:[0-9a-f]{64}$/
+const INTEGRITY_V2_RE = /^sha256:v2:[0-9a-f]{64}$/
+
+/**
+ * What `packDir` hashes to, in the same version as `recorded` — so a shipped or
+ * recorded v1 value is compared against a v1 recomputation, and anything else
+ * (v2, or a value in no known format) against v2.
+ */
+export function computePackIntegrityLike(recorded: string, packDir: string): string {
+  return INTEGRITY_V1_RE.test(recorded) ? `sha256:${computePackHash(packDir)}` : computePackIntegrity(packDir)
+}
+
+/**
+ * Does `packDir` match a recorded integrity value? Accepts v1 (`sha256:<hex>`,
+ * legacy) and v2 (`sha256:v2:<hex>`); any other format never matches.
+ */
+export function packIntegrityMatches(recorded: string, packDir: string): boolean {
+  if (!INTEGRITY_V1_RE.test(recorded) && !INTEGRITY_V2_RE.test(recorded)) return false
+  return computePackIntegrityLike(recorded, packDir) === recorded
+}
+
+// --- Migration: v1 -> v2 registry baselines ---
+
+export type PackIntegrityMigrationAction =
+  /** v1 row, pack verifies clean under v1: re-baselined (or would be, on a dry run). */
+  | 'migrated'
+  /** The row already carries v2. Nothing to do. */
+  | 'already-v2'
+  /** v1 row, but the pack no longer matches it. Left as v1, so it keeps reporting `modified`. */
+  | 'skipped-modified'
+  /** No registry row for this pack. No baseline is invented. */
+  | 'skipped-no-entry'
+  /** The pack's manifest could not be read, so it cannot be matched to a row. */
+  | 'skipped-unreadable'
+  /** The row's value is in no known format. Left as it is. */
+  | 'skipped-unknown-format'
+
+export interface PackIntegrityMigrationReport {
+  dry_run: boolean
+  /** How many rows were (or, on a dry run, would be) re-baselined to v2. */
+  migrated: number
+  packs: Array<{
+    /** Directory name under the packs directory. */
+    dir: string
+    /** Manifest name, when it could be read. */
+    name?: string
+    action: PackIntegrityMigrationAction
+    from?: string
+    to?: string
+  }>
+}
+
+/**
+ * Re-baseline installed packs' registry integrity from v1 to v2 (§5.5).
+ *
+ * A row is rewritten ONLY when its pack still verifies clean under v1. A pack
+ * that no longer matches its v1 baseline keeps that baseline, so it goes on
+ * reporting `modified` — re-hashing it would bless the modification. Nothing
+ * else in the row changes, and a pack's shipped `INTEGRITY` file is never
+ * touched (it is the producer's value, §5.5.1).
+ *
+ * Idempotent: a second run finds every clean row already v2. With
+ * `dryRun: true` it reports what it would do and writes nothing. Runs under the
+ * registry lock, and writes the registry once, only if a row changed.
+ */
+export function migratePackIntegrity(
+  packsDir: string,
+  opts: { dryRun?: boolean } = {},
+): PackIntegrityMigrationReport {
+  const dryRun = opts.dryRun === true
+  const report: PackIntegrityMigrationReport = { dry_run: dryRun, migrated: 0, packs: [] }
+  if (!fs.existsSync(packsDir)) return report
+
+  withRegistryLock(packsDir, () => {
+    const entries = loadRegistry(packsDir)
+    let changed = false
+    for (const dir of fs.readdirSync(packsDir).sort()) {
+      const packDir = path.join(packsDir, dir)
+      if (!fs.statSync(packDir).isDirectory()) continue
+      let name: string
+      try { name = loadPack(packDir).manifest.name } catch {
+        report.packs.push({ dir, action: 'skipped-unreadable' })
+        continue
+      }
+      const row = entries.find(e => e.name === name)
+      if (!row) { report.packs.push({ dir, name, action: 'skipped-no-entry' }); continue }
+      if (INTEGRITY_V2_RE.test(row.integrity)) { report.packs.push({ dir, name, action: 'already-v2' }); continue }
+      if (!INTEGRITY_V1_RE.test(row.integrity)) {
+        report.packs.push({ dir, name, action: 'skipped-unknown-format', from: row.integrity })
+        continue
+      }
+      if (!packIntegrityMatches(row.integrity, packDir)) {
+        report.packs.push({ dir, name, action: 'skipped-modified', from: row.integrity })
+        continue
+      }
+      const to = computePackIntegrity(packDir)
+      report.packs.push({ dir, name, action: 'migrated', from: row.integrity, to })
+      report.migrated++
+      if (!dryRun) { row.integrity = to; changed = true }
+    }
+    if (changed) saveRegistry(packsDir, entries)
+  })
+  return report
 }

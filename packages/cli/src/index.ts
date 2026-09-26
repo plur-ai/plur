@@ -45,6 +45,7 @@ Commands:
   packs list              List installed packs
   packs install <source>  Install engram pack (--force: accept an integrity mismatch)
   packs export <name>     Export engrams as a pack
+  packs migrate-integrity Re-baseline installed packs to sha256:v2: (dry run; --yes applies)
   similarity-search <q>   Search by cosine similarity with scores
   promote <id>            Promote an engram to active
   rescope <id...> --to <scope>  Move engram(s) to another scope (#676)

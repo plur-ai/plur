@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import * as crypto from 'crypto'
-import { computePackHash, installPack } from '../src/packs.js'
+import { computePackHash, computePackIntegrity, installPack } from '../src/packs.js'
 import { loadPack } from '../src/engrams.js'
 
 /**
@@ -108,8 +108,9 @@ describe('pack SKILL.md policy + manifest.yaml deprecation (#325)', () => {
         expect(existsSync(join(dest, 'manifest.yaml'))).toBe(false)
         // The upgraded SKILL.md re-parses to the same manifest.
         expect(loadPack(dest).manifest.name).toBe('legacy-pack')
-        // Integrity recorded over SKILL.md + engrams.yaml.
-        expect(result.registry.integrity).toBe(`sha256:${computePackHash(dest)}`)
+        // Integrity recorded (v2) over the upgraded SKILL.md + engrams.yaml;
+        // manifest.yaml is gone, so its part is recorded as absent.
+        expect(result.registry.integrity).toBe(computePackIntegrity(dest))
       } finally {
         rmSync(source, { recursive: true, force: true })
       }

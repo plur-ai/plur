@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Pack integrity values are now `sha256:v2:`, and a v1 value still verifies
+
+**The v1 pack hash could not tell some different packs apart** (ENGRAM-STANDARD-v1
+§5.5; found by the formal verification run in #1228). It was
+`SHA256(SKILL.md ‖ engrams.yaml)` with nothing between the two files, so bytes
+moved across the boundary kept the same hash — a trailing line of SKILL.md could
+move into engrams.yaml and the pack still reported `ok`. A missing SKILL.md
+hashed the same as an empty one, and a deprecated `manifest.yaml` was not
+covered at all.
+
+**New packs carry `sha256:v2:<hex>`**: SHA-256 over `SKILL.md`, `manifest.yaml`
+and `engrams.yaml`, each framed as its name, its byte length and its bytes, with
+a missing file spelled differently from an empty one. Export writes it, install
+records it, and `plur packs list` reports it.
+
+**Nothing you already have breaks.** A pack that shipped a v1 `INTEGRITY` value,
+and a registry row written by an earlier install, are checked in the form they
+were recorded in, exactly as before.
+
+**To move installed packs to v2**, run `plur packs migrate-integrity`. It is a
+dry run until you add `--yes`. It re-baselines a pack only if the pack still
+matches its v1 value, so it never blesses a pack that has been changed since it
+was installed. Those packs keep their v1 value and keep reporting `modified`.
+Running it twice changes nothing the second time. It never touches a pack's
+shipped `INTEGRITY` file.
+
+The standard moves to 1.8. Producers SHOULD write v2, and receivers MUST accept
+both forms. A consumer that only understands v1 will refuse v2 packs, so it
+needs updating before its producers switch. Two conformance vectors were added
+(`with-integrity-v2`, `boundary-shift-v2`), and every vector now declares its v2
+value as well.
+
 ### An unscoped write can no longer land in a team store
 
 **If you wrote an engram without a scope, it could be auto-routed into a shared

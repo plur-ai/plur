@@ -879,7 +879,7 @@ export interface PackProvenanceInput {
  * equal if one is direct statements from a named expert and the other is machine
  * guesses from an unknown source.
  *
- * On integrity: the pack's own hash covers `SKILL.md` and `engrams.yaml` only,
+ * On integrity: the pack's own hash covers the manifest and `engrams.yaml` only,
  * per the standard. A provenance file added to the pack is therefore NOT covered
  * by it. So the dependency runs the other way — this record carries the pack's
  * hash, and commits to the pack rather than the pack committing to it. Change
