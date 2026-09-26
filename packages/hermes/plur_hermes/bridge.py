@@ -153,7 +153,7 @@ class PlurLockError(PlurBridgeError):
     pass
 
 
-def _run_in_process_group(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
+def _run_in_process_group(cmd: list[str], timeout: int, input: str | None = None) -> subprocess.CompletedProcess:
     """subprocess.run(timeout=), but killing the whole process group.
 
     subprocess.run's timeout path calls Popen.kill() — SIGKILL to the DIRECT
@@ -174,15 +174,19 @@ def _run_in_process_group(cmd: list[str], timeout: int) -> subprocess.CompletedP
     Raises subprocess.TimeoutExpired exactly as subprocess.run would, so the
     retry layers above are unchanged.
     """
+    # `input` (formal Adapters #7): a statement that must not travel in argv
+    # is written to the child's stdin; `plur learn` reads it there when no
+    # positional statement is given. Without it, stdin stays inherited.
     with subprocess.Popen(
         cmd,
+        stdin=subprocess.PIPE if input is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
     ) as proc:
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(input=input, timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill_process_group(proc)
             # Reap, then re-raise so call()'s outer retry sees a normal timeout.
@@ -294,7 +298,8 @@ class PlurBridge:
         raise PlurNotFoundError(_NOT_FOUND_MSG)
 
     def call(self, command: str, args: list[str] | None = None,
-             timeout: int | None = None, retries: int = _DEFAULT_RETRIES) -> dict[str, Any]:
+             timeout: int | None = None, retries: int = _DEFAULT_RETRIES,
+             stdin: str | None = None) -> dict[str, Any]:
         binary = self._find_binary()
         args = args or []
         effective_timeout = timeout if timeout is not None else self._timeout
@@ -317,7 +322,7 @@ class PlurBridge:
         # Both honor `_retry_enabled` (PLUR_BRIDGE_RETRY=false disables everything).
         for timeout_attempt in range(effective_retries + 1):
             try:
-                return self._call_with_lock_retry(cmd, command, effective_timeout)
+                return self._call_with_lock_retry(cmd, command, effective_timeout, stdin)
             except subprocess.TimeoutExpired:
                 if timeout_attempt < effective_retries:
                     delay = _RETRY_DELAYS[min(timeout_attempt, len(_RETRY_DELAYS) - 1)]
@@ -335,7 +340,8 @@ class PlurBridge:
             except FileNotFoundError:
                 raise PlurNotFoundError(_NOT_FOUND_MSG)
 
-    def _call_with_lock_retry(self, cmd: list[str], command: str, timeout: int) -> dict[str, Any]:
+    def _call_with_lock_retry(self, cmd: list[str], command: str, timeout: int,
+                              stdin: str | None = None) -> dict[str, Any]:
         """Inner retry layer — handles PlurLockError (lock contention) with
         fast jittered backoff. Propagates TimeoutExpired and FileNotFoundError
         so the outer layer in call() can handle them.
@@ -344,7 +350,7 @@ class PlurBridge:
         """
         # First attempt — no delay, no log.
         try:
-            return self._invoke_cli(cmd, command, timeout)
+            return self._invoke_cli(cmd, command, timeout, stdin)
         except PlurLockError as e:
             if not self._retry_enabled:
                 raise
@@ -360,7 +366,7 @@ class PlurBridge:
             )
             time.sleep(delay)
             try:
-                result = self._invoke_cli(cmd, command, timeout)
+                result = self._invoke_cli(cmd, command, timeout, stdin)
                 logger.info("plur %s: succeeded on retry #%d", command, attempt)
                 return result
             except PlurLockError as e:
@@ -370,14 +376,16 @@ class PlurBridge:
         # above (not behind an assert so it remains valid under `python -O`).
         raise last_lock_error
 
-    def _invoke_cli(self, cmd: list[str], command: str, timeout: int) -> dict[str, Any]:
+    def _invoke_cli(self, cmd: list[str], command: str, timeout: int,
+                    stdin: str | None = None) -> dict[str, Any]:
         """Single CLI invocation. Returns the parsed response dict on success.
 
         Raises PlurLockError on lock contention (caught by _call_with_lock_retry).
         Lets subprocess.TimeoutExpired and FileNotFoundError propagate (caught
         by call()'s outer layer). All other CLI failures raise PlurBridgeError.
         """
-        result = _run_in_process_group(cmd, timeout)
+        result = (_run_in_process_group(cmd, timeout, input=stdin) if stdin is not None
+                  else _run_in_process_group(cmd, timeout))
 
         if result.returncode == 2:
             return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}
@@ -426,7 +434,15 @@ class PlurBridge:
         # Hard-coding --scope global here would bypass auto-route-to-team and
         # opt Hermes out of the 0.10.0 routing behavior. An explicit scope is
         # honored as-is.
-        args = [statement, "--type", type]
+        # A statement is data, not argv (formal Adapters #7). The CLI reads a
+        # leading `--name=value` token — or an exact flag such as `--json` —
+        # as a FLAG, and `plur learn` does not honour `--`, so a statement
+        # like "--dry-run=true is required" was refused ("Unrecognised
+        # flag") and "--path=/x …" re-pointed the store. When the statement
+        # could be read as a flag it goes on stdin, which `plur learn` reads
+        # when no positional is given; every other statement stays in argv.
+        via_stdin = statement.lstrip().startswith("-")
+        args = ([] if via_stdin else [statement]) + ["--type", type]
         if scope is not None:
             args.extend(["--scope", scope])
         if domain:
@@ -447,7 +463,15 @@ class PlurBridge:
             args.extend(["--abstract", abstract])
         if derived_from:
             args.extend(["--derived-from", derived_from])
-        result = self.call("learn", args)
+        result = self.call("learn", args, stdin=statement if via_stdin else None)
+        if result == _SAFE_RESPONSE:
+            # call() collapses an exhausted timeout into the read-path safe
+            # fallback. For a WRITE that reads as an empty success; say what
+            # happened instead — the CLI was killed, so whether the engram
+            # landed is unknown (formal Adapters #7).
+            return {**result, "timed_out": True,
+                    "warning": "plur learn timed out; it is unknown whether the engram was stored — "
+                               "recall it before re-learning."}
         if result.get("id"):
             self._cache_put(needle, {
                 "id": result["id"],

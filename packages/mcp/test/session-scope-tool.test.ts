@@ -237,6 +237,11 @@ describe('plur_session_scope — remote routing and dialing (#243 × #778)', () 
     configureStores([
       { url: 'https://enterprise.example.com/sse', token: 'test_token', scope: 'group:plur/eng', shared: true, readonly: false },
     ])
+    // Decision E7 (2026-09-26): an id-less write takes a session default only
+    // when exactly ONE session is open; with none it uses no session default.
+    // "Mid-session" means a session is open, so open one.
+    _resetSessionTelemetry()
+    await callTool('plur_session_start', { task: 'enterprise work' })
 
     const set = await callTool('plur_session_scope', { op: 'set', scope: 'group:plur/eng' })
     // Remote-backed shared scope → the warning names the store it routes to.

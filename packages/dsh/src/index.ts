@@ -28,13 +28,13 @@ import { registerCapture } from './capture.js'
 import { registerCommands } from './commands.js'
 import { Config } from './config.js'
 import { createCounters } from './counters.js'
-import { createWriteQueue, guard } from './guard.js'
+import { createWriteQueue, guard, WRITE_HARD_CAP_MS } from './guard.js'
 import { registerLearning } from './learn.js'
 import { createMemoryCache, renderBlock } from './memory-section.js'
 import { createRefreshPolicy } from './refresh.js'
 import { createScopeResolver, readScope } from './scope.js'
 import { recallQueryFrom, type LogEvent } from './session-log.js'
-import { readWorkspaceScope } from './workspace-scope.js'
+import { trustedWorkspaceScope } from './workspace-scope.js'
 import { registerSkills } from './skills.js'
 import { createEngine } from './engine.js'
 import { createViewer } from './viewer.js'
@@ -113,7 +113,14 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   // The REAL workspace reader, not a stub: without it every session on a
   // multi-session host collapses onto the configured default scope, ignoring
   // each workspace's own .plur.yaml.
-  const scopes = createScopeResolver(config, readWorkspaceScope)
+  // Decision E3: a workspace scope is adopted only from a `plur trust`ed
+  // directory, and `scope: global` never (see workspace-scope.ts).
+  const trusts = async (dir: string): Promise<boolean> => {
+    const p = plur as PlurClient & { trusts?: (d: string) => Promise<boolean> }
+    if (typeof p.trusts === 'function') return p.trusts(dir)
+    return p.isDirectoryTrusted?.(dir) === true
+  }
+  const scopes = createScopeResolver(config, trustedWorkspaceScope(trusts, msg => console.warn(msg)))
   const live = new Map<string, AgentState>()
   // ONE queue for the whole plugin's ENGRAM WRITES — learn, capture, and the
   // tools. Previously learn.ts and capture.ts each made their own and the
@@ -127,7 +134,21 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   // recall behind the previous one, which is the opposite of keeping recall
   // off the turn path. Correctness is core's `_withStoreLock`; this queue is
   // about not interleaving OUR writes.
-  const queue = createWriteQueue()
+  //
+  // A write keeps its slot past the soft `timeoutMs` (a tool answers
+  // UNAVAILABLE then, the write goes on) until it settles or the hard cap
+  // elapses; then the queue moves on and says so (decision S3, guard.ts
+  // WRITE_HARD_CAP_MS).
+  const queue = createWriteQueue({
+    hardCapMs: Math.max(WRITE_HARD_CAP_MS, config.timeoutMs),
+    onRelease: (ms) => {
+      counters.bump('errors_swallowed')
+      console.warn(
+        `[plur] a memory write was still running after ${ms}ms; the write queue moved on without it. ` +
+        'Later writes may now overlap it (core\'s store lock still guards the file).',
+      )
+    },
+  })
   const onError = () => counters.bump('errors_swallowed')
 
   /**

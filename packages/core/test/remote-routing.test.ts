@@ -148,6 +148,14 @@ describe('learn() — remote routing (issue #25)', () => {
       // (#1115) and would never reach the wire. The distinction `scope_source`
       // exists to draw is "a machine chose this", which is true here.
       mockSuccessfulAppend()
+      // Decision E1 "me-only" (2026-09-26): a url-backed personal scope is an
+      // auto-route target only when `/me` says it is the user's own namespace,
+      // so the remote must have answered `/me` for this token first.
+      const append = fetchMock.getMockImplementation()!
+      fetchMock.mockImplementation((async (url: string, init?: { method?: string }) =>
+        String(url).endsWith('/me')
+          ? { ok: true, status: 200, json: async () => ({ username: 'plur-me', org_id: '', role: 'developer', scopes: [] }), text: async () => '' } as Response
+          : append(url, init)) as any)
       writeStoresConfig(primaryDir, [{
         url: 'https://plur.example.com/sse',
         token: 'plur_sk_test',
@@ -156,6 +164,7 @@ describe('learn() — remote routing (issue #25)', () => {
         covers: ['acme.engineering'],
       }])
       const plur = new Plur({ path: primaryDir })
+      await plur.discoverRemoteScopes()
       const e = await plur.learnRouted('the staging deploy runs at 09:00', {
         domain: 'acme.engineering.deploy', type: 'behavioral',
       })

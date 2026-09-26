@@ -108,13 +108,23 @@ function parseArgs(args: string[]): ParsedArgs | { error: string } {
  *     OR is one of the block-scalar markers, regardless of trailing
  *     whitespace.
  */
+const REMOTE_HEADER = [
+  '# --- PLUR Enterprise remote (opt-in for this project) ---',
+  '# remote_token is sensitive — keep .plur.yaml in .gitignore.',
+]
+
 function stripRemoteKeys(content: string): string {
   const lines = content.split('\n')
   const out: string[] = []
   let skippingList = false
+  // Top-level keys only (formal Adapters #8b): a `remote_url:` nested under
+  // some other key is the user's, not ours — matching the TRIMMED line
+  // deleted it. The header comments buildConfigBody writes are ours too, and
+  // must go with the keys or every re-run appends another copy of them.
   const REMOTE_KEY = /^remote_(url|token|scopes)\s*:(.*)$/
   for (const line of lines) {
     const trimmed = line.trim()
+    if (REMOTE_HEADER.includes(line.trimEnd())) continue
     if (skippingList) {
       // Inside a previous remote_scopes list — skip dash items AND
       // intervening blank lines. Only break out when a non-dash
@@ -122,7 +132,7 @@ function stripRemoteKeys(content: string): string {
       if (trimmed === '' || trimmed.startsWith('-')) continue
       skippingList = false
     }
-    const m = trimmed.match(REMOTE_KEY)
+    const m = line.match(REMOTE_KEY)
     if (m) {
       const key = m[1]
       const rest = m[2].trim()
@@ -148,8 +158,7 @@ function buildConfigBody(existing: string, url: string, token: string, scopes?: 
   const stripped = stripRemoteKeys(existing)
   const sep = stripped.length > 0 && !stripped.endsWith('\n') ? '\n\n' : (stripped.length > 0 ? '\n' : '')
   const block: string[] = []
-  block.push('# --- PLUR Enterprise remote (opt-in for this project) ---')
-  block.push('# remote_token is sensitive — keep .plur.yaml in .gitignore.')
+  block.push(...REMOTE_HEADER)
   block.push(`remote_url: ${url}`)
   block.push(`remote_token: ${token}`)
   if (scopes && scopes.length > 0) {
@@ -241,15 +250,22 @@ interface ReadConfig {
 }
 function readRemoteFromConfig(path: string): ReadConfig {
   if (!existsSync(path)) return {}
-  const content = readFileSync(path, 'utf8')
+  return readRemoteFromContent(readFileSync(path, 'utf8'))
+}
+
+function readRemoteFromContent(content: string): ReadConfig {
+  // Balanced quotes are stripped the way core's project-config does
+  // (unquoteYamlValue) — otherwise `remote_url: "https://…"` was probed
+  // WITH its quotes (formal Adapters #8b).
+  const unquote = (v: string) => v.replace(/^(['"])(.*)\1$/, '$2')
   const out: ReadConfig = {}
   for (const line of content.split('\n')) {
     const trimmed = line.trim()
     if (trimmed.startsWith('#') || !trimmed) continue
     const m = trimmed.match(/^(remote_url|remote_token)\s*:\s*(.+)$/)
     if (m) {
-      if (m[1] === 'remote_url') out.url = m[2].trim()
-      if (m[1] === 'remote_token') out.token = m[2].trim()
+      if (m[1] === 'remote_url') out.url = unquote(m[2].trim())
+      if (m[1] === 'remote_token') out.token = unquote(m[2].trim())
     }
   }
   return out
@@ -445,3 +461,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo(`  - Consider moving the token to an env var if your project ships with`, flags)
   outputInfo(`    others (future: env-var substitution in .plur.yaml).`, flags)
 }
+
+/** Test seams (formal Adapters #8b). */
+export { buildConfigBody as _buildConfigBody, readRemoteFromContent as _readRemoteFromContent }

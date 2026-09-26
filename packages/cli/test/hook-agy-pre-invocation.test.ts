@@ -46,7 +46,10 @@ vi.mock('../src/lib/codex-hook-io.js', async (importOriginal) => {
 
 vi.mock('../src/plur.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/plur.js')>()
-  return { ...actual, createPlur: () => ({}) as never }
+  // The workspace directory is trusted: since decision E3 (2026-09-26) a
+  // `.plur.yaml` scope is adopted only from a `plur trust`ed directory, and
+  // this suite is about WHICH directory is read, not about trust.
+  return { ...actual, createPlur: () => ({ isDirectoryTrusted: () => true }) as never }
 })
 
 vi.mock('@plur-ai/core', async (importOriginal) => {

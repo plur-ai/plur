@@ -1,4 +1,4 @@
-import { createPlur, type GlobalFlags } from '../plur.js'
+import { createPlur, trustedProjectScope, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import {
   readStdinJson,
@@ -127,7 +127,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // hooks.json directory, where the `.plur.yaml` walk can never succeed.
     // The helper carries #1196's trust gate with the capability.
     const projectRemote = resolveProjectRemote(plur, workspace ?? process.cwd())
-    const projectConfig = projectRemote.config
+    // Decision E3: scope from an untrusted directory is ignored, and said.
+    const projectConfig = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
     const injectOpts = {
       budget: isFirst ? 3000 : 2000,
       ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
@@ -145,8 +146,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         ? `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
           (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
         : `[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]`
-      const refusal = projectRemote.refusedFrom && isFirst
-        ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
+      const refusal = isFirst
+        ? [
+          projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom) : null,
+          projectConfig.notice ?? null,
+        ].filter(Boolean).map(n => `${n}\n\n`).join('')
         : ''
       // Only on the FIRST turn: the refusal persists until the user acts on it,
       // so repeating it every turn would be noise rather than information.

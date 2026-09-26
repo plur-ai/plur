@@ -688,24 +688,53 @@ function settingsRefusal(path: string): string {
   return `skipped — ${path} exists but is not a JSON object; writing would discard your other settings (permissions, hooks, servers). Fix it by hand, then re-run \`plur init\``
 }
 
+/**
+ * A hook SPEC is PLUR's only if it BOTH names the PLUR binary AND runs one of
+ * its `hook-*` subcommands — the two-part test codex-hooks.ts and
+ * cursor-hooks.ts already use (formal Adapters #3). Three defects this closes:
+ *
+ * - the Windows shim is `C:\…\.plur\bin\plur-hook.cmd`; matching the literal
+ *   `.plur/bin/plur-hook` missed it, so every re-run of `plur init` on Windows
+ *   appended a second copy of every hook;
+ * - a binary-only match claimed a user's own `npx @plur-ai/cli learn …` hook
+ *   and deleted it;
+ * - a command-less hook (`type: "prompt"`) made `.includes` throw, aborting
+ *   init with the settings file untouched.
+ */
+function isPlurHookSpec(h: { command?: unknown } | null | undefined): boolean {
+  const raw = h?.command
+  if (typeof raw !== 'string') return false
+  const cmd = raw.replace(/\\/g, '/')
+  const isPlurBinary = cmd.includes('@plur-ai/cli') || cmd.includes('.plur/bin/plur-hook')
+  return isPlurBinary && /(^|\s)hook-[a-z][a-z0-9-]*(\s|$)/.test(cmd)
+}
+
 function isPlurHook(entry: HookEntry): boolean {
-  return (entry.hooks ?? []).some((h) =>
-    h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'),
-  )
+  return (entry?.hooks ?? []).some(isPlurHookSpec)
 }
 
 function hasPlurHooks(settings: Settings): boolean {
   const hooks = settings.hooks ?? {}
   for (const entries of Object.values(hooks)) {
-    if (entries.some(isPlurHook)) return true
+    if ((entries ?? []).some(isPlurHook)) return true
   }
   return false
 }
 
+/**
+ * Drop PLUR's own specs, per SPEC: an entry that also carries a user's spec
+ * survives with only the user's specs (it used to be dropped whole). An entry
+ * with no PLUR spec is kept exactly as it was.
+ */
 function stripPlurHooks(settings: Settings): Settings {
   const hooks = { ...(settings.hooks ?? {}) }
   for (const [event, entries] of Object.entries(hooks)) {
-    const kept = entries.filter((e) => !isPlurHook(e))
+    const kept: HookEntry[] = []
+    for (const e of entries ?? []) {
+      if (!isPlurHook(e)) { kept.push(e); continue }
+      const specs = (e.hooks ?? []).filter((h) => !isPlurHookSpec(h))
+      if (specs.length > 0) kept.push({ ...e, hooks: specs })
+    }
     if (kept.length > 0) {
       hooks[event] = kept
     } else {
@@ -1592,3 +1621,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // Never fail `init` over this. Staying unidentified is a working state.
   }
 }
+
+/** Test seams (formal Adapters #3). */
+export { mergeHooks as _mergeClaudeHooks }
+export { isPlurHookSpec as _isPlurClaudeHookSpec }

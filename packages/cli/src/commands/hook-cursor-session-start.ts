@@ -1,4 +1,4 @@
-import { createPlur, type GlobalFlags } from '../plur.js'
+import { createPlur, trustedProjectScope, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
@@ -69,7 +69,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   try {
     const plur = createPlur(flags)
     const projectRemote = resolveProjectRemote(plur)
-    const projectConfig = projectRemote.config
+    // Decision E3: scope from an untrusted directory is ignored, and said.
+    const projectConfig = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
     const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
     // NOT hybrid, and therefore NOT remote — see the BM25-only note in this
@@ -94,9 +95,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // A refused .plur.yaml is still worth saying: the user's scope routing is
     // unaffected, but they should know the remote settings were not honoured —
     // for the trust reason here, and for #1200 regardless.
-    const refusal = projectRemote.refusedFrom
-      ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
-      : ''
+    const refusal = [
+      projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom) : null,
+      projectConfig.notice ?? null,
+    ].filter(Boolean).map(n => `${n}\n\n`).join('')
     fullContext = refusal + (context ? `${header}\n\n${context}` : header)
   } catch (err: unknown) {
     // Audit fix (evaluator review — user lens, iteration 4, 2026-07-09):

@@ -138,6 +138,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
       claimClass = v as typeof claimClass; i++
     }
+    // `--` ends flag parsing: the next token is the statement, verbatim, even
+    // when it starts with `-` (decision S4). Before, `--` itself was stored.
+    else if (arg === '--') {
+      if (!statement && i + 1 < args.length) statement = args[i + 1]
+      break
+    }
     else if (!statement) { statement = arg; i++ }
     else { i++ }
   }
@@ -153,7 +159,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>] ' +
       '[--source <s>] [--rationale <r>] [--tags a,b,c] [--visibility private|public|template] ' +
       '[--abstract <id>] [--derived-from <id>] [--knowledge-anchors <json>] [--dual-coding <json>] ' +
-      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>]\n\n' +
+      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>]\n' +
+      '       plur learn [flags] -- <statement>   (a statement that starts with "-")\n\n' +
       '  --license      which licence governs reuse of this memory, e.g. cc-by-4.0.\n' +
       '                 Leave it out and a default applies that nobody chose, and\n' +
       '                 a provenance record will say so.\n' +

@@ -402,7 +402,10 @@ export function rankScopes(
  *
  * A refused shared candidate does not stop the search. The next eligible
  * non-shared candidate still wins, so a user whose personal `user:*` scope
- * declares `covers` keeps the routing they had. `refusedShared` reports the
+ * declares `covers` keeps the routing they had — unless that personal scope is
+ * backed by a URL store and is not the user's own `/me` namespace (decision
+ * E1, `refuseScope`): server-declared covers for another namespace never
+ * route, and it is refused and reported like a shared scope. `refusedShared` reports the
  * highest-ranked shared candidate that was passed over either way, so the
  * caller can say what it declined to do rather than silently doing less.
  */
@@ -448,6 +451,15 @@ export interface DecideAutoRouteOptions {
    * routing can have it, deliberately and in writing, rather than by accident.
    */
   allowSharedScope?: boolean
+  /**
+   * Decision E1 "me-only" (2026-09-26): refuse a NON-shared candidate exactly
+   * like a shared one — same `refuse-shared` action, same `refusedShared`
+   * report. The write path passes "backed by a URL store AND not the user's
+   * own `/me` namespace (or that identity is unknown)", so an unscoped write
+   * reaches a remote personal scope only when it is the user's own. Applies
+   * whatever `allowSharedScope` says: that opt-in governs shared scopes only.
+   */
+  refuseScope?: (scope: string) => boolean
 }
 
 /**
@@ -474,7 +486,8 @@ export function decideAutoRoute(
     // The deterministic forward-domain bypass, then the threshold gate.
     if (!candidate.coverContainsDomain && !(candidate.confidence >= threshold)) continue
     if (!firstEligible) firstEligible = candidate
-    if (!allowShared && isSharedScope(candidate.scope)) {
+    const shared = isSharedScope(candidate.scope)
+    if ((!allowShared && shared) || (!shared && options.refuseScope?.(candidate.scope) === true)) {
       if (!refusedShared) refusedShared = candidate
       continue
     }

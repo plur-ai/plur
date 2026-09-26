@@ -106,7 +106,7 @@ def _kill_process_group(proc: "subprocess.Popen[str]") -> None:
 
 
 def _run_in_process_group(
-    cmd: list[str], *, env: dict[str, str], timeout: float
+    cmd: list[str], *, env: dict[str, str], timeout: float, input: str | None = None
 ) -> "subprocess.CompletedProcess[str]":
     """``subprocess.run``-equivalent with process-group teardown on timeout.
 
@@ -116,9 +116,13 @@ def _run_in_process_group(
     its own session/process group and, on timeout, we kill the whole group, then
     re-raise ``subprocess.TimeoutExpired`` so callers behave exactly as they did
     under ``subprocess.run``.
+
+    ``input``, when given, is written to the child's stdin (then closed); when
+    ``None`` stdin is inherited, exactly as before.
     """
     proc = subprocess.Popen(
         cmd,
+        stdin=subprocess.PIPE if input is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -126,7 +130,7 @@ def _run_in_process_group(
         start_new_session=True,
     )
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
         # Drain pipes / reap the direct child so we don't leak fds or a zombie.
@@ -145,14 +149,20 @@ def run_json(
     binary: str | None = None,
     path: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
+    input: str | None = None,
 ) -> Any:
-    """Run ``plur <args> --json`` and return the parsed JSON (dict/list/None)."""
+    """Run ``plur <args> --json`` and return the parsed JSON (dict/list/None).
+
+    ``input`` is sent on the CLI's stdin. ``plur learn`` reads its statement
+    from stdin when argv carries none, which is how a statement starting with
+    ``-`` reaches it verbatim instead of being parsed as a flag.
+    """
     cmd = _resolve_base_command(binary) + list(args) + ["--json"]
     env = dict(os.environ)
     if path:
         env["PLUR_PATH"] = path
     try:
-        proc = _run_in_process_group(cmd, env=env, timeout=timeout)
+        proc = _run_in_process_group(cmd, env=env, timeout=timeout, input=input)
     except FileNotFoundError as exc:  # binary vanished between resolve and run
         raise PlurNotInstalledError(str(exc)) from exc
     except subprocess.TimeoutExpired as exc:

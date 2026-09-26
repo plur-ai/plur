@@ -25,6 +25,11 @@ type PlurCtor = new (options: { path?: string }) => PlurClient
 export interface Engine extends PlurClient {
   /** Resolves true once the real engine is constructed, false if it cannot be. */
   ready(): Promise<boolean>
+  /**
+   * Is `dir` trusted (`plur trust`)? False when the engine is unavailable or
+   * the check throws — the workspace-scope gate fails closed (decision E3).
+   */
+  trusts(dir: string): Promise<boolean>
 }
 
 /**
@@ -80,6 +85,13 @@ export function createEngine(
 
   return {
     ready: async () => (await engine()) !== undefined,
+    trusts: async (dir) => {
+      try {
+        return (await engine())?.isDirectoryTrusted?.(dir) === true
+      } catch {
+        return false
+      }
+    },
 
     // Hybrid is the primary path; a build of core without it falls back to
     // BM25 here rather than at the call site, which cannot see inside.

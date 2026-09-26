@@ -16,9 +16,9 @@
 //      — we ship a SHA-256 fingerprint of the normalized query (irreversible).
 //      The scope is reduced to its KIND only (#312): 'project:acme-secret'
 //      becomes 'project', so a user's private project/client name in the scope
-//      path is never transmitted. The domain (a generic topic label such as
-//      'trading' — the actual demand signal) and a reason code and UTC date
-//      round out the payload. No query text, no engram text, no result bodies,
+//      path is never transmitted. The domain is reduced to its first dotted
+//      segment ('trading.client-foo' becomes 'trading' — the topic, which is the
+//      actual demand signal); a reason code and UTC date round out the payload. No query text, no engram text, no result bodies,
 //      no scope paths, no identity beyond the opaque install id.
 //   3. Never throws. On any failure (network, timeout, non-2xx) emit() resolves
 //      to false; the caller's recall path is never disturbed.
@@ -53,7 +53,8 @@ export type MissSignalInput = {
   query: string
   /** Scope filter the caller passed, if any (coarse routing label). */
   scope?: string
-  /** Domain filter the caller passed, if any (coarse routing label). */
+  /** Domain filter the caller passed, if any. Only its first dotted segment is
+   *  transmitted (see domainHead). */
   domain?: string
   /** Number of engrams the recall returned (0 ⇒ no_results). */
   resultCount: number
@@ -68,6 +69,8 @@ export type MissSignalPayload = {
   /** Scope KIND only (e.g. 'project', 'group', 'global') — never the user-defined
    *  scope path, which can carry private project/client names (#312). */
   scope_type: string | null
+  /** First dotted segment of the domain only (e.g. 'trading') — never the full
+   *  user-defined path (decision I5). */
   domain: string | null
   reason: MissReason
   result_count: number
@@ -95,10 +98,24 @@ const DEFAULT_TIMEOUT_MS = 5000
 
 // Below this top RRF score we treat a non-empty result set as a miss: the
 // engrams that came back are too weakly related to the query to be a real hit.
-// Tunable via PLUR_MISS_SCORE_THRESHOLD. RRF scores are small (1/(k+rank+1),
-// k=60 ⇒ a single top-1 hit scores ~0.0164; the floor sits just under that so a
-// lone weak match still registers as a miss while genuine multi-list hits pass.
-export const DEFAULT_MISS_SCORE_THRESHOLD = 0.015
+// Tunable via PLUR_MISS_SCORE_THRESHOLD. RRF scores are small: rank r in one
+// result list scores 1/(k + r + 1), k = 60, and a document's score is the sum
+// over the lists (BM25, embeddings) that returned it.
+//
+// The default is 0.025 (owner decision I3, formal run 2026-09-26), strictly
+// between 1/61 ≈ 0.0164 and 2/61 ≈ 0.0328:
+//   - a top hit only ONE retrieval leg found scores at most 1/61 → `low_score`
+//     (a lone lexical or lone semantic match is a weak answer);
+//   - a top hit BOTH legs ranked first scores 2/61 → a hit;
+//   - a top hit both legs found counts as a hit while its rank in the second
+//     leg is ≤ 55 (1/61 + 1/116 ≥ 0.025 > 1/61 + 1/117).
+// 0.025 sits near the midpoint (3/122 ≈ 0.0246) so neither boundary is within
+// float noise of it. The previous 0.015 was below 1/61, so every non-empty
+// recall was a hit and `low_score` was unreachable (PlurSpec/ScopeInject.lean
+// `lowScore_unreachable`, at 0.015). Consequence: in BM25-only mode (embeddings off)
+// there is one leg, so an opted-in install reports every non-empty recall's
+// weak top hit as `low_score`.
+export const DEFAULT_MISS_SCORE_THRESHOLD = 0.025
 
 function resolveThreshold(env: NodeJS.ProcessEnv): number {
   const raw = env.PLUR_MISS_SCORE_THRESHOLD
@@ -146,6 +163,19 @@ export function classifyMiss(
   return null
 }
 
+/**
+ * Reduce a domain label to its FIRST dotted segment (owner decision I5, formal
+ * run 2026-09-26): 'trading.client-foo.deal-42' → 'trading'. Domains are
+ * user-defined and can carry the same private project/client names that #312
+ * removed from scopes; the leading segment is the topic, which is the demand
+ * signal. Absent or empty → null.
+ */
+export function domainHead(domain: string | undefined | null): string | null {
+  if (!domain) return null
+  const head = domain.split('.')[0].trim()
+  return head === '' ? null : head
+}
+
 export function buildMissSignalPayload(
   input: MissSignalInput,
   reason: MissReason,
@@ -156,7 +186,7 @@ export function buildMissSignalPayload(
     install_id: installId,
     query_fingerprint: fingerprintQuery(input.query),
     scope_type: scopeType(input.scope),
-    domain: input.domain ?? null,
+    domain: domainHead(input.domain),
     reason,
     result_count: input.resultCount,
     date: utcDate(now),

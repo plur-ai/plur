@@ -5,6 +5,7 @@ import { EngramSchemaPassthrough, type Engram } from './schemas/engram.js'
 import { PackManifestSchema, type PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
 import { atomicWrite } from './sync.js'
+import { recordLastWritten } from './backup.js'
 import { normalizeEngramInput } from './normalize-engram.js'
 
 /**
@@ -384,6 +385,11 @@ export function saveEngrams(filePath: string, engrams: Engram[], opts: SaveEngra
   // on the rare writes it actually ran on.
   if (!opts.allowShrink) assertShrinkAllowed(filePath, outgoing.length)
   atomicWrite(filePath, content)
+  // Record what PLUR itself wrote (owner decision P2, formal run 2026-09-26):
+  // the daily backup's shrink gate compares the file against this count, so a
+  // deliberate removal re-baselines it while a file that shrank without PLUR
+  // writing it is still refused. After the write, so it records what landed.
+  recordLastWritten(filePath, outgoing.length)
 }
 
 /**

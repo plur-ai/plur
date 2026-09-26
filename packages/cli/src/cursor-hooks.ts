@@ -97,7 +97,10 @@ export function mergeCursorHooks(config: CursorHooksConfig, additions: Record<st
   for (const [event, entries] of Object.entries(additions)) {
     hooks[event] = [...(hooks[event] ?? []), ...entries]
   }
-  return { version: clean.version ?? 1, hooks }
+  // Spread `clean`: unknown top-level keys readCursorHooksConfig preserved
+  // must survive the merge too — returning `{ version, hooks }` dropped them
+  // on every `plur init --cursor` (formal Adapters #4, cli#2).
+  return { ...clean, version: clean.version ?? 1, hooks }
 }
 
 export function readCursorHooksConfig(path: string): CursorHooksConfig {

@@ -60,7 +60,7 @@ import {
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock } from './store/async-lock.js'
-import { SessionScopeRegistry } from './session-scopes.js'
+import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import type { StorageAdapter } from './storage-adapter.js'
@@ -98,7 +98,7 @@ export * from './meta/index.js'
 export { classifyPolarity } from './polarity.js'
 export { computeConfidence, computeMetaConfidence, confidenceBand } from './confidence.js'
 export { SessionBreadcrumbs } from './session-state.js'
-export { SessionScopeRegistry } from './session-scopes.js'
+export { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
 export { findProjectConfigPath, readProjectConfig, readProjectConfigFromPath, canonicalize, type ProjectConfig } from './project-config.js'
 // The trust gate a project's REMOTE settings must pass before an adapter may
@@ -913,6 +913,20 @@ export {
   type ProvenanceSummary,
 } from './provenance.js'
 
+/**
+ * Reciprocal-rank-fusion score of `id` across ranked lists — the same formula
+ * (`Σ 1/(k + rank + 1)`, k = 60) `hybrid-search.ts` `rrfMerge` sums. Used by
+ * the PGLite recall path to report its top score (decision I4).
+ */
+function rrfScoreOf(id: string, lists: ReadonlyArray<ReadonlyArray<{ id: string }>>, k = 60): number {
+  let score = 0
+  for (const list of lists) {
+    const rank = list.findIndex(e => e.id === id)
+    if (rank >= 0) score += 1 / (k + rank + 1)
+  }
+  return score
+}
+
 export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
@@ -1454,6 +1468,15 @@ export class Plur {
    * (`warmRemoteCaches`) still populate it explicitly.
    */
   private _remoteStores = new Map<string, RemoteStore>()
+  /**
+   * Ids whose outbox delivery is being pushed by THIS instance right now —
+   * learn()'s fire-and-forget push or a running flushOutbox(). A second pusher
+   * skips them: without this, a flush that started while learn()'s immediate
+   * push was in flight selected the same row (attempt_count 0) and POSTed it
+   * again, so the remote got the engram twice (formal WritePath, candidate 1).
+   * In-process only: two PROCESSES flushing one store can still both push.
+   */
+  private _outboxInFlight = new Set<string>()
   private _loadRemoteCached(store: StoreEntry): Engram[] {
     const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
     // Synchronously read whatever the driver currently has cached — no
@@ -1800,6 +1823,57 @@ export class Plur {
    */
   private _isRemoteBackedScope(scope: string): boolean {
     return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
+  }
+
+  /**
+   * Decision E1 "me-only" (2026-09-26): the `/me` identity each remote token
+   * last reported, keyed `normalizedUrl::token`. Filled by every successful
+   * `/me` this instance makes (`discoverRemoteScopes`, `checkRemoteHealth`);
+   * DROPPED when a later `/me` for the same key fails, so "unknown" — never
+   * fetched, offline, token rejected — is the fail-closed state. In memory only.
+   */
+  private _meIdentities = new Map<string, { username: string; org_id: string }>()
+
+  private _meKey(url: string, token: string | undefined): string {
+    return `${normalizeEndpointUrl(url)}::${token ?? ''}`
+  }
+
+  private _noteMeIdentity(url: string, token: string | undefined, me: { username?: string; org_id?: string } | null): void {
+    const key = this._meKey(url, token)
+    if (me && typeof me.username === 'string' && me.username.length > 0) {
+      this._meIdentities.set(key, { username: me.username, org_id: typeof me.org_id === 'string' ? me.org_id : '' })
+    } else {
+      this._meIdentities.delete(key)
+    }
+  }
+
+  /**
+   * Is `scope` the user's OWN personal namespace on the URL store that backs
+   * it, per that store's `/me` identity? Own = `user:<username>` or
+   * `user:<org_id>:<username>` (case-folded), or a segment-descendant of
+   * either (`isScopeWithin`). `agent:*` and every other personal scope are not
+   * the user's own. Unknown identity → false (fail closed).
+   */
+  private _isOwnRemoteNamespace(scope: string): boolean {
+    const entry = (this.config.stores ?? []).find(s => !!s.url && s.scope === scope)
+    if (!entry?.url) return false
+    const id = this._meIdentities.get(this._meKey(entry.url, entry.token))
+    if (!id) return false
+    const s = scope.toLowerCase()
+    const user = id.username.toLowerCase()
+    const own = [`user:${user}`, ...(id.org_id ? [`user:${id.org_id.toLowerCase()}:${user}`] : [])]
+    return own.some(o => isScopeWithin(s, o))
+  }
+
+  /**
+   * Decision E1 "me-only": an auto-route candidate the router must refuse like
+   * a shared scope — backed by a URL store (so the write would leave the
+   * machine) and not the user's own `/me` namespace. Path-backed and unbacked
+   * personal scopes are never refused here. Shared scopes are
+   * `allow_shared_auto_route`'s business, not this predicate's.
+   */
+  private _refuseRemotePersonalAutoRoute(scope: string): boolean {
+    return this._isRemoteBackedScope(scope) && !this._isOwnRemoteNamespace(scope)
   }
 
   /** Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store. */
@@ -2154,7 +2228,9 @@ export class Plur {
 
   /** Record a cross-scope recurrence: append source, increment counters,
    * escalate commitment, and broaden scope to 'global' once the threshold
-   * is crossed. Returns the (possibly broadened) engram.
+   * is crossed — except for a row still queued for a remote store (`_outbox`),
+   * whose scope is never changed (decision D3). Returns the (possibly
+   * broadened) engram.
    *
    * Escalation ladder (graduated, not all-at-once):
    * - 1st cross-scope hit:   record source + recurrence_count++  (no scope/commitment change)
@@ -2206,7 +2282,14 @@ export class Plur {
         // Only promote SHARED scopes (project:*, space:*, etc.) to global —
         // personal-family scopes (local, user:*) stay within their family.
         // See issue #362 item (ii): personal-scope ceiling for cross-scope recurrence.
-        if (isSharedScope(e.scope)) e.scope = 'global'
+        //
+        // Decision D3 "no-widen" (2026-09-26): never widen a row that still
+        // carries `_outbox`. It is queued for a team store under its current
+        // scope; widening it locally made the queue entry disagree with the row
+        // (the flush then held it back, so the team never got it). The
+        // recurrence is recorded without changing scope — the same rule a
+        // remote-resident hit already follows (its broadening never persists).
+        if (isSharedScope(e.scope) && !(e as any).structured_data?._outbox) e.scope = 'global'
         if (e.commitment !== 'locked') {
           // Forward-only ladder: exploring → leaning → decided → locked.
           e.commitment = e.commitment === 'exploring'
@@ -2500,6 +2583,7 @@ export class Plur {
     return decideAutoRoute(candidates, {
       matchThreshold: cfg.match_threshold ?? SCOPE_MATCH_THRESHOLD,
       allowSharedScope: cfg.allow_shared_auto_route === true,
+      refuseScope: s => this._refuseRemotePersonalAutoRoute(s),
     })
   }
 
@@ -2753,9 +2837,13 @@ export class Plur {
     // that team store and be pushed to its remote, where local cleanup could not
     // undo it. A refused shared candidate does not end the search — the next
     // eligible PERSONAL candidate still wins, so personal-scope routing is intact.
+    // Decision E1 "me-only": a URL-backed personal candidate that is not the
+    // user's own `/me` namespace (or whose identity is unknown) is refused
+    // exactly like a shared one — same predicate as previewAutoRoute.
     const decision = decideAutoRoute(candidates, {
       matchThreshold,
       allowSharedScope: scopeRoutingCfg.allow_shared_auto_route === true,
+      refuseScope: s => this._refuseRemotePersonalAutoRoute(s),
     })
     const marker = (c: ScopeCandidate) => ({ scope: c.scope, confidence: c.confidence, reason: c.reason })
     const refusedShared = decision.refusedShared ? marker(decision.refusedShared) : null
@@ -3163,12 +3251,22 @@ export class Plur {
         // with nothing attached — an unhandled rejection, which terminates the
         // process on modern Node. A background task must not be able to take
         // the host down.
+        this._outboxInFlight.add(engram.id)
         void (async () => {
           let pushed = false
+          // Decision D1: keep the id the server assigned — if a forget/rescope
+          // cancels the delivery while this POST is on the wire, the accepted
+          // remote copy is queued for retirement by that id.
+          let serverId: string | undefined
           try {
-            await remoteDriver.append(engram)
+            ;({ id: serverId } = await remoteDriver.appendAndGetServerId(engram))
             pushed = true
           } catch (err) {
+            // The POST did not land, so nothing is on the wire any more: a
+            // flush may take the row now. Release the claim before the
+            // bookkeeping write below (which only touches a row that still
+            // carries `_outbox`), not after it.
+            this._outboxInFlight.delete(engram.id)
             // Already saved locally with outbox metadata — will be retried.
             logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
             await this._withStoreLock(this.paths.engrams, async () => {
@@ -3197,6 +3295,30 @@ export class Plur {
               // a full load until there is a `remove`/`deleteMany` seam.
               const fresh = await this._primaryStore.load()
               const idx = fresh.findIndex(e => e.id === engram.id)
+              // Hand off only a row that is STILL queued. A forget() or a local
+              // rescope that landed while the POST was in flight cancelled the
+              // delivery (#766, #848); deleting the row now would erase that
+              // decision while the remote keeps a live copy. Keep it and say so.
+              if (idx !== -1 && !Plur._stillQueued(fresh[idx])) {
+                // Decision D1: queue a durable "retire on remote" entry for the
+                // copy the remote just accepted; flushOutbox() retries it.
+                const queuedRetire = serverId
+                  ? Plur._queueRetireRemote(fresh[idx], {
+                      target_url: (engram as any).structured_data?._outbox?.target_url ?? '',
+                      target_scope: (engram as any).structured_data?._outbox?.target_scope ?? scope,
+                      server_id: serverId,
+                    }, new Date().toISOString())
+                  : false
+                if (queuedRetire) await this._updateEngrams(fresh, [fresh[idx]])
+                logger.warning(
+                  `[plur:outbox] ${engram.id} reached the remote${serverId ? ` as ${serverId}` : ''} after its delivery `
+                  + `was cancelled locally (forget/rescope during the push). The local record is kept`
+                  + (queuedRetire
+                    ? `; the remote copy is queued for retirement and the next flush retires it.`
+                    : `; the remote copy must be retired there.`),
+                )
+                return
+              }
               if (idx !== -1) {
                 fresh.splice(idx, 1)
                 // Deliberate removal: the remote accepted this engram, so the
@@ -3213,7 +3335,7 @@ export class Plur {
           }
         })().catch(err => {
           logger.warning(`[plur:outbox] background push for ${engram.id} failed unexpectedly: ${(err as Error).message}`)
-        })
+        }).finally(() => { this._outboxInFlight.delete(engram.id) })
 
         this._appendHistory({
           event: 'engram_created',
@@ -3367,7 +3489,12 @@ export class Plur {
     // mirroring learn() — before dedup can short-circuit the write.
     resolveValidity(statement, context)
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
-    if (!remoteDriver) {
+    // #90, formal WritePath candidate 4: an engram the caller explicitly marked
+    // private does not go to a remote store. learn() has always refused it
+    // (and warns); this path never checked, so the same input left the machine
+    // or not depending on which method was called. Take the local route and let
+    // learn() apply its #90 branch.
+    if (!remoteDriver || context?.visibility === 'private') {
       // Local route — sync learn() owns dedup, build, write, history. learn()'s
       // own guard sees the already-demoted (local) context and no-ops, so the
       // demotion marker is stamped here for the learnRouted-demoted case (#326).
@@ -4010,9 +4137,9 @@ export class Plur {
     // WS5 demand flywheel: a zero-result or low-top-score recall is a demand
     // signal. Emit an anonymized, content-free miss-signal (query fingerprint +
     // scope/domain + timestamp; never the raw query). Opt-in/default-off and
-    // fire-and-forget — never disturbs the recall path. (topScore is null on the
-    // PGLite path, which doesn't surface an RRF fusion score; the count-based
-    // miss still fires.)
+    // fire-and-forget — never disturbs the recall path. Both backends report
+    // the RRF fusion top score (decision I4 — the PGLite path returned null,
+    // which read as `no_results` whenever it found something).
     void emitMissSignal({
       query,
       scope: options?.scope,
@@ -4206,9 +4333,16 @@ export class Plur {
     const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
     const bm25Results = searchEngrams(filtered, lexicalQuery, bm25Limit)
     const merged = pgliteRrfMerge([bm25Results, pgHits])
+    // Decision I4 "rrf" (2026-09-26): report the top candidate's RRF fusion
+    // score, captured BEFORE the rerank exactly as hybridSearchWithMeta does,
+    // so the miss-signal classifies a PGLite recall the same way as a YAML one.
+    // It was null here, and classifyMiss reads null-with-results as
+    // `no_results` — every PGLite recall that FOUND something was reported as
+    // a miss. Same k (60) and the same two lists the merge just fused.
+    const topScore = merged.length > 0 ? rrfScoreOf(merged[0].id, [bm25Results, pgHits]) : null
     const reranked = await applyReranker(merged, query, rerank)
     const mode: HybridSearchResult['mode'] = status.disabled ? 'bm25-only' : 'hybrid'
-    return { engrams: reranked.engrams.slice(0, limit), mode, embedderError: null, topScore: null, reranked: reranked.count }
+    return { engrams: reranked.engrams.slice(0, limit), mode, embedderError: null, topScore, reranked: reranked.count }
   }
 
   /**
@@ -5500,9 +5634,12 @@ export class Plur {
       // Narrowing here is what lets BOTH counters follow one reading without
       // redefining what an injection is for every other caller.
       const dedupApplies = options?.source === 'hook'
+      // Decision E7: NO_SESSION selects "no session default" for the dial
+      // context; it is not a session id and is never recorded as one.
+      const recordedSessionId = options?.session_id === NO_SESSION ? undefined : options?.session_id
       const writeCoInjection = (): void => {
         if (dedupApplies
-          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
+          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, recordedSessionId)) return
         const injection_id = generateInjectionId()
         try {
           // ASK whether the write landed; do not infer it from the absence of a
@@ -5539,7 +5676,7 @@ export class Plur {
               tokens_used: tokensUsed,
               source: options?.source ?? 'inject',
               ...(options?.scope ? { scope: options.scope } : {}),
-              ...(options?.session_id ? { session_id: options.session_id } : {}),
+              ...(recordedSessionId ? { session_id: recordedSessionId } : {}),
             },
           })
           // In-memory provenance is set regardless: the engrams WERE injected,
@@ -5846,7 +5983,7 @@ export class Plur {
     // 'primary')` on an id absent locally rated a REMOTE engram. One severity
     // band below the retire (a mis-targeted signal is recoverable), same
     // defect, same predicate.
-    if (scope && isLocalOnlyScope(scope)) {
+    if (scope && isLocalOnlyScope(scope, this.config.stores ?? [])) {
       throw new Error(
         `Engram not found in the local store: ${id} (scope: "${scope}"). `
         + `That scope names a local target, so no remote store was searched. `
@@ -6064,6 +6201,7 @@ export class Plur {
       // statement, scope, commitment, relations and retirement as the tracked
       // mutations, and this is where four of the five actually happen.
       const toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
+      this._reconcileQueuedScope(engrams[idx], toWrite)
       engrams[idx] = toWrite
       // Incremental write (#740): only the updated engram row changed.
       await this._updateEngrams(engrams, [toWrite])
@@ -6120,6 +6258,53 @@ export class Plur {
       }
     }
     return null
+  }
+
+  /**
+   * Decision D4 "like-rescope" (2026-09-26): an update that changes the scope
+   * of a row still queued for a remote store (`_outbox` on the STORED row)
+   * behaves like `rescope()` (#848):
+   *   - new scope local-family (`isLocalOnlyScope`, config-aware) → the
+   *     pending delivery is cancelled;
+   *   - new scope has a writable URL store → `_outbox` is retargeted to it
+   *     (attempts reset). The leak guard has already run against the new
+   *     scope (`_guardExplicitUpdate` above); a demotion lands on `local` and
+   *     so takes the first branch;
+   *   - otherwise (no store, or only a readonly one) → cancelled, with a warning.
+   * The queue entry is read from the STORED row, never the caller's object,
+   * and so is `_retireRemote` (decision D1) — a caller-set value of either
+   * would otherwise direct a push or a remote DELETE. Mutates `toWrite`.
+   */
+  private _reconcileQueuedScope(stored: Engram, toWrite: Engram): void {
+    const storedSd = (stored as any).structured_data as Record<string, unknown> | undefined
+    const sd: Record<string, unknown> = { ...(((toWrite as any).structured_data as Record<string, unknown> | undefined) ?? {}) }
+    let changed = false
+    if (storedSd && '_retireRemote' in storedSd) { sd._retireRemote = storedSd._retireRemote; changed = true }
+    else if ('_retireRemote' in sd) { delete sd._retireRemote; changed = true }
+    const pending = storedSd?._outbox as { target_url?: string; target_scope?: string } | undefined
+    if (pending && stored.status !== 'retired' && toWrite.scope !== stored.scope) {
+      changed = true
+      const stores = this.config.stores ?? []
+      const newScope = toWrite.scope
+      const writable = stores.find(st => !!st.url && st.scope === newScope && st.readonly !== true)
+      if (isLocalOnlyScope(newScope, stores)) {
+        delete sd._outbox
+        logger.warning(
+          `[plur] update of ${stored.id} moved it to "${newScope}" and cancelled its pending delivery to `
+          + `${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}") — like rescope (#848).`,
+        )
+      } else if (writable) {
+        sd._outbox = { ...pending, target_url: writable.url, target_scope: newScope, attempt_count: 0, last_error: '' }
+      } else {
+        delete sd._outbox
+        logger.warning(
+          `[plur] update of ${stored.id} moved it to "${newScope}", which has no writable remote store — its pending `
+          + `delivery to ${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}") was CANCELLED. `
+          + `Rescope it to a store scope to deliver it.`,
+        )
+      }
+    }
+    if (changed) (toWrite as any).structured_data = Object.keys(sd).length > 0 ? sd : undefined
   }
 
   /**
@@ -6683,7 +6868,9 @@ export class Plur {
     // remote DELETE each for global/local/project:foo, 0 for primary. The
     // predicate is shared with `feedback` now precisely so the two cannot
     // drift again — the drift was the bug (#855).
-    if (targetScope && isLocalOnlyScope(targetScope)) {
+    // Decision E4: stores are passed, so a `project:*` scope a URL store
+    // covers (equal or segment-contained) is NOT local-only and reaches it.
+    if (targetScope && isLocalOnlyScope(targetScope, this.config.stores ?? [])) {
       throw new Error(
         `Engram not found in the local store: ${id} (scope: "${targetScope}"). `
         + `That scope names a local target, so no remote store was searched. `
@@ -7011,7 +7198,21 @@ export class Plur {
         }
       }
       if (!opts.keepLocal) {
-        await this._retireRescopedSource(id, target, serverId)
+        // The push LANDED: from here a failure must be reported per id with the
+        // server id, not thrown. Throwing aborted the rest of the batch and hid
+        // that a copy now exists at the target, so a retry pushed it again
+        // (formal WritePath, candidate 6).
+        try {
+          await this._retireRescopedSource(id, target, serverId)
+        } catch (err) {
+          return {
+            id, status: 'error', action, from_scope: source.scope, to_scope: target, new_id: serverId,
+            kept_local: opts.keepLocal,
+            error: `Pushed to "${target}" as ${serverId}, but the local source could not be retired: `
+              + `${(err as Error).message}. Both copies are now active — retire ${id} (plur forget) `
+              + `rather than re-running the rescope, which would push a second copy.`,
+          }
+        }
       }
       this._appendHistory({
         event: 'engram_rescoped',
@@ -7105,13 +7306,16 @@ export class Plur {
    * `_hashDedup` (the hash cannot resurrect the source) and from every
    * injection/list surface (status filters).
    */
-  private async _retireRescopedSource(id: string, toScope: string, newId: string): Promise<void> {
+  private async _retireRescopedSource(id: string, toScope: string, newId: string): Promise<boolean> {
     const now = new Date().toISOString()
-    await this._withStoreLock(this.paths.engrams, async () => {
+    const retired = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.
       const fresh = await this._loadTargeted([id])
       const t = fresh.find(e => e.id === id)
-      if (!t) return
+      // Gone (compacted) or already retired by a concurrent forget while the
+      // push was in flight: nothing to retire here, and history must not
+      // record a retirement that did not happen (#855).
+      if (!t || t.status === 'retired') return false
       t.status = 'retired'
       t.updated_at = new Date().toISOString()
       if (!t.rationale) t.rationale = `Retired: rescoped to ${toScope} as ${newId}`
@@ -7127,13 +7331,16 @@ export class Plur {
       // Incremental write (#740): only the retired source row changed.
       await this._updateEngrams(fresh, [t])
       await this._syncIndex()
+      return true
     })
+    if (!retired) return false
     this._appendHistory({
       event: 'engram_retired',
       engram_id: id,
       timestamp: now,
       data: { reason: `rescoped to ${toScope}`, rescoped_to: newId, routed_to: 'rescope' },
     })
+    return true
   }
 
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
@@ -7141,7 +7348,10 @@ export class Plur {
     this._assertWritable()
     return await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
-      const active = engrams.filter(e => e.status !== 'retired')
+      // Decision D1: a retired row still carrying a queued "retire on remote"
+      // entry is kept until the flush has retired the remote copy — removing
+      // it would lose the only durable record of that pending DELETE.
+      const active = engrams.filter(e => e.status !== 'retired' || !!(e as any).structured_data?._retireRemote)
       const removed = engrams.length - active.length
       if (removed > 0) {
         // Removing retired engrams IS this method (audit #794 shrink guard).
@@ -7747,15 +7957,71 @@ export class Plur {
    */
   async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
     this._assertWritable()
+    // Ids this flush claims in `_outboxInFlight`, released however it ends.
+    const claimed = new Set<string>()
+    try {
+      return await this._flushOutboxClaimed(claimed)
+    } finally {
+      for (const id of claimed) this._outboxInFlight.delete(id)
+    }
+  }
+
+  /**
+   * A row is still waiting for delivery: it carries `_outbox` and is not
+   * retired — exactly flushOutbox()'s selection predicate. The merge-back and
+   * learn()'s hand-off re-check it on the FRESH row, so a cancellation that
+   * landed during the network round-trip (forget #766, local rescope #848)
+   * is honoured instead of overwritten.
+   */
+  private static _stillQueued(e: Engram | undefined): boolean {
+    return !!e && !!(e as any).structured_data?._outbox && e.status !== 'retired'
+  }
+
+  /**
+   * Decision D1 "queue-retire": stamp a durable "retire on remote" entry on the
+   * local row — the copy a remote accepted AFTER a forget/rescope cancelled
+   * its delivery. `flushOutbox()` retries it like any other queued write, as a
+   * DELETE of `server_id` on the store at `target_url`/`target_scope`; it never
+   * POSTs, so it cannot resurrect anything. Idempotent: an entry for the same
+   * server id is left as it is. Returns whether the row changed. Mutates `row`.
+   */
+  private static _queueRetireRemote(
+    row: Engram,
+    target: { target_url: string; target_scope: string; server_id: string },
+    now: string,
+  ): boolean {
+    if (!target.server_id || !target.target_url) return false
+    const sd = ((row as any).structured_data && typeof (row as any).structured_data === 'object')
+      ? { ...(row as any).structured_data as Record<string, unknown> } : {}
+    const existing = sd._retireRemote as { server_id?: string } | undefined
+    if (existing?.server_id === target.server_id) return false
+    sd._retireRemote = { ...target, queued_at: now, last_attempt: '', attempt_count: 0, last_error: '' }
+    ;(row as any).structured_data = sd
+    return true
+  }
+
+  private async _flushOutboxClaimed(
+    claimed: Set<string>,
+  ): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
     const engrams = await this._primaryStore.load()
     // #766: skip retired engrams — a retired engram must not be pushed to the
     // remote and resurrected. The cancel-outbox path in forget() strips _outbox
     // on retirement; this guard is belt-and-suspenders for any path that retires
     // without explicitly cancelling (e.g. direct YAML edits, older client versions).
+    // Also skip rows another pusher in this process is delivering right now
+    // (learn()'s immediate push, a concurrent flush) — pushing them again is a
+    // duplicate on the remote.
     const pending = engrams.filter(e =>
-      (e as any).structured_data?._outbox && e.status !== 'retired'
+      Plur._stillQueued(e) && !this._outboxInFlight.has(e.id)
     )
-    if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
+    for (const e of pending) { this._outboxInFlight.add(e.id); claimed.add(e.id) }
+    // Decision D1: queued "retire on remote" entries — retired or rescoped
+    // rows whose remote copy was accepted after the delivery was cancelled.
+    const retiring = engrams.filter(e =>
+      !!(e as any).structured_data?._retireRemote && !this._outboxInFlight.has(e.id)
+    )
+    for (const e of retiring) { this._outboxInFlight.add(e.id); claimed.add(e.id) }
+    if (pending.length === 0 && retiring.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
 
     // #863: push supersedes TARGETS before the engrams that supersede them.
     //
@@ -7815,6 +8081,48 @@ export class Plur {
     const now = new Date()
     const TTL_MS = 7 * 24 * 60 * 60 * 1000
 
+    // Decision D1: retire accepted-after-cancel remote copies. A DELETE by the
+    // server id the remote assigned; 404/410 means already gone (done). The
+    // outcome is merged below: `undefined` = done (entry removed), otherwise
+    // the entry with its attempt bookkeeping bumped.
+    type RetireEntry = { target_url: string; target_scope: string; server_id: string; queued_at: string; last_attempt: string; attempt_count: number; last_error: string }
+    const retireOutcome = new Map<string, { serverId: string; next: RetireEntry | undefined }>()
+    for (const row of retiring) {
+      const entry = (row as any).structured_data._retireRemote as RetireEntry
+      const storeEntry = (this.config.stores ?? []).find(
+        s => s.url && s.scope === entry.target_scope && normalizeEndpointUrl(s.url) === normalizeEndpointUrl(entry.target_url),
+      )
+      if (!storeEntry) {
+        expired_warnings.push(
+          `${row.id}: remote copy ${entry.server_id} is queued for retirement on "${entry.target_scope}", `
+          + `but no store with that url and scope is configured — still queued.`,
+        )
+        failed++
+        continue
+      }
+      const driver = this._getRemoteDriver({ url: storeEntry.url!, token: storeEntry.token, scope: storeEntry.scope })
+      try {
+        await driver.removeIdempotent(entry.server_id)
+        retireOutcome.set(row.id, { serverId: entry.server_id, next: undefined })
+        flushed++
+        this._appendHistory({
+          event: 'engram_retired',
+          engram_id: row.id,
+          timestamp: now.toISOString(),
+          data: { reason: 'delivery cancelled locally during the push', routed_to: 'remote', scope: entry.target_scope, server_id: entry.server_id, outbox_flush: true },
+        })
+      } catch (err) {
+        retireOutcome.set(row.id, {
+          serverId: entry.server_id,
+          next: { ...entry, last_attempt: now.toISOString(), attempt_count: (entry.attempt_count ?? 0) + 1, last_error: (err as Error).message },
+        })
+        failed++
+        logger.warning(`[plur:outbox] retiring remote copy ${entry.server_id} of ${row.id} failed: ${(err as Error).message}`)
+      }
+    }
+    /** Where each pushed id went — for queuing a retire if it was cancelled meanwhile (D1). */
+    const pushedTo = new Map<string, { url: string; scope: string }>()
+
     for (const engram of pending) {
       const outbox = (engram as any).structured_data._outbox as {
         target_url: string; target_scope: string; queued_at: string
@@ -7827,6 +8135,25 @@ export class Plur {
         expired_warnings.push(
           `${engram.id} queued ${outbox.queued_at} (${Math.floor(ageMs / 86400000)}d ago) — consider manual resolution`
         )
+      }
+
+      // Invariant `_outbox ⇒ scope === _outbox.target_scope` (formal WritePath,
+      // candidate 2). Every in-process writer now keeps it: rescope() cancels
+      // or retargets (#848), updateEngram() does the same (decision D4), and
+      // cross-scope recurrence never widens a queued row (decision D3). Kept as
+      // DEFENCE, because it is still reachable: a hand-edited engrams.yaml, an
+      // older client sharing the store, or an update that keeps the scope but
+      // supplies its own `_outbox`. Pushing such a row delivered it, carrying its
+      // scope, to another store. Held back, loudly and non-destructively: the
+      // entry stays queued, so rescoping the engram decides where it goes.
+      if (engram.scope !== outbox.target_scope) {
+        expired_warnings.push(
+          `${engram.id}: NOT pushed — its scope is now "${engram.scope}" but it was queued for `
+          + `"${outbox.target_scope}". Rescope it (to "${outbox.target_scope}" to deliver, or to a local `
+          + `scope to cancel the delivery).`,
+        )
+        failed++
+        continue
       }
 
       // Resolve remote driver from current config (don't store tokens in outbox)
@@ -7971,6 +8298,7 @@ export class Plur {
         const pushed = await driver.appendAndGetServerId(cleanEngram)
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
+        pushedTo.set(engram.id, { url: storeEntry.url!, scope: outbox.target_scope })
         if (pushed?.id) {
           localToServer.set(engram.id, pushed.id)
           persistedIdMap[engram.id] = { server_id: pushed.id, url: storeEntry.url!, at: Date.now() }
@@ -8024,17 +8352,43 @@ export class Plur {
     // what it writes back, and nothing else.
     if (flushed > 0 || failed > 0) {
       const consideredIds = new Set(pending.map(e => e.id))
+      const retiredAt = new Date().toISOString()
       const survivorsById = new Map(
         engrams.filter(e => consideredIds.has(e.id)).map(e => [e.id, e] as const),
       )
       await this._withStoreLock(this.paths.engrams, async () => {
         const fresh = await this._storeAt(this.paths.engrams).load()
         const merged = fresh
-          // Drop the ones this flush successfully pushed (remote now owns them).
-          .filter(e => !(consideredIds.has(e.id) && !survivorsById.has(e.id)))
+          // Drop the ones this flush successfully pushed (remote now owns them)
+          // — but only while the fresh row is STILL queued. A forget() or local
+          // rescope that landed during the push cancelled the delivery; the
+          // remote accepted it anyway (the POST was already on the wire), so
+          // keep the local record and report the stray remote copy (#766).
+          .filter(e => {
+            if (!(consideredIds.has(e.id) && !survivorsById.has(e.id))) return true
+            if (Plur._stillQueued(e)) return false
+            const serverId = localToServer.get(e.id)
+            // Decision D1: queue the accepted copy for retirement on the remote
+            // (durable, on this kept row); the next flush DELETEs it.
+            const dest = pushedTo.get(e.id)
+            const queuedRetire = !!(serverId && dest)
+              && Plur._queueRetireRemote(e, { target_url: dest!.url, target_scope: dest!.scope, server_id: serverId! }, retiredAt)
+            expired_warnings.push(
+              `${e.id}: delivery was cancelled locally (forget/rescope) while the push was in flight, but `
+              + `the remote accepted it${serverId ? ` as ${serverId}` : ''}. The local record is kept; `
+              + (queuedRetire || (serverId && (e as any).structured_data?._retireRemote?.server_id === serverId)
+                ? `the remote copy is queued for retirement (next flush).`
+                : `retire the remote copy there if it should not exist.`),
+            )
+            return true
+          })
           .map(e => {
             const survivor = survivorsById.get(e.id)
             if (!survivor) return e
+            // #848: the delivery was cancelled while this flush ran (forget
+            // stripped `_outbox`, a local rescope dropped it). Copying the
+            // snapshot's `_outbox` back would re-queue it; leave the row alone.
+            if (!Plur._stillQueued(e)) return e
             const sSd = (survivor as any).structured_data as Record<string, unknown> | undefined
             const fSd = { ...((e as any).structured_data as Record<string, unknown> | undefined ?? {}) }
             // `_outbox` and `_demoted` are the flush's own bookkeeping: copy
@@ -8052,6 +8406,17 @@ export class Plur {
               ...(demotedIds.has(e.id) ? { scope: 'local', visibility: 'private' } : {}),
               structured_data: Object.keys(fSd).length > 0 ? fSd : undefined,
             } as Engram
+          })
+          // Decision D1: apply the retire outcomes — only to a row whose entry
+          // is still the one this flush worked on (same server id).
+          .map(e => {
+            const r = retireOutcome.get(e.id)
+            const cur = (e as any).structured_data?._retireRemote as { server_id?: string } | undefined
+            if (!r || cur?.server_id !== r.serverId) return e
+            const fSd = { ...((e as any).structured_data as Record<string, unknown>) }
+            if (r.next) fSd._retireRemote = r.next
+            else delete fSd._retireRemote
+            return { ...e, structured_data: Object.keys(fSd).length > 0 ? fSd : undefined } as Engram
           })
         // The dropped engrams are the ones the remote accepted — a deliberate
         // handoff, not a loss (audit #794 shrink guard).
@@ -8500,6 +8865,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * event type existed since SP2 with zero emitters — audit #213 C5).
    */
   async recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; new_count: number; existing_count: number }> {
+    this._assertWritable()
     if (pairs.length === 0) return { records: [], new_count: 0, existing_count: 0 }
     const engramById = new Map((await this._loadAllEngrams()).map(e => [e.id, e]))
     return withLock(this.paths.tensions, () => {
@@ -8582,6 +8948,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /** Mark a detected tension as a real conflict (detected → confirmed). */
   confirmTension(id: string): TensionRecord {
+    this._assertWritable()
     return this._mutateTension(id, r => {
       if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
       if (r.status === 'dismissed') throw new Error(`Tension ${id} is dismissed — re-scan cannot resurrect it; delete tensions.yaml entry manually if truly needed`)
@@ -8594,6 +8961,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * The pair stays in the scan exclusion set, so it is never re-flagged.
    */
   dismissTension(id: string): TensionRecord {
+    this._assertWritable()
     return this._mutateTension(id, r => {
       if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
       r.status = 'dismissed'
@@ -8607,6 +8975,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    * resolved_at set.
    */
   async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }> {
+    // Readonly (#731): refuse BEFORE the claim below writes tensions.yaml.
+    this._assertWritable()
     // CLAIM the resolution atomically before retiring anything (#813, audit
     // finding 5). The validation used to be a PRE-LOCK read via listTensions(),
     // and the retire and the tension update were separate critical sections
@@ -8735,8 +9105,18 @@ Generate an improved version of the procedure that prevents this failure. Return
       return loadTensions(this.paths.tensions).some(r =>
         (r.status === 'detected' || r.status === 'confirmed')
         && (r.engram_a === engramId || r.engram_b === engramId))
-    } catch {
-      return false
+    } catch (err) {
+      // Fail CLOSED (formal WritePath, candidate 5). `loadTensions` throws on
+      // an unreadable file precisely so it is never read as empty (#794 F1);
+      // answering "no tension" here undid that and let contradicted knowledge
+      // escalate into 'locked' — the one outcome this gate exists to stop.
+      // Capping at 'decided' while the file is unreadable is recoverable; a
+      // wrong lock is not. (A MISSING file still reads as no tensions.)
+      logger.warning(
+        `[plur:tensions] tensions file unreadable (${(err as Error).message}); `
+        + `treating ${engramId} as possibly contradicted — lock escalation held back`,
+      )
+      return true
     }
   }
 
@@ -9565,6 +9945,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
           }),
         ])
+        this._noteMeIdentity(url, token, me)
         const registeredSet = new Set(registered)
         // #647: scopes the user has dismissed from the offer are not "actionable"
         // — drop them from `unregistered` so the session-start hint and CLI stop
@@ -9588,6 +9969,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           metadata: me.scope_metadata ?? [],
         }
       } catch (err) {
+        this._noteMeIdentity(url, token, null)
         return {
           url, ok: false,
           authorized: [], registered, unregistered: [], metadata: [],
@@ -9668,12 +10050,14 @@ Generate an improved version of the procedure that prevents this failure. Return
         // A host that just answered /me is not unreachable — retire any cached
         // network-class recall failure for it rather than reporting both (#864).
         this.noteRemoteHostReachable(url)
+        this._noteMeIdentity(url, token, me)
         return { url, scopes, status: 'ok' as const, ok: true,
           ...(me.username ? { username: me.username } : {}),
           ...(me.org_id ? { orgId: me.org_id } : {}),
           grantedScopes: me.scopes.length,
           ...expiryFields }
       } catch (err) {
+        this._noteMeIdentity(url, token, null)
         const msg = err instanceof Error ? err.message : String(err)
         const isAuth = /\b40[13]\b/.test(msg)
         return { url, scopes, status: (isAuth ? 'auth_expired' : 'unreachable') as RemoteHealth['status'],

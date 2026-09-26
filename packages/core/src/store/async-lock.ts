@@ -28,7 +28,7 @@
  * *different* path works but is a lock-ordering hazard; don't.
  */
 import { writeFile, unlink, stat, readFile, rename, open } from 'fs/promises'
-import { constants } from 'fs'
+import { constants, readFileSync, utimesSync } from 'fs'
 import { hostname } from 'os'
 import * as path from 'path'
 import { KeyedAsyncMutex } from '../async-mutex.js'
@@ -173,6 +173,76 @@ export function holderIsAlive(token: string): boolean | undefined {
   }
 }
 
+/**
+ * Heartbeat (owner decision P1, formal run 2026-09-26).
+ *
+ * A contender that cannot probe the holder's liveness — the holder is on
+ * another host sharing `~/.plur`, or wrote a legacy bare-pid token — has only
+ * the lock file's age to go on, and steals once it is older than
+ * `staleThreshold`. Nothing refreshed that age during a hold, so a legitimate
+ * `Plur.sync()` (git fetch/pull/push, each up to 30 s — ~90 s in all) was
+ * stolen from at 60 s and a second writer entered (replayed:
+ * findings/persistence.md §4).
+ *
+ * So a holder re-touches its own lock (token-checked `utimes`) every
+ * `staleThreshold / 3` while it holds it — from a timer during async work, and
+ * from {@link heartbeatHeldLocks} at synchronous touch points (sync.ts calls it
+ * before every git command, since a blocking `execFileSync` starves timers).
+ * Stealing by age then only happens to a holder that stopped heartbeating.
+ * Both lock implementations (this one and `withLock` in sync.ts) register here;
+ * the heartbeat stops on release and on throw. No lock-file format change.
+ */
+const heldLocks = new Map<string, { lockPath: string; lastTouch: number; interval: number }>()
+
+/** Locks this process is heartbeating right now. Test/diagnostic seam. */
+export function activeHeartbeats(): number {
+  return heldLocks.size
+}
+
+/** Touch `lockPath` iff it still carries `token`. Never throws. */
+function touchIfOurs(lockPath: string, token: string): boolean {
+  try {
+    if (readFileSync(lockPath, 'utf8').trim() !== token) return false
+    const now = new Date()
+    utimesSync(lockPath, now, now)
+    return true
+  } catch {
+    return false // released, stolen or unreadable — nothing of ours to refresh
+  }
+}
+
+/**
+ * Re-touch every lock this process holds whose last touch is at least a
+ * heartbeat interval old. Synchronous and cheap; call it from long synchronous
+ * work done under a lock (sync.ts does, before each git command).
+ */
+export function heartbeatHeldLocks(): void {
+  const now = Date.now()
+  for (const [token, h] of heldLocks) {
+    if (now - h.lastTouch < h.interval) continue
+    if (touchIfOurs(h.lockPath, token)) h.lastTouch = now
+  }
+}
+
+/**
+ * Start heartbeating a lock just acquired with `token`. Returns the stop
+ * function, which the holder MUST call (in a `finally`) before releasing.
+ */
+export function startHeartbeat(lockPath: string, token: string, staleThreshold: number): () => void {
+  const interval = Math.max(1, Math.floor(staleThreshold / 3))
+  heldLocks.set(token, { lockPath, lastTouch: Date.now(), interval })
+  const timer = setInterval(() => {
+    const h = heldLocks.get(token)
+    if (h && touchIfOurs(lockPath, token)) h.lastTouch = Date.now()
+  }, interval)
+  // Never keep a process alive for a heartbeat.
+  timer.unref?.()
+  return () => {
+    clearInterval(timer)
+    heldLocks.delete(token)
+  }
+}
+
 /** Take the cross-process lock file, run `fn`, release. */
 async function withFileLock<T>(
   filePath: string,
@@ -276,9 +346,12 @@ async function withFileLock<T>(
     }
   }
 
+  // Heartbeat while held (decision P1); stopped before release, on return or throw.
+  const stopHeartbeat = acquired ? startHeartbeat(lockPath, token, staleThreshold) : () => {}
   try {
     return await fn()
   } finally {
+    stopHeartbeat()
     // Only ours to remove. `acquired` stops a failed acquisition deleting the
     // holder's file; the token comparison stops US deleting a THIEF's file
     // after our lock was stolen, which is what turned one stale-lock steal into
@@ -310,11 +383,60 @@ async function withFileLock<T>(
  * decided by that create, not by this function.
  */
 async function stealLock(lockPath: string, expected: string): Promise<void> {
+  // Formal-verification finding (spec/formal/findings/persistence.md, candidate 3):
+  // `rename` is single-winner, but the file it moves is whatever sits at
+  // `lockPath` NOW, not the one this contender judged stale. Replayed: A and B
+  // both judge a dead holder's lock stale; A claims it, confirms it, and
+  // O_EXCL-acquires; B's rename then moves A's LIVE lock aside, C O_EXCL-creates
+  // at the empty path before B can put A's back, and A and C are both inside the
+  // critical section. So stealing is itself serialized by a guard file, and the
+  // lock is re-read under the guard: while the guard is held no other stealer can
+  // touch `lockPath`, no acquirer can (the file exists), and a dead holder cannot
+  // release — so the file seen here is the file renamed below.
+  const guard = `${lockPath}.steal`
+  const guardToken = makeToken()
+  try {
+    await writeFile(guard, guardToken, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL })
+  } catch (err: any) {
+    if (err?.code === 'EEXIST') await clearAbandonedGuard(guard)
+    return // another contender is stealing — re-evaluate
+  }
+  try {
+    const now = await readFile(lockPath, 'utf8').then(c => c.trim(), () => null)
+    if (now !== expected) return // already stolen (and maybe re-acquired), or released
+    await claimAndRemove(lockPath, expected)
+  } finally {
+    await releaseIfOurs(guard, guardToken)
+  }
+}
+
+/**
+ * The steal guard is held for a read and a rename, so one that outlives its
+ * holder's process (or {@link GUARD_STALE_MS} when liveness cannot be probed)
+ * was abandoned by a crash mid-steal. Removing it is best-effort: the residual
+ * race needs a second crash-free stealer to hit that same microsecond window.
+ */
+async function clearAbandonedGuard(guard: string): Promise<void> {
+  try {
+    const [s, contents] = await Promise.all([stat(guard), readFile(guard, 'utf8')])
+    const alive = holderIsAlive(contents.trim())
+    if (alive === false || (alive === undefined && Date.now() - s.mtimeMs > GUARD_STALE_MS)) {
+      await unlink(guard)
+    }
+  } catch {
+    /* gone already */
+  }
+}
+
+/** A steal guard untouched this long, whose holder cannot be probed, is abandoned. */
+const GUARD_STALE_MS = 10_000
+
+async function claimAndRemove(lockPath: string, expected: string): Promise<void> {
   const claim = `${lockPath}.steal.${makeToken().replace(/[^\w.-]/g, '_')}`
   try {
     await rename(lockPath, claim)
   } catch {
-    return // another contender claimed it, or the holder released — re-evaluate
+    return // the holder released — re-evaluate
   }
   try {
     const current = (await readFile(claim, 'utf8')).trim()

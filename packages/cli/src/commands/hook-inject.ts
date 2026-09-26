@@ -2,7 +2,7 @@ import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, rea
 import { dirname, join, resolve } from 'path'
 import { tmpdir, homedir } from 'os'
 import { randomUUID } from 'crypto'
-import { createPlur, type GlobalFlags } from '../plur.js'
+import { createPlur, trustedProjectScope, storeTrustCheck, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
@@ -84,7 +84,7 @@ const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 // so both this hook AND the MCP server's session_start handler can use it
 // (the original duplication was the root cause of #177 — session_start
 // ignored .plur.yaml because the reader lived in this CLI-only file).
-import { readProjectConfig, claimHookDegradationLines, type Plur } from '@plur-ai/core'
+import { claimHookDegradationLines, type Plur } from '@plur-ai/core'
 import { resolveProjectRemote, projectRemoteRefusalNotice, type ProjectRemote } from '../lib/project-remote.js'
 
 /**
@@ -350,7 +350,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (!isRehydrate && existsSync(marker)) {
     if (isReminderDue()) {
       touchReminder()
-      const projectConfig = readProjectConfig()
+      // Same trust gate as session start (decision E3): an untrusted
+      // .plur.yaml does not get to name the scope the model writes under.
+      const reminderRemote = resolveProjectRemote(storeTrustCheck(flags))
+      const projectConfig = trustedProjectScope(storeTrustCheck(flags), reminderRemote.config, reminderRemote.configDir)
       const scopeHint = projectConfig.scope ? ` Use scope "${projectConfig.scope}" for plur_learn calls in this project.` : ''
       const output = {
         additionalContext: `[PLUR Memory Reminder] If the user corrected you, stated a preference, or you discovered a pattern — call plur_learn now.${scopeHint} Call plur_session_end with engram_suggestions before the conversation ends.`,
@@ -375,8 +378,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const input = readStdinSync()
   // Project remote routing is resolved with the Plur instance, below — see
-  // lib/project-remote.ts. `scope`/`domain` are read here because they are
-  // local filters and need no gate.
+  // lib/project-remote.ts. `scope`/`domain` are gated on directory trust too
+  // (decision E3): they are not only a read filter — the header tells the
+  // model to learn under the scope — so a cloned repo must not choose it.
   let projectRemote: ProjectRemote | null = null
 
   // Get task description from hook input
@@ -413,7 +417,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // directory trust (#1196). Fails closed; costs nothing when the project
   // declares no remote settings.
   projectRemote = resolveProjectRemote(plur)
-  const projectConfig = projectRemote.config
+  const projectConfig = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
   const remoteRefusedFrom = projectRemote.refusedFrom
 
   let injectSessionId: string | undefined
@@ -492,6 +496,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // this gate could otherwise introduce — the user must be able to tell
   // "refused, here is the one command" from "quietly broken".
   if (remoteRefusedFrom) parts.push(projectRemoteRefusalNotice(remoteRefusedFrom))
+  // E3: an ignored scope/domain is said too, naming the file and `plur trust`.
+  if (projectConfig.notice && !isRehydrate) parts.push(projectConfig.notice)
 
   if (context) {
     parts.push('')

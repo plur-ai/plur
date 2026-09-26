@@ -1,4 +1,4 @@
-import { createPlur, type GlobalFlags } from '../plur.js'
+import { createPlur, trustedProjectScope, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
@@ -46,7 +46,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // reaches Codex at session start too. The helper carries #1196's trust
       // gate, so this cannot reintroduce the exfiltration path.
       const projectRemote = resolveProjectRemote(plur)
-      const projectConfig = projectRemote.config
+      // E3 (formal verification, 2026-09-26): a `.plur.yaml` scope/domain is
+      // adopted only from a directory the user trusted with `plur trust` —
+      // the same rule as every other hook. Untrusted → ignored, with a notice.
+      const projectConfig = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
       const injectOpts = {
         budget: 3000,
         ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
@@ -66,7 +69,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const refusal = projectRemote.refusedFrom
         ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
         : ''
-      context = refusal + (body ? `${header}\n\n${body}` : header)
+      const trustNotice = projectConfig.notice ? `${projectConfig.notice}\n\n` : ''
+      context = refusal + trustNotice + (body ? `${header}\n\n${body}` : header)
     } catch (err: unknown) {
       context = '[PLUR Memory — injection FAILED at session start] ' +
         `(${(err as Error)?.message ?? 'unknown error'}). Recalled memory is unavailable; run ` +

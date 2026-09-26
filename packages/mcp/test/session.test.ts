@@ -402,6 +402,10 @@ describe('Session & store tools', () => {
     beforeEach(() => {
       projectDir = mkdtempSync(join(tmpdir(), 'plur-project-'))
       mkdirSync(join(projectDir, '.git'), { recursive: true })  // marks project boundary
+      // Decision E3 (2026-09-26): a .plur.yaml scope is adopted only from a
+      // `plur trust`ed directory; these tests are about adoption, so trust it.
+      // The untrusted case is formal-apply-surface-trust.test.ts.
+      plur.trustDirectory(projectDir)
       originalCwd = process.cwd()
     })
 

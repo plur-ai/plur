@@ -234,11 +234,38 @@ describe('real dsh system-prompt integration', () => {
           seen.push(opts.scope)
           return { directives: '[ENG-1] x', count: 1 }
         },
+        // Decision E3 (2026-09-26): a workspace scope is adopted only from a
+        // `plur trust`ed directory. This test is about the wiring, so trust it.
+        isDirectoryTrusted: () => true,
       })
       const a = { id: 'a1', session: { events: askedAbout('a question'), header: { cwd: root } } }
       await turn(a)
       expect(seen).toEqual(['project:from-disk'])
     } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('WIRING (E3): an untrusted workspace .plur.yaml does not set the scope, and says so', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'plur-dsh-wire-'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      writeFileSync(join(root, '.plur.yaml'), 'scope: "group:acme/eng"\n', 'utf8')
+      const seen: string[] = []
+      apply(host.ctx, cfg({}), {
+        injectHybrid: async (_task: string, opts: { scope: string }) => {
+          seen.push(opts.scope)
+          return { directives: '[ENG-1] x', count: 1 }
+        },
+        isDirectoryTrusted: () => false,
+      })
+      const a = { id: 'a1', session: { events: askedAbout('a question'), header: { cwd: root } } }
+      await turn(a)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).not.toBe('group:acme/eng')
+      expect(warn.mock.calls.flat().join('\n')).toContain('plur trust ')
+    } finally {
+      warn.mockRestore()
       rmSync(root, { recursive: true, force: true })
     }
   })

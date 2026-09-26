@@ -13,7 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
 import { readScope } from './scope.js'
 import type { Counters } from './counters.js'
-import { guard, type WriteQueue } from './guard.js'
+import { guard, writable, type WriteQueue } from './guard.js'
 import type { PlurClient } from './client.js'
 
 /** Dependencies shared by every tool. */
@@ -126,7 +126,8 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         // that did not happen is the worst answer a memory tool can give —
         // the user believes it is remembered and stops repeating it.
         const ok = await queue(async () => {
-          await plur?.learn?.(statement, {
+          if (!(await writable(plur, 'learn'))) return false
+          await plur!.learn!(statement, {
             scope,
             domain: input?.domain === undefined ? undefined : String(input.domain),
           })
@@ -157,7 +158,8 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         if (!id) return 'Nothing to retire: id was empty.'
         const scope = await resolveScope(callerOf(exec))
         const ok = await queue(async () => {
-          await plur?.forget?.(id, input?.reason === undefined ? undefined : String(input.reason), { scope })
+          if (!(await writable(plur, 'forget'))) return false
+          await plur!.forget!(id, input?.reason === undefined ? undefined : String(input.reason), { scope })
           return true
         })
         return ok === true ? 'Retired.' : `Could not retire ${id} — the memory store did not accept the write.`
@@ -183,7 +185,8 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         if (!id) return 'Nothing to rate: id was empty.'
         const scope = await resolveScope(callerOf(exec))
         const ok = await queue(async () => {
-          await plur?.feedback?.(id, input?.signal === 'negative' ? 'negative' : 'positive', scope)
+          if (!(await writable(plur, 'feedback'))) return false
+          await plur!.feedback!(id, input?.signal === 'negative' ? 'negative' : 'positive', scope)
           return true
         })
         return ok === true ? 'Recorded.' : `Could not record feedback on ${id}.`
