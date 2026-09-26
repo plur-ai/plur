@@ -34,6 +34,27 @@ needs updating before its producers switch. Two conformance vectors were added
 (`with-integrity-v2`, `boundary-shift-v2`), and every vector now declares its v2
 value as well.
 
+### Two packs with the same manifest name no longer share an integrity baseline
+
+**The pack registry was keyed by manifest name, while installed packs live in
+directories named after their source** (found by the formal verification run in
+#1228). Two directories whose manifests shared a name shared one registry row,
+which caused two failures:
+
+- the second install overwrote the first's baseline, so `plur packs list`
+  reported the untouched first pack as `modified`;
+- uninstalling either pack removed the row by name, leaving the other one
+  `unverified`. Tamper detection was lost without any message.
+
+**Registry rows now record the install directory in a new `dir` field**, and
+install, uninstall and list all look rows up by it. Uninstalling one pack never
+removes another pack's row.
+
+**Older registry files still load unchanged.** A row without `dir` is matched by
+manifest name, as before. Reinstalling that pack upgrades the row in place. A
+legacy row that two installed directories could both own is never removed on
+behalf of just one of them.
+
 ### An unscoped write can no longer land in a team store
 
 **If you wrote an engram without a scope, it could be auto-routed into a shared
