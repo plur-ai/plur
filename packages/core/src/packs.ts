@@ -121,7 +121,14 @@ export function cleanupDownloadedPack(tmpRoot: string): void {
 // --- Registry ---
 
 export interface RegistryEntry {
+  /** The pack's manifest name. NOT unique: two install directories may share it. */
   name: string
+  /**
+   * The install directory under the packs directory — what identifies the row
+   * (formal verification run, persistence finding 11). Absent on rows written
+   * before it existed; those are matched by `name` (`findRegistryRow`).
+   */
+  dir?: string
   installed_at: string
   source: string
   integrity: string
@@ -228,28 +235,86 @@ function withRegistryLock<T>(packsDir: string, fn: () => T): T {
   return withLock(registryPath(packsDir), fn)
 }
 
-function addToRegistry(packsDir: string, entry: RegistryEntry): void {
+/*
+ * Which registry row belongs to which installed pack.
+ *
+ * Rows are keyed by install directory (`dir`). Install used to write
+ * `registry[manifest.name]` while the pack lived at `packs/<basename>`, so two
+ * directories whose manifests shared a name shared ONE row: the second install
+ * overwrote the first's baseline (the untouched pack then reported `modified`),
+ * and uninstalling either removed the row by manifest name, leaving the other
+ * `unverified` — the loss of baseline the registry lock above exists to
+ * prevent (formal verification run, persistence finding 11, Lean theorem
+ * `Packs.registry_shared_row`).
+ *
+ * Rows written before `dir` existed carry only `name`. They still resolve, by
+ * manifest name, and only rows WITHOUT `dir` are matched that way — a row that
+ * names its directory never answers for another one.
+ */
+
+/** Index of the row for the pack installed at `dir` (manifest `name`), or -1. */
+function findRegistryRowIndex(entries: RegistryEntry[], dir: string, name: string | undefined): number {
+  const own = entries.findIndex(e => e.dir === dir)
+  if (own >= 0) return own
+  if (name === undefined) return -1
+  return entries.findIndex(e => e.dir === undefined && e.name === name)
+}
+
+/**
+ * Other install directories whose manifest carries `name`. A legacy row (no
+ * `dir`) with that name could belong to any of them, so it is only claimed or
+ * removed on behalf of `dir` when this is empty.
+ */
+function otherDirsNamed(packsDir: string, dir: string, name: string): string[] {
+  if (!fs.existsSync(packsDir)) return []
+  return fs.readdirSync(packsDir).filter(e => {
+    if (e === dir) return false
+    const d = path.join(packsDir, e)
+    try {
+      if (!fs.statSync(d).isDirectory()) return false
+      return loadPack(d).manifest.name === name
+    } catch { return false }
+  })
+}
+
+/** Index of the row `dir` may claim or remove: its own, or a legacy row only it can own. */
+function ownedRegistryRowIndex(packsDir: string, entries: RegistryEntry[], dir: string, name: string | undefined): number {
+  const idx = findRegistryRowIndex(entries, dir, name)
+  if (idx < 0 || entries[idx].dir === dir) return idx
+  // A legacy row matched by name: only if no other installed directory could own it.
+  return otherDirsNamed(packsDir, dir, name!).length === 0 ? idx : -1
+}
+
+function addToRegistry(packsDir: string, entry: RegistryEntry & { dir: string }): void {
   withRegistryLock(packsDir, () => {
     const entries = loadRegistry(packsDir)
-    const idx = entries.findIndex(e => e.name === entry.name)
+    const idx = ownedRegistryRowIndex(packsDir, entries, entry.dir, entry.name)
     if (idx >= 0) entries[idx] = entry
     else entries.push(entry)
     saveRegistry(packsDir, entries)
   })
 }
 
-function removeFromRegistry(packsDir: string, name: string): void {
+/**
+ * Remove the row for the pack installed at `dir` — never another pack's row.
+ * `name` is its manifest name when it could be read; a legacy row is removed
+ * by it only when no other installed directory carries the same name.
+ */
+function removeFromRegistry(packsDir: string, dir: string, name: string | undefined): void {
   withRegistryLock(packsDir, () => {
-    const entries = loadRegistry(packsDir).filter(e => e.name !== name)
+    const entries = loadRegistry(packsDir)
+    const idx = ownedRegistryRowIndex(packsDir, entries, dir, name)
+    if (idx < 0) return
+    entries.splice(idx, 1)
     saveRegistry(packsDir, entries)
   })
 }
 
 /** Rewrite one entry's `source` under the same lock — the URL-install path. */
-function setRegistrySource(packsDir: string, name: string, source: string): void {
+function setRegistrySource(packsDir: string, dir: string, source: string): void {
   withRegistryLock(packsDir, () => {
     const entries = loadRegistry(packsDir)
-    const idx = entries.findIndex(e => e.name === name)
+    const idx = entries.findIndex(e => e.dir === dir)
     if (idx >= 0) { entries[idx].source = source; saveRegistry(packsDir, entries) }
   })
 }
@@ -1354,8 +1419,9 @@ function _installPackDir(
   try { fsyncDir(path.dirname(destDir)) } catch { /* best-effort, as elsewhere */ }
   fs.rmSync(displaced, { recursive: true, force: true })
 
-  const registryEntry: RegistryEntry = {
+  const registryEntry: RegistryEntry & { dir: string } = {
     name: preview.manifest.name,
+    dir: path.basename(destDir),
     installed_at: new Date().toISOString(),
     source: path.resolve(source),
     integrity,
@@ -1409,7 +1475,7 @@ export async function installPack(
       // Overwrite the registry source with the original URL so `plur packs list`
       // shows where the pack came from, not an ephemeral /tmp path.
       result.registry.source = source
-      setRegistrySource(packsDir, result.registry.name, source)
+      setRegistrySource(packsDir, result.registry.dir!, source)
       return result
     } finally {
       cleanupDownloadedPack(tmpRoot)
@@ -1499,9 +1565,12 @@ export function uninstallPack(packsDir: string, name: string): UninstallResult {
   let manifestName: string | undefined
   try { manifestName = loadPack(packDir).manifest.name } catch {}
 
-  // Remove from registry (try both directory name and manifest name)
-  removeFromRegistry(packsDir, name)
-  if (manifestName && manifestName !== name) removeFromRegistry(packsDir, manifestName)
+  // Remove THIS directory's row only (formal finding 11): by `dir`, or — for a
+  // row written before `dir` existed — by manifest name, and then only when no
+  // other installed directory carries the same name. The directory name stands
+  // in for the manifest name when the manifest cannot be read, as before.
+  // Removing by name alone erased the baseline of every other pack sharing it.
+  removeFromRegistry(packsDir, path.basename(packDir), manifestName ?? path.basename(packDir))
 
   // Remove recursively
   fs.rmSync(packDir, { recursive: true, force: true })
@@ -1548,7 +1617,11 @@ export function listPacks(packsDir: string): PackInfo[] {
   if (!fs.existsSync(packsDir)) return []
 
   const registry = loadRegistry(packsDir)
-  const registryMap = new Map(registry.map(r => [r.name, r]))
+  // By directory first; a legacy row (no `dir`) by manifest name (finding 11).
+  const rowFor = (dir: string, name: string | undefined): RegistryEntry | undefined => {
+    const idx = findRegistryRowIndex(registry, dir, name)
+    return idx >= 0 ? registry[idx] : undefined
+  }
 
   const result: PackInfo[] = []
   for (const entry of fs.readdirSync(packsDir)) {
@@ -1557,7 +1630,7 @@ export function listPacks(packsDir: string): PackInfo[] {
 
     try {
       const pack = loadPack(packDir)
-      const reg = registryMap.get(pack.manifest.name)
+      const reg = rowFor(entry, pack.manifest.name)
       // Compared in the version the registry recorded: a v1 row from before
       // `sha256:v2:` still verifies as it did (§5.5). The reported value is
       // always v2, the current form.
@@ -1590,7 +1663,7 @@ export function listPacks(packsDir: string): PackInfo[] {
       } catch (corpusErr) {
         loadError = (corpusErr as Error).message
       }
-      const reg = registryMap.get(entry)
+      const reg = rowFor(entry, entry)
       result.push({
         name: entry,
         path: packDir,
@@ -2368,6 +2441,8 @@ export type PackIntegrityMigrationAction =
   | 'skipped-modified'
   /** No registry row for this pack. No baseline is invented. */
   | 'skipped-no-entry'
+  /** A legacy row (no `dir`) that another installed directory's manifest also names: it could be either pack's baseline, so it is left alone. */
+  | 'skipped-ambiguous-legacy-row'
   /** The pack's manifest could not be read, so it cannot be matched to a row. */
   | 'skipped-unreadable'
   /** The row's value is in no known format. Left as it is. */
@@ -2420,7 +2495,16 @@ export function migratePackIntegrity(
         report.packs.push({ dir, action: 'skipped-unreadable' })
         continue
       }
-      const row = entries.find(e => e.name === name)
+      // By directory first, a legacy row (no `dir`) by manifest name — the same
+      // rule listPacks verifies with, so a pack is migrated against its own row.
+      // A legacy row that another directory's manifest also names could be
+      // either pack's baseline: leave it alone rather than guess.
+      const idx = findRegistryRowIndex(entries, dir, name)
+      const row = idx >= 0 ? entries[idx] : undefined
+      if (row && row.dir === undefined && otherDirsNamed(packsDir, dir, name).length > 0) {
+        report.packs.push({ dir, name, action: 'skipped-ambiguous-legacy-row' })
+        continue
+      }
       if (!row) { report.packs.push({ dir, name, action: 'skipped-no-entry' }); continue }
       if (INTEGRITY_V2_RE.test(row.integrity)) { report.packs.push({ dir, name, action: 'already-v2' }); continue }
       if (!INTEGRITY_V1_RE.test(row.integrity)) {
