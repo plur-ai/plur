@@ -29,7 +29,7 @@ import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatu
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
-import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack, containsEmail } from './packs.js'
+import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack, containsEmail, migratePackIntegrity } from './packs.js'
 import type { ExportOptions } from './packs.js'
 import { learnContextContent, engramContentFields } from './content-fields.js'
 export { LEARN_CONTEXT_FIELD_ROLES, LEARN_CONTENT_FIELDS, learnContextContent, engramContentFields } from './content-fields.js'
@@ -287,7 +287,7 @@ export type { Engram, PreviousVersionRef } from './schemas/engram.js'
 export { ExtractionProvenanceSchema, getExtractionProvenance, type ExtractionProvenance } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
-export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView, InstallResult, NeutralizedCounts } from './packs.js'
+export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView, InstallResult, NeutralizedCounts, PackIntegrityMigrationReport } from './packs.js'
 export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
@@ -7597,6 +7597,15 @@ export class Plur {
   /** List all installed packs (with integrity hashes). */
   listPacks(): ReturnType<typeof listPacks> {
     return listPacks(this.paths.packs)
+  }
+
+  /**
+   * Re-baseline installed packs' registry integrity from v1 to `sha256:v2:`
+   * (ENGRAM-STANDARD-v1 §5.5), only for packs that still verify clean under v1.
+   * `dryRun: true` reports without writing. See `migratePackIntegrity`.
+   */
+  migratePackIntegrity(opts: { dryRun?: boolean } = {}): ReturnType<typeof migratePackIntegrity> {
+    return migratePackIntegrity(this.paths.packs, opts)
   }
 
   // SP5 methods (deferred — vault-export, registry not yet merged)

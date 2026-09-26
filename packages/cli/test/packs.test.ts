@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
+import { join, basename } from 'path'
+import { createHash } from 'crypto'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
@@ -74,6 +75,37 @@ describe('plur packs', () => {
       const output = JSON.parse(run(`packs install ${packDir}`))
       expect(output.installed).toBe(1)
       expect(output.name).toBeDefined()
+    } finally {
+      rmSync(packDir, { recursive: true })
+    }
+  })
+
+  it('packs migrate-integrity is a dry run without --yes, and re-baselines a clean v1 row with it', () => {
+    const packDir = mkdtempSync(join(tmpdir(), 'test-pack-mig-'))
+    try {
+      writeFileSync(join(packDir, 'SKILL.md'), '---\nname: mig-pack\nversion: 1.0.0\n---\n')
+      writeFileSync(join(packDir, 'engrams.yaml'), 'engrams: []\n')
+      run(`packs install ${packDir}`)
+      // Put the registry row back into the pre-v2 state: a v1 value.
+      const installed = join(dir, 'packs', basename(packDir))
+      const v1 = 'sha256:' + createHash('sha256')
+        .update(readFileSync(join(installed, 'SKILL.md')))
+        .update(readFileSync(join(installed, 'engrams.yaml'))).digest('hex')
+      const regPath = join(dir, 'packs', 'registry.yaml')
+      writeFileSync(regPath, readFileSync(regPath, 'utf8').replace(/integrity: .*/, `integrity: "${v1}"`))
+      const before = readFileSync(regPath, 'utf8')
+
+      const dry = JSON.parse(run('packs migrate-integrity'))
+      expect(dry.dry_run).toBe(true)
+      expect(dry.migrated).toBe(1)
+      expect(readFileSync(regPath, 'utf8')).toBe(before)
+
+      const real = JSON.parse(run('packs migrate-integrity --yes'))
+      expect(real.dry_run).toBe(false)
+      expect(real.migrated).toBe(1)
+      expect(readFileSync(regPath, 'utf8')).toMatch(/integrity: "?sha256:v2:[0-9a-f]{64}/)
+      const listed = JSON.parse(run('packs list'))
+      expect(listed.packs[0].integrity_status).toBe('ok')
     } finally {
       rmSync(packDir, { recursive: true })
     }

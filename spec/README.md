@@ -117,7 +117,7 @@ standard is the NGI/NLnet-fundable scope:
    (`git diff --exit-code spec/`). The divergence risk is eliminated.
 
 2. ~~**Conformance test vectors.**~~ **Partly done (#1022).** `spec/vectors/`
-   now holds 13 golden packs with known `INTEGRITY` values and declared
+   now holds 15 golden packs with known `INTEGRITY` values and declared
    install outcomes (load, refuse, report, neutralize — with every count a
    consumer must report), and 13 `.plur` capsules covering magic, version,
    flags, header, payload, SHA-256 and the `SIGNED`/`signer` agreement,

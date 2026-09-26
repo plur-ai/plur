@@ -40,11 +40,11 @@
  * vector to match the code without establishing that first.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { computePackHash, verifyPackIntegrity, previewPack, installPack, listPacks } from '../src/packs.js'
+import { computePackHash, computePackIntegrity, verifyPackIntegrity, previewPack, installPack, listPacks } from '../src/packs.js'
 import { loadEngrams } from '../src/engrams.js'
 import { readCapsule } from '../src/capsule.js'
 
@@ -57,6 +57,7 @@ interface Vector {
   pack: string
   engram_count: number
   computed_integrity: string
+  computed_integrity_v2: string
   shipped_integrity: string | null
   expect: 'load' | 'reject' | 'load-with-report' | 'load-neutralized' | 'disputed'
   integrity_status: 'ok' | 'modified' | 'absent'
@@ -104,6 +105,32 @@ describe('golden pack vectors — the hash', () => {
       expect(`sha256:${computePackHash(dirOf(v))}`, `${v.pack} — ${v.note}`).toBe(v.computed_integrity)
     })
   }
+
+  for (const v of index.vectors) {
+    it(`${v.pack}: computePackIntegrity reproduces the sha256:v2: value Python computed`, () => {
+      // §5.5 v2, from the same independent side: named, length-prefixed parts.
+      expect(computePackIntegrity(dirOf(v)), `${v.pack} — ${v.note}`).toBe(v.computed_integrity_v2)
+    })
+  }
+
+  it('boundary-shift-v2: v1 cannot see the shift, v2 does', () => {
+    // The shipped value was computed before SKILL.md's last byte moved into
+    // engrams.yaml. The v1 hash of the unshifted pack equals the v1 hash of
+    // these bytes (the concatenation is identical); the v2 value does not.
+    const v = byName('boundary-shift-v2')
+    const skill = readFileSync(join(dirOf(v), 'SKILL.md'))
+    const engrams = readFileSync(join(dirOf(v), 'engrams.yaml'))
+    const unshifted = mkdtempSync(join(tmpdir(), 'plur-spec-unshift-'))
+    try {
+      writeFileSync(join(unshifted, 'SKILL.md'), Buffer.concat([skill, engrams.subarray(0, 1)]))
+      writeFileSync(join(unshifted, 'engrams.yaml'), engrams.subarray(1))
+      expect(computePackHash(unshifted)).toBe(computePackHash(dirOf(v)))
+      expect(computePackIntegrity(unshifted)).toBe(v.shipped_integrity)
+      expect(computePackIntegrity(dirOf(v))).not.toBe(v.shipped_integrity)
+    } finally {
+      rmSync(unshifted, { recursive: true, force: true })
+    }
+  })
 
   it('the non-latin fixture really is non-ASCII, so an encoding assumption has somewhere to fail', () => {
     // The first version of this vector was pure ASCII — `\\u30c7…` escapes —
