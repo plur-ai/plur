@@ -2,7 +2,7 @@
 """Check a repository's formal models: build, gaps, axioms, drift.
 
 This file is VENDORED into each verified repository's Lean project (next to its
-verify.yaml) by `/verify`, so the repository's CI can run it without depending
+verify.yaml) by `/formal-verify`, so the repository's CI can run it without depending
 on the dev module. Keep it standard-library only apart from PyYAML.
 
     python3 formal_check.py [--project DIR] [--base REF] [--no-build] [--strict-drift]
@@ -83,9 +83,22 @@ def load_config(project: Path) -> dict:
     return cfg
 
 
+# Variables git exports to hooks. Inherited by our own git calls they override
+# `-C`: in a worktree pre-push hook GIT_DIR is set without GIT_WORK_TREE, so
+# `rev-parse --show-toplevel` answered with the current directory and every
+# covered file looked missing. Our git calls locate the repo from `-C` alone.
+_HOOK_GIT_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                  "GIT_PREFIX", "GIT_OBJECT_DIRECTORY")
+
+
+def _git_env() -> dict:
+    import os
+    return {k: v for k, v in os.environ.items() if k not in _HOOK_GIT_VARS}
+
+
 def repo_root(project: Path) -> Path:
     out = subprocess.run(["git", "-C", str(project), "rev-parse", "--show-toplevel"],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, env=_git_env())
     return Path(out.stdout.strip()) if out.returncode == 0 else project
 
 
@@ -156,7 +169,7 @@ def check_axioms(project: Path, libraries: list[str], allowed: list[str]) -> tup
 
 def changed_files(root: Path, base: str) -> set[str] | None:
     r = subprocess.run(["git", "-C", str(root), "diff", "--name-only", f"{base}...HEAD"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=_git_env())
     if r.returncode != 0:
         return None
     return {l.strip() for l in r.stdout.splitlines() if l.strip()}
