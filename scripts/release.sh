@@ -35,7 +35,9 @@
 #                    because its versions are already published (step 3.7
 #                    would correctly refuse). Requires the v<version> tag on
 #                    origin, and must be the only flag. Iterate the copy with
-#                    --preview-tweet first; this mode is not for that.
+#                    --preview-tweet first; this mode is not for that. When
+#                    run from a terminal it asks y/N before posting; without
+#                    a terminal on stdin it posts without asking.
 #   --skip-tweet     Full release but don't post to X.
 #   --trust-ci       Replace the LOCAL test suite (step 3) with a verification
 #                    that HEAD equals origin/main and that the five required CI
@@ -157,8 +159,13 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --*)
-      echo "Unknown flag: $1" >&2
-      shift
+      # Fatal, not a warning: a misspelled safety flag (`--dryrun` for
+      # `--dry-run`, `--skip-tweets` for `--skip-tweet`) must not let the run
+      # carry on without it. With --tweet-only that would post publicly; on a
+      # release it would publish when a rehearsal was asked for.
+      echo "FAIL: unknown flag: $1 — nothing was run." >&2
+      echo "      Known flags: --dry-run --skip-tweet --preview-tweet --tweet-only --trust-ci --no-website --claw <ver> --dsh <ver> --opencode <ver>" >&2
+      exit 1
       ;;
     *)
       if [ -z "$VERSION" ]; then
@@ -235,6 +242,16 @@ fi
 # with a helpful diagnostic before any irreversible action.
 TWEET_MAX=270
 
+# Length in Unicode code points, the same on every machine. Bash ${#var}
+# depends on the locale: the 0.20.0 tweet counted 246 under UTF-8 and 257 under
+# C (bytes). Counting the UTF-8 bytes that START a character (every byte except
+# the 0x80-0xBF continuation bytes) gives code points without depending on
+# which locales are installed. X's own weighting (emoji as 2, URLs as 23) is
+# not modelled; the 10-char headroom under 280 covers the difference.
+char_count() {
+  printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' '
+}
+
 # --- Tweet generation (deterministic; called from multiple places) ---
 # Reads CHANGELOG.md for $VERSION, sets globals: TWEET, REPLY, TWEET_LEN, REPLY_LEN.
 # Returns 0 on success, 1 if CHANGELOG section is empty.
@@ -267,14 +284,16 @@ github.com/plur-ai/plur/releases/tag/v$VERSION"
   # One line per harness this repo actually integrates with. Windsurf is not
   # listed: it has no integration here (generic MCP only), and naming it beside
   # harnesses that ship hooks implies a parity that does not exist. Codex and
-  # Antigravity ship hooks through @plur-ai/cli; opencode has its own package.
+  # Antigravity ship hooks through @plur-ai/cli. opencode is set up through
+  # @plur-ai/cli too: @plur-ai/opencode has no bin, and opencode fetches that
+  # plugin from npm itself — this is the line packages/opencode/README.md uses.
   REPLY="Manual update:
 
 Claude Code / Cursor / Codex / Antigravity:
 npm update -g @plur-ai/mcp @plur-ai/cli
 
 opencode:
-npm i -g @plur-ai/opencode && plur init --opencode
+npx @plur-ai/cli init --opencode
 
 OpenClaw:
 openclaw plugins install @plur-ai/claw
@@ -282,8 +301,8 @@ openclaw plugins install @plur-ai/claw
 Hermes:
 pip install --upgrade plur-hermes"
 
-  TWEET_LEN=${#TWEET}
-  REPLY_LEN=${#REPLY}
+  TWEET_LEN=$(char_count "$TWEET")
+  REPLY_LEN=$(char_count "$REPLY")
   return 0
 }
 
@@ -436,6 +455,16 @@ if [ "$TWEET_ONLY" = true ]; then
   echo "--- Reply ($REPLY_LEN / $TWEET_MAX chars) ---"
   echo "$REPLY"
   echo ""
+  # Last chance to stop after reading the copy. Only when stdin is a terminal:
+  # a non-interactive caller gets no prompt and is never left blocked on one.
+  if [ -t 0 ]; then
+    CONFIRM=""
+    read -r -p "Post this tweet and reply publicly to X? [y/N] " CONFIRM || true
+    case "$CONFIRM" in
+      y|Y|yes|YES) ;;
+      *) echo "Not confirmed. Nothing posted."; exit 1 ;;
+    esac
+  fi
   post_tweet_pair
   exit 0
 fi
