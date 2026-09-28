@@ -123,3 +123,33 @@ quoted commands, one hook set after two `init` runs, and `command: <node.exe>, a
 3. Item 6: publish `@plur-ai/opencode`, or keep the plugin opt-in and ship MCP-only by default.
 4. Item 8b: close as already fixed.
 5. Item 8c: register `hook-correction-detect`, or delete it.
+
+## Status — end of 2026-09-28
+
+| Item | Issue | PR | Verified how |
+|------|-------|----|--------------|
+| 1 delivery field + warning | #1264 | #1273 | unit tests core/mcp/cli; revert-proof; mcp suite 476/476 re-run by the lead |
+| 2 `stores add --url` | #1265 | #1272 | stub-server tests; token grep over all output; revert-proof |
+| 5 Stop nudge reaches model | #1266 | #1271 | real Claude Code session (2.1.283): delivered, one continuation, no loop |
+| 7 Windows | #1267 | #1270 | win32-stubbed tests incl. `plur doctor`; **not verified on real Windows** |
+| 8a shared recurrence | #1268 | #1275 | unit tests; revert-proof. Carve-out for ladder-promoted `global` engrams awaits owner decision |
+| 8d outbox flush | #1269 | #1277 | real-HTTP stub: drain, failure stays queued, slow remote cut at budget |
+| new: inject never delivered | #1274 | #1276 | real sessions per event (2.1.284); plan mode not verified |
+| follow-up: session marker keyed on ppid | #1278 | — | filed |
+| follow-up: `plur-mcp init` registers PostCompact | #1279 | — | filed |
+
+### Found on the delivery path (new, 2026-09-28)
+
+- **Claude Code drops top-level `additionalContext`** on Stop and UserPromptSubmit (codeword experiments with positive
+  controls). `hook-inject` used that shape, so automatic injection has not reached the model in Claude Code. PostCompact
+  cannot carry context at all; rehydrate moves to `SessionStart` matcher `compact`.
+- **Async UserPromptSubmit context arrives only at the next safe point** (after a tool result or the next prompt), so a
+  first reply with no tool calls gets no memory. Owner decision pending: sync with a deadline, or keep async.
+- **Queued writes that are permanently refused stay silent.** A developer store had queued personal-scope writes
+  rejected with 403 on every attempt for 12 days (one entry at 103 attempts) with no user-visible signal. #1273 reports
+  where a *new* write went; nothing yet surfaces an outbox entry that can never succeed. Candidate follow-up.
+
+### Owner decisions still open
+
+Item 3 design note (and Q1–Q3), item 4 defaults, item 6 opencode, item 8c register/delete, #1275 carve-out,
+sync-vs-async injection.
