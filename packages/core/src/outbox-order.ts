@@ -24,43 +24,63 @@
  * engrams, where a comparator and a topological sort agree.
  */
 
-/** Kahn's algorithm over the pending set, stable, cycles appended not dropped. */
+/**
+ * Kahn's algorithm over the pending set, stable, cycles appended not dropped.
+ *
+ * Nodes are POSITIONS in `pending`, not ids (formal-verification finding,
+ * spec/formal/findings/persistence.md candidate 8). Keyed by id, a duplicated
+ * id collapsed to one map entry (`byId` last-wins) while the ready list held it
+ * twice: the result carried the LAST copy twice and dropped the first — an
+ * engram vanishing from the flush, which the cycle handling below exists to
+ * prevent. A store can hold duplicate ids (hand edits, a sync that kept both
+ * sides). By position, the output is a permutation of the input whatever the ids.
+ * An engram superseding a duplicated id waits for every copy.
+ */
 export function orderBySupersedes<T extends { id: string }>(
   pending: readonly T[],
   targetsOf: (item: T) => string[],
 ): T[] {
-  const pendingIds = new Set(pending.map(e => e.id))
-  const byId = new Map(pending.map(e => [e.id, e]))
+  const n = pending.length
+  /** Positions holding each id (more than one only for a duplicated id). */
+  const positions = new Map<string, number[]>()
+  pending.forEach((e, i) => {
+    const list = positions.get(e.id)
+    if (list) list.push(i)
+    else positions.set(e.id, [i])
+  })
   /** How many of THIS flush's engrams a node must wait for. */
-  const waitingOn = new Map<string, number>()
-  /** Reverse edges: target id -> ids that supersede it. */
-  const dependents = new Map<string, string[]>()
+  const waitingOn: number[] = new Array(n).fill(0)
+  /** Reverse edges: target position -> positions that supersede it. */
+  const dependents: number[][] = Array.from({ length: n }, () => [])
 
-  for (const e of pending) {
+  for (let i = 0; i < n; i++) {
+    const e = pending[i]
     // Only edges INSIDE the pending set constrain this flush. A target that is
     // already on the server, or lives only locally, is resolved elsewhere —
     // counting it here would leave every node waiting forever.
-    const deps = targetsOf(e).filter(t => pendingIds.has(t) && t !== e.id)
-    waitingOn.set(e.id, deps.length)
-    for (const t of deps) {
-      const list = dependents.get(t)
-      if (list) list.push(e.id)
-      else dependents.set(t, [e.id])
+    for (const t of new Set(targetsOf(e))) {
+      if (t === e.id) continue
+      for (const j of positions.get(t) ?? []) {
+        waitingOn[i]++
+        dependents[j].push(i)
+      }
     }
   }
 
   // Seeded in original order and drained FIFO, so the result is STABLE:
   // engrams with no dependency keep the order the store gave them, and the
   // flush stays predictable for the overwhelmingly common no-edges case.
-  const ready = pending.filter(e => waitingOn.get(e.id) === 0).map(e => e.id)
+  const ready: number[] = []
+  for (let i = 0; i < n; i++) if (waitingOn[i] === 0) ready.push(i)
+  const placed: boolean[] = new Array(n).fill(false)
   const ordered: T[] = []
-  for (let i = 0; i < ready.length; i++) {
-    const id = ready[i]
-    ordered.push(byId.get(id)!)
-    for (const dep of dependents.get(id) ?? []) {
-      const left = (waitingOn.get(dep) ?? 0) - 1
-      waitingOn.set(dep, left)
-      if (left === 0) ready.push(dep)
+  for (let k = 0; k < ready.length; k++) {
+    const i = ready[k]
+    placed[i] = true
+    ordered.push(pending[i])
+    for (const d of dependents[i]) {
+      waitingOn[d]--
+      if (waitingOn[d] === 0) ready.push(d)
     }
   }
 
@@ -69,9 +89,6 @@ export function orderBySupersedes<T extends { id: string }>(
   // these engrams must still be attempted, so the flush refuses them out loud
   // and reports it. An engram that vanishes from the flush is worse than one
   // that fails in it.
-  if (ordered.length < pending.length) {
-    const placed = new Set(ordered.map(e => e.id))
-    for (const e of pending) if (!placed.has(e.id)) ordered.push(e)
-  }
+  for (let i = 0; i < n; i++) if (!placed[i]) ordered.push(pending[i])
   return ordered
 }

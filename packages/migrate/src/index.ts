@@ -16,6 +16,11 @@ USAGE
   npx @plur-ai/migrate [path]           report un-awaited calls (default: .)
   npx @plur-ai/migrate [path] --write   also apply the unambiguous fixes
 
+EXIT CODES
+  0  clean, or every finding fixed by --write
+  2  un-awaited calls remain: sites that need a human, or (without --write)
+     fixable sites not yet written
+
 WHY
   As of 0.16 the PLUR engine's read and write methods return promises, so a
   store can live across a network. A call left un-awaited does not throw — it
@@ -82,6 +87,10 @@ export function run(argv: string[]): number {
 
   const all: Finding[] = []
   let changed = 0
+  // Counted from what applyFixes actually did (formal R2, mcp#8): the summary
+  // used to report every fixable site as fixed, including ones it skipped.
+  let appliedTotal = 0
+  const notApplied = new Set<Finding>()
   for (const f of files) {
     let src: string
     try { src = readFileSync(f, 'utf8') } catch { continue }
@@ -100,10 +109,12 @@ export function run(argv: string[]): number {
     all.push(...findings)
 
     if (write) {
-      const { src: next, applied } = applyFixes(src, findings)
+      const { src: next, applied, skipped } = applyFixes(src, findings)
+      for (const s of skipped) notApplied.add(s)
       if (applied > 0) {
         writeFileSync(f, next)
         changed++
+        appliedTotal += applied
       }
     }
   }
@@ -113,18 +124,21 @@ export function run(argv: string[]): number {
     return 0
   }
 
-  const fixable = all.filter(f => f.fixable)
-  const manual = all.filter(f => !f.fixable)
+  // A fixable site the rewrite could not apply is a site for a human.
+  const isManual = (f: Finding) => !f.fixable || notApplied.has(f)
+  const fixable = all.filter(f => !isManual(f))
+  const manual = all.filter(isManual)
 
   for (const f of all) {
-    const mark = f.fixable ? (write ? 'fixed  ' : 'fixable') : 'MANUAL '
+    const mark = isManual(f) ? 'MANUAL ' : (write ? 'fixed  ' : 'fixable')
+    const reason = notApplied.has(f) ? 'the rewrite could not be applied safely here — add `await` by hand' : f.reason
     process.stdout.write(`${mark} ${f.file}:${f.line}:${f.column}  .${f.method}()\n         ${f.text}\n`)
-    if (f.reason) process.stdout.write(`         ^ ${f.reason}\n`)
+    if (reason) process.stdout.write(`         ^ ${reason}\n`)
   }
 
   process.stdout.write('\n')
   if (write) {
-    process.stdout.write(`plur-migrate: applied ${fixable.length} fix(es) across ${changed} file(s).\n`)
+    process.stdout.write(`plur-migrate: applied ${appliedTotal} fix(es) across ${changed} file(s).\n`)
   } else {
     process.stdout.write(`plur-migrate: ${fixable.length} fixable, ${manual.length} need a human. Re-run with --write to apply the fixable ones.\n`)
   }
@@ -134,8 +148,11 @@ export function run(argv: string[]): number {
       `program meaning rather than just adding a wait — the notes above say how.\n`,
     )
   }
-  // Non-zero when anything still needs a human, so this composes in CI.
-  return manual.length > 0 ? 2 : 0
+  // Non-zero whenever un-awaited calls remain, so this composes in CI: sites
+  // that need a human, and — in report-only mode — fixable sites not yet
+  // written (formal R2, mcp#8: report-only used to exit 0 with work
+  // outstanding, which a CI gate reads as "migration done").
+  return manual.length > 0 || (!write && fixable.length > 0) ? 2 : 0
 }
 
 export { scanSource, applyFixes, NEWLY_ASYNC }

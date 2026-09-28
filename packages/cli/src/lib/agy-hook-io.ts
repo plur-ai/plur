@@ -40,7 +40,7 @@ import { safeSessionKey } from './session-key.js'
  */
 
 export { readStdinJson, runCodexHook as runAgyHook, injectWithFallback, isPlurSessionStartTool } from './codex-hook-io.js'
-import { ensureSessionDir, sessionDirSafeToSweep } from './codex-hook-io.js'
+import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted } from './codex-hook-io.js'
 
 const SESSION_DIR = join(tmpdir(), 'plur-agy-sessions')
 const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
@@ -92,7 +92,7 @@ export function agyMarkSessionStarted(conversationId: string): void {
 }
 
 export function agyIsSessionStarted(conversationId: string): boolean {
-  return existsSync(agySentinelPath(conversationId))
+  return sessionDirTrusted(SESSION_DIR) && existsSync(agySentinelPath(conversationId))
 }
 
 /** Same fail-open contract as codex-hook-io's incrementCounter: an unpersistable counter reports itself as exceeded. */
@@ -124,6 +124,11 @@ export interface AgyTurnCache {
   step: number
   textHash: string
   message: string
+  /**
+   * Byte offset of the turn's USER_INPUT line in the transcript (formal r2,
+   * cli#12). Optional: caches written before it existed simply lack it.
+   */
+  offset?: number
 }
 
 /**
@@ -136,6 +141,12 @@ export interface AgyTurnCache {
  * injecting another conversation's recalled memory into this one.
  */
 export function readAgyTurnCache(conversationId: string): AgyTurnCache | null {
+  // Read-side vetting (formal r2, cli#8). This file's text is emitted to the
+  // model verbatim as "recalled memory", so a cache planted in a symlinked,
+  // foreign or group/other-writable directory is prompt injection, not a
+  // cache hit. The writer already refused such a directory; the reader
+  // believed it anyway.
+  if (!sessionDirTrusted(SESSION_DIR)) return null
   try {
     const raw = JSON.parse(readFileSync(agyCounterPath(conversationId, 'turncache'), 'utf8')) as Partial<AgyTurnCache>
     if (raw.conversationId !== conversationId) return null
@@ -149,6 +160,7 @@ export function readAgyTurnCache(conversationId: string): AgyTurnCache | null {
       step: raw.step,
       textHash: typeof raw.textHash === 'string' ? raw.textHash : '',
       message: raw.message,
+      ...(typeof raw.offset === 'number' && Number.isSafeInteger(raw.offset) ? { offset: raw.offset } : {}),
     }
   } catch {
     return null // missing, torn, or corrupt — degrade to a fresh recall
@@ -179,6 +191,21 @@ export function cleanupStaleAgySessionFiles(now: number = Date.now(), dir: strin
 export interface AgyUserInput {
   stepIndex: number
   text: string
+  /**
+   * Absolute byte offset of this USER_INPUT line in the transcript. The
+   * transcript is append-only JSONL, so a later user message always sits at a
+   * larger offset — a turn identity that survives a missing `step_index`
+   * (which collapses to -1) and an identical re-sent text (same hash). Formal
+   * r2, cli#12: without it, "yes" … "yes" replayed the first turn's memory.
+   */
+  offset: number
+  /**
+   * True when the WHOLE transcript was read and this is its only user message
+   * — i.e. the conversation's genuine first turn, known from the transcript
+   * itself rather than from the absence of a cache (which an unusable cache
+   * dir makes permanent: every turn was "first").
+   */
+  firstInTranscript: boolean
 }
 
 /**
@@ -207,19 +234,23 @@ export interface AgyUserInput {
 const TRANSCRIPT_READ_CAP = 4 * 1024 * 1024
 
 export function lastUserInput(transcriptPath: string): AgyUserInput | null {
-  let raw: string
+  let raw: Buffer
+  let base = 0
+  let whole = true
   try {
     const fd = openSync(transcriptPath, 'r')
     try {
       const size = fstatSync(fd).size
       if (size <= TRANSCRIPT_READ_CAP) {
-        raw = readFileSync(transcriptPath, 'utf8')
+        raw = readFileSync(transcriptPath)
       } else {
         const buf = Buffer.alloc(TRANSCRIPT_READ_CAP)
-        const n = readSync(fd, buf, 0, TRANSCRIPT_READ_CAP, size - TRANSCRIPT_READ_CAP)
+        base = size - TRANSCRIPT_READ_CAP
+        whole = false
+        const n = readSync(fd, buf, 0, TRANSCRIPT_READ_CAP, base)
         // The first line of the window is almost certainly torn; its
         // JSON.parse fails and it is skipped, same as any mid-write line.
-        raw = buf.subarray(0, n).toString('utf8')
+        raw = buf.subarray(0, n)
       }
     } finally {
       closeSync(fd)
@@ -228,7 +259,16 @@ export function lastUserInput(transcriptPath: string): AgyUserInput | null {
     return null
   }
   let found: AgyUserInput | null = null
-  for (const line of raw.split('\n')) {
+  let userTurns = 0
+  // Walk lines on the BYTES so each line's offset is exact (a torn UTF-8
+  // sequence at the window start cannot shift the offsets after it).
+  let start = 0
+  while (start < raw.length) {
+    let end = raw.indexOf(0x0a, start)
+    if (end < 0) end = raw.length
+    const lineOffset = base + start
+    const line = raw.subarray(start, end).toString('utf8')
+    start = end + 1
     if (!line.includes('"USER_INPUT"')) continue // cheap pre-filter before JSON.parse
     try {
       const d = JSON.parse(line) as { type?: string; step_index?: number; content?: string }
@@ -237,9 +277,13 @@ export function lastUserInput(transcriptPath: string): AgyUserInput | null {
         .replace(/^\s*<USER_REQUEST>\s*/i, '')
         .replace(/\s*<\/USER_REQUEST>\s*$/i, '')
         .trim()
-      if (text) found = { stepIndex: d.step_index ?? -1, text }
+      if (text) {
+        userTurns++
+        found = { stepIndex: d.step_index ?? -1, text, offset: lineOffset, firstInTranscript: false }
+      }
     } catch { /* partial line mid-write — skip */ }
   }
+  if (found) found.firstInTranscript = whole && userTurns === 1
   return found
 }
 

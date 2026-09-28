@@ -334,6 +334,15 @@ export interface InjectionResult {
    */
   warnings?: string[]
   /**
+   * Set by `injectHybrid` (formal round 2, core-retrieval#12): which retrieval
+   * legs contributed, as in `HybridSearchResult.mode`. `hybrid-degraded` = the
+   * embedder was meant to run and failed, so the injection used keyword
+   * matching only (`embedder_error` says why); `bm25-only` = embeddings are
+   * turned off by choice, not a fault.
+   */
+  mode?: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
+  embedder_error?: string
+  /**
    * Pinned engrams that did NOT make this injection, with what each would have
    * cost and which cap it lost to (#1142).
    *

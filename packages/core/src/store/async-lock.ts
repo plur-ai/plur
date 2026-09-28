@@ -28,10 +28,12 @@
  * *different* path works but is a lock-ordering hazard; don't.
  */
 import { writeFile, unlink, stat, readFile, rename, open } from 'fs/promises'
-import { constants } from 'fs'
+import { constants, readFileSync, utimesSync } from 'fs'
 import { hostname } from 'os'
+import { createHash } from 'crypto'
 import * as path from 'path'
 import { KeyedAsyncMutex } from '../async-mutex.js'
+import { logger } from '../logger.js'
 
 export interface AsyncLockOptions {
   /**
@@ -173,6 +175,107 @@ export function holderIsAlive(token: string): boolean | undefined {
   }
 }
 
+/**
+ * Heartbeat (owner decision P1, formal run 2026-09-26).
+ *
+ * A contender that cannot probe the holder's liveness — the holder is on
+ * another host sharing `~/.plur`, or wrote a legacy bare-pid token — has only
+ * the lock file's age to go on, and steals once it is older than
+ * `staleThreshold`. Nothing refreshed that age during a hold, so a legitimate
+ * `Plur.sync()` (git fetch/pull/push, each up to 30 s — ~90 s in all) was
+ * stolen from at 60 s and a second writer entered (replayed:
+ * findings/persistence.md §4).
+ *
+ * So a holder re-touches its own lock (token-checked `utimes`) every
+ * `staleThreshold / 3` while it holds it — from a timer during async work, and
+ * from {@link heartbeatHeldLocks} at synchronous touch points (sync.ts calls it
+ * before every git command, since a blocking `execFileSync` starves timers).
+ * Stealing by age then only happens to a holder that stopped heartbeating.
+ * Both lock implementations (this one and `withLock` in sync.ts) register here;
+ * the heartbeat stops on release and on throw. No lock-file format change.
+ */
+const heldLocks = new Map<string, { lockPath: string; lastTouch: number; interval: number }>()
+
+/** Locks this process is heartbeating right now. Test/diagnostic seam. */
+export function activeHeartbeats(): number {
+  return heldLocks.size
+}
+
+/** Touch `lockPath` iff it still carries `token`. Never throws. */
+function touchIfOurs(lockPath: string, token: string): boolean {
+  try {
+    if (readFileSync(lockPath, 'utf8').trim() !== token) return false
+    const now = new Date()
+    utimesSync(lockPath, now, now)
+    return true
+  } catch {
+    return false // released, stolen or unreadable — nothing of ours to refresh
+  }
+}
+
+/**
+ * Re-touch every lock this process holds whose last touch is at least a
+ * heartbeat interval old. Synchronous and cheap; call it from long synchronous
+ * work done under a lock (sync.ts does, before each git command).
+ */
+export function heartbeatHeldLocks(): void {
+  const now = Date.now()
+  for (const [token, h] of heldLocks) {
+    if (now - h.lastTouch < h.interval) continue
+    if (touchIfOurs(h.lockPath, token)) h.lastTouch = now
+  }
+}
+
+/**
+ * Start heartbeating a lock just acquired with `token`. Returns the stop
+ * function, which the holder MUST call (in a `finally`) before releasing.
+ */
+export function startHeartbeat(lockPath: string, token: string, staleThreshold: number): () => void {
+  const interval = Math.max(1, Math.floor(staleThreshold / 3))
+  warnIfThresholdTooShort(staleThreshold, interval)
+  heldLocks.set(token, { lockPath, lastTouch: Date.now(), interval })
+  const timer = setInterval(() => {
+    const h = heldLocks.get(token)
+    if (h && touchIfOurs(lockPath, token)) h.lastTouch = Date.now()
+  }, interval)
+  // Never keep a process alive for a heartbeat.
+  timer.unref?.()
+  return () => {
+    clearInterval(timer)
+    heldLocks.delete(token)
+  }
+}
+
+/**
+ * Longest single blocking step a holder may take between two heartbeat touch
+ * points: one git command under `Plur.sync` (sync.ts `git()` uses this as its
+ * `execFileSync` timeout — the single source for both).
+ */
+export const GIT_COMMAND_TIMEOUT_MS = 30_000
+
+const warnedThresholds = new Set<number>()
+
+/**
+ * The heartbeat keeps a lock's age below `interval + longest blocking step`
+ * (spec/formal/PlurSpec/Persistence.lean `sync_age_bound`). With a custom
+ * `staleThreshold` at or below that bound — `T/3 + 30 s ≥ T`, i.e. T ≤ ~45 s —
+ * a holder blocked in one git command can be judged abandoned (when its liveness
+ * cannot be probed) and stolen from mid-hold. Said once per threshold value, not
+ * refused: short thresholds are legitimate for locks that never run git (formal
+ * round 2, findings/r2-persist.md item 7).
+ */
+function warnIfThresholdTooShort(staleThreshold: number, interval: number): void {
+  if (staleThreshold === DEFAULT_STALE_THRESHOLD || warnedThresholds.has(staleThreshold)) return
+  if (interval + GIT_COMMAND_TIMEOUT_MS < staleThreshold) return
+  warnedThresholds.add(staleThreshold)
+  logger.warning(
+    `[plur] lock staleThreshold ${staleThreshold} ms is too short for the heartbeat guarantee: a holder ` +
+    `blocked in one git command (up to ${GIT_COMMAND_TIMEOUT_MS} ms) goes ${interval + GIT_COMMAND_TIMEOUT_MS} ms ` +
+    `between touches, so a holder whose liveness cannot be probed (another host) may be stolen from mid-sync. ` +
+    `Use more than ${Math.ceil((GIT_COMMAND_TIMEOUT_MS * 3) / 2)} ms for any lock held across git.`,
+  )
+}
+
 /** Take the cross-process lock file, run `fn`, release. */
 async function withFileLock<T>(
   filePath: string,
@@ -276,9 +379,12 @@ async function withFileLock<T>(
     }
   }
 
+  // Heartbeat while held (decision P1); stopped before release, on return or throw.
+  const stopHeartbeat = acquired ? startHeartbeat(lockPath, token, staleThreshold) : () => {}
   try {
     return await fn()
   } finally {
+    stopHeartbeat()
     // Only ours to remove. `acquired` stops a failed acquisition deleting the
     // holder's file; the token comparison stops US deleting a THIEF's file
     // after our lock was stolen, which is what turned one stale-lock steal into
@@ -310,17 +416,134 @@ async function withFileLock<T>(
  * decided by that create, not by this function.
  */
 async function stealLock(lockPath: string, expected: string): Promise<void> {
+  // Formal-verification finding (spec/formal/findings/persistence.md, candidate 3):
+  // `rename` is single-winner, but the file it moves is whatever sits at
+  // `lockPath` NOW, not the one this contender judged stale. Replayed: A and B
+  // both judge a dead holder's lock stale; A claims it, confirms it, and
+  // O_EXCL-acquires; B's rename then moves A's LIVE lock aside, C O_EXCL-creates
+  // at the empty path before B can put A's back, and A and C are both inside the
+  // critical section. So stealing is itself serialized by a guard, and the lock is
+  // re-read under it: while the guard is held no other stealer can touch
+  // `lockPath`, no acquirer can (the file exists), and a dead holder cannot
+  // release — so the file seen here is the file renamed below.
+  //
+  // Round 2 (findings/r2-persist.md item 1): the guard is a LADDER of slots keyed
+  // by the judged token — see {@link acquireStealSlot} — because removing a
+  // guard abandoned by a crashed stealer was itself an unguarded
+  // read-then-unlink, and that double fault reopened the race above (replayed).
+  const guardToken = makeToken()
+  const slot = await acquireStealSlot(lockPath, expected, guardToken)
+  if (!slot) return // another contender is stealing (or every slot is abandoned) — re-evaluate
+  try {
+    const now = await readFile(lockPath, 'utf8').then(c => c.trim(), () => null)
+    if (now !== expected) return // already stolen (and maybe re-acquired), or released
+    if (await claimAndRemove(lockPath, expected)) await clearStealSlots(lockPath, expected, slot)
+  } finally {
+    await releaseIfOurs(slot, guardToken)
+  }
+}
+
+/**
+ * How many guard slots a steal of one lock instance may walk before giving up.
+ * Each slot past the first costs one stealer crash inside the guard (a window of
+ * one read and one rename); running out leaves the lock to the acquire deadline,
+ * whose error names the lock file.
+ */
+export const STEAL_GUARD_SLOTS = 8
+
+/** A steal guard untouched this long, whose writer cannot be probed, is abandoned. */
+const GUARD_STALE_MS = 10_000
+
+/**
+ * Path of guard slot `k` for stealing the lock instance whose token is `expected`.
+ *
+ * Keyed by the judged token, so a slot abandoned by a crashed stealer never has
+ * to be removed while that token is still at `lockPath`: nobody but a slot's own
+ * writer ever unlinks it then, which is what makes the ladder safe (a
+ * read-then-unlink of someone else's file is the race being closed). Tokens are
+ * unique per acquisition, so once the judged lock is gone its ladder is dead
+ * weight and is cleared by whoever confirmed the claim.
+ */
+export function stealGuardPath(lockPath: string, expected: string, k: number): string {
+  const key = createHash('sha256').update(expected).digest('hex').slice(0, 16)
+  return `${lockPath}.guard-${key}-${k}`
+}
+
+/**
+ * State of a guard slot: `dead` iff its writer's process is gone (or, when
+ * liveness cannot be probed, it has been untouched for {@link GUARD_STALE_MS}).
+ * A slot just created but not yet written reads as '' — unknown liveness, fresh
+ * — and so counts as live.
+ */
+export function judgeStealSlot(contents: string, mtimeMs: number, now = Date.now()): 'dead' | 'live' {
+  const alive = holderIsAlive(contents.trim())
+  return alive === false || (alive === undefined && now - mtimeMs > GUARD_STALE_MS) ? 'dead' : 'live'
+}
+
+async function stealSlotState(slot: string): Promise<'dead' | 'live' | 'gone'> {
+  try {
+    const [s, contents] = await Promise.all([stat(slot), readFile(slot, 'utf8')])
+    return judgeStealSlot(contents, s.mtimeMs)
+  } catch {
+    return 'gone'
+  }
+}
+
+/**
+ * Take the steal guard for `expected`: the lowest free slot above a run of
+ * abandoned ones, O_EXCL-created, then VERIFIED — every lower slot must still
+ * exist and still be abandoned. A live slot (or one that vanished: its writer
+ * finished) means another contender is stealing, and the caller re-evaluates.
+ * Returns the slot path, or null. Proof of mutual exclusion, crashes included:
+ * spec/formal/PlurSpec/R2Persist.lean `ladder_mutex`.
+ */
+async function acquireStealSlot(lockPath: string, expected: string, token: string): Promise<string | null> {
+  for (let k = 0; k < STEAL_GUARD_SLOTS; k++) {
+    const slot = stealGuardPath(lockPath, expected, k)
+    try {
+      await writeFile(slot, token, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL })
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') return null
+      if ((await stealSlotState(slot)) === 'dead') continue
+      return null
+    }
+    for (let i = 0; i < k; i++) {
+      if ((await stealSlotState(stealGuardPath(lockPath, expected, i))) !== 'dead') {
+        await releaseIfOurs(slot, token)
+        return null
+      }
+    }
+    return slot
+  }
+  return null
+}
+
+/**
+ * After a CONFIRMED claim the judged token is gone from `lockPath` for good
+ * (tokens are unique per acquisition, and a dead holder cannot re-acquire), so
+ * every other slot of its ladder is dead weight: a stealer still in it re-reads
+ * the lock, finds another token and backs off. Best-effort.
+ */
+async function clearStealSlots(lockPath: string, expected: string, own: string): Promise<void> {
+  for (let k = 0; k < STEAL_GUARD_SLOTS; k++) {
+    const slot = stealGuardPath(lockPath, expected, k)
+    if (slot !== own) await unlink(slot).catch(() => {})
+  }
+}
+
+/** Returns true iff the file moved aside was the judged one (the claim is confirmed). */
+async function claimAndRemove(lockPath: string, expected: string): Promise<boolean> {
   const claim = `${lockPath}.steal.${makeToken().replace(/[^\w.-]/g, '_')}`
   try {
     await rename(lockPath, claim)
   } catch {
-    return // another contender claimed it, or the holder released — re-evaluate
+    return false // the holder released — re-evaluate
   }
   try {
     const current = (await readFile(claim, 'utf8')).trim()
     if (current === expected) {
       await unlink(claim) // confirmed the one we judged stale
-      return
+      return true
     }
     // Not the lock we judged stale — a live holder's. Put it back, but never on
     // top of a lock someone has since acquired: `wx` fails rather than clobber.
@@ -334,6 +557,7 @@ async function stealLock(lockPath: string, expected: string): Promise<void> {
     // would ever clean it up.
     await unlink(claim).catch(() => {})
   }
+  return false
 }
 
 /** Release the lock iff the file still carries our token. */

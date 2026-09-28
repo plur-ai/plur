@@ -1,4 +1,6 @@
-import { Plur } from '@plur-ai/core'
+import { Plur, isDirectoryTrusted, type ProjectConfig } from '@plur-ai/core'
+import { join, resolve } from 'path'
+import { homedir } from 'os'
 import type { OutputOptions } from './output.js'
 
 export interface GlobalFlags extends OutputOptions {
@@ -61,6 +63,11 @@ export function parseGlobalFlags(rawArgv: string[]): {
   let i = 0
   while (i < argv.length) {
     const arg = argv[i]
+    // `--` ends option parsing (decision S4, 2026-09-26). Everything after it
+    // is passed to the command verbatim, `--` included so the command can see
+    // where values start: a statement such as "--path=/elsewhere …" must never
+    // select — or create — a store, and "--json" after `--` is a value.
+    if (arg === '--') { args.push(...argv.slice(i)); break }
     if (arg === '--json') { flags.json = true; i++ }
     else if (arg === '--quiet') { flags.quiet = true; i++ }
     else if (arg === '--fast') { flags.fast = true; i++ }
@@ -133,4 +140,92 @@ export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean })
   const path = flags.path || process.env.PLUR_PATH || undefined
   lastInstance = new Plur({ path, readonly: options?.readonly })
   return lastInstance
+}
+
+
+/**
+ * The one question the scope gate asks — `Plur` answers it (`plur trust`).
+ * `storageRoot` (a `Plur` has it) is the store whose `trust.yaml` answers, so
+ * the notice can name a command that writes to THAT store.
+ */
+export interface ScopeTrustCheck {
+  isDirectoryTrusted(dir: string): boolean
+  readonly storageRoot?: string
+}
+
+/** Quote a shell word only when it needs it, so the common case stays readable. */
+function shellWord(s: string): string {
+  return /^[A-Za-z0-9_@%+=:,./~-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The trust command a notice tells the user to run (audit 1228-c #1).
+ *
+ * `plur trust <dir>` writes `trust.yaml` in the store the CLI resolves —
+ * `--path`, else `PLUR_PATH`, else `~/.plur`. A hook or server running on a
+ * different store (its own `PLUR_PATH`, `--path`, an MCP config's env) checks
+ * THAT store's file, and the user's shell usually has none of those set: the
+ * bare command wrote a grant the adapter never read, and the notice repeated.
+ * So when the store is not the default one, the command names it.
+ */
+export function trustCommand(dir: string | null, storageRoot?: string): string {
+  const target = dir === null ? '<dir>' : shellWord(dir)
+  if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur trust ${target}`
+  return `plur --path ${shellWord(storageRoot)} trust ${target}`
+}
+
+/** What a hook may adopt from `.plur.yaml`, and what to tell the user when it may not. */
+export interface TrustedProjectScope {
+  scope?: string
+  domain?: string
+  /** Set when a scope/domain was IGNORED: names the file and the trust command. */
+  notice?: string
+}
+
+/**
+ * Adopt a `.plur.yaml` `scope`/`domain` only from a directory the user trusted
+ * (decision E3, 2026-09-26): the rule @plur-ai/opencode's `resolveTrustedScope`
+ * already followed, now shared by every CLI hook adapter.
+ *
+ * A cloned repository's `scope: group:acme/eng` was adopted as "a local filter
+ * that needs no gate" — and it is not only a filter: the hooks tell the model
+ * to learn under it, so a repo could pick the (possibly remote, team) scope an
+ * unscoped write lands in. Trust is checked against the directory the FILE
+ * lives in (`configDir`, from `resolveProjectRemote`'s single read), and it is
+ * hierarchical, so trusting the repo root once covers it. Fails closed: no
+ * directory, or a throwing check, means untrusted.
+ */
+export function trustedProjectScope(
+  trust: ScopeTrustCheck,
+  config: Pick<ProjectConfig, 'scope' | 'domain'>,
+  configDir: string | null,
+): TrustedProjectScope {
+  if (!config.scope && !config.domain) return {}
+  let trusted = false
+  try {
+    trusted = configDir !== null && trust.isDirectoryTrusted(configDir)
+  } catch {
+    trusted = false
+  }
+  if (trusted) return { scope: config.scope, domain: config.domain }
+  const file = configDir ? join(configDir, '.plur.yaml') : '.plur.yaml'
+  const declared = [
+    config.scope ? `scope "${config.scope}"` : null,
+    config.domain ? `domain "${config.domain}"` : null,
+  ].filter(Boolean).join(' / ')
+  return {
+    notice:
+      `[PLUR] Ignored the ${declared} in ${file} — ${configDir ?? 'its directory'} is not a trusted directory, ` +
+      `so the local default scope is used instead. If this project is yours, run: ${trustCommand(configDir, trust.storageRoot)}`,
+  }
+}
+
+/**
+ * A trust check against the store `flags` select, without constructing a Plur
+ * (the hook reminder path runs on every prompt and builds none). Same answer
+ * as `Plur.isDirectoryTrusted`: the trust file lives in the store root.
+ */
+export function storeTrustCheck(flags: GlobalFlags): ScopeTrustCheck {
+  const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+  return { isDirectoryTrusted: (dir: string) => isDirectoryTrusted(dir, root), storageRoot: root }
 }

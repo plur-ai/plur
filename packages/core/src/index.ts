@@ -56,11 +56,11 @@ import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
-  type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome} from './remote-recall.js'
+  type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome, stampStoreRow} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock } from './store/async-lock.js'
-import { SessionScopeRegistry } from './session-scopes.js'
+import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import type { StorageAdapter } from './storage-adapter.js'
@@ -98,7 +98,7 @@ export * from './meta/index.js'
 export { classifyPolarity } from './polarity.js'
 export { computeConfidence, computeMetaConfidence, confidenceBand } from './confidence.js'
 export { SessionBreadcrumbs } from './session-state.js'
-export { SessionScopeRegistry } from './session-scopes.js'
+export { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
 export { findProjectConfigPath, readProjectConfig, readProjectConfigFromPath, canonicalize, type ProjectConfig } from './project-config.js'
 // The trust gate a project's REMOTE settings must pass before an adapter may
@@ -913,6 +913,20 @@ export {
   type ProvenanceSummary,
 } from './provenance.js'
 
+/**
+ * Reciprocal-rank-fusion score of `id` across ranked lists — the same formula
+ * (`Σ 1/(k + rank + 1)`, k = 60) `hybrid-search.ts` `rrfMerge` sums. Used by
+ * the PGLite recall path to report its top score (decision I4).
+ */
+function rrfScoreOf(id: string, lists: ReadonlyArray<ReadonlyArray<{ id: string }>>, k = 60): number {
+  let score = 0
+  for (const list of lists) {
+    const rank = list.findIndex(e => e.id === id)
+    if (rank >= 0) score += 1 / (k + rank + 1)
+  }
+  return score
+}
+
 export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
@@ -1022,6 +1036,21 @@ export class Plur {
    *      public mutators gate on {@link _assertWritable} before routing.
    */
   private readonly _readonly: boolean = false
+  /** Unsubscribes this instance from its store's id-rename reports (P1); see `close()`. */
+  private _unsubscribeRenames: (() => void) | null = null
+
+  /**
+   * Detach this instance from resources it subscribed to on a store it does
+   * not own. Today: the id-rename reports of a shared primary store (owner
+   * decision P1 — a Postgres `save` that renames a clashing id reports it to
+   * every attached instance, which records it in its own history). Does NOT
+   * close the store: the caller passed it in and owns its lifecycle.
+   * Idempotent.
+   */
+  close(): void {
+    this._unsubscribeRenames?.()
+    this._unsubscribeRenames = null
+  }
 
   /**
    * @param options.path  Root directory for this instance (defaults to
@@ -1059,6 +1088,26 @@ export class Plur {
     this._readonly = options?.readonly === true
     const baseStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this._primaryStore = this._readonly ? new ReadonlyStoreGuard(baseStore) : baseStore
+    // Owner decision P1 (2026-09-27, "keep both, rename one — nothing lost or
+    // hidden"): a store that renames a clashing id on write (Postgres `save`)
+    // reports the rename here, and it is recorded in THIS instance's history
+    // like every other rename — never log-only.
+    // Every instance on a shared store subscribes (a Set on the store side), and
+    // `close()` unsubscribes.
+    const renameSink = (baseStore as { addRenameListener?: (fn: (r: Array<{ from: string; to: string }>) => void) => () => void }).addRenameListener
+    if (typeof renameSink === 'function' && !this._readonly) {
+      this._unsubscribeRenames = renameSink.call(baseStore, renames => {
+        for (const r of renames) {
+          this._appendHistory({
+            event: 'engram_rekeyed',
+            engram_id: r.to,
+            timestamp: new Date().toISOString(),
+            data: { from: r.from, to: r.to, store: this._primaryStore.kind, cause: 'store-save' },
+            reason: 'duplicate id: a later, different engram in a save batch was given a fresh id (P1)',
+          })
+        }
+      })
+    }
     // `loadByIds` and `updateMany` are a capability PAIR: recall's targeted
     // reactivation uses them together or not at all (`canTarget` in
     // `_reactivateResults` — implementing only one silently falls back to the
@@ -1366,7 +1415,6 @@ export class Plur {
       const storeEngrams = store.url
         ? this._loadRemoteCached(store)
         : await this._loadCached(store.path!)
-      const prefix = storePrefix(store.scope)
       for (const e of storeEngrams) {
         // Phase 4: Scope validation. Segment-aware (#383): a sibling that is a
         // mere string-prefix of the store scope (group:plur/eng-private under a
@@ -1376,16 +1424,14 @@ export class Plur {
           continue
         }
 
-        const cloned = { ...e } as any
-        // Narrow global scope to store scope
-        if (cloned.scope === 'global') {
-          cloned.scope = store.scope
-        }
-        // Namespace the ID to avoid collisions
-        const originalId = cloned.id
-        cloned.id = cloned.id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
-        cloned._originalId = originalId
-        cloned._storeScope = store.scope
+        // The same stamp as the remote recall leg (R2-CoreB core-policy#6/#7,
+        // applied here by R2-CoreA): drop `_`-prefixed keys the row ships (a
+        // forged `_pack` made a store row pass as pack content in
+        // `withoutPacks` and injected-pack counts), narrow `global` to the
+        // store scope, and namespace the id IDEMPOTENTLY — the regex replace
+        // used here turned an id already carrying the prefix into
+        // `ENG-XXX-XXX-…`, a different id from the recall leg's for one row.
+        const cloned = stampStoreRow(e, store.scope) as any
         all.push(cloned)
       }
     }
@@ -1395,7 +1441,11 @@ export class Plur {
     for (const pack of packs) {
       for (const e of pack.engrams) {
         if (e.status !== 'active') continue
-        const cloned = { ...e } as any
+        // A pack row cannot ship loader markers (`_storeScope`, `_originalId`,
+        // its own `_pack`): only this loader stamps them (R2-CoreB).
+        const cloned = Object.fromEntries(
+          Object.entries(e as unknown as Record<string, unknown>).filter(([k]) => !k.startsWith('_')),
+        ) as any
         cloned._pack = pack.manifest.name
         // Sanitise HERE, at the point pack content enters the injection corpus
         // (#940, #952). Pack install does not call learn() or learnRouted() —
@@ -1454,6 +1504,41 @@ export class Plur {
    * (`warmRemoteCaches`) still populate it explicitly.
    */
   private _remoteStores = new Map<string, RemoteStore>()
+  /**
+   * Ids whose outbox delivery is being pushed by THIS instance right now —
+   * learn()'s fire-and-forget push or a running flushOutbox(). A second pusher
+   * skips them: without this, a flush that started while learn()'s immediate
+   * push was in flight selected the same row (attempt_count 0) and POSTed it
+   * again, so the remote got the engram twice (formal WritePath, candidate 1).
+   * In-process only: two PROCESSES flushing one store can still both push.
+   */
+  private _outboxInFlight = new Set<string>()
+  /**
+   * What the ambiguity guards (#831 forget, #850 feedback) may conclude from a
+   * store's cache WITHOUT a network call (core-index#7, round 2).
+   *
+   * - `present`: the cache holds the id — a collision, refuse.
+   * - `absent`: ONLY when the cache is a complete load younger than the
+   *   driver's TTL. A cold-cache `append()` seeds `{ ts: 0, [stored] }` —
+   *   explicitly "one engram is not all engrams in this scope" — and a cache
+   *   past its TTL may predate the remote row. Both used to count as proof of
+   *   absence because any non-empty cache did, so after a single push the
+   *   guard retired the local engram while the same id lived remotely.
+   * - `unknown`: cold, empty, partial or stale — the caller probes live.
+   *
+   * Model: spec/formal/PlurSpec/R2CoreA.lean §2 (`peek_absent_sound`).
+   */
+  private _remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 'unknown' {
+    const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
+    const view = driver as unknown as { cache: { ts: number; engrams: Engram[] } | null; ttlMs?: number }
+    const cache = view.cache
+    if (!cache || cache.engrams.length === 0) return 'unknown'
+    if (cache.engrams.some(e => e.id === serverId)) return 'present'
+    const ttl = typeof view.ttlMs === 'number' ? view.ttlMs : 60_000
+    const age = Date.now() - cache.ts
+    return cache.ts > 0 && age >= 0 && age < ttl ? 'absent' : 'unknown'
+  }
+
   private _loadRemoteCached(store: StoreEntry): Engram[] {
     const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
     // Synchronously read whatever the driver currently has cached — no
@@ -1794,20 +1879,99 @@ export class Plur {
    * content written there would cross the machine boundary unguarded.
    *
    * Pure CONFIG lookup — NO driver instantiation, NO network, NO side effects —
-   * because this runs on every learn(). It mirrors `_resolveRemoteStoreForScope`'s
-   * exact-scope-match rule (no prefix matching) so the guard and the router agree
-   * on which writes reach the remote.
+   * because this runs on every learn(). It uses `_resolveRemoteStoreForScope`'s
+   * exact-scope-match rule (no prefix matching), but DELIBERATELY does not
+   * mirror its readonly skip (core-index#9, round 2): a readonly URL store is not
+   * a write target, yet its scope names a remote namespace, so the leak guard
+   * still scans writes into it. That can only demote more, never let more out.
+   * Where "a write here reaches the remote" is the question, use
+   * {@link _isRemoteWriteScope}.
    */
   private _isRemoteBackedScope(scope: string): boolean {
     return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
   }
 
-  /** Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store. */
-  private async _findEngramStore(id: string): Promise<{ path: string; readonly: boolean; originalId: string } | null> {
+  /** Exactly the router's rule (`_resolveRemoteStoreForScope`): a writable URL
+   *  store for exactly this scope, so a write to it leaves the machine. */
+  private _isRemoteWriteScope(scope: string): boolean {
+    return (this.config.stores ?? []).some(s => !!s.url && s.readonly !== true && s.scope === scope)
+  }
+
+  /**
+   * Decision E1 "me-only" (2026-09-26): the `/me` identity each remote token
+   * last reported, keyed `normalizedUrl::token`. Filled by every successful
+   * `/me` this instance makes (`discoverRemoteScopes`, `checkRemoteHealth`);
+   * DROPPED when a later `/me` for the same key fails, so "unknown" — never
+   * fetched, offline, token rejected — is the fail-closed state. In memory only.
+   */
+  private _meIdentities = new Map<string, { username: string; org_id: string }>()
+
+  private _meKey(url: string, token: string | undefined): string {
+    return `${normalizeEndpointUrl(url)}::${token ?? ''}`
+  }
+
+  private _noteMeIdentity(url: string, token: string | undefined, me: { username?: string; org_id?: string } | null): void {
+    const key = this._meKey(url, token)
+    if (me && typeof me.username === 'string' && me.username.length > 0) {
+      this._meIdentities.set(key, { username: me.username, org_id: typeof me.org_id === 'string' ? me.org_id : '' })
+    } else {
+      this._meIdentities.delete(key)
+    }
+  }
+
+  /**
+   * Is `scope` the user's OWN personal namespace on the URL store that backs
+   * it, per that store's `/me` identity? Own = `user:<username>` or
+   * `user:<org_id>:<username>` (case-folded), or a segment-descendant of
+   * either (`isScopeWithin`). `agent:*` and every other personal scope are not
+   * the user's own. Unknown identity → false (fail closed).
+   */
+  private _isOwnRemoteNamespace(scope: string): boolean {
+    const entry = (this.config.stores ?? []).find(s => !!s.url && s.scope === scope)
+    if (!entry?.url) return false
+    const id = this._meIdentities.get(this._meKey(entry.url, entry.token))
+    if (!id) return false
+    const s = scope.toLowerCase()
+    const user = id.username.toLowerCase()
+    const own = [`user:${user}`, ...(id.org_id ? [`user:${id.org_id.toLowerCase()}:${user}`] : [])]
+    return own.some(o => isScopeWithin(s, o))
+  }
+
+  /**
+   * Decision E1 "me-only": an auto-route candidate the router must refuse like
+   * a shared scope — backed by a URL store (so the write would leave the
+   * machine) and not the user's own `/me` namespace. Path-backed and unbacked
+   * personal scopes are never refused here. Shared scopes are
+   * `allow_shared_auto_route`'s business, not this predicate's.
+   */
+  private _refuseRemotePersonalAutoRoute(scope: string): boolean {
+    return this._isRemoteBackedScope(scope) && !this._isOwnRemoteNamespace(scope)
+  }
+
+  /**
+   * Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store.
+   *
+   * `storeScope` — the loader's `_storeScope` stamp of the row, when the caller
+   * holds one — names the store exactly. `storePrefix` is three letters, so
+   * two store scopes can share one (group:plur/eng and group:plur/ops are both
+   * GPL) and a namespaced id alone then names both; ids collide across stores
+   * as the common case, so the first store with the bare id was the wrong one
+   * (audit of #1228). A stamped row is never the primary's.
+   *
+   * The stored id may itself carry the prefix (a row from another client or
+   * a sync): namespacing on load is idempotent, so the loaded id IS the stored
+   * id, and the stripped form is not in the file (audit of #1228, finding 2).
+   * Both forms are tried; `originalId` is the id as the store file has it.
+   */
+  private async _findEngramStore(
+    id: string, storeScope?: string,
+  ): Promise<{ path: string; readonly: boolean; originalId: string } | null> {
     // Check primary first (uses mtime cache)
-    const primaryEngrams = await this._loadCached(this.paths.engrams)
-    if (primaryEngrams.find(e => e.id === id)) {
-      return { path: this.paths.engrams, readonly: false, originalId: id }
+    if (storeScope === undefined) {
+      const primaryEngrams = await this._loadCached(this.paths.engrams)
+      if (primaryEngrams.find(e => e.id === id)) {
+        return { path: this.paths.engrams, readonly: false, originalId: id }
+      }
     }
 
     // Check stores — ID might be namespaced. Remote stores are skipped
@@ -1817,14 +1981,17 @@ export class Plur {
     const stores = this.config.stores ?? []
     for (const store of stores) {
       if (!store.path) continue
+      if (storeScope !== undefined && store.scope !== storeScope) continue
       const prefix = storePrefix(store.scope)
       const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
       if (nsPattern.test(id)) {
-        // Strip the namespace prefix to get the original ID
-        const originalId = id.replace(nsPattern, '$1-')
+        // Strip the namespace prefix to get the original ID — or the id as it
+        // is, when the store file already holds it namespaced.
+        const stripped = id.replace(nsPattern, '$1-')
         const storeEngrams = await this._loadCached(store.path)
-        if (storeEngrams.find(e => e.id === originalId)) {
-          return { path: store.path, readonly: store.readonly ?? false, originalId }
+        const found = storeEngrams.find(e => e.id === stripped) ?? storeEngrams.find(e => e.id === id)
+        if (found) {
+          return { path: store.path, readonly: store.readonly ?? false, originalId: found.id }
         }
       }
     }
@@ -1881,9 +2048,16 @@ export class Plur {
   async provenanceFor(engramId: string, options: ProvenanceOptions = {}): Promise<unknown | undefined> {
     const engram = await this.getById(engramId)
     if (!engram) return undefined
+    // Decision E6: a scope backed by a remote store on this install leaves the
+    // machine; only this instance knows its stores. Current config, not a
+    // stale snapshot (core-index#9).
+    this.reloadConfigIfChanged()
     const cfg = (this.config as any)?.provenance
     return buildProvenanceRecord(engram, this.getEngramHistory(engramId), {
       includeStatement: cfg?.include_statement ?? false,
+      // Writable URL stores only: a readonly one is not a path off the machine,
+      // and not knowing can only withhold more (core-index#9b).
+      remoteBacked: this._isRemoteWriteScope(engram.scope),
       ...options,
     })
   }
@@ -2130,16 +2304,53 @@ export class Plur {
       })
     } catch { /* history is an audit trail, never a gate on the write */ }
 
-    // Persist if the engram is in the primary store. Cross-store duplicates
-    // (same scope across stores) are deduplicated but not persisted in v1 —
-    // `target` is then `hit` itself and the mutation is returned to the caller
-    // without a write, which is the documented v1 behaviour.
+    // Persist where the engram lives.
     if (idx !== -1) {
       // Incremental write (#740): only the duplicate-counted engram changed.
       await this._updateEngrams(engrams, [target])
       await this._syncIndex()
+    } else {
+      // A hit in a WRITABLE secondary (path) store is persisted there, under
+      // that store's lock with the load inside it (core-index#8, round 2).
+      // forget() decrements write_count in secondary stores and cross-scope
+      // recurrence persists its increment there; counting this increment only
+      // in memory made the pair asymmetric — two writers, one forget, retired,
+      // and the second writer's reference (#107) was gone. Packs, readonly
+      // stores and other scopes' remote rows never reach here (Decision A:
+      // they do not absorb a write); the writable remote of this very scope
+      // is counted in memory only, as before (a remote retire is a whole
+      // DELETE; the server owns its row).
+      // Lock order primary → secondary, same as `_recordCrossScopeRecurrence`.
+      const storeInfo = await this._findEngramStore(hit.id, (hit as any)._storeScope)
+      if (storeInfo && storeInfo.path !== this.paths.engrams && !storeInfo.readonly) {
+        const sourceEntry = ((target as any).sources as unknown[]).at(-1)
+        await this._withStoreLock(storeInfo.path, async () => {
+          const storeEngrams = await this._storeAt(storeInfo.path).load()
+          const row = storeEngrams.find(e => e.id === storeInfo.originalId)
+          if (!row || row.status !== 'active') return
+          row.write_count = (row.write_count ?? (row as any).reference_count ?? 1) + 1
+          ;(row as any).sources = [...((row as any).sources ?? []), sourceEntry]
+          await this._writeEngrams(storeInfo.path, storeEngrams)
+          await this._syncIndex()
+          // The caller gets the persisted count, not the pre-lock guess.
+          target.write_count = row.write_count
+          ;(target as any).sources = (row as any).sources
+        })
+      }
     }
     return target
+  }
+
+  /**
+   * May a cross-scope hit (#176) absorb a write INTO `scope`? Not when `scope`
+   * is backed by a writable remote store (R2-Integrations, applied by
+   * R2-CoreA): the write is then an explicit egress to a team store, and
+   * absorbing it into a local engram of another scope meant the team never
+   * received it — no POST, nothing queued (replayed for learn() and
+   * learnRouted()). The same-scope dedup still applies there.
+   */
+  private _crossScopeRecurrenceApplies(scope: string): boolean {
+    return !this._isRemoteWriteScope(scope)
   }
 
   /** Find an active engram with the same content_hash but a DIFFERENT scope.
@@ -2169,7 +2380,9 @@ export class Plur {
 
   /** Record a cross-scope recurrence: append source, increment counters,
    * escalate commitment, and broaden scope to 'global' once the threshold
-   * is crossed. Returns the (possibly broadened) engram.
+   * is crossed — except for a row still queued for a remote store (`_outbox`),
+   * whose scope is never changed (decision D3). Returns the (possibly
+   * broadened) engram.
    *
    * Escalation ladder (graduated, not all-at-once):
    * - 1st cross-scope hit:   record source + recurrence_count++  (no scope/commitment change)
@@ -2221,7 +2434,14 @@ export class Plur {
         // Only promote SHARED scopes (project:*, space:*, etc.) to global —
         // personal-family scopes (local, user:*) stay within their family.
         // See issue #362 item (ii): personal-scope ceiling for cross-scope recurrence.
-        if (isSharedScope(e.scope)) e.scope = 'global'
+        //
+        // Decision D3 "no-widen" (2026-09-26): never widen a row that still
+        // carries `_outbox`. It is queued for a team store under its current
+        // scope; widening it locally made the queue entry disagree with the row
+        // (the flush then held it back, so the team never got it). The
+        // recurrence is recorded without changing scope — the same rule a
+        // remote-resident hit already follows (its broadening never persists).
+        if (isSharedScope(e.scope) && !(e as any).structured_data?._outbox) e.scope = 'global'
         if (e.commitment !== 'locked') {
           // Forward-only ladder: exploring → leaning → decided → locked.
           e.commitment = e.commitment === 'exploring'
@@ -2282,7 +2502,7 @@ export class Plur {
       if (target !== hit) syncHitFrom(target)
     } else {
       // primaryIdx already proved this isn't in primary; only check writability.
-      const storeInfo = await this._findEngramStore(hit.id)
+      const storeInfo = await this._findEngramStore(hit.id, (hit as any)._storeScope)
       if (storeInfo && !storeInfo.readonly) {
         // Under the SECONDARY store's own lock. This read-modify-write had none
         // at all, while the identical operation on the primary store took one:
@@ -2323,8 +2543,11 @@ export class Plur {
         }
         })
       } else {
-        // Readonly or remote — apply to hit only. Remote PATCH wiring tracked
-        // separately; in-memory state is still returned to the caller.
+        // Readonly or remote — apply to hit only. Since Decision A (owner,
+        // 2026-09-27) learn()/learnRouted() never route such a hit here: a
+        // pack / readonly / other-remote match gets a new row instead and a
+        // history-only note (`_noteUnpersistableRecurrence`). Kept as the
+        // defensive fallback for a hit whose store vanished meanwhile.
         newRecurrence = applyMutation(hit, sourceEntry, lockTimestamp)
         persistedTo = 'in-memory'
       }
@@ -2515,6 +2738,7 @@ export class Plur {
     return decideAutoRoute(candidates, {
       matchThreshold: cfg.match_threshold ?? SCOPE_MATCH_THRESHOLD,
       allowSharedScope: cfg.allow_shared_auto_route === true,
+      refuseScope: s => this._refuseRemotePersonalAutoRoute(s),
     })
   }
 
@@ -2768,9 +2992,13 @@ export class Plur {
     // that team store and be pushed to its remote, where local cleanup could not
     // undo it. A refused shared candidate does not end the search — the next
     // eligible PERSONAL candidate still wins, so personal-scope routing is intact.
+    // Decision E1 "me-only": a URL-backed personal candidate that is not the
+    // user's own `/me` namespace (or whose identity is unknown) is refused
+    // exactly like a shared one — same predicate as previewAutoRoute.
     const decision = decideAutoRoute(candidates, {
       matchThreshold,
       allowSharedScope: scopeRoutingCfg.allow_shared_auto_route === true,
+      refuseScope: s => this._refuseRemotePersonalAutoRoute(s),
     })
     const marker = (c: ScopeCandidate) => ({ scope: c.scope, confidence: c.confidence, reason: c.reason })
     const refusedShared = decision.refusedShared ? marker(decision.refusedShared) : null
@@ -2798,6 +3026,12 @@ export class Plur {
     statement: string,
     context?: LearnContext,
   ): Promise<{ scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null; scopeSource: ScopeSource }> {
+    // Every egress decision below reads the CURRENT config (core-index#9,
+    // round 2): this ran `reloadConfigIfChanged` only on the unscoped path, so
+    // an explicit-scope write in a long-running process was guarded — and
+    // routed — against a `sensitivity` policy another process had since
+    // tightened. One statSync; reloads only on an mtime change.
+    this.reloadConfigIfChanged()
     // "Truly unscoped" = caller passed no scope AND no session/`.plur.yaml`
     // default is in effect (both land in the session scope registry). Only this
     // path auto-routes / applies unscoped_default; everything else is honored
@@ -2966,6 +3200,187 @@ export class Plur {
     return statement
   }
 
+  /** learn()'s delegation test (#828) — the capability SET, see learn(). */
+  private _learnCanDelegate(): boolean {
+    const ps = this._primaryStore
+    return Boolean(
+      ps.findActiveByContentHash && ps.nextEngramId
+      && ps.append && ps.updateMany && ps.loadByIds,
+    )
+  }
+
+  /** learn()'s same-scope content-hash dedup: the store seam first (a primary
+   *  match has always won), then the in-memory scan. One implementation for
+   *  learn(), learnRouted(), learnAsync's hash step and {@link wouldDeduplicate}.
+   *
+   *  Decision A ("always store my write", owner 2026-09-27): only a hit the
+   *  writer can persist absorbs the write (`hashMatch`). A match held only
+   *  where the writer cannot persist it — a pack, a readonly store, another
+   *  scope's remote cache — comes back as `foreign`: the caller stores a new
+   *  row and records the recurrence against it in history only. */
+  private async _learnHashMatch(
+    statement: string, scope: string, canDelegate: boolean, allEngrams: Engram[],
+  ): Promise<{ primaryHashMatch: Engram | null; hashMatch: Engram | null; foreign: Engram | null }> {
+    const primaryHashMatch = canDelegate && isHashable(statement)
+      ? await this._primaryStore.findActiveByContentHash!(computeContentHash(statement), scope)
+      : null
+    if (primaryHashMatch) return { primaryHashMatch, hashMatch: primaryHashMatch, foreign: null }
+    const { hit, foreign } = await this._firstPersistableHit(
+      allEngrams, this._hashDedupPredicate(statement, scope), scope,
+    )
+    return { primaryHashMatch: null, hashMatch: hit, foreign }
+  }
+
+  /** `_hashDedup`'s match rule as a predicate (null: nothing can match, #896). */
+  private _hashDedupPredicate(statement: string, scope?: string): ((e: Engram) => boolean) | null {
+    if (!isHashable(statement)) return null
+    const hash = computeContentHash(statement)
+    return e => e.status === 'active' && (e as any).content_hash === hash
+      && (scope === undefined || e.scope === scope)
+  }
+
+  /** `_crossScopeRecurrenceDetect`'s match rule as a predicate. */
+  private _crossScopePredicate(statement: string, scope: string): ((e: Engram) => boolean) | null {
+    if (!isHashable(statement)) return null
+    const hash = computeContentHash(statement)
+    return e => e.status === 'active' && (e as any).content_hash === hash && e.scope !== scope
+  }
+
+  /**
+   * Where a dedup hit lives, as far as a writer to `scope` is concerned
+   * (Decision A). `primary`, a writable `secondary` path store, and
+   * `own-remote` (the cache of a writable URL store for exactly `scope`) are
+   * the writer's own; `pack`, `readonly` and another scope's `remote-cache`
+   * are not. Every non-primary row carries the loader's `_storeScope` or
+   * `_pack` stamp (`_loadSecondaryAndPacks`), so an unstamped row is primary.
+   */
+  private async _hitHolder(
+    hit: Engram, scope: string,
+  ): Promise<'primary' | 'secondary' | 'own-remote' | 'pack' | 'readonly' | 'remote-cache'> {
+    if ((hit as any)._pack) return 'pack'
+    const storeScope = (hit as any)._storeScope as string | undefined
+    if (storeScope === undefined) return 'primary'
+    const info = await this._findEngramStore(hit.id, storeScope)
+    if (info) {
+      if (info.path === this.paths.engrams) return 'primary'
+      return info.readonly ? 'readonly' : 'secondary'
+    }
+    // A URL store's cache row (or a path row that vanished meanwhile — then no
+    // writable URL entry matches either, and it is treated as not persistable).
+    const urlEntries = (this.config.stores ?? []).filter(s => !!s.url && s.scope === storeScope)
+    if (!urlEntries.some(s => s.readonly !== true)) return 'readonly'
+    return storeScope === scope ? 'own-remote' : 'remote-cache'
+  }
+
+  /** The first candidate matching `pred` that the writer can persist (`hit`),
+   *  and the first one it cannot (`foreign`), in corpus order. */
+  private async _firstPersistableHit(
+    candidates: Engram[], pred: ((e: Engram) => boolean) | null, scope: string | undefined,
+  ): Promise<{ hit: Engram | null; foreign: Engram | null }> {
+    let foreign: Engram | null = null
+    if (!pred) return { hit: null, foreign }
+    for (const e of candidates) {
+      if (!pred(e)) continue
+      const holder = await this._hitHolder(e, scope ?? e.scope)
+      if (holder === 'primary' || holder === 'secondary' || holder === 'own-remote') return { hit: e, foreign }
+      foreign ??= e
+    }
+    return { hit: null, foreign }
+  }
+
+  /** Decision A for learnAsync's dedup candidates: keep only rows the writer
+   *  can persist (`_hitHolder` of the row in its own scope). */
+  private async _persistableCandidates(rows: Engram[]): Promise<Engram[]> {
+    const out: Engram[] = []
+    for (const e of rows) {
+      const holder = await this._hitHolder(e, e.scope)
+      if (holder === 'primary' || holder === 'secondary' || holder === 'own-remote') out.push(e)
+    }
+    return out
+  }
+
+  /** #176 cross-scope match over `allEngrams`, split by Decision A like
+   *  {@link _learnHashMatch}. Nothing when `_crossScopeRecurrenceApplies`
+   *  says a cross-scope hit may not absorb a write into `scope`. */
+  private async _crossScopeMatch(
+    statement: string, allEngrams: Engram[], scope: string,
+  ): Promise<{ hit: Engram | null; foreign: Engram | null }> {
+    if (!this._crossScopeRecurrenceApplies(scope)) return { hit: null, foreign: null }
+    return this._firstPersistableHit(allEngrams, this._crossScopePredicate(statement, scope), scope)
+  }
+
+  /**
+   * Decision A: the write was stored as `storedAs` although its statement was
+   * already held by `hit`, which the writer cannot persist (pack, readonly
+   * store, another scope's remote cache). The hit is NOT mutated — not on disk
+   * and not in memory; the recurrence is recorded in history only.
+   */
+  private async _noteUnpersistableRecurrence(hit: Engram, scope: string, storedAs: string): Promise<void> {
+    try {
+      const heldIn = await this._hitHolder(hit, scope)
+      this._appendHistory({
+        event: 'recurrence_detected',
+        engram_id: hit.id,
+        timestamp: new Date().toISOString(),
+        data: {
+          previous_scope: hit.scope,
+          new_scope: hit.scope,
+          previous_commitment: hit.commitment ?? null,
+          new_commitment: hit.commitment ?? null,
+          // The hit's own count, unchanged: nothing was written to it.
+          recurrence_count: (hit as any).recurrence_count ?? 0,
+          from_scope: scope,
+          matched: hit.scope === scope ? 'same-scope' : 'cross-scope',
+          held_in: heldIn,
+          persisted_to: 'history-only',
+          stored_as: storedAs,
+        },
+      })
+    } catch { /* history is an audit trail, never a gate on the write */ }
+  }
+
+  /**
+   * Would `learn(statement, context)` resolve to an EXISTING engram instead of
+   * writing a new one? Returns that engram's id, or null. Writes nothing.
+   *
+   * Same scope resolution (`_guardSensitiveScope`) and the same dedup code as
+   * learn(): the same-scope hash match (store seam or scan), then cross-scope
+   * recurrence over the corpus learn() scans — which on a delegating store
+   * (Postgres/PGLite) deliberately excludes the primary store (scopes are a
+   * permission boundary there). So a dry run — the importer's — predicts the
+   * real run on every backend (R2-Retrieval core-retrieval#10 residual).
+   * Covers learn()'s local dedup; secret refusal is the caller's own check.
+   *
+   * Decision A: a hit the writer cannot persist (pack, readonly store, another
+   * scope's remote cache) does not count — learn() stores a new row — so it
+   * answers null. Decision R: the importer asks this BEFORE learn() and skips
+   * without writing when it answers an id.
+   */
+  async wouldDeduplicate(statement: string, context?: LearnContext): Promise<string | null> {
+    const guarded = await this._guardSensitiveScope(statement, context)
+    const scope = guarded.scope
+    const canDelegate = this._learnCanDelegate()
+    const allEngrams = canDelegate ? await this._loadSecondaryAndPacks() : await this._loadAllEngrams()
+    const { hashMatch } = await this._learnHashMatch(statement, scope, canDelegate, allEngrams)
+    if (hashMatch) return hashMatch.id
+    return (await this._crossScopeMatch(statement, allEngrams, scope)).hit?.id ?? null
+  }
+
+  /**
+   * The scope learn() would write `statement` into (after the sensitive-scope
+   * guard and routing), and whether learn()'s dedup there also matches a row
+   * of ANOTHER scope in the primary store (#176 over the corpus). False on a
+   * delegating store (Postgres/PGLite: scopes are a permission boundary, see
+   * learn()) and for a writable-remote scope (`_crossScopeRecurrenceApplies`).
+   * Writes nothing. The importer's dry run keys its in-file duplicate map with
+   * it, so two records of one file in different scopes are predicted as the
+   * real run treats them (dry-run parity, owner 2026-09-27).
+   */
+  async dedupScopeFor(statement: string, context?: LearnContext): Promise<{ scope: string; acrossScopes: boolean }> {
+    const { scope } = await this._guardSensitiveScope(statement, context)
+    return { scope, acrossScopes: !this._learnCanDelegate() && this._crossScopeRecurrenceApplies(scope) }
+  }
+
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
     statement = this._validateLearnInput('learn', statement, context)
@@ -2994,10 +3409,7 @@ export class Plur {
       // of one or two rows to a FULL REPLACE — the #749 shape that deleted a
       // corpus on an ordinary recall, and the reason `_reactivateResults`
       // checks its pair rather than each half.
-      const canDelegate = Boolean(
-        ps.findActiveByContentHash && ps.nextEngramId
-        && ps.append && ps.updateMany && ps.loadByIds,
-      )
+      const canDelegate = this._learnCanDelegate()
       // The primary corpus, or an empty stand-in when nothing below will read
       // or rewrite it. Safe ONLY under `canDelegate` — see above.
       const engrams = canDelegate ? [] : await ps.load()
@@ -3017,16 +3429,14 @@ export class Plur {
       // Unhashable statements skip the store lookup entirely (#896) — the
       // delegated query has the same collapse the in-memory scan does, and
       // this is the branch a Postgres/PGLite install actually takes.
-      const primaryHashMatch = canDelegate && isHashable(statement)
-        ? await ps.findActiveByContentHash!(computeContentHash(statement), scope)
-        : null
-      const hashMatch = primaryHashMatch ?? this._hashDedup(statement, allEngrams, scope)
+      const { primaryHashMatch, hashMatch, foreign: sameScopeForeign } =
+        await this._learnHashMatch(statement, scope, canDelegate, allEngrams)
       if (hashMatch) {
-        // `_recordDuplicate` persists only when the hit is IN the array it is
-        // given — a match from a secondary store or a pack is counted in
-        // memory and not written, which is the documented v1 behaviour. The
-        // store-served hit is a freshly-read row under this same lock, so it
-        // is the corpus in hand for exactly one row.
+        // Decision A: `hashMatch` is a row the writer can persist (primary, a
+        // writable secondary store, or the writable remote of this very
+        // scope); a pack / readonly / other-remote match never gets here.
+        // The store-served hit is a freshly-read row under this same lock, so
+        // it is the corpus in hand for exactly one row.
         const corpusInHand = primaryHashMatch ? [primaryHashMatch] : engrams
         return await this._recordDuplicate(hashMatch, corpusInHand, scope, context, statement)
       }
@@ -3047,11 +3457,16 @@ export class Plur {
       // statement becomes its own engram, and a deployment that wants
       // graduation declines the seam and keeps the corpus scan.
       // See `PrimaryStore.findActiveByContentHash`.
-      const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
+      //
+      // Decision A: only a hit the writer can persist graduates; one held in a
+      // pack, a readonly store or another scope's remote cache does not absorb
+      // the write — it falls through to a new row and is noted in history.
+      const cross = await this._crossScopeMatch(statement, allEngrams, scope)
       // `engrams` is empty under delegation, so `_recordCrossScopeRecurrence`
       // takes its secondary-store branch — which is where every match it can
       // still see actually lives.
-      if (crossMatch) return await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
+      if (cross.hit) return await this._recordCrossScopeRecurrence(cross.hit, engrams, scope, context)
+      const unpersistableHit = sameScopeForeign ?? cross.foreign
 
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
@@ -3179,15 +3594,26 @@ export class Plur {
         // process on modern Node. A background task must not be able to take
         // the host down.
         // Started only once the local write has committed (#1178, F16). A
-        // transactional primary store would otherwise hand this task the
-        // write's own connection, which is gone by the time it runs.
+        // transactional primary store would otherwise hand this task — and the
+        // in-flight claim — the write's own connection, which is gone by the
+        // time it runs; and a rolled-back write must not be pushed at all.
         this._afterStoreCommit(() => {
+          this._outboxInFlight.add(engram.id)
           void (async () => {
             let pushed = false
+            // Decision D1: keep the id the server assigned — if a forget/rescope
+            // cancels the delivery while this POST is on the wire, the accepted
+            // remote copy is queued for retirement by that id.
+            let serverId: string | undefined
             try {
-              await remoteDriver.append(engram)
+              ;({ id: serverId } = await remoteDriver.appendAndGetServerId(engram))
               pushed = true
             } catch (err) {
+              // The POST did not land, so nothing is on the wire any more: a
+              // flush may take the row now. Release the claim before the
+              // bookkeeping write below (which only touches a row that still
+              // carries `_outbox`), not after it.
+              this._outboxInFlight.delete(engram.id)
               // Already saved locally with outbox metadata — will be retried.
               logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
               await this._withStoreLock(this.paths.engrams, async () => {
@@ -3216,6 +3642,38 @@ export class Plur {
                 // a full load until there is a `remove`/`deleteMany` seam.
                 const fresh = await this._primaryStore.load()
                 const idx = fresh.findIndex(e => e.id === engram.id)
+                // Hand off only a row that is STILL queued FOR THIS STORE. A
+                // forget() or a local rescope that landed while the POST was in
+                // flight cancelled the delivery (#766, #848); a D4 update or a
+                // rescope to another store RETARGETED it (audit of #1228,
+                // finding 1) — the row still carries `_outbox`, but for a store
+                // that has not received it. Deleting the row in either case
+                // loses a decision; keep it and say so.
+                const pushedTarget = storeEntry ? { url: storeEntry.url!, scope } : undefined
+                if (idx !== -1 && !Plur._stillQueuedFor(fresh[idx], pushedTarget)) {
+                  const retargeted = Plur._stillQueued(fresh[idx])
+                  // Decision D1: queue a durable "retire on remote" entry for the
+                  // copy the remote just accepted; flushOutbox() retries it (and,
+                  // for a retargeted row, before it delivers to the new store).
+                  const queuedRetire = serverId
+                    ? Plur._queueRetireRemote(fresh[idx], {
+                        target_url: pushedTarget?.url ?? '',
+                        target_scope: scope,
+                        server_id: serverId,
+                      }, new Date().toISOString())
+                    : false
+                  if (queuedRetire) await this._updateEngrams(fresh, [fresh[idx]])
+                  logger.warning(
+                    `[plur:outbox] ${engram.id} reached the remote${serverId ? ` as ${serverId}` : ''} after its delivery `
+                    + (retargeted
+                      ? `was retargeted to another store during the push. The local record stays queued for the new store`
+                      : `was cancelled locally (forget/rescope during the push). The local record is kept`)
+                    + (queuedRetire
+                      ? `; the old copy is queued for retirement and the next flush retires it.`
+                      : `; the remote copy must be retired there.`),
+                  )
+                  return
+                }
                 if (idx !== -1) {
                   fresh.splice(idx, 1)
                   // Deliberate removal: the remote accepted this engram, so the
@@ -3232,7 +3690,7 @@ export class Plur {
             }
           })().catch(err => {
             logger.warning(`[plur:outbox] background push for ${engram.id} failed unexpectedly: ${(err as Error).message}`)
-          })
+          }).finally(() => { this._outboxInFlight.delete(engram.id) })
         })
 
         this._appendHistory({
@@ -3241,6 +3699,7 @@ export class Plur {
           timestamp: now,
           data: { type: engram.type, scope: engram.scope, source: engram.source, routed_to: 'remote', outbox: true },
         })
+        if (unpersistableHit) await this._noteUnpersistableRecurrence(unpersistableHit, scope, engram.id)
         this._maybeWriteProvenance(engram.id)
         return engram
       }
@@ -3259,6 +3718,7 @@ export class Plur {
         timestamp: now,
         data: { type: engram.type, scope: engram.scope, source: engram.source },
       })
+      if (unpersistableHit) await this._noteUnpersistableRecurrence(unpersistableHit, scope, engram.id)
       this._maybeWriteProvenance(engram.id)
       return engram
     })
@@ -3387,7 +3847,12 @@ export class Plur {
     // mirroring learn() — before dedup can short-circuit the write.
     resolveValidity(statement, context)
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
-    if (!remoteDriver) {
+    // #90, formal WritePath candidate 4: an engram the caller explicitly marked
+    // private does not go to a remote store. learn() has always refused it
+    // (and warns); this path never checked, so the same input left the machine
+    // or not depending on which method was called. Take the local route and let
+    // learn() apply its #90 branch.
+    if (!remoteDriver || context?.visibility === 'private') {
       // Local route — sync learn() owns dedup, build, write, history. learn()'s
       // own guard sees the already-demoted (local) context and no-ops, so the
       // demotion marker is stamped here for the learnRouted-demoted case (#326).
@@ -3422,7 +3887,11 @@ export class Plur {
     // representation we hand back to the caller. On failure, save to
     // local outbox for retry (issue #26).
     const allEngrams = await this._loadAllEngrams()
-    const hashMatch = this._hashDedup(statement, allEngrams, scope)
+    // Decision A: a same-scope match only in a pack or a readonly store does
+    // not absorb the write; it is POSTed and the match noted in history.
+    const { hit: hashMatch, foreign: unpersistableHit } = await this._firstPersistableHit(
+      allEngrams, this._hashDedupPredicate(statement, scope), scope,
+    )
     if (hashMatch) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
       return await this._withStoreLock(this.paths.engrams, async () => {
@@ -3430,8 +3899,11 @@ export class Plur {
         return await this._recordDuplicate(hashMatch, engrams, scope, context, statement)
       })
     }
-    // #176: cross-scope recurrence (same semantics as the local learn() path).
-    const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
+    // #176 cross-scope recurrence does NOT apply here: this is the remote
+    // route, and an explicit write to a team store must reach it
+    // (`_crossScopeRecurrenceApplies`). Only the same-scope match above
+    // absorbs a write.
+    const { hit: crossMatch } = await this._crossScopeMatch(statement, allEngrams, scope)
     if (crossMatch) {
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
@@ -3499,6 +3971,7 @@ export class Plur {
           timestamp: now,
           data: { type: localPlaceholder.type, scope, source: localPlaceholder.source, routed_to: 'outbox', error: (err as Error).message },
         })
+        if (unpersistableHit) await this._noteUnpersistableRecurrence(unpersistableHit, scope, localPlaceholder.id)
         this._maybeWriteProvenance(localPlaceholder.id)
         logger.warning(`[plur:outbox] remote write failed for ${localPlaceholder.id}, queued for retry: ${(err as Error).message}`)
         return localPlaceholder
@@ -3519,6 +3992,7 @@ export class Plur {
         timestamp: now,
         data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
       })
+      if (unpersistableHit) await this._noteUnpersistableRecurrence(unpersistableHit, scope, serverEngram.id)
       this._maybeWriteProvenance(serverEngram.id)
     } catch (err) {
       logger.warning(
@@ -3686,13 +4160,28 @@ export class Plur {
   /** Build deps for learn-async module. */
   private async _learnAsyncDeps() {
     return {
-      hashDedup: async (statement: string, scope?: string) => this._hashDedup(statement, await this._loadAllEngrams(), scope),
+      // Decision A: only a hit the writer can persist is a NOOP; a pack /
+      // readonly / other-remote match falls through to learn(), which stores
+      // the write and notes the match in history.
+      hashDedup: async (statement: string, scope?: string) => (await this._firstPersistableHit(
+        await this._loadAllEngrams(), this._hashDedupPredicate(statement, scope), scope,
+      )).hit,
       // remote:false (#776) — dedup queries are DERIVED FROM STATEMENTS. With
       // the remote leg on, every plur_learn would fire statement-derived POSTs
       // to all hosts, and a namespaced remote row could silently suppress a
       // local write as a "dedup match". Dedup is a local decision.
-      recallHybrid: (query: string, options?: { limit?: number }) => this.recallHybrid(query, { ...options, remote: false }),
-      recall: (query: string, options?: { limit?: number }) => this.recall(query, { ...options, remote: false }),
+      //
+      // Decision A (follow-up, owner 2026-09-27): these results are the
+      // LLM/cosine candidates learnAsync may NOOP/UPDATE/MERGE into, so only
+      // rows the writer can persist are offered. A pack / readonly / other-
+      // scope remote-cache row is dropped; with nothing left the write is an
+      // ADD through learn(), which notes an exact match in history only.
+      // learnAsync keeps only candidates in the requested scope, so each row
+      // is judged against its own scope (== the writer's when one is given).
+      recallHybrid: async (query: string, options?: { limit?: number }) =>
+        this._persistableCandidates(await this.recallHybrid(query, { ...options, remote: false })),
+      recall: async (query: string, options?: { limit?: number }) =>
+        this._persistableCandidates(await this.recall(query, { ...options, remote: false })),
       learn: (statement: string, context?: LearnContext) => this.learn(statement, context),
       // #930: learnBatch uses this instead of `learn` so remote-scope writes
       // await the server push and return the server-assigned id. See LearnAsyncDeps.learnRouted.
@@ -4030,16 +4519,25 @@ export class Plur {
     // WS5 demand flywheel: a zero-result or low-top-score recall is a demand
     // signal. Emit an anonymized, content-free miss-signal (query fingerprint +
     // scope/domain + timestamp; never the raw query). Opt-in/default-off and
-    // fire-and-forget — never disturbs the recall path. (topScore is null on the
-    // PGLite path, which doesn't surface an RRF fusion score; the count-based
-    // miss still fires.)
-    void emitMissSignal({
-      query,
-      scope: options?.scope,
-      domain: options?.domain,
-      resultCount: result.engrams.length,
-      topScore: result.topScore ?? null,
-    }).catch(() => {})
+    // fire-and-forget — never disturbs the recall path. Both backends report
+    // the RRF fusion top score (decision I4 — the PGLite path returned null,
+    // which read as `no_results` whenever it found something).
+    //
+    // One retrieval leg (embeddings off by choice, or the embedder failed —
+    // `mode` is not 'hybrid'): the threshold (I3, 0.025) sits between 1/61 and
+    // 2/61 and is calibrated for TWO legs, so every non-empty one-leg recall
+    // would read as `low_score`. Offer only `no_results` then (follow-up to
+    // I3, round 2): a weak one-leg top hit is not evidence of a miss.
+    const oneLeg = result.mode !== 'hybrid'
+    if (!(oneLeg && result.engrams.length > 0)) {
+      void emitMissSignal({
+        query,
+        scope: options?.scope,
+        domain: options?.domain,
+        resultCount: result.engrams.length,
+        topScore: result.topScore ?? null,
+      }).catch(() => {})
+    }
     return result
   }
 
@@ -4226,9 +4724,16 @@ export class Plur {
     const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
     const bm25Results = searchEngrams(filtered, lexicalQuery, bm25Limit)
     const merged = pgliteRrfMerge([bm25Results, pgHits])
+    // Decision I4 "rrf" (2026-09-26): report the top candidate's RRF fusion
+    // score, captured BEFORE the rerank exactly as hybridSearchWithMeta does,
+    // so the miss-signal classifies a PGLite recall the same way as a YAML one.
+    // It was null here, and classifyMiss reads null-with-results as
+    // `no_results` — every PGLite recall that FOUND something was reported as
+    // a miss. Same k (60) and the same two lists the merge just fused.
+    const topScore = merged.length > 0 ? rrfScoreOf(merged[0].id, [bm25Results, pgHits]) : null
     const reranked = await applyReranker(merged, query, rerank)
     const mode: HybridSearchResult['mode'] = status.disabled ? 'bm25-only' : 'hybrid'
-    return { engrams: reranked.engrams.slice(0, limit), mode, embedderError: null, topScore: null, reranked: reranked.count }
+    return { engrams: reranked.engrams.slice(0, limit), mode, embedderError: null, topScore, reranked: reranked.count }
   }
 
   /**
@@ -5202,6 +5707,11 @@ export class Plur {
     // letting unrelated short sentences leak through once embeddings actually
     // started running.)
     let embeddingBoosts: Map<string, number> | undefined
+    // Why the semantic leg did not contribute, when it did not (R2-Retrieval
+    // core-retrieval#12, applied by R2-CoreA). `embed()` swallows an embedder
+    // failure and returns null, and this catch was silent, so the injection
+    // quietly ran on keyword matching only and nobody could tell.
+    let embedFailure: string | null = null
     try {
       const engrams = (await this._loadAllEngrams()).filter(e => e.status === 'active')
       // Route through PGLite/pgvector when active (#226 B-1), intersecting hits
@@ -5292,15 +5802,39 @@ export class Plur {
           }
         }
       }
-    } catch {
-      // Embeddings unavailable — continue without boosts
+    } catch (err) {
+      // Continue without boosts — but say so.
+      embedFailure = (err as Error)?.message ?? String(err)
+      logger.warning(`[plur] injectHybrid: embeddings failed (${embedFailure}) — keyword-only injection.`)
     }
+    // A swallowed failure shows in the embedder's status. Embeddings the USER
+    // turned off (`disabled`) are a choice, not a degradation: never flagged.
+    const st = embedderStatus()
+    if (!embedFailure && !st.disabled && !st.available) embedFailure = st.lastError ?? 'embedder unavailable'
     // #776: server rows join the candidate pool + boost channel. Visibility/
     // authorization run over them INSIDE _remoteInjectCandidates, before any
     // boost exists to resurrect a scope-excluded row.
     const remote = await this._remoteInjectCandidates(remotePromise, options)
-    return await this._formatInjection(task, options, embeddingBoosts, remote)
+    const result = await this._formatInjection(task, options, embeddingBoosts, remote)
+    // Reported as structured fields mirroring `HybridSearchResult`, not as a
+    // `warnings` line: `warnings` is rendered into the injected context on
+    // every prompt, and an install without the model would repeat the same
+    // line forever. Logged once per process for an operator.
+    if (embedFailure) {
+      result.mode = 'hybrid-degraded'
+      result.embedder_error = embedFailure
+      if (!Plur._injectDegradedLogged) {
+        Plur._injectDegradedLogged = true
+        logger.warning(`[plur] injectHybrid: embedder unavailable (${embedFailure}) — injecting by keyword match only.`)
+      }
+    } else {
+      result.mode = st.disabled ? 'bm25-only' : 'hybrid'
+    }
+    return result
   }
+
+  /** One operator log line per process for a degraded injectHybrid. */
+  private static _injectDegradedLogged = false
 
   private async _formatInjection(
     task: string,
@@ -5520,9 +6054,12 @@ export class Plur {
       // Narrowing here is what lets BOTH counters follow one reading without
       // redefining what an injection is for every other caller.
       const dedupApplies = options?.source === 'hook'
+      // Decision E7: NO_SESSION selects "no session default" for the dial
+      // context; it is not a session id and is never recorded as one.
+      const recordedSessionId = options?.session_id === NO_SESSION ? undefined : options?.session_id
       const writeCoInjection = (): void => {
         if (dedupApplies
-          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
+          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, recordedSessionId)) return
         const injection_id = generateInjectionId()
         try {
           // ASK whether the write landed; do not infer it from the absence of a
@@ -5559,7 +6096,7 @@ export class Plur {
               tokens_used: tokensUsed,
               source: options?.source ?? 'inject',
               ...(options?.scope ? { scope: options.scope } : {}),
-              ...(options?.session_id ? { session_id: options.session_id } : {}),
+              ...(recordedSessionId ? { session_id: recordedSessionId } : {}),
             },
           })
           // In-memory provenance is set regardless: the engrams WERE injected,
@@ -5756,10 +6293,10 @@ export class Plur {
         for (const entry of (this.config.stores ?? [])) {
           if (!entry.url) continue
           const serverId = this._stripRemotePrefix(id, entry.scope)
-          const remoteCached = this._loadRemoteCached(entry)
+          const peek = this._remoteCacheAnswer(entry, serverId)
           let existsRemotely: boolean
-          if (remoteCached.length > 0) {
-            existsRemotely = remoteCached.some(e => e.id === serverId)
+          if (peek !== 'unknown') {
+            existsRemotely = peek === 'present'
           } else if (Date.now() >= guardDeadline) {
             // Budget spent on earlier stores. Same branch an unreachable store
             // takes — "cannot tell" — so feedback proceeds with a warning
@@ -5866,7 +6403,7 @@ export class Plur {
     // 'primary')` on an id absent locally rated a REMOTE engram. One severity
     // band below the retire (a mis-targeted signal is recoverable), same
     // defect, same predicate.
-    if (scope && isLocalOnlyScope(scope)) {
+    if (scope && isLocalOnlyScope(scope, this.config.stores ?? [])) {
       throw new Error(
         `Engram not found in the local store: ${id} (scope: "${scope}"). `
         + `That scope names a local target, so no remote store was searched. `
@@ -6068,6 +6605,8 @@ export class Plur {
 
   private async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
     this._assertWritable()
+    // Guards and routing below read the current config (core-index#9).
+    this.reloadConfigIfChanged()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.
@@ -6084,10 +6623,27 @@ export class Plur {
       // statement, scope, commitment, relations and retirement as the tracked
       // mutations, and this is where four of the five actually happen.
       const toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
+      this._reconcileQueuedScope(engrams[idx], toWrite)
+      const retiresNow = engrams[idx].status !== 'retired' && toWrite.status === 'retired'
       engrams[idx] = toWrite
       // Incremental write (#740): only the updated engram row changed.
       await this._updateEngrams(engrams, [toWrite])
       await this._syncIndex()
+      // "Every removal is explicit" (coordinator, 2026-09-27): an update that
+      // retires a row is a removal and leaves the same trace forget() does.
+      // `plur_validate_meta` retires a failing meta-engram through here, and
+      // it used to vanish with no history event. Nothing when the row was
+      // already retired or its status did not change.
+      if (retiresNow) {
+        try {
+          this._appendHistory({
+            event: 'engram_retired',
+            engram_id: toWrite.id,
+            timestamp: toWrite.updated_at,
+            data: { reason: null, via: 'update' },
+          })
+        } catch { /* history is an audit trail, never a gate on the write */ }
+      }
       return toWrite
     })
     if (localResult) return localResult
@@ -6114,32 +6670,122 @@ export class Plur {
     // across stores, so there the walk keeps the graceful contract pinned by
     // `set-pinned-remote.test.ts`: try the next store, and report null/false
     // rather than a success that did not happen.
-    for (const entry of (this.config.stores ?? [])) {
-      if (!entry.url || entry.readonly === true) continue
+    // core-index#9 (round 2): an id NAMESPACED to a configured store names that
+    // store (the refusal rule above relies on it), so only the store(s) it is
+    // namespaced to are candidates. The walk used to run EVERY store's guard —
+    // and PATCH every store — in order until one answered, so store A's
+    // stricter policy refused an update of store B's engram, and B's content
+    // was sent to A first. A bare id keeps the full walk (ownership unknown).
+    // Audit of #1228: `storePrefix` is three letters, so two store scopes can
+    // share one and a namespaced id then names both. Disambiguate on the full
+    // store scope — the loader's `_storeScope` stamp when the caller passes
+    // the row it got from us, else the store whose scope holds the row's
+    // scope. Neither narrows to nothing: an unmatched hint keeps `namedBy`.
+    const writableRemotes = (this.config.stores ?? []).filter(e => !!e.url && e.readonly !== true)
+    let namedBy = writableRemotes.filter(e => this._stripRemotePrefix(updated.id, e.scope) !== updated.id)
+    if (namedBy.length > 1) {
+      const stamp = (updated as any)._storeScope as string | undefined
+      const byStamp = stamp ? namedBy.filter(e => e.scope === stamp) : []
+      const byScope = typeof updated.scope === 'string' ? namedBy.filter(e => isScopeWithin(updated.scope, e.scope)) : []
+      if (byStamp.length > 0) namedBy = byStamp
+      else if (byScope.length > 0) namedBy = byScope
+    }
+    for (const entry of (namedBy.length > 0 ? namedBy : writableRemotes)) {
       // Leak guard (#353): remote-resident, explicit update → THROW on a
       // forbidden hit (no coherent demotion for a remote engram).
       // LOW-2: scan context fields too, not just the statement.
       this._guardExplicitUpdate(updated.statement, entry.scope, true, this._engramContextFields(updated))
       const serverId = this._stripRemotePrefix(updated.id, entry.scope)
-      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
       // PATCH a focused subset — full-engram PATCH would require strict
       // schema mirroring on the server and is not what enterprise PR #111
       // exposes. Send the fields most commonly mutated by the callers
       // (setPinned, promote, reportFailure).
       try {
+        // "Every removal is explicit and traced" (owner, 2026-09-27): a patch
+        // that sets `retired` reads the previous status first, so the history
+        // records a real transition only. `getById` answers null for both a
+        // 404 and an unreachable store, so null or a throw is "unknown" — then
+        // the event is still written, flagged, rather than dropped.
+        let previous: { status?: string } | null | undefined
+        if (updated.status === 'retired') {
+          try { previous = await driver.getById(serverId) } catch { previous = null }
+        }
         const patched = await driver.patch(serverId, {
           pinned: updated.pinned,
           status: updated.status,
           statement: updated.statement,
         })
         // `null` is a 404 — this remote does not hold it, so keep looking.
-        if (patched) return patched
+        if (patched) {
+          if (updated.status === 'retired' && previous?.status !== 'retired') {
+            try {
+              this._appendHistory({
+                event: 'engram_retired',
+                engram_id: updated.id,
+                timestamp: new Date().toISOString(),
+                data: {
+                  reason: null, via: 'update', routed_to: 'remote', scope: entry.scope,
+                  ...(previous ? {} : { previous_status_unknown: true }),
+                },
+              })
+            } catch { /* history is an audit trail, never a gate on the write */ }
+          }
+          return patched
+        }
       } catch (err) {
         if (serverId !== updated.id) throw err
         continue
       }
     }
     return null
+  }
+
+  /**
+   * Decision D4 "like-rescope" (2026-09-26): an update that changes the scope
+   * of a row still queued for a remote store (`_outbox` on the STORED row)
+   * behaves like `rescope()` (#848):
+   *   - new scope local-family (`isLocalOnlyScope`, config-aware) → the
+   *     pending delivery is cancelled;
+   *   - new scope has a writable URL store → `_outbox` is retargeted to it
+   *     (attempts reset). The leak guard has already run against the new
+   *     scope (`_guardExplicitUpdate` above); a demotion lands on `local` and
+   *     so takes the first branch;
+   *   - otherwise (no store, or only a readonly one) → cancelled, with a warning.
+   * The queue entry is read from the STORED row, never the caller's object,
+   * and so is `_retireRemote` (decision D1) — a caller-set value of either
+   * would otherwise direct a push or a remote DELETE. Mutates `toWrite`.
+   */
+  private _reconcileQueuedScope(stored: Engram, toWrite: Engram): void {
+    const storedSd = (stored as any).structured_data as Record<string, unknown> | undefined
+    const sd: Record<string, unknown> = { ...(((toWrite as any).structured_data as Record<string, unknown> | undefined) ?? {}) }
+    let changed = false
+    if (storedSd && '_retireRemote' in storedSd) { sd._retireRemote = storedSd._retireRemote; changed = true }
+    else if ('_retireRemote' in sd) { delete sd._retireRemote; changed = true }
+    const pending = storedSd?._outbox as { target_url?: string; target_scope?: string } | undefined
+    if (pending && stored.status !== 'retired' && toWrite.scope !== stored.scope) {
+      changed = true
+      const stores = this.config.stores ?? []
+      const newScope = toWrite.scope
+      const writable = stores.find(st => !!st.url && st.scope === newScope && st.readonly !== true)
+      if (isLocalOnlyScope(newScope, stores)) {
+        delete sd._outbox
+        logger.warning(
+          `[plur] update of ${stored.id} moved it to "${newScope}" and cancelled its pending delivery to `
+          + `${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}") — like rescope (#848).`,
+        )
+      } else if (writable) {
+        sd._outbox = { ...pending, target_url: writable.url, target_scope: newScope, attempt_count: 0, last_error: '' }
+      } else {
+        delete sd._outbox
+        logger.warning(
+          `[plur] update of ${stored.id} moved it to "${newScope}", which has no writable remote store — its pending `
+          + `delivery to ${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}") was CANCELLED. `
+          + `Rescope it to a store scope to deliver it.`,
+        )
+      }
+    }
+    if (changed) (toWrite as any).structured_data = Object.keys(sd).length > 0 ? sd : undefined
   }
 
   /**
@@ -6514,10 +7160,10 @@ export class Plur {
         for (const entry of (this.config.stores ?? [])) {
           if (!entry.url) continue
           const serverId = this._stripRemotePrefix(id, entry.scope)
-          const cached = this._loadRemoteCached(entry)
+          const peek = this._remoteCacheAnswer(entry, serverId)
           let existsRemotely: boolean
-          if (cached.length > 0) {
-            existsRemotely = cached.some(e => e.id === serverId)
+          if (peek !== 'unknown') {
+            existsRemotely = peek === 'present'
           } else if (Date.now() >= guardDeadline) {
             // Budget spent on earlier stores. Same branch an unreachable store
             // takes here — and on THIS path that branch REFUSES, because a
@@ -6703,7 +7349,9 @@ export class Plur {
     // remote DELETE each for global/local/project:foo, 0 for primary. The
     // predicate is shared with `feedback` now precisely so the two cannot
     // drift again — the drift was the bug (#855).
-    if (targetScope && isLocalOnlyScope(targetScope)) {
+    // Decision E4: stores are passed, so a `project:*` scope a URL store
+    // covers (equal or segment-contained) is NOT local-only and reaches it.
+    if (targetScope && isLocalOnlyScope(targetScope, this.config.stores ?? [])) {
       throw new Error(
         `Engram not found in the local store: ${id} (scope: "${targetScope}"). `
         + `That scope names a local target, so no remote store was searched. `
@@ -6893,6 +7541,15 @@ export class Plur {
     // invalid target fails the whole batch early (#676 constraint 4). ---
     const remoteDriver = this._resolveRemoteStoreForScope(target)
     const storeEntry = (this.config.stores ?? []).find(s => s.scope === target)
+    // Case-SENSITIVE on purpose, unlike `isSharedScope`'s case-folded prefix
+    // test (formal run 2026-09-26, kept after review). This is typo protection
+    // on an explicit move: the target is written verbatim as the row's scope
+    // (never normalised), and every reader matches scopes exactly — `global`
+    // in the inject/recall filters, `isScopeWithin`, the store `scope ===`
+    // lookups. Folding here would accept `Global` or `Project:app` as
+    // local-family and strand the row under a scope no filter recognises as
+    // global, while `isSharedScope` classes `Project:app` as SHARED. Refusing
+    // it with the "check for typos" error below is the fail-loud outcome.
     const isLocalFamily = target === 'local' || target === 'global' || target.startsWith('project:')
     let route: 'remote' | 'local'
     if (remoteDriver) {
@@ -7049,7 +7706,21 @@ export class Plur {
         }
       }
       if (!opts.keepLocal) {
-        await this._retireRescopedSource(id, target, serverId)
+        // The push LANDED: from here a failure must be reported per id with the
+        // server id, not thrown. Throwing aborted the rest of the batch and hid
+        // that a copy now exists at the target, so a retry pushed it again
+        // (formal WritePath, candidate 6).
+        try {
+          await this._retireRescopedSource(id, target, serverId)
+        } catch (err) {
+          return {
+            id, status: 'error', action, from_scope: source.scope, to_scope: target, new_id: serverId,
+            kept_local: opts.keepLocal,
+            error: `Pushed to "${target}" as ${serverId}, but the local source could not be retired: `
+              + `${(err as Error).message}. Both copies are now active — retire ${id} (plur forget) `
+              + `rather than re-running the rescope, which would push a second copy.`,
+          }
+        }
       }
       this._appendHistory({
         event: 'engram_rescoped',
@@ -7143,13 +7814,16 @@ export class Plur {
    * `_hashDedup` (the hash cannot resurrect the source) and from every
    * injection/list surface (status filters).
    */
-  private async _retireRescopedSource(id: string, toScope: string, newId: string): Promise<void> {
+  private async _retireRescopedSource(id: string, toScope: string, newId: string): Promise<boolean> {
     const now = new Date().toISOString()
-    await this._withStoreLock(this.paths.engrams, async () => {
+    const retired = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.
       const fresh = await this._loadTargeted([id])
       const t = fresh.find(e => e.id === id)
-      if (!t) return
+      // Gone (compacted) or already retired by a concurrent forget while the
+      // push was in flight: nothing to retire here, and history must not
+      // record a retirement that did not happen (#855).
+      if (!t || t.status === 'retired') return false
       t.status = 'retired'
       t.updated_at = new Date().toISOString()
       if (!t.rationale) t.rationale = `Retired: rescoped to ${toScope} as ${newId}`
@@ -7165,13 +7839,16 @@ export class Plur {
       // Incremental write (#740): only the retired source row changed.
       await this._updateEngrams(fresh, [t])
       await this._syncIndex()
+      return true
     })
+    if (!retired) return false
     this._appendHistory({
       event: 'engram_retired',
       engram_id: id,
       timestamp: now,
       data: { reason: `rescoped to ${toScope}`, rescoped_to: newId, routed_to: 'rescope' },
     })
+    return true
   }
 
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
@@ -7179,7 +7856,10 @@ export class Plur {
     this._assertWritable()
     return await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
-      const active = engrams.filter(e => e.status !== 'retired')
+      // Decision D1: a retired row still carrying a queued "retire on remote"
+      // entry is kept until the flush has retired the remote copy — removing
+      // it would lose the only durable record of that pending DELETE.
+      const active = engrams.filter(e => e.status !== 'retired' || !!(e as any).structured_data?._retireRemote)
       const removed = engrams.length - active.length
       if (removed > 0) {
         // Removing retired engrams IS this method (audit #794 shrink guard).
@@ -7720,10 +8400,9 @@ export class Plur {
    *  (direct YAML edit, older client) is skipped by the flush forever, so
    *  counting it would report a permanent phantom "pending" (#766). */
   async outboxCount(): Promise<number> {
-    const engrams = await this._loadCached(this.paths.engrams)
-    return engrams.filter(e =>
-      (e as any).structured_data?._outbox && e.status !== 'retired'
-    ).length
+    // Same entries as `listOutbox()` (pushes AND queued remote retirements,
+    // decision D1), so the count and the list cannot disagree.
+    return (await this.listOutbox()).length
   }
 
   /**
@@ -7744,6 +8423,11 @@ export class Plur {
    */
   async listOutbox(): Promise<Array<{
     id: string
+    /** `push`: a write waiting to reach its store (`_outbox`). `retire`: a
+     *  queued DELETE of a copy the remote accepted after a forget/rescope
+     *  cancelled its delivery (decision D1, `_retireRemote`) — listed so a
+     *  stuck retirement is visible, not reported as an empty outbox. */
+    kind: 'push' | 'retire'
     target_scope: string
     queued_at: string
     attempt_count: number
@@ -7753,15 +8437,13 @@ export class Plur {
     const engrams = await this._loadCached(this.paths.engrams)
     const now = Date.now()
     const out = []
-    for (const e of engrams) {
-      const ob = (e as any).structured_data?._outbox as {
-        target_scope?: string; queued_at?: string; attempt_count?: number; last_error?: string
-      } | undefined
-      if (!ob || e.status === 'retired') continue
+    type Entry = { target_scope?: string; queued_at?: string; attempt_count?: number; last_error?: string }
+    const toEntry = (id: string, kind: 'push' | 'retire', ob: Entry) => {
       const queued_at = typeof ob.queued_at === 'string' ? ob.queued_at : ''
       const queuedMs = queued_at ? Date.parse(queued_at) : NaN
-      out.push({
-        id: e.id,
+      return {
+        id,
+        kind,
         target_scope: ob.target_scope ?? '(unknown)',
         queued_at,
         attempt_count: typeof ob.attempt_count === 'number' ? ob.attempt_count : 0,
@@ -7770,7 +8452,13 @@ export class Plur {
         // rendered, and NaN in a report reads as a bug in the reporter rather
         // than as the missing data it actually is.
         age_days: Number.isFinite(queuedMs) ? Math.floor((now - queuedMs) / 86_400_000) : 0,
-      })
+      }
+    }
+    for (const e of engrams) {
+      const sd = (e as any).structured_data as { _outbox?: Entry; _retireRemote?: Entry } | undefined
+      if (sd?._outbox && e.status !== 'retired') out.push(toEntry(e.id, 'push', sd._outbox))
+      // Selected exactly as flushOutbox selects them (any status).
+      if (sd?._retireRemote) out.push(toEntry(e.id, 'retire', sd._retireRemote))
     }
     return out
   }
@@ -7785,15 +8473,98 @@ export class Plur {
    */
   async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
     this._assertWritable()
+    // Ids this flush claims in `_outboxInFlight`, released however it ends.
+    const claimed = new Set<string>()
+    try {
+      return await this._flushOutboxClaimed(claimed)
+    } finally {
+      for (const id of claimed) this._outboxInFlight.delete(id)
+    }
+  }
+
+  /**
+   * A row is still waiting for delivery: it carries `_outbox` and is not
+   * retired — exactly flushOutbox()'s selection predicate. The merge-back and
+   * learn()'s hand-off re-check it on the FRESH row, so a cancellation that
+   * landed during the network round-trip (forget #766, local rescope #848)
+   * is honoured instead of overwritten.
+   */
+  private static _stillQueued(e: Engram | undefined): boolean {
+    return !!e && !!(e as any).structured_data?._outbox && e.status !== 'retired'
+  }
+
+  /**
+   * Still queued AND still queued for the store a push just went to (audit of
+   * #1228, finding 1). A D4 update or a rescope can retarget `_outbox` to
+   * another store while the POST to the old one is on the wire; the fresh row
+   * then still carries `_outbox`, but for a store that has NOT received it.
+   * Only a row whose entry still names the same url and scope is handed off.
+   */
+  private static _stillQueuedFor(
+    e: Engram | undefined,
+    target: { url: string; scope: string } | undefined,
+  ): boolean {
+    if (!target || !Plur._stillQueued(e)) return false
+    const ob = (e as any).structured_data._outbox as { target_url?: string; target_scope?: string }
+    return ob.target_scope === target.scope
+      && !!ob.target_url && normalizeEndpointUrl(ob.target_url) === normalizeEndpointUrl(target.url)
+  }
+
+  /**
+   * Decision D1 "queue-retire": stamp a durable "retire on remote" entry on the
+   * local row — the copy a remote accepted AFTER a forget/rescope cancelled
+   * its delivery. `flushOutbox()` retries it like any other queued write, as a
+   * DELETE of `server_id` on the store at `target_url`/`target_scope`; it never
+   * POSTs, so it cannot resurrect anything. Idempotent: an entry for the same
+   * server id is left as it is. Returns whether the row changed. Mutates `row`.
+   */
+  private static _queueRetireRemote(
+    row: Engram,
+    target: { target_url: string; target_scope: string; server_id: string },
+    now: string,
+  ): boolean {
+    if (!target.server_id || !target.target_url) return false
+    const sd = ((row as any).structured_data && typeof (row as any).structured_data === 'object')
+      ? { ...(row as any).structured_data as Record<string, unknown> } : {}
+    const existing = sd._retireRemote as { server_id?: string } | undefined
+    if (existing?.server_id === target.server_id) return false
+    sd._retireRemote = { ...target, queued_at: now, last_attempt: '', attempt_count: 0, last_error: '' }
+    ;(row as any).structured_data = sd
+    return true
+  }
+
+  private async _flushOutboxClaimed(
+    claimed: Set<string>,
+  ): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
+    // The re-guard below promises the target scope's CURRENT policy (R2-D #12);
+    // without this a long-running process flushed against the config it
+    // started with (core-index#9, round 2).
+    this.reloadConfigIfChanged()
     const engrams = await this._primaryStore.load()
     // #766: skip retired engrams — a retired engram must not be pushed to the
     // remote and resurrected. The cancel-outbox path in forget() strips _outbox
     // on retirement; this guard is belt-and-suspenders for any path that retires
     // without explicitly cancelling (e.g. direct YAML edits, older client versions).
+    // Also skip rows another pusher in this process is delivering right now
+    // (learn()'s immediate push, a concurrent flush) — pushing them again is a
+    // duplicate on the remote.
     const pending = engrams.filter(e =>
-      (e as any).structured_data?._outbox && e.status !== 'retired'
+      Plur._stillQueued(e) && !this._outboxInFlight.has(e.id)
     )
-    if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
+    for (const e of pending) { this._outboxInFlight.add(e.id); claimed.add(e.id) }
+    // Decision D1: queued "retire on remote" entries — retired or rescoped
+    // rows whose remote copy was accepted after the delivery was cancelled.
+    // A row can carry both (audit of #1228, finding 1: retargeted to another
+    // store while the push to the old one was in flight) — it is claimed by
+    // THIS flush through `pending`, so it is not skipped as in flight: the old
+    // copy is retired here, before the push to the new store below.
+    const pendingClaimed = new Set(pending.map(e => e.id))
+    const retiring = engrams.filter(e =>
+      !!(e as any).structured_data?._retireRemote
+      && (!this._outboxInFlight.has(e.id) || pendingClaimed.has(e.id))
+    )
+    for (const e of retiring) { this._outboxInFlight.add(e.id); claimed.add(e.id) }
+    if (pending.length === 0 && retiring.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
 
     // #863: push supersedes TARGETS before the engrams that supersede them.
     //
@@ -7853,10 +8624,68 @@ export class Plur {
     const now = new Date()
     const TTL_MS = 7 * 24 * 60 * 60 * 1000
 
+    // Decision D1: retire accepted-after-cancel remote copies. A DELETE by the
+    // server id the remote assigned; 404/410 means already gone (done). The
+    // outcome is merged below: `undefined` = done (entry removed), otherwise
+    // the entry with its attempt bookkeeping bumped.
+    type RetireEntry = { target_url: string; target_scope: string; server_id: string; queued_at: string; last_attempt: string; attempt_count: number; last_error: string }
+    const retireOutcome = new Map<string, { serverId: string; next: RetireEntry | undefined }>()
+    for (const row of retiring) {
+      const entry = (row as any).structured_data._retireRemote as RetireEntry
+      const storeEntry = (this.config.stores ?? []).find(
+        s => s.url && s.scope === entry.target_scope && normalizeEndpointUrl(s.url) === normalizeEndpointUrl(entry.target_url),
+      )
+      if (!storeEntry) {
+        expired_warnings.push(
+          `${row.id}: remote copy ${entry.server_id} is queued for retirement on "${entry.target_scope}", `
+          + `but no store with that url and scope is configured — still queued.`,
+        )
+        failed++
+        continue
+      }
+      const driver = this._getRemoteDriver({ url: storeEntry.url!, token: storeEntry.token, scope: storeEntry.scope })
+      try {
+        await driver.removeIdempotent(entry.server_id)
+        retireOutcome.set(row.id, { serverId: entry.server_id, next: undefined })
+        flushed++
+        this._appendHistory({
+          event: 'engram_retired',
+          engram_id: row.id,
+          timestamp: now.toISOString(),
+          data: { reason: 'delivery cancelled locally during the push', routed_to: 'remote', scope: entry.target_scope, server_id: entry.server_id, outbox_flush: true },
+        })
+      } catch (err) {
+        retireOutcome.set(row.id, {
+          serverId: entry.server_id,
+          next: { ...entry, last_attempt: now.toISOString(), attempt_count: (entry.attempt_count ?? 0) + 1, last_error: (err as Error).message },
+        })
+        failed++
+        logger.warning(`[plur:outbox] retiring remote copy ${entry.server_id} of ${row.id} failed: ${(err as Error).message}`)
+      }
+    }
+    /** Where each pushed id went — for queuing a retire if it was cancelled meanwhile (D1). */
+    const pushedTo = new Map<string, { url: string; scope: string }>()
+
     for (const engram of pending) {
       const outbox = (engram as any).structured_data._outbox as {
         target_url: string; target_scope: string; queued_at: string
         last_attempt: string; attempt_count: number; last_error: string
+      }
+
+      // Audit of #1228, finding 1: a row still owing a retire of an older
+      // remote copy is delivered only once that retire is done. Pushing first
+      // and then losing the row on hand-off would drop the retire entry with it.
+      const owedRetire = (engram as any).structured_data._retireRemote as { server_id?: string } | undefined
+      if (owedRetire) {
+        const r = retireOutcome.get(engram.id)
+        if (!r || r.serverId !== owedRetire.server_id || r.next !== undefined) {
+          expired_warnings.push(
+            `${engram.id}: NOT pushed yet — its earlier remote copy ${owedRetire.server_id ?? '?'} must be retired `
+            + `first (still queued; the next flush retries both).`,
+          )
+          failed++
+          continue
+        }
       }
 
       // Check TTL warning
@@ -7865,6 +8694,25 @@ export class Plur {
         expired_warnings.push(
           `${engram.id} queued ${outbox.queued_at} (${Math.floor(ageMs / 86400000)}d ago) — consider manual resolution`
         )
+      }
+
+      // Invariant `_outbox ⇒ scope === _outbox.target_scope` (formal WritePath,
+      // candidate 2). Every in-process writer now keeps it: rescope() cancels
+      // or retargets (#848), updateEngram() does the same (decision D4), and
+      // cross-scope recurrence never widens a queued row (decision D3). Kept as
+      // DEFENCE, because it is still reachable: a hand-edited engrams.yaml, an
+      // older client sharing the store, or an update that keeps the scope but
+      // supplies its own `_outbox`. Pushing such a row delivered it, carrying its
+      // scope, to another store. Held back, loudly and non-destructively: the
+      // entry stays queued, so rescoping the engram decides where it goes.
+      if (engram.scope !== outbox.target_scope) {
+        expired_warnings.push(
+          `${engram.id}: NOT pushed — its scope is now "${engram.scope}" but it was queued for `
+          + `"${outbox.target_scope}". Rescope it (to "${outbox.target_scope}" to deliver, or to a local `
+          + `scope to cancel the delivery).`,
+        )
+        failed++
+        continue
       }
 
       // Resolve remote driver from current config (don't store tokens in outbox)
@@ -7899,7 +8747,9 @@ export class Plur {
       // test set PLUR_PATH and `path` to the same directory, the one
       // configuration in which the bug is invisible.
       const healthPath = this.remoteHealthStatePath()
-      const cooldown = isHostInCooldown(storeEntry.url!, Date.now(), healthPath)
+      // Per credential (R2-CoreB core-policy#3): a 429 on another token for
+      // this url does not park this one.
+      const cooldown = isHostInCooldown(storeEntry.url!, Date.now(), healthPath, storeEntry.token)
       if (cooldown.inCooldown) {
         if (!cooldownSkippedHosts.has(storeEntry.url!)) {
           cooldownSkippedHosts.add(storeEntry.url!)
@@ -8009,6 +8859,7 @@ export class Plur {
         const pushed = await driver.appendAndGetServerId(cleanEngram)
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
+        pushedTo.set(engram.id, { url: storeEntry.url!, scope: outbox.target_scope })
         if (pushed?.id) {
           localToServer.set(engram.id, pushed.id)
           persistedIdMap[engram.id] = { server_id: pushed.id, url: storeEntry.url!, at: Date.now() }
@@ -8062,18 +8913,54 @@ export class Plur {
     // what it writes back, and nothing else.
     if (flushed > 0 || failed > 0) {
       const consideredIds = new Set(pending.map(e => e.id))
+      const retiredAt = new Date().toISOString()
       const survivorsById = new Map(
         engrams.filter(e => consideredIds.has(e.id)).map(e => [e.id, e] as const),
       )
       await this._withStoreLock(this.paths.engrams, async () => {
         const fresh = await this._storeAt(this.paths.engrams).load()
         const merged = fresh
-          // Drop the ones this flush successfully pushed (remote now owns them).
-          .filter(e => !(consideredIds.has(e.id) && !survivorsById.has(e.id)))
+          // Drop the ones this flush successfully pushed (remote now owns them)
+          // — but only while the fresh row is STILL queued. A forget() or local
+          // rescope that landed during the push cancelled the delivery; the
+          // remote accepted it anyway (the POST was already on the wire), so
+          // keep the local record and report the stray remote copy (#766).
+          .filter(e => {
+            if (!(consideredIds.has(e.id) && !survivorsById.has(e.id))) return true
+            const dest = pushedTo.get(e.id)
+            // Handed off only while still queued FOR THE STORE IT WENT TO — a
+            // D4 update / rescope that retargeted it mid-push leaves it queued
+            // for a store that has not received it (audit of #1228, finding 1).
+            if (Plur._stillQueuedFor(e, dest)) return false
+            const retargeted = Plur._stillQueued(e)
+            const serverId = localToServer.get(e.id)
+            // Decision D1: queue the accepted copy for retirement on the remote
+            // (durable, on this kept row); the next flush DELETEs it.
+            const queuedRetire = !!(serverId && dest)
+              && Plur._queueRetireRemote(e, { target_url: dest!.url, target_scope: dest!.scope, server_id: serverId! }, retiredAt)
+            expired_warnings.push(
+              `${e.id}: delivery was ${retargeted ? 'retargeted to another store' : 'cancelled locally (forget/rescope)'} `
+              + `while the push was in flight, but the remote accepted it${serverId ? ` as ${serverId}` : ''}. `
+              + `The local record is kept${retargeted ? ', still queued for the new store' : ''}; `
+              + (queuedRetire || (serverId && (e as any).structured_data?._retireRemote?.server_id === serverId)
+                ? `the remote copy is queued for retirement (next flush).`
+                : `retire the remote copy there if it should not exist.`),
+            )
+            return true
+          })
           .map(e => {
             const survivor = survivorsById.get(e.id)
             if (!survivor) return e
+            // #848: the delivery was cancelled while this flush ran (forget
+            // stripped `_outbox`, a local rescope dropped it). Copying the
+            // snapshot's `_outbox` back would re-queue it; leave the row alone.
+            if (!Plur._stillQueued(e)) return e
             const sSd = (survivor as any).structured_data as Record<string, unknown> | undefined
+            // Audit of #1228, finding 1: retargeted meanwhile (D4 update /
+            // rescope to another store). The snapshot's `_outbox` names the OLD
+            // store; copying it back would re-point the row there.
+            const sOb = sSd?._outbox as { target_url?: string; target_scope?: string } | undefined
+            if (sOb?.target_url && !Plur._stillQueuedFor(e, { url: sOb.target_url, scope: sOb.target_scope ?? '' })) return e
             const fSd = { ...((e as any).structured_data as Record<string, unknown> | undefined ?? {}) }
             // `_outbox` and `_demoted` are the flush's own bookkeeping: copy
             // them across (including their ABSENCE, which is how a cancelled
@@ -8090,6 +8977,17 @@ export class Plur {
               ...(demotedIds.has(e.id) ? { scope: 'local', visibility: 'private' } : {}),
               structured_data: Object.keys(fSd).length > 0 ? fSd : undefined,
             } as Engram
+          })
+          // Decision D1: apply the retire outcomes — only to a row whose entry
+          // is still the one this flush worked on (same server id).
+          .map(e => {
+            const r = retireOutcome.get(e.id)
+            const cur = (e as any).structured_data?._retireRemote as { server_id?: string } | undefined
+            if (!r || cur?.server_id !== r.serverId) return e
+            const fSd = { ...((e as any).structured_data as Record<string, unknown>) }
+            if (r.next) fSd._retireRemote = r.next
+            else delete fSd._retireRemote
+            return { ...e, structured_data: Object.keys(fSd).length > 0 ? fSd : undefined } as Engram
           })
         // The dropped engrams are the ones the remote accepted — a deliberate
         // handoff, not a loss (audit #794 shrink guard).
@@ -8538,6 +9436,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * event type existed since SP2 with zero emitters — audit #213 C5).
    */
   async recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; new_count: number; existing_count: number }> {
+    this._assertWritable()
     if (pairs.length === 0) return { records: [], new_count: 0, existing_count: 0 }
     const engramById = new Map((await this._loadAllEngrams()).map(e => [e.id, e]))
     return withLock(this.paths.tensions, () => {
@@ -8620,6 +9519,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /** Mark a detected tension as a real conflict (detected → confirmed). */
   confirmTension(id: string): TensionRecord {
+    this._assertWritable()
     return this._mutateTension(id, r => {
       if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
       if (r.status === 'dismissed') throw new Error(`Tension ${id} is dismissed — re-scan cannot resurrect it; delete tensions.yaml entry manually if truly needed`)
@@ -8632,6 +9532,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * The pair stays in the scan exclusion set, so it is never re-flagged.
    */
   dismissTension(id: string): TensionRecord {
+    this._assertWritable()
     return this._mutateTension(id, r => {
       if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
       r.status = 'dismissed'
@@ -8645,6 +9546,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    * resolved_at set.
    */
   async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }> {
+    // Readonly (#731): refuse BEFORE the claim below writes tensions.yaml.
+    this._assertWritable()
     // CLAIM the resolution atomically before retiring anything (#813, audit
     // finding 5). The validation used to be a PRE-LOCK read via listTensions(),
     // and the retire and the tension update were separate critical sections
@@ -8773,8 +9676,18 @@ Generate an improved version of the procedure that prevents this failure. Return
       return loadTensions(this.paths.tensions).some(r =>
         (r.status === 'detected' || r.status === 'confirmed')
         && (r.engram_a === engramId || r.engram_b === engramId))
-    } catch {
-      return false
+    } catch (err) {
+      // Fail CLOSED (formal WritePath, candidate 5). `loadTensions` throws on
+      // an unreadable file precisely so it is never read as empty (#794 F1);
+      // answering "no tension" here undid that and let contradicted knowledge
+      // escalate into 'locked' — the one outcome this gate exists to stop.
+      // Capping at 'decided' while the file is unreadable is recoverable; a
+      // wrong lock is not. (A MISSING file still reads as no tensions.)
+      logger.warning(
+        `[plur:tensions] tensions file unreadable (${(err as Error).message}); `
+        + `treating ${engramId} as possibly contradicted — lock escalation held back`,
+      )
+      return true
     }
   }
 
@@ -9603,6 +10516,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
           }),
         ])
+        this._noteMeIdentity(url, token, me)
         const registeredSet = new Set(registered)
         // #647: scopes the user has dismissed from the offer are not "actionable"
         // — drop them from `unregistered` so the session-start hint and CLI stop
@@ -9626,6 +10540,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           metadata: me.scope_metadata ?? [],
         }
       } catch (err) {
+        this._noteMeIdentity(url, token, null)
         return {
           url, ok: false,
           authorized: [], registered, unregistered: [], metadata: [],
@@ -9706,12 +10621,14 @@ Generate an improved version of the procedure that prevents this failure. Return
         // A host that just answered /me is not unreachable — retire any cached
         // network-class recall failure for it rather than reporting both (#864).
         this.noteRemoteHostReachable(url)
+        this._noteMeIdentity(url, token, me)
         return { url, scopes, status: 'ok' as const, ok: true,
           ...(me.username ? { username: me.username } : {}),
           ...(me.org_id ? { orgId: me.org_id } : {}),
           grantedScopes: me.scopes.length,
           ...expiryFields }
       } catch (err) {
+        this._noteMeIdentity(url, token, null)
         const msg = err instanceof Error ? err.message : String(err)
         const isAuth = /\b40[13]\b/.test(msg)
         return { url, scopes, status: (isAuth ? 'auth_expired' : 'unreachable') as RemoteHealth['status'],

@@ -21,7 +21,16 @@ import { beforeAll, afterAll } from 'vitest'
  * git-spawning test files written since then each forgot it — a shared
  * helper is the version the NEXT file cannot forget.
  */
-export function isolateGitConfig(): void {
+export function isolateGitConfig(opts: {
+  /**
+   * Pin `init.defaultBranch` for fixtures that name a branch (a bare remote
+   * made with `-b main`, `git show main:…`). sync.ts runs a plain `git init`,
+   * whose branch otherwise depends on the machine's git: `main` on some
+   * builds, `master` on the CI runners, where such fixtures pushed `master`
+   * to a remote whose HEAD named `main` and every clone came out empty.
+   */
+  defaultBranch?: string
+} = {}): void {
   let tmpConfigDir: string
   let origGlobal: string | undefined
   let origSystem: string | undefined
@@ -31,7 +40,8 @@ export function isolateGitConfig(): void {
     origSystem = process.env.GIT_CONFIG_SYSTEM
     tmpConfigDir = mkdtempSync(join(tmpdir(), 'plur-gitconfig-'))
     const configFile = join(tmpConfigDir, 'gitconfig')
-    writeFileSync(configFile, '[user]\n  name = PLUR Test\n  email = test@plur.ai\n')
+    writeFileSync(configFile, '[user]\n  name = PLUR Test\n  email = test@plur.ai\n'
+      + (opts.defaultBranch ? `[init]\n  defaultBranch = ${opts.defaultBranch}\n` : ''))
     process.env.GIT_CONFIG_GLOBAL = configFile
     process.env.GIT_CONFIG_SYSTEM = '/dev/null'
   })

@@ -9,13 +9,17 @@ import { CLI_VERSION as VERSION } from './version.js'
 
 // --- Main ---
 const argv = process.argv.slice(2)
+// `--` ends option parsing (formal verification S4, 2026-09-26): a statement
+// such as `plur learn -- "--help"` is data, not a request for help.
+const sep = argv.indexOf('--')
+const options = sep === -1 ? argv : argv.slice(0, sep)
 
-if (argv.includes('--version') || argv.includes('-v')) {
+if (options.includes('--version') || options.includes('-v')) {
   console.log(VERSION)
   process.exit(0)
 }
 
-if (argv.includes('--help') || argv.includes('-h') || argv.length === 0) {
+if (options.includes('--help') || options.includes('-h') || argv.length === 0) {
   console.log(`plur v${VERSION} — persistent memory for AI agents
 
 Usage: plur <command> [options]
@@ -109,8 +113,16 @@ if (flagError) exit(1, flagError)
 // hook-* commands are unaffected: their stdout is protocol JSON written
 // directly, never through outputInfo.
 setQuiet(flags.quiet === true)
+// `plur -- learn x`: `--` ends option parsing, so what follows it is data —
+// including the word that would have been the command. Say where it goes
+// instead of reporting "Unknown command: --" (audit 1228-c #3).
+if (args[0] === '--') {
+  exit(1, args[1]
+    ? `\`--\` goes after the command, not before it: plur ${args[1]} -- <value>`
+    : "`--` goes after the command, not before it: plur <command> -- <value>. Run 'plur --help' for usage.")
+}
 const command = args[0]
-const commandArgs = args.slice(1)
+const commandArgs = separatedArgs(command, args.slice(1))
 
 const COMMANDS: Record<string, string> = {
   learn: './commands/learn.js',
@@ -198,6 +210,31 @@ async function drainPendingIndexWork(): Promise<void> {
     const plur = getLastPlurInstance?.()
     if (plur && typeof plur.waitForIndex === 'function') await plur.waitForIndex()
   } catch { /* derived index — never fail a command over it */ }
+}
+
+/**
+ * `--` for the commands that do not parse it themselves (audit 1228-c #3).
+ *
+ * The global parser passes `--` through so a command can see where values
+ * start. Eight commands read it (below); every other one took `--` as its
+ * first positional — `plur trust -- <dir>` trusted a directory named `--`,
+ * `plur feedback -- <id> positive` looked up the id `--`. For those the
+ * separator is dropped and the values after it stay positional. They parse
+ * any `-…` token as one of their own flags, so a value that begins with `-`
+ * after `--` is refused rather than silently read as a flag.
+ */
+function separatedArgs(cmd: string | undefined, rest: string[]): string[] {
+  const SEPARATOR_AWARE = new Set([
+    'learn', 'recall', 'inject', 'forget', 'capture', 'timeline', 'similarity-search', 'ingest',
+  ])
+  const at = rest.indexOf('--')
+  if (!cmd || at === -1 || SEPARATOR_AWARE.has(cmd) || cmd.startsWith('hook-')) return rest
+  const values = rest.slice(at + 1)
+  const dashed = values.find(v => v.startsWith('-'))
+  if (dashed !== undefined) {
+    exit(1, `plur ${cmd} cannot take a value that begins with "-" (got ${JSON.stringify(dashed)}), even after \`--\`.`)
+  }
+  return [...rest.slice(0, at), ...values]
 }
 
 if (!command || !COMMANDS[command]) {

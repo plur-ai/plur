@@ -3,6 +3,10 @@ import type { Engram } from '../schemas/engram.js'
 import { logger } from '../logger.js'
 import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
+import type { ScopeSource } from '../scope-routing.js'
+
+/** The values `scope_source` may carry on the wire (#1221); anything else is omitted. */
+const SCOPE_SOURCES: ReadonlySet<string> = new Set<ScopeSource>(['explicit', 'session', 'default', 'routed'])
 
 /**
  * Lenient validation for semi-trusted remote rows (security audit 2026-06-10,
@@ -221,10 +225,28 @@ interface BoundedResponse {
   readonly text?: string
 }
 
+/**
+ * Top-level `_`-prefixed keys are LOADER bookkeeping, never server data:
+ * `_pack`, `_storeScope` and `_originalId` are stamped by the code that loads
+ * a row and are read as the row's origin (tensions.ts `engramOrigin`, the
+ * `withoutPacks` filter, injected-pack counting). `.passthrough()` used to
+ * carry a server-supplied `_pack` straight through, so a remote writer could
+ * give its row an installed pack's origin and defeat the measured-under gate
+ * (#981; formal R2-CoreB, core-policy#6). Stripped here, at the one trust
+ * boundary both remote legs share, so the loaders' own stamps are the only
+ * markers a remote row can carry.
+ */
+function withoutLoaderMarkers(candidate: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(candidate)) if (!k.startsWith('_')) out[k] = v
+  return out
+}
+
 export function salvageRemoteRow(
-  candidate: Record<string, unknown>,
+  rawCandidate: Record<string, unknown>,
   logContext?: { url: string; rowId?: unknown },
 ): { data: Record<string, unknown>; salvagedFields: string[] } | null {
+  const candidate = withoutLoaderMarkers(rawCandidate)
   const first = RemoteRowSchema.safeParse(candidate)
   if (first.success) return { data: first.data as Record<string, unknown>, salvagedFields: [] }
   const failing = [...new Set(first.error.issues.map(i => String(i.path[0] ?? '')).filter(Boolean))]
@@ -544,7 +566,19 @@ export class RemoteStore {
           const ctrl = new AbortController()
           const t = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
           try {
-            const r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
+            let r: Response
+            try {
+              r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
+            } catch (err) {
+              // Network-level failure (fetch only throws on those + our abort):
+              // mark the host so sibling stores skip their own timeouts (#1069).
+              markRemoteHostDown(this.url)
+              const msg = (err as Error).name === 'AbortError'
+                ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
+                : (err as Error).message
+              console.error(`[plur:remote-store] ${this.url} load page failed: ${msg}`)
+              break
+            }
             clearRemoteHostDown(this.url) // answered — alive, whatever the status
             if (!r.ok) {
               // 403 (no read access) and 404 (scope doesn't exist) are stable
@@ -559,27 +593,42 @@ export class RemoteStore {
               }
               break
             }
-            const body = await r.json() as { rows: any[]; total_count: number }
+            // The host ANSWERED. From here on nothing marks it down — "HTTP
+            // responses never trip it" (formal R2-CoreB, core-policy#10). An
+            // unreadable or malformed body used to throw into the network
+            // catch, open the breaker for every store on the host and log a
+            // network failure; it now ends pagination as incomplete (prior
+            // cache kept), the same as fetchBounded treats a bad body. A body
+            // stalled past the deadline is reported as the timeout it is,
+            // still without a mark (fetchBounded's rule too).
+            let body: unknown
+            try {
+              body = await r.json()
+            } catch {
+              const why = ctrl.signal.aborted
+                ? `a page body that stalled past ${LOAD_FETCH_TIMEOUT_MS}ms`
+                : 'an unreadable (non-JSON) page body'
+              console.error(`[plur:remote-store] ${this.url} returned ${why} loading scope ${this.scope}`)
+              break
+            }
+            const page = body as { rows?: unknown; total_count?: unknown } | null
+            if (!page || typeof page !== 'object' || !Array.isArray(page.rows)) {
+              console.error(`[plur:remote-store] ${this.url} returned a malformed page (no rows array) loading scope ${this.scope}`)
+              break
+            }
+            const rows = page.rows as any[]
             // Server returns DB rows shaped {id, scope, status, data, created_at, updated_at}
             // — the engram contents live in row.data. Reshape + validate; drop malformed.
-            for (const row of body.rows) {
-              const e = this.reshape(row)
+            for (const row of rows) {
+              const e = row && typeof row === 'object' ? this.reshape(row) : null
               if (e) all.push(e)
             }
-            if (all.length >= body.total_count || body.rows.length < limit) {
+            const total = typeof page.total_count === 'number' ? page.total_count : Infinity
+            if (all.length >= total || rows.length < limit) {
               paginationComplete = true
               break
             }
             offset += limit
-          } catch (err) {
-            // Network-level failure (fetch only throws on those + our abort):
-            // mark the host so sibling stores skip their own timeouts (#1069).
-            markRemoteHostDown(this.url)
-            const msg = (err as Error).name === 'AbortError'
-              ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
-              : (err as Error).message
-            console.error(`[plur:remote-store] ${this.url} load page failed: ${msg}`)
-            break
           } finally {
             clearTimeout(t)
           }
@@ -650,7 +699,14 @@ export class RemoteStore {
     // typed from one the router picked out of `covers`. Omitted when absent, so
     // an engram written by an older path, or replayed from an outbox predating
     // this, sends nothing rather than claiming `explicit` it cannot vouch for.
-    const scope_source = e.structured_data?._scopeSource as string | undefined
+    //
+    // `structured_data` is caller-settable on update, so the value is checked
+    // against the four `ScopeSource` values rather than trusted: anything else
+    // is omitted, the same answer as an engram written before #1221.
+    const rawScopeSource: unknown = e.structured_data?._scopeSource
+    const scope_source = typeof rawScopeSource === 'string' && SCOPE_SOURCES.has(rawScopeSource)
+      ? rawScopeSource
+      : undefined
     const body = JSON.stringify({
       statement: e.statement,
       scope:     engram.scope,
@@ -854,6 +910,23 @@ export class RemoteStore {
   }
 
   /** Remove → DELETE /api/v1/engrams/:id (server soft-retires). */
+  /**
+   * Retire `id` on the server, idempotently (decision D1, the queued
+   * "retire on remote" entry). `'removed'` on 2xx; `'absent'` on 404/410 —
+   * the row is already gone, which is the goal, so the entry is done. Any
+   * other status throws (the caller keeps the entry queued and retries);
+   * a network failure throws from `fetchBounded` as usual.
+   */
+  async removeIdempotent(id: string): Promise<'removed' | 'absent'> {
+    const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: this.headers(),
+    }, RemoteStore.readBounded)
+    if (r.ok) { this.cache = null; return 'removed' }
+    if (r.status === 404 || r.status === 410) return 'absent'
+    throw new Error(`Remote delete failed: ${r.status} ${r.text}`)
+  }
+
   async remove(id: string): Promise<boolean> {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',

@@ -11,11 +11,18 @@ import { EngramSchemaPassthrough } from '../src/schemas/engram.js'
 let root: string
 let store: string
 let config: string
-const fault = vi.hoisted(() => ({ path: '' }))
+// Models a CRASH at a commit boundary: the first write to `fault.path` fails,
+// and so does every write after it, as if the process had died there. A
+// plain throw is not a crash: after one, commitMigration puts the corpus back
+// (formal round 2, r2-persist §4), which formal-r2-persist-schema-stamp tests.
+const fault = vi.hoisted(() => ({ path: '', crashed: false }))
 vi.mock('../src/sync.js', async importOriginal => {
   const original = await importOriginal<typeof import('../src/sync.js')>()
   return { ...original, atomicWrite: (...args: Parameters<typeof original.atomicWrite>) => {
-    if (args[0] === fault.path) throw new Error('injected commit interruption')
+    if (fault.crashed || (fault.path !== '' && args[0] === fault.path)) {
+      fault.crashed = true
+      throw new Error('injected commit interruption')
+    }
     return original.atomicWrite(...args)
   } }
 })
@@ -23,7 +30,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(join(tmpdir(), 'plur-migration-preserve-'))
   store = join(root, 'engrams.yaml')
   config = join(root, 'config.yaml')
-  fault.path = ''
+  fault.path = ''; fault.crashed = false
 })
 
 it.each(['up', 'down'] as const)('recovers %s after corpus replacement but before the version stamp', direction => {
@@ -34,7 +41,7 @@ it.each(['up', 'down'] as const)('recovers %s after corpus replacement but befor
   expect(run).toThrow('injected commit interruption')
   const committed = fs.readFileSync(store, 'utf8')
   expect(fs.existsSync(`${store}.migration.json`)).toBe(true)
-  fault.path = ''
+  fault.path = ''; fault.crashed = false
   for (const migration of ALL_MIGRATIONS) vi.spyOn(migration, direction).mockImplementation(() => { throw new Error('must not replay') })
   run()
   expect(fs.readFileSync(store, 'utf8')).toBe(committed)
@@ -47,7 +54,7 @@ it('does not overwrite intervening writes while recovering an interrupted migrat
   setSchemaVersion(config, 0)
   fault.path = config
   expect(() => runMigrations(store, config)).toThrow('injected commit interruption')
-  fault.path = ''
+  fault.path = ''; fault.crashed = false
   saveEngrams(store, [row(1), row(2)])
   const newer = fs.readFileSync(store, 'utf8')
   expect(() => runMigrations(store, config)).toThrow(/reconcile/)
@@ -154,7 +161,7 @@ describe('round-2 review: configuration shapes, file modes and actionable refusa
     setSchemaVersion(config, 0)
     fault.path = config
     expect(() => runMigrations(store, config)).toThrow('injected commit interruption')
-    fault.path = ''
+    fault.path = ''; fault.crashed = false
     saveEngrams(store, [row(1), row(2)])
     let message = ''
     try { runMigrations(store, config) } catch (error) { message = String(error) }

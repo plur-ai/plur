@@ -94,7 +94,8 @@ function rrfMerge(resultSets: Engram[][], k = 60): Engram[] {
  *
  * For aggregation queries ("how many", "total"), uses a specialized prompt
  * that generates entity-focused variants to find ALL mentions across
- * conversations, not just the top few.
+ * conversations, not just the top few. The returned list is capped at
+ * `limit` either way.
  *
  * Cost: 1 LLM call (~$0.001) + N× hybrid search
  */
@@ -137,8 +138,10 @@ export async function expandedSearch(
   )
   const resultSets = await Promise.all(searchPromises)
 
-  // Step 3: Merge via RRF — aggregation returns more results
+  // Step 3: Merge via RRF. The aggregation floor of 50 above widens the pool
+  // each variant contributes; the RETURNED list is capped at the caller's
+  // limit, as on every hybrid path since #770 (formal R2, core-retrieval#9:
+  // this path still returned max(limit, 50)).
   const merged = rrfMerge(resultSets)
-  const effectiveLimit = aggregation ? Math.max(limit, 50) : limit
-  return merged.slice(0, effectiveLimit)
+  return merged.slice(0, limit)
 }

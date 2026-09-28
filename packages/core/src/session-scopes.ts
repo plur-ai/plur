@@ -41,6 +41,25 @@
  * auto-route instead of inheriting the process default.
  */
 
+/**
+ * Decision E7 (2026-09-26): the "no session" sentinel.
+ *
+ * Pass it as `LearnContext.session` (learn / learnRouted), `RecallOptions.session`
+ * or `InjectOptions.session_id` when the caller KNOWS it has no session — e.g. an
+ * MCP call without a `session_id` while several sessions are open, where
+ * falling back to the process-default slot would hand this write whichever
+ * session scope was set last (possibly a team scope). With `NO_SESSION` the
+ * registry answers `null`: neither a keyed registration nor the process-default
+ * slot applies, so an unscoped write takes the genuinely-unscoped path
+ * (auto-route / `unscoped_default`, `scope_source` 'routed' | 'default'). An
+ * explicit `scope` still wins.
+ *
+ * It is a string (the `session` fields are strings) that no real session id
+ * can collide with. It is never registered (`set` refuses it), never recorded
+ * as a session id in provenance, and never persisted on an engram.
+ */
+export const NO_SESSION = '\u0000plur:no-session'
+
 export class SessionScopeRegistry {
   private scopes = new Map<string, string | null>()
   private defaultScope: string | null = null
@@ -54,6 +73,11 @@ export class SessionScopeRegistry {
    * registered — see the module header.
    */
   set(scope: string | null, session?: string): void {
+    if (session === NO_SESSION) {
+      // A registration under the sentinel could never be read back (`get`
+      // answers null for it) — refuse loudly rather than store a dead entry.
+      throw new Error('NO_SESSION cannot hold a session scope: it means "no session". Register under a real session key.')
+    }
     if (session === undefined) {
       this.defaultScope = scope
       return
@@ -66,6 +90,8 @@ export class SessionScopeRegistry {
    * slot only when the session has no registration of its own.
    */
   get(session?: string): string | null {
+    // Decision E7: the sentinel has no default at all — not even the process slot.
+    if (session === NO_SESSION) return null
     if (session !== undefined && this.scopes.has(session)) {
       return this.scopes.get(session) ?? null
     }
@@ -78,6 +104,7 @@ export class SessionScopeRegistry {
    * Omitting `session` clears the process slot.
    */
   clear(session?: string): void {
+    if (session === NO_SESSION) return
     if (session === undefined) {
       this.defaultScope = null
       return

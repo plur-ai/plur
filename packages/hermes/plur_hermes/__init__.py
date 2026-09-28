@@ -220,7 +220,7 @@ def register(ctx):
                 "type": "object",
                 "properties": {
                     "statement": {"type": "string", "description": "The knowledge assertion"},
-                    "scope": {"type": "string", "default": "global"},
+                    "scope": {"type": "string", "description": "Target scope. Omit to let PLUR route it (auto-route rules, else the configured unscoped default)."},
                     "type": {"type": "string", "enum": ["behavioral", "terminological", "procedural", "architectural"], "default": "behavioral"},
                     "domain": {"type": "string"},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Classification tags"},
@@ -369,7 +369,7 @@ def register(ctx):
         def handler(args: dict, **kwargs) -> str:
             try:
                 if tool_name == "plur_learn":
-                    result = bridge.learn(args["statement"], scope=args.get("scope", "global"),
+                    result = bridge.learn(args["statement"], scope=args.get("scope"),  # omitted → core routes (formal R2 #5)
                                           type=args.get("type", "behavioral"), domain=args.get("domain"),
                                           tags=args.get("tags"), rationale=args.get("rationale"),
                                           visibility=args.get("visibility"),

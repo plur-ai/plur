@@ -4,7 +4,6 @@ import {
   readProjectConfigFromPath,
   findProjectConfigPath,
   resolveProjectRemoteFromConfig,
-  projectRemoteRefusalNotice,
   type ProjectRemote,
 } from '@plur-ai/core'
 // Type-only: the host contract is untyped at runtime — `@opencode-ai/plugin`
@@ -17,13 +16,29 @@ import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
-import { resolveScopeRoot, resolveTrustedScope } from './scope.js'
+import { resolveScopeRoot, resolveTrustedScope, projectRemoteRefusalNotice } from './scope.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
 // Unconditional — unlike `log` above. A `.plur.yaml` scope the plugin refuses
 // to adopt (untrusted directory, D2) is exactly the kind of thing a user
 // needs to see without having to already know to set PLUR_DEBUG=1 first.
 const warn = (msg: string) => { console.error(`[plur:opencode] warning: ${msg}`) }
+
+/**
+ * Upper bound on the recall in `chat.message` (formal R2, mcp#10). The recall
+ * was awaited unbounded, so a hung store (lock, dead remote, stuck embedder)
+ * stalled the user's turn. Past the bound the turn proceeds with no memory
+ * block; the recall keeps running in the background and its result is dropped.
+ * 10 s leaves room for the embedder's cold load.
+ */
+export const INJECT_TIMEOUT_MS = 10_000
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const t = new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })
+  return Promise.race([p, t]).finally(() => { if (timer) clearTimeout(timer) })
+}
+const TIMED_OUT = Symbol('timed-out')
 
 /** Never let a memory failure break the agent's turn. */
 async function safe(label: string, fn: () => Promise<void>): Promise<void> {
@@ -88,13 +103,17 @@ export const PlurPlugin: Plugin = async (ctx) => {
   // Refusal is unconditional like the scope one: team memory that silently
   // never arrives is indistinguishable from a broken remote leg, which is the
   // failure #1198 was filed about.
-  if (projectRemote?.refusedFrom) warn(projectRemoteRefusalNotice(projectRemote.refusedFrom))
+  if (projectRemote?.refusedFrom) warn(projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot))
   // Host only, never the token — this line exists so a user can see WHICH
   // store the session will dial, not to echo the credential that reaches it.
   if (projectRemote?.remoteProject) log(`project remote: ${projectRemote.remoteProject.url}`)
   const blocks = new BlockCache()
   const path = new RenderPath()
   const turns = new TurnBuffer()
+  // Sessions whose CURRENT turn's block was already injected by the
+  // chat.message fallback (formal R2, mcp#10): system.transform must not push
+  // it again into the same request. Reset at the next chat.message.
+  const fallbackInjected = new Set<string>()
   void OPENCODE_PLUGIN_VERSION
 
   return {
@@ -112,11 +131,12 @@ export const PlurPlugin: Plugin = async (ctx) => {
         // fires for the user's own submitted message too, not just the
         // assistant's streamed reply (confirmed against the real binary).
         turns.markUserMessage(input.sessionID, output.message?.id)
+        fallbackInjected.delete(input.sessionID)
 
         const query = (output?.parts ?? [])
           .filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
           .map((p: any) => p.text).join('\n')
-        const injection = await plur.injectHybrid(query, {
+        const pending = plur.injectHybrid(query, {
           scope: projectConfig.scope,
           // Without this the remote leg dials only when the session scope
           // happens to match a store already registered in the user's global
@@ -125,8 +145,17 @@ export const PlurPlugin: Plugin = async (ctx) => {
           // every other adapter reached their team store (#1207).
           ...(projectRemote?.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
         })
-        blocks.set(input.sessionID, renderMemoryBlock({ injection }))
-        log(`recall for ${input.sessionID}: ${injection?.count ?? 0} engrams`)
+        pending.catch(() => {}) // a late rejection after the timeout must not go unhandled
+        const injection = await withTimeout(pending, INJECT_TIMEOUT_MS)
+        if (injection === TIMED_OUT) {
+          // No memory this turn rather than the previous turn's block, which
+          // answered a different query.
+          blocks.clear(input.sessionID)
+          warn(`recall took longer than ${INJECT_TIMEOUT_MS} ms — continuing this turn without memory`)
+        } else {
+          blocks.set(input.sessionID, renderMemoryBlock({ injection }))
+          log(`recall for ${input.sessionID}: ${injection?.count ?? 0} engrams`)
+        }
 
         // Secondary learning path: corrections/preferences from the user's
         // own text — the same text the recall query above was built from.
@@ -150,6 +179,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
               text: block,
               synthetic: true,
             })
+            fallbackInjected.add(input.sessionID)
             log('system.transform unavailable — using chat.message fallback (accretes)')
           } else if (block) {
             // Per the spec's Known Gotcha #1: a part with messageID undefined
@@ -170,7 +200,8 @@ export const PlurPlugin: Plugin = async (ctx) => {
     'experimental.chat.system.transform': async (input, output) => {
       await safe('system.transform', async () => {
         const block = input.sessionID ? blocks.get(input.sessionID) : undefined
-        if (block) output.system.push(block)
+        // Already in this request via the fallback part: do not render twice.
+        if (block && !fallbackInjected.has(input.sessionID!)) output.system.push(block)
         if (input.sessionID) path.markRendered(input.sessionID)
       })
     },
@@ -204,6 +235,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
           blocks.clear(sessionID)
           turns.clear(sessionID)
           path.clear(sessionID)
+          fallbackInjected.delete(sessionID)
         }
       })
     },

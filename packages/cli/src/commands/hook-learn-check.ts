@@ -1,8 +1,9 @@
-import { readSync, readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync, renameSync, unlinkSync } from 'fs'
+import { readSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
+import { ensureSessionDir, ticketCounter } from '../lib/codex-hook-io.js'
 
 /**
  * plur hook-learn-check — Stop hook that prompts learning reflection
@@ -32,46 +33,43 @@ function sessionKey(): string {
 
 function counterPath(): string {
   const dir = join(tmpdir(), 'plur-sessions')
-  mkdirSync(dir, { recursive: true })
+  // Vetted (formal r2, cli#8): a symlinked or foreign dir is refused and the
+  // caller's fail-open branch passes the payload through untouched.
+  if (!ensureSessionDir(dir)) throw new Error('session state dir refused')
   return join(dir, `${sessionKey()}.stop-count`)
 }
 
 /**
- * Atomic counter via append-only file size, not read-int/increment/write
- * (audit fix, 2026-07-09 — cross-referenced from the feat/cursor-integration
- * branch's evaluator review: this file's own docstring at the top is what
- * hook-cursor-stop.ts cited as "the same mechanism" it mirrors, and an
- * identical audit there found and fixed this exact race — every Stop hook
- * invocation is a fresh, independent process, so a plain
- * read-then-write can lose an increment if two fire close together,
- * silently shifting/skipping the LEARN_INTERVAL nudge and
- * CHECKPOINT_INTERVAL gate below). Appending one byte is atomic on POSIX
- * filesystems even under concurrent writers; counting file size instead of
- * parsing decimal content can't lose an increment the way read-then-write
- * can.
+ * Per-session Stop counter. It used to be "atomic" append-a-byte-then-stat:
+ * the append is atomic, the pair is not — `A-append, B-append, A-stat,
+ * B-stat` handed both hooks 2, so one LEARN_INTERVAL/CHECKPOINT_INTERVAL
+ * multiple fired twice and the next was skipped (formal r2, cli#11). Each
+ * caller now gets the position of its own appended line: distinct values,
+ * exactly 1..n after n calls (PlurSpec/R2CLI.lean §4).
  */
 function incrementCounter(path: string): number {
-  appendFileSync(path, '.')
-  try {
-    return statSync(path).size
-  } catch {
-    return 1
-  }
+  return ticketCounter(path)
 }
 
-function plurPath(): string {
-  return process.env.PLUR_PATH ?? join(homedir(), '.plur')
+/**
+ * The store root — resolved exactly as createPlur resolves it (`--path`, then
+ * PLUR_PATH, then ~/.plur). The writer used to read PLUR_PATH only while
+ * hook-session-end honoured `--path`, so with `--path` the closer looked in a
+ * directory the writer never wrote (formal r2, cli#6).
+ */
+export function checkpointRoot(flags: GlobalFlags): string {
+  return flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
 }
 
-function checkpointDir(): string {
-  const dir = join(plurPath(), 'sessions')
+function checkpointDir(flags: GlobalFlags): string {
+  const dir = join(checkpointRoot(flags), 'sessions')
   mkdirSync(dir, { recursive: true })
   return dir
 }
 
-function writeCheckpoint(count: number, cwd: string): void {
+function writeCheckpoint(count: number, cwd: string, flags: GlobalFlags): void {
   const id = sessionKey()
-  const dir = checkpointDir()
+  const dir = checkpointDir(flags)
   const path = join(dir, `${id}.checkpoint.json`)
 
   const now = new Date().toISOString()
@@ -130,7 +128,7 @@ function readStdinRaw(): string {
 
 const LEARN_PROMPT = `[PLUR] Did you discover, learn, or get corrected on something in your last response? If yes — call plur_learn now before moving on. If no — continue.`
 
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
 
   // Silent pass-through for projects without plur configured (#247).
@@ -162,7 +160,7 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
 
   // Write session checkpoint periodically (#215)
   if (count % CHECKPOINT_INTERVAL === 0) {
-    try { writeCheckpoint(count, cwd) } catch { /* never block on checkpoint failure */ }
+    try { writeCheckpoint(count, cwd, flags) } catch { /* never block on checkpoint failure */ }
   }
 
   // Learning nudge every Nth stop

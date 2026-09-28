@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -68,7 +68,10 @@ describe('hook-cursor-stop', () => {
     // First COMPLETED stop is counted as #1 (1 % 3 !== 0) → still no nudge.
     expect(stop(id, 'completed').trim()).toBe('')
     // Prove it: the stop-count file has advanced by exactly one, not three.
+    // (Formal r2 cli#11: the counter is one line per increment now, not one
+    // byte — the append-then-stat form could hand two racing hooks the same
+    // value. Count lines.)
     const counterFile = join(SESSIONS_DIR, `${id}.stopcount`)
-    expect(statSync(counterFile).size).toBe(1)
+    expect(readFileSync(counterFile, 'utf8').split('\n').filter(Boolean)).toHaveLength(1)
   })
 })

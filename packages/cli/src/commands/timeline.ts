@@ -11,6 +11,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   while (i < args.length) {
     const arg = args[i]
     if (arg === '--limit' && i + 1 < args.length) { limit = parseInt(args[++i], 10); i++ }
+    // `--` ends flag parsing: the next token is the query, verbatim, even when
+    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
+    // itself became the query.
+    else if (arg === '--') { if (!query && i + 1 < args.length) query = args[i + 1]; break }
     else if (!query) { query = arg; i++ }
     else { i++ }
   }

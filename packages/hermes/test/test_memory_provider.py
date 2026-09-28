@@ -171,7 +171,7 @@ class TestHandleToolCall:
         result = json.loads(p.handle_tool_call("plur_learn", {"statement": "test stmt"}))
         bridge.learn.assert_called_once_with(
             "test stmt",
-            scope="global",
+            scope=None,  # omitted → core's unscoped routing decides (formal R2 #5)
             type="behavioral",
             domain=None,
             tags=None,

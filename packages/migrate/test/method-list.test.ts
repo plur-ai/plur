@@ -59,6 +59,12 @@ const ALWAYS_ASYNC = new Set([
   // Embedding-backed, so it could never have been sync, and it is new in this
   // release, so no pre-0.16 call site exists for the migrate tool to rewrite.
   'nearDuplicates',
+  // Born async (formal verification round 2, 2026-09-27) — the importer's
+  // dry-run parity helpers: they answer "would learn() dedup this?" and
+  // "which scope would it write to?" through the same async store seam as
+  // learn(). New in this release, so no pre-0.16 call site exists.
+  'wouldDeduplicate',
+  'dedupScopeFor',
   // Born async (#852) — the content_hash repair behind `plur reindex-hashes`.
   // Takes the store lock and goes through the async PrimaryStore seam, so it
   // could never have been sync; new in this release, so there is no pre-0.16

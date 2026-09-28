@@ -1,5 +1,6 @@
-import { dirname } from 'node:path'
-import type { ProjectConfig } from '@plur-ai/core'
+import { dirname, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { projectRemoteRefusalNotice as coreRefusalNotice, type ProjectConfig } from '@plur-ai/core'
 
 /**
  * Which path this session's memory is scoped by.
@@ -18,6 +19,32 @@ export function resolveScopeRoot(ctx: { directory?: string; worktree?: string })
 /** The subset of `Plur` this module needs — narrow so tests can stub it cheaply. */
 export interface TrustCheck {
   isDirectoryTrusted(dir: string): boolean
+  /** The store whose `trust.yaml` answers (`Plur.storageRoot`). */
+  readonly storageRoot?: string
+}
+
+/** Quote a shell word only when it needs it. */
+function shellWord(s: string): string {
+  return /^[A-Za-z0-9_@%+=:,./~-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The trust command that reaches the store this plugin checks (audit 1228-c
+ * #1). The plugin opens `PLUR_PATH` when opencode's environment sets it; a bare
+ * `plur trust <dir>` in a shell without it writes `~/.plur/trust.yaml`, which
+ * this plugin never reads — so a non-default store is named with `--path`.
+ */
+export function trustCommand(dir: string, storageRoot?: string): string {
+  if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur trust ${shellWord(dir)}`
+  return `plur --path ${shellWord(storageRoot)} trust ${shellWord(dir)}`
+}
+
+/** Core's remote-refusal line, closing with {@link trustCommand} for this store. */
+export function projectRemoteRefusalNotice(refusedFrom: string, storageRoot?: string): string {
+  const line = coreRefusalNotice(refusedFrom)
+  const bare = `plur trust ${refusedFrom}`
+  if (!line.endsWith(bare)) return line
+  return line.slice(0, -bare.length) + trustCommand(refusedFrom, storageRoot)
 }
 
 /** The only fields this plugin ever adopts from a `.plur.yaml`. */
@@ -85,7 +112,7 @@ export function resolveTrustedScope(
     `${configPath} declares scope "${projectConfig.scope ?? '(none)'}"` +
     `${projectConfig.domain ? ` / domain "${projectConfig.domain}"` : ''}, but ${configDir} is not trusted — ` +
     `ignoring it and using the local default scope instead. If you cloned this repo yourself and want its ` +
-    `scope honored, run: plur trust ${configDir}`,
+    `scope honored, run: ${trustCommand(configDir, plur.storageRoot)}`,
   )
   return {}
 }

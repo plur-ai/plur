@@ -51,6 +51,8 @@ Knowledge is stored as **engrams** — small assertions that strengthen with use
 
 The plugin calls the [PLUR CLI](https://www.npmjs.com/package/@plur-ai/cli) under the hood via subprocess. If the CLI isn't installed globally, it auto-resolves via `npx` on first use (cached after that).
 
+**CLI version.** Text that begins with `-` (a recall query or an injected message such as `--dry-run …`) is sent after a `--` separator, which `plur recall` / `plur inject` honour from the first `@plur-ai/cli` release after 0.20.1. An older CLI reads `--` as the text itself, so upgrade the CLI if you rely on such queries; every other query is sent exactly as before, and statements / summaries that begin with `-` go on stdin, which every CLI version reads.
+
 ## What makes PLUR different from Hermes built-in memory
 
 Hermes has MEMORY.md (2,200 chars) and session search (FTS5). PLUR adds:

@@ -75,6 +75,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
 import { normalizeEngramInput } from './normalize-engram.js'
+import { duplicateEngramIds, resolveDuplicateIds, type IdRename } from './engrams.js'
 import {
   searchEngrams, ftsTokenize, engramSearchText, embeddingContentHash,
   MIN_TOKEN_LENGTH, TOKENIZER_VERSION, type CorpusStats,
@@ -139,6 +140,55 @@ const HNSW_INDEX_NAME = 'engram_embeddings_hnsw'
 
 /** Rows per INSERT round trip in `save()`. */
 const SAVE_CHUNK_SIZE = 500
+
+/**
+ * Refuse an UPDATE batch that carries one id twice (formal round 2,
+ * core-persistence#11). Before, the outcome depended on the chunk boundary:
+ * two copies inside one {@link SAVE_CHUNK_SIZE} chunk raised "ON CONFLICT DO
+ * UPDATE command cannot affect row a second time", two copies in different
+ * chunks silently kept the later one.
+ *
+ * Only `updateMany` refuses now. Its rows name EXISTING engrams to replace, so
+ * renaming one copy would insert a new row rather than update anything — two
+ * different replacements for one row is a caller bug, and it surfaces. `save()`
+ * — the whole-corpus write a store load feeds — follows the shared duplicate
+ * rule instead (owner decision P1; see {@link resolveSaveBatch}).
+ */
+function refuseDuplicateIds(op: string, engrams: readonly Engram[]): void {
+  const dups = duplicateEngramIds(engrams)
+  if (dups.length === 0) return
+  const shown = dups.slice(0, 5).join(', ') + (dups.length > 5 ? `, … (${dups.length} in all)` : '')
+  throw new Error(
+    `[plur] refusing to ${op} ${engrams.length} engram(s) to Postgres: duplicate id(s) ${shown}. ` +
+    `A Postgres store holds one row per id, so one copy would be lost. Nothing was written.`,
+  )
+}
+
+/**
+ * Owner decision P1 (2026-09-27, "keep both, rename one"): a whole-corpus
+ * batch carrying one id on two different engrams keeps both — the later copy
+ * under the loader's fresh id ({@link resolveDuplicateIds}, the one rule every
+ * reader follows); an exact duplicate is written once. Replaces the refusal
+ * that stood in while the decision was open. Independent of chunking, since it
+ * runs on the whole batch before anything is written. A batch from
+ * `loadEngrams` is already resolved (and its renames recorded in history), so
+ * this only acts on a batch that did not come through the loader. The
+ * renames are handed to the rename listener after the write commits
+ * ({@link PostgresAdapter.addRenameListener}); every `Plur` instance attached to
+ * the adapter subscribes and records `engram_rekeyed` in its own history root,
+ * so no rename is log-only while an engine is attached. A bare adapter has no
+ * history root: there the log line is the only record.
+ */
+function resolveSaveBatch(engrams: Engram[]): { engrams: Engram[]; renames: IdRename[] } {
+  const { engrams: out, renames } = resolveDuplicateIds(engrams)
+  if (renames.length > 0) {
+    logger.warning(
+      `[plur] Postgres save: ${renames.length} engram(s) shared an id with an earlier, different engram in the batch; ` +
+      `stored under fresh ids (${renames.slice(0, 5).map(r => `${r.from} -> ${r.to}`).join(', ')}${renames.length > 5 ? ', …' : ''}).`,
+    )
+  }
+  return { engrams: out, renames }
+}
 
 /** Postgres identifiers this adapter will interpolate into DDL. */
 const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/
@@ -515,17 +565,23 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     const client = await this.acquire(this.pool)
     const key = `plur:init:${this.schema}`
     let locked = false
+    let poisoned: Error | undefined
     try {
       await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
       locked = true
       await this.initSchemaLocked(client)
     } finally {
       if (locked) {
-        // Best-effort: the session ends on release anyway, and Postgres drops
-        // session advisory locks with the session.
-        try { await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]) } catch { /* released with the session */ }
+        // Same rule as withExclusiveAccess (formal verification, round-2 drift
+        // review): a bare release() returns the session to the pool, and a
+        // session advisory lock lives as long as the SESSION — so a failed
+        // unlock must destroy the session, or every later initSchema waits on
+        // the lock forever.
+        try { await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]) } catch (err) {
+          poisoned = err instanceof Error ? err : new Error(String(err))
+        }
       }
-      client.release()
+      client.release(poisoned)
     }
   }
 
@@ -906,6 +962,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    */
   async updateMany(engrams: Engram[]): Promise<void> {
     if (engrams.length === 0) return
+    refuseDuplicateIds('update', engrams)
     const pool = await this.getPool()
     const client = await this.acquire(pool)
     try {
@@ -966,7 +1023,31 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // No cache to drop — `loadCached()` delegates to `load()` on this adapter.
   }
 
-  async save(engrams: Engram[]): Promise<void> {
+  /**
+   * Subscribe to the id renames `save()` makes under the shared duplicate rule
+   * (owner decision P1). Every subscriber is called, after the transaction
+   * commits, so a rename is reported only once it is stored. Returns the
+   * unsubscribe function.
+   *
+   * A SET of listeners, not one slot: several `Plur` instances may share one
+   * adapter, and each records the rename in its own history root — with a
+   * single slot the last one registered silently took the others' records
+   * ("nothing hidden", owner principle 2026-09-27). `Plur` subscribes in its
+   * constructor and unsubscribes in `close()`.
+   *
+   * With NO subscriber (a bare adapter no engine is attached to) there is no
+   * history root to record in; the rename is then only logged — see
+   * {@link resolveSaveBatch}.
+   */
+  addRenameListener(fn: (renames: IdRename[]) => void): () => void {
+    this.renameListeners.add(fn)
+    return () => { this.renameListeners.delete(fn) }
+  }
+
+  private readonly renameListeners = new Set<(renames: IdRename[]) => void>()
+
+  async save(batch: Engram[]): Promise<void> {
+    const { engrams, renames } = resolveSaveBatch(batch)
     const pool = await this.getPool()
     const client = await this.acquire(pool)
     try {
@@ -1004,6 +1085,18 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
         await client.query(`DELETE FROM "${this.schema}".engrams`)
       }
       if (!this.exclusiveSession.getStore()) await client.query('COMMIT')
+      if (renames.length > 0) {
+        // Report renames only once they are STORED: inside an exclusive
+        // operation this save joined the outer transaction, which commits
+        // later — or rolls back, in which case nothing was renamed.
+        this.afterCommit(() => {
+          for (const listener of [...this.renameListeners]) {
+            try { listener(renames) } catch (err) {
+              logger.warning(`[plur] Postgres save: recording ${renames.length} id rename(s) failed: ${(err as Error).message}`)
+            }
+          }
+        })
+      }
     } catch (err) {
       if (!this.exclusiveSession.getStore()) await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
       throw err
