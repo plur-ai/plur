@@ -87,8 +87,25 @@ export interface SaveOptions {
  * that satisfies neither is outside what the engine can defend.
  */
 export interface PrimaryStore {
-  /** Queue background work until the current transaction commits. Stores
-   * without transactions may omit this capability. */
+  /**
+   * Queue background work until the current transaction commits. Stores
+   * without transactions may omit this capability.
+   *
+   * Contract for callers:
+   * - Register SYNCHRONOUSLY from inside the protected function (the `fn` of
+   *   `withExclusiveAccess`), before it returns or throws. That is the only
+   *   registration guaranteed to run, and it runs once, after the commit is
+   *   confirmed, outside the transaction's connection.
+   * - Work registered after the protected function has ended but before the
+   *   commit is confirmed — from a detached promise, or while COMMIT is in
+   *   flight — is DROPPED with a warning, even if the commit then succeeds.
+   *   The store cannot tell such a late registration from one made after a
+   *   rollback, so it errs towards not running work for a write that may not
+   *   have landed.
+   * - Outside any protected operation, or after a confirmed commit, the
+   *   callback runs at once.
+   * - Work registered in an operation that rolls back never runs.
+   */
   afterCommit?(callback: () => void): void
 
   /** Backing medium — for diagnostics and `status()` reporting. */

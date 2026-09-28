@@ -1150,8 +1150,14 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * ownership together. A separate pool avoids starving ordinary readers;
    * incremental mutations join the outer transaction instead of committing it.
    */
-  /** Background work must start after commit, outside the connection's
-   * ownership context. Rolled-back operations never launch these callbacks. */
+  /**
+   * Background work must start after commit, outside the connection's
+   * ownership context. See the contract on {@link PrimaryStore.afterCommit}:
+   * register synchronously inside the protected function; a registration
+   * that arrives after the function ended — including while COMMIT is in
+   * flight — is dropped with a warning even if the commit then succeeds.
+   * Rolled-back operations never launch these callbacks.
+   */
   afterCommit(callback: () => void): void {
     const session = this.exclusiveSession.getStore()
     if (!session || session.committed) { this.exclusiveSession.exit(callback); return }
