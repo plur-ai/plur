@@ -97,6 +97,17 @@ export function setSchemaVersion(configPath: string, version: number): void {
   })
 }
 
+/*
+ * There is deliberately no "restore from backup" on failure (#1178 F01;
+ * formal-verification finding, spec/formal/findings/persistence.md candidate 2).
+ * `up()`/`down()` run on an in-memory copy and nothing is written until every
+ * one has succeeded, so when one throws the live engrams.yaml is still exactly
+ * what it was. The backup, by contrast, is never refreshed (the no-clobber rule
+ * below keeps the FIRST copy taken for a version), so copying it back replaced
+ * the live store with an older one and destroyed later writes. The backup stays
+ * on disk for manual recovery; the failure path simply writes nothing.
+ */
+
 /** Create a backup of engrams.yaml before migration. Returns backup path. */
 function createBackup(engramsPath: string, version: number): string | null {
   if (!fs.existsSync(engramsPath)) return null
@@ -186,14 +197,25 @@ function commitMigration(engramsPath: string, configPath: string, engrams: Retur
         // The put-back is a PLUR write too: keep the backup gate's baseline in step.
         recordLastWritten(engramsPath, countEntries(engramsPath, before))
       }
-      fs.unlinkSync(journalPath)
-      fsyncDir(join(engramsPath, '..'))
     } catch (restoreErr) {
       throw new Error(
         `Recording schema_version ${version} in ${configPath} failed (${stampErr}), and restoring ` +
         `engrams.yaml afterwards failed too (${restoreErr}). The recovery journal ${journalPath} was kept: ` +
         `the next migration run finishes the stamp. To do it by hand, set schema_version: ${version} in ${configPath} ` +
         `and delete ${journalPath}.`,
+      )
+    }
+    // The corpus is back. Removing the journal is cleanup: if it fails, the
+    // next run sees the corpus matches the journal's "before" and only clears it.
+    try {
+      fs.unlinkSync(journalPath)
+      fsyncDir(join(engramsPath, '..'))
+    } catch (cleanupErr) {
+      throw new Error(
+        `Recording schema_version ${version} in ${configPath} failed: ${stampErr}. ` +
+        `engrams.yaml was restored to its previous contents (still schema ${fromVersion}), but removing the ` +
+        `recovery journal ${journalPath} failed (${cleanupErr}). Nothing else needs doing: the next migration run ` +
+        `only clears the journal.`,
       )
     }
     throw new Error(

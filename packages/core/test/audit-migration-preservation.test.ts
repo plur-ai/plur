@@ -15,22 +15,31 @@ let config: string
 // and so does every write after it, as if the process had died there. A
 // plain throw is not a crash: after one, commitMigration puts the corpus back
 // (formal round 2, r2-persist §4), which formal-r2-persist-schema-stamp tests.
-const fault = vi.hoisted(() => ({ path: '', crashed: false }))
+// `throwOnly` instead models a plain failure of that one write (no crash),
+// and `unlinkJournal` a failure to remove the recovery journal.
+const fault = vi.hoisted(() => ({ path: '', crashed: false, throwOnly: false, unlinkJournal: false }))
 vi.mock('../src/sync.js', async importOriginal => {
   const original = await importOriginal<typeof import('../src/sync.js')>()
   return { ...original, atomicWrite: (...args: Parameters<typeof original.atomicWrite>) => {
     if (fault.crashed || (fault.path !== '' && args[0] === fault.path)) {
-      fault.crashed = true
+      if (!fault.throwOnly) fault.crashed = true
       throw new Error('injected commit interruption')
     }
     return original.atomicWrite(...args)
+  } }
+})
+vi.mock('fs', async importOriginal => {
+  const real = await importOriginal<typeof import('node:fs')>()
+  return { ...real, unlinkSync: (target: import('node:fs').PathLike) => {
+    if (fault.unlinkJournal && String(target).endsWith('.migration.json')) throw new Error('injected unlink failure')
+    return real.unlinkSync(target)
   } }
 })
 beforeEach(() => {
   root = fs.mkdtempSync(join(tmpdir(), 'plur-migration-preserve-'))
   store = join(root, 'engrams.yaml')
   config = join(root, 'config.yaml')
-  fault.path = ''; fault.crashed = false
+  fault.path = ''; fault.crashed = false; fault.throwOnly = false; fault.unlinkJournal = false
 })
 
 it.each(['up', 'down'] as const)('recovers %s after corpus replacement but before the version stamp', direction => {
@@ -168,5 +177,33 @@ describe('round-2 review: configuration shapes, file modes and actionable refusa
     expect(message).toContain(`${store}.migration.json`)
     expect(message).toMatch(/schema_version: \d+/)
     expect(message).toMatch(/delete the journal/)
+  })
+})
+
+describe('reconciliation with #1228: stamp failure and last-written bookkeeping', () => {
+  it('says the corpus was restored when only removing the journal fails, and the next run clears it', () => {
+    saveEngrams(store, [row(1)])
+    setSchemaVersion(config, 0)
+    const before = fs.readFileSync(store, 'utf8')
+    fault.path = config; fault.throwOnly = true; fault.unlinkJournal = true
+    let message = ''
+    try { runMigrations(store, config) } catch (error) { message = String(error) }
+    expect(message).toMatch(/restored to its previous contents/)
+    expect(message).toMatch(/next migration run only clears the journal/)
+    expect(fs.readFileSync(store, 'utf8')).toBe(before)
+    expect(fs.existsSync(`${store}.migration.json`)).toBe(true)
+    fault.path = ''; fault.throwOnly = false; fault.unlinkJournal = false
+    runMigrations(store, config)
+    expect(fs.existsSync(`${store}.migration.json`)).toBe(false)
+    expect(getSchemaVersion(config)).toBe(ALL_MIGRATIONS.length)
+  })
+
+  it('records the live store, not the staged file, as last written', () => {
+    fs.mkdirSync(join(root, 'backups'))
+    saveEngrams(store, [row(1), row(2)])
+    setSchemaVersion(config, 0)
+    runMigrations(store, config)
+    const record = JSON.parse(fs.readFileSync(join(root, 'backups', '.last-written.json'), 'utf8'))
+    expect(record).toEqual({ file: 'engrams.yaml', count: 2 })
   })
 })

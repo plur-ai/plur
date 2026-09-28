@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { PostgresAdapter } from '../src/storage-postgres.js'
 import { EngramSchemaPassthrough } from '../src/schemas/engram.js'
 import { Plur } from '../src/index.js'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type Server } from 'node:http'
@@ -180,5 +180,45 @@ describe.skipIf(!url)('Postgres ownership and transaction interruption', () => {
     await new Promise(r => setTimeout(r, 100))
     expect(calls).toBe(1)
     expect(insideSession).toBe(false)
+  }, 30000)
+
+  // #1228 x #1252: a save() inside an exclusive operation joins the outer
+  // transaction, so an id rename it makes is stored only if that commits.
+  const rekeyedEvents = (root: string) => {
+    const dir = join(root, 'history')
+    if (!existsSync(dir)) return 0
+    return readdirSync(dir).filter(f => f.endsWith('.jsonl'))
+      .flatMap(f => readFileSync(join(dir, f), 'utf8').split('\n').filter(Boolean))
+      .filter(line => line.includes('"engram_rekeyed"')).length
+  }
+  const clashingBatch = () => [row(1), { ...row(1), statement: 'A different engram that shares the id' }]
+
+  it('reports no rename, and records no engram_rekeyed, when the operation that made it rolls back', async () => {
+    const { a } = pair()
+    const path = mkdtempSync(join(tmpdir(), 'plur-pg-rename-rollback-')); roots.push(path)
+    new Plur({ path, store: a, autoDiscover: false })
+    let heard = 0
+    a.addRenameListener(() => { heard++ })
+    await expect(a.withExclusiveAccess(async () => {
+      await a.save(clashingBatch())
+      throw new Error('injected failure after the renaming save')
+    })).rejects.toThrow('injected failure')
+    await new Promise(r => setTimeout(r, 50))
+    expect(heard).toBe(0)
+    expect(rekeyedEvents(path)).toBe(0)
+    expect(await a.load()).toEqual([])
+  }, 30000)
+
+  it('control: the same rename is reported and recorded once the operation commits', async () => {
+    const { a } = pair()
+    const path = mkdtempSync(join(tmpdir(), 'plur-pg-rename-commit-')); roots.push(path)
+    new Plur({ path, store: a, autoDiscover: false })
+    let heard = 0
+    a.addRenameListener(() => { heard++ })
+    await a.withExclusiveAccess(async () => { await a.save(clashingBatch()) })
+    await new Promise(r => setTimeout(r, 50))
+    expect(heard).toBe(1)
+    expect(rekeyedEvents(path)).toBe(1)
+    expect(await a.load()).toHaveLength(2)
   }, 30000)
 })

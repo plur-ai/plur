@@ -10,7 +10,7 @@
  * corpus, and nothing ever migrates it again.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, unlinkSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, unlinkSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, hostname } from 'os'
 import yaml from 'js-yaml'
@@ -53,6 +53,8 @@ describe('formal-r2-persist: schema stamp failure after the corpus write', () =>
     releaseConfigLock()
     expect(getSchemaVersion(configPath)).toBe(0)
     expect(readFileSync(engramsPath).equals(before)).toBe(true)
+    // The put-back is complete, so no recovery journal is left for a later run.
+    expect(existsSync(`${engramsPath}.migration.json`)).toBe(false)
   }, 30_000)
 
   it('a failed rollback leaves corpus and version as they were', () => {
@@ -64,6 +66,7 @@ describe('formal-r2-persist: schema stamp failure after the corpus write', () =>
     releaseConfigLock()
     expect(getSchemaVersion(configPath)).toBe(CURRENT_SCHEMA_VERSION)
     expect(readFileSync(engramsPath).equals(migrated)).toBe(true)
+    expect(existsSync(`${engramsPath}.migration.json`)).toBe(false)
   }, 30_000)
 
   it('without the fault, run and rollback still write and stamp', () => {
