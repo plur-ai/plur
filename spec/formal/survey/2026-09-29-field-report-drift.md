@@ -7,6 +7,69 @@ merge notes in `docs/audits/2026-09-29-integration-notes.md`) merged
 touched. This is a workspace for auditing the two bodies of work together,
 not a candidate for main.
 
+## Refresh 3 (2026-09-29, final pass)
+
+Merged `--no-ff`: `integration/field-report-2026-09-29` @ `8f1cdafd` (heads
+and resolutions in `docs/audits/2026-09-29-integration-notes.md`, "Refresh
+3"). `origin/verify/formal-lean` @ `420f4f25` and #1401 @ `83d3ffdf` were
+already contained. The C3/F1 commit `5d370bb5` is kept.
+
+### Resolutions on this branch
+
+- **Outbox claims (#1277 C3/C4 vs this branch's C3):** #1277's claim code
+  replaces this branch's (atomic takeover with a stale-content re-check and a
+  read-back, live same-host owners, no orphan/in-doubt, no probe, no
+  `--resend`, key persisted before the first POST, claims released however
+  a flush ends). #1228's flush structure (D1 retire queue, `routeFor`, the
+  lease-free selection from C3) is kept around it. Kept from this branch:
+  per-instance claim tokens so only the taker releases a claim, and the
+  advisory `listOutbox().leased_until` derived from the claim file alone.
+- **`async-lock.ts` (#1424 vs this branch):** #1424 ports this branch's
+  lock + ladder composition and adds C2; its text is taken, with the P1
+  heartbeat import (`utimesSync`) from #1228.
+- **Loader/recall stamps (#1228 `stampStoreRow` × #1273
+  `_fromRemoteStore`):** both.
+- **importer `engine.ts`:** this branch's `wouldDeduplicate`-based dry run
+  (F1 applied in core); #1275's scope-keyed map is not needed here.
+- **stub server:** this branch's (keeps the `ignoreIdempotencyKeys` knob the
+  conflict-I replays use).
+- **Claude/Codex/Cursor/Antigravity hooks (#1228 E3 × #1418 folder map):**
+  #1418's folder gate and `sessionSettings` are taken; #1228's
+  `trustedProjectScope` notices are removed. Session-state paths are nullable
+  everywhere (H3, #1395), the O_EXCL inject lock and marker handling from
+  #1228 stay. `hook-learn-check`: #1395's dir rule under #1228's
+  `checkpointRoot(flags)` (cli#6). **OPEN CONFLICT J** below.
+- **`init-remote.ts`:** #1415 turned it into an alias of `plur remote`; its
+  file is taken, so #1228's Adapters #8b fixes to the old rewrite are gone.
+
+### OPEN CONFLICT J — the E3 notice vs the folder map (#1228 × #1418)
+
+Round-1 decision D1 said #1228's E3 code stays and #1348 regenerates its
+goldens for the notice. #1418 instead drops untrusted hints through the
+folder policy and asks once; it prints no "Ignored the scope … run `plur
+trust`" notice, and #1415 hides `plur trust`. Failing here:
+`formal-apply-surface-trust` (4), `formal-gaps-codex-session-start` (1),
+`formal-audit-1228c` (3). Not decided: either #1418 keeps the E3 notice
+(pointing at `plur folders set --trusted`), or #1228 retires those tests in
+favour of the ask flow.
+
+### Formal check
+
+`lake build` ok (16 jobs); `formal_check.py --base origin/verify/formal-lean`:
+build ok, no gaps, 3272 theorems, none using axioms outside propext /
+Classical.choice / Quot.sound, **no drift**.
+
+### Suites (one at a time; load average about 50)
+
+| Suite | Result | Failures, rerun alone |
+|---|---|---|
+| core | 4477 passed, 6 failed, 4 expected fail, 46 skipped | `formal-fr-c3` thrown_merge_new_key and 3 `secrets` linear-time tests pass alone; `formal-r2-apply-core-always-store` "good case" and `formal-writepath-tension` "missing tensions.yaml" fail again (A1/A3 fixtures predate the ladder) |
+| core-pglite | 115 passed, 121 skipped | — |
+| mcp | 608 passed | — |
+| cli | 1313 passed, 14 failed, 2 expected fail | all 14 fail again alone: conflict J (8), `formal-adapters-init-remote` (4, code removed by #1415), `hook-force-exit-lock` and `init-windows-h3` (as in refresh 2) |
+| cli-spawn | 82 passed | — |
+| migrate | 105 passed, 1 failed | `method-list` NEWLY_ASYNC: `verifyRemoteStore` (#1415) unaccounted for; fails again alone |
+
 ## Refresh 2 (2026-09-29, quiet machine)
 
 Merged `--no-ff`: `integration/field-report-2026-09-29` @ `d159c6dd` (refresh 2,
