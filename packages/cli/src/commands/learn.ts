@@ -235,6 +235,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
   if (timeoutHandle) clearTimeout(timeoutHandle)
 
+  // #1264: where the engram went — remote, outbox or local. A shared scope that
+  // stayed local also carries a warning, because nothing else would tell the
+  // user their team save never left this machine.
+  const delivered = plur.deliveryOf(engram)
+
   // LOW-10 (#353): surface a scope demotion instead of swallowing it silently.
   // When learnRouted demotes a sensitive shared-scope write to local/private it
   // stamps structured_data._demoted; mirror the MCP display contract (tools.ts)
@@ -277,6 +282,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       scope: engram.scope,
       type: engram.type,
       domain: engram.domain ?? null,
+      delivery: delivered.delivery,
+      ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
       // Include the demotion only when it happened; include requested_scope ONLY
       // when --scope was passed, to avoid a confusing requested_scope on an
       // unscoped write that demoted from the resolved default.
@@ -297,6 +304,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         `  Warning: Sensitive content (${demoted.patterns}) detected — stored at ` +
         `${demoted.to}/private instead of ${demoted.from}; re-scope deliberately if false positive.`,
       )
+    }
+    if (delivered.warning) {
+      // Same class as the demotion: the write is not where a reader of the
+      // command would assume, so it is never suppressed by --quiet.
+      outputText(`  Warning: ${delivered.warning}`)
     }
     if (routed) {
       // Where it landed, when the caller did not choose — same class as the

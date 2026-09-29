@@ -31,6 +31,25 @@ error, including an error that echoes the server's reply. `plur stores add
 <path> <scope>` is unchanged. The core method is `Plur.addRemoteStore()`, which
 throws `AddRemoteStoreError` with a stable `code`.
 
+### A team save that stays on this machine now says so (#1264)
+
+**A write to a shared scope with no store registered for it never left the
+machine, and nothing said so.** An enterprise deployment reported engrams that
+were created and never reached the team. A `learn` to `group:`/`project:`/`org:`…
+with no writable url store for exactly that scope falls through to the local
+store — deliberately, since nothing is auto-routed into a shared store — but
+`plur_learn` answered `decision: "ADD"` and `plur learn` printed nothing else.
+
+Every learn result now carries `delivery`: `remote` (a store accepted it),
+`outbox` (saved here and queued for a store — the push is deferred or failed and
+will be retried) or `local` (on this machine only). A shared scope that lands
+`local` also carries a warning naming the scope and how to register a store for
+it. `plur_learn` returns both (`delivery`, `delivery_warning`); `plur learn
+--json` does too, and plain `plur learn` prints the warning even with `--quiet`.
+Core exposes the same answer as `plur.deliveryOf(engram)`.
+
+Nothing about where engrams are written changes. The field is additive.
+
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
 **The Stop hook's "did you learn something?" nudge was never shown to the
