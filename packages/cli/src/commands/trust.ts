@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { findProjectConfigPath, readProjectConfigFromPath } from '@plur-ai/core'
 
 /**
@@ -36,7 +36,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const dir = args[0] || process.cwd()
-  const trusted = plur.trustDirectory(dir)
+  // #1347: the grant is `trusted: true` in the folder map. A map that cannot
+  // be read is refused rather than overwritten.
+  let trusted: string
+  try {
+    trusted = plur.trustDirectory(dir)
+  } catch (err) {
+    return exit(1, (err as Error).message)
+  }
 
   // E7 (2026-09 audit): this is the one moment a human is in the loop before
   // a `.plur.yaml`'s scope/domain (and, if it declares one, a REMOTE store

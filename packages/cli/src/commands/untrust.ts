@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
 /**
  * `plur untrust [dir]` — revoke a directory trust grant made by `plur trust`.
@@ -19,7 +19,12 @@ import { shouldOutputJson, outputJson, outputText } from '../output.js'
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
   const dir = args[0] || process.cwd()
-  const removed = plur.untrustDirectory(dir)
+  let removed: boolean
+  try {
+    removed = plur.untrustDirectory(dir)
+  } catch (err) {
+    return exit(1, (err as Error).message)
+  }
 
   if (removed) {
     if (shouldOutputJson(flags)) {

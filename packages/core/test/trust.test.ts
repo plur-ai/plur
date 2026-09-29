@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, realpathSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, realpathSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -107,10 +107,12 @@ describe('trust.ts (D2)', () => {
     }
   })
 
-  it('the trust store persists to <root>/trust.yaml as plain YAML', () => {
+  it('the trust store persists to <root>/folders.yaml (#1347); trust.yaml is no longer written', () => {
     trustDirectory(dir, root)
-    const raw = readFileSync(join(root, 'trust.yaml'), 'utf8')
+    const raw = readFileSync(join(root, 'folders.yaml'), 'utf8')
     expect(raw).toContain(realpathSync(dir))
+    expect(raw).toContain('trusted: true')
+    expect(existsSync(join(root, 'trust.yaml'))).toBe(false)
   })
 
   it('a corrupt trust.yaml is treated as empty rather than throwing', () => {

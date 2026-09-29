@@ -74,6 +74,17 @@ import {
   listTrustedDirectories as _listTrustedDirectories,
   coveringTrustedAncestor as _coveringTrustedAncestor,
 } from './trust.js'
+import {
+  resolveFolderPolicy as _resolveFolderPolicy,
+  loadFolderMap as _loadFolderMap,
+  setFolderEntry as _setFolderEntry,
+  removeFolderEntry as _removeFolderEntry,
+  issueFolderNonce as _issueFolderNonce,
+  endFolderNonceSession as _endFolderNonceSession,
+  type FolderPolicy,
+  type FolderEntry,
+  type FolderChange,
+} from './folders.js'
 import type { Engram } from './schemas/engram.js'
 import { ATTRIBUTION_UNIDENTIFIED, MeasuredUnderSchema, type MeasuredUnder } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -119,6 +130,33 @@ export {
 // configuration it finds on disk (a `.plur.yaml` scope, say) from a directory
 // the user opened but never explicitly vetted. See trust.ts for the model.
 export { isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirectories, coveringTrustedAncestor } from './trust.js'
+// Folder map (#1347) — the user's on/off/ask, default scope and trust
+// decisions per folder, in <PLUR home>/folders.yaml. See folders.ts.
+export {
+  resolveFolderPolicy,
+  loadFolderMap,
+  saveFolderMap,
+  folderMapPath,
+  setFolderEntry,
+  removeFolderEntry,
+  clearFolderTrust,
+  findPlurMarker,
+  folderPatternMatches,
+  folderPatternSpecificity,
+  issueFolderNonce,
+  consumeFolderNonce,
+  endFolderNonceSession,
+  FolderMapError,
+  FOLDER_NONCE_TTL_MS,
+  safeSessionKey,
+  type FolderMode,
+  type FolderEntry,
+  type FolderMap,
+  type FolderPolicy,
+  type FolderPolicySource,
+  type FolderChange,
+  type FolderMapErrorCode,
+} from './folders.js'
 export { generateGuardrails } from './guardrails.js'
 // Shared memory system-prompt renderer (opencode plugin's task 1): one
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
@@ -9711,6 +9749,45 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   coveringTrustedAncestor(dir: string): string | null {
     return _coveringTrustedAncestor(dir, this.paths.root)
+  }
+
+  /**
+   * What PLUR does in `dir` according to the folder map, `.plur.yaml` and
+   * project MCP configs (#1347, design r2). Keyed on this instance's root.
+   */
+  resolveFolderPolicy(dir: string, options?: { home?: string }): FolderPolicy {
+    return _resolveFolderPolicy(dir, { root: this.paths.root, ...(options?.home ? { home: options.home } : {}) })
+  }
+
+  /** The folder map entries, in file order (#1347). */
+  listFolders(): FolderEntry[] {
+    return _loadFolderMap(this.paths.root).folders
+  }
+
+  /**
+   * Record a decision for `folder` (`plur folders set`). A shared scope must
+   * name a store configured in config.yaml; a `nonce` (from the ask flow)
+   * must be the one issued for this folder. Throws FolderMapError on refusal.
+   */
+  setFolder(folder: string, change: FolderChange, options?: { nonce?: string; home?: string }): FolderEntry {
+    this.reloadConfigIfChanged()
+    const configuredScopes = (this.config.stores ?? []).map(s => s.scope)
+    return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, ...options })
+  }
+
+  /** Remove the exact entry for `folder` (`plur folders rm`). */
+  removeFolder(folder: string): boolean {
+    return _removeFolderEntry(this.paths.root, folder)
+  }
+
+  /** Issue a single-use nonce naming `folder` for the ask flow of `sessionId`. */
+  issueFolderNonce(sessionId: string, folder: string): string {
+    return _issueFolderNonce(this.paths.root, sessionId, folder)
+  }
+
+  /** Expire every folder nonce of `sessionId` (call at session end). */
+  endFolderNonceSession(sessionId: string): void {
+    _endFolderNonceSession(this.paths.root, sessionId)
   }
 
   autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {

@@ -1,0 +1,1 @@
+{"additionalContext":"[PLUR Memory — session started, 1 engrams injected]\nSession ID: <UUID>\nProject domain: fixture.deploy\nProject scope: project:fixture — use this scope for plur_learn calls\n\n[ENG-<DATE>-001] Fixture deploys go through the blue staging lane before release\n  Domain: fixture.deploy | Commitment: leaning | Confidence: 0.35 | Last active: <DATE>"}
