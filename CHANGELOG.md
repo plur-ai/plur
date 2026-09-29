@@ -26,8 +26,18 @@ and says "already registered" without touching the file. The same url and scope
 with a *different* token replaces the stored token, but only after the new one
 verifies — a token the server rejects never overwrites a working one.
 
+**A scope that already belongs to another store is never taken silently.** The
+command refuses, changes nothing, and says to re-run with `--overwrite-scope`.
+With that flag the scope is reassigned to the url store, and only after the
+token has passed `/me`.
+
 The token is never printed: not in text output, not in `--json`, and not in an
-error, including an error that echoes the server's reply. `plur stores add
+error, including an error that echoes the server's reply. That covers the token
+raw, percent-encoded, JSON-escaped and base64-encoded, and a scope or username
+in the server's `/me` answer that carries the token (such scopes are left out
+of the listed authorised scopes, and the message says how many were withheld).
+A fragment of the token, or its base64 buried inside a larger blob, has no
+fixed form and is not caught. `plur stores add
 <path> <scope>` is unchanged. The core method is `Plur.addRemoteStore()`, which
 throws `AddRemoteStoreError` with a stable `code`.
 

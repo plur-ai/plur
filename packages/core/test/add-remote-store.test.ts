@@ -13,8 +13,10 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { createServer, type Server } from 'http'
+import type { AddressInfo } from 'net'
 import yaml from 'js-yaml'
-import { Plur } from '../src/index.js'
+import { Plur, redactToken } from '../src/index.js'
 import { StubServer } from './helpers/stub-server.js'
 
 const TOKEN = 'add-remote-valid-token-9f3a'
@@ -126,5 +128,95 @@ describe('Plur.addRemoteStore (#1265)', () => {
       expect(JSON.stringify(e)).not.toContain(secret)
     }
     expect(existsSync(join(dir, 'config.yaml'))).toBe(true)
+  })
+
+  describe('scope already registered to a different store', () => {
+    const seedConflict = () => writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+      index: false, stores: [{ path: join(dir, 'team.yaml'), scope: SCOPE, shared: false, readonly: false }],
+    }))
+
+    it('refuses without overwriteScope, naming the option, and writes nothing', async () => {
+      seedConflict()
+      const before = configText()
+      const err = await new Plur({ path: dir }).addRemoteStore({ url: baseUrl, token: TOKEN, scope: SCOPE }).catch(e => e)
+      expect(err).toMatchObject({ code: 'scope_conflict' })
+      expect(err.message).toContain('overwriteScope')
+      expect(err.message).not.toContain(TOKEN)
+      expect(configText()).toBe(before)
+    })
+
+    it('with overwriteScope, reassigns the scope after /me verifies', async () => {
+      seedConflict()
+      const r = await new Plur({ path: dir }).addRemoteStore({ url: baseUrl, token: TOKEN, scope: SCOPE, overwriteScope: true })
+      expect(r.status).toBe('overwritten')
+      const stores = (yaml.load(configText()) as { stores: Array<{ url?: string; path?: string; scope: string }> }).stores
+      expect(stores.filter(s => s.scope === SCOPE)).toEqual([expect.objectContaining({ url: baseUrl, token: TOKEN })])
+    })
+
+    it('with overwriteScope but a rejected token, the existing entry is untouched', async () => {
+      seedConflict()
+      const before = configText()
+      await expect(new Plur({ path: dir }).addRemoteStore({ url: baseUrl, token: 'nope-token', scope: SCOPE, overwriteScope: true }))
+        .rejects.toMatchObject({ code: 'auth_rejected' })
+      expect(configText()).toBe(before)
+    })
+  })
+
+  // Audit of #1272: a buggy or hostile server can hand the token back in an
+  // encoded form, or inside the /me scope list or username.
+  describe('token echoes from the server (audit)', () => {
+    const ODD = 'plr_SECRET/+=va"lue'
+    const forms = (t: string) => [
+      t,
+      encodeURIComponent(t),
+      encodeURIComponent(t).replace(/%[0-9A-F]{2}/g, m => m.toLowerCase()),
+      JSON.stringify(t).slice(1, -1),
+      Buffer.from(t).toString('base64'),
+      Buffer.from(t).toString('base64').replace(/=+$/, ''),
+      Buffer.from(t).toString('base64url'),
+    ]
+
+    it('redactToken removes raw, percent-encoded, JSON-escaped and base64 forms', () => {
+      const text = forms(ODD).map((f, i) => `form${i}=${f};`).join(' ')
+      const out = redactToken(text, ODD)
+      for (const f of forms(ODD)) expect(out).not.toContain(f)
+      expect(out).toContain('form0=')
+    })
+
+    it('a 401 body echoing every encoding of the token is fully scrubbed from the error', async () => {
+      let echo: Server | undefined
+      try {
+        echo = createServer((req, res) => {
+          res.writeHead(401, { 'content-type': 'text/plain' })
+          res.end(`invalid token ${forms(ODD).join(' | ')}`)
+        })
+        await new Promise<void>(r => echo!.listen(0, '127.0.0.1', () => r()))
+        const url = `http://127.0.0.1:${(echo.address() as AddressInfo).port}`
+        const err = await new Plur({ path: dir }).addRemoteStore({ url, token: ODD, scope: SCOPE }).catch(e => e)
+        expect(err).toMatchObject({ code: 'auth_rejected' })
+        const dump = err.message + JSON.stringify(err)
+        for (const f of forms(ODD)) expect(dump).not.toContain(f)
+      } finally {
+        await new Promise<void>(r => (echo ? echo.close(() => r()) : r()))
+      }
+    })
+
+    it('a /me scope list or username carrying the token never reaches the error or the result', async () => {
+      server.setMe({ username: `u-${TOKEN}`, scopes: [SCOPE, `group:${TOKEN}`, `group:${Buffer.from(TOKEN).toString('base64url')}`, 'group:example/ops'] })
+      try {
+        const err = await new Plur({ path: dir }).addRemoteStore({ url: baseUrl, token: TOKEN, scope: 'group:example/finance' }).catch(e => e)
+        expect(err).toMatchObject({ code: 'scope_not_authorised' })
+        expect(err.authorised).toEqual([SCOPE, 'group:example/ops'])
+        expect(err.message + JSON.stringify(err)).not.toContain(TOKEN)
+        expect(err.message).not.toContain(Buffer.from(TOKEN).toString('base64url'))
+
+        const ok = await new Plur({ path: dir }).addRemoteStore({ url: baseUrl, token: TOKEN, scope: SCOPE })
+        expect(ok.status).toBe('added')
+        expect(JSON.stringify(ok)).not.toContain(TOKEN)
+        expect(ok.authorised).toEqual([SCOPE, 'group:example/ops'])
+      } finally {
+        server.setMe({ username: 'installer' })
+      }
+    })
   })
 })
