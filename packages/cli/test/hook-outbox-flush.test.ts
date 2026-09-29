@@ -10,7 +10,7 @@
  * "the hook exits promptly" is measured on the wall clock the harness sees.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, hostname } from 'os'
 import { spawn } from 'child_process'
@@ -189,7 +189,11 @@ describe('outbox flush from hooks and plur sync (#1269)', () => {
     expect(await pending()).toBe(0)
   })
 
-  it('a hook abandoned after its POST landed does not cause a second copy (audit follow-up)', async () => {
+  // Decision C4 changed this test: the next flush simply retries (no lookup),
+  // with the key persisted on the row before the first POST — so a
+  // key-honouring server keeps exactly one row.
+  it('a hook abandoned after its POST landed is retried with the same key; a key-honouring server keeps one row', async () => {
+    server.honourIdempotency = true
     await queue(1)
     // Another writer holds the store lock, so the flush's merge-back waits and
     // the Codex hook's outer timer gives up and force-exits — after the POST
@@ -204,20 +208,28 @@ describe('outbox flush from hooks and plur sync (#1269)', () => {
       rmSync(lock, { force: true })
     }
 
-    // Next flush: must find the landed write by its key, not post it again.
+    // Next flush: re-posts with the same key; the server collapses it.
     const result = await new Plur({ path: store }).flushOutbox()
     expect(result.flushed).toBe(1)
     expect(server.engramCount).toBe(1)
+    expect(new Set(server.appendKeys.filter(Boolean)).size).toBe(1)
     expect(await pending()).toBe(0)
   })
 
-  it('plur outbox --resend posts an entry that is waiting on a manual check', async () => {
-    await queue(1)
-    const [entry] = await new Plur({ path: store }).listOutbox()
-    const r = await runCli(['outbox', '--resend', entry.id, '--json'], { cwd: project, env })
+  it('an empty PLUR_PATH counts as unset: the hook flushes ~/.plur, not a store in the current directory', async () => {
+    // The store under the (temp) HOME, where an unset PLUR_PATH points.
+    const homeStore = join(env.HOME, '.plur')
+    mkdirSync(homeStore, { recursive: true })
+    writeFileSync(join(homeStore, 'config.yaml'), readFileSync(join(store, 'config.yaml'), 'utf8'))
+    const plur = new Plur({ path: homeStore })
+    server.appendErrorResponse = { status: 503, body: 'down for the test' }
+    await plur.learnRouted('queued under the home store', { scope: SCOPE, type: 'behavioral' })
+    server.appendErrorResponse = null
+    expect(await plur.outboxCount()).toBe(1)
+
+    const r = await runCli(HOOKS[0].args, { cwd: project, env: { ...env, PLUR_PATH: '' }, input: HOOKS[0].input })
     expect(r.code, r.stderr).toBe(0)
-    expect(JSON.parse(r.stdout.trim().split('\n').pop()!)).toMatchObject({ flushed: 1, pending: 0 })
-    expect(await pending()).toBe(0)
+    expect(await new Plur({ path: homeStore }).outboxCount()).toBe(0)
   })
 
   it('the kill-switch turns the hook flush off', async () => {

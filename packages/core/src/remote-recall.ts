@@ -21,7 +21,9 @@
  * |                      |                    | not read as revocation (detail: http_403)   |
  * | 403 ×2 consecutive   | `forbidden`        | treated as auth-level revocation            |
  * | 404                  | `unsupported`      | host parked for 10 min (NOT process life)   |
- * | 429                  | `rate_limited`     | honor Retry-After (else 30 s) cooldown      |
+ * | 422                  | `unreachable`      | refusal: breaker neither counts nor resets  |
+ * |                      |                    | (decision C5, as the write leg, #1308)      |
+ * | 429                 | `rate_limited`     | honor Retry-After (else 30 s) cooldown      |
  * | breaker open         | `skipped_cooldown` | 3 straight failures → 5 min cooldown        |
  *
  * Breaker / cooldown / unsupported state is PERSISTED across processes in
@@ -792,6 +794,15 @@ export async function remoteRecall(
         h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
         h.unsupported_until = now() + UNSUPPORTED_TTL_MS
         return finish('unsupported', { detail: 'http_404' })
+      }
+      if (res.status === 422) {
+        // Decision C5: the host answered that the REQUEST was invalid — a
+        // refusal, like 401/403/404, not a sign the host is down. The same
+        // rule as the write leg (#1308): it neither counts toward the
+        // per-host breaker nor resets it. Counting it let three refused
+        // recalls park queued writes to every scope on the host.
+        h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
+        return finish('unreachable', { detail: 'http_422_refused' })
       }
       if (res.status === 429) {
         h.failures = 0

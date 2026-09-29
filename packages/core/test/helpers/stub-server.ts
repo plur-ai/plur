@@ -98,9 +98,6 @@ export class StubServer {
   /** Model a server that follows docs/remote-store-contract.md on POST: a key
    *  already accepted from the same token replays the original response. */
   honourIdempotency = false
-  /** Model a server that neither records `idempotency_key` nor supports the
-   *  `?idempotency_key=` list filter — delivery cannot be confirmed by key. */
-  ignoreIdempotencyKeys = false
   private idempotencyReplies = new Map<string, { id: string; scope: string; status: string; data: Record<string, unknown> }>()
   /** When set, PATCH /engrams/:id still applies the update server-side but
    *  echoes this value as the {engram: ...} body — to simulate a server whose
@@ -219,7 +216,6 @@ export class StubServer {
     this.lastAppendIdempotencyKey = null
     this.appendKeys = []
     this.honourIdempotency = false
-    this.ignoreIdempotencyKeys = false
     this.idempotencyReplies.clear()
     this.badPatchEcho = null
     this.recallRows = []
@@ -338,7 +334,8 @@ export class StubServer {
           res.end(refusal.body)
           return
         }
-        const idempotency_key = this.ignoreIdempotencyKeys ? undefined : body.idempotency_key
+        // Recorded with the row, as docs/remote-store-contract.md recommends.
+        const idempotency_key = body.idempotency_key
         const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
         const now = new Date().toISOString()
         const engram: StoredEngram = {
@@ -448,19 +445,9 @@ export class StubServer {
       if (scope) {
         all = all.filter(e => e.scope === scope)
       }
-      // Contract: a server that supports the key filter narrows the listing
-      // AND echoes the key, so the client can tell "filtered, not there" from
-      // "filter ignored".
-      const keyFilter = url.searchParams.get('idempotency_key')
-      if (keyFilter && !this.ignoreIdempotencyKeys) {
-        all = all.filter(e => e.data.idempotency_key === keyFilter)
-      }
       const total_count = all.length
       const rows = all.slice(offset, offset + limit)
-      this.json(res, 200, {
-        rows, total_count,
-        ...(keyFilter && !this.ignoreIdempotencyKeys ? { idempotency_key: keyFilter } : {}),
-      })
+      this.json(res, 200, { rows, total_count })
       return
     }
 

@@ -82,7 +82,10 @@ describe('flushOutbox({ timeoutMs }) (#1269)', () => {
     expect(after.filter(e => e.attempt_count === before.find(b => b.id === e.id)!.attempt_count)).toHaveLength(1)
   })
 
-  it('a push cut mid-flight is not delivered twice when the server had already stored it', async () => {
+  // Decision C4 changed this test: a cut push is retried, not looked up. With
+  // the same key on the retry, a key-honouring server keeps one row.
+  it('a push cut mid-flight after the server stored it is retried with the same key; a key-honouring server keeps one row', async () => {
+    server.honourIdempotency = true
     const plur = new Plur({ path: dir })
     await queue(plur, 1)
 
@@ -92,10 +95,11 @@ describe('flushOutbox({ timeoutMs }) (#1269)', () => {
     await plur.flushOutbox({ timeoutMs: 300 })
     expect(server.engramCount).toBe(1)
 
-    // Next flush, server healthy: it must find the copy, not post a second.
+    // Next flush, server healthy: it re-posts with the same key.
     server.appendDelayMs = 0
     for (let i = 0; i < 3; i++) await plur.flushOutbox({ timeoutMs: 5_000 })
     expect(server.engramCount).toBe(1)
+    expect(new Set(server.appendKeys.filter(Boolean)).size).toBe(1)
     expect(await plur.outboxCount()).toBe(0)
   })
 

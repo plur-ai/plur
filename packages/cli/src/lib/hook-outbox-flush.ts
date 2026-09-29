@@ -86,7 +86,10 @@ function markFlushed(root: string, hook: string): void {
 }
 
 function storeRoot(flags: GlobalFlags): string {
-  return flags.path ?? process.env.PLUR_PATH ?? join(homedir(), '.plur')
+  // `||`, not `??`: an empty PLUR_PATH (or --path "") means unset, as it does
+  // for createPlur and the other hook readers (#1395). With `??` it resolved
+  // `./engrams.yaml` in the current directory.
+  return flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
 }
 
 /**

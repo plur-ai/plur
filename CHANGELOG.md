@@ -930,39 +930,51 @@ The result has two new counts: `deferred` (entries it did not get to) and
 reports skipped writes and the breaker's reason; before, it said nothing
 about them. A cut is not counted as a failure against the host.
 
-**A push cut mid-flight is not delivered twice.** The server may have stored
-it before the budget ran out, and the client cannot know. So the cut is
-recorded as an attempt, which `plur outbox` shows, and the write is marked in
-doubt. Before posting it again, the client looks it up on the server by its
-idempotency key.
+**A push that is cut, times out or throws is retried, with the same key.**
+The server may have stored it before the answer arrived, and the client cannot
+know. The owner decided this is not a "maybe delivered" state: the write stays
+queued, the attempt is recorded (`plur outbox` shows it), and the next flush
+posts it again. What makes that safe is the idempotency key.
 
-**Audit follow-up: idempotency keys are unique per write.** An earlier
-version of this change derived the key from the engram id. On a direct team
-write that id is the placeholder `__pending__`, and on queued writes it is a
-per-day number that two machines share. A server following the contract would
-have kept only the first write and reported the rest as delivered. Now:
+**Idempotency keys are unique per write, and on the row before the first
+POST.** An earlier version of this change derived the key from the engram id.
+On a direct team write that id is the placeholder `__pending__`, and on queued
+writes it is a per-day number that two machines share. A server following the
+contract would have kept only the first write and reported the rest as
+delivered. Now:
 
-- every write gets a random UUID when it is created, stored with the queued
-  write and reused on each retry of that write;
+- every write gets a random UUID when it is created. It is stored on the
+  queued write's outbox row before that write is first posted, and reused on
+  every retry. A row queued by an older client gets a key minted and stored
+  before it is posted, so a flush whose local write-back fails afterwards
+  still retries with the same key;
 - each queued write is *claimed* before it is pushed: a small file created
-  atomically, with a 60-second lease. So a flush and `learn()`'s own background
-  push, or two flushes, can never push the same write at once. Before, this
-  race gave two server copies in half of the audit's runs. A claim left behind
-  by a hook that gave up, or a process that died mid-request, marks the write
-  in doubt rather than "never sent";
-- an in-doubt write is matched on the server **by key only**, never by
-  statement, because a teammate's engram with the same sentence was being
-  taken as ours and ours deleted;
-- a write the server cannot confirm either way is kept, never deleted. After 5
-  checks it is marked *needs action* (#1299's state), with the reason and the
-  next step, instead of showing as "retrying" forever. It is held, not retried.
-  A forced flush (`plur outbox --flush`) does not post it either, because no
-  fix made elsewhere answers "is it already there?". Once you have checked the
-  team store, `plur outbox --resend <id>` posts it.
+  atomically. So a flush and `learn()`'s own background push, or two flushes,
+  never push the same write at once. Before, this race gave two server copies
+  in half of the audit's runs. A claim is held while the process that made it
+  is alive, however long its push runs, so a POST held open by a slow server
+  cannot be re-pushed by a second flusher (a 15-minute cap covers a recycled
+  process id). A stale claim is taken over by renaming a new claim over it, so
+  there is never a moment with no claim for a second writer to slip into;
+- on a key-honouring server every write is stored once. A server that
+  ignores the key may see at most one duplicate per write, and no write is
+  ever dropped.
 
-`docs/remote-store-contract.md` now states the key semantics exactly: unique
-per logical write, stable across retries, deduplicated by the server within a
-window, and looked up with `?idempotency_key=`.
+`docs/remote-store-contract.md` states this exactly: unique per logical write,
+persisted before the first POST, stable across retries, deduplicated by a
+key-honouring server within a 7-day window.
+
+**A recall refused with 422 no longer trips the host breaker.** Like 401, 403
+and 404 before it, and like the write leg (#1308), a 422 answer to a recall
+neither counts toward the per-host breaker nor resets it. Three refused
+recalls used to open a 5-minute cooldown that also parked queued writes to
+every scope on the host.
+
+**An empty `PLUR_PATH` no longer hides queued writes from the hook flush.**
+The hooks' "is anything queued?" check treated `PLUR_PATH=""` as a path and
+looked for `./engrams.yaml` in the current directory, so it skipped a store
+under `~/.plur` that had queued writes. An empty value now counts as unset,
+as it does everywhere else (#1395).
 
 ### A killed writer no longer stalls the store for a minute
 

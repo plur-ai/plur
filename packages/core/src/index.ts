@@ -728,15 +728,20 @@ const REMOTE_GUARD_BUDGET_MS = 45_000
 const OUTBOX_ID_MAP_MAX = 5000
 
 /**
- * In-doubt outbox entries whose delivery the server could not confirm by key
- * this many times are marked `needs_action` and no longer retried
- * automatically (2026-09-29 audit): better a clear "check this" than an entry
- * that reads "retrying" forever.
+ * How long a push claim is honoured when its owner is on ANOTHER host, whose
+ * pid cannot be checked: longer than one bounded request (30s). An owner on
+ * this host holds its claim while its process is alive (see
+ * `_outboxClaimHeld`).
  */
-export const OUTBOX_INCONCLUSIVE_LIMIT = 5
-
-/** How long a push claim is honoured: longer than one bounded request (30s). */
 const OUTBOX_CLAIM_LEASE_MS = 60_000
+
+/**
+ * Hard cap on a live same-host owner's claim: far above one push's worst case
+ * (a 30s request plus the 180s store-lock wait before the merge-back), so it
+ * never cuts a real push short, but finite so a recycled pid cannot hold an
+ * entry forever.
+ */
+const OUTBOX_CLAIM_MAX_AGE_MS = 15 * 60_000
 
 /** Is this process still running? (`kill 0` probes without signalling.) */
 function pidAlive(pid: number): boolean {
@@ -3565,15 +3570,16 @@ export class Plur {
                 await this._syncIndex()
               }
             })
-            this._releaseOutboxClaim(engram.id)
           } catch (err) {
-            // The claim is deliberately NOT released: once its lease lapses the
-            // next flush treats the entry as in doubt and finds it by key
-            // instead of posting it again.
+            // Retried by the next flush with the same key (decision C4): a
+            // key-honouring server collapses it; one that ignores keys may
+            // hold one duplicate.
             logger.warning(
               `[plur:outbox] ${engram.id} was accepted by the remote but its local copy could not be removed: `
-              + `${(err as Error).message}. The next flush will find it on the remote by its key.`,
+              + `${(err as Error).message}. The next flush will retry it with the same idempotency key.`,
             )
+          } finally {
+            this._releaseOutboxClaim(engram.id)
           }
         })().catch(err => {
           logger.warning(`[plur:outbox] background push for ${engram.id} failed unexpectedly: ${(err as Error).message}`)
@@ -5023,12 +5029,13 @@ export class Plur {
   }
 
   /**
-   * Per-entry push claims (2026-09-29 audits). A claim is a small file created
-   * with O_EXCL, so two writers — two flushes, or a flush and learn()'s
-   * background push, in one process or several — cannot both push an entry.
-   * It holds the idempotency key and is removed only after the outcome is in
-   * the store, so a claim left by a process that died mid-POST marks the
-   * entry in doubt and says which key that POST carried.
+   * Per-entry push claims — the one duplicate-push guard (decision C3). A
+   * claim is a small file created with O_EXCL, so two writers — two flushes,
+   * or a flush and learn()'s background push, in one process or several —
+   * cannot both push an entry at once. It is released once the push's outcome
+   * is recorded (or the flush ends); a claim left by a process that died is
+   * taken over after its lease lapses, and the write is simply retried with
+   * the key already on its outbox row (decision C4).
    */
   outboxClaimsDir(): string {
     return join(this.paths.root, 'cache', 'outbox-claims')
@@ -5040,43 +5047,97 @@ export class Plur {
 
   /**
    * Take the claim on an outbox entry. `busy` when another live writer holds
-   * it. A lapsed claim (lease expired, or its process is gone) is taken over
-   * and reported as `orphan`, with the key it carried offered to `keyFor`.
+   * it. A lapsed claim (lease expired, or its process is gone) is taken over.
+   * `keyFor` supplies the key recorded in the claim.
+   *
+   * Decision C3: the takeover is ATOMIC. The stale claim file is never
+   * removed; a fresh one is written beside it and renamed over it, so the
+   * path is never empty and no second claimer can slip a fresh claim into a
+   * gap. Before the rename the stale content is re-read and must be
+   * unchanged, and after it the file is read back: of two claimers taking
+   * over the same stale claim, only the one whose token is in the file wins.
+   *
    * Never throws: if the claim cannot be recorded at all, the push goes ahead
    * unclaimed rather than never.
    */
   private _claimOutboxEntry(
     id: string,
-    keyFor: (orphanKey: string | undefined) => string,
-  ): { status: 'busy' } | { status: 'claimed'; key: string; orphan: boolean } {
+    keyFor: () => string,
+  ): { status: 'busy' } | { status: 'claimed'; key: string } {
     const path = this._outboxClaimPath(id)
-    let orphanKey: string | undefined
-    let orphan = false
+    const readRaw = (): string | undefined => {
+      try { return fs.readFileSync(path, 'utf8') } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+        throw err
+      }
+    }
     try {
       fs.mkdirSync(this.outboxClaimsDir(), { recursive: true })
-      if (fs.existsSync(path)) {
-        let held: { key?: string; pid?: number; host?: string; until?: number } = {}
-        try { held = JSON.parse(fs.readFileSync(path, 'utf8')) } catch { /* unreadable: lapsed */ }
-        const now = Date.now()
-        const leaseLive = typeof held.until === 'number' && held.until > now
-          // A lease dated implausibly far ahead is clock skew, not a live writer.
-          && held.until - now <= 2 * OUTBOX_CLAIM_LEASE_MS
-        const ownerLive = held.host !== hostname() || (typeof held.pid === 'number' && pidAlive(held.pid))
-        if (leaseLive && ownerLive) return { status: 'busy' }
-        orphanKey = typeof held.key === 'string' ? held.key : undefined
-        orphan = true
-        fs.rmSync(path, { force: true })
+      const stale = readRaw()
+      if (stale !== undefined) {
+        let held: { key?: string; pid?: number; host?: string; until?: number; at?: number } = {}
+        try { held = JSON.parse(stale) } catch { /* unreadable: lapsed */ }
+        if (this._outboxClaimHeld(held, Date.now())) return { status: 'busy' }
       }
-      const key = keyFor(orphanKey)
-      fs.writeFileSync(path, JSON.stringify({
-        key, pid: process.pid, host: hostname(), until: Date.now() + OUTBOX_CLAIM_LEASE_MS,
-      }), { flag: 'wx' })
-      return { status: 'claimed', key, orphan }
+      const key = keyFor()
+      const token = randomUUID()
+      const at = Date.now()
+      const body = JSON.stringify({
+        key, token, pid: process.pid, host: hostname(), at, until: at + OUTBOX_CLAIM_LEASE_MS,
+      })
+      if (stale === undefined) {
+        fs.writeFileSync(path, body, { flag: 'wx' }) // EEXIST: someone else got it first
+        return { status: 'claimed', key }
+      }
+      // Atomic takeover (C3): rename over the stale file, never remove it.
+      const tmp = `${path}.${process.pid}.${token}.tmp`
+      fs.writeFileSync(tmp, body)
+      if (readRaw() !== stale) {
+        // Someone took it over (or released it) since we looked.
+        fs.rmSync(tmp, { force: true })
+        return { status: 'busy' }
+      }
+      fs.renameSync(tmp, path)
+      try {
+        if ((JSON.parse(readRaw() ?? '{}') as { token?: string }).token !== token) return { status: 'busy' }
+      } catch { return { status: 'busy' } }
+      return { status: 'claimed', key }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') return { status: 'busy' } // lost the race
       logger.warning(`[plur:outbox] could not record a push claim for ${id}: ${(err as Error).message}`)
-      return { status: 'claimed', key: keyFor(orphanKey), orphan }
+      return { status: 'claimed', key: keyFor() }
     }
+  }
+
+  /**
+   * Is this claim still held by a live writer?
+   *
+   * - **Owner on this host:** held while its process is alive, however long
+   *   its push runs. The lease is NOT the bound here: a POST held open past
+   *   it by a slow but alive server would otherwise let a second flusher
+   *   take the claim over and re-push the same entry. A dead owner's claim is
+   *   stale at once. A hard age cap ({@link OUTBOX_CLAIM_MAX_AGE_MS}) still
+   *   applies, so a recycled pid cannot block an entry forever.
+   * - **Owner on another host** (a shared store directory): its pid cannot be
+   *   checked, so the lease decides.
+   *
+   * A timestamp dated implausibly far ahead is clock skew, not a live writer.
+   */
+  private _outboxClaimHeld(
+    held: { pid?: number; host?: string; until?: number; at?: number },
+    now: number,
+  ): boolean {
+    if (held.host === hostname()) {
+      if (typeof held.pid !== 'number' || !pidAlive(held.pid)) return false
+      const at = typeof held.at === 'number'
+        ? held.at
+        : typeof held.until === 'number' ? held.until - OUTBOX_CLAIM_LEASE_MS : undefined
+      if (at === undefined) return false
+      const age = now - at
+      return age >= -OUTBOX_CLAIM_LEASE_MS && age < OUTBOX_CLAIM_MAX_AGE_MS
+    }
+    return typeof held.until === 'number' && held.until > now
+      && held.until - now <= 2 * OUTBOX_CLAIM_LEASE_MS
   }
 
   /** Release a claim this process holds. Never throws. */
@@ -8363,30 +8424,19 @@ export class Plur {
       const ob = (e as any).structured_data?._outbox as {
         target_scope?: string; queued_at?: string; attempt_count?: number; last_error?: string
         last_status?: unknown; last_attempt?: string
-        /** Audit follow-up: delivery could not be confirmed by key (why). */
-        unconfirmed?: string
       } | undefined
       if (!ob || e.status === 'retired') continue
       const queued_at = typeof ob.queued_at === 'string' ? ob.queued_at : ''
       const queuedMs = queued_at ? Date.parse(queued_at) : NaN
       const target_scope = ob.target_scope ?? '(unknown)'
       const last_status = typeof ob.last_status === 'number' ? ob.last_status : undefined
-      // An in-doubt write the server could not confirm by key is waiting on a
-      // person, not on a retry (2026-09-29 audit) — it is never retried
-      // automatically, so it has no next_retry_at.
-      const verdict = ob.unconfirmed
-        ? {
-            state: 'needs_action' as OutboxState,
-            reason: ob.unconfirmed,
-            next_step: `Check "${target_scope}" for this write; if it is missing, run \`plur outbox --resend ${e.id}\`.`,
-          }
-        : classifyOutboxFailure({
-            last_status,
-            last_error: ob.last_error,
-            has_store: this._hasWritableStoreFor(target_scope),
-            scope: target_scope,
-          })
-      const nextRetry = verdict.state === 'needs_action' && !ob.unconfirmed ? this._needsActionRetryAt(ob) : undefined
+      const verdict = classifyOutboxFailure({
+        last_status,
+        last_error: ob.last_error,
+        has_store: this._hasWritableStoreFor(target_scope),
+        scope: target_scope,
+      })
+      const nextRetry = verdict.state === 'needs_action' ? this._needsActionRetryAt(ob) : undefined
       out.push({
         id: e.id,
         target_scope,
@@ -8444,23 +8494,22 @@ export class Plur {
    * OUR time says nothing about THEIRS. The merge-back after is not covered:
    * it must run to completion or a delivered entry would be pushed again.
    *
-   * A push cut MID-FLIGHT may already be stored on the server. It is recorded
-   * as an attempt and marked `in_doubt`; before it is posted again, the flush
-   * looks it up on the server BY ITS IDEMPOTENCY KEY and treats a match as
-   * delivered (docs/remote-store-contract.md).
+   * Decision C4: a push that was cut, timed out or threw is simply retried
+   * on the next flush — there is no "maybe delivered" state and no lookup
+   * before a re-post. What makes the retry safe is the idempotency key: a
+   * random UUID minted when the write is queued, persisted on the outbox row
+   * BEFORE the first POST (a row from an older client gets one minted and
+   * persisted here, before it is posted), and sent on every retry. A
+   * key-honouring server collapses the retry; a key-ignoring one may see at
+   * most one duplicate per write (docs/remote-store-contract.md).
+   *
+   * Decision C3: each entry is claimed before it is pushed, so two writers —
+   * two flushes, or a flush and learn()'s background push — never push it at
+   * once. Claims are released when the flush ends, also when it throws; the
+   * key is on the row, so nothing about the next retry depends on them.
    *
    * `skipped` counts entries not attempted because their host's circuit
    * breaker is open; the reason is in `expired_warnings`.
-   *
-   * Audit follow-up (2026-09-29): every write carries a random idempotency
-   * key minted once and persisted with the entry. Each entry is claimed
-   * before it is pushed, so two writers never push it at once, and a claim
-   * left by a process that died mid-POST marks it in doubt. When the server
-   * cannot confirm an in-doubt write either way, the entry is kept; after
-   * {@link OUTBOX_INCONCLUSIVE_LIMIT} such checks it is `needs_action`
-   * (unconfirmed) and not retried automatically — not even by `force`, since
-   * no fix the user makes elsewhere answers "is it already there?". `resend`
-   * lists entry ids to post anyway, for a user who has checked the store.
    *
    * #1299: an entry whose last failure retrying cannot fix (`needs_action`:
    * 401/403/404/422 or a write refusal) is re-dialled at most once per
@@ -8470,7 +8519,7 @@ export class Plur {
    * anyway, for the user who has just fixed the cause. Nothing is ever
    * dropped or rescoped for being `needs_action`.
    */
-  async flushOutbox(options: { timeoutMs?: number; force?: boolean; resend?: string[] } = {}): Promise<{
+  async flushOutbox(options: { timeoutMs?: number; force?: boolean } = {}): Promise<{
     flushed: number; failed: number; deferred: number; skipped: number; held: number; expired_warnings: string[]
   }> {
     this._assertWritable()
@@ -8481,14 +8530,20 @@ export class Plur {
         budgetTimer = setTimeout(() => budget.abort(), Math.max(0, options.timeoutMs))
       }
     }
+    /** Entries this flush holds a claim on. */
+    const claimed = new Set<string>()
     try {
-      return await this._flushOutbox(budget.signal, startBudget, options.force === true, new Set(options.resend ?? []))
+      return await this._flushOutbox(budget.signal, startBudget, options.force === true, claimed)
     } finally {
       if (budgetTimer) clearTimeout(budgetTimer)
+      // Released however the flush ended — a thrown merge-back included. The
+      // idempotency key lives on the outbox row, so the retry does not need
+      // the claim to remember anything (decision C4).
+      for (const id of claimed) this._releaseOutboxClaim(id)
     }
   }
 
-  private async _flushOutbox(budget: AbortSignal, startBudget: () => void, force: boolean, resend: Set<string>): Promise<{
+  private async _flushOutbox(budget: AbortSignal, startBudget: () => void, force: boolean, claimed: Set<string>): Promise<{
     flushed: number; failed: number; deferred: number; skipped: number; held: number; expired_warnings: string[]
   }> {
     const engrams = await this._primaryStore.load()
@@ -8502,6 +8557,12 @@ export class Plur {
       (e as any).structured_data?._outbox && e.status !== 'retired'
     )
     if (pending.length === 0) return { flushed: 0, failed: 0, deferred: 0, skipped: 0, held: 0, expired_warnings: [] }
+
+    // Decision C4: every entry's idempotency key is ON ITS ROW before its first
+    // POST. Rows queued by clients that predate keys get one minted and
+    // persisted here, under the store lock, before anything is posted — so a
+    // merge-back that later throws cannot cost the retry its key.
+    await this._persistMissingOutboxKeys(pending)
 
     // #863: push supersedes TARGETS before the engrams that supersede them.
     //
@@ -8538,8 +8599,6 @@ export class Plur {
      * proceeds, and written back at the end.
      */
     const persistedIdMap = this._readOutboxIdMap()
-    /** Entries this flush holds a claim on; released after the merge-back. */
-    const claimed = new Set<string>()
     const localToServer = new Map<string, string>()
     let idMapDirty = false
 
@@ -8574,50 +8633,27 @@ export class Plur {
         target_url: string; target_scope: string; queued_at: string
         last_attempt: string; attempt_count: number; last_error: string
         last_status?: number
-        /** The last push was cut mid-flight: the server may already have it. */
-        in_doubt?: boolean
-        /** Unique per logical write, stable across its retries. */
+        /** Unique per logical write, stable across its retries (C4). */
         idempotency_key?: string
-        /** In-doubt checks that could not confirm either way. */
-        inconclusive_checks?: number
-        /** Delivery could not be confirmed by key: why. Waits on a person
-         *  (listOutbox reports it as needs_action; `resend` clears it). */
-        unconfirmed?: string
       }
 
-      // Claim the entry before touching the network (2026-09-29 audits): one
-      // pusher at a time — another flush, or learn()'s own background push —
-      // and a claim left behind by a process that died mid-POST marks the
-      // entry in doubt, carrying the key that POST used.
-      const claim = this._claimOutboxEntry(engram.id, orphanKey =>
-        outbox.idempotency_key ?? orphanKey ?? randomUUID())
+      // C4: never post without the key already on the row. Only a failed
+      // key write above leaves one keyless; it waits for the next flush.
+      if (!outbox.idempotency_key) {
+        expired_warnings.push(`${engram.id}: its idempotency key could not be saved — left for the next flush`)
+        deferred++
+        continue
+      }
+
+      // C3: claim the entry before touching the network — one pusher at a
+      // time (another flush, or learn()'s own background push).
+      const claim = this._claimOutboxEntry(engram.id, () => outbox.idempotency_key!)
       if (claim.status === 'busy') {
         expired_warnings.push(`${engram.id}: another writer is pushing it right now — left to that writer`)
         deferred++
         continue
       }
       claimed.add(engram.id)
-      if (outbox.idempotency_key !== claim.key) {
-        // Minted now (queued by an older client) or recovered from a claim.
-        outbox.idempotency_key = claim.key
-        metadataDirty = true
-      }
-      if (claim.orphan) {
-        outbox.in_doubt = true
-        metadataDirty = true
-      }
-      if (resend.has(engram.id)) {
-        delete outbox.in_doubt
-        delete outbox.unconfirmed
-        delete outbox.inconclusive_checks
-        metadataDirty = true
-      } else if (outbox.unconfirmed) {
-        // Waiting on a person, like any other needs_action entry (#1299):
-        // counted as held. `force` does not override it — no fix made
-        // elsewhere answers "is it already on the server?".
-        held++
-        continue
-      }
 
       // Check TTL warning
       const ageMs = now.getTime() - new Date(outbox.queued_at).getTime()
@@ -8779,39 +8815,8 @@ export class Plur {
       }
 
       try {
-        let pushed: { id: string } | undefined
-        if (outbox.in_doubt) {
-          // An earlier attempt may have landed. Look it up BY KEY before
-          // posting again — never by statement, which a teammate may share.
-          const probe = await driver.findByIdempotencyKey(outbox.idempotency_key!, { signal: budget })
-          if (probe.status === 'found') {
-            pushed = { id: probe.id }
-          } else if (probe.status === 'unknown') {
-            // Could not tell. Posting risks a duplicate; deleting risks a loss.
-            // Keep it, and after repeated inconclusive checks say so plainly
-            // instead of reporting it as retrying forever.
-            metadataDirty = true
-            if (!budget.aborted) {
-              outbox.inconclusive_checks = (outbox.inconclusive_checks ?? 0) + 1
-              if (outbox.inconclusive_checks >= OUTBOX_INCONCLUSIVE_LIMIT) {
-                outbox.unconfirmed =
-                  `Could not confirm whether the store already holds this write `
-                  + `(${outbox.inconclusive_checks} checks; the server does not support lookup by idempotency key).`
-                outbox.last_error = outbox.unconfirmed
-              }
-            }
-            deferred++
-            continue
-          } else {
-            delete outbox.in_doubt
-            delete outbox.inconclusive_checks
-            metadataDirty = true
-          }
-        }
-        // The claim taken above is the in-flight record: if this process is
-        // abandoned mid-POST (a hook's outer timer, a kill), the next flush
-        // finds it and checks the server by key instead of posting blind.
-        pushed ??= await driver.appendAndGetServerId(cleanEngram, { signal: budget, idempotencyKey: outbox.idempotency_key })
+        // C4: the same key on every retry of this write.
+        const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget, idempotencyKey: outbox.idempotency_key })
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
         if (pushed?.id) {
@@ -8834,31 +8839,20 @@ export class Plur {
         this._maybeWriteProvenance(engram.id)
       } catch (err) {
         // #1269: cut at the caller's budget. Not a failure of the remote, so
-        // no attempt is recorded and the breaker is not fed. The remote MAY
-        // have applied the write before the cut; that is the same exposure a
-        // request timeout already has, and the entry is retried as before.
-        if (err instanceof RemoteAbortedError || err instanceof RemoteTimeoutError) {
-          // Recorded, so `plur outbox` shows it, and marked in doubt, so the
-          // next flush checks the server before posting again.
+        // the breaker is not fed. Recorded as an attempt so `plur outbox`
+        // shows it, and retried on the next flush with the same key (C4).
+        // A remote timeout or any other error takes the ordinary failure
+        // path below and is retried the same way.
+        if (err instanceof RemoteAbortedError) {
           outbox.last_attempt = now.toISOString()
           outbox.attempt_count += 1
-          outbox.last_error = err instanceof RemoteAbortedError
-            ? 'cut at the flush time budget before the remote answered — delivery unknown, checked before the next push'
-            : `${(err as Error).message} — delivery unknown, checked before the next push`
-          outbox.in_doubt = true
+          outbox.last_error = 'cut at the flush time budget before the remote answered — retried on the next flush'
           // #1299: this attempt got no status; an older 403 must not keep
           // classifying the entry as needs_action.
           delete outbox.last_status
           metadataDirty = true
-          // A remote timeout is still the host's failure (breaker); a budget
-          // cut is not.
-          if (err instanceof RemoteTimeoutError) {
-            recordWriteOutcome(storeEntry.url!, false, Date.now(), this.remoteHealthStatePath())
-            failed++
-          } else {
-            deferred++
-          }
-          logger.warning(`[plur:outbox] ${engram.id}: flush budget ran out mid-push — left queued, in doubt`)
+          deferred++
+          logger.warning(`[plur:outbox] ${engram.id}: flush budget ran out mid-push — left queued for retry`)
           continue
         }
         outbox.last_attempt = now.toISOString()
@@ -8949,12 +8943,39 @@ export class Plur {
     // the file on every no-op flush.
     if (idMapDirty) this._writeOutboxIdMap(persistedIdMap)
 
-    // The merge-back has landed, so each attempt's outcome is now recorded in
-    // the store itself (delivered and removed, or `in_doubt` / failure on the
-    // entry). Only now may the claims go.
-    for (const id of claimed) this._releaseOutboxClaim(id)
-
     return { flushed, failed, deferred, skipped, held, expired_warnings }
+  }
+
+  /**
+   * Mint and persist an idempotency key for every pending outbox row that has
+   * none (rows queued by clients that predate keys), BEFORE any is posted
+   * (decision C4). Under the store lock; a row another writer keyed in the
+   * meantime keeps that key. Updates `pending` in place. Never throws: a row
+   * whose key could not be saved stays keyless and is not posted this flush.
+   */
+  private async _persistMissingOutboxKeys(pending: Engram[]): Promise<void> {
+    const keyless = pending.filter(e => !(e as any).structured_data?._outbox?.idempotency_key)
+    if (keyless.length === 0) return
+    try {
+      await this._withStoreLock(this.paths.engrams, async () => {
+        const fresh = await this._loadTargeted(keyless.map(e => e.id))
+        const changed: Engram[] = []
+        for (const row of fresh) {
+          const ob = (row as any).structured_data?._outbox
+          const mine = keyless.find(e => e.id === row.id) as any
+          if (!ob || !mine) continue
+          if (!ob.idempotency_key) {
+            ob.idempotency_key = randomUUID()
+            changed.push(row)
+          }
+          mine.structured_data._outbox.idempotency_key = ob.idempotency_key
+        }
+        await this._updateEngrams(fresh, changed)
+      })
+    } catch (err) {
+      for (const e of keyless) delete (e as any).structured_data._outbox.idempotency_key
+      logger.warning(`[plur:outbox] could not save idempotency keys for ${keyless.length} queued write(s): ${(err as Error).message}`)
+    }
   }
 
   /**

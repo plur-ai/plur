@@ -827,49 +827,6 @@ export class RemoteStore {
     throw new Error('Remote store does not support bulk save() — use append()/remove() per engram')
   }
 
-  /**
-   * Did a write with this idempotency key land in this scope?
-   *
-   * Used by the outbox flush before re-posting a write whose previous attempt
-   * may have reached the server (cut mid-flight, timed out, or abandoned by
-   * its process). Matches on the KEY only — never on the statement, which a
-   * teammate may share (2026-09-29 audits).
-   *
-   * Asks with `?idempotency_key=` (docs/remote-store-contract.md). A server
-   * that applied the filter echoes the key in the envelope, so an empty
-   * answer there is a confirmed `absent`. A server that ignored the filter
-   * returns the plain listing: a row carrying the key is still `found`, but
-   * its absence proves nothing — `unknown`. Never throws; the caller must not
-   * post on `unknown`.
-   */
-  async findByIdempotencyKey(
-    key: string,
-    opts?: { signal?: AbortSignal },
-  ): Promise<{ status: 'found'; id: string } | { status: 'absent' } | { status: 'unknown' }> {
-    const limit = 200
-    try {
-      for (let page = 0, offset = 0; page < 50; page++, offset += limit) {
-        const u = `${this.apiBase}/engrams?scope=${encodeURIComponent(this.scope)}`
-          + `&idempotency_key=${encodeURIComponent(key)}&limit=${limit}&offset=${offset}`
-        const r = await this.fetchBounded(u, { headers: this.headers() }, RemoteStore.readBounded, opts?.signal)
-        if (!r.ok) return { status: 'unknown' }
-        const body = r.json as { rows?: unknown[]; total_count?: number; idempotency_key?: unknown } | undefined
-        if (!body || !Array.isArray(body.rows)) return { status: 'unknown' }
-        const filtered = body.idempotency_key === key
-        for (const raw of body.rows as Array<{ data?: { idempotency_key?: unknown } }>) {
-          if (raw?.data?.idempotency_key !== key) continue
-          const e = this.reshape(raw as any)
-          if (e && e.status !== 'retired') return { status: 'found', id: e.id }
-        }
-        const complete = body.rows.length < limit || offset + body.rows.length >= (body.total_count ?? 0)
-        if (complete) return filtered ? { status: 'absent' } : { status: 'unknown' }
-      }
-      return { status: 'unknown' } // page cap reached without a full answer
-    } catch {
-      return { status: 'unknown' }
-    }
-  }
-
   async getById(id: string): Promise<Engram | null> {
     try {
       const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, RemoteStore.readBounded)
