@@ -555,23 +555,27 @@ function sameFolderIgnoringCase(form: string, target: string): boolean {
  * an edit or removal must find it rather than add a second entry beside it.
  * Compared as written apart from letter case — never resolved on disk.
  */
-function findEntryIndex(entries: FolderEntry[], folder: string, home: string): { exact: number[]; caseOnly: number[] } {
-  if (hasGlob(folder)) return { exact: entries.flatMap((e, i) => (e.path === folder ? [i] : [])), caseOnly: [] }
+function findEntryIndex(entries: FolderEntry[], folder: string, home: string): { applied: number[]; nameOnly: number[] } {
+  if (hasGlob(folder)) return { applied: entries.flatMap((e, i) => (e.path === folder ? [i] : [])), nameOnly: [] }
   const raw = resolve(expandHome(folder, home))
   const target = canonicalize(raw)
-  // EVERY entry for this folder, not just the first. Two spellings of one
-  // folder (`~/dup` and its absolute form, both kept by the trust.yaml import)
-  // are two exact entries: revoking trust on one would leave the other's
-  // grant in force. Entries in another letter case likewise: a leftover
-  // mis-cased `off` would keep winning (through the loose `off` match) after
-  // the user set the folder on (#1357).
-  const exact: number[] = []
-  const caseOnly: number[] = []
+  // EVERY entry for this folder, not just the first: a second entry would
+  // keep a decision the user just changed (a revoked grant, a replaced `off`).
+  //
+  // `applied`: the entry covers the canonical target under the strict,
+  // fail-closed comparison, so its `trusted` and `scope` are in effect now.
+  // `nameOnly`: the entry names the folder only by another spelling — as
+  // typed, through a symlink, or in another letter case (identity-checked,
+  // #1357). The strict comparison never matched it, so its grant and scope
+  // never applied; only an `off` did, through the loose match `off` uses.
+  const applied: number[] = []
+  const nameOnly: number[] = []
   entries.forEach((e, i) => {
-    if (entryIsFolder(e, folder, raw, target, home)) exact.push(i)
-    else if (!hasGlob(e.path) && entryForms(e.path, home, false).some(f => sameFolderIgnoringCase(f, target))) caseOnly.push(i)
+    if (!hasGlob(e.path) && entryForms(e.path, home, false).includes(target)) applied.push(i)
+    else if (entryIsFolder(e, folder, raw, target, home) ||
+      (!hasGlob(e.path) && entryForms(e.path, home, false).some(f => sameFolderIgnoringCase(f, target)))) nameOnly.push(i)
   })
-  return { exact, caseOnly }
+  return { applied, nameOnly }
 }
 
 /** The most restrictive of the modes: off, then ask, then on. */
@@ -620,30 +624,32 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   const map = loadForWrite(root)
   const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, opts.now) : null
   const key = folderEntryKey(folder, home)
-  const { exact, caseOnly } = findEntryIndex(map.folders, folder, home)
-  // Every entry for this folder merges into ONE, so no second entry keeps a
-  // decision the user just changed (a revoked grant, a replaced `off`).
-  //
-  // Exact entries all applied, so they merge whole: the most restrictive
-  // mode, `trusted` if any had it, the first scope; the first one's path.
-  //
-  // Entries in another letter case are rewritten to the on-disk spelling, so
-  // the strict (fail-closed) comparison matches the result from now on
-  // (#1357). Of those only an `off` ever applied (through the loose match
-  // `off` alone uses); their `ask`/`on`, `trusted` and `scope` never did.
-  // Their mode still carries over, as the more restrictive side; their grant
-  // and scope do not, so rewriting the path never brings a dormant grant (or
-  // one `plur untrust` just cleared) to life.
-  //
-  // A mode this change sets wins over all of them, and `--scope` without a
-  // mode means `on` — also when it replaces a merged mis-cased `off`.
-  const entry: FolderEntry = exact.length ? { ...map.folders[exact[0]] } : { path: key }
-  for (const i of exact.slice(1)) {
-    const e = map.folders[i]
-    if (e.trusted === true) entry.trusted = true
-    if (entry.scope === undefined && e.scope !== undefined) entry.scope = e.scope
-  }
-  const mode = mostRestrictive([...exact, ...caseOnly].map(i => map.folders[i].plur))
+  const { applied, nameOnly } = findEntryIndex(map.folders, folder, home)
+  // Every entry for this folder merges into ONE, which keeps exactly what is
+  // in effect now, except what this change sets:
+  //  - path, `trusted` and `scope` come ONLY from entries that applied. The
+  //    scope is the one the resolver picks among them (`mostSpecific`), so a
+  //    merge never reroutes writes; the grant is kept when any applied entry
+  //    had one, as `isTrustedInMap` does. With none, the path is the canonical
+  //    key and there is no grant or scope.
+  //  - entries matched only by name (typed spelling, symlink, letter case)
+  //    contribute their mode at most. Their grant and scope never applied,
+  //    and a merge must not bring them to life (#778, #1357).
+  //  - the mode is the most restrictive of the applied modes and the
+  //    name-only `off`/`ask` (never a name-only `on`); a mode this change sets
+  //    wins, and `--scope` without a mode means `on` — also when it replaces a
+  //    merged `off`.
+  const appliedEntries = applied.map(i => ({ e: map.folders[i], i }))
+  const entry: FolderEntry = { path: appliedEntries[0]?.e.path ?? key }
+  if (appliedEntries.some(c => c.e.trusted === true)) entry.trusted = true
+  const scope = mostSpecific(appliedEntries.filter(c => c.e.scope !== undefined), home)?.scope
+  if (scope !== undefined) entry.scope = scope
+  // A name-only entry can only make the mode MORE restrictive: its `on` never
+  // applied (only `off` matches loosely), so it must not become the mode.
+  const mode = mostRestrictive([
+    ...applied.map(i => map.folders[i].plur),
+    ...nameOnly.map(i => map.folders[i].plur).filter(m => m !== 'on'),
+  ])
   if (mode !== undefined) entry.plur = mode
   if (change.scope !== undefined) {
     entry.scope = change.scope
@@ -652,7 +658,7 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   if (change.mode !== undefined) entry.plur = change.mode
   if (change.trusted === true) entry.trusted = true
   if (change.trusted === false) delete entry.trusted
-  const matched = [...exact, ...caseOnly]
+  const matched = [...applied, ...nameOnly]
   if (matched.length) {
     const at = Math.min(...matched)
     map.folders = map.folders.flatMap((e, i) => (i === at ? [entry] : matched.includes(i) ? [] : [e]))
@@ -682,8 +688,8 @@ function removeFolderEntryUnlocked(
 ): boolean {
   const map = loadForWrite(root)
   const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, opts.now) : null
-  const { exact, caseOnly } = findEntryIndex(map.folders, folder, home)
-  const matched = [...exact, ...caseOnly]
+  const { applied, nameOnly } = findEntryIndex(map.folders, folder, home)
+  const matched = [...applied, ...nameOnly]
   if (matched.length === 0) return false
   map.folders = map.folders.filter((_, i) => !matched.includes(i))
   saveFolderMap(root, map)

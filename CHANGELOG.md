@@ -304,19 +304,21 @@ Now:
   folder is compared in its on-disk case; an `off` entry still matches every
   spelling it matched before, and a `trusted` entry recorded in the on-disk
   case (as `plur trust` records it) now also covers other case spellings.
-  `plur folders set`, `plur folders rm` and `plur untrust` still find the
-  entries recorded for a folder in another case, when the filesystem shows
-  that spelling is the same folder (a sibling `pROJ` on a case-sensitive
-  disk is never taken for `Proj`). `set` merges them into one entry in the
-  on-disk case. Of such an entry only an `off` ever applied, through the
-  loose match that only `off` uses; its `ask` or `on`, trust grant and
-  scope did not. `set` keeps their mode (the most restrictive one, unless
-  you set a mode), never their trust grant or scope. `--scope` without a
-  mode means `on`, also when it replaces a merged mis-cased `off`. `rm`
-  removes all of them, and `untrust` clears their grants. The same holds
-  for two entries that spell one folder differently, such as `~/dup` and
-  its absolute path (both kept by the `trust.yaml` import): `set` merges
-  them, so `--no-trusted` revokes every grant, and `rm` removes both.
+  `plur folders set`, `plur folders rm` and `plur untrust` find every entry
+  recorded for a folder, including one that spells it differently: as
+  typed, through a symlink, as `~/dup` beside its absolute path (both kept
+  by the `trust.yaml` import), or in another letter case when the
+  filesystem shows that spelling is the same folder (a sibling `pROJ` or
+  `Ⓟ` on a case-sensitive disk is never taken for `Proj` or `ⓟ`). `rm`
+  removes all of them, and `untrust` clears all their grants. `set` merges
+  them into one entry and keeps what was in effect: a trust grant and a
+  scope come only from entries that applied to the folder, and the scope
+  kept is the one the resolver was using. An entry that matched only by
+  its spelling never applied its grant or scope (only an `off` applies
+  that loosely), so it can only make the mode more restrictive: its `off`
+  or `ask` counts, its `on` does not. The most restrictive mode is kept
+  unless you set one. `--scope` without a mode
+  means `on`, also when it replaces a merged `off`.
 
 
 ### The secret guard now recognises GitHub, GitLab, Slack, npm, Stripe and AWS temporary keys
