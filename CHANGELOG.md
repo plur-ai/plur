@@ -427,10 +427,15 @@ An unknown `--event` no longer echoes the hook payload back to stdout.
 put rehydrate on `PostCompact`. It now uses `SessionStart` with matcher
 `compact`, `async: true`, `timeout: 90`, the same as `plur init`; a test fails
 if the two diverge. Re-running `plur-mcp init` used to stop at "already
-installed". It now removes a PLUR `PostCompact` entry and adds the
-`SessionStart(compact)` one. Your own hooks, including your own `PostCompact`
-hooks, are left in place. Installs that use the local `~/.plur/bin/plur-hook`
-shim now count as installed too, so re-running no longer adds a second set.
+installed". It now removes PLUR's `PostCompact` hooks and adds the
+`SessionStart(compact)` one. It removes PLUR's hooks one at a time and only
+those: a hook counts as PLUR's when it runs the PLUR binary (the
+`~/.plur/bin/plur-hook` shim or `npx @plur-ai/cli`) with a subcommand init
+writes. Your own hooks, including your own `PostCompact` hooks and one that
+shares an entry with a PLUR hook, are left in place. Installs that use the
+local shim, including the backslash and quoted Windows paths, now count as
+installed too, so re-running no longer adds a second set (#1303, on Windows
+as well).
 
 ### A refused write to one scope no longer pauses writes to the whole server
 

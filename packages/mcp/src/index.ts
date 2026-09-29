@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
 import { VERSION } from './version.js'
+import { isPlurHookCommand } from './hook-command.js'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -284,26 +285,49 @@ function writeMcpConfig(configPath: string): string {
   return `added to ${configPath}`
 }
 
-/** Same test as @plur-ai/cli's isPlurHook: the npx form or the local shim. */
+/** Does this entry hold at least one hook PLUR wrote? See isPlurHookCommand. */
 function isPlurHook(entry: HookEntry): boolean {
-  return (entry.hooks ?? []).some(h =>
-    h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'),
-  )
+  return (entry.hooks ?? []).some(h => isPlurHookCommand(h.command))
 }
 
 function isPlurRehydrate(entry: HookEntry): boolean {
-  return isPlurHook(entry) && entry.hooks.some(h => h.command.includes('hook-inject --rehydrate'))
+  return (entry.hooks ?? []).some(h =>
+    isPlurHookCommand(h.command) && h.command.includes('hook-inject --rehydrate'),
+  )
+}
+
+/**
+ * Remove PLUR's hooks from a list of entries, one hook at a time. An entry
+ * is dropped only when nothing is left in it; an entry without a PLUR hook
+ * comes back as the same object. A user's hook is never removed.
+ */
+function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
+  const kept: HookEntry[] = []
+  for (const entry of entries) {
+    if (!isPlurHook(entry)) {
+      kept.push(entry)
+      continue
+    }
+    const rest = entry.hooks.filter(h => !isPlurHookCommand(h.command))
+    if (rest.length > 0) kept.push({ ...entry, hooks: rest })
+  }
+  return kept
 }
 
 /**
  * Merge PLUR hooks into Claude Code settings (#1279). Pure, no I/O.
+ * A hook is PLUR's only when isPlurHookCommand says so: PLUR's binary, in
+ * the shim or npx form and with any slash direction or quoting, followed by
+ * a subcommand init writes.
  * - No PLUR hook present: append the full set ('installed').
- * - PLUR hooks present: drop PLUR entries from PostCompact, which cannot
- *   carry context (#1274), and add the SessionStart(compact) rehydrate entry
+ * - PLUR hooks present: remove PLUR's hooks from PostCompact, which cannot
+ *   carry context (#1274), one hook at a time, dropping an entry only when
+ *   it has no hooks left; then add the SessionStart(compact) rehydrate entry
  *   if it is missing ('healed'). Nothing else changes, so a fuller
  *   `plur init` install is not replaced by this smaller set.
  * - Otherwise 'already', and the settings come back unchanged.
- * User hooks are never removed or reordered.
+ * User hooks are never removed or reordered, including a user hook that
+ * shares an entry with a PLUR hook.
  */
 export function applyPlurHooks(
   settings: Settings,
@@ -321,7 +345,7 @@ export function applyPlurHooks(
 
   let changed = false
   if (hooks.PostCompact?.some(isPlurHook)) {
-    const kept = hooks.PostCompact.filter(e => !isPlurHook(e))
+    const kept = stripPlurHooks(hooks.PostCompact)
     if (kept.length > 0) hooks.PostCompact = kept
     else delete hooks.PostCompact
     changed = true

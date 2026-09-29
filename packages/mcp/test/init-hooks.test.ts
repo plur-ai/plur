@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildPlurHooks, applyPlurHooks } from '../src/index.js'
+import { buildPlurHooks, applyPlurHooks, type Settings } from '../src/index.js'
 // @plur-ai/mcp cannot depend on @plur-ai/cli, so the hook definitions are
 // mirrored. This import is test-only: it pins the mirror to the source.
 import { buildInjectionHooks } from '../../cli/src/commands/init.js'
@@ -92,4 +92,109 @@ describe('applyPlurHooks (#1279)', () => {
     expect(status).toBe('already')
     expect(settings).toEqual(snapshot)
   })
+})
+
+/**
+ * Review of #1300: the PostCompact cleanup used a bare substring test and
+ * dropped whole entries, so it deleted the user's own hooks, and on Windows it
+ * never recognised the backslash shim path, so every re-run appended a second
+ * full hook set (#1303). A hook is PLUR's only when it names PLUR's binary
+ * followed by a subcommand init writes; PLUR hooks are removed one at a time.
+ */
+describe('applyPlurHooks only ever removes PLUR hooks (#1300 review, #1303)', () => {
+  const plurHooks = buildPlurHooks(CMD)
+  const legacyRehydrate = (cli: string) => ({
+    type: 'command', command: `${cli} hook-inject --rehydrate`, timeout: 15,
+  })
+  const userHook = { type: 'command', command: 'echo compacted >> ~/compact.log' }
+
+  it('a user hook sharing an entry with the legacy rehydrate hook is kept', () => {
+    const old = {
+      hooks: {
+        UserPromptSubmit: plurHooks.UserPromptSubmit,
+        PostCompact: [{ matcher: 'auto|manual', hooks: [legacyRehydrate(CMD), userHook] }],
+      },
+    }
+    const { settings, status } = applyPlurHooks(old, plurHooks)
+    expect(status).toBe('healed')
+    expect(settings.hooks!.PostCompact).toEqual([{ matcher: 'auto|manual', hooks: [userHook] }])
+    expect(settings.hooks!.SessionStart).toEqual(plurHooks.SessionStart)
+  })
+
+  it("a user's own `npx @plur-ai/cli doctor` PostCompact hook is kept", () => {
+    const doctor = { matcher: 'auto', hooks: [{ type: 'command', command: 'npx @plur-ai/cli doctor >> ~/log' }] }
+    const old = {
+      hooks: {
+        ...plurHooks,
+        PostCompact: [doctor],
+      },
+    }
+    const snapshot = JSON.parse(JSON.stringify(old))
+    const { settings, status } = applyPlurHooks(old, plurHooks)
+    expect(status).toBe('already')
+    expect(settings).toEqual(snapshot)
+  })
+
+  const winShims = [
+    // What `plur-mcp init` writes on Windows: the unquoted backslash path.
+    'C:\\Users\\Test\\.plur\\bin\\plur-hook.cmd',
+    // What `plur init` writes on Windows since #1267: the quoted path.
+    '"C:\\Users\\Test User\\.plur\\bin\\plur-hook.cmd"',
+  ]
+  for (const shim of winShims) {
+    it(`recognises the Windows shim form ${shim}: a re-run is 'already', no duplicate`, () => {
+      const hooks = buildPlurHooks(shim)
+      const first = applyPlurHooks({ hooks: { Stop: [userStop()] } }, hooks)
+      expect(first.status).toBe('installed')
+      const snapshot = JSON.parse(JSON.stringify(first.settings))
+      const second = applyPlurHooks(first.settings, hooks)
+      expect(second.status).toBe('already')
+      expect(second.settings).toEqual(snapshot)
+      expect(second.settings.hooks!.UserPromptSubmit).toHaveLength(1)
+    })
+
+    it(`heals a stale Windows PostCompact rehydrate hook — ${shim}`, () => {
+      const hooks = buildPlurHooks(shim)
+      const old = {
+        hooks: {
+          UserPromptSubmit: hooks.UserPromptSubmit,
+          PostCompact: [{ matcher: 'auto|manual', hooks: [legacyRehydrate(shim)] }],
+        },
+      }
+      const { settings, status } = applyPlurHooks(old, hooks)
+      expect(status).toBe('healed')
+      expect(settings.hooks!.PostCompact).toBeUndefined()
+      expect(settings.hooks!.SessionStart).toEqual(hooks.SessionStart)
+    })
+  }
+
+  it('#1303: running init twice with the shim form leaves the second run a no-op', () => {
+    for (const shim of ['/home/u/.plur/bin/plur-hook', 'C:\\Users\\u\\.plur\\bin\\plur-hook.cmd']) {
+      const hooks = buildPlurHooks(shim)
+      let settings: Settings = {}
+      const statuses: string[] = []
+      for (let run = 0; run < 3; run++) {
+        const r = applyPlurHooks(settings, hooks)
+        statuses.push(r.status)
+        settings = JSON.parse(JSON.stringify(r.settings))
+      }
+      expect(statuses).toEqual(['installed', 'already', 'already'])
+      expect(settings).toEqual({ hooks })
+    }
+  })
+
+  it('a user-only hook naming .plur/bin/plur-hook-backup.ps1 does not count as installed', () => {
+    const backup = {
+      matcher: 'auto',
+      hooks: [{ type: 'command', command: 'pwsh ~/.plur/bin/plur-hook-backup.ps1 hook-inject' }],
+    }
+    const { settings, status } = applyPlurHooks({ hooks: { PostCompact: [backup] } }, plurHooks)
+    expect(status).toBe('installed')
+    expect(settings.hooks!.PostCompact).toEqual([backup])
+    expect(settings.hooks!.UserPromptSubmit).toEqual(plurHooks.UserPromptSubmit)
+  })
+
+  function userStop() {
+    return { matcher: '*', hooks: [{ type: 'command', command: 'say done' }] }
+  }
 })
