@@ -773,7 +773,10 @@ export class RemoteStore {
     })
     const r = await this.fetchBounded(`${this.apiBase}/engrams`, {
       method: 'POST',
-      headers: this.headers({ 'Content-Type': 'application/json' }),
+      // Stable across retries of the same local engram, so a server that
+      // honours it can collapse a retried POST into the original
+      // (docs/remote-store-contract.md). Servers that do not ignore it.
+      headers: this.headers({ 'Content-Type': 'application/json', 'Idempotency-Key': engram.id }),
       body,
     }, RemoteStore.readBounded, opts?.signal)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
@@ -810,6 +813,39 @@ export class RemoteStore {
    */
   async save(_engrams: Engram[]): Promise<void> {
     throw new Error('Remote store does not support bulk save() — use append()/remove() per engram')
+  }
+
+  /**
+   * Is an engram with exactly this statement stored in this scope?
+   *
+   * Used by the outbox flush before re-posting a push that was cut mid-flight
+   * (review of #1277): the server may have stored it, and the server-assigned
+   * id never reached us. Pages the ordinary list endpoint, uncached, under
+   * `signal`. Never throws: anything short of a complete answer is `unknown`,
+   * and the caller must not post on `unknown`.
+   */
+  async findByStatement(
+    statement: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ status: 'found'; id: string } | { status: 'absent' } | { status: 'unknown' }> {
+    const limit = 200
+    try {
+      for (let page = 0, offset = 0; page < 50; page++, offset += limit) {
+        const u = `${this.apiBase}/engrams?scope=${encodeURIComponent(this.scope)}&limit=${limit}&offset=${offset}`
+        const r = await this.fetchBounded(u, { headers: this.headers() }, RemoteStore.readBounded, opts?.signal)
+        if (!r.ok) return r.status === 403 || r.status === 404 ? { status: 'absent' } : { status: 'unknown' }
+        const body = r.json as { rows?: unknown[]; total_count?: number } | undefined
+        if (!body || !Array.isArray(body.rows)) return { status: 'unknown' }
+        for (const row of body.rows) {
+          const e = this.reshape(row as any)
+          if (e && e.statement === statement && e.status !== 'retired') return { status: 'found', id: e.id }
+        }
+        if (body.rows.length < limit || offset + body.rows.length >= (body.total_count ?? 0)) return { status: 'absent' }
+      }
+      return { status: 'unknown' } // page cap reached without a full answer
+    } catch {
+      return { status: 'unknown' }
+    }
   }
 
   async getById(id: string): Promise<Engram | null> {

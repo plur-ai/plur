@@ -521,9 +521,20 @@ never fails over it. `PLUR_HOOK_OUTBOX_FLUSH=0` turns it off and
 `--json` output (`flushed`, `pending`, `warnings`), and a line for writes that
 are still queued.
 
-`flushOutbox()` takes an optional `{ timeoutMs }` and returns a new `deferred`
-count — entries it did not get to. A cut is not counted as an attempt or as a
-failure against the host.
+`flushOutbox()` takes an optional `{ timeoutMs }`. The clock starts after the
+local store is loaded, so a large store does not use up the network budget.
+The result has two new counts: `deferred` (entries it did not get to) and
+`skipped` (entries held back by an open circuit breaker). `plur sync` now
+reports skipped writes and the breaker's reason; before, it said nothing
+about them. A cut is not counted as a failure against the host.
+
+**A push cut mid-flight is not delivered twice.** The server may have stored
+it before the budget ran out, and the client cannot know. So the cut is
+recorded as an attempt, which `plur outbox` shows, and the write is marked in
+doubt. Before posting it again, the client looks for it on the server and
+treats a match as delivered. Every create now also carries an
+`Idempotency-Key` (the local engram id) for servers that honour one. See
+`docs/remote-store-contract.md`.
 
 ### The end-of-response learning nudge now reaches the model in Claude Code
 

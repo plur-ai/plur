@@ -14,7 +14,7 @@ const mockPlur = {
   waitForIndex: vi.fn(async () => undefined),
   lastIndexError: vi.fn((): IndexSyncError | null => null),
   // #1269: `plur sync` now flushes the outbox; an empty one reports nothing.
-  flushOutbox: vi.fn(async () => ({ flushed: 0, failed: 0, deferred: 0, expired_warnings: [] as string[] })),
+  flushOutbox: vi.fn(async () => ({ flushed: 0, failed: 0, deferred: 0, skipped: 0, expired_warnings: [] as string[] })),
   outboxCount: vi.fn(async () => 0),
 }
 

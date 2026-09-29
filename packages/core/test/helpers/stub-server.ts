@@ -88,6 +88,12 @@ export class StubServer {
   /** Number of POST /api/v1/engrams requests received, answered or refused
    *  (#1299: proves a backed-off outbox entry did not dial the server). */
   appendCalls = 0
+
+  /** With `appendDelayMs`: store the engram only when the delayed answer is
+   *  sent, so a client that gives up first leaves nothing on the server. */
+  appendDropWhileDelayed = false
+  /** `Idempotency-Key` header of the most recent POST /engrams. */
+  lastAppendIdempotencyKey: string | null = null
   /** When set, PATCH /engrams/:id still applies the update server-side but
    *  echoes this value as the {engram: ...} body — to simulate a server whose
    *  echoed row fails RemoteRowSchema validation (#327). */
@@ -195,6 +201,9 @@ export class StubServer {
     this.appendErrorByScope = {}
     this.appendDelayMs = 0
     this.appendCalls = 0
+
+    this.appendDropWhileDelayed = false
+    this.lastAppendIdempotencyKey = null
     this.badPatchEcho = null
     this.recallRows = []
     this.recallStatus = null
@@ -292,6 +301,8 @@ export class StubServer {
         res.end(body)
         return
       }
+      const idemKey = req.headers['idempotency-key']
+      this.lastAppendIdempotencyKey = typeof idemKey === 'string' ? idemKey : null
       this.readBody(req, (body) => {
         this.lastAppendBody = body
         const { statement, scope, domain, type, source } = body
@@ -315,12 +326,14 @@ export class StubServer {
           created_at: now,
           updated_at: now,
         }
-        this.engrams.set(id, engram)
+        const store = () => this.engrams.set(id, engram)
+        if (!(this.appendDelayMs > 0 && this.appendDropWhileDelayed)) store()
         // Normally the server returns the real assigned id; badAppendId lets a
         // test make it return a malformed one (#404).
         const returnedId = this.badAppendId !== null ? this.badAppendId : id
         const respond = () => {
           if (!res.writableEnded && !res.destroyed) {
+            if (this.appendDelayMs > 0 && this.appendDropWhileDelayed) store()
             this.json(res, 201, { id: returnedId, scope: engram.scope, status: engram.status, data: engram.data })
           }
         }

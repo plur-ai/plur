@@ -156,10 +156,10 @@ export async function flushOutboxForHook(
         )
         return { ran: true, timed_out: true }
       }
-      if (result.flushed > 0 || result.failed > 0 || result.deferred > 0) {
+      if (result.flushed > 0 || result.failed > 0 || result.deferred > 0 || result.skipped > 0) {
         process.stderr.write(
           `[plur] ${opts.hook}: outbox — ${result.flushed} delivered, ${result.failed} failed, `
-          + `${result.deferred} left for next time.\n`,
+          + `${result.deferred} left for next time, ${result.skipped} skipped (host paused).\n`,
         )
       }
       return { ran: true, flushed: result.flushed, failed: result.failed, deferred: result.deferred }

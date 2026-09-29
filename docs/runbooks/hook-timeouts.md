@@ -119,9 +119,11 @@ are bounded so they cannot cost the hook its budget:
 With nothing queued the flush is skipped after one file read. Cursor's `stop`
 fires on every turn, so it retries at most once every five minutes. When the budget
 runs out the in-flight push is cut, nothing further starts, and every
-undelivered write stays queued with its attempt count unchanged: a cut is our
-time running out, not a failure of the remote, so it does not count toward
-the host's circuit breaker either.
+undelivered write stays queued. A cut is our time running out, not a failure
+of the remote, so it does not count toward the host's circuit breaker. The
+budget starts after the local store load. A push cut mid-flight is recorded
+and checked against the server before it is posted again, so a slow server
+does not gain a copy per retry (`docs/remote-store-contract.md`).
 
 ```sh
 PLUR_HOOK_OUTBOX_FLUSH=0        # turn the hook flush off

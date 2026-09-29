@@ -206,6 +206,25 @@ describe('outbox flush from hooks and plur sync (#1269)', () => {
     expect(await pending()).toBe(1)
   })
 
+  it('plur sync reports writes skipped behind an open circuit breaker, and why', async () => {
+    await queue(1)
+    // Fail until the host's breaker opens.
+    server.appendErrorResponse = { status: 500, body: 'still broken' }
+    const plur = new Plur({ path: store })
+    for (let i = 0; i < 5; i++) {
+      const res = await plur.flushOutbox()
+      if (res.expired_warnings.some(w => /circuit breaker/.test(w))) break
+    }
+    server.appendErrorResponse = null
+
+    const r = await runCli(['sync', '--json'], { cwd: project, env })
+    expect(r.code, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout.trim().split('\n').pop()!)
+    expect(out.outbox).toMatchObject({ flushed: 0, skipped: 1, pending: 1 })
+    expect(out.outbox.warnings.join('\n')).toMatch(/circuit breaker open/)
+    expect(await pending()).toBe(1)
+  })
+
   describe('outboxMayHaveEntries (the no-load fast path)', () => {
     it('is false for a missing store and a store with no queued writes', async () => {
       expect(outboxMayHaveEntries(join(root, 'nope'))).toBe(false)
