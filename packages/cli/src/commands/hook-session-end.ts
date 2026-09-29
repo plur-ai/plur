@@ -7,6 +7,7 @@ import { isPlurConfigured } from '../lib/plur-configured.js'
 import { safeSessionKey } from '../lib/session-key.js'
 import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
 import { removeSessionTask } from '../lib/session-task.js'
+import { hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js' // decision H1
 
 /**
  * plur hook-session-end — Claude Code SessionEnd hook (shipped v1.0.85).
@@ -47,12 +48,19 @@ function sessionKeys(payloadSessionId?: string): string[] {
   // checkpoint under safeSessionKey(id), which REPLACES unsafe characters with
   // '_' — try that form first, then the stripped form older writers used
   // (#1278 follow-up; #1301 fixed the same mismatch in plur_session_end).
-  return [payloadSessionId, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
+  //
+  // Owner decision H1 ("payload"): the writer's key is hookSessionKey; the
+  // shared legacyHookSessionKeys adds the forms older writers used (main's and
+  // #1228's env-first stripped key, including its 'default'). The
+  // per-candidate forms below stay as a superset so no key this reader
+  // accepted before is dropped.
+  const perCandidate = [payloadSessionId, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
     .filter(Boolean)
     .flatMap(k => [
       safeSessionKey(k!).slice(0, 64),
       k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64),
     ])
+  return [...new Set([hookSessionKey(payloadSessionId), ...legacyHookSessionKeys(payloadSessionId), ...perCandidate])]
     .filter(Boolean)
 }
 
