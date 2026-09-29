@@ -1,0 +1,196 @@
+slug: plur-field-report-formal-2
+title: Field report — formal verification, round 2
+eyebrow: PLUR · formal verification · 2026-09-29
+lede: Five modelling clusters proved 3,272 theorems (build clean, no gaps). These are the places where
+  the proofs found a defect whose fix is a choice, or where two designs conflict.
+sources:
+- spec/formal/findings/*.md (branch formal/field-report-2026-09-29)
+sections:
+- key: conflicts
+  prefix: C
+  label: Design conflicts settled by proof
+  rows:
+  - area: Lock (conflict G)
+    title: Which PR carries the one lock design that is proved safe?
+    context: 'Proof: #1398''s lock alone lets two processes hold the lock after two crashes; #1228''s
+      alone after one crash (it also makes writers wait 60 s). Only the combination (#1398''s one-step
+      publish + #1228''s takeover ladder) proves mutual exclusion. Both counterexamples were replayed
+      against the real code.'
+    ref: findings/persistence.md §G
+    suggested: pr1398
+    options:
+    - value: pr1398
+      label: 'A PR against #1398 that ports the ladder'
+      consequence: 'The proven design lands where the lock fix already lives; #1228 then drops its own
+        lock change.'
+    - value: pr1228
+      label: 'Rebase #1228 onto #1398''s lock'
+      consequence: 'Keeps it in the formal PR; slower, #1228 is large.'
+    - value: own
+      label: Its own PR from the formal branch
+      consequence: Cleanest diff, but a third PR touching the lock.
+  - area: Lock safety margin (G2)
+    title: Re-check that the owner is really gone right before taking over the lock?
+    context: '#1398 re-checked abandonment under its guard; the combined version does not. Under the model''s
+      assumptions it changes nothing; it only matters for a holder on another host whose heartbeat failed
+      and then resumed. One line of code.'
+    ref: findings/persistence.md
+    suggested: 'yes'
+    options:
+    - value: 'yes'
+      label: Add the re-check
+      consequence: Cheap extra safety at the one point the model had to assume.
+    - value: 'no'
+      label: Leave as proved
+      consequence: Relies on the model's assumption.
+  - area: Duplicate-push guard (conflict I)
+    title: Which mechanism keeps a queued write from being sent twice?
+    context: 'Proof: #1228''s leases alone duplicate after a crash (replayed: 2 rows); #1277''s per-entry
+      claims alone are enough for any interleaving, once the claim takeover is made atomic. With a server
+      that honours the retry key, neither is needed. Keeping leases also makes every push wait for the
+      store lock.'
+    ref: findings/outbox.md
+    suggested: claims
+    options:
+    - value: claims
+      label: Claims only; make the takeover atomic; leases stay as an advisory listing field
+      consequence: Proven exactly-once on key-ignoring servers too; no lock wait before each push.
+    - value: both
+      label: Keep both
+      consequence: Also proven safe; slower pushes and one test stays red.
+  - area: Timed-out pushes (outbox 1a/1b)
+    title: Treat a timed-out or thrown push as 'maybe delivered' everywhere?
+    context: 'The background push in learn() and learnRouted() do not mark a timed-out POST as in doubt,
+      and a flush that throws during merge-back releases the claim and loses the in-doubt state (and,
+      for older entries, the minted key). Replayed: 2 rows on the server. The contract doc already says
+      a timed-out write is in doubt.'
+    ref: findings/outbox.md
+    suggested: 'yes'
+    options:
+    - value: 'yes'
+      label: Mark in doubt on every timeout; keep claims and persist the key before posting
+      consequence: Exactly-once with the documented contract (proved).
+    - value: 'no'
+      label: Leave
+      consequence: At most one duplicate per write on servers that ignore the key.
+  - area: Recall refusals and the breaker
+    title: Should a 422 from memory recall stop counting toward the per-host circuit breaker, like writes
+      already do?
+    context: 'Writes stopped counting refusals in #1308. Recall still counts a 422, so three bad recall
+      requests can pause queued writes to the same server.'
+    ref: findings/outbox.md
+    suggested: align
+    options:
+    - value: align
+      label: Yes, same rule as writes
+      consequence: 'One rule: a refusal says the request was wrong, not that the server is down.'
+    - value: keep
+      label: Keep the asymmetry
+      consequence: Recall refusals can still pause writes.
+- key: folders
+  prefix: F
+  label: Folder map and trust
+  rows:
+  - area: Importer and A1
+    title: Should the importer follow your decision A1 (a team record is never absorbed)?
+    context: Today the importer asks wouldDeduplicate(), which still uses the pre-A1 rule, so a team-scope
+      record whose text exists in another scope is skipped and never reaches its team. One existing test
+      pins the old skip.
+    ref: findings/r2-corea.md
+    suggested: follow
+    options:
+    - value: follow
+      label: 'Yes: import into the team scope and credit the matching engram'
+      consequence: Imports behave like learn(); the pinned test changes.
+    - value: skip
+      label: Keep skipping; fix the docstring
+      consequence: Imported team knowledge can silently stay out of the team store.
+  - area: Revoking trust
+    title: When trust is revoked, remove the old trust.yaml line with the same matcher the map uses?
+    context: '`plur folders rm` of a trusted folder leaves its trust.yaml line; `plur untrust` misses
+      a line spelled with `~`. An adapter on an older core keeps trusting the folder, and deleting folders.yaml
+      re-imports the grant. Fix proved.'
+    ref: findings/folders.md
+    suggested: both
+    options:
+    - value: both
+      label: Yes, for both rm and untrust
+      consequence: Revocations are complete in both files (proved).
+    - value: noimport
+      label: Also stop importing `~` lines
+      consequence: Stricter; a `~` grant from an old version needs re-granting.
+    - value: accept
+      label: Accept the gap until the dual-write is retired
+      consequence: Old adapters may keep trusting a revoked folder.
+  - area: One-time code
+    title: Use the one-time code up as soon as the folder map is saved?
+    context: If writing trust.yaml fails after folders.yaml was saved, the code stays live and a second
+      write with it is accepted (same folder). Fix proved.
+    ref: findings/folders.md
+    suggested: consume
+    options:
+    - value: consume
+      label: Consume right after the map save
+      consequence: Exactly one write per code (proved); a failed trust.yaml write needs a fresh ask.
+    - value: retry
+      label: Allow one retry with the same code
+      consequence: Simpler recovery; up to two writes per code.
+  - area: Recognising PLUR's hooks
+    title: Tighten the matcher so a user command that merely contains a PLUR call is not treated as PLUR's?
+    context: 'The matcher is unanchored: `<plur hook> hook-x && notify.sh` or `nice -n 10 <plur hook>
+      hook-x` is claimed as PLUR''s and re-running init deletes the user''s part. In exec form any checkout
+      ending in packages/cli/dist/index.js is claimed.'
+    ref: findings/adapters.md
+    suggested: anchor
+    options:
+    - value: anchor
+      label: 'Anchor it: nothing but arguments after the subcommand; exec form only for the recorded entry'
+      consequence: User hooks are never touched (anchoring modelled and proved).
+    - value: keep
+      label: Keep as is
+      consequence: A user who edits PLUR's own hook line loses the edit on re-init.
+- key: hooks
+  prefix: H
+  label: Hook behaviour
+  rows:
+  - area: Stopped run output
+    title: When the watchdog has stopped a run, must the hook print nothing even if it then errors?
+    context: If the injection throws while the watchdog waits for the store, the CLI prints {"error":…}
+      to stdout and exits 1 — editors show that to the model or user. One existing test expects the error
+      on stdout for failed runs.
+    ref: findings/r2-cli.md
+    suggested: silent
+    options:
+    - value: silent
+      label: 'Silent: hook commands never print errors to stdout; log to stderr'
+      consequence: Editors only ever see valid hook output (proved for the gated version).
+    - value: keep
+      label: Keep printing the error
+      consequence: Stopped runs can leak an error line into the conversation.
+  - area: Auto-rate record failure
+    title: If recording a rating fails, skip sending it?
+    context: 'Write-ahead is correct, but when the record write fails the rating is still sent, so a later
+      turn can send it again. Fix proved: at most once per engram per session.'
+    ref: findings/r2-cli.md
+    suggested: skip
+    options:
+    - value: skip
+      label: Skip the rating when it can't be recorded
+      consequence: Never double-counted; a failure loses one signal.
+    - value: send
+      label: Send anyway
+      consequence: A failure can double-count one engram.
+  - area: Stop-counter storage
+    title: Should the save-nudge counter use the same safe folder rule as the other hook state?
+    context: 'Conflict H''s proved rule (shared folder if safe, else private fallback if safe, else nothing)
+      is now in #1395 for injection state; hook-learn-check''s counter still refuses outright when the
+      shared folder is unsafe, so the nudge stops.'
+    ref: findings/r2-cli.md
+    suggested: same
+    options:
+    - value: same
+      label: Yes, same rule
+      consequence: The nudge keeps working when the shared folder is unsafe.
+    - value: refuse
+      label: Keep refuse-only
+      consequence: No nudge in that case.
