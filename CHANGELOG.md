@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### `plur init-remote` is now `plur remote`, and the token stays out of the repo (#1413)
+
+**One command connects a folder to a team store** (folder-map design r3).
+`plur init-remote` wrote the URL and bearer token into the repo's
+`.plur.yaml`, relying on `.gitignore` to keep the token out of git. `plur
+remote` keeps both in your own config instead:
+
+```
+plur remote --url https://plur.example.test --token <t> --scope group:example/eng
+plur remote --url https://plur.example.test --token <t> --scopes group:example/eng,group:example/ops
+plur remote        # show this folder's connection and check it
+```
+
+- **Nothing is written until the server agrees.** Every scope is checked
+  against the server's `/me` first (`Plur.verifyRemoteStore`, the checks of
+  #1272's `addRemoteStore` without the write). A rejected token, an unreachable
+  server, or one scope in `--scopes` the token is not authorised for exits 1
+  and leaves every file as it was.
+- **Then** each scope is registered as a url store in `config.yaml` (the token
+  is kept there), and the current folder is recorded in `folders.yaml` with the
+  scope: `--scope`, or the first of `--scopes`. **Nothing is written to
+  `.plur.yaml` or `.gitignore`.** Running it again changes nothing. No trust
+  grant is needed: the URL and token are yours, in your config.
+- The token can also come from `--token-env <VAR>` or stdin (`--token -`). It
+  is never printed: not in text, not in `--json`, not in an error.
+- **`plur remote` with no flags** prints the folder's policy (`on`/`off`/`ask`,
+  the scope, and where that came from) and checks each store serving the
+  folder: the url stores for its scope, and a trusted `.plur.yaml` remote.
+  Exit 0 when all are reachable, 2 when one is not, 1 when none serves it.
+- **`plur init-remote` is a hidden alias.** The same flags give the same
+  result, `--verify` is bare `plur remote`, and `--no-gitignore` is accepted
+  and does nothing. **It no longer writes `.plur.yaml`** and no longer grants
+  trust, and it now supports `--json`.
+- **An existing `.plur.yaml` with `remote_url` / `remote_token` keeps working**
+  under a trusted folder, exactly as before. Running `plur remote` there prints
+  one line saying the connection now lives in your user config and the token
+  can be removed from `.plur.yaml`. It never edits or deletes the file.
+- **The folder entry does not yet steer the hooks.** They start reading the
+  folder map in the next #1347 change. Until then, core dials a url store only
+  when the session's scope names that store's org, so a folder with no
+  `.plur.yaml` scope gets the store registered but no remote recall from the
+  hooks or the opencode plugin.
+
+### `plur trust` and `plur untrust` are hidden from `plur --help` (#1413)
+
+Trust is now granted by `plur folders set <dir> --trusted`, by the automatic
+import of `trust.yaml`, and, once the hooks read the folder map, by answering
+yes to the one-time question.
+Both commands keep working, with the same output and exit codes, so existing
+scripts and runbooks keep running. The trust check for a `.plur.yaml` that
+names its own remote is unchanged.
+
 ### `plur stores add` can register a remote store, and checks the token first (#1265)
 
 **An installer script can now connect a machine to a team store without MCP**

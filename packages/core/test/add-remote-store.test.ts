@@ -220,3 +220,21 @@ describe('Plur.addRemoteStore (#1265)', () => {
     })
   })
 })
+
+describe('Plur.verifyRemoteStore (#1413)', () => {
+  it('runs every check and writes nothing', async () => {
+    const before = configText()
+    const plur = new Plur({ path: dir })
+    const r = await plur.verifyRemoteStore({ url: baseUrl, token: TOKEN, scope: SCOPE })
+    expect(r).toEqual({ scope: SCOPE, username: 'installer', authorised: [SCOPE, 'group:example/ops'] })
+    expect(configText()).toBe(before)
+  })
+
+  it('refuses what addRemoteStore refuses, with the same codes', async () => {
+    const plur = new Plur({ path: dir })
+    await expect(plur.verifyRemoteStore({ url: baseUrl, token: 'wrong-token-77', scope: SCOPE }))
+      .rejects.toMatchObject({ code: 'auth_rejected' })
+    await expect(plur.verifyRemoteStore({ url: baseUrl, token: TOKEN, scope: 'group:example/finance' }))
+      .rejects.toMatchObject({ code: 'scope_not_authorised' })
+  })
+})
