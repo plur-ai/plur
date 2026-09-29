@@ -9243,8 +9243,10 @@ export class Plur {
     // Ids this flush claims in `_outboxInFlight`, released however it ends.
     const claimed = new Set<string>()
     const leases: OutboxFlushLeases = { leased: new Set(), settled: new Set(), mergedBack: false }
+    // #1277 per-entry claims this flush takes; released after the merge-back.
+    const entryClaims = new Set<string>()
     try {
-      return await this._flushOutboxClaimed(claimed, leases, budget.signal, options.force === true, startBudget, new Set(options.resend ?? []))
+      return await this._flushOutboxClaimed(claimed, leases, budget.signal, options.force === true, startBudget, new Set(options.resend ?? []), entryClaims)
     } finally {
       if (budgetTimer) clearTimeout(budgetTimer)
       // Audit of #1231, finding 4: a flush that threw between leasing and its
@@ -9255,6 +9257,14 @@ export class Plur {
       // runs out, which is the at-least-once edge the lease documents.
       if (!leases.mergedBack && leases.leased.size > 0) {
         await this._releaseOutboxLeases([...leases.leased].filter(id => !leases.settled.has(id)), leases.lease)
+      }
+      // Integration of #1277 with #1228's finding 4: a flush that threw before
+      // its merge-back also releases the #1277 claims of entries whose POST
+      // never landed, so the next flush is not told "another writer is
+      // pushing it". A claim on an entry the remote accepted (`settled`) is
+      // kept: it is what makes the next flush check by key, not re-post.
+      if (!leases.mergedBack) {
+        for (const id of entryClaims) if (!leases.settled.has(id)) this._releaseOutboxClaim(id)
       }
       for (const id of claimed) this._outboxInFlight.delete(id)
     }
@@ -9344,6 +9354,7 @@ export class Plur {
     force: boolean,
     startBudget: () => void,
     resend: Set<string>,
+    entryClaims: Set<string>,
   ): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     // The re-guard below promises the target scope's CURRENT policy (R2-D #12);
     // without this a long-running process flushed against the config it
@@ -9376,8 +9387,6 @@ export class Plur {
        *  (listOutbox reports it as needs_action; `resend` clears it). */
       unconfirmed?: string
     }
-    /** Entries this flush holds a #1277 claim on; released after the merge-back. */
-    const entryClaims = new Set<string>()
     /**
      * #1299: back off an entry the store has already refused in a way a retry
      * cannot fix. Nothing about it changes; it is only not dialled (and, since
