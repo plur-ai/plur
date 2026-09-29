@@ -65,7 +65,7 @@ function sessionKeys(payloadSessionId?: string): string[] {
 }
 
 function plurPath(flags: GlobalFlags): string {
-  return flags.path ?? process.env.PLUR_PATH ?? join(homedir(), '.plur')
+  return flags.path || process.env.PLUR_PATH || join(homedir(), '.plur') // `||`: empty means unset (H3)
 }
 
 function readStdinRaw(): string {

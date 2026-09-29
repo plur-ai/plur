@@ -14,14 +14,17 @@ import { safeSessionKey } from './session-key.js'
  * (`ensureSessionDir`, the check the Codex/Cursor/Antigravity families already
  * use). A directory that fails the check — a planted symlink, or one another
  * user created — is refused, and state goes to a private directory under the
- * PLUR root instead. Nothing is ever written into the refused directory.
+ * PLUR root instead, but only if THAT passes the same check. When both are
+ * refused this returns null and callers persist nothing: a refused directory
+ * is never written to (formal conflict H, spec/formal R2CLI §FR5
+ * `Dir.conflict_H_unique` — the only policy that is both safe and persistent).
  */
-export function hookSessionDir(): string {
+export function hookSessionDir(): string | null {
   const shared = join(tmpdir(), 'plur-sessions')
   if (ensureSessionDir(shared)) return shared
-  const fallback = join(process.env.PLUR_PATH ?? join(homedir(), '.plur'), 'hook-sessions')
-  ensureSessionDir(fallback) // best effort; writes below fail open if it cannot be made
-  return fallback
+  // `||`, not `??`: an empty PLUR_PATH means unset, never "the cwd" (H3).
+  const fallback = join(process.env.PLUR_PATH || join(homedir(), '.plur'), 'hook-sessions')
+  return ensureSessionDir(fallback) ? fallback : null
 }
 
 /**
@@ -32,9 +35,9 @@ export function hookSessionDir(): string {
 export const SESSION_TASK_MAX_CHARS = 1000
 
 function taskPath(sessionId: unknown): string | null {
-  return typeof sessionId === 'string' && sessionId
-    ? join(hookSessionDir(), `${safeSessionKey(sessionId)}.task`)
-    : null
+  if (typeof sessionId !== 'string' || !sessionId) return null
+  const dir = hookSessionDir()
+  return dir ? join(dir, `${safeSessionKey(sessionId)}.task`) : null
 }
 
 /**

@@ -803,10 +803,16 @@ no compaction summary, so the rehydrate query now comes from the session's
 last prompt, stored per Claude Code `session_id`. That copy is private: the
 session directory is created 0700 and must be a real directory this user owns.
 A planted symlink, or a directory another user created, is refused, and state
-moves to `hook-sessions/` under the PLUR root instead. The file is written 0600
+moves to `hook-sessions/` under the PLUR root instead, but only if that directory
+passes the same check. If both are refused, the hook keeps no state at all and
+still injects. A refused directory is never written to. The file is written 0600
 through an exclusive, no-follow temp file and a rename, so a symlink at its path
 is replaced, never followed. It keeps only the first 1000 characters, and the
 SessionEnd hook deletes it. On Linux `$TMPDIR` is usually the shared `/tmp`.
+The Stop hook's counter follows the same rule, and so does its session
+checkpoint in `<PLUR root>/sessions`. An empty `PLUR_PATH` now means "unset"
+wherever the hooks resolve the PLUR root, so it never resolves against the
+working directory.
 
 This fix alone kept both registrations `async: true`, so the context arrived
 only at the next safe point, not on the turn that triggered it. Both are now
