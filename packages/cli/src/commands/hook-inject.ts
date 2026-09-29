@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, readSync, statSync, readdirSync, unlinkSync } from 'fs'
 import { dirname, join, resolve } from 'path'
-import { tmpdir, homedir, hostname } from 'os'
+import { homedir, hostname } from 'os'
 import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
@@ -8,6 +8,7 @@ import { recordInjected } from '../lib/auto-rate.js'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
 import { correctionReminder } from './hook-correction-detect.js'
+import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
 // on the hot path of every prompt; slow networks make this a perceptible
@@ -116,16 +117,10 @@ function claudeHookEventName(
  */
 const NO_CONTEXT_EVENTS = new Set(['PostCompact'])
 
-/**
- * The last task seen for a Claude Code session, keyed on the payload
- * `session_id`. The SessionStart(compact) payload carries no compact_summary,
- * so rehydration queries with this. It is rewritten on every prompt; the
- * session marker keeps only the first one.
- */
-function sessionTaskPath(input: Record<string, unknown>): string | null {
-  const id = input.session_id
-  return typeof id === 'string' && id ? join(sessionDir(), `${safeSessionKey(id)}.task`) : null
-}
+// The last task seen for a Claude Code session, keyed on the payload
+// `session_id` (lib/session-task.ts): the SessionStart(compact) payload carries
+// no compact_summary, so rehydration queries with it. Rewritten on every
+// prompt, length-capped, 0600 in a verified 0700 dir, removed at SessionEnd.
 
 /**
  * #1278: the key for this session's marker, reminder clock and inject lock.
@@ -220,12 +215,10 @@ function surfaceRemoteOutcomes(plur: Plur): string[] {
 }
 
 function sessionDir(): string {
-  const dir = join(tmpdir(), 'plur-sessions')
-  // Fail-open: an unwritable $TMPDIR (read-only tmpfs, full disk) must never
-  // crash the prompt. Swallow the mkdir error and return the path anyway —
-  // downstream state-dir writes are individually wrapped and degrade to no-ops.
-  try { mkdirSync(dir, { recursive: true }) } catch { /* fail-open */ }
-  return dir
+  // 0700, owned by this user, never a symlink; a refused shared dir falls back
+  // to a private one (lib/session-task.ts). Fail-open: an unwritable $TMPDIR
+  // must never crash the prompt — state writes are individually wrapped.
+  return hookSessionDir()
 }
 
 function sessionMarkerPath(key: string): string {
@@ -507,10 +500,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (!isRehydrate && existsSync(marker)) {
     // Keep the latest prompt for rehydration after compaction (#1274 reads it).
     const prompt = input.prompt
-    const taskPath = sessionTaskPath(input)
-    if (taskPath && typeof prompt === 'string' && prompt) {
-      try { writeFileSync(taskPath, prompt) } catch { /* fail-open */ }
-    }
+    if (typeof prompt === 'string') writeSessionTask(input.session_id, prompt)
     const lines: string[] = []
     if (isReminderDue(key)) {
       touchReminder(key)
@@ -618,9 +608,7 @@ async function injectSession(
   let newSessionId: string | undefined
   if (isRehydrate) {
     const summary = (input.compact_summary as string) || ''
-    let original = ''
-    const taskPath = sessionTaskPath(input)
-    try { if (taskPath) original = readFileSync(taskPath, 'utf8') } catch {}
+    let original = readSessionTask(input.session_id)
     if (!original) {
       try {
         const raw = readFileSync(marker, 'utf8')
@@ -642,8 +630,7 @@ async function injectSession(
     // next prompt simply tries again.
     newSessionId = randomUUID()
     pendingMarker = JSON.stringify({ task, sessionId: newSessionId })
-    const taskPath = sessionTaskPath(input)
-    if (taskPath) try { writeFileSync(taskPath, task) } catch { /* fail-open */ }
+    writeSessionTask(input.session_id, task)
     touchReminder(key) // Reset reminder timer on first message
   }
 
