@@ -67,8 +67,11 @@ describe('plur init on win32 with a home dir containing a space (#1267)', { time
     const shim = join(home, '.plur', 'bin', 'plur-hook.cmd')
     const cursor = JSON.parse(readFileSync(join(home, '.cursor', 'hooks.json'), 'utf-8'))
     const commands = Object.values(cursor.hooks as Record<string, HookSpec[]>).flat().map((h) => h.command)
-    expect(commands.length).toBe(4)
-    for (const c of commands) expect(c.startsWith(`"${shim}" hook-cursor-`)).toBe(true)
+    // 4 hook-cursor-* entries plus the #1310 end-of-turn auto-rater.
+    expect(commands.length).toBe(5)
+    for (const c of commands) {
+      expect(c.startsWith(`"${shim}" hook-cursor-`) || c === `"${shim}" hook-auto-rate cursor`).toBe(true)
+    }
   })
 
   it('two init runs leave exactly one PLUR hook set per event', () => {
@@ -78,10 +81,18 @@ describe('plur init on win32 with a home dir containing a space (#1267)', { time
     const second = readSettings()
     expect(second.hooks).toEqual(first.hooks)
     for (const entries of Object.values(second.hooks ?? {})) {
-      const perMatcher = new Map<string, number>()
-      for (const e of entries) perMatcher.set(e.matcher ?? '', (perMatcher.get(e.matcher ?? '') ?? 0) + 1)
-      // Every event's PLUR entries are distinct matchers — nothing doubled.
-      for (const n of perMatcher.values()) expect(n).toBe(1)
+      // No (matcher, command) pair appears twice — nothing doubled. Keyed on
+      // the command too: one event may legitimately hold two PLUR entries
+      // under the same matcher (Stop '*': hook-learn-check and #1310's
+      // hook-auto-rate).
+      const perKey = new Map<string, number>()
+      for (const e of entries) {
+        for (const h of e.hooks) {
+          const k = `${e.matcher ?? ''}\0${h.command}`
+          perKey.set(k, (perKey.get(k) ?? 0) + 1)
+        }
+      }
+      for (const n of perKey.values()) expect(n).toBe(1)
     }
   })
 
@@ -104,8 +115,12 @@ describe('plur init on win32 with a home dir containing a space (#1267)', { time
     const commands = allCommands(settings)
     expect(commands.some((c) => c.includes('C:\\Users'))).toBe(false)
     expect(settings.hooks?.UserPromptSubmit?.filter((e) => e.hooks[0].command.includes('hook-inject'))).toHaveLength(1)
-    expect(settings.hooks?.SessionStart).toHaveLength(1)
-    expect(settings.hooks?.Stop).toHaveLength(1)
+    // Counted per subcommand: SessionStart also carries the #1274 compact
+    // rehydrate entry, and Stop the #1310 auto-rater.
+    const withCmd = (event: string, sub: string) =>
+      (settings.hooks?.[event] ?? []).filter((e) => e.hooks.some((h) => h.command.includes(sub)))
+    expect(withCmd('SessionStart', 'hook-session-remind')).toHaveLength(1)
+    expect(withCmd('Stop', 'hook-learn-check')).toHaveLength(1)
     // The user's own hook survives.
     expect(commands).toContain('C:\\tools\\my-own-hook.exe')
   })

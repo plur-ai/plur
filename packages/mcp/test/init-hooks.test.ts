@@ -20,7 +20,7 @@ describe('plur-mcp init hook definitions (#1279)', () => {
     expect(hooks.SessionStart).toEqual([
       {
         matcher: 'compact',
-        hooks: [{ type: 'command', command: `${CMD} hook-inject --rehydrate`, timeout: 90, async: true }],
+        hooks: [{ type: 'command', command: `${CMD} hook-inject --rehydrate`, timeout: 20 }],
       },
     ])
   })

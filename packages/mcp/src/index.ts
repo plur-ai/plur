@@ -120,9 +120,11 @@ export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
     // Re-inject after compaction. SessionStart with matcher "compact" fires
     // right after compaction and can carry context; PostCompact cannot
     // (#1274, #1279). Re-running init moves an old PostCompact entry here.
+    // Sync, 20s: the cli's CLAUDE_INJECT_TIMEOUT_S since #1313 (the hook
+    // exits itself at 15s), which this package cannot import.
     SessionStart: [{
       matcher: 'compact',
-      hooks: [{ type: 'command', command: `${cli} hook-inject --rehydrate`, timeout: 90, async: true }],
+      hooks: [{ type: 'command', command: `${cli} hook-inject --rehydrate`, timeout: 20 }],
     }],
     // Auto-close the memory lifecycle at session end (Claude Code SessionEnd,
     // shipped v1.0.85) — captures a closing episode and cleans up the session
