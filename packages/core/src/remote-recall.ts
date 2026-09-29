@@ -597,6 +597,8 @@ function processHostRows(
     cloned.id = namespaceEngramId(cloned.id, entry.scope)
     cloned._originalId = originalId
     cloned._storeScope = entry.scope
+    // Served by a url store (see the same marker in `_loadSecondaryAndPacks`).
+    cloned._fromRemoteStore = true
     // The injection scorer iterates `tags` unguarded — a row without them
     // must not throw at scoring time.
     if (!Array.isArray(cloned.tags)) cloned.tags = []

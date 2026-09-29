@@ -64,6 +64,11 @@ result is `local` and the warning names the scope you asked for and says nothing
 was written there. Before, the warning named the other team's scope (the one
 you did not write to), or there was no warning at all.
 
+A save that matched an existing row is classified by the store that actually
+holds that row. With a url store and a local path store registered for the same
+scope, a match on the path store's row is reported `local`, not `remote` —
+nothing was sent anywhere.
+
 Nothing about where engrams are written changes. The field is additive.
 
 ### A team save is no longer swallowed by a personal note with the same text (#1268)

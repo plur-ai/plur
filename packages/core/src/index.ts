@@ -1500,6 +1500,12 @@ export class Plur {
         cloned.id = cloned.id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
         cloned._originalId = originalId
         cloned._storeScope = store.scope
+        // Which store served the row, not just its scope: several stores may
+        // share one scope (a url store and a path store both load), and
+        // delivery reporting must classify by the one that held the row. A
+        // boolean, not the url: every field of a loaded row is content-scanned
+        // on the explicit-update path, and a url is not content.
+        if (store.url) cloned._fromRemoteStore = true
         all.push(cloned)
       }
     }
@@ -3912,8 +3918,10 @@ export class Plur {
     else if (e.structured_data?._outbox) delivery = 'outbox'
     else if (typeof e._storeScope === 'string') {
       // A dedup/recurrence hit on a row read from a secondary store: it lives
-      // wherever that store lives.
-      delivery = stores.find(s => s.scope === e._storeScope)?.url ? 'remote' : 'local'
+      // wherever the store that SERVED it lives. Classified by the loader's
+      // `_fromRemoteStore` marker, never by the scope's first store entry — a
+      // url store and a path store can share one scope (formal replay, cluster 1).
+      delivery = e._fromRemoteStore === true ? 'remote' : 'local'
     } else delivery = 'local'
     if (delivery !== 'local' || !isSharedScope(engram.scope)) return { delivery }
 
