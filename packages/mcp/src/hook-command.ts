@@ -24,6 +24,8 @@ export const PLUR_SETTINGS_SUBCOMMANDS = [
   'hook-session-guard',
   'hook-session-mark',
   'hook-session-end',
+  // #1310: kept identical to the cli copy, which lists it since #1318.
+  'hook-auto-rate',
 ] as const
 
 const SUBCOMMAND = `(?:${PLUR_SETTINGS_SUBCOMMANDS.join('|')})(?:\\s|$)`
