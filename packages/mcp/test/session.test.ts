@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
@@ -80,6 +80,26 @@ describe('Session & store tools', () => {
     const episodes = plur.timeline()
     expect(episodes.length).toBe(1)
     expect(episodes[0].summary).toBe('Implemented session management')
+  })
+
+  // #1278: hook-learn-check writes the checkpoint under safeSessionKey(id),
+  // which REPLACES unsafe characters with '_'. This reader used to STRIP them,
+  // so an id like "a.b:c" was written as a_b_c and looked for as abc — the
+  // clean close never removed it and the next session reported it orphaned.
+  it('plur_session_end removes the checkpoint under the key the Stop hook writes', async () => {
+    const prev = process.env.PLUR_PATH
+    process.env.PLUR_PATH = dir
+    try {
+      const sessionsDir = join(dir, 'sessions')
+      mkdirSync(sessionsDir, { recursive: true })
+      const cp = join(sessionsDir, 'a_b_c.checkpoint.json')
+      writeFileSync(cp, JSON.stringify({ session_id: 'a_b_c' }))
+      await callTool('plur_session_end', { summary: 'done', session_id: 'a.b:c' })
+      expect(existsSync(cp)).toBe(false)
+    } finally {
+      if (prev === undefined) delete process.env.PLUR_PATH
+      else process.env.PLUR_PATH = prev
+    }
   })
 
   it('plur_session_end works with no suggestions and returns hint', async () => {

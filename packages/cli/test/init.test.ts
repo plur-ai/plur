@@ -66,7 +66,11 @@ describe('plur init', () => {
     expect(injectHook?.async).toBe(true)
     expect(injectHook?.timeout).toBe(90)
 
-    const rehydrateHook = settings.hooks?.PostCompact?.[0]?.hooks?.[0]
+    // #1274: rehydration rides SessionStart(compact). PostCompact cannot
+    // deliver context to the model in Claude Code, so it is not registered.
+    expect(settings.hooks?.PostCompact).toBeUndefined()
+    const rehydrateEntry = settings.hooks?.SessionStart?.find((e) => e.matcher === 'compact')
+    const rehydrateHook = rehydrateEntry?.hooks?.[0]
     expect(rehydrateHook?.command).toContain('--rehydrate')
     expect(rehydrateHook?.async).toBe(true)
     expect(rehydrateHook?.timeout).toBe(90)
@@ -125,6 +129,25 @@ describe('plur init', () => {
     expect(secondHookCount).toBe(firstHookCount)
     // Still exactly one plur entry
     expect(Object.keys(second.mcpServers ?? {}).filter((k) => k === 'plur')).toHaveLength(1)
+  })
+
+  it('re-running init moves a PostCompact rehydrate hook to SessionStart(compact) (#1274)', () => {
+    const settingsPath = join(home, '.claude', 'settings.json')
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        PostCompact: [
+          { matcher: 'auto|manual', hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject --rehydrate', timeout: 90, async: true }] },
+        ],
+      },
+    }, null, 2))
+
+    runInit()
+    const settings = readSettings()
+    expect(settings.hooks?.PostCompact).toBeUndefined()
+    const compact = settings.hooks?.SessionStart?.filter((e) => e.matcher === 'compact') ?? []
+    expect(compact).toHaveLength(1)
+    expect(compact[0].hooks[0].command).toContain('hook-inject --rehydrate')
   })
 
   it('upgrade path: hooks-only install gets MCP added without re-adding hooks', () => {
@@ -229,8 +252,11 @@ describe('plur init', () => {
       expect(projectSettings.hooks?.UserPromptSubmit).toBeDefined()
       expect(globalSettings.hooks?.UserPromptSubmit).toBeUndefined()
 
-      // Enforcement hooks NOT duplicated at project
-      expect(projectSettings.hooks?.SessionStart).toBeUndefined()
+      // Enforcement hooks NOT duplicated at project. The only project
+      // SessionStart entry is the injection rehydrate (matcher "compact", #1274).
+      const projectSessionStart = projectSettings.hooks?.SessionStart ?? []
+      expect(projectSessionStart.some((h) => h.hooks.some((c) => c.command.includes('hook-session-remind')))).toBe(false)
+      expect(projectSessionStart.map((h) => h.matcher)).toEqual(['compact'])
 
       // MCP server registered at project (the path that does work in this project)
       expect(projectSettings.mcpServers?.plur).toBeDefined()

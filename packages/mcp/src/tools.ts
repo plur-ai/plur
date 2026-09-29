@@ -3638,10 +3638,17 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         try {
           const plurDir = process.env.PLUR_PATH ?? join(homedir(), '.plur')
           const sessionsDir = join(plurDir, 'sessions')
-          // Try session_id first, then CLAUDE_SESSION_ID, then ppid
+          // Try session_id first, then CLAUDE_SESSION_ID, then ppid. #1278:
+          // the Stop hook writes the checkpoint under safeSessionKey(id),
+          // which REPLACES unsafe characters with '_'; try that form first,
+          // then the stripped form older writers used.
           const keys = [session_id, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
             .filter(Boolean)
-            .map(k => k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+            .flatMap(k => [
+              (k!.replace(/[^A-Za-z0-9_-]/g, '_') || 'unknown').slice(0, 64),
+              k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64),
+            ])
+            .filter(Boolean)
           for (const key of keys) {
             const cp = join(sessionsDir, `${key}.checkpoint.json`)
             if (existsSync(cp)) { unlinkSync(cp); break }
