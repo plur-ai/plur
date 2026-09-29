@@ -56,7 +56,13 @@ will be retried) or `local` (on this machine only). A shared scope that lands
 `local` also carries a warning naming the scope and how to register a store for
 it. `plur_learn` returns both (`delivery`, `delivery_warning`); `plur learn
 --json` does too, and plain `plur learn` prints the warning even with `--quiet`.
-Core exposes the same answer as `plur.deliveryOf(engram)`.
+Core exposes the same answer as `plur.deliveryOf(engram, requestedScope?)`.
+
+When a save to a shared scope comes back as an engram in a *different* scope —
+recorded as a recurrence on another team's engram, or on a `global` one — the
+result is `local` and the warning names the scope you asked for and says nothing
+was written there. Before, the warning named the other team's scope (the one
+you did not write to), or there was no warning at all.
 
 Nothing about where engrams are written changes. The field is additive.
 

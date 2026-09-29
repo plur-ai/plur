@@ -148,6 +148,43 @@ describe('learn delivery (#1264)', () => {
     }
   })
 
+  // Audit F8 (2026-09-29): when a save to shared scope B came back as an
+  // engram in another scope — absorbed into team A's engram, or into a
+  // `global` one — the warning named A (the scope NOT written to), or there
+  // was no warning at all. The requested scope is what the user must hear.
+  describe('the save came back as an engram in a different scope (F8)', () => {
+    const OPS = 'group:example/ops'
+
+    it('absorbed into another team scope: the warning names the scope asked for', async () => {
+      const plur = new Plur({ path: dir })
+      await plur.learn('canary before every deploy', { scope: TEAM })
+      const e = await plur.learnRouted('canary before every deploy', { scope: OPS })
+      const d = plur.deliveryOf(e, OPS)
+      expect(d.delivery).toBe('local')
+      expect(d.warning).toContain(OPS)
+      if (e.scope !== OPS) expect(d.warning).toContain(`"${e.scope}"`)
+    })
+
+    it('came back as a global engram: warns instead of staying silent', async () => {
+      const plur = new Plur({ path: dir })
+      await plur.learn('document breaking changes', { scope: 'project:a' })
+      await plur.learn('document breaking changes', { scope: 'project:b' })
+      const e = await plur.learnRouted('document breaking changes', { scope: OPS })
+      const d = plur.deliveryOf(e, OPS)
+      if (e.scope !== OPS) {
+        expect(d.delivery).toBe('local')
+        expect(d.warning).toContain(OPS)
+        expect(d.warning).toContain(`"${e.scope}"`)
+      }
+    })
+
+    it('a save that landed where it was asked gets no extra warning', async () => {
+      const plur = new Plur({ path: dir })
+      const e = await plur.learn('my own preference', { scope: 'global' })
+      expect(plur.deliveryOf(e, 'global').warning).toBeUndefined()
+    })
+  })
+
   it('a duplicate of a local shared-scope engram still reports local and warns', async () => {
     const plur = new Plur({ path: dir })
     await plur.learn('team fact written twice', { scope: TEAM, type: 'behavioral' })

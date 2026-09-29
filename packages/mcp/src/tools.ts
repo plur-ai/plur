@@ -1273,7 +1273,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const engram = await plur.learnRouted(statement, context)
           // #1264: where the engram went. Read off the returned object before
           // anything copies it — a copy loses the remote-confirmed evidence.
-          const delivered = plur.deliveryOf(engram)
+          const delivered = plur.deliveryOf(engram, context?.scope)
           const isOutbox = !!(engram as any).structured_data?._outbox
           const demoted = (engram as any).structured_data?._demoted as { from: string; to: string; patterns: string } | undefined
           const routed = (engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
@@ -1357,7 +1357,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 // learnRouted now saves to outbox on remote failure, so this
           // path should rarely be reached. Keep as defense-in-depth.
           const engram = await plur.learn(statement, context)
-          const delivered = plur.deliveryOf(engram)
+          const delivered = plur.deliveryOf(engram, context?.scope)
           const isOutbox = !!(engram as any).structured_data?._outbox
           const routedFallback = (engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
           mcpCanary.signal('learn_activity')

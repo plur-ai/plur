@@ -3803,10 +3803,26 @@ export class Plur {
    * Pure: reads the returned engram and the store config, never the network,
    * and changes nothing about where anything was written. Pass the object
    * `learn()` / `learnRouted()` returned; a copy loses the `remote` evidence.
+   *
+   * `requestedScope` (audit F8): the scope the caller asked for. When the save
+   * came back as an engram in a DIFFERENT scope — recorded as a recurrence on
+   * another team's engram, or on a `global` one — nothing was written to the
+   * requested shared scope, so the result is `local` for that scope and the
+   * warning names the requested scope, not the one it landed in. A sensitive-
+   * content demotion is excluded: it already carries its own warning.
    */
-  deliveryOf(engram: Engram): { delivery: LearnDelivery; warning?: string } {
+  deliveryOf(engram: Engram, requestedScope?: string): { delivery: LearnDelivery; warning?: string } {
     const e = engram as any
     const stores = this.config.stores ?? []
+    if (requestedScope && requestedScope !== engram.scope && isSharedScope(requestedScope)
+        && !e.structured_data?._demoted) {
+      return {
+        delivery: 'local',
+        warning: `You saved to shared scope "${requestedScope}", but this matched an existing engram in ` +
+          `"${engram.scope}" and was recorded on it as a recurrence. Nothing was written to ` +
+          `"${requestedScope}" or sent to its store, so that team will not see it.`,
+      }
+    }
     let delivery: LearnDelivery
     if (this._remoteDelivered.has(engram)) delivery = 'remote'
     else if (e.structured_data?._outbox) delivery = 'outbox'
