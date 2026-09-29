@@ -230,14 +230,20 @@ describe('plur init sets up opencode by default (#1311)', { timeout: 60000 }, ()
       expect(readOc().mcp.plur.command).toEqual([node, js])
     })
 
-    it('repairs a node path that exists but is not the node resolved now', () => {
-      const [node, js] = current()
+    // Same rule as the Claude Code heal (#1270 review): a different node
+    // binary that still exists is not stale. Rewriting it whenever another
+    // install ran init would flip the entry between Node installs
+    // (nvm-windows, Volta) on every run.
+    it('leaves a node path alone that exists but is not the node running init', () => {
+      const [, js] = current()
       const otherNode = join(home, 'other-node', 'node.exe')
       mkdirSync(join(home, 'other-node'), { recursive: true })
       writeFileSync(otherNode, '')
       reseed({ type: 'local', command: [otherNode, js], enabled: true })
-      runInit([], true)
-      expect(readOc().mcp.plur.command).toEqual([node, js])
+      const before = readFileSync(ocJson(), 'utf-8')
+      const out = runInit([], true)
+      expect(readFileSync(ocJson(), 'utf-8')).toBe(before)
+      expect(out).not.toContain('mcp.plur: repaired')
     })
 
     it('a current entry is left byte-for-byte alone', () => {

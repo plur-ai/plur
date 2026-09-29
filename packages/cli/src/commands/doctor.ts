@@ -20,7 +20,7 @@ import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { isPlurHookCommand } from '../lib/hook-command.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
-import { codexHome, missingNodeEntryPaths } from '../mcp-config.js'
+import { codexHome, missingNodeEntryPaths, readCodexPlurMcpEntry, isOwnWin32CmdShimEntry } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction } from '@plur-ai/core'
 
@@ -119,6 +119,12 @@ interface DoctorReport {
    */
   codexDetected: boolean
   codexWired: boolean
+  /**
+   * Codex's config.toml registers the `plur-mcp.cmd` shim an older
+   * `plur init` wrote on Windows, which current Node cannot spawn
+   * (`spawn EINVAL`, #1267). `plur init --codex` replaces it.
+   */
+  codexCmdShimMcp: boolean
   /**
    * Antigravity CLI (agy). Same machine-level detection rationale as Codex —
    * reported as its own line, deliberately NOT folded into `overall`. Unlike
@@ -962,9 +968,18 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const codexDetected = existsSync(codexHome())
   const codexHooksReport = configs.find((c) => c.label === 'Codex (~/.codex/hooks.json)')
   const codexTomlReport = configs.find((c) => c.label === 'Codex (~/.codex/config.toml)')
+  // The `plur-mcp.cmd` entry an older init wrote on Windows is registered but
+  // cannot start (spawn EINVAL, #1267). Only PLUR's own entry is matched.
+  let codexCmdShimMcp = false
+  if (codexTomlReport?.exists && codexTomlReport.hasPlurMcp) {
+    try {
+      const entry = readCodexPlurMcpEntry(readFileSync(codexTomlReport.path, 'utf8'))
+      codexCmdShimMcp = entry !== null && isOwnWin32CmdShimEntry(entry)
+    } catch { /* unreadable — nothing to flag */ }
+  }
   const codexWired = Boolean(
     codexHooksReport?.exists && codexHooksReport.hasPlurHooks &&
-    codexTomlReport?.exists && codexTomlReport.hasPlurMcp,
+    codexTomlReport?.exists && codexTomlReport.hasPlurMcp && !codexCmdShimMcp,
   )
 
   // Antigravity health, from agy's OWN two files only.
@@ -1060,7 +1075,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
-      cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
+      cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, agyDetected, agyWired,
       pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, opencode, outbox, overall,
     }
   })
@@ -1140,7 +1155,11 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   if (report.codexDetected) {
     outputText(`${tick(report.codexWired)} Codex: ~/.codex/hooks.json + config.toml wired to plur`)
-    if (!report.codexWired) {
+    if (report.codexCmdShimMcp) {
+      outputText('  config.toml registers the old ~/.plur/bin/plur-mcp.cmd shim, which current Node')
+      outputText('  cannot start (spawn EINVAL). Fix: run `plur init --codex` — it replaces the entry')
+      outputText('  through `codex mcp remove` + `codex mcp add`.')
+    } else if (!report.codexWired) {
       outputText('  Codex is installed on this machine but PLUR is not wired into it — it')
       outputText('  would get MCP tools with no injection, enforcement, or learn nudges.')
       outputText('  If you use Codex, run `plur init --codex`. (Advisory: this does not')

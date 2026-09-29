@@ -23,6 +23,8 @@ import {
   codexHome,
   codexHooksConfigPath,
   codexConfigTomlPath,
+  readCodexPlurMcpEntry,
+  isOwnWin32CmdShimEntry,
   agyConfigDir,
   agyHooksConfigPath,
   agyMcpConfigPath,
@@ -54,6 +56,7 @@ import {
   opencodeConfigPath,
   opencodeConfigDir,
   opencodeMcpCommand,
+  opencodeMcpNote,
 } from '../opencode-config.js'
 
 /**
@@ -936,17 +939,31 @@ function installCodexMcp(): string {
   // Codex has no "update this server" verb, and `add` on an existing name
   // errors rather than replacing. Detecting the existing entry lets us
   // report honestly instead of swallowing that error as a failure.
+  let healed = false
   if (/(^|\s)plur(\s|$)/m.test(listed)) {
     // init cannot edit TOML safely (see docstring), but it CAN detect the
     // #1069 race and say so instead of a bare "already registered" — the
     // one leg where 'run plur init again' does not heal.
+    let toml = ''
+    try { toml = readFileSync(codexConfigTomlPath(), 'utf8') } catch { /* unreadable — the bare message is still true */ }
+    if (toml.includes('@plur-ai/mcp@latest')) {
+      return 'already registered, but the entry uses @plur-ai/mcp@latest — the npx cache-rewrite race (#1069). Fix: `codex mcp remove plur`, then re-run `plur init --codex`'
+    }
+    // The `plur-mcp.cmd` entry an older init wrote on Windows fails with
+    // `spawn EINVAL` (#1267). Heal it through Codex's own CLI — remove, then
+    // the add below — rather than editing TOML. Only that exact entry: our
+    // shim path and no args. Anything else is the user's.
+    const existing = readCodexPlurMcpEntry(toml)
+    if (!existing || !isOwnWin32CmdShimEntry(existing)) {
+      return 'already registered (run `codex mcp remove plur` first if you need to re-point it)'
+    }
     try {
-      const toml = readFileSync(codexConfigTomlPath(), 'utf8')
-      if (toml.includes('@plur-ai/mcp@latest')) {
-        return 'already registered, but the entry uses @plur-ai/mcp@latest — the npx cache-rewrite race (#1069). Fix: `codex mcp remove plur`, then re-run `plur init --codex`'
-      }
-    } catch { /* config.toml unreadable — the bare message is still true */ }
-    return 'already registered (run `codex mcp remove plur` first if you need to re-point it)'
+      execFileSync('codex', ['mcp', 'remove', 'plur'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
+    } catch (err: unknown) {
+      const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
+      return `already registered with the old plur-mcp.cmd entry, which fails to start (spawn EINVAL), and \`codex mcp remove plur\` failed (${stderr || (err as Error).message}). Fix: run \`codex mcp remove plur\`, then re-run \`plur init --codex\``
+    }
+    healed = true
   }
 
   try {
@@ -954,7 +971,9 @@ function installCodexMcp(): string {
     if (entry.env) for (const [k, v] of Object.entries(entry.env)) args.push('--env', `${k}=${v}`)
     args.push('--', entry.command, ...entry.args)
     execFileSync('codex', args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
-    return 'registered via `codex mcp add`'
+    return healed
+      ? 'healed — replaced the old plur-mcp.cmd entry (spawn EINVAL) via `codex mcp remove` + `codex mcp add`'
+      : 'registered via `codex mcp add`'
   } catch (err: unknown) {
     const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
     return `FAILED (${stderr || (err as Error).message}) — add it by hand: ` +
@@ -1177,21 +1196,7 @@ function installOpencode(cliVersion: string): string {
   }
 
   const status = result.created ? 'created' : result.changed ? 'updated' : 'already up to date'
-  const mcpNote = result.mcpPlurUpgraded
-    // #1311: PLUR's own older bare-npx entry on Windows, command replaced.
-    ? '\n  mcp.plur: upgraded to the Windows launcher (node.exe + @plur-ai/mcp), other fields kept'
-    : result.mcpPlurRepaired
-    // #1311: PLUR's own node-form entry on Windows had gone stale.
-    ? '\n  mcp.plur: repaired (the node.exe or @plur-ai/mcp path it named was stale), other fields kept'
-    : result.mcpPlurPreserved
-    // B2 (0.20.0 audit): an existing mcp.plur (possibly a non-default
-    // PLUR_PATH, or an enterprise remote store with bearer headers) is left
-    // completely untouched rather than overwritten with PLUR's own local
-    // entry. Say so explicitly — the user should know this from the init
-    // output, not discover it later from where their memory writes landed.
-    ? '\n  mcp.plur: left as-is (an entry already existed — not overwritten)'
-    : ''
-  return `Opencode: config ${status} (${configPath})${mcpNote}`
+  return `Opencode: config ${status} (${configPath})${opencodeMcpNote(result)}`
 }
 
 function writeSettings(path: string, settings: Settings): void {
@@ -1493,7 +1498,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const opencodeStatus = shouldSetupOpencode(args)
     ? containLeg('Opencode', () => installOpencode(CLI_VERSION))
-    : 'Opencode: skipped (no ~/.config/opencode found — pass --opencode to force, --no-opencode to silence this)'
+    : args.includes('--no-opencode')
+      ? 'Opencode: skipped (--no-opencode)'
+      : `Opencode: skipped (no ${opencodeConfigDir()} found — pass --opencode to force, --no-opencode to silence this)`
 
   // Contained like the harness legs: an unwritable skills dir must not abort
   // the hooks and MCP registration that are the point of `plur init`.
@@ -1563,7 +1570,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // that only clones the repo, that path won't exist and PLUR silently
     // won't start there. `plur doctor` now catches this after the fact
     // (cursorWired checks the command exists); this warns before it bites.
-    if (cmd.startsWith('/') || /^[A-Za-z]:\\/.test(cmd)) {
+    // The shim path may be quoted (#1267); test the path itself.
+    const bareCmd = cmd.replace(/"/g, '')
+    if (bareCmd.startsWith('/') || /^[A-Za-z]:\\/.test(bareCmd)) {
       outputInfo('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local', flags)
       outputInfo(`  path (${cmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`, flags)
       outputInfo('  Run `plur init --cursor` there too (it pins the right version — avoid @latest, #1069).', flags)

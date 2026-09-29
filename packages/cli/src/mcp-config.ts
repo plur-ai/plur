@@ -445,10 +445,40 @@ export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { en
  * Matches only our own shim path, in either slash style; any other command is
  * the user's and is never touched.
  */
-function isOwnWin32CmdShimEntry(entry: McpServerEntry): boolean {
+export function isOwnWin32CmdShimEntry(entry: McpServerEntry): boolean {
   if (platform() !== 'win32') return false
   const cmd = (entry.command ?? '').replace(/\\/g, '/').replace(/"/g, '').toLowerCase()
   return cmd.endsWith('/.plur/bin/plur-mcp.cmd') && (entry.args ?? []).length === 0
+}
+
+/**
+ * The `[mcp_servers.plur]` table in Codex's config.toml, as a launch entry.
+ * A narrow reader, not a TOML parser: it finds that exact table header (a
+ * commented header or `[mcp_servers.plurality]` does not count), reads its
+ * `command` and a single-line `args` array, and understands basic strings
+ * (with `\\` and `\"` escapes) and literal strings. Anything it cannot read
+ * returns null, which callers treat as "not PLUR's entry", so an unusual
+ * hand-written table is left alone rather than misread (#1267).
+ */
+export function readCodexPlurMcpEntry(toml: string): McpServerEntry | null {
+  const lines = toml.split(/\r?\n/)
+  const start = lines.findIndex((l) => /^\s*\[mcp_servers\.plur\]\s*(#.*)?$/.test(l))
+  if (start === -1) return null
+  const STRING = /"((?:[^"\\]|\\.)*)"|'([^']*)'/g
+  let command: string | null = null
+  let args: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*\[/.test(line)) break
+    const kv = /^\s*(command|args)\s*=\s*(.*)$/.exec(line)
+    if (!kv) continue
+    const values: string[] = []
+    for (const m of kv[2].matchAll(STRING)) {
+      values.push(m[2] !== undefined ? m[2] : m[1].replace(/\\(["\\])/g, '$1'))
+    }
+    if (kv[1] === 'command') command = values[0] ?? null
+    else args = values
+  }
+  return command ? { command, args } : null
 }
 
 /** Windows paths compare without regard to slash style or case. */

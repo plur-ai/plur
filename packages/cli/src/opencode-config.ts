@@ -113,11 +113,18 @@ export interface WriteOpencodeConfigResult {
   mcpPlurUpgraded: boolean
   /**
    * True when `mcp.plur` was PLUR's own win32 node-form entry and had gone
-   * stale — its node binary or js entry no longer exists, or either differs
-   * from what resolves now — and its `command` was rewritten (#1311). Every
-   * other field is kept. Always false off win32 and for a current entry.
+   * stale — its node binary or js entry no longer exists, or its js entry
+   * differs from the one resolved now — and its `command` was rewritten
+   * (#1311). Every other field is kept. Always false off win32 and for a
+   * current entry.
    */
   mcpPlurRepaired: boolean
+  /**
+   * The `command` written when `mcpPlurUpgraded` or `mcpPlurRepaired` is
+   * true, so the caller can say what it actually wrote: the node.exe
+   * launcher, or the `cmd.exe /c npx` fallback. Absent otherwise.
+   */
+  mcpPlurCommand?: string[]
 }
 
 /**
@@ -130,12 +137,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * opencode's global config directory. Everything `plur init --opencode`
- * touches lives here — no per-project variant, same reasoning as agy's
- * config dir: one global engram store, one place to register it.
+ * The opencode config directory `plur init` writes into, resolved the way
+ * opencode resolves it: `OPENCODE_CONFIG_DIR` when set (opencode loads
+ * `opencode.json(c)` from that directory on top of the global one), else the
+ * global directory `$XDG_CONFIG_HOME/opencode`, falling back to
+ * `~/.config/opencode` (opencode's `packages/core/src/global.ts` joins
+ * `xdg-basedir`'s `xdgConfig` with "opencode"; `xdg-basedir` treats an empty
+ * `XDG_CONFIG_HOME` as unset). Without this, a user with a custom location
+ * and a leftover `~/.config/opencode` got a config written where opencode
+ * never reads it, and a success line (#1311 review). No per-project
+ * variant: one global engram store, one place to register it.
  */
-export function opencodeConfigDir(): string {
-  return join(homedir(), '.config', 'opencode')
+export function opencodeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.OPENCODE_CONFIG_DIR) return env.OPENCODE_CONFIG_DIR
+  const xdgConfig = env.XDG_CONFIG_HOME || join(homedir(), '.config')
+  return join(xdgConfig, 'opencode')
 }
 
 /**
@@ -275,8 +291,7 @@ function sameWin32Path(a: string, b: string): boolean {
  * Code entry, through its own predicates: the entry must be
  * `[<node(.exe)>, <@plur-ai/mcp js entry>]` (`isOwnWin32NodeEntry`); it is
  * rewritten when a path it names is gone (`missingNodeEntryPaths`), or when
- * today's command is itself the node form and names a different node binary
- * or js entry. A working entry is never replaced by the npx fallback. Any
+ * today's command is itself the node form and names a different js entry. A working entry is never replaced by the npx fallback. Any
  * other shape — another script, extra args, another launcher — is the
  * user's and is never touched.
  */
@@ -288,8 +303,12 @@ function staleOwnWin32NodeCommand(entry: unknown, cliVersion: string): string[] 
   if (!isOwnWin32NodeEntry(asEntry)) return null
   const now = opencodeMcpCommand(cliVersion)
   if (missingNodeEntryPaths(asEntry).length > 0) return now
+  // Only the js entry is compared, like the Claude Code heal
+  // (nodeEntryNeedsHealing): a different node binary that still exists is
+  // not stale, and replacing it whenever another install ran init would flip
+  // the entry between Node installs (nvm-windows, Volta) on every run.
   const nowIsNodeForm = now.length === 2 && isOwnWin32NodeEntry({ command: now[0], args: [now[1]] })
-  if (nowIsNodeForm && (!sameWin32Path(now[0], cmd[0]) || !sameWin32Path(now[1], cmd[1]))) return now
+  if (nowIsNodeForm && !sameWin32Path(now[1], cmd[1])) return now
   return null
 }
 
@@ -405,5 +424,30 @@ export function writeOpencodeConfig(
     // keeps this a write-through when configPath is itself a symlink.
     atomicWrite(resolveWriteTarget(configPath), JSON.stringify(cfg, null, 2) + '\n')
   }
-  return { created, changed, ok: true, mcpPlurPreserved, mcpPlurUpgraded, mcpPlurRepaired }
+  return {
+    created, changed, ok: true, mcpPlurPreserved, mcpPlurUpgraded, mcpPlurRepaired,
+    ...(rewritten ? { mcpPlurCommand: (mcp.plur as { command: string[] }).command } : {}),
+  }
+}
+
+/**
+ * The `plur init` line describing what happened to `mcp.plur`, naming what
+ * was actually written when the entry was rewritten: the node.exe launcher,
+ * or the pinned `cmd.exe /c npx` fallback used when @plur-ai/mcp's js entry
+ * cannot be resolved (#1311 review). Empty when there is nothing to say.
+ */
+export function opencodeMcpNote(result: WriteOpencodeConfigResult): string {
+  const written = result.mcpPlurCommand ?? []
+  const form = written[0]?.toLowerCase() === 'cmd.exe'
+    ? `the pinned cmd.exe /c npx fallback (@plur-ai/mcp's js entry could not be resolved): ${written.join(' ')}`
+    : `the Windows launcher (node.exe + @plur-ai/mcp): ${written.join(' ')}`
+  if (result.mcpPlurUpgraded) return `\n  mcp.plur: upgraded to ${form}; other fields kept`
+  if (result.mcpPlurRepaired) {
+    return `\n  mcp.plur: repaired (the node.exe or @plur-ai/mcp path it named was stale), now ${form}; other fields kept`
+  }
+  // B2 (0.20.0 audit): an existing mcp.plur (a non-default PLUR_PATH, or an
+  // enterprise remote store with bearer headers) is left untouched. Say so,
+  // so the user learns it from init rather than from where writes landed.
+  if (result.mcpPlurPreserved) return '\n  mcp.plur: left as-is (an entry already existed — not overwritten)'
+  return ''
 }
