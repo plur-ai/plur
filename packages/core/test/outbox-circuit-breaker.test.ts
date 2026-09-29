@@ -18,6 +18,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
+import { backgroundPushesSettled } from './helpers/background-pushes.js'
 import {
   isHostInCooldown, recordWriteOutcome, remoteHealthPath,
   BREAKER_FAILURE_THRESHOLD, BREAKER_COOLDOWN_MS,
@@ -106,7 +107,7 @@ describe('flushOutbox honours the breaker (#785)', () => {
     for (let i = 0; i < n; i++) {
       await plur.learn(`queued team fact number ${i}`, { scope: 'group:acme/team', type: 'behavioral' })
     }
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
   }
 
   it('stops attempting once the breaker is open, instead of one timeout per engram', async () => {
@@ -205,7 +206,7 @@ describe('both legs share one health file across path configurations (#785)', ()
     for (let i = 0; i < BREAKER_FAILURE_THRESHOLD; i++) {
       await plur.learn(`queued team fact ${i}`, { scope: 'group:acme/team', type: 'behavioral' })
     }
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(storeDir)
     await plur.flushOutbox()
 
     // The engine's own answer to "where does health state live".

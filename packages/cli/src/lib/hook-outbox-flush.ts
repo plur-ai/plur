@@ -68,7 +68,11 @@ function throttleMarker(root: string, hook: string): string {
 /** True when a flush from this hook ran less than `minIntervalMs` ago. */
 function recentlyFlushed(root: string, hook: string, minIntervalMs: number): boolean {
   try {
-    return Date.now() - statSync(throttleMarker(root, hook)).mtimeMs < minIntervalMs
+    const age = Date.now() - statSync(throttleMarker(root, hook)).mtimeMs
+    // A marker dated in the future (clock skew, a restored backup) would
+    // otherwise suppress the flush until the clock caught up: treat it as
+    // expired (2026-09-29 audit).
+    return age >= 0 && age < minIntervalMs
   } catch {
     return false
   }
@@ -113,6 +117,8 @@ export interface HookFlushOutcome {
   flushed?: number
   failed?: number
   deferred?: number
+  /** #1299: needs_action entries the flush did not dial (daily back-off). */
+  held?: number
   timed_out?: boolean
   error?: string
 }
@@ -156,13 +162,18 @@ export async function flushOutboxForHook(
         )
         return { ran: true, timed_out: true }
       }
-      if (result.flushed > 0 || result.failed > 0 || result.deferred > 0 || result.skipped > 0) {
+      // #1299: `held` counts too — when every entry is held back, nothing else
+      // moves, and staying silent is exactly the failure being fixed.
+      const held = result.held ?? 0
+      if (result.flushed > 0 || result.failed > 0 || result.deferred > 0 || result.skipped > 0 || held > 0) {
         process.stderr.write(
           `[plur] ${opts.hook}: outbox — ${result.flushed} delivered, ${result.failed} failed, `
-          + `${result.deferred} left for next time, ${result.skipped} skipped (host paused).\n`,
+          + `${result.deferred} left for next time, ${result.skipped} skipped (host paused)`
+          + (held > 0 ? `, ${held} held back (needs action — run \`plur outbox\`)` : '')
+          + '.\n',
         )
       }
-      return { ran: true, flushed: result.flushed, failed: result.failed, deferred: result.deferred }
+      return { ran: true, flushed: result.flushed, failed: result.failed, deferred: result.deferred, held }
     } finally {
       if (timer) clearTimeout(timer)
     }

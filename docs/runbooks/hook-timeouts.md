@@ -140,7 +140,8 @@ are bounded so they cannot cost the hook its budget:
 | Cursor | `stop` | 3s | 1.2s |
 
 With nothing queued the flush is skipped after one file read. Cursor's `stop`
-fires on every turn, so it retries at most once every five minutes. When the budget
+fires on every turn, so it retries at most once every five minutes. A throttle
+marker dated in the future, from clock skew, counts as expired. When the budget
 runs out the in-flight push is cut, nothing further starts, and every
 undelivered write stays queued. A cut is our time running out, not a failure
 of the remote, so it does not count toward the host's circuit breaker. The

@@ -762,7 +762,9 @@ additive field). Entries queued before this are classified from their error
 text, and anything unclear counts as `retrying`.
 
 **The `needs_action` entries are reported**, with count, scope, a one-line
-reason and a next step, in:
+reason and a next step, in the places below. There is one row for each scope
+and reason: a scope holding both a 403 and a 422 gets two rows, each with its
+own advice.
 - the MCP `plur_session_start` result (`outbox_needs_action`, plus a line in `guide`);
 - `plur status` and `plur_status` (`outbox_needs_action`, `outbox_attention`);
 - `plur doctor`, as a failing `outbox` check. A write that only failed on the
@@ -776,7 +778,9 @@ The next step names real commands: get write access and run `plur outbox
 
 **Back-off:** automatic flushes (session start and end, stop hooks,
 `plur sync`) retry a `needs_action` entry at most once a day. They return the
-number held back as `held`. An explicit flush (`plur outbox --flush`,
+number held back as `held`. `plur sync` (`outbox.held` in `--json`) and the
+hook's stderr line report it, including when every entry was held back.
+An explicit flush (`plur outbox --flush`,
 `plur_outbox { flush: true }`, or `flushOutbox({ force: true })`) retries it
 at once. **Nothing is dropped, rescoped or rewritten automatically.** Only the
 retry bookkeeping changes: `attempt_count`, `last_attempt`, `last_error` and
@@ -806,7 +810,9 @@ it did.
 `SessionEnd`, Codex `SessionEnd`, and Cursor `stop`. Each flush has a budget
 that fits inside its hook's timeout (2.5s, 1.2s, 1.2s), and with nothing
 queued it is skipped after a single file read; Cursor's `stop`, which fires
-on every turn, retries at most once every five minutes. When the budget runs out the
+on every turn, retries at most once every five minutes. A throttle timestamp
+dated in the future, from clock skew, counts as expired instead of blocking
+the flush until the clock catches up. When the budget runs out the
 in-flight push is cut and the rest stays queued, unchanged; a failing remote
 leaves entries queued with the failure recorded, as before. The hook itself
 never fails over it. `PLUR_HOOK_OUTBOX_FLUSH=0` turns it off and
@@ -826,10 +832,36 @@ about them. A cut is not counted as a failure against the host.
 **A push cut mid-flight is not delivered twice.** The server may have stored
 it before the budget ran out, and the client cannot know. So the cut is
 recorded as an attempt, which `plur outbox` shows, and the write is marked in
-doubt. Before posting it again, the client looks for it on the server and
-treats a match as delivered. Every create now also carries an
-`Idempotency-Key` (the local engram id) for servers that honour one. See
-`docs/remote-store-contract.md`.
+doubt. Before posting it again, the client looks it up on the server by its
+idempotency key.
+
+**Audit follow-up: idempotency keys are unique per write.** An earlier
+version of this change derived the key from the engram id. On a direct team
+write that id is the placeholder `__pending__`, and on queued writes it is a
+per-day number that two machines share. A server following the contract would
+have kept only the first write and reported the rest as delivered. Now:
+
+- every write gets a random UUID when it is created, stored with the queued
+  write and reused on each retry of that write;
+- each queued write is *claimed* before it is pushed: a small file created
+  atomically, with a 60-second lease. So a flush and `learn()`'s own background
+  push, or two flushes, can never push the same write at once. Before, this
+  race gave two server copies in half of the audit's runs. A claim left behind
+  by a hook that gave up, or a process that died mid-request, marks the write
+  in doubt rather than "never sent";
+- an in-doubt write is matched on the server **by key only**, never by
+  statement, because a teammate's engram with the same sentence was being
+  taken as ours and ours deleted;
+- a write the server cannot confirm either way is kept, never deleted. After 5
+  checks it is marked *needs action* (#1299's state), with the reason and the
+  next step, instead of showing as "retrying" forever. It is held, not retried.
+  A forced flush (`plur outbox --flush`) does not post it either, because no
+  fix made elsewhere answers "is it already there?". Once you have checked the
+  team store, `plur outbox --resend <id>` posts it.
+
+`docs/remote-store-contract.md` now states the key semantics exactly: unique
+per logical write, stable across retries, deduplicated by the server within a
+window, and looked up with `?idempotency_key=`.
 
 ### A killed writer no longer stalls the store for a minute
 

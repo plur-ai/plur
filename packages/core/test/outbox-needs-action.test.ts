@@ -82,6 +82,28 @@ describe('classifyOutboxFailure (#1299)', () => {
   })
 })
 
+describe('summarizeOutbox keeps each reason with its own advice (#1299 review)', () => {
+  const entry = (id: string, status: number) => ({
+    id, target_scope: SCOPE, ...classifyOutboxFailure({ last_status: status, scope: SCOPE }),
+  })
+
+  it('one scope, two different refusals: one row per reason, each with its own next step', () => {
+    const summary = summarizeOutbox([entry('A', 403), entry('B', 422), entry('C', 403)])
+    expect(summary.needs_action).toBe(3)
+    expect(summary.scopes).toHaveLength(2)
+    const forbidden = summary.scopes.find(s => /403/.test(s.reason))!
+    const invalid = summary.scopes.find(s => /422/.test(s.reason))!
+    expect(forbidden).toMatchObject({ scope: SCOPE, count: 2 })
+    expect(invalid).toMatchObject({ scope: SCOPE, count: 1 })
+    // The 403 entries must not be told to forget themselves (the 422 advice),
+    // nor the 422 entry told to get write access (the 403 advice).
+    expect(forbidden.next_step).not.toMatch(/plur forget/)
+    expect(forbidden.next_step).toMatch(/write access/)
+    expect(invalid.next_step).toMatch(/plur forget/)
+    expect(invalid.next_step).not.toMatch(/write access/)
+  })
+})
+
 describe('outbox needs_action end to end (#1299)', () => {
   let dir: string
 

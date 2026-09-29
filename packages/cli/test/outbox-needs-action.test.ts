@@ -145,6 +145,30 @@ describe('outbox needs_action in the CLI (#1299)', () => {
     expect(await new Plur({ path: store }).outboxCount()).toBe(1)
   })
 
+  it('plur sync --json reports an entry it held back, even when nothing else happened', async () => {
+    await queue(403, `Cannot write to scope ${SCOPE}`, 'refused team fact')
+    const r = await runCli(['sync', '--json'], env, root)
+    expect(r.code, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout.trim().split('\n').pop()!)
+    expect(out.outbox).toMatchObject({ flushed: 0, held: 1, pending: 1 })
+  })
+
+  it('the session-end hook says it held an entry back', async () => {
+    await queue(403, `Cannot write to scope ${SCOPE}`, 'refused team fact')
+    const project = join(root, 'project')
+    mkdirSync(project, { recursive: true })
+    // Marks the project plur-enabled for the hook's configured-guard.
+    writeFileSync(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } }))
+    const child = spawn('node', [CLI, 'hook-session-end'], { cwd: project, env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr.on('data', d => { stderr += d })
+    child.stdin.end(JSON.stringify({ session_id: 'needs-action-hook-1', cwd: '' }))
+    const code = await new Promise<number | null>(res => child.on('close', res))
+    expect(code, stderr).toBe(0)
+    expect(stderr).toMatch(/1 held back/)
+    expect(server.appendCalls).toBe(0)
+  })
+
   describe('text output', () => {
     let out: string[]
     let spy: ReturnType<typeof vi.spyOn>
@@ -168,6 +192,15 @@ describe('outbox needs_action in the CLI (#1299)', () => {
       expect(text).toMatch(/will not deliver/)
       expect(text).toContain(SCOPE)
       expect(text).toMatch(/plur rescope/)
+    })
+
+    it('plur sync says an entry was held back and needs action', async () => {
+      await queue(403, `Cannot write to scope ${SCOPE}`, 'refused team fact')
+      const { run } = await import('../src/commands/sync.js')
+      await run([], { json: false, path: store })
+      const text = out.join('')
+      expect(text).toMatch(/1 write\(s\) held back/)
+      expect(text).toMatch(/plur outbox/)
     })
 
     it('plur outbox marks the entry needs action and says what to do', async () => {

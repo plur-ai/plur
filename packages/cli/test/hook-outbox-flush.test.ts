@@ -10,9 +10,9 @@
  * "the hook exits promptly" is measured on the wall clock the harness sees.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'fs'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { tmpdir, hostname } from 'os'
 import { spawn } from 'child_process'
 import { Plur } from '@plur-ai/core'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
@@ -173,6 +173,50 @@ describe('outbox flush from hooks and plur sync (#1269)', () => {
     // Session-end hooks are not throttled.
     const end = await runCli(HOOKS[0].args, { cwd: project, env, input: HOOKS[0].input })
     expect(end.code, end.stderr).toBe(0)
+    expect(await pending()).toBe(0)
+  })
+
+  it('a throttle marker dated in the future (clock skew) does not block the Cursor stop flush', async () => {
+    await queue(1)
+    const marker = join(store, 'cache', 'hook-cursor-stop.outbox-flush')
+    mkdirSync(join(store, 'cache'), { recursive: true })
+    writeFileSync(marker, 'from a clock two days ahead')
+    const future = new Date(Date.now() + 2 * 86_400_000)
+    utimesSync(marker, future, future)
+
+    const r = await runCli(HOOKS[2].args, { cwd: project, env, input: HOOKS[2].input })
+    expect(r.code, r.stderr).toBe(0)
+    expect(await pending()).toBe(0)
+  })
+
+  it('a hook abandoned after its POST landed does not cause a second copy (audit follow-up)', async () => {
+    await queue(1)
+    // Another writer holds the store lock, so the flush's merge-back waits and
+    // the Codex hook's outer timer gives up and force-exits — after the POST
+    // already reached the server.
+    const lock = join(store, 'engrams.yaml.lock')
+    writeFileSync(lock, `${hostname()}:${process.pid}:${Date.now()}:0`)
+    try {
+      const r = await runCli(HOOKS[1].args, { cwd: project, env, input: HOOKS[1].input })
+      expect(r.code, r.stderr).toBe(0)
+      expect(server.engramCount).toBe(1)
+    } finally {
+      rmSync(lock, { force: true })
+    }
+
+    // Next flush: must find the landed write by its key, not post it again.
+    const result = await new Plur({ path: store }).flushOutbox()
+    expect(result.flushed).toBe(1)
+    expect(server.engramCount).toBe(1)
+    expect(await pending()).toBe(0)
+  })
+
+  it('plur outbox --resend posts an entry that is waiting on a manual check', async () => {
+    await queue(1)
+    const [entry] = await new Plur({ path: store }).listOutbox()
+    const r = await runCli(['outbox', '--resend', entry.id, '--json'], { cwd: project, env })
+    expect(r.code, r.stderr).toBe(0)
+    expect(JSON.parse(r.stdout.trim().split('\n').pop()!)).toMatchObject({ flushed: 1, pending: 0 })
     expect(await pending()).toBe(0)
   })
 
