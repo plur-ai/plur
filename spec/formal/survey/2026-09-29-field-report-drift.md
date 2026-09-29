@@ -57,7 +57,12 @@ favour of the ask flow.
 
 `lake build` ok (16 jobs); `formal_check.py --base origin/verify/formal-lean`:
 build ok, no gaps, 3272 theorems, none using axioms outside propext /
-Classical.choice / Quot.sound, **no drift**.
+Classical.choice / Quot.sound, **no drift** against that base. The pre-push
+formal gate (range of this push) reports 10 models that may be stale, each
+because code it models changed in refresh 3 while the model did not:
+WritePath, Persistence, Adapters (twice: hooks/init/init-remote, and the hook
+matcher), R2CoreA, R2CoreB, R2Persist, R2CLI, Folders, Outbox. None was
+remodelled in this pass.
 
 ### Suites (one at a time; load average about 50)
 
