@@ -7,6 +7,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
+import { canonicalize } from './project-config.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
@@ -1043,6 +1044,11 @@ export class Plur {
   private _rerankerEvalAdvisoryDone = false
   /** mtime (ms) of config.yaml at last load — drives reloadConfigIfChanged (#307). */
   private configMtimeMs = 0
+  /** Local store entries dropped at load because they name the primary file
+   *  or a store already registered under another spelling (#1319). Kept on
+   *  disk; see {@link _loadConfig}. */
+  private _ignoredDuplicateStores: StoreEntry[] = []
+  private _warnedDuplicateStores = new Set<string>()
   /** Whether constructor-time cwd store discovery is enabled for this instance. */
   private _autoDiscover = true
   /**
@@ -1165,7 +1171,7 @@ export class Plur {
         )
       }
     }
-    this.config = loadConfig(this.paths.config)
+    this.config = this._loadConfig()
     this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
     // Auto-discover project stores from CWD (skips temp dirs for test safety).
     //
@@ -1178,8 +1184,8 @@ export class Plur {
     // silently reconfigure a shared deployment.
     if (this._autoDiscover) this.autoDiscoverStores(options?.cwd)
     // Re-read config after potential store additions
-    if (this.config.stores?.length !== loadConfig(this.paths.config).stores?.length) {
-      this.config = loadConfig(this.paths.config)
+    if (this.config.stores?.length !== this._loadConfig().stores?.length) {
+      this.config = this._loadConfig()
     }
     this.configMtimeMs = this.statConfigMtime()
     const selection = this._resolveBackend()
@@ -2052,7 +2058,7 @@ export class Plur {
       configData.provenance = provenance
       atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
     })
-    this.config = loadConfig(this.paths.config)
+    this.config = this._loadConfig()
     this.configMtimeMs = this.statConfigMtime()
     return { ...this.identity(), ...(warning ? { warning } : {}) }
   }
@@ -9201,6 +9207,58 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /**
+   * Load config.yaml for in-memory use, dropping any LOCAL store entry whose
+   * file is the primary store or a store already registered earlier in the
+   * list, compared by canonical path (#1319).
+   *
+   * Such an entry makes the loader read the same file twice — once as the
+   * primary, once as a secondary with its ids namespaced — so every engram in
+   * it is injected twice and its feedback is split between two copies. The
+   * entry is only ignored here: config.yaml is not rewritten, and writebacks
+   * start from the raw file (addStore / persistScopeMetadata), so nothing is
+   * deleted from disk. `ignoredDuplicateStores()` reports what was skipped.
+   */
+  private _loadConfig(): PlurConfig {
+    const config = loadConfig(this.paths.config)
+    const stores = config.stores ?? []
+    if (!stores.some(s => s.path !== undefined && !s.url)) {
+      this._ignoredDuplicateStores = []
+      return config
+    }
+    const primary = canonicalize(this.paths.engrams)
+    const seen = new Map<string, string>([[primary, 'the primary store']])
+    const kept: StoreEntry[] = []
+    const ignored: StoreEntry[] = []
+    for (const s of stores) {
+      if (s.url || s.path === undefined) { kept.push(s); continue }
+      const key = canonicalize(s.path)
+      const owner = seen.get(key)
+      if (owner !== undefined) {
+        ignored.push(s)
+        const warnKey = `${s.path}\0${s.scope}`
+        if (!this._warnedDuplicateStores.has(warnKey)) {
+          this._warnedDuplicateStores.add(warnKey)
+          logger.warning(
+            `[plur:config] ignoring store "${s.scope}" (${s.path}): it is the same file as ${owner}. ` +
+            `Loading it would inject its engrams twice. The entry is left in config.yaml.`,
+          )
+        }
+        continue
+      }
+      seen.set(key, `store "${s.scope}"`)
+      kept.push(s)
+    }
+    this._ignoredDuplicateStores = ignored
+    return ignored.length ? { ...config, stores: kept } : config
+  }
+
+  /** Local store entries in config.yaml that are ignored because they name the
+   *  primary file or an already-registered store (#1319). For `plur doctor`. */
+  ignoredDuplicateStores(): StoreEntry[] {
+    return [...this._ignoredDuplicateStores]
+  }
+
+  /**
    * Reload this.config from disk if config.yaml changed since the last load (#307).
    *
    * The MCP server holds ONE long-lived Plur instance, so a store added by
@@ -9214,7 +9272,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   private reloadConfigIfChanged(): boolean {
     const mtime = this.statConfigMtime()
     if (mtime === 0 || mtime === this.configMtimeMs) return false
-    this.config = loadConfig(this.paths.config)
+    this.config = this._loadConfig()
     this.configMtimeMs = mtime
     // Same `.partial()`-neutralised-default rule as the constructor
     // (evaluator audit M4): `config.index` is `undefined` on a default
@@ -9265,7 +9323,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       // tmp + fsync + rename, so a crash leaves the previous complete config.
       atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
     })
-    this.config = loadConfig(this.paths.config)
+    this.config = this._loadConfig()
     this.configMtimeMs = this.statConfigMtime()
   }
 
@@ -9412,9 +9470,19 @@ Generate an improved version of the procedure that prevents this failure. Return
     // (RemoteStore.apiBase folds them at HTTP time), so an exact-string compare
     // here would happily register the same url+scope twice under two spellings.
     // Comparison-time only — the stored spelling is never rewritten.
+    // Local identity is the CANONICAL path (#1319): the same file spelled two
+    // ways (a symlinked home, /var vs /private/var) is one store, and the
+    // primary engrams.yaml is never a secondary store under any spelling —
+    // registering it loads every primary engram twice.
+    const canonicalStorePath = isRemote ? '' : canonicalize(storePath)
+    if (!isRemote && canonicalStorePath === canonicalize(this.paths.engrams)) {
+      throw new Error(
+        `addStore: "${storePath}" is the primary store (${this.paths.engrams}); it is always loaded and cannot be registered again as "${scope}".`,
+      )
+    }
     const sameEntry = config.stores?.find(s =>
       isRemote ? (s.url !== undefined && normalizeEndpointUrl(s.url) === normalizeEndpointUrl(options!.url!) && s.scope === scope)
-               : (s.path === storePath),
+               : (s.path !== undefined && !s.url && (s.path === storePath || canonicalize(s.path) === canonicalStorePath)),
     )
     if (sameEntry) {
       // Token rotation (#305): a matched remote endpoint with a NEW token means
@@ -9655,9 +9723,15 @@ Generate an improved version of the procedure that prevents this failure. Return
       return discovered
     }
 
-    const knownPaths = new Set((this.config.stores ?? []).map(s => s.path))
-    // Also exclude the primary store directory
-    const primaryDir = dirname(this.paths.engrams)
+    // Canonical paths (#1319): the walk sees kernel-canonical cwd spellings
+    // while PLUR_PATH / $HOME are taken verbatim, so a raw string compare
+    // missed the primary under a symlinked home and registered it as
+    // `project:<home>`. Compare canonical forms; the primary is excluded here
+    // and again in addStore.
+    const knownPaths = new Set(
+      (this.config.stores ?? []).filter(s => s.path !== undefined && !s.url).map(s => canonicalize(s.path!)),
+    )
+    const primaryStore = canonicalize(this.paths.engrams)
 
     let dir = startDir
     const visited = new Set<string>()
@@ -9666,13 +9740,15 @@ Generate an improved version of the procedure that prevents this failure. Return
       visited.add(dir)
       const candidate = join(dir, '.plur', 'engrams.yaml')
 
+      const candidateKey = canonicalize(candidate)
+
       // Skip primary store
-      if (join(dir, '.plur') === primaryDir) {
+      if (candidateKey === primaryStore) {
         dir = dirname(dir)
         continue
       }
 
-      if (fs.existsSync(candidate) && !knownPaths.has(candidate)) {
+      if (fs.existsSync(candidate) && !knownPaths.has(candidateKey)) {
         // Infer scope from directory name or git remote
         let scope = `project:${basename(dir)}`
         try {
@@ -9686,7 +9762,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
         this.addStore(candidate, scope, { shared: true, readonly: false })
         discovered.push({ path: candidate, scope })
-        knownPaths.add(candidate)
+        knownPaths.add(candidateKey)
         logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
       }
 
@@ -10269,7 +10345,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       // tmp + fsync + rename, so a crash leaves the previous complete config.
       atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
     })
-    this.config = loadConfig(this.paths.config)
+    this.config = this._loadConfig()
     this.configMtimeMs = this.statConfigMtime()
   }
 
@@ -10306,7 +10382,9 @@ Generate an improved version of the procedure that prevents this failure. Return
    * mergeStoresForWriteback's raw-forbid restore doesn't discard the update.
    */
   persistScopeMetadata(discoveries: RemoteScopeDiscovery[]): void {
-    const stores = this.config.stores ?? []
+    // Raw config, not this.config: the in-memory list drops ignored duplicate
+    // local entries (#1319), and writing it back would delete them from disk.
+    const stores = loadConfig(this.paths.config).stores ?? []
     if (!stores.length) return
 
     let changed = false

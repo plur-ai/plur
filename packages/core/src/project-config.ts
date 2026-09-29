@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 
 /**
@@ -15,7 +15,22 @@ import { homedir } from 'os'
  * pass on macOS while failing on Linux CI, where /tmp has no symlink.)
  */
 export function canonicalize(p: string): string {
-  try { return realpathSync(p) } catch { return resolve(p) }
+  // `resolve` makes the path absolute and normalises `.` / `..` lexically.
+  const abs = resolve(p)
+  try { return realpathSync(abs) } catch {}
+  // A path that does not exist yet (a fresh install's engrams.yaml, a
+  // not-yet-created project dir) cannot be realpath'd, but its ancestors can:
+  // resolve the deepest EXISTING ancestor and re-append the missing tail, so
+  // `/var/…/missing` and `/private/var/…/missing` compare equal (#1319).
+  const tail: string[] = []
+  let cur = abs
+  for (;;) {
+    const parent = dirname(cur)
+    if (parent === cur) return abs
+    tail.unshift(basename(cur))
+    cur = parent
+    try { return join(realpathSync(cur), ...tail) } catch {}
+  }
 }
 
 /**
