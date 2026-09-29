@@ -84,6 +84,70 @@ file-path stores still broaden in place.
 Shared↔shared recurrence, personal→personal recurrence, and a personal save
 recurring onto a shared engram behave as before.
 
+### Editors now rate the memory they inject, from the reply
+
+**No editor hook ever produced a feedback outcome** (#1310). plur-hermes rated
+injected engrams after each reply; Claude Code, Codex, Cursor and Antigravity
+did not, so ranking there learned only from explicit `plur_feedback` calls.
+
+Now each editor's end-of-turn hook rates the engrams injected in that session
+against the assistant's reply, and sends a verdict only when it is at least 0.6
+confident:
+
+- the engram's statement appears in the reply: positive;
+- most of its word trigrams appear in the reply: positive;
+- one sentence of the reply both corrects something ("Actually, …", "no
+  longer needed", "is wrong") and contains at least two of the engram's
+  distinctive words: negative. The Python version looked at a window of 100 to
+  200 characters around any correction word, which marked unrelated engrams
+  negative. The TypeScript version lives in `@plur-ai/core`
+  (`detectInjectionSignal`, `rateInjectedEngrams`), so the heuristic has one
+  implementation.
+
+**Automatic feedback changes ranking only.** It moves `retrieval_strength`
+and the feedback counters, and never advances `commitment`. It is recorded
+with `source: "auto"` on the `feedback_received` and `injection_outcome`
+history events. Explicit `plur_feedback` works exactly as before.
+`Plur.feedback()` takes an optional fourth argument `{ source: 'auto' }`, and
+`applyFeedbackSignal()` takes `{ source }`.
+
+**Remote stores get automatic feedback only if they say they can handle it.**
+A server opts in by listing `feedback.source` in the `capabilities` array of
+its `GET /api/v1/me` response. The client then sends
+`{"signal": ..., "source": "auto"}` to `POST /api/v1/engrams/:id/feedback`, and
+the server must treat it as ranking-only. A server that does not list the
+capability receives no automatic feedback, only explicit feedback, whose
+request body is unchanged. The capability is read from the `/me` call that
+session start already makes, and is cached per server and token for the
+process: at most one extra `/me`, never one per rating. `RemoteStore.me()`
+now returns `capabilities` (`[]` for older servers). Contract:
+`docs/specs/2026-09-29-feedback-source-contract.md`.
+
+Each injected engram gets at most one automatic verdict per session.
+
+| Editor | End-of-turn event | Where the reply comes from |
+|---|---|---|
+| Claude Code | `Stop` (its own entry, next to the learning nudge) | `last_assistant_message` |
+| Codex | `Stop` (new) | `last_assistant_message` |
+| Cursor | `afterAgentResponse` (new; `stop` carries no reply) | `text` |
+| Antigravity | `Stop` (new; prints nothing, so it never blocks the stop) | model responses in the transcript since the last user message |
+
+The inject hooks record the ids they delivered, per editor session, in a
+per-user temp directory (ids only, no engram text). When nothing was injected
+in the session, the hook exits without opening the store. Every path is
+fail-open, and the run is capped at 9s, below the 10s budget each editor gives
+it. The Claude Code `Stop` hook is synchronous: in a real `claude -p` session an
+async `Stop` hook was killed when the session exited and rated nothing.
+
+Switches, both environment variables:
+
+- `PLUR_AUTO_RATE=0` (or `false`, `off`) turns automatic rating off. It is on by default.
+- `PLUR_AUTO_CAPTURE=1` (or `true`, `on`) turns on automatic capture of the reply's
+  `🧠 I learned:` block, stored as `claim_class: inferred`. It is off by default and writes
+  nothing unless you opt in. `auto_learn: false` in `config.yaml` still wins.
+
+Run `plur init` again to install the new hook entries.
+
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
 **The Stop hook's "did you learn something?" nudge was never shown to the

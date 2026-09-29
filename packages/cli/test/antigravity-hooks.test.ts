@@ -19,9 +19,10 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-agy-hooks-')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
 describe('buildAgyHookSet', () => {
-  it('uses exactly the two events the adapter needs', () => {
+  it('uses exactly the events the adapter needs', () => {
     const set = buildAgyHookSet(SHIM)
-    expect(Object.keys(set).sort()).toEqual(['PreInvocation', 'PreToolUse', 'enabled'])
+    // Stop since #1310: the silent auto-rate hook only.
+    expect(Object.keys(set).sort()).toEqual(['PreInvocation', 'PreToolUse', 'Stop', 'enabled'])
     expect(set.enabled).toBe(true)
   })
 
@@ -38,11 +39,12 @@ describe('buildAgyHookSet', () => {
 
   // agy's Stop can only BLOCK termination (decision:"continue" re-enters the
   // loop) and PostToolUse can only output {} — neither can carry a nudge, and
-  // wiring them anyway would either force extra turns or do nothing.
-  it('never registers Stop or PostToolUse', () => {
+  // wiring them anyway would either force extra turns or do nothing. Stop
+  // holds only the auto-rate hook (#1310), which prints nothing.
+  it('never registers PostToolUse, and Stop only for the silent auto-rate hook', () => {
     const set = buildAgyHookSet(SHIM)
-    expect(set.Stop).toBeUndefined()
     expect(set.PostToolUse).toBeUndefined()
+    expect(set.Stop?.map(h => h.command)).toEqual([`${SHIM} hook-auto-rate agy`])
   })
 
   it('keeps timeouts within agy seconds semantics and the hybrid worst case', () => {

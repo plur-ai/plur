@@ -2,6 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { recordInjected } from '../lib/auto-rate.js'
 
 /**
  * plur hook-cursor-session-start — Cursor `sessionStart` hook.
@@ -85,6 +86,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // sends query TEXT and the server embeds. A remote-with-BM25 mode in core
     // would fix Cursor without touching the deadline. Tracked in #1200.
     const result = await plur.inject('general session start', injectOpts)
+    recordInjected('cursor', conversationId, result.injected_ids) // #1310 auto-rate
     const count = result.count
     const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 

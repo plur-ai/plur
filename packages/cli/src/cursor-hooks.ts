@@ -47,6 +47,9 @@ export function buildCursorHooks(cmd: string): Record<string, CursorHookEntry[]>
     preToolUse: [{ command: `${cmd} hook-cursor-guard`, timeout: 3, failClosed: false }],
     postToolUse: [{ command: `${cmd} hook-cursor-post-tool`, timeout: 10, failClosed: false }],
     stop: [{ command: `${cmd} hook-cursor-stop`, timeout: 3, failClosed: false }],
+    // Auto-rate injected engrams from the reply text (#1310): the `stop`
+    // payload carries no reply, `afterAgentResponse` carries `text`.
+    afterAgentResponse: [{ command: `${cmd} hook-auto-rate cursor`, timeout: 10, failClosed: false }],
   }
 }
 
@@ -56,6 +59,7 @@ const PLUR_CURSOR_SUBCOMMANDS = [
   'hook-cursor-guard',
   'hook-cursor-post-tool',
   'hook-cursor-stop',
+  'hook-auto-rate',
 ]
 
 /**

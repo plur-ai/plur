@@ -97,6 +97,15 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
       },
     ],
 
+    // Auto-rate injected engrams from the reply (#1310). Stop carries
+    // `last_assistant_message`; the hook prints nothing, which is Codex's
+    // valid "no opinion" Stop result.
+    Stop: [
+      {
+        hooks: [{ type: 'command', command: `${cmd} hook-auto-rate codex`, timeout: 10 }],
+      },
+    ],
+
     // Session cleanup. Codex clamps SessionEnd timeouts to 3s and forces
     // them synchronous, so this must stay cheap: it removes the sentinel and
     // counters, NOTHING more — it deliberately does not capture a closing
@@ -118,6 +127,7 @@ const PLUR_CODEX_SUBCOMMANDS = [
   'hook-codex-guard',
   'hook-codex-post-tool',
   'hook-codex-session-end',
+  'hook-auto-rate',
 ]
 
 /**

@@ -15,6 +15,7 @@ import {
   emitInjectSteps,
 } from '../lib/agy-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { recordInjected } from '../lib/auto-rate.js'
 
 /**
  * plur hook-agy-pre-invocation — Antigravity `PreInvocation` hook.
@@ -138,6 +139,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     let message: string
     try {
       const { result, mode } = await injectWithFallback(plur, task, injectOpts)
+      recordInjected('agy', conversationId, result.injected_ids) // #1310 auto-rate
       const body = result.count > 0
         ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
         : ''

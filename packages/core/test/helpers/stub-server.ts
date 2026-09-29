@@ -67,7 +67,9 @@ export class StubServer {
   // user; override per-test with setMe() to simulate multi-team authorization.
   // #345 D2: scope_metadata is optional and defaults to absent so older-server
   // behavior is the default; setMe({ scope_metadata }) opts a test into it.
-  private me: { username: string; org_id: string; role: string; scopes: string[]; scope_metadata?: unknown[] } = {
+  // #1310: `capabilities` is optional and absent by default (older server);
+  // setMe({ capabilities: ['feedback.source'] }) simulates a capable server.
+  private me: { username: string; org_id: string; role: string; scopes: string[]; scope_metadata?: unknown[]; capabilities?: unknown[] } = {
     username: 'testuser', org_id: 'test-org', role: 'developer', scopes: ['group:test'],
   }
   /** When set, POST /engrams returns this as the assigned id instead of a valid
@@ -84,6 +86,11 @@ export class StubServer {
    *  the client actually transmits on the wire (#768: optional fields like
    *  pinned/rationale/tags were silently never sent). */
   lastAppendBody: Record<string, unknown> | null = null
+  /** Every POST /engrams/:id/feedback body received, in order (#1310: assert
+   *  whether `source` was sent). */
+  feedbackBodies: Array<Record<string, unknown>> = []
+  /** Number of GET /api/v1/me requests received (#1310 capability caching). */
+  meCalls = 0
 
   // --- POST /api/v1/recall (#776 server-authoritative recall envelope) ---
   /** Rows served in the envelope's `results` (top-level engram shape, each
@@ -114,7 +121,7 @@ export class StubServer {
   /** Override the GET /api/v1/me response (authorized scope set, identity).
    *  #345 D2: pass `scope_metadata` to simulate a server that serves
    *  self-describing scope metadata. */
-  setMe(me: Partial<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: unknown[] }>): void {
+  setMe(me: Partial<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: unknown[]; capabilities: unknown[] }>): void {
     this.me = { ...this.me, ...me }
   }
 
@@ -184,6 +191,8 @@ export class StubServer {
     this.recallCalls = 0
     this.lastRecallBody = null
     this.lastAppendBody = null
+    this.feedbackBodies = []
+    this.meCalls = 0
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -200,6 +209,7 @@ export class StubServer {
 
     // GET /api/v1/me — resolved identity + authorized scopes (#292)
     if (method === 'GET' && path === '/api/v1/me') {
+      this.meCalls++
       this.json(res, 200, this.me)
       return
     }
@@ -377,6 +387,7 @@ export class StubServer {
         return
       }
       this.readBody(req, (body) => {
+        this.feedbackBodies.push(body)
         const signal = body.signal as string
         const data = engram.data as any
         if (!data.feedback_signals) {

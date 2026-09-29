@@ -250,6 +250,26 @@ export function salvageRemoteRow(
   return { data: second.data as Record<string, unknown>, salvagedFields }
 }
 
+/**
+ * Capability a server advertises in `GET /api/v1/me` → `capabilities[]` when it
+ * honours `source` on `POST /engrams/:id/feedback` (#1310). Contract:
+ * docs/specs/2026-09-29-feedback-source-contract.md.
+ */
+export const FEEDBACK_SOURCE_CAPABILITY = 'feedback.source'
+
+/**
+ * Advertised capabilities per (url, token), for the life of the process
+ * (#1310). Filled by every successful `me()` — session start already calls it
+ * — and consulted by `hasCapability()`, which calls `/me` at most once per
+ * (url, token) when nothing has filled it yet. Never one call per rating.
+ */
+const CAPABILITY_CACHE = new Map<string, Promise<string[]>>()
+
+/** Test seam — forget every cached capability set. */
+export function _resetRemoteCapabilityCache(): void {
+  CAPABILITY_CACHE.clear()
+}
+
 export class RemoteStore {
   private cache: { ts: number; engrams: Engram[] } | null = null
   private inFlight: Promise<Engram[]> | null = null
@@ -449,10 +469,16 @@ export class RemoteStore {
    *
    * Throws on a non-2xx response (caller decides whether to swallow per URL).
    */
-  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[] }> {
+  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[]; capabilities: string[] }> {
     const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded)
     if (!r.ok) throw new Error(`Remote /me failed: ${r.status} ${r.text}`)
-    const body = (r.json ?? {}) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[] }>
+    const body = (r.json ?? {}) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[]; capabilities: unknown[] }>
+    // #1310: optional, additive. Older servers omit it → []. Same safe-grammar
+    // filter as scope names: nothing malformed enters from a hostile remote.
+    const capabilities = Array.isArray(body.capabilities)
+      ? body.capabilities.filter((c): c is string => typeof c === 'string' && /^[\w.:-]{1,64}$/.test(c))
+      : []
+    CAPABILITY_CACHE.set(this.capabilityKey(), Promise.resolve(capabilities))
     const scopes = Array.isArray(body.scopes)
       // Validate every /me scope to a safe grammar at the trust boundary:
       //  - #427: a non-string element would later throw in isSharedScope's
@@ -468,6 +494,7 @@ export class RemoteStore {
       org_id:   body.org_id ?? '',
       role:     body.role ?? '',
       scopes,
+      capabilities,
       // #345 D2: self-describing scope metadata served by the enterprise
       // `scopes` table. Validate each entry through the SAME ScopeMetadataSchema
       // the local config path uses — a hostile/old remote can send anything, so
@@ -872,14 +899,41 @@ export class RemoteStore {
    * RemoteStore-specific — no file-backed counterpart.
    * Requires server support: see https://github.com/plur-ai/plur/issues/85
    */
-  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
+  async feedback(
+    id: string,
+    signal: 'positive' | 'negative' | 'neutral',
+    options?: { source?: 'auto' },
+  ): Promise<void> {
+    // #1310: `source` is sent only when set, so an explicit rating's request
+    // body is byte-identical to before. Callers send `source: 'auto'` only to
+    // a server that advertises FEEDBACK_SOURCE_CAPABILITY.
+    const payload = options?.source === 'auto' ? { signal, source: 'auto' } : { signal }
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}/feedback`, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ signal }),
+      body: JSON.stringify(payload),
     }, RemoteStore.readBounded)
     if (!r.ok) throw new Error(`Remote feedback failed: ${r.status} ${r.text}`)
     this.cache = null
+  }
+
+  private capabilityKey(): string {
+    return `${this.apiBase}::${this.token}`
+  }
+
+  /**
+   * Does the server advertise `name` in `/me` → `capabilities`? Cached per
+   * (url, token) for the process; a failed `/me` reads as "no" and is cached
+   * too, so an unreachable host costs one bounded attempt, not one per call.
+   */
+  async hasCapability(name: string): Promise<boolean> {
+    const key = this.capabilityKey()
+    let pending = CAPABILITY_CACHE.get(key)
+    if (!pending) {
+      pending = this.me().then(m => m.capabilities, () => [] as string[])
+      CAPABILITY_CACHE.set(key, pending)
+    }
+    return (await pending).includes(name)
   }
 
   async count(filter?: { status?: string }): Promise<number> {

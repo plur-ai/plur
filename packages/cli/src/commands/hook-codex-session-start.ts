@@ -2,6 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { recordInjected } from '../lib/auto-rate.js'
 
 /**
  * plur hook-codex-session-start — Codex `SessionStart` hook.
@@ -54,6 +55,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       }
 
       const { result, mode } = await injectWithFallback(plur, 'general session start', injectOpts)
+      recordInjected('codex', sessionId, result.injected_ids) // #1310 auto-rate
       const body = result.count > 0
         ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
         : ''

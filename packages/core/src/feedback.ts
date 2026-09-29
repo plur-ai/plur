@@ -18,6 +18,22 @@ import type { Engram } from './schemas/engram.js'
 
 export type FeedbackSignal = 'positive' | 'negative' | 'neutral'
 
+/**
+ * Who produced a feedback signal (#1310).
+ *
+ * - `explicit` — a person or agent deliberately rated the engram
+ *   (`plur_feedback`, `plur feedback`). The default.
+ * - `auto` — an editor hook inferred the verdict from the reply text
+ *   (`injection-signal.ts`). It moves ranking only: `commitment` records how
+ *   settled a person considers the knowledge, and a string match in a reply
+ *   is not a person deciding anything.
+ */
+export type FeedbackSource = 'explicit' | 'auto'
+
+export interface ApplyFeedbackOptions {
+  source?: FeedbackSource
+}
+
 /** Strength added on a positive signal. Capped at 1.0. */
 export const POSITIVE_STRENGTH_DELTA = 0.05
 /** Strength removed on a negative signal. Floored at 0.0. */
@@ -64,11 +80,14 @@ export function nextCommitment(current: string | undefined): string | undefined 
  * @param signal  the verdict
  * @param today   date stamp to re-anchor `last_accessed` with, `YYYY-MM-DD`.
  *                Injectable so tests are not clock-dependent.
+ * @param options `source: 'auto'` adjusts strength only and never advances
+ *                `commitment` (#1310).
  */
 export function applyFeedbackSignal(
   engram: Engram,
   signal: FeedbackSignal,
   today: string = new Date().toISOString().slice(0, 10),
+  options: ApplyFeedbackOptions = {},
 ): void {
   if (!engram.feedback_signals) {
     engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
@@ -79,9 +98,13 @@ export function applyFeedbackSignal(
     engram.activation.retrieval_strength = Math.min(
       1.0, engram.activation.retrieval_strength + POSITIVE_STRENGTH_DELTA,
     )
-    const e = engram as Engram & { commitment?: string }
-    const next = nextCommitment(e.commitment)
-    if (next !== undefined) e.commitment = next as typeof e.commitment
+    // Automatic verdicts never promote (#1310): only deliberate feedback may
+    // say "this is more settled than it was".
+    if (options.source !== 'auto') {
+      const e = engram as Engram & { commitment?: string }
+      const next = nextCommitment(e.commitment)
+      if (next !== undefined) e.commitment = next as typeof e.commitment
+    }
   } else if (signal === 'negative') {
     engram.activation.retrieval_strength = Math.max(
       0.0, engram.activation.retrieval_strength - NEGATIVE_STRENGTH_DELTA,

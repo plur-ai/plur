@@ -82,6 +82,7 @@ Commands:
   hook-cursor-guard      (internal) Cursor preToolUse hook handler
   hook-cursor-post-tool  (internal) Cursor postToolUse hook handler
   hook-cursor-stop       (internal) Cursor stop hook handler
+  hook-auto-rate <editor> (internal) End-of-turn hook — rate injected engrams from the reply
   hook-codex-session-start (internal) Codex SessionStart hook handler
   hook-codex-inject      (internal) Codex UserPromptSubmit hook handler
   hook-codex-guard       (internal) Codex PreToolUse hook handler
@@ -172,6 +173,7 @@ const COMMANDS: Record<string, string> = {
   'hook-cursor-guard': './commands/hook-cursor-guard.js',
   'hook-cursor-post-tool': './commands/hook-cursor-post-tool.js',
   'hook-cursor-stop': './commands/hook-cursor-stop.js',
+  'hook-auto-rate': './commands/hook-auto-rate.js',
   'hook-codex-session-start': './commands/hook-codex-session-start.js',
   'hook-codex-inject': './commands/hook-codex-inject.js',
   'hook-codex-guard': './commands/hook-codex-guard.js',

@@ -18,10 +18,10 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-codex-hooks-')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
 describe('buildCodexHooks', () => {
-  it('covers the five events the adapter needs', () => {
+  it('covers the six events the adapter needs', () => {
     const hooks = buildCodexHooks(SHIM)
     expect(Object.keys(hooks).sort()).toEqual([
-      'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'UserPromptSubmit',
+      'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit',
     ])
   })
 

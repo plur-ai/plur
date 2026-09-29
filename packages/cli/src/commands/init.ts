@@ -391,6 +391,17 @@ function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
           { type: 'command', command: `${cmd} hook-learn-check`, timeout: 2 },
         ],
       },
+      // Auto-rate injected engrams from the reply (#1310). Its own entry.
+      // Synchronous on purpose: verified in a real `claude -p` session, an
+      // async Stop hook is killed when the session exits and never rates the
+      // last (in headless mode, the only) reply. It skips without opening the
+      // store when nothing was injected, and is bounded well inside 10s.
+      {
+        matcher: '*',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-auto-rate claude`, timeout: 10 },
+        ],
+      },
     ],
   }
 }

@@ -4,6 +4,7 @@ import { tmpdir, homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
+import { recordInjected } from '../lib/auto-rate.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
 // on the hot path of every prompt; slow networks make this a perceptible
@@ -335,6 +336,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     let eventSessionId: string | undefined
     try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
     const result = await plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
+    recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
@@ -440,6 +442,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   try {
     const result = await plur.injectHybrid(task, injectOpts)
+    recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
@@ -451,6 +454,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } catch {
     // Fall back to BM25 (local-only by design — inject() never dials).
     const result = await plur.inject(task, injectOpts)
+    recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
