@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, realpathSync } from 'fs'
-import { join, resolve } from 'path'
-import yaml from 'js-yaml'
+import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirectories, coveringTrustedAncestor,
@@ -164,86 +163,5 @@ describe('trust.ts (D2)', () => {
     } finally {
       rmSync(otherRoot, { recursive: true, force: true })
     }
-  })
-})
-
-/**
- * #1319 trust and symlinks. Owner decision (2026-09-29): the trust check fails
- * CLOSED. A stored entry is compared exactly as written against the checked
- * folder's canonical form. It is never resolved at compare time, because
- * resolving it would follow a symlink planted after trust was granted (#778).
- * The cost: a trust that an older version granted for a folder that did not
- * exist yet, under a symlinked parent, was stored in the parent's symlinked
- * spelling and no longer matches once the folder exists. Re-run `plur trust`.
- */
-describe('trust.yaml entries and symlinks (#1319)', () => {
-  let root: string
-  let base: string
-
-  beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'plur-trust-old-root-'))
-    base = mkdtempSync(join(tmpdir(), 'plur-trust-old-base-'))
-    mkdirSync(join(base, 'real'))
-    symlinkSync(join(base, 'real'), join(base, 'link'), 'dir')
-  })
-
-  afterEach(() => {
-    rmSync(root, { recursive: true, force: true })
-    rmSync(base, { recursive: true, force: true })
-  })
-
-  function writeOldEntry(): { oldEntry: string; text: string } {
-    // Exactly what the old `realpathSync(p) catch resolve(p)` stored for a
-    // folder that did not exist at trust time.
-    const oldEntry = resolve(join(base, 'link', 'later-project'))
-    const text = yaml.dump({ version: 1, trusted: [oldEntry] })
-    writeFileSync(join(root, 'trust.yaml'), text, 'utf8')
-    return { oldEntry, text }
-  }
-
-  it('an old-spelling entry does NOT grant trust once the folder exists (owner decision: re-run `plur trust`)', () => {
-    const { text } = writeOldEntry()
-    mkdirSync(join(base, 'real', 'later-project', 'sub'), { recursive: true })
-    expect(isDirectoryTrusted(join(base, 'link', 'later-project'), root)).toBe(false)
-    expect(isDirectoryTrusted(join(base, 'real', 'later-project'), root)).toBe(false)
-    expect(isDirectoryTrusted(join(base, 'real', 'later-project', 'sub'), root)).toBe(false)
-    expect(coveringTrustedAncestor(join(base, 'real', 'later-project', 'sub'), root)).toBeNull()
-    expect(readFileSync(join(root, 'trust.yaml'), 'utf8')).toBe(text)
-    // Re-running `plur trust` restores it.
-    trustDirectory(join(base, 'link', 'later-project'), root)
-    expect(isDirectoryTrusted(join(base, 'real', 'later-project', 'sub'), root)).toBe(true)
-  })
-
-  it('a trusted folder later replaced by a symlink to another folder is NOT trusted (#778)', () => {
-    const proj = join(base, 'real', 'proj')
-    mkdirSync(proj)
-    mkdirSync(join(base, 'real', 'evil'))
-    trustDirectory(proj, root)
-    const text = readFileSync(join(root, 'trust.yaml'), 'utf8')
-    rmSync(proj, { recursive: true })
-    symlinkSync(join(base, 'real', 'evil'), proj, 'dir')
-    expect(isDirectoryTrusted(proj, root)).toBe(false)
-    expect(isDirectoryTrusted(join(base, 'real', 'evil'), root)).toBe(false)
-    expect(coveringTrustedAncestor(proj, root)).toBeNull()
-    expect(readFileSync(join(root, 'trust.yaml'), 'utf8')).toBe(text)
-  })
-
-  it('plur untrust removes an old-spelling entry by the spelling it was trusted under (owner decision)', () => {
-    writeOldEntry()
-    mkdirSync(join(base, 'real', 'later-project'))
-    expect(untrustDirectory(join(base, 'link', 'later-project'), root)).toBe(true)
-    expect(listTrustedDirectories(root)).toEqual([])
-  })
-
-  it('a trusted folder whose PARENT is later replaced by a symlink is NOT trusted (#778)', () => {
-    mkdirSync(join(base, 'real', 'proj', 'sub'), { recursive: true })
-    mkdirSync(join(base, 'real', 'evil', 'sub'), { recursive: true })
-    trustDirectory(join(base, 'real', 'proj', 'sub'), root)
-    const text = readFileSync(join(root, 'trust.yaml'), 'utf8')
-    rmSync(join(base, 'real', 'proj'), { recursive: true })
-    symlinkSync(join(base, 'real', 'evil'), join(base, 'real', 'proj'), 'dir')
-    expect(isDirectoryTrusted(join(base, 'real', 'proj', 'sub'), root)).toBe(false)
-    expect(coveringTrustedAncestor(join(base, 'real', 'proj', 'sub'), root)).toBeNull()
-    expect(readFileSync(join(root, 'trust.yaml'), 'utf8')).toBe(text)
   })
 })

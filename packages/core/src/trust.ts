@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join, resolve, sep } from 'path'
+import { join, sep } from 'path'
 import yaml from 'js-yaml'
 import { logger } from './logger.js'
 import { canonicalize } from './project-config.js'
@@ -94,15 +94,10 @@ export function trustDirectory(dir: string, root: string): string {
  */
 export function untrustDirectory(dir: string, root: string): boolean {
   const target = canonicalize(dir)
-  // Also remove an entry stored under the plain spelling of `dir` (#1319): an
-  // older version saved that spelling for a folder that did not exist yet.
-  // Removing is fail-safe, so matching the raw string here cannot widen trust.
-  // The trust CHECK never does this — see isDirectoryTrusted.
-  const raw = resolve(dir)
   const data = loadTrustFile(root)
-  const kept = data.trusted.filter(t => t !== target && t !== raw)
-  if (kept.length === data.trusted.length) return false
-  data.trusted = kept
+  const idx = data.trusted.indexOf(target)
+  if (idx === -1) return false
+  data.trusted.splice(idx, 1)
   saveTrustFile(root, data)
   return true
 }
