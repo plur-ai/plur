@@ -269,3 +269,22 @@ the owner's private decision-board folder. The owner said "apply the decisions".
 | H3 | plan: Claude Code uses the exec form; other editors get an unquoted short path; a Windows CI job gates the merge | PR #1270 |
 
 Design note r3 (`plur remote`, trust commands hidden) is approved; it follows as a PR stacked on #1348 and #1272.
+
+### Fourth round — formal verification, round 2 (2026-09-29)
+
+These answers come from the board `docs/audits/2026-09-29-formal-decisions-2.yaml`; the saved answers are filed privately. The owner said "apply the decisions".
+
+| Id | Choice | Carried by |
+|---|---|---|
+| C1 | A PR against #1398 ports #1228's steal-guard ladder into #1398's one-step lock. This is the only design with a proof. | new PR on #1398 |
+| C2 | Restore the check that the lock owner is really gone right before the takeover. | same PR |
+| C3 | Per-entry claims are the only guard against duplicate pushes, with an atomic takeover. #1228's leases come off the push path and remain only as an advisory listing field. | #1277 and a PR against #1228 |
+| C4 | Owner's note: a timed-out or thrown push is not "maybe delivered"; it is **retried**. The retry key is persisted on the row before the first send and reused on every retry. There is no in-doubt state and no lookup before the retry. A server that honours the key sees no duplicate; a server that ignores it sees at most one duplicate per write. | #1277 |
+| C5 | A 401, 403, 404 or 422 from recall no longer counts toward the breaker, the same rule as for writes. | #1277 |
+| F1 | The importer follows A1: it imports into the team scope and credits the matching engram. | #1275 |
+| F2 | `plur folders rm` and `plur untrust` both remove the trust.yaml line, using the map's own matcher. | #1403 |
+| F3 | The one-time code is consumed immediately after folders.yaml is saved. | #1403 |
+| F4 | The hook matcher is anchored, and the exec form is claimed only for the recorded entry. | #1270 |
+| H1 | Hook commands never print errors to stdout, and a stopped run prints nothing. | hook-inject stack |
+| H2 | A rating that could not be recorded is skipped. | #1318 |
+| H3 | The stop counter uses the same safe-folder rule as the rest of the hook state. | #1395 |
