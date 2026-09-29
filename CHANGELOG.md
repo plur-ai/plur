@@ -291,6 +291,25 @@ twice** (#1267). Three separate faults:
   (after a Node upgrade or a version-manager switch); `plur doctor` reports
   such an entry as broken. A hand-written entry is never changed.
 
+### Claude Code: corrections in a prompt now prompt a `plur_learn`
+
+**The correction reminder never fired** (#1312). `plur hook-correction-detect`
+spots correction-shaped prompts ("no, …", "from now on", "I prefer" …) and
+reminds the agent to save the rule with `plur_learn`. No installer registered
+it, so corrections were acknowledged in prose and lost.
+
+`plur hook-inject` now runs the same detection on every `UserPromptSubmit`
+and appends the reminder to its own output: after the memory on the first
+prompt, alongside the 10-minute reminder when both are due, or on its own on
+a later prompt. A prompt that does not match, including the known false
+positives ("no problem", "actually that works", "wait a sec"), adds nothing.
+There is no extra process per prompt and no `plur init` step beyond the one
+for #1313. The standalone command still works for anyone who registered it by
+hand; if you did, remove that entry, or the reminder appears twice.
+
+Checked in a real Claude Code session: a second prompt starting "No, from
+now on" carried the reminder, and the model quoted it back.
+
 ### Claude Code: memory is in place for the first reply
 
 **The first reply of a Claude Code session had no memory unless it called a

@@ -7,6 +7,7 @@ import { isPlurConfigured } from '../lib/plur-configured.js'
 import { recordInjected } from '../lib/auto-rate.js'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
+import { correctionReminder } from './hook-correction-detect.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
 // on the hot path of every prompt; slow networks make this a perceptible
@@ -143,6 +144,17 @@ function sessionKey(input: Record<string, unknown>): string {
     process.env.CLAUDE_SESSION_ID ||
     String(process.ppid || 'unknown')
   return safeSessionKey(raw)
+}
+
+/**
+ * #1312: the `hook-correction-detect` reminder for this prompt, or null.
+ * Folded into this hook's UserPromptSubmit output instead of registering a
+ * second process per prompt; only a UserPromptSubmit payload has a prompt.
+ */
+function promptCorrection(input: Record<string, unknown>): string | null {
+  if (claudeHookEventName(input, { rehydrate: false, event: null }) !== 'UserPromptSubmit') return null
+  const prompt = input.prompt
+  return typeof prompt === 'string' ? correctionReminder(prompt) : null
 }
 
 function emitContext(hookEventName: string, additionalContext: string): void {
@@ -466,14 +478,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (taskPath && typeof prompt === 'string' && prompt) {
       try { writeFileSync(taskPath, prompt) } catch { /* fail-open */ }
     }
+    const lines: string[] = []
     if (isReminderDue(key)) {
       touchReminder(key)
       const projectConfig = readProjectConfig()
       const scopeHint = projectConfig.scope ? ` Use scope "${projectConfig.scope}" for plur_learn calls in this project.` : ''
-      emitContext(
-        claudeHookEventName(input, { rehydrate: false, event: null }),
-        `[PLUR Memory Reminder] If the user corrected you, stated a preference, or you discovered a pattern — call plur_learn now.${scopeHint} Call plur_session_end with engram_suggestions before the conversation ends.`,
-      )
+      lines.push(`[PLUR Memory Reminder] If the user corrected you, stated a preference, or you discovered a pattern — call plur_learn now.${scopeHint} Call plur_session_end with engram_suggestions before the conversation ends.`)
+    }
+    const correction = promptCorrection(input)
+    if (correction) lines.push(correction)
+    if (lines.length > 0) {
+      emitContext(claudeHookEventName(input, { rehydrate: false, event: null }), lines.join('\n\n'))
     }
     return
   }
@@ -683,6 +698,10 @@ async function injectSession(
     parts.push('')
     parts.push(context)
   }
+
+  // #1312: correction detection rides this output, after the memory.
+  const correction = isRehydrate ? null : promptCorrection(input)
+  if (correction) parts.push('', correction)
 
   if (parts.length === 0) return
 
