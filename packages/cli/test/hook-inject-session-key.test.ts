@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { spawn } from 'child_process'
 import { runCli } from './helpers/spawn.js'
 import { builtCliPath } from './helpers/built-cli.js'
 
@@ -172,4 +173,114 @@ describe('hook-inject session marker keyed on session_id (#1278)', () => {
     expect(context(retry.stdout)).toContain('session started')
     expect(existsSync(join(sessions, `${session_id}.marker`))).toBe(true)
   }, 60_000)
+
+  it('stops retrying the full injection after 2 attempts that did not finish', () => {
+    const session_id = 'aaaaaaaa-0000-4000-8000-000000000009'
+    const store = join(dir, 'broken-store-cap')
+    mkdirSync(store, { recursive: true })
+    writeFileSync(join(store, 'engrams.yaml'), 'engrams: [\n  - {bad')
+    const env = { PLUR_PATH: store }
+    expect(prompt({ session_id, prompt: 'one' }, env).stdout).toContain('"error"')
+    expect(prompt({ session_id, prompt: 'two' }, env).stdout).toContain('"error"')
+    // Third prompt: capped. No full injection (which would fail on this store
+    // again), a short notice instead, and the session is marked so later
+    // prompts take the cheap path.
+    const third = prompt({ session_id, prompt: 'three' }, env)
+    expect(third.status).toBe(0)
+    const notice = context(third.stdout)
+    expect(notice).toContain('skipped')
+    expect(notice).not.toContain('session started')
+    expect(existsSync(join(sessions, `${session_id}.marker`))).toBe(true)
+    expect(prompt({ session_id, prompt: 'four' }, env).stdout).toBe('')
+  }, 90_000)
+})
+
+/**
+ * #1278 review: a run stopped by the watchdog (process.exit) or killed by the
+ * editor skips every `finally`. A store large enough that the injection takes
+ * ~1-2s makes both cases reproducible without a real editor.
+ */
+describe('hook-inject: runs that never finish (#1278)', () => {
+  let dir: string
+  let sessions: string
+  let env: NodeJS.ProcessEnv
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-inject-kill-'))
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } }))
+    mkdirSync(join(dir, 'tmp'), { recursive: true })
+    mkdirSync(join(dir, '.plur'), { recursive: true })
+    const lines = ['engrams:']
+    for (let i = 0; i < 2000; i++) {
+      lines.push(
+        `  - id: ENG-2026-09-29-${String(i + 1).padStart(5, '0')}`,
+        '    version: 2',
+        '    status: active',
+        '    type: behavioral',
+        '    scope: global',
+        '    created_at: "2026-09-29T08:13:08.497Z"',
+        `    statement: Filler statement ${i} about topic alpha${i % 97} beta${i % 13}`,
+      )
+    }
+    writeFileSync(join(dir, '.plur', 'engrams.yaml'), lines.join('\n') + '\n')
+    sessions = join(dir, 'tmp', 'plur-sessions')
+    env = {
+      ...process.env,
+      HOME: dir,
+      USERPROFILE: dir,
+      TMPDIR: join(dir, 'tmp'),
+      PLUR_PATH: join(dir, '.plur'),
+      PLUR_DISABLE_EMBEDDINGS: '1',
+    }
+    delete env.CLAUDE_SESSION_ID
+  })
+
+  afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
+  beforeEach(() => { rmSync(sessions, { recursive: true, force: true }) })
+
+  function prompt(payload: Record<string, unknown>, extraEnv: Record<string, string> = {}) {
+    const r = runCli('node', [CLI, 'hook-inject'], {
+      input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', ...payload }),
+      encoding: 'utf-8', timeout: 60_000, env: { ...env, ...extraEnv }, cwd: dir,
+    })
+    return { stdout: r.stdout ?? '', status: r.status ?? 1 }
+  }
+
+  it('a watchdog exit removes its inject lock', () => {
+    const session_id = 'bbbbbbbb-0000-4000-8000-000000000001'
+    const r = prompt({ session_id, prompt: 'alpha5 topic' }, { PLUR_HOOK_CEILING_MS: '100' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe('') // stopped before printing
+    expect(existsSync(join(sessions, `${session_id}.injecting`))).toBe(false)
+    expect(existsSync(join(sessions, `${session_id}.marker`))).toBe(false)
+  }, 60_000)
+
+  it('a killed run is retried once its lock goes stale', async () => {
+    const session_id = 'bbbbbbbb-0000-4000-8000-000000000002'
+    const lock = join(sessions, `${session_id}.injecting`)
+    const child = spawn('node', [CLI, 'hook-inject'], { env, cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
+    child.stdin.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id, prompt: 'alpha5 topic' }))
+    let out = ''
+    child.stdout.on('data', d => { out += d })
+    const exited = new Promise(res => child.on('exit', res))
+    const deadline = Date.now() + 30_000
+    while (!existsSync(lock) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+    expect(existsSync(lock)).toBe(true)
+    child.kill('SIGKILL')
+    await exited
+    expect(out).toBe('') // killed mid-injection
+    expect(existsSync(join(sessions, `${session_id}.marker`))).toBe(false)
+
+    // The SIGKILL can also land while core holds the store's own write lock
+    // (engrams.yaml.lock). That lock and its stale handling belong to core and
+    // are out of scope here; clear it so this test measures only the hook's
+    // own lock and marker.
+    rmSync(join(dir, '.plur', 'engrams.yaml.lock'), { force: true })
+
+    // Past the lock's stale window, the next prompt runs the full injection.
+    await new Promise(r => setTimeout(r, 300))
+    const retry = prompt({ session_id, prompt: 'alpha5 topic' }, { PLUR_LOCK_STALE_MS: '200' })
+    expect(retry.stdout).toContain('session started')
+    expect(existsSync(join(sessions, `${session_id}.marker`))).toBe(true)
+  }, 90_000)
 })

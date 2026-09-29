@@ -446,6 +446,26 @@ const LOCK_STALE_MS =
     ? parseInt(process.env.PLUR_LOCK_STALE_MS, 10)
     : HOOK_CEILING_MS
 
+// The inject lock this run holds, if any. The watchdog removes it before its
+// process.exit(): exit skips every `finally`, and a lock left behind would make
+// every prompt for the next LOCK_STALE_MS bail silently (#1278 review).
+let heldInjectLock: string | null = null
+
+// Full first-message injections allowed per session before the hook stops
+// trying (#1278 review). Each attempt that does not finish — it threw, the
+// watchdog stopped it, or the editor killed it at its hook timeout — leaves no
+// marker, so without a cap a store that always overruns the timeout would run
+// the full injection on every prompt of the session.
+const MAX_INJECT_ATTEMPTS = 2
+
+function attemptsPath(key: string): string {
+  return join(sessionDir(), `${key}.attempts`)
+}
+
+function readAttempts(key: string): number {
+  try { return parseInt(readFileSync(attemptsPath(key), 'utf8'), 10) || 0 } catch { return 0 }
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Silent pass-through for projects without plur configured (#247).
   // Lets hooks be installed globally without affecting non-plur projects.
@@ -457,7 +477,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Installed after isPlurConfigured() so it only fires for
   // sessions that actually do work. unref() prevents it from delaying clean exit.
   runStartedAt = Date.now()
-  const watchdog = setTimeout(() => process.exit(0), HOOK_CEILING_MS)
+  const watchdog = setTimeout(() => {
+    if (heldInjectLock) try { unlinkSync(heldInjectLock) } catch { /* fail-open */ }
+    process.exit(0)
+  }, HOOK_CEILING_MS)
   watchdog.unref()
 
   const isRehydrate = args.includes('--rehydrate')
@@ -541,14 +564,26 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (Date.now() - s.mtimeMs < LOCK_STALE_MS) return
   } catch { /* no lock file — proceed */ }
   try { writeFileSync(injectLock, ''); injectLockAcquired = true } catch { /* fail-open */ }
+  if (injectLockAcquired) heldInjectLock = injectLock
 
   // Release the lock on every exit, including a throw from the injection —
   // a lock left behind would make the retry on the next prompt bail silently
   // until it goes stale (#1278).
   try {
+    if (!isRehydrate) {
+      const attempts = readAttempts(key)
+      if (attempts >= MAX_INJECT_ATTEMPTS) {
+        await skipCappedSession(input, key, marker)
+        return
+      }
+      // Counted BEFORE the heavy work: a run that is killed never gets to
+      // record anything afterwards.
+      try { writeFileSync(attemptsPath(key), String(attempts + 1)) } catch { /* fail-open */ }
+    }
     await injectSession(input, key, marker, isRehydrate, flags)
   } finally {
     if (injectLockAcquired) try { unlinkSync(injectLock) } catch {}
+    heldInjectLock = null
   }
   // #1313: the output (if any) has been flushed — emitContextConfirmed waits
   // for it. Exit now rather than let the abandoned hybrid search keep a
@@ -598,6 +633,24 @@ export async function waitForOwnStoreLock(lockPath: string, maxMs: number): Prom
     if (!mayBeOurs) return
     await new Promise(r => setTimeout(r, 25))
   }
+}
+
+/**
+ * The cap is reached: mark the session so later prompts take the cheap
+ * reminder path, and say once that automatic memory was skipped. Nothing here
+ * touches the store — whatever made the full injection fail (a store too large
+ * for the hook timeout, a store that does not load) would make a keyword-only
+ * fallback fail the same way, so none is attempted.
+ */
+async function skipCappedSession(input: Record<string, unknown>, key: string, marker: string): Promise<void> {
+  const task = (typeof input.prompt === 'string' && input.prompt) || 'general session'
+  try { writeFileSync(marker, JSON.stringify({ task, sessionId: randomUUID(), injection: 'skipped' })) } catch { /* fail-open */ }
+  touchReminder(key)
+  await emitContextConfirmed(
+    claudeHookEventName(input, { rehydrate: false, event: null }),
+    `[PLUR Memory — automatic injection skipped: the last ${MAX_INJECT_ATTEMPTS} attempts in this session did not finish] ` +
+      'Call plur_session_start or plur_recall to load memory for this session.',
+  )
 }
 
 async function injectSession(
