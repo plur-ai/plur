@@ -180,8 +180,13 @@ describe('hook-inject session marker keyed on session_id (#1278)', () => {
     mkdirSync(store, { recursive: true })
     writeFileSync(join(store, 'engrams.yaml'), 'engrams: [\n  - {bad')
     const env = { PLUR_PATH: store }
-    expect(prompt({ session_id, prompt: 'one' }, env).stdout).toContain('"error"')
-    expect(prompt({ session_id, prompt: 'two' }, env).stdout).toContain('"error"')
+    // Both attempts fail. Decision H1: a failed hook prints nothing on stdout
+    // (the error goes to stderr) and exits 0 — it used to print {"error"}.
+    for (const p of ['one', 'two']) {
+      const failed = prompt({ session_id, prompt: p }, env)
+      expect(failed.stdout).toBe('')
+      expect(failed.status).toBe(0)
+    }
     // Third prompt: capped. No full injection (which would fail on this store
     // again), a short notice instead, and the session is marked so later
     // prompts take the cheap path.

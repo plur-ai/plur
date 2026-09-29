@@ -249,6 +249,16 @@ try {
   // isn't, the fingerprint guard makes an unchanged YAML nearly free.
   await drainPendingIndexWork()
 } catch (err: any) {
+  // Hook commands never print errors to stdout (owner decision H1, formal
+  // field report cluster 5). An editor parses a hook's stdout as its result
+  // and shows a non-zero exit as a hook error, so an `{"error"}` document
+  // there — e.g. from an injection that threw after the watchdog had stopped
+  // the run — breaks the turn instead of failing open. Stderr, exit 0.
+  // Every other command keeps its error document and exit 1.
+  if (command.startsWith('hook-')) {
+    process.stderr.write(`[plur] ${command} failed: ${err?.message ?? 'unknown error'}\n`)
+    process.exit(0)
+  }
   if (shouldOutputJson(flags)) {
     outputJson({ error: err.message })
   } else {
