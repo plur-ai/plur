@@ -244,3 +244,11 @@ it. **Recommendation:** add the test; it is a few lines.
 Folder map: Q1 is "offer never here → off", Q2 is "ask in `$HOME`", Q3 is "CLI only". The owner
 asked for the design to be compacted around the overlap between `trust.yaml`, `folders.yaml`
 and `.plur.yaml`, which became r2 of the design note. r2 awaits approval.
+
+### Second round — 2026-09-29
+
+- **Folder map r2 approved.** Q-A: ask once for an untrusted repo remote. Q-B: fold `trust.yaml` into `folders.yaml`. Tracked in #1347.
+- **Comment to the reviewer on PR #1275:** approved and posted.
+- **Shared file-path team stores:** they get the same protection as url stores. What is in a team store stays there; global duplicates may be created. Applied in PR #1275.
+- **Auto-rate for team-server memories:** A. The client sends `source: auto` only to servers that advertise support. The server contract goes in a public spec. PR #1318.
+- **Trust matching (#1334):** fail closed. A trust granted before its folder existed, under a symlinked parent, needs `plur trust` again.

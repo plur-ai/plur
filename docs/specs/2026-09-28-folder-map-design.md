@@ -1,6 +1,6 @@
 # Folder map with "ask" — design note (revision 2, compacted)
 
-Status: **Draft r2, awaiting owner approval of the compaction. No implementation until approved.**
+Status: **Approved r2 (owner, 2026-09-29).** Implementation: #1347.
 Dates: r1 2026-09-28; r2 2026-09-29, which folds `trust.yaml` into the folder map.
 Triage: `docs/audits/2026-09-28-field-report-triage.md` item 3.
 
@@ -162,9 +162,18 @@ whose remote is already being refused today** (see Q-A).
 - Q1 → offer "never here", which writes `off`. *(decided 2026-09-29)*
 - Q2 → ask in `$HOME` like any other folder. *(decided 2026-09-29)*
 - Q3 → CLI only. *(decided 2026-09-29)*
-- **Q-A (new in r2): should an untrusted `.plur.yaml` remote trigger the one-time question?**
+- **Q-A → yes, ask once** *(decided 2026-09-29)*. Original question: should an untrusted `.plur.yaml` remote trigger the one-time question?
   **Proposed: yes.** The alternative is a remote leg that stays silently dead, which is the
   field report's symptom.
-- **Q-B (new in r2): fold `trust.yaml` into `folders.yaml`?** **Proposed: yes, with import
+- **Q-B → yes, fold it in** *(decided 2026-09-29)*. Original question: fold `trust.yaml` into `folders.yaml`? **Proposed: yes, with import
   and aliases as above.** The alternative keeps `trust.yaml` as a second file and adds
   `folders.yaml` beside it.
+
+## Open after approval (2026-09-29)
+
+- **Does `off` also silence the MCP tools?** Today it would not: the MCP server is registered
+  for the editor, not per folder, so the agent can still call `plur_*` tools in an `off`
+  folder. Proposal pending.
+- **Remotes and trust.** The owner proposes renaming `init-remote` to `remote` and dropping the
+  `trust` commands. The evaluation is in the reply of 2026-09-29; r3 of this note follows the
+  owner's answer.
