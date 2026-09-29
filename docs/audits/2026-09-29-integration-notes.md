@@ -41,6 +41,95 @@ duplicate-primary-store fix, and no trust changes. Some PR branches were
 pushed during the build: #1300 and #1307 each moved twice. The table lists
 the exact heads that were merged.
 
+## Refresh 2 — 2026-09-29 (quiet machine), heads as of the start
+
+`origin/main` @ `05bcb51b` (now includes #1348) merged first. Then, in this
+order, each head merged `--no-ff`:
+
+| PR | Branch | Head |
+|---|---|---|
+| #1272 | feat/1265-stores-add-url | 41b8737e |
+| #1273 | fix/1264-learn-delivery | 502b8b67 |
+| #1275 | fix/1268-shared-recurrence | a1425020 |
+| #1318 | feat/1310-auto-rate | db45f4e3 |
+| #1334 | fix/1319-duplicate-primary-store | 09c2a6f4 |
+| #1340 | fix/1317-secret-token-prefixes | d1c072b5 |
+| #1403 | feat/1347-folder-map-core | b94eef4e |
+| #1398 | fix/1354-empty-lock-takeover | c1e288cd |
+| #1270 | fix/1267-windows-init | 7340e05e |
+| #1276 | fix/1274-inject-delivery | 58ac8904 |
+| #1395 | fix/inject-task-file-perms | c507c92a |
+| #1396 | fix/h1-session-key-1276 | 7f95a958 |
+| #1353 | fix/1301-watchdog-lock | 2fd0d575 |
+| #1349 | fix/1343-codex-hook-lock | 869adc29 |
+| #1277 | fix/1269-hook-outbox-flush | 14730fc5 (already contains #1307 and #1309) |
+| #1400 | fix/h1-session-end-reader-1277 | dcf84245 |
+| — | fix/inject-embedding-warmup (PR not yet open) | 30dfdb5b |
+
+#1300, #1307, #1309, #1341 and #1342 are no longer open: they were merged
+into their base branches and arrive through #1276, #1277 and #1353.
+
+### Refresh 2 resolutions
+
+- **CHANGELOG.md** (most merges): kept every entry. Several conflicts were
+  artefacts of a recursive merge base (the base side showed `<<<<<<<<<
+  Temporary merge branch` markers and the PR side was empty); those take the
+  integration side. After each merge, a script compared every Unreleased entry
+  of the PR head with the branch. Every entry matches verbatim, except entries
+  that later stacked PRs extend on purpose (#1276's two entries, extended by
+  #1395, #1300, #1353 and the warmup branch), and #1270's stale copy of the
+  folder-map entry (main's current #1348/#1403 text is kept). Two fixes by
+  hand: #1334's new case-folding bullet was placed at the end of its own
+  entry, and the warmup paragraph was moved into the #1313 entry it belongs to.
+- **core `index.ts` imports** (#1272, #1277): union (`redactToken`,
+  `containsToken`, `RemoteTimeoutError`). Export block from #1318
+  (`GET_BY_IDS_REMOTE_CAP`) kept with #1265's and #1264's.
+- **core `index.ts` `flushOutbox`** (#1277): #1277's branch now contains
+  #1307 and #1309, so its flush (claims, idempotency key, `resend`,
+  `unconfirmed`) replaces the first build's hand merge. The resulting function
+  is byte-identical to #1277's.
+- **core `folders.ts`** (#1403): `withLock` import from #1403 and
+  `canonicalSpellings` from main, both kept.
+- **cli `doctor.ts`** (#1334, #1270): the report carries `ignoredDuplicateStores`
+  (#1334), `windowsHookFallback` (#1270), `outbox` (#1307) and
+  `codexCmdShimMcp`. The `overall` condition is unchanged.
+- **H2 (#1270) replaces the allow-lists**: `lib/hook-command.ts`,
+  `codex-hooks.ts`, `cursor-hooks.ts` and `mcp/src/hook-command.ts` take
+  #1270's prefix matcher. The `hook-auto-rate` list entries added in the first
+  build are gone.
+- **cli `init.ts`** (#1270 × #1276 × #1318 × #1341): #1270's `HookLaunch` (exec
+  form) builders, with #1341's sync 20s timeouts on `hook-inject` and the
+  rehydrate hook, and #1318's `hook-auto-rate claude` Stop hook written
+  through `mk()`. `buildInjectionHooks` and `buildEnforcementHooks` are
+  exported (for #1276's and #1300's `plur-mcp init` tests) and accept either
+  a `HookLaunch` or a plain launcher string (new `hookLaunchOf`). **Code
+  change; carry in whichever of #1270 and #1276 lands second.**
+- **mcp `index.ts`** (#1270 × #1300): #1300's `applyPlurHooks` kept; its
+  matcher is now #1270's H2 copy.
+- **mcp `test/hook-command.test.ts`** (#1300 × #1270): imported
+  `PLUR_SETTINGS_SUBCOMMANDS`, which H2 removed. It is now a local fixture
+  list, and `npx @plur-ai/cli hook-auto-rate-mine` is expected to be claimed
+  (H2). **Carry in whichever of #1270 and #1276 (which holds #1300) lands
+  second.**
+- **cli `test/init-windows-1267.test.ts`**: Cursor commands are `& "<shim>"`
+  (H3), and there are 5 of them (#1318 auto-rate). Subcommands are counted
+  from `args` (exec form). The no-duplicates check keys on matcher, command
+  and args.
+- **cli `hook-inject.ts`** (#1395, #1349, warmup branch): #1395's
+  `session-task.js` imports; #1349's `store-lock-exit.js` (the local
+  `waitForOwnStoreLock` is gone, so `tmpdir` is no longer imported); the
+  warmup branch's `startEmbeddingWarmup`, called before #1349's
+  `exitWhenStoreIdle` in both the watchdog and the abandoned-hybrid exit.
+  `storeLockPath` stays retired (#1349). **The warmup branch must merge
+  #1349 (it predates it).**
+- **cli `hook-session-end.ts`** (#1395 × #1400): the two new import lines are
+  adjacent, which gave a trivial conflict. Both are kept.
+
+Build and typecheck after refresh 2: `pnpm -r build` exit 0; `tsc --noEmit`
+exit 0 in core, migrate, ui, claw, cli, dsh, mcp and opencode. The full
+suites run on the formal branch (see
+`spec/formal/survey/2026-09-29-field-report-drift.md`).
+
 ## Refresh — 2026-09-29, heads as of the start of the refresh
 
 `origin/main` was still `524530e0` (#1271 and #1316 already in it), so merging
