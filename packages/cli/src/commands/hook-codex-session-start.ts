@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderPolicy, payloadDir, sessionSettings } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
@@ -28,9 +28,12 @@ import { recordInjected } from '../lib/auto-rate.js'
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex session-start', async () => {
-    if (!isPlurConfigured()) return
-
     const input = readStdinJson()
+    // #1347: only an `on` folder gets a session batch. An `ask` folder is
+    // asked by hook-codex-inject on the first prompt; `off` is silent.
+    const dir = payloadDir(input)
+    const policy = hookFolderPolicy(dir, flags)
+    if (policy.mode !== 'on') return
     const sessionId = codexSessionId(input)
     if (!sessionId) return
 
@@ -46,8 +49,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // #1198: carry the project's remote settings so Enterprise team memory
       // reaches Codex at session start too. The helper carries #1196's trust
       // gate, so this cannot reintroduce the exfiltration path.
-      const projectRemote = resolveProjectRemote(plur)
-      const projectConfig = projectRemote.config
+      const projectRemote = resolveProjectRemote(plur, dir)
+      const projectConfig = sessionSettings(policy, projectRemote.config)
       const injectOpts = {
         budget: 3000,
         ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),

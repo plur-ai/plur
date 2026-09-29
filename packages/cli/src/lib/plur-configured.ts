@@ -48,12 +48,10 @@ export function canonicalize(p: string): string {
  * home) — i.e., the user's project root IS $HOME. For nested projects the walk
  * stops without reading home's config files.
  *
- * Used by the session enforcement hooks (`hook-session-guard`,
- * `hook-session-remind`, `hook-session-mark`) and the injection hooks
- * (`hook-inject`, `hook-observe`, `hook-learn-check`), plus the Cursor
- * hooks (`hook-cursor-session-start`, `hook-cursor-guard`,
- * `hook-cursor-post-tool`) — all gate on this to stay silent for non-plur
- * projects.
+ * The hooks no longer gate on this directly (#1347): they ask the folder map
+ * through lib/folder-gate.ts, whose resolver walks the same markers
+ * (core `findPlurMarker`, held to this walk by a parity test). This stays as
+ * that gate's fallback when the resolver itself fails.
  *
  * Cheap — a few `existsSync` + JSON parses, terminates at `home`, the root, or the
  * first match.

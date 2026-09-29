@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
@@ -26,11 +26,22 @@ import { recordInjected } from '../lib/auto-rate.js'
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex inject', async () => {
-    if (!isPlurConfigured()) return
-
     const input = readStdinJson()
     const sessionId = codexSessionId(input)
     const prompt = String(input.prompt ?? '').trim()
+
+    // #1347: off is silent; ask prints the one question on the first prompt
+    // of the session (no memories, no sentinel), then nothing.
+    const dir = payloadDir(input)
+    const policy = hookFolderPolicy(dir, flags)
+    if (policy.mode === 'off') return
+    if (policy.mode === 'ask') {
+      let askPlur = null
+      try { askPlur = createPlur(flags, { readonly: true }) } catch { /* the question works without the ranker */ }
+      const ask = folderAskOnce({ dir, policy, sessionId, flags, plur: askPlur, prompt })
+      if (ask) emitContext('UserPromptSubmit', ask)
+      return
+    }
 
     if (sessionId) markSessionStarted(sessionId)
 
@@ -46,10 +57,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // `plur init-remote` onboarding got memory on Claude Code and silence
       // here. The helper carries #1196's trust gate with the capability, so
       // adding it cannot reintroduce the exfiltration path.
-      const projectRemote = resolveProjectRemote(plur)
+      const projectRemote = resolveProjectRemote(plur, dir)
+      const { scope } = sessionSettings(policy, projectRemote.config)
       const injectOpts = {
         budget: 2000,
-        ...(projectRemote.config.scope ? { scope: projectRemote.config.scope } : {}),
+        ...(scope ? { scope } : {}),
         ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
       }
 

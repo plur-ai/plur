@@ -2,7 +2,7 @@ import { readSync, readFileSync, writeFileSync, existsSync, appendFileSync, stat
 import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir, parsePayload } from '../lib/folder-gate.js'
 import { hookSessionKey } from '../lib/session-key.js'
 import { hookSessionDir } from '../lib/session-task.js'
 import { ensureSessionDir } from '../lib/codex-hook-io.js'
@@ -168,12 +168,11 @@ function readStdinRaw(): string {
 // explicit, near-silent answer so that turn costs as little as possible.
 export const LEARN_PROMPT = `[PLUR] Memory check: if your last response involved a correction, a stated preference, or a reusable discovery, call plur_learn for it now. Otherwise reply with just "ok". Do not repeat or continue your previous answer.`
 
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
 
-  // Silent pass-through for projects without plur configured (#247).
-  // Lets hooks be installed globally without affecting non-plur projects.
-  if (!isPlurConfigured()) return
+  // Silent unless the folder map says on (#1347; was #247's project gate).
+  if (!hookFolderOn(payloadDir(parsePayload(raw)), flags)) return
 
   // Parse stdin for cwd, session_id and stop_hook_active (Claude Code payload)
   let cwd = process.cwd()

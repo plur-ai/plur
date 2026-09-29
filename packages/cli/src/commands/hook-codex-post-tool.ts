@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
 import {
   readStdinJson,
   runCodexHook,
@@ -47,11 +47,11 @@ import {
 
 const TOOLS_BETWEEN_NUDGES = 12
 
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex post-tool', async () => {
-    if (!isPlurConfigured()) return
-
     const input = readStdinJson()
+    // Silent unless the folder map says on (#1347).
+    if (!hookFolderOn(payloadDir(input), flags)) return
     const sessionId = codexSessionId(input)
     if (!sessionId) return
 
