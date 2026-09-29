@@ -64,9 +64,20 @@ describe('importer dry run predicts the real run on every backend', () => {
     expect([dry.imported, dry.skipped]).toEqual([real.imported, real.skipped])
   })
 
-  it('YAML store: the same case is skipped in both (cross-scope recurrence)', async () => {
+  it('YAML store: the same case is imported in both — a shared-scope record is written into its own scope (decision F1)', async () => {
+    // Decision F1 (2026-09-29, following A1): a cross-scope match absorbs a
+    // record only when the record's scope is NOT shared. \`project:b\` is
+    // shared, so learn() writes the team copy and credits the project:a
+    // engram; the importer, dry and real, must say the same.
     const dry = await runImport(await fresh(), records, { from: 'generic', dryRun: true, scope: 'project:b' })
     const real = await runImport(await fresh(), records, { from: 'generic', scope: 'project:b' })
+    expect(real.imported).toBe(1)
+    expect([dry.imported, dry.skipped]).toEqual([real.imported, real.skipped])
+  })
+
+  it('YAML store: a personal-scope record matching another scope is skipped in both (cross-scope recurrence)', async () => {
+    const dry = await runImport(await fresh(), records, { from: 'generic', dryRun: true, scope: 'global' })
+    const real = await runImport(await fresh(), records, { from: 'generic', scope: 'global' })
     expect(real.skipped).toBe(1)
     expect([dry.imported, dry.skipped]).toEqual([real.imported, real.skipped])
   })

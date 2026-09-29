@@ -281,3 +281,19 @@ and a CLI `--source auto` flag.
 | queued row not counted on promotion | `a2_row_kept`, `a2_exactly_one_linked` |
 | second global copy despite a twin | `a2_at_most_one`, `a2_exactly_one_linked` |
 | auto feedback promotes | `auto_feedback_keeps_commitment` |
+
+## Decision F1 applied (2026-09-29, formal/field-report-2026-09-29)
+
+Decision F1 applied: the importer follows A1. `Plur.wouldDeduplicate()`
+counts a match in ANOTHER scope only when the record's scope is not shared;
+`dedupScopeFor().acrossScopes` is false for a shared scope. A shared-scope
+record is imported into its own scope and learn() credits the match
+(recurrence + `validated_by`); dry run and real run agree. Tests:
+`import-shared-scope.test.ts` (ported from #1275); updated
+`formal-r2-corea-import-parity.test.ts` › "YAML store: the same case is
+imported in both…" (was "…skipped in both"), plus a personal-scope case;
+`formal-r2-apply-core-followups.test.ts` F3 YAML case (two shared scopes are
+now two imports; a new personal-scope case keeps the scope-blind check);
+`formal-r2-apply-core-reimport.test.ts` cross-scope re-import now pins a
+personal scope. The two A1 importer replays in `formal-fr-c1-replays.test.ts`
+(`it.fails`) now pass and need flipping to plain tests.

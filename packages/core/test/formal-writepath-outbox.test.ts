@@ -100,6 +100,9 @@ describe('formal WritePath — outbox delivery races (candidate 1)', () => {
     const e = await plur.learn(statement, { scope: SCOPE, type: 'behavioral' })
     await waitFor(() => !!rowOf(e.id)?.structured_data?._outbox?.last_error, 'the background push to record its failure')
     // The background task releases its in-flight claim just after that write.
+    // Decision C3: the flush no longer waits on the store lock before
+    // selecting, so wait for the per-entry claim to be gone too.
+    await waitFor(() => !existsSync(join(plur.outboxClaimsDir(), `${e.id}.json`)), 'the failed push to release its claim')
     await new Promise(r => setTimeout(r, 30))
     remote.posts.length = 0
     return e

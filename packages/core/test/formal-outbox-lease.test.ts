@@ -13,6 +13,12 @@
  * (real TCP, no fetch mocking) and counts every POST and DELETE. Interleavings
  * are forced by holding one POST open on the stub (`appendHook`) while the
  * other instance runs to completion. No real service is contacted.
+ *
+ * Decision C3 (owner, 2026-09-29; spec/formal/findings/outbox.md): #1277's
+ * per-entry claims are the ONE duplicate-push guard. Row leases are no longer
+ * taken or waited for on the push path; a lease an older client left on a row
+ * holds nothing back, and `leased_until` in the outbox listing is advisory
+ * (it reports the live claim). The tests below pin that.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
@@ -92,11 +98,17 @@ describe('outbox lease — two processes flushing one store', () => {
     return { release, arrived: () => arrived }
   }
 
+  /** The per-entry claim file (#1277) a writer holds while it pushes `id`. */
+  const claimOf = (plur: Plur, id: string) => join(plur.outboxClaimsDir(), `${id}.json`)
+
   /** Learn while the store rejects writes, so the engram sits queued (attempt_count 1). */
   async function queued(plur: Plur, statement: string) {
     server.appendErrorResponse = { status: 503, body: 'down' }
     const e = await plur.learn(statement, { scope: SCOPE, type: 'behavioral' })
     await waitFor(() => !!rowOf(e.id)?.structured_data?._outbox?.last_error, 'the background push to record its failure')
+    // Decision C3: the flush no longer waits on the store lock before
+    // selecting, so wait for the failed push to let go of its claim too.
+    await waitFor(() => !existsSync(claimOf(plur, e.id)), 'the failed push to release its claim')
     await new Promise(r => setTimeout(r, 30))
     server.appendErrorResponse = null
     server.appendCalls = 0
@@ -129,7 +141,9 @@ describe('outbox lease — two processes flushing one store', () => {
     const hold = holdNextAppend()
     const e = await a.learn('a team fact whose first push is slow', { scope: SCOPE, type: 'behavioral' })
     await waitFor(hold.arrived, "learn()'s background push to be on the wire")
-    expect(rowOf(e.id)?.structured_data?._outboxLease?.holder, 'learn() queues the row under its own lease').toBeTruthy()
+    // Decision C3: learn() holds the per-entry claim, not a row lease.
+    expect(rowOf(e.id)?.structured_data?._outboxLease, 'learn() still stamps a row lease').toBeUndefined()
+    expect(existsSync(claimOf(a, e.id)), "learn()'s push holds the entry's claim").toBe(true)
 
     const rb = await b.flushOutbox()
     expect(rb.flushed).toBe(0)
@@ -153,22 +167,16 @@ describe('outbox lease — two processes flushing one store', () => {
     expect(rowOf(e.id)).toBeUndefined()
   })
 
-  it('a crashed holder does not block forever: its live lease is honoured, then taken over once it expires', async () => {
+  it('decision C3: a live row lease (an older client, a crashed holder) no longer holds delivery back', async () => {
     const a = new Plur({ path: dir })
     const b = new Plur({ path: dir })
     const e = await queued(a, 'a team fact whose holder crashed mid-flush')
     const expires = new Date(Date.now() + 400).toISOString()
     editRow(e.id, row => { row.structured_data._outboxLease = { holder: 'crashed-process', expires_at: expires } })
 
+    // No claim is held on the entry, so it is delivered at once, exactly once.
     const first = await b.flushOutbox()
-    expect(first.flushed).toBe(0)
-    expect(server.appendCalls, 'a live foreign lease was ignored').toBe(0)
-    expect(rowOf(e.id)?.structured_data?._outboxLease, "another process's lease was overwritten")
-      .toEqual({ holder: 'crashed-process', expires_at: expires })
-
-    await new Promise(r => setTimeout(r, 450))
-    const second = await b.flushOutbox()
-    expect(second.flushed).toBe(1)
+    expect(first.flushed, 'a row lease still held the push back').toBe(1)
     expect(server.appendCalls).toBe(1)
     expect(rowOf(e.id)).toBeUndefined()
   })
@@ -193,7 +201,7 @@ describe('outbox lease — two processes flushing one store', () => {
     expect(server.appendCalls).toBe(1)
   })
 
-  it('retire-on-remote entries honour a live foreign lease and are retired once it expires', async () => {
+  it('decision C3: a retire-on-remote entry under a live row lease is retired at once (the DELETE is idempotent)', async () => {
     const a = new Plur({ path: dir })
     const b = new Plur({ path: dir })
     const e = await queued(a, 'a team fact forgotten while its push was on the wire')
@@ -209,17 +217,12 @@ describe('outbox lease — two processes flushing one store', () => {
     })
 
     const first = await b.flushOutbox()
-    expect(server.deleteCalls, 'a retirement another process holds was sent again').toBe(0)
-    expect(first.flushed).toBe(0)
-    expect(rowOf(e.id)?.structured_data?._retireRemote?.server_id).toBe('ENG-SRV-999')
-
-    await new Promise(r => setTimeout(r, 450))
-    const second = await b.flushOutbox()
-    expect(second.flushed).toBe(1)
+    expect(first.flushed, 'a row lease still held the retirement back').toBe(1)
     expect(server.deleteCalls).toBe(1)
-    const after = rowOf(e.id)
-    expect(after?.structured_data?._retireRemote).toBeUndefined()
-    expect(after?.structured_data?._outboxLease).toBeUndefined()
+    expect(rowOf(e.id)?.structured_data?._retireRemote).toBeUndefined()
+    const second = await b.flushOutbox()
+    expect(second.flushed).toBe(0)
+    expect(server.deleteCalls, 'a done retirement was sent again').toBe(1)
   })
 
   it('the lease is bookkeeping, never content, and an update cannot forge one', async () => {
@@ -273,29 +276,27 @@ describe('outbox lease — two processes flushing one store', () => {
     return { release: async () => { release(); await held } }
   }
 
-  it('finding 1: a flush that waited for the store lock reads the lease clock after it, not before', async () => {
+  it('decision C3: a flush posts without first waiting for the store lock', async () => {
+    // Before C3 the flush selected and leased under the store lock, so a hook
+    // flush behind a long lock holder never got its POST out (the abandoned-
+    // hook case). Now only the merge-back takes the lock.
     const a = new Plur({ path: dir })
-    const e = await queued(a, 'a team fact another process leased while A waited for the lock')
-    const clock = shiftClock()
+    const e = await queued(a, 'a team fact flushed while another process holds the store lock')
+    const lock = await holdStoreLock()
+    let ra: Awaited<ReturnType<Plur['flushOutbox']>> | undefined
     try {
-      const lock = await holdStoreLock()
-      const flushingA = a.flushOutbox() // waits for the lock
-      await new Promise(r => setTimeout(r, 50))
-      // Six minutes pass (a long sync holds the lock); meanwhile another
-      // process took the row with a fresh, LIVE lease.
-      clock.add(6 * 60_000)
-      editRow(e.id, row => {
-        row.structured_data._outboxLease = { holder: 'process-b', expires_at: new Date(Date.now() + OUTBOX_LEASE_TTL_MS).toISOString() }
-      })
+      const flushingA = a.flushOutbox().then(r => { ra = r; return r })
+      await waitFor(() => server.appendCalls === 1, 'the POST to go out while the store lock is held')
+      expect(ra, 'the flush finished its merge-back while the lock was held').toBeUndefined()
       await lock.release()
-      const ra = await flushingA
-      expect(ra.flushed).toBe(0)
-      expect(server.appendCalls, "A judged B's live lease from a clock read before the lock wait").toBe(0)
-      expect(rowOf(e.id)?.structured_data?._outboxLease?.holder).toBe('process-b')
-    } finally { clock.restore() }
+      await flushingA
+    } finally { await lock.release() }
+    expect(ra?.flushed).toBe(1)
+    expect(server.appendCalls).toBe(1)
+    expect(rowOf(e.id)).toBeUndefined()
   })
 
-  it('finding 2: a merge-back that waits on the store lock still lands inside the lease (no redelivery)', async () => {
+  it('finding 2 (decision C3): a merge-back that waits on the store lock is not redelivered — a lapsed claim is found by key', async () => {
     const a = new Plur({ path: dir })
     const b = new Plur({ path: dir })
     const e1 = await queued(a, 'the first team fact of a slow batch')
@@ -307,27 +308,28 @@ describe('outbox lease — two processes flushing one store', () => {
     try {
       const flushingA = a.flushOutbox()
       await waitFor(() => arrivals === 1, "A's first POST")
-      // The batch ran long: the second push starts at the last moment the
-      // margin allows.
-      clock.add(OUTBOX_LEASE_TTL_MS - OUTBOX_LEASE_MARGIN_MS - 5_000)
+      clock.add(30_000) // the POST takes its full request bound
       gates[0]()
       await waitFor(() => arrivals === 2, "A's second POST")
-      // A long lock holder takes the store lock; B queues behind it, A's
-      // merge-back queues behind B.
+      // A long lock holder takes the store lock; A's second POST lands and
+      // its merge-back queues behind the lock.
       const lock = await holdStoreLock()
-      clock.add(30_000) // the POST takes its full request bound
-      clock.add(DEFAULT_ACQUIRE_TIMEOUT) // the lock is held for the whole acquire bound
-      const flushingB = b.flushOutbox()
-      await new Promise(r => setTimeout(r, 20))
-      server.appendHook = null // any later POST (a redelivery) answers at once
+      clock.add(30_000)
       gates[1]()
+      await new Promise(r => setTimeout(r, 50))
+      // The lock is held for the whole acquire bound: A's claims lapse.
+      clock.add(DEFAULT_ACQUIRE_TIMEOUT)
+      server.appendHook = null // any later POST (a redelivery) answers at once
+      const flushingB = b.flushOutbox()
       await new Promise(r => setTimeout(r, 50))
       await lock.release()
       const rb = await flushingB
       const ra = await flushingA
-      expect(ra.flushed).toBe(2)
-      expect(rb.flushed, 'B took rows A had already delivered').toBe(0)
+      // Decision C3: B took the lapsed claims over, marked the entries in
+      // doubt and found both on the server by their keys instead of POSTing
+      // them again; whichever merge-back runs first hands them off.
       expect(server.appendCalls, 'a statement was delivered twice').toBe(2)
+      expect(ra.flushed + rb.flushed).toBeGreaterThanOrEqual(2)
       expect(rowOf(e1.id)).toBeUndefined()
       expect(rowOf(e2.id)).toBeUndefined()
     } finally { clock.restore(); for (const g of gates) g() }
@@ -352,12 +354,13 @@ describe('outbox lease — two processes flushing one store', () => {
     expect(server.appendCalls).toBe(0)
   })
 
-  it('finding 4: a flush that throws after leasing releases its leases', async () => {
+  it('finding 4: a flush that throws mid-way leaves no lease and no claim behind', async () => {
     const a = new Plur({ path: dir })
     const e = await queued(a, 'a team fact whose flush blows up mid-way')
     ;(a as any)._getRemoteDriver = () => { throw new Error('driver construction failed') }
     await expect(a.flushOutbox()).rejects.toThrow('driver construction failed')
     expect(rowOf(e.id)?.structured_data?._outboxLease, 'a lease outlived the flush that took it').toBeUndefined()
+    expect(existsSync(claimOf(a, e.id)), 'a claim outlived the flush that took it').toBe(false)
     expect(rowOf(e.id)?.structured_data?._outbox).toBeTruthy()
     const r = await new Plur({ path: dir }).flushOutbox()
     expect(r.flushed).toBe(1)
@@ -365,7 +368,7 @@ describe('outbox lease — two processes flushing one store', () => {
 
   // ---- Review of #1231 (2026-09-28) ------------------------------------------
 
-  it("a failed learn() push does not release the lease a flush in the same instance just took", async () => {
+  it("a failed learn() push and flushes racing it deliver the row once (decision C3: the claim guards it)", async () => {
     // A's learn() push fails; before its bookkeeping write, a flush in A takes
     // the store lock. Releasing by holder id (and the in-flight claim before
     // that write) let the flush re-lease and POST the row, and then the failed
@@ -395,6 +398,7 @@ describe('outbox lease — two processes flushing one store', () => {
       await new Promise(r => setTimeout(r, 100)) // the failure reaches learn(), which waits for the lock
       await lock.release()
       await waitFor(() => rowOf(e.id)?.structured_data?._outbox?.attempt_count === 1, "the failed push's bookkeeping")
+      await waitFor(() => !existsSync(claimOf(a, e.id)), 'the failed push to release its claim')
       const flushingB = b.flushOutbox()
       await new Promise(r => setTimeout(r, 50))
       releaseSecond()
@@ -438,65 +442,7 @@ describe('outbox lease — two processes flushing one store', () => {
     } finally { failFirst() }
   })
 
-  it('a flush whose lease runs short mid-batch does not start the remaining pushes', async () => {
-    const a = new Plur({ path: dir })
-    const e1 = await queued(a, 'the first team fact of a batch that outlives its lease')
-    const e2 = await queued(a, 'the second team fact of a batch that outlives its lease')
-    const clock = shiftClock()
-    try {
-      // The first push takes so long that less than the margin is left after it.
-      server.appendHook = async (n: number) => { if (n === 1) clock.add(OUTBOX_LEASE_TTL_MS - OUTBOX_LEASE_MARGIN_MS + 1_000) }
-      const r = await a.flushOutbox()
-      expect(r.flushed).toBe(1)
-      expect(server.appendCalls, 'a push started with less than the margin left on its lease').toBe(1)
-      expect(r.expired_warnings.some(w => w.includes('ran short'))).toBe(true)
-      const left = [rowOf(e1.id), rowOf(e2.id)].filter(Boolean)
-      expect(left).toHaveLength(1)
-      expect(left[0].structured_data._outbox, 'the row not attempted stays queued').toBeTruthy()
-      expect(left[0].structured_data._outboxLease, 'its lease is released for the next flush').toBeUndefined()
-    } finally { clock.restore() }
-  })
-
-  it('a flush whose lease runs short mid-batch does not start the remaining retirements', async () => {
-    const a = new Plur({ path: dir })
-    const ids: string[] = []
-    for (const [i, stmt] of ['the first forgotten team fact', 'the second forgotten team fact'].entries()) {
-      const e = await queued(a, stmt)
-      editRow(e.id, row => {
-        row.status = 'retired'
-        delete row.structured_data._outbox
-        row.structured_data._retireRemote = {
-          target_url: url, target_scope: SCOPE, server_id: `ENG-SRV-90${i}`,
-          queued_at: new Date().toISOString(), last_attempt: '', attempt_count: 0, last_error: '',
-        }
-      })
-      ids.push(e.id)
-    }
-    const clock = shiftClock()
-    const orig = (a as any)._getRemoteDriver.bind(a)
-    let deletes = 0
-    ;(a as any)._getRemoteDriver = (...args: any[]) => {
-      const d = orig(...args)
-      const remove = d.removeIdempotent.bind(d)
-      d.removeIdempotent = async (id: string) => {
-        const out = await remove(id)
-        if (++deletes === 1) clock.add(OUTBOX_LEASE_TTL_MS - OUTBOX_LEASE_MARGIN_MS + 1_000)
-        return out
-      }
-      return d
-    }
-    try {
-      const r = await a.flushOutbox()
-      expect(server.deleteCalls, 'a retirement started with less than the margin left on its lease').toBe(1)
-      expect(r.flushed).toBe(1)
-      expect(r.expired_warnings.some(w => w.includes('ran short'))).toBe(true)
-      const still = ids.map(rowOf).filter(row => row?.structured_data?._retireRemote)
-      expect(still, 'the retirement not attempted stays queued').toHaveLength(1)
-      expect(still[0].structured_data._outboxLease).toBeUndefined()
-    } finally { clock.restore() }
-  })
-
-  it("listOutbox reports leased_until for a row being pushed now, this instance's own push included", async () => {
+  it("listOutbox reports leased_until (advisory, from the claim) for a row being pushed now, this instance's own push included", async () => {
     const a = new Plur({ path: dir })
     const e = await queued(a, 'a team fact listed while its push is on the wire')
     const hold = holdNextAppend()
@@ -506,6 +452,7 @@ describe('outbox lease — two processes flushing one store', () => {
     const other = (await new Plur({ path: dir }).listOutbox()).find(x => x.id === e.id)
     expect(own?.leased_until).toBeTruthy()
     expect(other?.leased_until).toBe(own?.leased_until)
+    expect(rowOf(e.id)?.structured_data?._outboxLease, 'the push wrote a row lease').toBeUndefined()
     hold.release()
     await flushing
   })

@@ -232,8 +232,9 @@ describe('formal cluster 3: exactly-once delivery of outbox writes', () => {
     const doc = yaml.load(readFileSync(path, 'utf8')) as any
     const rows: any[] = Array.isArray(doc) ? doc : doc.engrams
     const row = rows.find(r => r.id === id)
-    expect(row.structured_data._outboxLease).toBeTruthy() // A's lease is on the row
-    row.structured_data._outboxLease.expires_at = new Date(Date.now() - 1000).toISOString()
+    // Decision C3 (2026-09-29): the push no longer writes a row lease, so
+    // there is none to expire — the claim is the only guard left to vary.
+    expect(row.structured_data._outboxLease).toBeUndefined()
     writeFileSync(path, yaml.dump(doc))
   }
   const claimsDir = () => join(dir, 'cache', 'outbox-claims')

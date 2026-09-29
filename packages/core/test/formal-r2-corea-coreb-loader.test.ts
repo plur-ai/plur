@@ -11,7 +11,7 @@
  * No network.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
@@ -21,6 +21,19 @@ import { tokenHealthKey } from '../src/remote-recall.js'
 import { normalizeEndpointUrl } from '../src/store/remote-store.js'
 
 const SCOPE = 'group:plur/eng'
+
+async function settled(plur: Plur, id: string): Promise<void> {
+  // Decision C3: the flush no longer waits on the store lock before selecting,
+  // so a test that flushes right after learn() waits for the failed first push
+  // to be recorded and to let go of its per-entry claim.
+  const deadline = Date.now() + 5000
+  for (;;) {
+    const row: any = await plur.getById(id)
+    if (row?.structured_data?._outbox?.last_error && !existsSync(join(plur.outboxClaimsDir(), `${id}.json`))) return
+    if (Date.now() >= deadline) throw new Error('timed out waiting for the failed push to settle')
+    await new Promise(r => setTimeout(r, 5))
+  }
+}
 
 describe('R2-CoreB loader fixes in _loadSecondaryAndPacks', () => {
   let dir: string
@@ -95,8 +108,8 @@ describe('R2-CoreB core-policy#3 in flushOutbox: the 429 cooldown is per credent
       stores: [{ url: URL_, token: 'ta', scope: 'group:acme/team', shared: true, readonly: false }], index: false,
     }))
     const plur = new Plur({ path: dir })
-    await plur.learn('Team fact queued while offline', { scope: 'group:acme/team' })
-    await new Promise(r => setTimeout(r, 50))
+    const queuedRow = await plur.learn('Team fact queued while offline', { scope: 'group:acme/team' })
+    await settled(plur, queuedRow.id)
     fail = false
     posts.length = 0
     // Token 'ta' is in a 429 cooldown (per-credential state, CoreB format).

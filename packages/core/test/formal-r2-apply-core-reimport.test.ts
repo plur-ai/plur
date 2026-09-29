@@ -48,14 +48,18 @@ describe('Decision R: re-importing an existing record is a true skip', () => {
     expect(await snapshot(plur)).toBe(before)
   })
 
-  it('a cross-scope re-import neither records recurrence nor graduates the engram', async () => {
+  it('a cross-scope re-import into a personal scope neither records recurrence nor graduates the engram', async () => {
+    // Decision F1 (2026-09-29, following A1): only a record whose scope is NOT
+    // shared is absorbed by another scope's engram. A shared-scope re-import is
+    // written into its own scope and credits the match
+    // (import-shared-scope.test.ts), so this pins the personal-scope case.
     const plur = fresh()
     await runImport(plur, records, { from: 'generic' })
     const before = await snapshot(plur)
-    const again = await runImport(plur, records, { from: 'generic', scope: 'project:other' })
+    const again = await runImport(plur, records, { from: 'generic', scope: 'user:alice' })
     expect(again.skipped).toBe(2)
     expect(await snapshot(plur)).toBe(before)
-    const again2 = await runImport(plur, records, { from: 'generic', scope: 'project:third' })
+    const again2 = await runImport(plur, records, { from: 'generic', scope: 'user:bob' })
     expect(again2.skipped).toBe(2)
     expect(await snapshot(plur)).toBe(before)
   })

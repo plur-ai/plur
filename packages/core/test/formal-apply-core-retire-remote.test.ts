@@ -91,6 +91,9 @@ describe('Decision D1 — a remote copy accepted after a local cancel is queued 
     remote.setMode('fail')
     const e = await plur.learn(statement, { scope: SCOPE, type: 'behavioral' })
     await waitFor(() => !!rowOf(e.id)?.structured_data?._outbox?.last_error, 'the failed push to be recorded')
+    // Decision C3: the flush no longer waits on the store lock before
+    // selecting, so wait for the failed push to let go of its claim too.
+    await waitFor(() => !existsSync(join(plur.outboxClaimsDir(), `${e.id}.json`)), 'the failed push to release its claim')
     await new Promise(r => setTimeout(r, 30))
     remote.posts.length = 0
     return e

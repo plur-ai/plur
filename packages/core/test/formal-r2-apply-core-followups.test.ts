@@ -157,9 +157,21 @@ describe('F3: in-file duplicates across scopes, dry run vs real run', () => {
     expect(actions(dry)).toEqual(actions(real))
   })
 
-  it('YAML store: still scope-blind (cross-scope recurrence) in both modes', async () => {
+  it('YAML store: two shared scopes → two imports in both modes (decision F1: a shared-scope record is never absorbed across scopes)', async () => {
     const real = await runImport(plurWith(), recs, { from: 'generic' })
     const dry = await runImport(plurWith(), recs, { from: 'generic', dryRun: true })
+    expect(actions(real)).toEqual(['imported', 'imported', 'skipped'])
+    expect(actions(dry)).toEqual(actions(real))
+  })
+
+  it('YAML store: personal scopes are still scope-blind (cross-scope recurrence) in both modes', async () => {
+    const personal = [
+      { statement: 'Tag every release', scope: 'global' },
+      { statement: 'Tag every release', scope: 'user:alice' },
+      { statement: 'Tag every release', scope: 'user:alice' },
+    ]
+    const real = await runImport(plurWith(), personal, { from: 'generic' })
+    const dry = await runImport(plurWith(), personal, { from: 'generic', dryRun: true })
     expect(actions(real)).toEqual(['imported', 'skipped', 'skipped'])
     expect(actions(dry)).toEqual(actions(real))
   })

@@ -15,7 +15,7 @@
  * Model: spec/formal/PlurSpec/R2CoreA.lean §4. `globalThis.fetch` is mocked.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, utimesSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
@@ -26,6 +26,19 @@ const REMOTE_A = 'https://a.example.com/sse'
 const REMOTE_B = 'https://b.example.com/sse'
 const SCOPE = 'group:acme/team'
 const INFRA = 'The staging box answers on 10.1.2.3:8080'
+
+async function settled(plur: Plur, id: string): Promise<void> {
+  // Decision C3: the flush no longer waits on the store lock before selecting,
+  // so a test that flushes right after learn() waits for the failed first push
+  // to be recorded and to let go of its per-entry claim.
+  const deadline = Date.now() + 5000
+  for (;;) {
+    const row: any = await plur.getById(id)
+    if (row?.structured_data?._outbox?.last_error && !existsSync(join(plur.outboxClaimsDir(), `${id}.json`))) return
+    if (Date.now() >= deadline) throw new Error('timed out waiting for the failed push to settle')
+    await new Promise(r => setTimeout(r, 5))
+  }
+}
 
 function fakeRemote(opts: { failPosts?: boolean } = {}) {
   const posts: Array<{ url: string; body: any }> = []
@@ -95,7 +108,7 @@ describe('core-index#9a — egress guards read the CURRENT config', () => {
     writeConfig(true)
     const plur = new Plur({ path: dir })
     const e = await plur.learn(INFRA, { scope: SCOPE })
-    await new Promise(r => setTimeout(r, 50))
+    await settled(plur, e.id)
     expect(((await plur.getById(e.id)) as any)?.structured_data?._outbox).toBeDefined()
     remote.setFailPosts(false)
     remote.posts.length = 0

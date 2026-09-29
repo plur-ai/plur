@@ -260,3 +260,31 @@ and the id map (unchanged, modelled in R2CoreA/WritePath).
 Mutation results (scratch copies, `lake env lean`): each mutation named above
 made the named theorem stop proving; additionally an orphan takeover that
 does not mark doubt, or that posts, makes `cinv_step` stop proving.
+
+## Decision C3 applied (2026-09-29, formal/field-report-2026-09-29)
+
+Decision C3 applied: claims only. #1277's per-entry claims are the one
+duplicate-push guard; #1228's row leases left the push path.
+
+- `packages/core/src/index.ts` `_flushOutboxClaimed`: selection is a plain
+  load (no store lock, no lease written, no `leaseStillCovers` check, no
+  "ran short" warning); only the merge-back takes the store lock. learn()'s
+  immediate push writes no `_outboxLease`. `_releaseOutboxLeases` removed.
+  The wire copy still strips `_outboxLease`, and `updateEngram` still refuses
+  a caller-set one (rows from older clients may carry it).
+- Fix (1) of the recommendation, which claims-alone needs: the takeover in
+  `_claimOutboxEntry` renames a new claim file over the stale one (never
+  rm-then-create), so the path is never free (`atomic_never_none`). Each claim
+  carries a nonce; `_releaseOutboxClaim` releases only its own (two writers in
+  one process share a pid).
+- `listOutbox().leased_until` is advisory: the live claim's expiry (any
+  holder's, this instance's own included), or a live row lease an older client
+  left. Nothing is held back by it.
+- Not done here (still NEEDS-OWNER): 1a (first-leg timeout in doubt) and 1b
+  (keep in-doubt/minted-key claims on a thrown flush).
+- Residual: a POST held open longer than the claim lease (60 s) can be taken
+  over while nothing has landed yet, so the probe finds nothing and the entry
+  is posted again. The request bound (30 s) keeps this out of reach unless
+  the bound fails; the 10-minute lease used to cover that case too.
+- Tests: `outbox-claim-takeover.test.ts` (new); `formal-outbox-lease.test.ts`
+  updated (see the commit message for the list).
