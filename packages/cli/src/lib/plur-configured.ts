@@ -1,12 +1,30 @@
 import { existsSync, readFileSync, realpathSync } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 
-// Resolves symlinks so that `process.cwd()` (which the OS resolves canonically
-// via getcwd()) and `homedir()` (which reads the `$HOME` env verbatim) agree
-// even when `/tmp` or another component is a bind-mount or symlink (#521).
-function canonicalize(p: string): string {
-  try { return realpathSync(p) } catch { return resolve(p) }
+/**
+ * Resolves symlinks so that `process.cwd()` (which the OS resolves canonically
+ * via getcwd()) and `homedir()` (which reads the `$HOME` env verbatim) agree
+ * even when `/tmp` or another component is a bind-mount or symlink (#521).
+ *
+ * A copy of `canonicalize` in packages/core/src/project-config.ts, kept here
+ * without a core import so the lightweight hooks stay cheap; a parity test
+ * holds the two together (#1357). `realpathSync.native` folds letter case to
+ * the on-disk name on case-insensitive filesystems; a missing path resolves
+ * its deepest existing ancestor and re-appends the rest (#1319).
+ */
+export function canonicalize(p: string): string {
+  const abs = resolve(p)
+  try { return realpathSync.native(abs) } catch {}
+  const tail: string[] = []
+  let cur = abs
+  for (;;) {
+    const parent = dirname(cur)
+    if (parent === cur) return abs
+    tail.unshift(basename(cur))
+    cur = parent
+    try { return join(realpathSync.native(cur), ...tail) } catch {}
+  }
 }
 
 /**

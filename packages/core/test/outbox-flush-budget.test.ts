@@ -116,12 +116,13 @@ describe('flushOutbox({ timeoutMs }) (#1269)', () => {
     expect(await plur.outboxCount()).toBe(0)
   })
 
-  it('sends a stable idempotency key: the local engram id', async () => {
+  it('sends an idempotency key that is NOT the local engram id (audit follow-up)', async () => {
     const plur = new Plur({ path: dir })
     await queue(plur, 1)
     const [entry] = await plur.listOutbox()
     await plur.flushOutbox({ timeoutMs: 5_000 })
-    expect(server.lastAppendIdempotencyKey).toBe(entry.id)
+    expect(server.lastAppendIdempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+    expect(server.lastAppendIdempotencyKey).not.toBe(entry.id)
   })
 
   it('the budget starts after the local store load, not before', async () => {

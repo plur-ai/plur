@@ -11,8 +11,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
-import { tmpdir } from 'os'
-import yaml from 'js-yaml'
+import { tmpdir, hostname } from 'os'
+import { loadEngrams } from '@plur-ai/core'
+import { namespaceEngramId } from '../../core/src/engrams.js'
 import { runCli } from './helpers/spawn.js'
 import { builtCliPath } from './helpers/built-cli.js'
 
@@ -53,12 +54,46 @@ function cli(e: Env, args: string[], input: unknown, extraEnv: Record<string, st
     cwd: e.project,
     env: { ...e.env, ...extraEnv },
   })
+  // The hook may hand its store work to a background worker; wait for it so
+  // assertions read the settled store.
+  if (args[0] === 'hook-auto-rate') waitIdle(e)
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status }
 }
 
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/** Block until no auto-rate turn is queued and no worker is running. */
+function waitIdle(e: Env, timeoutMs = 90_000): void {
+  const dir = join(e.root, 'tmp', 'plur-auto-rate')
+  const t0 = Date.now()
+  while (existsSync(dir) && readdirSync(dir).some(f => /\.(queue|worker)/.test(f))) {
+    if (Date.now() - t0 > timeoutMs) throw new Error(`auto-rate still busy: ${readdirSync(dir).join(', ')}`)
+    sleepSync(100)
+  }
+}
+
+/** A large store written straight to YAML (no Plur round trip). */
+function writeLargeStore(e: Env, n: number, extra: string): string {
+  const lines = ['engrams:']
+  const words = ['deploy', 'billing', 'cache', 'queue', 'schema', 'review', 'release', 'index', 'token', 'budget']
+  const entry = (id: string, st: string) => lines.push(
+    `  - id: ${id}`, '    version: 2', '    status: active', '    consolidated: false', '    type: behavioral',
+    '    scope: global', '    visibility: private', `    statement: "${st}"`, '    commitment: leaning',
+    "    activation: { retrieval_strength: 0.7, storage_strength: 1.0, frequency: 0, last_accessed: '2026-09-01' }",
+    '    feedback_signals: { positive: 0, negative: 0, neutral: 0 }', '    associations: []', '    derivation_count: 1',
+    '    tags: []', '    pack: null', '    abstract: null', '    derived_from: null', '    reference_count: 1', '    sources: []')
+  for (let i = 1; i <= n; i++) entry(`ENG-2026-0901-${String(i).padStart(5, '0')}`, `Rule ${i}: prefer ${words[i % 10]} ${words[(i * 7) % 10]} handling in module ${i % 97}`)
+  const target = 'ENG-2026-0902-00001'
+  entry(target, extra)
+  mkdirSync(e.plurPath, { recursive: true })
+  writeFileSync(join(e.plurPath, 'engrams.yaml'), lines.join('\n') + '\n')
+  return target
+}
+
 function engrams(e: Env): Array<Record<string, any>> {
-  const doc = yaml.load(readFileSync(join(e.plurPath, 'engrams.yaml'), 'utf8')) as { engrams?: any[] }
-  return doc?.engrams ?? []
+  return loadEngrams(join(e.plurPath, 'engrams.yaml')) as Array<Record<string, any>>
 }
 
 function history(e: Env): Array<Record<string, any>> {
@@ -78,7 +113,7 @@ function seed(e: Env, statement: string = STATEMENT): string {
 
 const QUOTING_REPLY = `Following your note — ${STATEMENT}. Done, the deploy is green.`
 
-describe('hook-auto-rate (#1310)', () => {
+describe('hook-auto-rate (#1310)', { timeout: 120_000 }, () => {
   let e: Env
   beforeEach(() => { e = setup() })
   afterEach(() => { rmSync(e.root, { recursive: true, force: true }) })
@@ -148,6 +183,84 @@ describe('hook-auto-rate (#1310)', () => {
     cli(e, ['hook-auto-rate', 'claude'], stopPayload)
     cli(e, ['hook-auto-rate', 'claude'], stopPayload)
     expect(engrams(e).find(x => x.id === id)!.feedback_signals?.positive).toBe(1)
+  })
+
+  describe('audit follow-up (#1318)', () => {
+    it('a large store: the verdict lands exactly once and no store lock is left behind (audit M1)', () => {
+      const id = writeLargeStore(e, 12_000, STATEMENT)
+      mkdirSync(join(e.root, 'tmp', 'plur-auto-rate'), { recursive: true, mode: 0o700 })
+      writeFileSync(join(e.root, 'tmp', 'plur-auto-rate', 'claude-big-1.injected'), `${id}\n`, { mode: 0o600 })
+      const payload = { hook_event_name: 'Stop', session_id: 'big-1', cwd: e.project, last_assistant_message: QUOTING_REPLY }
+      // A short ceiling models the harness cutting the hook off mid-way.
+      cli(e, ['hook-auto-rate', 'claude'], payload, { PLUR_AUTO_RATE_CEILING_MS: '300' })
+      cli(e, ['hook-auto-rate', 'claude'], payload, { PLUR_AUTO_RATE_CEILING_MS: '300' })
+      expect(existsSync(join(e.plurPath, 'engrams.yaml.lock'))).toBe(false)
+      const events = history(e).filter(h => h.event === 'feedback_received' && h.engram_id === id)
+      expect(events).toHaveLength(1)
+      expect(engrams(e).find(x => x.id === id)!.feedback_signals.positive).toBe(1)
+    }, 240_000)
+
+    it("a verdict waiting on another writer's lock is applied once, after the lock clears (audit F5)", () => {
+      const a = seed(e)
+      const teamDir = join(e.root, 'team')
+      mkdirSync(teamDir, { recursive: true })
+      const teamFile = join(teamDir, 'engrams.yaml')
+      const B = 'Staging secrets live in the vault under the ops path'
+      // JSON is valid YAML, so the fixtures need no YAML serializer.
+      writeFileSync(teamFile, JSON.stringify({ engrams: [{
+        id: 'ENG-2026-0901-001', version: 2, status: 'active', consolidated: false, type: 'behavioral',
+        scope: 'project:x', visibility: 'private', statement: B,
+        activation: { retrieval_strength: 0.7, storage_strength: 1.0, frequency: 0, last_accessed: '2026-09-01' },
+        feedback_signals: { positive: 0, negative: 0, neutral: 0 }, associations: [], derivation_count: 1,
+        tags: [], pack: null, abstract: null, derived_from: null, reference_count: 1, sources: [],
+      }] }))
+      writeFileSync(join(e.plurPath, 'config.yaml'), JSON.stringify({ index: false, stores: [{ path: teamFile, scope: 'project:x', shared: false }] }))
+      const bId = namespaceEngramId('ENG-2026-0901-001', 'project:x')
+      const rateDir = join(e.root, 'tmp', 'plur-auto-rate')
+      mkdirSync(rateDir, { recursive: true, mode: 0o700 })
+      writeFileSync(join(rateDir, 'claude-f5.injected'), `${a}\n${bId}\n`, { mode: 0o600 })
+      const payload = { hook_event_name: 'Stop', session_id: 'f5', cwd: e.project, last_assistant_message: `Done. ${STATEMENT}. Also: ${B}.` }
+      // Another live writer holds the team store's lock during turn 1.
+      const lock = `${teamFile}.lock`
+      writeFileSync(lock, `${hostname()}:${process.pid}:${Date.now()}:0`)
+      const r1 = runCli(process.execPath, [CLI, 'hook-auto-rate', 'claude'], {
+        input: JSON.stringify(payload), encoding: 'utf-8', timeout: 60_000, cwd: e.project,
+        env: { ...e.env, PLUR_AUTO_RATE_CEILING_MS: '2000' },
+      })
+      expect(r1.status).toBe(0)
+      rmSync(lock, { force: true })
+      waitIdle(e)
+      cli(e, ['hook-auto-rate', 'claude'], payload, { PLUR_AUTO_RATE_CEILING_MS: '2000' })
+      const aEvents = history(e).filter(h => h.event === 'feedback_received' && h.engram_id === a)
+      expect(aEvents).toHaveLength(1)
+      const bStored = loadEngrams(teamFile)[0] as any
+      expect(bStored.feedback_signals.positive).toBe(1)
+    }, 120_000)
+  })
+
+  describe('pending window (#1318 review)', () => {
+    const MISS = 'Done. The build is green and nothing else changed.'
+    const stopWith = (sid: string, reply: string) =>
+      cli(e, ['hook-auto-rate', 'claude'], { hook_event_name: 'Stop', session_id: sid, cwd: e.project, last_assistant_message: reply })
+
+    it('an engram used on a later turn inside the window is still rated', () => {
+      const id = seed(e)
+      cli(e, ['hook-inject'], { hook_event_name: 'UserPromptSubmit', session_id: 'pw-1', prompt: 'zebra-quartz migration invoice service' })
+      stopWith('pw-1', MISS)
+      stopWith('pw-1', QUOTING_REPLY)
+      expect(engrams(e).find(x => x.id === id)!.feedback_signals?.positive).toBe(1)
+    })
+
+    it('an engram with no verdict for three turns is settled and no longer pending', () => {
+      const id = seed(e)
+      cli(e, ['hook-inject'], { hook_event_name: 'UserPromptSubmit', session_id: 'pw-2', prompt: 'zebra-quartz migration invoice service' })
+      stopWith('pw-2', MISS)
+      stopWith('pw-2', MISS)
+      stopWith('pw-2', MISS)
+      // Settled: the fourth turn takes the fast path and does not rate it.
+      stopWith('pw-2', QUOTING_REPLY)
+      expect(engrams(e).find(x => x.id === id)!.feedback_signals?.positive ?? 0).toBe(0)
+    })
   })
 
   it('writes nothing when nothing was injected this session', () => {

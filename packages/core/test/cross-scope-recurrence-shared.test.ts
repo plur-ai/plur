@@ -70,9 +70,11 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
     }
 
     it('a graduated global engram is not absorbed either — the team copy is written', async () => {
+      // Decision A1 (2026-09-29): shared saves are credited, never absorbed, so
+      // the ladder is driven by personal saves.
       const a = await plur.learn('tag releases', { scope: 'project:a' })
-      await plur.learn('tag releases', { scope: 'project:b' })
-      const graduated = await plur.learn('tag releases', { scope: 'project:c' })
+      await plur.learn('tag releases', { scope: 'user:b' })
+      const graduated = await plur.learn('tag releases', { scope: 'user:c' })
       expect(graduated.scope).toBe('global')
 
       const team = await plur.learn('tag releases', { scope: TEAM })
@@ -81,17 +83,21 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
       expect((await find(a.id)).recurrence_count).toBe(3)
     })
 
-    it('team validation escalates commitment but never to locked', async () => {
+    // Decision A3 (2026-09-29, "allow" as a policy): by default the ladder,
+    // team validation included, may reach locked. Before, team validation was
+    // hard-capped at decided; `recurrence.max_commitment: decided` now does
+    // that (see recurrence-decisions.test.ts).
+    it('team validation may escalate commitment to locked by default', async () => {
       const mine = await plur.learn('prefer small PRs', { scope: 'global' })
       await plur.learn('prefer small PRs', { scope: 'local' })       // recurrence 1
       await plur.learn('prefer small PRs', { scope: 'user:alice' })  // recurrence 2 → decided
       expect((await find(mine.id)).commitment).toBe('decided')
 
-      await plur.learn('prefer small PRs', { scope: TEAM })          // recurrence 3 — would lock
+      await plur.learn('prefer small PRs', { scope: TEAM })          // recurrence 3 → locked
       const after = await find(mine.id)
       expect(after.recurrence_count).toBe(3)
-      expect(after.commitment).toBe('decided')
-      expect(after.locked_at).toBeUndefined()
+      expect(after.commitment).toBe('locked')
+      expect(after.locked_at).toBeDefined()
     })
 
     it('learnRouted with a team store: the team copy is POSTed and the counterpart credited', async () => {
@@ -135,13 +141,15 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
       const c = copies[0]
       expect(c.derived_from).toBe(teamId)
       expect(c.recurrence_count).toBe(recurrence)
-      expect(c.commitment).not.toBe('locked')
       expect(c.structured_data?._outbox).toBeUndefined()
       expect((c.sources ?? []).some((x: any) => x.promoted_from === TEAM)).toBe(true)
       return c
     }
 
-    it('a queued (outbox) team engram is left untouched; one global copy is made and never queued', async () => {
+    // Decision A2 (2026-09-29, "both"): the queued row also records the
+    // recurrence on itself (count + source; scope and outbox kept). Before,
+    // this test asserted the queued row was left untouched (count stayed 1).
+    it('a queued (outbox) team engram records the recurrence, keeps its scope and outbox; one global copy is made and never queued', async () => {
       writeFileSync(join(dir, 'config.yaml'), yaml.dump({
         index: false, stores: [{ url: URL, token: 't', scope: TEAM, shared: true, readonly: false }],
       }))
@@ -159,21 +167,23 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
 
       const queued = await plur.learnRouted('pin node versions', { scope: TEAM })
       expect((queued as any).structured_data?._outbox).toBeDefined()
-      await plur.learnRouted('pin node versions', { scope: 'project:a' })   // recurrence 1 on the team engram
-      const promoted = await plur.learnRouted('pin node versions', { scope: 'project:b' })
+      // Decision A1 (2026-09-29): shared saves are credited, never absorbed, so
+      // the ladder is driven by personal saves.
+      await plur.learnRouted('pin node versions', { scope: 'user:a' })   // recurrence 1 on the team engram
+      const promoted = await plur.learnRouted('pin node versions', { scope: 'user:b' })
       expect(promoted.scope).toBe('global')
       expect(promoted.id).not.toBe(queued.id)
 
       const team = primaryRows().find(e => e.id === queued.id)
       expect(team.scope).toBe(TEAM)
-      expect(team.recurrence_count).toBe(1)                // untouched by the promotion
+      expect(team.recurrence_count).toBe(2)                // A2: recorded on the queued row
       expect(team.structured_data?._outbox).toBeDefined()   // still queued, as it was
       expectCopy('pin node versions', queued.id, 2)
 
       // Idempotent: a further recurrence credits the same copy.
-      await plur.learnRouted('pin node versions', { scope: 'project:c' })
+      await plur.learnRouted('pin node versions', { scope: 'user:c' })
       expectCopy('pin node versions', queued.id, 3)
-      expect(primaryRows().find(e => e.id === queued.id).recurrence_count).toBe(1)
+      expect(primaryRows().find(e => e.id === queued.id).recurrence_count).toBe(3)
 
       // Only the team engram is in the outbox, and it flushes with its team scope.
       expect(await plur.outboxCount()).toBe(1)
@@ -191,8 +201,10 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
       globalThis.fetch = vi.fn(async () =>
         ({ ok: true, status: 200, json: async () => ({ rows: [], total_count: 0 }), text: async () => '' } as Response)) as any
       plur = new Plur({ path: dir })
-      await plur.learn('lint before commit', { scope: 'project:a' })
-      const promoted = await plur.learn('lint before commit', { scope: 'project:b' })
+      // Decision A1 (2026-09-29): shared saves are credited, never absorbed, so
+      // the ladder is driven by personal saves.
+      await plur.learn('lint before commit', { scope: 'user:a' })
+      const promoted = await plur.learn('lint before commit', { scope: 'user:b' })
       expect(promoted.scope).toBe('global')
       expect(primaryRows().find(e => e.id === seed.id).scope).toBe(TEAM)
       expectCopy('lint before commit', seed.id, 2)
@@ -205,14 +217,15 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
         // Seed the engram IN the shared store file (a teammate's write).
         await new Plur({ path: storeDir }).learn('review migrations in pairs', { scope: TEAM })
         plur.addStore(storePath, TEAM, { shared: true, readonly: false })
-        const first = await plur.learn('review migrations in pairs', { scope: 'project:a' })
+        // Decision A1: driven by personal saves (shared saves are credited only).
+        const first = await plur.learn('review migrations in pairs', { scope: 'user:a' })
         const teamId = first.id
         const fileBefore = readFileSync(storePath, 'utf8')
-        const promoted = await plur.learn('review migrations in pairs', { scope: 'project:b' })
+        const promoted = await plur.learn('review migrations in pairs', { scope: 'user:b' })
         expect(promoted.scope).toBe('global')
         expect(readFileSync(storePath, 'utf8')).toBe(fileBefore)   // team file untouched
         expectCopy('review migrations in pairs', teamId, 2)
-        await plur.learn('review migrations in pairs', { scope: 'project:c' })
+        await plur.learn('review migrations in pairs', { scope: 'user:c' })
         expectCopy('review migrations in pairs', teamId, 3)
         expect(readFileSync(storePath, 'utf8')).toBe(fileBefore)
       } finally { rmSync(storeDir, { recursive: true, force: true }) }
@@ -224,8 +237,9 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
       try {
         await new Plur({ path: storeDir }).learn('keep a changelog', { scope: 'project:mine' })
         plur.addStore(storePath, 'project:mine', { shared: false, readonly: false })
-        const first = await plur.learn('keep a changelog', { scope: 'project:a' })
-        const after = await plur.learn('keep a changelog', { scope: 'project:b' })
+        // Decision A1: driven by personal saves (shared saves are credited only).
+        const first = await plur.learn('keep a changelog', { scope: 'user:a' })
+        const after = await plur.learn('keep a changelog', { scope: 'user:b' })
         expect(after.id).toBe(first.id)
         expect(after.scope).toBe('global')
       } finally { rmSync(storeDir, { recursive: true, force: true }) }
@@ -233,8 +247,10 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
 
     it('without a team store the ladder still broadens in place (unchanged)', async () => {
       const first = await plur.learn('write the test first', { scope: TEAM })
-      await plur.learn('write the test first', { scope: 'project:a' })
-      const after = await plur.learn('write the test first', { scope: 'project:b' })
+      // Decision A1 (2026-09-29): shared saves are credited, never absorbed, so
+      // the ladder is driven by personal saves.
+      await plur.learn('write the test first', { scope: 'user:a' })
+      const after = await plur.learn('write the test first', { scope: 'user:b' })
       expect(after.id).toBe(first.id)
       expect(after.scope).toBe('global')
       expect(copiesOf('write the test first')).toHaveLength(1)
@@ -242,11 +258,17 @@ describe('shared-scope saves and cross-scope recurrence (#1268)', () => {
   })
 
   describe('unchanged', () => {
-    it('shared↔shared recurrence absorbs as before', async () => {
+    // Decision A1 (2026-09-29, "never"): shared↔shared is no longer absorbed.
+    // Before, this test asserted the second team save returned the first
+    // team's engram.
+    it('shared↔shared: the second team save writes its own engram; the first is credited', async () => {
       const a = await plur.learn('pin versions', { scope: TEAM })
       const b = await plur.learn('pin versions', { scope: 'project:example' })
-      expect(b.id).toBe(a.id)
-      expect(b.recurrence_count).toBe(1)
+      expect(b.id).not.toBe(a.id)
+      expect(b.scope).toBe('project:example')
+      const credited = await find(a.id)
+      expect(credited.recurrence_count).toBe(1)
+      expect((credited.sources!.at(-1) as any).validated_by).toBe('project:example')
     })
 
     it('personal→personal recurrence absorbs as before', async () => {

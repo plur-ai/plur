@@ -1,11 +1,17 @@
-import { appendFileSync, readFileSync, openSync, fstatSync, readSync, closeSync, existsSync } from 'fs'
-import { join } from 'path'
+import {
+  appendFileSync, readFileSync, openSync, fstatSync, readSync, closeSync, existsSync,
+  writeSync, renameSync, unlinkSync, statSync, readdirSync,
+} from 'fs'
+import { join, dirname, basename } from 'path'
 import { tmpdir } from 'os'
+import { spawn } from 'child_process'
 import {
   rateInjectedEngrams,
   extractSelfReportedLearnings,
-  readProjectConfig,
+  findProjectConfigPath,
+  readProjectConfigFromPath,
   bareEngramId,
+  FEEDBACK_SOURCE_CAPABILITY,
   type RatedEngram,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -34,6 +40,19 @@ import { ensureSessionDir, sessionDirSafeToSweep, cleanupStaleSessionFiles } fro
  * has been rated) and auto-capture is off, no store is opened at all — the
  * cost is one small file read.
  *
+ * The hook never does the store work itself (#1318 audit M1). It appends the
+ * turn to a per-session queue and hands it to a detached background worker
+ * (`plur hook-auto-rate --worker`), then returns. On a large store the store
+ * work takes seconds to tens of seconds of synchronous YAML parsing and
+ * writing; done inside the hook it overran the editor's budget, was killed
+ * part-way, and could leave the store lock behind. The worker is not bound
+ * by the editor's timeout, runs one at a time per session, and never exits
+ * while a store write is in flight.
+ *
+ * At most one verdict per engram per session: an id is recorded as rated
+ * BEFORE its feedback is applied (write-ahead). A worker killed between the
+ * two loses that one signal; it can never apply it twice.
+ *
  * Switches (environment, the same convention as PLUR_REMOTE_RECALL):
  *   PLUR_AUTO_RATE=0|false|off   turns automatic rating off (on by default)
  *   PLUR_AUTO_CAPTURE=1|true|on  turns automatic capture on (off by default)
@@ -58,7 +77,15 @@ export function autoCaptureEnabled(env: NodeJS.ProcessEnv = process.env): boolea
   return v === '1' || v === 'true' || v === 'on'
 }
 
-function fileFor(editor: AutoRateEditor, sessionId: string, kind: 'injected' | 'rated'): string {
+/**
+ * How many end-of-turn replies an injected engram is checked against before
+ * it is settled without a verdict (#1318 review). Without a cap, an engram
+ * the reply never mentions stays pending all session and every turn's hook
+ * opens the store; with it, the fast path returns after this many turns.
+ */
+export const AUTO_RATE_MAX_TURNS = 3
+
+function fileFor(editor: AutoRateEditor, sessionId: string, kind: 'injected' | 'rated' | 'tries' | 'queue' | 'worker'): string {
   return join(DIR, `${editor}-${safeSessionKey(sessionId)}.${kind}`)
 }
 
@@ -93,10 +120,16 @@ export function recordInjected(editor: AutoRateEditor, sessionId: unknown, ids: 
   } catch { /* fail-open */ }
 }
 
-/** Ids injected in this session that have not had an automatic verdict yet. */
+/**
+ * Ids injected in this session that have neither had an automatic verdict
+ * nor been checked against {@link AUTO_RATE_MAX_TURNS} replies already.
+ */
 export function pendingInjected(editor: AutoRateEditor, sessionId: string): string[] {
   const rated = new Set(readIds(fileFor(editor, sessionId, 'rated')))
-  return [...new Set(readIds(fileFor(editor, sessionId, 'injected')))].filter(id => !rated.has(id))
+  const tries = new Map<string, number>()
+  for (const id of readIds(fileFor(editor, sessionId, 'tries'))) tries.set(id, (tries.get(id) ?? 0) + 1)
+  return [...new Set(readIds(fileFor(editor, sessionId, 'injected')))]
+    .filter(id => !rated.has(id) && (tries.get(id) ?? 0) < AUTO_RATE_MAX_TURNS)
 }
 
 export interface AutoRateOutcome {
@@ -106,9 +139,149 @@ export interface AutoRateOutcome {
   captured: number
 }
 
+interface QueuedTurn {
+  reply: string
+  cwd?: string
+}
+
+/**
+ * Hook side: queue this turn for the background worker. Returns false (and
+ * writes nothing) when there is nothing to do — nothing pending, capture off.
+ * Cheap: a couple of small file reads and one append.
+ */
+export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; reply: string; cwd?: string }): boolean {
+  try {
+    const reply = typeof opts.reply === 'string' ? opts.reply : ''
+    if (!reply.trim() || !opts.sessionId) return false
+    const pending = autoRateEnabled() ? pendingInjected(opts.editor, opts.sessionId) : []
+    if (pending.length === 0 && !autoCaptureEnabled()) return false
+    if (!ensureSessionDir(DIR)) return false
+    const line = JSON.stringify({ reply, ...(opts.cwd ? { cwd: opts.cwd } : {}) } satisfies QueuedTurn) + '\n'
+    appendFileSync(fileFor(opts.editor, opts.sessionId, 'queue'), line, { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Hook side: did a killed worker leave a turn batch behind for this session?
+ * If so the hook starts a worker even when it queued nothing itself, so the
+ * leftovers are finished (write-ahead makes that safe) and cleaned up.
+ */
+export function hasLeftoverBatches(editor: AutoRateEditor, sessionId: string): boolean {
+  try {
+    const prefix = `${basename(fileFor(editor, sessionId, 'queue'))}.`
+    return readdirSync(DIR).some(f => f.startsWith(prefix))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Hook side: start the background worker for this session, detached, so the
+ * hook can exit at once. Returns false if it could not be started.
+ */
+export function spawnWorker(editor: AutoRateEditor, sessionId: string, flags: GlobalFlags): boolean {
+  try {
+    const entry = process.argv[1]
+    if (!entry) return false
+    const child = spawn(process.execPath, [
+      ...process.execArgv, entry, 'hook-auto-rate', '--worker', editor, sessionId,
+      ...(flags.path ? ['--path', flags.path] : []),
+    ], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env })
+    child.on('error', () => { /* fail-open: the queue stays for the next turn */ })
+    child.unref()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** A worker lock older than this, or owned by a dead pid, is abandoned. */
+const WORKER_STALE_MS = 15 * 60 * 1000
+
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try { process.kill(pid, 0); return true } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM' }
+}
+
+function acquireWorkerLock(path: string): boolean {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, 'wx', 0o600)
+      try { writeSync(fd, String(process.pid)) } finally { closeSync(fd) }
+      return true
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
+      let stale = false
+      try {
+        const owner = parseInt(readFileSync(path, 'utf8'), 10)
+        stale = !pidAlive(owner) || Date.now() - statSync(path).mtimeMs > WORKER_STALE_MS
+      } catch { stale = true }
+      if (!stale) return false
+      try { unlinkSync(path) } catch { /* raced — retry decides */ }
+    }
+  }
+  return false
+}
+
+/**
+ * Worker side: drain this session's queue, one turn at a time. Only one
+ * worker runs per session; a second one exits at once and leaves its turn
+ * to the running worker, which re-checks the queue before it leaves.
+ */
+export async function runWorker(editor: AutoRateEditor, sessionId: string, flags: GlobalFlags): Promise<AutoRateOutcome> {
+  const total: AutoRateOutcome = { rated: [], captured: 0 }
+  if (!ensureSessionDir(DIR)) return total
+  const lock = fileFor(editor, sessionId, 'worker')
+  const queue = fileFor(editor, sessionId, 'queue')
+  let plur: ReturnType<typeof createPlur> | null = null
+  // Batches a killed worker renamed but never finished. Only ever read while
+  // holding the lock, and the lock is only taken over from a dead or stale
+  // owner, so no live worker is still working on them.
+  const orphans = (): string[] => {
+    try {
+      const prefix = `${basename(queue)}.`
+      return readdirSync(DIR).filter(f => f.startsWith(prefix)).map(f => join(DIR, f))
+    } catch { return [] }
+  }
+  for (let round = 0; round < 10 && (existsSync(queue) || orphans().length > 0); round++) {
+    if (!acquireWorkerLock(lock)) break
+    try {
+      for (;;) {
+        let batch = orphans()[0]
+        if (!batch) {
+          if (!existsSync(queue)) break
+          batch = `${queue}.${process.pid}`
+          try { renameSync(queue, batch) } catch { break }
+        }
+        let lines: string[] = []
+        try { lines = readFileSync(batch, 'utf8').split('\n').filter(Boolean) } catch { /* empty */ }
+        for (const line of lines) {
+          let turn: QueuedTurn
+          try { turn = JSON.parse(line) as QueuedTurn } catch { continue }
+          plur ??= createPlur(flags)
+          const out = await autoRateTurn({ editor, sessionId, reply: turn.reply, flags, cwd: turn.cwd, plur })
+          total.rated.push(...out.rated)
+          total.captured += out.captured
+        }
+        try { unlinkSync(batch) } catch { if (existsSync(batch)) break }
+      }
+    } finally {
+      try { unlinkSync(lock) } catch { /* already gone */ }
+    }
+    // A hook may have queued a turn between the last drain and the unlock;
+    // it saw the lock held and did not start a worker. Take it too.
+  }
+  sweep()
+  return total
+}
+
 /**
  * Rate this session's injected engrams against one reply, and — only when
  * opted in — capture the reply's self-reported learnings. Never throws.
+ * The worker calls this; it is exported for tests.
  */
 export async function autoRateTurn(opts: {
   editor: AutoRateEditor
@@ -117,6 +290,8 @@ export async function autoRateTurn(opts: {
   flags: GlobalFlags
   /** Project root for `.plur.yaml` scope/domain on captured learnings. */
   cwd?: string
+  /** Reuse an open store (the worker handles several turns with one). */
+  plur?: ReturnType<typeof createPlur>
 }): Promise<AutoRateOutcome> {
   const outcome: AutoRateOutcome = { rated: [], captured: 0 }
   try {
@@ -127,10 +302,13 @@ export async function autoRateTurn(opts: {
     const capture = autoCaptureEnabled()
     if (pending.length === 0 && !capture) return outcome // nothing injected, nothing to do
 
-    const plur = createPlur(opts.flags)
+    const plur = opts.plur ?? createPlur(opts.flags)
 
     if (pending.length > 0) {
-      const engrams = await plur.getByIds(pending)
+      // Remote ids are fetched by id (the remote cache is empty in a fresh
+      // process), and only from servers that advertise feedback.source —
+      // a server that would not receive the verdict is never asked (#1318).
+      const engrams = await plur.getByIds(pending, { remoteCapability: FEEDBACK_SOURCE_CAPABILITY })
       // One record can be injected under two ids — its own and a store-
       // namespaced alias (ENG-XYZ-…) when the same file is also mounted as a
       // secondary store. Rate each record once: same bare id and statement
@@ -146,23 +324,26 @@ export async function autoRateTurn(opts: {
         unique.map(e => ({ id: e.id, statement: e.statement })),
         reply,
       )
-      const done: string[] = []
+      const ratedFile = fileFor(opts.editor, opts.sessionId, 'rated')
+      // Aliases skipped above, and ids that no longer exist anywhere, will
+      // never be rated on their own; stop loading them.
+      const kept = new Set(unique.map(e => e.id))
+      appendIds(ratedFile, pending.filter(id => !kept.has(id)))
+      // This reply counts as one of the turns each remaining engram gets.
+      const withVerdict = new Set(verdicts.map(v => v.id))
+      appendIds(fileFor(opts.editor, opts.sessionId, 'tries'), [...kept].filter(id => !withVerdict.has(id)))
       for (const v of verdicts) {
+        // Write-ahead (#1318 audit F5/M1): recorded as rated BEFORE the
+        // feedback is applied, so a kill between the two can lose this one
+        // signal but can never apply it twice.
+        appendIds(ratedFile, [v.id])
         try {
           await plur.feedback(v.id, v.signal, undefined, { source: 'auto' })
           outcome.rated.push(v)
         } catch (err) {
           process.stderr.write(`[plur] auto-rate: ${v.id} not rated (${(err as Error)?.message ?? 'unknown'})\n`)
         }
-        // Rated or refused (remote, readonly): either way, do not retry it
-        // on every later turn of this session.
-        done.push(v.id)
       }
-      // Aliases skipped above, and ids that no longer exist anywhere, will
-      // never be rated on their own; stop loading them.
-      const kept = new Set(unique.map(e => e.id))
-      for (const id of pending) if (!kept.has(id)) done.push(id)
-      appendIds(fileFor(opts.editor, opts.sessionId, 'rated'), done)
     }
 
     // `auto_learn: false` in config.yaml is the store-wide kill switch for
@@ -170,18 +351,40 @@ export async function autoRateTurn(opts: {
     if (capture && (plur as unknown as { config?: { auto_learn?: boolean } }).config?.auto_learn !== false) {
       const statements = extractSelfReportedLearnings({ role: 'assistant', content: reply })
       if (statements.length > 0) {
-        const project = readProjectConfig(opts.cwd)
+        // Where captured text may go (#1318 audit, adversarial M3). This is an
+        // unattended write of the agent's own reply text, so a repository must
+        // not choose its destination. A scope is used only when the user set
+        // it: a folder-map entry's scope (`plur folders`), or a `.plur.yaml`
+        // scope/domain in a trusted folder (`plur trust`). Otherwise — and
+        // whenever no scope applies — the statement goes to the local store
+        // via `learn()`, which never routes, so it can never be auto-routed
+        // into a shared scope either. A folder the map turns off gets nothing.
+        const dir = opts.cwd ?? process.cwd()
+        const policy = plur.resolveFolderPolicy(dir)
+        const configPath = findProjectConfigPath(dir)
+        const hint = configPath ? readProjectConfigFromPath(configPath) : {}
+        const trusted = configPath !== null && plur.isDirectoryTrusted(dirname(configPath))
+        const mapScope = policy.scope && policy.scope !== hint.scope ? policy.scope : undefined
+        const project: { scope?: string; domain?: string } = policy.mode === 'off'
+          ? {}
+          : trusted
+            ? { ...(policy.scope ? { scope: policy.scope } : {}), ...(hint.domain ? { domain: hint.domain } : {}) }
+            : (mapScope ? { scope: mapScope } : {})
+        if (policy.mode === 'off') statements.length = 0
+        const base = {
+          type: 'behavioral' as const,
+          source: `${opts.editor}:auto-capture`,
+          rationale: 'self-reported by the agent in its reply (auto-capture)',
+          tags: ['auto-capture'],
+          claim_class: 'inferred' as const,
+        }
         for (const statement of statements) {
           try {
-            await plur.learnRouted(statement, {
-              type: 'behavioral',
-              ...(project.scope ? { scope: project.scope } : {}),
-              ...(project.domain ? { domain: project.domain } : {}),
-              source: `${opts.editor}:auto-capture`,
-              rationale: 'self-reported by the agent in its reply (auto-capture)',
-              tags: ['auto-capture'],
-              claim_class: 'inferred',
-            })
+            if (project.scope) {
+              await plur.learnRouted(statement, { ...base, scope: project.scope, ...(project.domain ? { domain: project.domain } : {}) })
+            } else {
+              await plur.learn(statement, base)
+            }
             outcome.captured++
           } catch (err) {
             process.stderr.write(`[plur] auto-capture: not stored (${(err as Error)?.message ?? 'unknown'})\n`)
@@ -192,7 +395,6 @@ export async function autoRateTurn(opts: {
   } catch (err) {
     process.stderr.write(`[plur] auto-rate failed: ${(err as Error)?.message ?? 'unknown'}\n`)
   }
-  sweep()
   return outcome
 }
 

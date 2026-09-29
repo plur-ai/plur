@@ -3,42 +3,83 @@ export interface SecretMatch {
   match: string
 }
 
-const SECRET_PATTERNS: { name: string; regex: RegExp }[] = [
+const SECRET_PATTERNS: { name: string; regex?: RegExp; find?: (text: string) => string | null }[] = [
   // `AKIA` is a long-term access key id, `ASIA` a temporary (STS) one; both are
-  // the documented four-letter prefix plus 16 uppercase letters or digits.
-  { name: 'aws_access_key', regex: /(?:AKIA|ASIA)[0-9A-Z]{16}/ },
+  // the four-letter prefix plus 16 uppercase letters or digits, 20 in all.
+  //
+  // The `AKIA` branch is unchanged from before #1317 (no boundary), so the
+  // guard is never weaker than it was. The `ASIA` branch is new and stricter,
+  // because `ASIA` begins ordinary uppercase words: "ASIAPACIFICNORTHEAST1"
+  // blocked a learn (#1340 audit). It must be exactly 20 characters between
+  // non-alphanumerics and contain a digit. A real temporary key id with no
+  // digit in its 16-character body is missed; for a uniformly random body
+  // over A-Z and 0-9 that is (26/36)^16, about 0.5%, and the key id alone is
+  // not a usable credential without its secret and session token.
+  { name: 'aws_access_key', regex: /AKIA[0-9A-Z]{16}|(?<![A-Za-z0-9])ASIA(?=[A-Z0-9]{0,15}[0-9])[0-9A-Z]{16}(?![A-Za-z0-9])/ },
   // Vendor-prefixed tokens (#1317). Each follows the vendor's documented
-  // prefix, charset and minimum length, and must not be glued onto a longer
-  // identifier, so prose that names a prefix ("use a ghp_ token") stays clean.
+  // prefix, charset and minimum length, and must not be glued onto the end of
+  // a longer word, so prose that names a prefix ("use a ghp_ token") stays
+  // clean. The guard only looks for a preceding LETTER: a token glued after a
+  // digit ("1ghp_…") or after a percent-encoded `=` ("%3Dghp_…") is still a
+  // token (#1340 audit); the percent-decoded view below covers the latter too.
   //
   // GitHub: `ghp_` classic PAT, `gho_` OAuth, `ghu_` user-to-server,
   // `ghs_` server-to-server, `ghr_` refresh — 36 base62 characters today;
   // GitHub reserves the right to grow them, so longer bodies still match.
-  { name: 'github_token', regex: /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}/ },
+  { name: 'github_token', regex: /(?<![A-Za-z])gh[pousr]_[A-Za-z0-9]{36,}/ },
   // GitHub fine-grained PAT: `github_pat_`, 22 base62, `_`, 59 base62.
-  { name: 'github_pat', regex: /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9]{22,}_[A-Za-z0-9]{40,}/ },
-  // GitLab's documented token prefixes: personal/project/group access
-  // (`glpat-`), OAuth application secret (`gloas-`), deploy (`gldt-`), runner
-  // authentication (`glrt-`) and registration (`glrtr-`), CI job (`glcbt-`),
-  // pipeline trigger (`glptt-`), feed (`glft-`), incoming mail (`glimt-`),
-  // Kubernetes agent (`glagent-`), SCIM (`glsoat-`), feature-flag client
-  // (`glffct-`). Legacy bodies are 20 characters; routable ones are longer and
-  // may carry dots.
+  { name: 'github_pat', regex: /(?<![A-Za-z])github_pat_[A-Za-z0-9]{22,}_[A-Za-z0-9]{40,}/ },
+  // GitLab's documented token prefixes (docs.gitlab.com, "Token prefixes"):
+  // personal/project/group/impersonation access (`glpat-`), OAuth application
+  // secret (`gloas-`), deploy (`gldt-`), runner authentication (`glrt-`, or
+  // `glrtr-` when created by registration), CI/CD job (`glcbt-`), trigger
+  // (`glptt-`), feed (`glft-`), incoming mail (`glimt-`), Kubernetes agent
+  // (`glagent-`), workspace (`glwt-`), SCIM (`glsoat-`), feature-flag client
+  // (`glffct-`).
+  //
+  // Legacy bodies are 20 base64url characters, so `-` and `_` are legitimate
+  // inside a token and cannot be excluded; routable bodies are longer and end
+  // in `.xx.xxxxxxx`, which the 20-character run still matches before the dot.
+  // Because hyphens are allowed, a docs slug such as `glrt-` followed by
+  // "runner-authentication-tokens" has the right length, and prose URLs like
+  // it are common (#1340 review). What a
+  // random body has and a slug does not is case or digit structure, so the
+  // body must also contain a lower-or-digit followed by an upper, an upper
+  // followed by an upper or digit, or four digits. A lowercase or Title-Case
+  // slug has none of these; a seeded sample of 12,000 random 20-character
+  // bodies in the test suite checks that real tokens still match.
+  //
+  // Both lookahead runs are bounded to 64 characters (#1340 review). Unbounded,
+  // every repeated prefix scanned to the end of the run, so input such as
+  // `glpat-glpat-glpat-…` took quadratic time: 400 KB took 28 s, and packs and
+  // engrams are scanned up to 1 MiB. The structure check now looks at the first
+  // 64 characters of the body, which covers every legacy 20-character body.
   {
     name: 'gitlab_token',
-    regex: /(?<![A-Za-z0-9])(?:glpat|gloas|gldt|glrtr|glrt|glcbt|glptt|glft|glimt|glagent|glsoat|glffct)-[A-Za-z0-9_-]{20,}/,
+    regex: /(?<![A-Za-z])(?:glpat|gloas|gldt|glrtr|glrt|glcbt|glptt|glft|glimt|glagent|glwt|glsoat|glffct)-(?=[A-Za-z0-9_-]{0,64}(?:[a-z0-9][A-Z]|[A-Z][A-Z0-9])|(?:[A-Za-z_-]{0,64}[0-9]){4})[A-Za-z0-9_-]{20,}/,
   },
-  // Slack: `xoxb-` bot, `xoxp-` user, `xoxa-` app, `xoxr-` refresh, `xoxs-`
-  // session. Every documented shape has a numeric segment right after the
-  // prefix (a team id, or the `2` of `xoxa-2-`), which keeps `xoxb-style`
-  // prose out.
-  { name: 'slack_token', regex: /(?<![A-Za-z0-9])xox[abprs]-[0-9]+-[A-Za-z0-9-]{10,}/ },
+  // Slack. Bot (`xoxb-`), user (`xoxp-`) and legacy session (`xoxs-`) tokens
+  // open with a numeric workspace id of eight or more digits, then more ids
+  // and a random tail. Legacy workspace tokens (`xoxa-`, `xoxr-`) are an
+  // optional single digit and `-`, then an unbroken alphanumeric run.
+  // Requiring the long numeric id, or an unbroken run with both letters and
+  // digits, keeps prose out (#1340 review): a short number followed by
+  // hyphenated words is not a token.
+  //
+  // App-level tokens (`xapp-1-<app id>-<number>-<hex>`) and token-rotation
+  // tokens — refresh (`xoxe-1-…`) and the rotating access tokens
+  // (`xoxe.xoxp-1-…`, `xoxe.xoxb-1-…`), whose bodies are well over 100
+  // alphanumerics — are separate shapes (#1340 audit).
+  {
+    name: 'slack_token',
+    regex: /(?<![A-Za-z])(?:xox[bps]-[0-9]{8,}-[A-Za-z0-9-]{10,}|xox[ar]-(?:[0-9]-)?(?=[A-Za-z]*[0-9])(?=[0-9]*[A-Za-z])[A-Za-z0-9]{16,}|xapp-[0-9]+-[A-Z0-9]{8,}-[0-9]{8,}-[A-Za-z0-9]{16,}|xoxe(?:\.xox[bp])?-[0-9]+-[A-Za-z0-9]{100,})/,
+  },
   // npm access token: `npm_` plus 36 base62 characters.
-  { name: 'npm_token', regex: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,}/ },
+  { name: 'npm_token', regex: /(?<![A-Za-z])npm_[A-Za-z0-9]{36,}/ },
   // Stripe live secret (`sk_live_`) and restricted (`rk_live_`) keys. The
   // generic `sk` shape below already catches `sk_live_`; the named pattern
   // covers `rk_live_` and says what the key is.
-  { name: 'stripe_live_key', regex: /(?<![A-Za-z0-9])[sr]k_live_[A-Za-z0-9]{24,}/ },
+  { name: 'stripe_live_key', regex: /(?<![A-Za-z])[sr]k_live_[A-Za-z0-9]{24,}/ },
   { name: 'aws_secret_key', regex: /(?:aws_secret_access_key|secret_access_key)\s*[=:]\s*[A-Za-z0-9/+=]{40}/i },
   // Twenty or more characters after the prefix, and the segments MAY be
   // separated by hyphens or underscores. The previous form demanded twenty
@@ -53,10 +94,45 @@ const SECRET_PATTERNS: { name: string; regex: RegExp }[] = [
   { name: 'api_key_assignment', regex: /(?:api[_-]?key|api[_-]?secret|secret[_-]?key)\s*[=:]\s*\S{20,}/i },
   { name: 'password_assignment', regex: /password\s*[=:]\s*\S{8,}/i },
   { name: 'connection_string', regex: /(?:postgres|mysql|mongodb|redis):\/\/\S+/ },
-  { name: 'jwt', regex: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}/ },
+  // Matched in code, not by regex (#1397): see findJwt.
+  { name: 'jwt', find: findJwt },
   { name: 'private_key', regex: /-----BEGIN\s+\S+\s+PRIVATE KEY-----/ },
   { name: 'bearer_token', regex: /Bearer\s+[A-Za-z0-9._~+/=-]{20,}/ },
 ]
+
+const isJwtSegmentChar = (c: number): boolean =>
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 45 || c === 95
+
+/**
+ * The leftmost match of `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}` in
+ * `text`, or null, found in linear time (#1397).
+ *
+ * As a regex, the pattern was quadratic: on repeated `eyJ` every start
+ * position ran its first segment to the end of the run before failing to find
+ * the dot, so 1 MiB took about six minutes, and every scan view paid it again.
+ * Bounding the runs would cap real tokens, whose payload segment can run to
+ * several kilobytes. Instead this anchors on each `.eyJ`, the one fixed
+ * point between header and payload: it walks back over the header run to the
+ * leftmost `eyJ` that leaves ten characters before the dot, and forward over
+ * the payload run. Runs end at a dot, so the runs walked for successive
+ * `.eyJ` are disjoint and the whole scan is linear. The test suite checks it
+ * against the original regex on seeded random inputs.
+ */
+function findJwt(text: string): string | null {
+  for (let dot = text.indexOf('.eyJ'); dot !== -1; dot = text.indexOf('.eyJ', dot + 1)) {
+    // Payload: `eyJ` then at least ten segment characters, as many as follow.
+    let end = dot + 4
+    while (end < text.length && isJwtSegmentChar(text.charCodeAt(end))) end++
+    if (end - (dot + 4) < 10) continue
+    // Header: the segment run ending at the dot.
+    let runStart = dot
+    while (runStart > 0 && isJwtSegmentChar(text.charCodeAt(runStart - 1))) runStart--
+    const start = text.indexOf('eyJ', runStart)
+    if (start === -1 || start + 13 > dot) continue
+    return text.slice(start, end)
+  }
+  return null
+}
 
 /**
  * The raw text and, when it differs, the folded copy a reader would see.
@@ -72,6 +148,106 @@ function scanViews(text: string): string[] {
   return folded === text ? [text] : [text, folded]
 }
 
+/**
+ * The text with percent-encoded ASCII decoded, or null when there is none.
+ *
+ * A credential pasted as part of a URL or query string arrives encoded:
+ * `access_token%3Dghp_…` hides the `=` that separates the token from the
+ * word before it, and `ghp%5F…` hides the underscore inside the prefix
+ * (#1340 audit). Decoding is a view, scanned IN ADDITION to the raw text, so
+ * nothing that matched before stops matching. Up to three passes cover
+ * double and triple encoding. Only `%00`–`%7F` are decoded — every
+ * credential format here is ASCII — and a malformed `%` is left as it is,
+ * so decoding never throws.
+ *
+ * Credentials only: `detectSensitive`'s infra patterns keep the raw and
+ * folded views, since decoding `%3A` into a port separator would change what
+ * those patterns see in ordinary encoded URLs, and that is a separate
+ * decision.
+ */
+function percentDecodedView(text: string): string | null {
+  if (!/%[0-7][0-9A-Fa-f]/.test(text)) return null
+  let out = text
+  for (let pass = 0; pass < 3; pass++) {
+    const next = out.replace(/%([0-7][0-9A-Fa-f])/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    if (next === out) break
+    out = next
+  }
+  return out === text ? null : out
+}
+
+const ESCAPES: Record<string, string> = {
+  n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', '\\': '\\', '"': '"', '/': '/',
+}
+
+/**
+ * The text with literal backslash escapes unfolded, or null when there are none.
+ *
+ * JSON-escaped text and pasted logs carry a newline as the two characters `\`
+ * and `n`, so the character before a token on the next line is the letter
+ * `n`, and the vendor patterns' leading boundary rejects it (#1372). This view
+ * turns the JSON escapes (`\n`, `\t`, `\r`, `\b`, `\f`, `\\`, `\"`, `\/`)
+ * and ASCII `\u00XX` escapes (`\u000a` ends in a letter too) back into the
+ * characters they stand for. Like the percent-decoded view it is scanned IN
+ * ADDITION to the raw text, so nothing that matched before stops matching. Up
+ * to three passes cover JSON nested in JSON. Each pass is one linear
+ * `replace`.
+ */
+function escapeUnfoldedView(text: string): string | null {
+  if (!/\\(?:[nrtbf\\"/]|u00[0-7][0-9A-Fa-f])/.test(text)) return null
+  let out = text
+  for (let pass = 0; pass < 3; pass++) {
+    const next = out.replace(/\\(?:([nrtbf\\"/])|u00([0-7][0-9A-Fa-f]))/g, (_, c: string | undefined, hex: string | undefined) =>
+      c !== undefined ? ESCAPES[c] : String.fromCharCode(parseInt(hex as string, 16)))
+    if (next === out) break
+    out = next
+  }
+  return out === text ? null : out
+}
+
+/**
+ * The part of each credential match that is a label, not a secret: the
+ * vendor prefix, the keyword of an assignment, the URL scheme. A pattern
+ * missing here shows its first four characters.
+ */
+const FINDING_PREFIX: Record<string, RegExp> = {
+  aws_access_key: /^A[KS]IA/,
+  github_token: /^gh[pousr]_/,
+  github_pat: /^github_pat_/,
+  gitlab_token: /^gl[a-z]+-/,
+  slack_token: /^(?:xoxe(?:\.xox[bp])?|xox[a-z]|xapp)-/,
+  npm_token: /^npm_/,
+  stripe_live_key: /^[sr]k_live_/,
+  aws_secret_key: /^[^=:]*[=:]\s*/,
+  // The match includes the separator before `sk`/`pk`; group 1 leaves it out.
+  generic_api_key: /^[^a-z]?((?:sk|pk)[-_])/i,
+  api_key_assignment: /^[^=:]*[=:]\s*/,
+  password_assignment: /^[^=:]*[=:]\s*/,
+  connection_string: /^[a-z]+:\/\//,
+  jwt: /^eyJ/,
+  private_key: /^[\s\S]*/,
+  bearer_token: /^Bearer\s+/,
+}
+
+/**
+ * What a finding shows of the matched credential (#1373): its prefix, then
+ * `...`, then the last four characters when at least 16 follow the prefix.
+ * The finding reaches pack-scan issue details, and the old first-20-characters
+ * echo was the prefix plus 16 of a GitHub or npm token's 36 body characters.
+ * Four trailing characters tell a reader which credential it is, the way
+ * vendor dashboards identify keys; a value shorter than 16 characters, such as
+ * a password, is not shown at all.
+ */
+function maskFinding(name: string, matched: string): string {
+  // A prefix pattern with a capture group shows only the group; the whole
+  // match is still what is withheld from the tail.
+  const m = FINDING_PREFIX[name]?.exec(matched)
+  const prefix = m ? (m[1] ?? m[0]) : matched.slice(0, 4)
+  const rest = matched.slice(m ? m[0].length : 4)
+  if (rest.length === 0) return prefix
+  return prefix + '...' + (rest.length >= 16 ? rest.slice(-4) : '')
+}
+
 /** Scan text for potential secrets. Returns empty array if clean. */
 export function detectSecrets(text: string): SecretMatch[] {
   if (typeof text !== 'string') {
@@ -79,13 +255,21 @@ export function detectSecrets(text: string): SecretMatch[] {
   }
   const matches: SecretMatch[] = []
   const found = new Set<string>()
-  for (const view of scanViews(text)) {
-    for (const { name, regex } of SECRET_PATTERNS) {
+  // Raw text first, then the percent-decoded and escape-unfolded copies,
+  // each also folded (see scanViews).
+  const bases = [text]
+  const decoded = percentDecodedView(text)
+  if (decoded !== null) bases.push(decoded)
+  const unescaped = escapeUnfoldedView(text)
+  if (unescaped !== null) bases.push(unescaped)
+  const views = bases.flatMap(scanViews)
+  for (const view of views) {
+    for (const { name, regex, find } of SECRET_PATTERNS) {
       if (found.has(name)) continue
-      const m = view.match(regex)
-      if (m) {
+      const m = find ? find(view) : (view.match(regex as RegExp)?.[0] ?? null)
+      if (m !== null) {
         found.add(name)
-        matches.push({ pattern: name, match: m[0].slice(0, 20) + '...' })
+        matches.push({ pattern: name, match: maskFinding(name, m) })
       }
     }
   }

@@ -17,6 +17,7 @@ import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 import { RemoteStore, FEEDBACK_SOURCE_CAPABILITY, _resetRemoteCapabilityCache } from '../src/store/remote-store.js'
 import { StubServer } from './helpers/stub-server.js'
+import { namespaceEngramId } from '../src/engrams.js'
 
 const TOKEN = 'feedback-source-token'
 const SCOPE = 'group:test'
@@ -106,6 +107,36 @@ describe('remote feedback source (#1310)', () => {
     for (let i = 0; i < 4; i++) await plur.feedback(serverId, 'positive', SCOPE, { source: 'auto' })
     expect(server.feedbackBodies).toHaveLength(4)
     expect(server.meCalls).toBe(1)
+  })
+
+  describe('getByIds with remoteCapability (#1318 review)', () => {
+    it('fetches a namespaced remote id by id from a capable store, in a fresh process', async () => {
+      server.setMe({ capabilities: [FEEDBACK_SOURCE_CAPABILITY] })
+      const nsId = namespaceEngramId(serverId, SCOPE)
+      const plur = new Plur({ path: dir })
+      const got = await plur.getByIds([nsId], { remoteCapability: FEEDBACK_SOURCE_CAPABILITY })
+      expect(got.map(e => e.id)).toEqual([nsId])
+      expect(got[0].statement).toBe('team rule for auto feedback')
+      // …and the fetched id then rates through the ordinary unscoped walk.
+      await plur.feedback(got[0].id, 'positive', undefined, { source: 'auto' })
+      expect(server.feedbackBodies).toEqual([{ signal: 'positive', source: 'auto' }])
+    })
+
+    it('does not fetch from a store without the capability', async () => {
+      const nsId = namespaceEngramId(serverId, SCOPE)
+      const plur = new Plur({ path: dir })
+      const got = await plur.getByIds([nsId], { remoteCapability: FEEDBACK_SOURCE_CAPABILITY })
+      expect(got).toEqual([])
+      expect(server.getByIdCalls).toBe(0)
+    })
+
+    it('does not fetch remotely at all without the option', async () => {
+      server.setMe({ capabilities: [FEEDBACK_SOURCE_CAPABILITY] })
+      const plur = new Plur({ path: dir })
+      expect(await plur.getByIds([namespaceEngramId(serverId, SCOPE)])).toEqual([])
+      expect(server.getByIdCalls).toBe(0)
+      expect(server.meCalls).toBe(0)
+    })
   })
 
   it('a capability learned from an earlier /me (session start) costs no further call', async () => {

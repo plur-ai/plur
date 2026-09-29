@@ -17,6 +17,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawn } from 'child_process'
+import { createServer, type Server } from 'http'
+import type { AddressInfo } from 'net'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
 import { builtCliPath } from './helpers/built-cli.js'
 // Warm the module graph at collection time (see login.test.ts).
@@ -32,6 +34,16 @@ interface Run { status: number; stdout: string; stderr: string }
 
 let server: StubServer
 let baseUrl: string
+/** A token with characters that change under each encoding (audit of #1272). */
+const ODD = 'plr_SECRET/+=va"lue'
+const oddForms = [
+  ODD,
+  encodeURIComponent(ODD),
+  encodeURIComponent(ODD).replace(/%[0-9A-F]{2}/g, m => m.toLowerCase()),
+  JSON.stringify(ODD).slice(1, -1),
+  Buffer.from(ODD).toString('base64'),
+  Buffer.from(ODD).toString('base64url'),
+]
 /** Every byte any CLI run in this file printed — grepped for the token at the end. */
 const allOutput: string[] = []
 
@@ -49,6 +61,7 @@ describe('plur stores add --url (#1265)', () => {
     // The token was passed on every run below; it must not appear anywhere.
     expect(allOutput.join('\n')).not.toContain(TOKEN)
     expect(allOutput.join('\n')).not.toContain('wrong-token-SECRET-88')
+    for (const f of oddForms) expect(allOutput.join('\n')).not.toContain(f)
   })
 
   beforeEach(() => {
@@ -185,6 +198,64 @@ describe('plur stores add --url (#1265)', () => {
     expect(r.status, r.stderr).toBe(0)
     expect(JSON.parse(r.stdout)).toEqual({ success: true, status: 'added', path: storeFile, scope: 'project:legacy' })
     expect(existsSync(storeFile)).toBe(true)
+  }, TEST_TIMEOUT_MS)
+
+  it('scope registered to a different store: exit 1 naming --overwrite-scope, config unchanged', async () => {
+    writeFileSync(join(plurDir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - path: "${join(root, 'team.yaml')}"\n    scope: "${SCOPE}"\n`)
+    const before = configText()
+    const r = await cli(['stores', 'add', '--url', baseUrl, '--token', TOKEN, '--scope', SCOPE])
+    expect(r.status).toBe(1)
+    expect(r.stdout + r.stderr).toContain('--overwrite-scope')
+    expect(r.stdout + r.stderr).not.toContain('overwriteScope: true')
+    expect(configText()).toBe(before)
+  }, TEST_TIMEOUT_MS)
+
+  it('--overwrite-scope reassigns the scope after verification', async () => {
+    writeFileSync(join(plurDir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - path: "${join(root, 'team.yaml')}"\n    scope: "${SCOPE}"\n`)
+    const r = await cli(['stores', 'add', '--url', baseUrl, '--token', TOKEN, '--scope', SCOPE, '--overwrite-scope', '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(JSON.parse(r.stdout)).toMatchObject({ success: true, status: 'overwritten', scope: SCOPE })
+    expect(configText()).toContain(baseUrl)
+    expect(configText()).not.toContain('team.yaml')
+    // A rejected token with the flag still writes nothing.
+    const after = configText()
+    const bad = await cli(['stores', 'add', '--url', 'http://127.0.0.1:1', '--token', 'wrong-token-SECRET-88', '--scope', SCOPE, '--overwrite-scope'])
+    expect(bad.status).toBe(1)
+    expect(configText()).toBe(after)
+  }, TEST_TIMEOUT_MS)
+
+  it('a server echoing the token in any encoding: nothing printed, text or --json', async () => {
+    const echo: Server = createServer((_req, res) => {
+      res.writeHead(401, { 'content-type': 'text/plain' })
+      res.end(`invalid token ${oddForms.join(' | ')}`)
+    })
+    await new Promise<void>(r => echo.listen(0, '127.0.0.1', () => r()))
+    try {
+      const url = `http://127.0.0.1:${(echo.address() as AddressInfo).port}`
+      const before = configText()
+      for (const extra of [['--json'], []]) {
+        const r = await cli(['stores', 'add', '--url', url, '--token-env', 'ODD_TOKEN', '--scope', SCOPE, ...extra],
+          { env: { ODD_TOKEN: ODD } })
+        expect(r.status).toBe(1)
+        for (const f of oddForms) expect(r.stdout + r.stderr).not.toContain(f)
+      }
+      expect(configText()).toBe(before)
+    } finally {
+      await new Promise<void>(r => echo.close(() => r()))
+    }
+  }, TEST_TIMEOUT_MS)
+
+  it('a /me scope list or username carrying the token is never printed', async () => {
+    server.setMe({ username: `u-${TOKEN}`, scopes: [SCOPE, `group:${TOKEN}`, 'group:example/ops'] })
+    const refused = await cli(['stores', 'add', '--url', baseUrl, '--token', TOKEN, '--scope', 'group:example/finance', '--json'])
+    expect(refused.status).toBe(1)
+    expect(refused.stdout + refused.stderr).toContain('group:example/ops')
+    const ok = await cli(['stores', 'add', '--url', baseUrl, '--token', TOKEN, '--scope', SCOPE, '--json'])
+    expect(ok.status, ok.stderr).toBe(0)
+    const text = await inProcess(['add', '--url', baseUrl, '--token', TOKEN, '--scope', 'group:example/ops'])
+    for (const out of [refused.stdout + refused.stderr, ok.stdout + ok.stderr, text]) expect(out).not.toContain(TOKEN)
   }, TEST_TIMEOUT_MS)
 
   it('discover empty state points at the new --url form', async () => {

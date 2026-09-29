@@ -3,7 +3,8 @@
  *
  * The golden files under `fixtures/plur-yaml/` were captured from `main`
  * BEFORE the folder map landed, by running this suite with
- * `PLUR_UPDATE_GOLDEN=1`. The suite replays the same fixtures and compares
+ * `PLUR_UPDATE_GOLDEN=1` (trusted-scope-hint.txt: captured on main's sources
+ * with the trust recorded in trust.yaml, as main reads it). The suite replays the same fixtures and compares
  * the hook's stdout byte for byte, after replacing the temp directory with
  * `<DIR>`, dates with `<DATE>` and session ids with `<UUID>` (all change on every run).
  *
@@ -19,6 +20,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { runCli } from './helpers/spawn.js'
 import { builtCliPath } from './helpers/built-cli.js'
+import { resolveFolderPolicy } from '@plur-ai/core'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 const GOLDEN_DIR = join(__dirname, 'fixtures', 'plur-yaml')
@@ -80,10 +82,26 @@ describe('existing .plur.yaml behaviour is unchanged by the folder map (#1347)',
     return normalise(cli(['hook-inject'], JSON.stringify({ prompt: 'how do fixture deploys reach release' })))
   }
 
-  it('a scope/domain .plur.yaml: hook-inject output matches main', () => {
+  // Decision D1 ("ignore-ask"): only a TRUSTED .plur.yaml keeps today's
+  // behaviour, so the unchanged-behaviour golden is a trusted fixture. Trust
+  // is granted the way main records it (trust.yaml), which this branch imports.
+  it('a TRUSTED scope/domain .plur.yaml: hook-inject output matches main', () => {
     writeFileSync(join(repo, '.plur.yaml'), 'scope: project:fixture\ndomain: fixture.deploy\n')
-    check('scope-hint', seedAndInject())
+    mkdirSync(join(dir, '.plur'), { recursive: true })
+    writeFileSync(join(dir, '.plur', 'trust.yaml'), `version: 1\ntrusted:\n  - ${repo}\n`)
+    check('trusted-scope-hint', seedAndInject())
   }, 60_000)
+
+  // D1: an UNTRUSTED .plur.yaml that requests a scope resolves to ask. The
+  // hooks switch to the resolver in the hook-integration PR; until then this
+  // pins the resolver's answer for the same fixture.
+  it('an UNTRUSTED scope/domain .plur.yaml resolves to ask (D1)', () => {
+    writeFileSync(join(repo, '.plur.yaml'), 'scope: project:fixture\ndomain: fixture.deploy\n')
+    expect(resolveFolderPolicy(repo, { root: join(dir, '.plur'), home: dir })).toEqual({
+      mode: 'ask', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
+      requested: { scope: 'project:fixture', domain: 'fixture.deploy' },
+    })
+  })
 
   it('an untrusted remote .plur.yaml: same refusal notice as main, no dial', () => {
     // Port 9 (discard) on loopback: nothing listens, and an untrusted remote

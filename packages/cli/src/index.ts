@@ -14,6 +14,18 @@ const argv = process.argv.slice(2)
 const sep = argv.indexOf('--')
 const options = sep === -1 ? argv : argv.slice(0, sep)
 
+// Hook probe (decision H3's Windows CI job): with PLUR_HOOK_PROBE set to a
+// file path, a hook-* invocation appends its subcommand to that file and
+// exits 0 without running. The job runs every hook string `plur init`
+// generated through bash, pwsh and cmd, and this proves each one reached
+// the CLI with the right subcommand. Unset (always, outside that job), it
+// does nothing.
+if (process.env.PLUR_HOOK_PROBE && /^hook-/.test(argv[0] ?? '')) {
+  const { appendFileSync } = await import('fs')
+  appendFileSync(process.env.PLUR_HOOK_PROBE, `${argv[0]}\n`)
+  process.exit(0)
+}
+
 if (options.includes('--version') || options.includes('-v')) {
   console.log(VERSION)
   process.exit(0)
@@ -57,6 +69,7 @@ Commands:
   stores list             List configured stores
   stores add <path>       Add a knowledge store
   stores add --url <u>    Add a remote store (verified; --scope, --token-env)
+  stores prune            Remove config.yaml store entries that name the primary store file (#1356)
   trust [dir]             Trust a directory's .plur.yaml scope/domain (default: cwd) [--list]
   untrust [dir]           Revoke a directory's trust grant (default: cwd)
   folders list            Your per-folder decisions (~/.plur/folders.yaml, #1347)

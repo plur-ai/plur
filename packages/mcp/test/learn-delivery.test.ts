@@ -36,6 +36,16 @@ describe('plur_learn reports delivery (#1264)', () => {
     expect(String(r.warning)).toContain(TEAM)
   })
 
+  it('F8: a save absorbed into another team scope warns about the scope asked for', async () => {
+    const plur = new Plur({ path: dir })
+    await plur.learn('canary before every deploy', { scope: TEAM })
+    const r = await learn(plur, { statement: 'canary before every deploy', scope: 'group:example/ops' })
+    if (r.scope !== 'group:example/ops') {
+      expect(r.delivery).toBe('local')
+      expect(String(r.delivery_warning)).toContain('group:example/ops')
+    }
+  })
+
   it('a personal scope reports local with no delivery warning', async () => {
     const plur = new Plur({ path: dir })
     const r = await learn(plur, { statement: 'my own preference', scope: 'global' })

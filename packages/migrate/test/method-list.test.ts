@@ -90,6 +90,11 @@ const ALWAYS_ASYNC = new Set([
   // that need action. Wraps the async listOutbox, so it could never have been
   // sync; new in this release, so there is no pre-0.16 call site to rewrite.
   'outboxSummary',
+  // Born async (#1310) — batch lookup of injected engrams for the auto-rate
+  // Stop hook. Loads through the async PrimaryStore seam and may fetch ids from
+  // remote stores, so it could never have been sync; new in this release, so
+  // there is no pre-0.16 call site to rewrite.
+  'getByIds',
 ])
 
 /** Public methods of `Plur`, mapped to whether they are declared `async`. */

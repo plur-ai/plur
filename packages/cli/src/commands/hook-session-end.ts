@@ -6,6 +6,7 @@ import { createPlur } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { safeSessionKey, hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js'
 import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
+import { removeSessionTask } from '../lib/session-task.js'
 
 /**
  * plur hook-session-end — Claude Code SessionEnd hook (shipped v1.0.85).
@@ -48,9 +49,10 @@ function sessionKeys(payloadSessionId?: string): string[] {
   // (#1278 follow-up; #1301 fixed the same mismatch in plur_session_end).
   //
   // Owner decision H1 ("payload"): the writer's key is hookSessionKey; the
-  // shared legacyHookSessionKeys adds the forms older writers used (#1228's
-  // env-first stripped key among them). The per-candidate forms below stay
-  // as a superset so no key this reader accepted before is dropped.
+  // shared legacyHookSessionKeys adds the forms older writers used (main's and
+  // #1228's env-first stripped key, including its 'default'). The
+  // per-candidate forms below stay as a superset so no key this reader
+  // accepted before is dropped.
   const perCandidate = [payloadSessionId, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
     .filter(Boolean)
     .flatMap(k => [
@@ -103,6 +105,10 @@ async function closeSession(flags: GlobalFlags): Promise<void> {
   try {
     payload = JSON.parse(raw)
   } catch { /* fall back to env-derived keys */ }
+
+  // The hook-inject rehydrate query is a copy of the user's latest prompt;
+  // it has no use once the session is over.
+  removeSessionTask(payload.session_id)
 
   const sessionsDir = join(plurPath(flags), 'sessions')
   if (!existsSync(sessionsDir)) return

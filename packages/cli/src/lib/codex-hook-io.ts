@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { safeSessionKey } from './session-key.js'
+import { exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from './store-lock-exit.js'
 
 /**
  * Shared stdin-reading and sentinel helpers for the four hook-codex-*
@@ -387,11 +388,13 @@ export async function runCodexHook(
   // Tests, which call run() in-process, would take the whole runner down
   // with it — hence one explicit, purpose-named opt-out rather than
   // sniffing for a test runner.
-  if (process.env.PLUR_HOOK_NO_EXIT === '1') {
-    process.exitCode = 0
-    return
-  }
-  process.exit(0)
+  //
+  // Not while this process may be inside a store write (#1343): a missed
+  // hybrid deadline leaves that search running, and it records its injection
+  // under `engrams.yaml.lock`. Exiting mid-acquire leaves an empty lock that
+  // stalls every later writer for 60s. Bounded, and free when the store is idle.
+  const noExit = process.env.PLUR_HOOK_NO_EXIT === '1'
+  await exitWhenStoreIdle(EXIT_LOCK_WAIT_MS, noExit ? () => { process.exitCode = 0 } : () => process.exit(0))
 }
 
 const DEADLINE_MISSED = Symbol('plur.hybrid.deadline')
@@ -467,7 +470,8 @@ export interface Injectable<O, R> {
  * injects NOTHING, which is strictly worse than BM25 results. The race bounds
  * the worst case at deadline + BM25 (~10s here) while keeping the typical case
  * at hybrid speed. The abandoned hybrid promise is harmless: `runCodexHook`
- * force-exits the process immediately afterwards.
+ * force-exits the process afterwards — once any store write it is inside has
+ * finished (bounded; #1343).
  */
 export async function injectWithFallback<O, R>(
   plur: Injectable<O, R>,

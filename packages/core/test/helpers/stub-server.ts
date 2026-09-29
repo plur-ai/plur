@@ -88,12 +88,20 @@ export class StubServer {
   /** Number of POST /api/v1/engrams requests received, answered or refused
    *  (#1299: proves a backed-off outbox entry did not dial the server). */
   appendCalls = 0
-
   /** With `appendDelayMs`: store the engram only when the delayed answer is
    *  sent, so a client that gives up first leaves nothing on the server. */
   appendDropWhileDelayed = false
   /** `Idempotency-Key` header of the most recent POST /engrams. */
   lastAppendIdempotencyKey: string | null = null
+  /** Every `Idempotency-Key` received on an accepted POST /engrams, in order. */
+  appendKeys: Array<string | null> = []
+  /** Model a server that follows docs/remote-store-contract.md on POST: a key
+   *  already accepted from the same token replays the original response. */
+  honourIdempotency = false
+  /** Model a server that neither records `idempotency_key` nor supports the
+   *  `?idempotency_key=` list filter — delivery cannot be confirmed by key. */
+  ignoreIdempotencyKeys = false
+  private idempotencyReplies = new Map<string, { id: string; scope: string; status: string; data: Record<string, unknown> }>()
   /** When set, PATCH /engrams/:id still applies the update server-side but
    *  echoes this value as the {engram: ...} body — to simulate a server whose
    *  echoed row fails RemoteRowSchema validation (#327). */
@@ -114,6 +122,12 @@ export class StubServer {
    *  number — lets a test hold one write on the wire while another client runs
    *  (deterministic interleaving across two clients). */
   appendHook: ((n: number) => Promise<void>) | null = null
+  /** Number of GET /api/v1/engrams/:id requests received (#1318 review: remote
+   *  ids are fetched only from stores that advertise the capability). */
+  getByIdCalls = 0
+  /** Delay before answering POST /engrams/:id/feedback, ms — to simulate a
+   *  slow server a hook watchdog cuts off mid-way (#1318 review). */
+  feedbackDelayMs = 0
 
   // --- POST /api/v1/recall (#776 server-authoritative recall envelope) ---
   /** Rows served in the envelope's `results` (top-level engram shape, each
@@ -208,9 +222,12 @@ export class StubServer {
     this.appendErrorByScope = {}
     this.appendDelayMs = 0
     this.appendCalls = 0
-
     this.appendDropWhileDelayed = false
     this.lastAppendIdempotencyKey = null
+    this.appendKeys = []
+    this.honourIdempotency = false
+    this.ignoreIdempotencyKeys = false
+    this.idempotencyReplies.clear()
     this.badPatchEcho = null
     this.recallRows = []
     this.recallStatus = null
@@ -225,6 +242,8 @@ export class StubServer {
     this.lastAppendBody = null
     this.feedbackBodies = []
     this.meCalls = 0
+    this.getByIdCalls = 0
+    this.feedbackDelayMs = 0
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -301,8 +320,8 @@ export class StubServer {
 
     // POST /api/v1/engrams — create
     if (method === 'POST' && path === '/api/v1/engrams') {
-      // Merge of the field-report stub (#1307 appendCalls/per-scope refusals,
-      // #1277 idempotency key + delayed/dropped answers) with #1228's
+      // Field-report stub (#1307 appendCalls/per-scope refusals, #1277
+      // idempotency key, replay and delayed/dropped answers) inside #1228's
       // appendHook (hold one write on the wire while another client runs).
       const n = ++this.appendCalls
       const handleAppend = (): void => {
@@ -316,6 +335,13 @@ export class StubServer {
         this.lastAppendIdempotencyKey = typeof idemKey === 'string' ? idemKey : null
         this.readBody(req, (body) => {
           this.lastAppendBody = body
+          const key = typeof idemKey === 'string' ? idemKey : null
+          this.appendKeys.push(key)
+          const replayKey = key ? `${req.headers.authorization}\0${key}` : null
+          if (this.honourIdempotency && replayKey && this.idempotencyReplies.has(replayKey)) {
+            this.json(res, 201, this.idempotencyReplies.get(replayKey))
+            return
+          }
           const { statement, scope, domain, type, source } = body
           const refusal = typeof scope === 'string' ? this.appendErrorByScope[scope] : undefined
           if (refusal) {
@@ -323,6 +349,7 @@ export class StubServer {
             res.end(refusal.body)
             return
           }
+          const idempotency_key = this.ignoreIdempotencyKeys ? undefined : body.idempotency_key
           const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
           const now = new Date().toISOString()
           const engram: StoredEngram = {
@@ -333,11 +360,18 @@ export class StubServer {
             status: 'active',
             // `source` carries rescope provenance over the wire (#676) — keep it
             // so tests can assert the pushed shape.
-            data: { statement, domain, type, ...(source !== undefined ? { source } : {}) },
+            data: {
+              statement, domain, type,
+              ...(source !== undefined ? { source } : {}),
+              ...(idempotency_key !== undefined ? { idempotency_key } : {}),
+            },
             created_at: now,
             updated_at: now,
           }
-          const store = () => this.engrams.set(id, engram)
+          const store = () => {
+            this.engrams.set(id, engram)
+            if (replayKey) this.idempotencyReplies.set(replayKey, { id, scope: engram.scope, status: engram.status, data: engram.data })
+          }
           if (!(this.appendDelayMs > 0 && this.appendDropWhileDelayed)) store()
           // Normally the server returns the real assigned id; badAppendId lets a
           // test make it return a malformed one (#404).
@@ -360,6 +394,7 @@ export class StubServer {
     // GET /api/v1/engrams/:id — get by ID
     const idMatch = path.match(/^\/api\/v1\/engrams\/([^/]+)$/)
     if (method === 'GET' && idMatch) {
+      this.getByIdCalls++
       const id = decodeURIComponent(idMatch[1])
       const engram = this.engrams.get(id)
       if (!engram) {
@@ -428,9 +463,19 @@ export class StubServer {
       if (scope) {
         all = all.filter(e => e.scope === scope)
       }
+      // Contract: a server that supports the key filter narrows the listing
+      // AND echoes the key, so the client can tell "filtered, not there" from
+      // "filter ignored".
+      const keyFilter = url.searchParams.get('idempotency_key')
+      if (keyFilter && !this.ignoreIdempotencyKeys) {
+        all = all.filter(e => e.data.idempotency_key === keyFilter)
+      }
       const total_count = all.length
       const rows = all.slice(offset, offset + limit)
-      this.json(res, 200, { rows, total_count })
+      this.json(res, 200, {
+        rows, total_count,
+        ...(keyFilter && !this.ignoreIdempotencyKeys ? { idempotency_key: keyFilter } : {}),
+      })
       return
     }
 
@@ -443,7 +488,8 @@ export class StubServer {
         this.json(res, 404, { error: 'Not found' })
         return
       }
-      this.readBody(req, (body) => {
+      this.readBody(req, async (body) => {
+        if (this.feedbackDelayMs > 0) await new Promise(r => setTimeout(r, this.feedbackDelayMs))
         this.feedbackBodies.push(body)
         const signal = body.signal as string
         const data = engram.data as any

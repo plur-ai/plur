@@ -28,6 +28,15 @@ describe('plur learn reports delivery (#1264)', () => {
     expect(String(out.delivery_warning)).toContain(TEAM)
   })
 
+  it('F8: --json warns about the scope asked for when the save landed in another team scope', () => {
+    run(`learn "canary before every deploy" --scope ${TEAM}`, true)
+    const out = JSON.parse(run('learn "canary before every deploy" --scope group:example/ops', true))
+    if (out.scope !== 'group:example/ops') {
+      expect(out.delivery).toBe('local')
+      expect(String(out.delivery_warning)).toContain('group:example/ops')
+    }
+  })
+
   it('--json carries delivery "local" and no warning for a personal scope', () => {
     const out = JSON.parse(run('learn "my own preference" --scope global', true))
     expect(out.delivery).toBe('local')

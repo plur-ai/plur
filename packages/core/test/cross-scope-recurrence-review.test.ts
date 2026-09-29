@@ -64,6 +64,10 @@ describe('#1268 review findings', () => {
   // Finding 1: learnRouted's remote route decided "team validation" AFTER the
   // recurrence had already rewritten the matched engram to global, so the
   // same save that learn() absorbs was ALSO POSTed as a second team engram.
+  // Decision A1 (2026-09-29, "never") changes WHAT they agree on: the team
+  // save is no longer absorbed into the project:a engram — both paths credit
+  // it and write/POST the team's own engram. Before, this test asserted the
+  // save was absorbed with no POST.
   it('1: learn() and learnRouted() agree when a shared save graduates a shared engram', async () => {
     writeFileSync(join(dir, 'config.yaml'), yaml.dump({
       index: false, stores: [{ url: URL, token: 't', scope: TEAM, shared: true, readonly: false }],
@@ -78,11 +82,14 @@ describe('#1268 review findings', () => {
     }) as any
     const plur = new Plur({ path: dir })
     const a = await plur.learnRouted('ship behind a flag', { scope: 'project:a' })
-    await plur.learnRouted('ship behind a flag', { scope: 'project:b' })        // recurrence 1
+    await plur.learnRouted('ship behind a flag', { scope: 'user:b' })           // recurrence 1
     const r = await plur.learnRouted('ship behind a flag', { scope: TEAM })      // recurrence 2 → graduates
-    expect(r.id).toBe(a.id)
-    expect(r.scope).toBe('global')
-    expect(posts).toHaveLength(0)   // absorbed, exactly as learn() does
+    expect(r.id).not.toBe(a.id)
+    expect(r.scope).toBe(TEAM)
+    expect(posts).toHaveLength(1)   // the team's own engram, exactly once
+    expect(posts[0].scope).toBe(TEAM)
+    const credited = (await plur.list()).find(e => e.id === a.id)!
+    expect(credited.recurrence_count).toBe(2)
   })
 
   // Finding 2: after one engram graduated, the next shared saves wrote a new
@@ -105,10 +112,11 @@ describe('#1268 review findings', () => {
     const plur = new Plur({ path: dir, store, autoDiscover: false } as any)
     await plur.ready()
     plur.addStore(join(storeDir, 'engrams.yaml'), TEAM, { shared: true, readonly: false })
-    await plur.learn('pair on schema changes', { scope: 'project:a' })    // recurrence 1 (in the team file)
+    // Driven by personal saves (decision A1: shared saves are credited only).
+    await plur.learn('pair on schema changes', { scope: 'user:a' })       // recurrence 1 (in the team file)
     store.fullLoads = 0
     store.nextIdCalls = 0
-    const copy = await plur.learn('pair on schema changes', { scope: 'project:b' })
+    const copy = await plur.learn('pair on schema changes', { scope: 'user:b' })
     expect(copy.scope).toBe('global')
     expect(store.nextIdCalls).toBe(1)
     expect(copy.id).toMatch(/-901$/)
@@ -129,8 +137,9 @@ describe('#1268 review findings', () => {
     } as any)
     const plur = new Plur({ path: dir })
     plur.addStore(join(storeDir, 'engrams.yaml'), TEAM, { shared: true, readonly: false })
-    await plur.learn('freeze merges during the audit', { scope: 'project:a' })
-    const copy = await plur.learn('freeze merges during the audit', { scope: 'project:b' })
+    // Driven by personal saves (decision A1: shared saves are credited only).
+    await plur.learn('freeze merges during the audit', { scope: 'user:a' })
+    const copy = await plur.learn('freeze merges during the audit', { scope: 'user:b' })
     expect(copy.scope).toBe('global')
     expect(copy.temporal?.valid_from).toBe('2026-09-01')
     expect(copy.temporal?.valid_until).toBe('2099-12-31')

@@ -64,7 +64,7 @@ describe('#1319 primary store is never registered as a secondary store', () => {
     const plur = new Plur({ cwd: projectDir })
     const primaryReal = realpathSync(join(realHome, '.plur', 'engrams.yaml'))
     for (const s of await plur.listStores()) {
-      if (s.scope === 'global' || !s.path || s.path === plur.paths.engrams) continue
+      if (s.scope === 'global' || !s.path || s.path === (plur as any).paths.engrams) continue
       expect(realpathSync(s.path)).not.toBe(primaryReal)
     }
     let cfg: any = {}

@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import { canonicalize } from './project-config.js'
-import { loadFolderMap, isTrustedInMap, setFolderEntry, clearFolderTrust } from './folders.js'
+import { loadFolderMap, isTrustedInMap, setFolderEntry, clearFolderTrust, removeLegacyTrustEntry, withFolderMapLock } from './folders.js'
 
 /**
  * Directory trust — a one-time, explicit, per-directory grant, the same
@@ -22,7 +22,8 @@ import { loadFolderMap, isTrustedInMap, setFolderEntry, clearFolderTrust } from 
  *
  * #1347: the grant now lives in the folder map (`<root>/folders.yaml`) as
  * `trusted: true` on an entry. A pre-#1347 `<root>/trust.yaml` is imported
- * once, on the first read of a missing folders.yaml, and never rewritten.
+ * once, on the first read of a missing folders.yaml, and every grant and
+ * revocation is dual-written to both files (see folders.ts).
  * These functions keep their signatures and results; see folders.ts.
  */
 
@@ -52,9 +53,17 @@ export function trustDirectory(dir: string, root: string): string {
  * Revoke trust from `dir`. Exact entry only — untrusting a root does not
  * walk its previously-covered descendants (they were never their own
  * entries). Returns whether a grant was removed.
+ *
+ * The grant is removed from folders.yaml AND from trust.yaml (the dual-write
+ * for adapters on the previous core), so neither an older reader, a downgrade
+ * nor a re-import can bring it back.
  */
 export function untrustDirectory(dir: string, root: string): boolean {
-  return clearFolderTrust(root, dir)
+  return withFolderMapLock(root, () => {
+    const fromMap = clearFolderTrust(root, dir)
+    const fromLegacy = removeLegacyTrustEntry(root, dir)
+    return fromMap || fromLegacy
+  })
 }
 
 /** List every directory this user has explicitly trusted (sorted). */

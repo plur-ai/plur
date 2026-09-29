@@ -14,25 +14,23 @@ import { buildCursorHooks, mergeCursorHooks, hasPlurCursorHooks } from '../src/c
 import { buildCodexHooks, mergeCodexHooks } from '../src/codex-hooks.js'
 
 const WIN_SHIM = 'C:\\Users\\Test User\\.plur\\bin\\plur-hook.cmd'
+const SHORT_SHIM = 'C:/Users/TESTUS~1/.plur/bin/plur-hook.cmd'
 
 const realPlatform = process.platform
 function setPlatform(p: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: p })
 }
 
+// darwin/linux only since decision H3: Windows hooks never use a quoted
+// prefix (see windowsHookCommand / claudeHookSpec, hook-decisions-h2-h3.test.ts).
 describe('hookCommandPrefix (#1267)', () => {
-  it('quotes the shim path on win32', () => {
-    expect(hookCommandPrefix(WIN_SHIM, 'win32')).toBe(`"${WIN_SHIM}"`)
-    expect(hookCommandPrefix('C:\\Users\\a\\.plur\\bin\\plur-hook.cmd', 'win32')).toBe('"C:\\Users\\a\\.plur\\bin\\plur-hook.cmd"')
-  })
-
   it('leaves a darwin/linux path without whitespace byte-identical', () => {
-    expect(hookCommandPrefix('/Users/a/.plur/bin/plur-hook', 'darwin')).toBe('/Users/a/.plur/bin/plur-hook')
-    expect(hookCommandPrefix('/home/a/.plur/bin/plur-hook', 'linux')).toBe('/home/a/.plur/bin/plur-hook')
+    expect(hookCommandPrefix('/Users/a/.plur/bin/plur-hook')).toBe('/Users/a/.plur/bin/plur-hook')
+    expect(hookCommandPrefix('/home/a/.plur/bin/plur-hook')).toBe('/home/a/.plur/bin/plur-hook')
   })
 
   it('quotes a darwin/linux path that contains a space', () => {
-    expect(hookCommandPrefix('/Users/Test User/.plur/bin/plur-hook', 'darwin')).toBe('"/Users/Test User/.plur/bin/plur-hook"')
+    expect(hookCommandPrefix('/Users/Test User/.plur/bin/plur-hook')).toBe('"/Users/Test User/.plur/bin/plur-hook"')
   })
 })
 
@@ -93,20 +91,21 @@ describe('Cursor and Codex hook merges on Windows (#1267)', () => {
       hooks: Object.fromEntries(Object.entries(oldSet).map(([ev, es]) => [ev, [...es, ...es]])),
     }
     expect(hasPlurCursorHooks(doubled)).toBe(true)
-    const next = mergeCursorHooks(doubled, buildCursorHooks(hookCommandPrefix(WIN_SHIM, 'win32')))
+    // Decision H3: the new set is the unquoted short path.
+    const next = mergeCursorHooks(doubled, buildCursorHooks(SHORT_SHIM))
     for (const entries of Object.values(next.hooks)) {
       expect(entries).toHaveLength(1)
-      expect(entries[0].command.startsWith(`"${WIN_SHIM}" `)).toBe(true)
+      expect(entries[0].command.startsWith(`${SHORT_SHIM} `)).toBe(true)
     }
   })
 
   it('Codex: re-init over an older unquoted backslash set leaves one set', () => {
     const old = mergeCodexHooks({ hooks: {} }, buildCodexHooks(WIN_SHIM))
-    const next = mergeCodexHooks(old, buildCodexHooks(hookCommandPrefix(WIN_SHIM, 'win32')))
+    const next = mergeCodexHooks(old, buildCodexHooks(SHORT_SHIM))
     for (const entries of Object.values(next.hooks ?? {})) {
       const specs = entries.flatMap((e) => e.hooks)
       expect(specs).toHaveLength(1)
-      expect(specs[0].command.startsWith(`"${WIN_SHIM}" `)).toBe(true)
+      expect(specs[0].command.startsWith(`${SHORT_SHIM} `)).toBe(true)
     }
   })
 })

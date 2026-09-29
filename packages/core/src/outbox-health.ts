@@ -74,7 +74,7 @@ export interface OutboxVerdict {
 
 export function classifyOutboxFailure(input: OutboxFailureInput): OutboxVerdict {
   const scope = input.scope ?? '<scope>'
-  // The id is not embedded: the same line is shown once per scope, over
+  // The id is not embedded: the same line is shown once per scope and reason, over
   // several entries, next to the listing that names them.
   const rescope = '`plur rescope <id> --to <other scope>`'
   const retry = 'then `plur outbox --flush`'
@@ -134,23 +134,28 @@ export interface OutboxSummary {
   pending: number
   retrying: number
   needs_action: number
-  /** One row per scope with needs_action entries: the first entry's reason and next step. */
+  /** One row per (scope, reason) with needs_action entries, each with that reason's next step. */
   scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
 }
 
 export function summarizeOutbox(entries: readonly OutboxEntryLike[]): OutboxSummary {
-  const byScope = new Map<string, { scope: string; count: number; reason: string; next_step: string }>()
+  // Keyed by scope AND reason: one scope can hold entries refused for
+  // different reasons, and each reason has its own next step. Grouping by
+  // scope alone told a 403 entry to `plur forget` itself (the 422 advice).
+  const rows = new Map<string, { scope: string; count: number; reason: string; next_step: string }>()
   let needs = 0
   for (const e of entries) {
     if (e.state !== 'needs_action') continue
     needs++
-    const row = byScope.get(e.target_scope)
+    const reason = e.reason ?? 'retrying cannot fix it'
+    const key = `${e.target_scope}\u0000${reason}`
+    const row = rows.get(key)
     if (row) row.count++
-    else byScope.set(e.target_scope, {
-      scope: e.target_scope, count: 1, reason: e.reason ?? 'retrying cannot fix it', next_step: e.next_step ?? 'run `plur outbox`',
+    else rows.set(key, {
+      scope: e.target_scope, count: 1, reason, next_step: e.next_step ?? 'run `plur outbox`',
     })
   }
-  return { pending: entries.length, retrying: entries.length - needs, needs_action: needs, scopes: [...byScope.values()] }
+  return { pending: entries.length, retrying: entries.length - needs, needs_action: needs, scopes: [...rows.values()] }
 }
 
 /** One human line per needs_action scope, for status/doctor/session_start. */

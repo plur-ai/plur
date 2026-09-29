@@ -46,16 +46,20 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       : null
 
   // #1269: flush after the repository sync, same order as MCP plur_sync.
-  let outbox: { flushed: number; skipped: number; pending: number; warnings: string[] } | undefined
+  let outbox: { flushed: number; skipped: number; held: number; pending: number; warnings: string[] } | undefined
   let outboxError: string | undefined
   try {
     const flushed = await plur.flushOutbox()
     // `skipped` is an open circuit breaker: nothing was attempted, the writes
     // are still queued, and the reason is in the warnings (review of #1277).
-    if (flushed.flushed > 0 || flushed.failed > 0 || flushed.deferred > 0 || flushed.skipped > 0) {
+    // #1299: `held` — needs_action entries backed off — must be reported too:
+    // a flush that held every entry back did nothing else.
+    const held = flushed.held ?? 0
+    if (flushed.flushed > 0 || flushed.failed > 0 || flushed.deferred > 0 || flushed.skipped > 0 || held > 0) {
       outbox = {
         flushed: flushed.flushed,
         skipped: flushed.skipped,
+        held,
         pending: await plur.outboxCount(),
         warnings: flushed.expired_warnings,
       }
@@ -86,6 +90,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (outbox) {
       if (outbox.flushed > 0) outputInfo(`  Outbox: ${outbox.flushed} queued write(s) delivered.`, flags)
       // Undelivered writes are an outcome that differs from "synced" — never suppressed.
+      if (outbox.held > 0) {
+        outputText(`  Outbox: ${outbox.held} write(s) held back — the store refused them in a way retrying cannot fix (retried once a day). Run 'plur outbox' for the reason and what to do.`)
+      }
       if (outbox.pending > 0) {
         outputText(`  Outbox: ${outbox.pending} write(s) still queued — the remote store is unreachable or refused them. Run 'plur outbox' for details.`)
       }

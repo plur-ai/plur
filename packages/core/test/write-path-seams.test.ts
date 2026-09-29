@@ -319,7 +319,9 @@ describe('#828 YamlPrimaryStore behaviour is unchanged', () => {
     await plur.ready()
 
     const a = await plur.learn('secrets never go in the repo', { scope: 'project:alpha' })
-    const b = await plur.learn('secrets never go in the repo', { scope: 'project:beta' })
+    // A personal re-learn: since decision A1 (2026-09-29) a SHARED save
+    // (`project:beta`) is credited, never absorbed, and writes its own row.
+    const b = await plur.learn('secrets never go in the repo', { scope: 'user:beta' })
 
     // Same engram, escalated — not a second row.
     expect(b.id).toBe(a.id)

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
+import { isPlurHookCommand } from './lib/hook-command.js'
 
 /**
  * Support for Codex's `~/.codex/hooks.json`.
@@ -120,28 +121,15 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
   }
 }
 
-/** The exact set of subcommands `buildCodexHooks()` installs. */
-const PLUR_CODEX_SUBCOMMANDS = [
-  'hook-codex-session-start',
-  'hook-codex-inject',
-  'hook-codex-guard',
-  'hook-codex-post-tool',
-  'hook-codex-session-end',
-  'hook-auto-rate',
-]
-
 /**
- * A hook is PLUR's only if it BOTH names the PLUR binary AND invokes one of
- * PLUR's exact subcommands — the same two-part test `cursor-hooks.ts` uses,
- * and for the same reason: matching on a bare `hook-codex-` substring would
- * claim a user's own `./scripts/hook-codex-lint.sh` and silently delete it
- * on the next `plur init --codex`.
+ * A hook is PLUR's when PLUR's own launcher runs a `hook-*` subcommand —
+ * the shared matcher (decision H2 "prefix"), so a new Codex hook needs no
+ * list update. A user's own `./scripts/hook-codex-lint.sh`, or any hook-*
+ * run by another binary, is not PLUR's and is never deleted by
+ * `plur init --codex`.
  */
 function isPlurCodexHookSpec(spec: CodexHookSpec): boolean {
-  const cmd = spec?.command ?? ''
-  const isPlurBinary = cmd.includes('@plur-ai/cli') || cmd.includes('plur-hook')
-  if (!isPlurBinary) return false
-  return PLUR_CODEX_SUBCOMMANDS.some((sub) => cmd.includes(sub))
+  return typeof spec?.command === 'string' && isPlurHookCommand(spec.command)
 }
 
 function entryIsPlurOwned(entry: CodexHookEntry): boolean {

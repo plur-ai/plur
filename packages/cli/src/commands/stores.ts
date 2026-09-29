@@ -1,9 +1,9 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { AddRemoteStoreError } from '@plur-ai/core'
+import { AddRemoteStoreError, redactToken, redactTokenDeep } from '@plur-ai/core'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 const REMOTE_USAGE =
-  'Usage: plur stores add --url <url> --scope <scope> (--token <token> | --token-env <VAR> | --token -)'
+  'Usage: plur stores add --url <url> --scope <scope> (--token <token> | --token-env <VAR> | --token -) [--overwrite-scope]'
 
 /** Value following `name` in args, or undefined. A flag present with no value
  *  (or followed by another flag) yields '' so the caller can refuse it. */
@@ -52,20 +52,29 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
   const readonly = args.includes('--readonly')
   let result: Awaited<ReturnType<typeof plur.addRemoteStore>>
   try {
-    result = await plur.addRemoteStore({ url: url!, token, scope: scope!, ...(readonly ? { readonly } : {}) })
+    result = await plur.addRemoteStore({
+      url: url!, token, scope: scope!,
+      ...(readonly ? { readonly } : {}),
+      ...(args.includes('--overwrite-scope') ? { overwriteScope: true } : {}),
+    })
   } catch (err) {
     // AddRemoteStoreError messages are already token-free; anything else (an
-    // addStore scope conflict, a write failure) is scrubbed here as well.
+    // addStore scope conflict, a write failure) is scrubbed here as well —
+    // every encoding of the token, not only the exact string (audit of #1272).
     const raw = err instanceof Error ? err.message : String(err)
-    const msg = raw.split(token).join('[redacted]')
+    let msg = redactToken(raw, token)
+    // Core names its option; a CLI user needs the flag (review of #1272).
+    if (err instanceof AddRemoteStoreError && err.code === 'scope_conflict') {
+      msg = msg.replace('pass overwriteScope to replace that entry', 're-run with --overwrite-scope to replace that entry')
+    }
     const code = err instanceof AddRemoteStoreError ? err.code : 'error'
     if (shouldOutputJson(flags)) {
-      outputJson({
+      outputJson(redactTokenDeep({
         success: false, error: msg, code, url, scope,
         ...(err instanceof AddRemoteStoreError && err.authorised.length ? { authorised: err.authorised } : {}),
-      })
+      }, token))
     }
-    exit(1, `Not registered: ${msg}. Nothing was written.`)
+    exit(1, redactToken(`Not registered: ${msg}. Nothing was written.`, token))
   }
 
   const message = {
@@ -75,13 +84,16 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
     overwritten: `Reassigned scope ${result.scope} to ${url}.`,
   }[result.status]
   if (shouldOutputJson(flags)) {
-    outputJson({
+    outputJson(redactTokenDeep({
       success: true, status: result.status, url, scope: result.scope,
       ...(result.username ? { username: result.username } : {}),
       message,
-    })
+    }, token))
   } else {
-    outputInfo(message + (result.username && result.status !== 'already_registered' ? ` — verified as ${result.username}` : ''), flags)
+    outputInfo(redactToken(
+      message + (result.username && result.status !== 'already_registered' ? ` — verified as ${result.username}` : ''),
+      token,
+    ), flags)
   }
 }
 
@@ -179,6 +191,26 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
+  if (subcommand === 'prune') {
+    // #1356: removes ONLY entries that name the primary engrams file. They are
+    // ignored at load already (#1319) but keep warning on every run until
+    // they are gone. Any other store is left alone.
+    let removed
+    try {
+      removed = plur.removeDuplicatePrimaryStores()
+    } catch (err) {
+      exit(1, `plur stores prune: ${(err as Error).message}`)
+    }
+    if (shouldOutputJson(flags)) {
+      outputJson({ removed: removed.map(s => ({ path: s.path, scope: s.scope })), count: removed.length })
+    } else if (removed.length === 0) {
+      outputText('Nothing to prune: config.yaml lists no store that is the primary store file.')
+    } else {
+      for (const s of removed) outputText(`Removed store "${s.scope}" (${s.path}): it is the primary store file, which is always loaded.`)
+    }
+    return
+  }
+
   if (!subcommand || subcommand === 'list') {
     // Async variant — accurate remote store engram_count (issue #184)
     const storeList = await plur.listStoresAsync()
@@ -197,5 +229,5 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  exit(1, 'Usage: plur stores <add|list|discover>')
+  exit(1, 'Usage: plur stores <add|list|discover|prune>')
 }

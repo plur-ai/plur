@@ -245,7 +245,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // #1264: where the engram went — remote, outbox or local. A shared scope that
   // stayed local also carries a warning, because nothing else would tell the
   // user their team save never left this machine.
-  const delivered = plur.deliveryOf(engram)
+  const delivered = plur.deliveryOf(engram, scopeProvided ? scope : undefined)
 
   // LOW-10 (#353): surface a scope demotion instead of swallowing it silently.
   // When learnRouted demotes a sensitive shared-scope write to local/private it

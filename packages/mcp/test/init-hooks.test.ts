@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { buildPlurHooks, applyPlurHooks, type Settings } from '../src/index.js'
 // @plur-ai/mcp cannot depend on @plur-ai/cli, so the hook definitions are
 // mirrored. This import is test-only: it pins the mirror to the source.
-import { buildInjectionHooks } from '../../cli/src/commands/init.js'
+import { buildInjectionHooks, buildEnforcementHooks } from '../../cli/src/commands/init.js'
 
 /**
  * #1279: `plur-mcp init` registered rehydrate on PostCompact, which Claude
@@ -198,3 +198,56 @@ describe('applyPlurHooks only ever removes PLUR hooks (#1300 review, #1303)', ()
     return { matcher: '*', hooks: [{ type: 'command', command: 'say done' }] }
   }
 })
+
+describe('applyPlurHooks heal scope (#1300 review, second round)', () => {
+  const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
+
+  // `plur init` writes only the enforcement hooks to the global settings file
+  // and the injection hooks (rehydrate included) to the project's. Running
+  // `plur-mcp init` from a directory without .claude/ targets the global
+  // file; adding rehydrate there would run it twice per compaction.
+  for (const cmd of ['npx @plur-ai/cli', '/home/u/.plur/bin/plur-hook']) {
+    it(`global settings holding only plur init enforcement hooks are left unchanged — ${cmd}`, () => {
+      const global = { hooks: clone(buildEnforcementHooks(cmd)) }
+      const snapshot = clone(global)
+      const { settings, status } = applyPlurHooks(global, buildPlurHooks(cmd))
+      expect(status).toBe('already')
+      expect(settings).toEqual(snapshot)
+    })
+  }
+
+  it('a Windows-cased backslash rehydrate on SessionStart counts as present', () => {
+    const cmd = 'C:\\Users\\U\\.plur\\bin\\plur-hook.cmd'
+    const hooks = buildPlurHooks(cmd)
+    const settings = clone({ hooks }) as Settings
+    settings.hooks!.SessionStart[0].hooks[0].command = `"${cmd}" HOOK-INJECT  --REHYDRATE`
+    settings.hooks!.PostCompact = [
+      { matcher: 'auto|manual', hooks: [{ type: 'command', command: `"${cmd}" hook-inject --rehydrate`, timeout: 15 }] },
+    ]
+    const r = applyPlurHooks(settings, hooks)
+    expect(r.status).toBe('healed')
+    expect(r.settings.hooks!.PostCompact).toBeUndefined()
+    // the existing (differently cased) rehydrate is recognised: no second one
+    expect(r.settings.hooks!.SessionStart).toHaveLength(1)
+  })
+
+  it('hooks without a command (type prompt / agent) do not make init throw', () => {
+    const prompt = { hooks: [{ type: 'prompt', prompt: 'be nice' }] } as unknown as HookEntryT
+    const agent = { matcher: 'auto', hooks: [{ type: 'agent', agent: 'x' }] } as unknown as HookEntryT
+    const hooks = buildPlurHooks('npx @plur-ai/cli')
+    expect(() => applyPlurHooks({ hooks: { Stop: [prompt] } }, hooks)).not.toThrow()
+    const old: Settings = {
+      hooks: {
+        UserPromptSubmit: clone(hooks.UserPromptSubmit),
+        PostCompact: [agent, { matcher: 'auto|manual', hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject --rehydrate', timeout: 15 }] }],
+        SessionStart: [prompt],
+      },
+    }
+    const r = applyPlurHooks(old, hooks)
+    expect(r.status).toBe('healed')
+    expect(r.settings.hooks!.PostCompact).toEqual([agent])
+    expect(r.settings.hooks!.SessionStart).toEqual([prompt, ...hooks.SessionStart])
+  })
+})
+
+type HookEntryT = NonNullable<Settings['hooks']>[string][number]

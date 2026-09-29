@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { existsSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { isPlurHookCommand, PLUR_SETTINGS_SUBCOMMANDS } from '../src/hook-command.js'
+import { isPlurHookCommand } from '../src/hook-command.js'
+
+// Every subcommand init has written (decision H2 dropped the matcher's own
+// allow-list; these stay as fixtures, not as the rule).
+const PLUR_SETTINGS_SUBCOMMANDS = [
+  'hook-inject', 'hook-observe', 'hook-learn-check', 'hook-session-remind',
+  'hook-session-guard', 'hook-session-mark', 'hook-session-end', 'hook-auto-rate',
+] as const
 
 /**
  * `isPlurHookCommand` is a copy of @plur-ai/cli's `src/lib/hook-command.ts`
@@ -23,11 +30,12 @@ const OURS: Array<[string, boolean]> = [
   ['/home/u/.plur/bin/plur-hook hook-inject --rehydrate', true],
   ['C:\\USERS\\U\\.PLUR\\BIN\\PLUR-HOOK.CMD HOOK-INJECT --rehydrate', true],
   ['plur-hook hook-observe --post', true],
+  // Decision H2 "prefix": any hook-* behind PLUR's launcher is PLUR's.
+  ['npx @plur-ai/cli hook-auto-rate-mine', true],
 ]
 
 const THEIRS: Array<[string, boolean]> = [
   ['npx @plur-ai/cli doctor >> ~/log', false],
-  ['npx @plur-ai/cli hook-auto-rate-mine', false],
   ['pwsh ~/.plur/bin/plur-hook-backup.ps1 hook-inject', false],
   ['C:\\Users\\U\\.plur\\bin\\plur-hook-backup.ps1 hook-inject', false],
   ['/home/u/.plur/bin/plur-hook status', false],

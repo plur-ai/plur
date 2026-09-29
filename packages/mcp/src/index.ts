@@ -286,14 +286,28 @@ function writeMcpConfig(configPath: string): string {
 }
 
 /** Does this entry hold at least one hook PLUR wrote? See isPlurHookCommand. */
+/**
+ * Claude Code also has `type: "prompt"` and `type: "agent"` hooks, which
+ * carry no `command`. They are never PLUR's and must not make init throw.
+ */
+function isPlurCommandHook(h: { command?: unknown }): boolean {
+  return typeof h.command === 'string' && isPlurHookCommand(h.command)
+}
+
 function isPlurHook(entry: HookEntry): boolean {
-  return (entry.hooks ?? []).some(h => isPlurHookCommand(h.command))
+  return (entry.hooks ?? []).some(isPlurCommandHook)
+}
+
+/** Same normalisation as isPlurHookCommand: backslashes to `/`, any case. */
+const REHYDRATE = /(?:^|\s)hook-inject\s+--rehydrate(?:\s|$)/
+
+function isPlurRehydrateHook(h: { command?: unknown }): boolean {
+  return isPlurCommandHook(h) &&
+    REHYDRATE.test((h.command as string).replace(/\\/g, '/').toLowerCase())
 }
 
 function isPlurRehydrate(entry: HookEntry): boolean {
-  return (entry.hooks ?? []).some(h =>
-    isPlurHookCommand(h.command) && h.command.includes('hook-inject --rehydrate'),
-  )
+  return (entry.hooks ?? []).some(isPlurRehydrateHook)
 }
 
 /**
@@ -308,7 +322,7 @@ function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
       kept.push(entry)
       continue
     }
-    const rest = entry.hooks.filter(h => !isPlurHookCommand(h.command))
+    const rest = entry.hooks.filter(h => !isPlurCommandHook(h))
     if (rest.length > 0) kept.push({ ...entry, hooks: rest })
   }
   return kept
@@ -322,8 +336,10 @@ function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
  * - No PLUR hook present: append the full set ('installed').
  * - PLUR hooks present: remove PLUR's hooks from PostCompact, which cannot
  *   carry context (#1274), one hook at a time, dropping an entry only when
- *   it has no hooks left; then add the SessionStart(compact) rehydrate entry
- *   if it is missing ('healed'). Nothing else changes, so a fuller
+ *   it has no hooks left. If a PLUR rehydrate was among them, add the
+ *   SessionStart(compact) entry unless one is there ('healed'). A file with
+ *   PLUR hooks but no rehydrate (the global file `plur init` writes) gets
+ *   none added. Nothing else changes, so a fuller
  *   `plur init` install is not replaced by this smaller set.
  * - Otherwise 'already', and the settings come back unchanged.
  * User hooks are never removed or reordered, including a user hook that
@@ -344,13 +360,19 @@ export function applyPlurHooks(
   }
 
   let changed = false
+  let movedRehydrate = false
   if (hooks.PostCompact?.some(isPlurHook)) {
+    movedRehydrate = hooks.PostCompact.some(isPlurRehydrate)
     const kept = stripPlurHooks(hooks.PostCompact)
     if (kept.length > 0) hooks.PostCompact = kept
     else delete hooks.PostCompact
     changed = true
   }
-  if (!(hooks.SessionStart ?? []).some(isPlurRehydrate)) {
+  // Add SessionStart(compact) only in place of a PostCompact rehydrate just
+  // removed from THIS file. `plur init` keeps the global file to enforcement
+  // hooks and puts rehydrate in the project file; adding one to the global
+  // file would run rehydrate twice per compaction there.
+  if (movedRehydrate && !(hooks.SessionStart ?? []).some(isPlurRehydrate)) {
     hooks.SessionStart = [...(hooks.SessionStart ?? []), ...(hooksMap.SessionStart ?? [])]
     changed = true
   }
