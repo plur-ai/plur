@@ -41,7 +41,77 @@ duplicate-primary-store fix, and no trust changes. Some PR branches were
 pushed during the build: #1300 and #1307 each moved twice. The table lists
 the exact heads that were merged.
 
-## Conflicts and resolutions
+## Refresh — 2026-09-29, heads as of the start of the refresh
+
+`origin/main` was still `524530e0` (#1271 and #1316 already in it), so merging
+it changed nothing. PR heads taken at the start (`gh pr list`), then merged
+`--no-ff` in the original order, only where the head had moved:
+
+| PR | Head at refresh | Merged now? |
+|----|-----------------|-------------|
+| #1272 | 49d406a1 | unchanged |
+| #1273 | 3cdb9321 | unchanged |
+| #1275 | b05b4e8b | yes (clean) |
+| #1318 | 46d0e69f | unchanged |
+| #1334 | 5885ca62 | yes (clean) |
+| #1340 | f76c52f7 | unchanged |
+| #1348 | f59e7d43 | unchanged |
+| #1270 | 815e125a | yes — conflict in doctor.ts |
+| #1276 | e29aabf6 | unchanged |
+| #1341 | cbbb4fdb | yes — conflict in hook-inject.ts |
+| #1300 | b82ef274 | yes (clean) + allow-list fix |
+| #1342 | 78eccc32 | unchanged |
+| #1277 | d1205021 | yes — conflicts in core index.ts, stub-server.ts |
+| #1307 | 8e8c7fa0 | unchanged |
+| #1309 | 8e8cf450 | yes (clean; already contained #1307's head) |
+
+The #1301, #1314 and #1315 merges into their parent branches were already in
+the first build (checked with `merge-base --is-ancestor`).
+
+### Refresh resolutions
+
+- **doctor.ts (#1270 @815e125a vs #1307):** the report object keeps both
+  #1270's new `codexCmdShimMcp` and #1307's `outbox`. `overall` unchanged
+  (both conditions from the first build). Carry in: whichever of #1270/#1307
+  lands second.
+- **hook-inject.ts (#1341 @cbbb4fdb vs #1318):** #1341 now destructures
+  `hybrid` from `injectForHook` (to await the abandoned search before exit);
+  #1318's `recordInjected` call stays right after it. Carry in: whichever of
+  #1318/#1341 lands second (same as before).
+- **packages/mcp/src/hook-command.ts (#1300 @b82ef274 x #1318) — code change:**
+  #1300 now ships a copy of the cli's hook allow-list for `plur-mcp init`,
+  whose test checks parity with the cli copy. Added `hook-auto-rate` so the
+  two copies stay identical (the cli copy got it in the first build). Carry
+  in: #1300, or #1318 if it lands after #1300 (then it must update both
+  copies).
+- **core index.ts `flushOutbox` (#1277 @d1205021 vs #1307/#1309) — code
+  change:** #1277's review rework moves the budget clock after the local load
+  (`startBudget`), adds `in_doubt` handling and returns `skipped`; #1307 adds
+  `force` and `held`. Combined: `flushOutbox({ timeoutMs, force })`,
+  `_flushOutbox(budget, force, startBudget)`, return type and every return
+  site `{ flushed, failed, deferred, held, skipped, expired_warnings }`, the
+  outbox record type carries both `last_status` (#1307) and `in_doubt`
+  (#1277), doc comment carries both paragraphs. Carry in: #1307 must rebase
+  onto #1277's new head (it is stacked on it) and make exactly this merge.
+- **core/test/helpers/stub-server.ts (#1277 vs #1307):** kept #1307's
+  `appendCalls` and #1277's `appendDropWhileDelayed` /
+  `lastAppendIdempotencyKey`, fields and resets. Carry in: #1307 (same rebase).
+
+### Refresh verification
+
+Load average on the machine was 220–290 during these runs (other agents).
+
+- `pnpm -r build` exit 0; `tsc --noEmit` exit 0 in all 9 packages.
+- `@plur-ai/core` + `@plur-ai/mcp` (PLUR_PATH + HOME in scratch): 277 files
+  passed, 5 skipped; 4411 tests passed, 1 expected fail, 36 skipped.
+- `@plur-ai/cli` + `cli-spawn` (HOME in scratch, PLUR_PATH unset — see
+  below): 96/96 files, 1018 passed, 4 skipped.
+- `core-pglite`: 9 passed, 2 failed, 10 skipped files; 113 passed, 2 failed.
+  Both failures were timeouts (208s and 139s against a 120s limit) under the
+  load above. Rerun alone: `pglite-adapter` + `pglite-scope-pushdown` 2/2
+  files, 47/47 tests.
+
+## Conflicts and resolutions (first build)
 
 ### CHANGELOG.md (every merge after the first)
 Kept every entry from both sides, with no rewording. I checked for duplicate
