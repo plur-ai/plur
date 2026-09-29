@@ -496,6 +496,8 @@ describe('plur login CLI (gated device flow + arg errors)', () => {
     expect(r.stdout).toMatch(/not available yet/)
     expect(r.stdout).toContain('https://plur.example.com/auth')
     expect(r.stdout).toContain('plur_stores_add')
+    // #1265: the CLI can now register a url store itself — the advice says how.
+    expect(r.stdout).toContain('plur stores add --url https://plur.example.com --token-env')
     // The flow must not have started — no device code prompt.
     expect(r.stdout).not.toMatch(/one-time code/)
   })

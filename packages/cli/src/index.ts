@@ -52,6 +52,7 @@ Commands:
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
+  stores add --url <u>    Add a remote store (verified; --scope, --token-env)
   trust [dir]             Trust a directory's .plur.yaml scope/domain (default: cwd) [--list]
   untrust [dir]           Revoke a directory's trust grant (default: cwd)
   scopes                  List authorized-but-unregistered shared scopes (#647)
