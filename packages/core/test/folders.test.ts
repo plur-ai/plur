@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, realpathSync, chmodSync } from 'fs'
 import yaml from 'js-yaml'
-import { join } from 'path'
+import { join, sep } from 'path'
 import { tmpdir } from 'os'
 import {
   resolveFolderPolicy, loadFolderMap, saveFolderMap, folderMapPath, setFolderEntry, removeFolderEntry,
@@ -16,6 +16,7 @@ import {
   endFolderNonceSession, FolderMapError, isTrustedInMap, clearFolderTrust, FOLDER_NONCE_TTL_MS, type FolderEntry,
 } from '../src/folders.js'
 import { isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirectories } from '../src/trust.js'
+import { canonicalize } from '../src/project-config.js'
 import { logger } from '../src/logger.js'
 
 let base: string
@@ -89,18 +90,54 @@ describe('resolveFolderPolicy', () => {
     expect(policy(mk('notesX')).mode).toBe('ask')
   })
 
-  it('a .plur.yaml means on with its scope hint, unless a map entry sets scope', () => {
+  // Decision D1 (owner, 2026-09-29: "ignore-ask", matching #1228's E3): an
+  // UNTRUSTED .plur.yaml's scope/domain hints are ignored and the folder asks.
+  it('D1: an untrusted .plur.yaml that requests settings asks, with the reason and what it requests', () => {
     const repo = mk('src', 'repo')
     mkdirSync(join(repo, '.git'))
     writeFileSync(join(repo, '.plur.yaml'), 'scope: project:hint\ndomain: x.y\n')
+    expect(policy(repo)).toEqual({
+      mode: 'ask', remoteAllowed: false, source: 'plur-yaml',
+      reason: 'untrusted-plur-yaml', requested: { scope: 'project:hint', domain: 'x.y' },
+    })
+    // A remote request is named too (the URL, never the token).
+    writeFileSync(join(repo, '.plur.yaml'), 'remote_url: http://127.0.0.1:9\nremote_token: secret-token\n')
+    const p = policy(repo)
+    expect(p).toMatchObject({ mode: 'ask', reason: 'untrusted-plur-yaml', requested: { remote_url: 'http://127.0.0.1:9' } })
+    expect(JSON.stringify(p)).not.toContain('secret-token')
+  })
+
+  it('D1: a trusted .plur.yaml behaves exactly as before (on, its scope hint)', () => {
+    const repo = mk('src', 'repo')
+    mkdirSync(join(repo, '.git'))
+    writeFileSync(join(repo, '.plur.yaml'), 'scope: project:hint\ndomain: x.y\n')
+    writeMap([{ path: repo, trusted: true }])
     expect(policy(repo)).toEqual({ mode: 'on', scope: 'project:hint', remoteAllowed: false, source: 'plur-yaml' })
-
-    writeMap([{ path: '~/src/**', scope: 'project:mine' }])
+    // A map scope still beats the hint.
+    writeMap([{ path: repo, trusted: true }, { path: '~/src/**', scope: 'project:mine' }])
     expect(policy(repo)).toEqual({ mode: 'on', scope: 'project:mine', remoteAllowed: false, source: 'plur-yaml' })
-
-    // An explicit ask entry does not turn a .plur.yaml folder off (only off does).
-    writeMap([{ path: repo, plur: 'ask' }])
+    // An explicit ask entry does not turn a trusted .plur.yaml folder off (only off does).
+    writeMap([{ path: repo, trusted: true, plur: 'ask' }])
     expect(policy(repo).mode).toBe('on')
+  })
+
+  it('D1: an untrusted .plur.yaml under a map decision uses the map, never the hint', () => {
+    const repo = mk('src', 'repo')
+    mkdirSync(join(repo, '.git'))
+    writeFileSync(join(repo, '.plur.yaml'), 'scope: project:hint\n')
+    writeMap([{ path: '~/src/**', scope: 'project:mine' }])
+    expect(policy(repo)).toEqual({ mode: 'on', scope: 'project:mine', remoteAllowed: false, source: 'map' })
+    writeMap([{ path: repo, plur: 'on' }])
+    expect(policy(repo)).toEqual({ mode: 'on', remoteAllowed: false, source: 'map' })
+    writeMap([{ path: repo, plur: 'ask' }])
+    expect(policy(repo)).toMatchObject({ mode: 'ask', source: 'map' })
+  })
+
+  it('D1: a .plur.yaml that requests nothing still means on, trusted or not', () => {
+    const repo = mk('src', 'plain')
+    mkdirSync(join(repo, '.git'))
+    writeFileSync(join(repo, '.plur.yaml'), '# nothing here\n')
+    expect(policy(repo)).toEqual({ mode: 'on', remoteAllowed: false, source: 'plur-yaml' })
   })
 
   it('a project MCP config means on', () => {
@@ -114,7 +151,7 @@ describe('resolveFolderPolicy', () => {
     mkdirSync(join(repo, '.git'))
     writeFileSync(join(repo, '.plur.yaml'),
       'scope: project:r\nremote_url: http://127.0.0.1:9\nremote_token: t\nremote_scopes:\n  - project:r\n')
-    expect(policy(repo).remoteAllowed).toBe(false)
+    expect(policy(repo)).toMatchObject({ mode: 'ask', remoteAllowed: false, reason: 'untrusted-plur-yaml' })
 
     writeMap([{ path: repo, trusted: true }])
     expect(policy(repo)).toEqual({ mode: 'on', scope: 'project:r', remoteAllowed: true, source: 'plur-yaml' })
@@ -417,10 +454,10 @@ describe('trust.yaml import', () => {
     rmSync(folderMapPath(root))
     expect(isDirectoryTrusted(a, root)).toBe(false)
     expect(isDirectoryTrusted(b, root)).toBe(true)
-    // trust never writes trust.yaml.
+    // A new grant is dual-written (see the dual-write describe below).
     const c = mk('c')
     trustDirectory(c, root)
-    expect(yaml.load(readFileSync(join(root, 'trust.yaml'), 'utf8'))).toEqual({ version: 1, trusted: [b] })
+    expect(yaml.load(readFileSync(join(root, 'trust.yaml'), 'utf8'))).toEqual({ version: 1, trusted: [b, realpathSync(c)].sort() })
   })
 
   it('untrust of a grant that exists only in trust.yaml (after import) still reports removed', () => {
@@ -439,7 +476,7 @@ describe('trust.yaml import', () => {
     trustDirectory(d, root)
     expect(listTrustedDirectories(root)).toEqual([realpathSync(d)])
     expect(isDirectoryTrusted(join(d), root)).toBe(true)
-    expect(existsSync(join(root, 'trust.yaml'))).toBe(false)
+    expect(readFileSync(join(root, 'trust.yaml'), 'utf8')).toContain(realpathSync(d))
     expect(untrustDirectory(d, root)).toBe(true)
     expect(untrustDirectory(d, root)).toBe(false)
     // A trust-only entry is removed entirely when its grant is cleared.
@@ -572,5 +609,60 @@ describe('writes: nonce and shared-scope guards', () => {
   it('a glob entry is stored as typed', () => {
     setFolderEntry(root, '~/work/**', { mode: 'ask' }, { configuredScopes: [], home })
     expect(loadFolderMap(root).folders).toEqual([{ path: '~/work/**', plur: 'ask' }])
+  })
+})
+
+/**
+ * Audit follow-up (adversarial M1, data-loss F7): while any published adapter
+ * still reads trust.yaml — the opencode plugin pins the pre-folder-map core —
+ * every grant and revocation is DUAL-WRITTEN to folders.yaml and trust.yaml.
+ * `oldReader` is main's (pre-#1347) isDirectoryTrusted, verbatim in logic.
+ */
+describe('dual-write to trust.yaml for adapters on the previous core', () => {
+  function oldReader(dir: string): boolean {
+    const file = join(root, 'trust.yaml')
+    if (!existsSync(file)) return false
+    const raw = yaml.load(readFileSync(file, 'utf8')) as { trusted?: unknown } | null
+    const trusted = Array.isArray(raw?.trusted) ? (raw!.trusted as unknown[]).filter((t): t is string => typeof t === 'string') : []
+    const target = canonicalize(dir)
+    return trusted.some(t => target === t || target.startsWith(t + sep))
+  }
+
+  it('plur trust / untrust are seen by the old reader', () => {
+    const d = mk('dual')
+    trustDirectory(d, root)
+    expect(oldReader(d)).toBe(true)
+    expect(oldReader(join(d))).toBe(true)
+    expect(untrustDirectory(d, root)).toBe(true)
+    expect(oldReader(d)).toBe(false)
+    expect(isDirectoryTrusted(d, root)).toBe(false)
+  })
+
+  it('folders set --trusted / --no-trusted are seen by the old reader; a re-import agrees', () => {
+    const d = mk('dual-set')
+    setFolderEntry(root, d, { mode: 'on', trusted: true }, { configuredScopes: [], home })
+    expect(oldReader(d)).toBe(true)
+    setFolderEntry(root, d, { trusted: false }, { configuredScopes: [], home })
+    expect(oldReader(d)).toBe(false)
+    // Lose folders.yaml: the re-import from trust.yaml must not resurrect it.
+    rmSync(folderMapPath(root))
+    expect(isDirectoryTrusted(d, root)).toBe(false)
+  })
+
+  it('a grant made by the OLD core after the import is not lost on revocation', () => {
+    const d = mk('old-grant')
+    trustDirectory(mk('first'), root)   // folders.yaml now exists
+    // An adapter on the old core appends to trust.yaml directly.
+    const file = join(root, 'trust.yaml')
+    const cur = yaml.load(readFileSync(file, 'utf8')) as { trusted: string[] }
+    writeFileSync(file, yaml.dump({ version: 1, trusted: [...cur.trusted, realpathSync(d)] }))
+    expect(oldReader(d)).toBe(true)
+    expect(untrustDirectory(d, root)).toBe(true)
+    expect(oldReader(d)).toBe(false)
+  })
+
+  it('a glob grant is not written to trust.yaml (the old reader cannot express it)', () => {
+    setFolderEntry(root, '~/work/**', { trusted: true }, { configuredScopes: [], home })
+    expect(existsSync(join(root, 'trust.yaml'))).toBe(false)
   })
 })

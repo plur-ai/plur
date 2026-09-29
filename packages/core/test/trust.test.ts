@@ -110,12 +110,12 @@ describe('trust.ts (D2)', () => {
     }
   })
 
-  it('the trust store persists to <root>/folders.yaml (#1347); trust.yaml is no longer written', () => {
+  it('the trust store persists to <root>/folders.yaml (#1347); and is dual-written to trust.yaml for older adapters', () => {
     trustDirectory(dir, root)
     const raw = readFileSync(join(root, 'folders.yaml'), 'utf8')
     expect(raw).toContain(realpathSync(dir))
     expect(raw).toContain('trusted: true')
-    expect(existsSync(join(root, 'trust.yaml'))).toBe(false)
+    expect(readFileSync(join(root, 'trust.yaml'), 'utf8')).toContain(realpathSync(dir))
   })
 
   it('a corrupt trust.yaml is treated as empty rather than throwing', () => {

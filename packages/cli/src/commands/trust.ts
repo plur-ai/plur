@@ -80,5 +80,5 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } else {
     outputInfo('No .plur.yaml found here (or above, within this project) — nothing for an adapter to adopt yet. This grant takes effect if one is added later.', flags)
   }
-  outputInfo('A .plur.yaml scope/domain in this directory (or below it) will now be honored by adapters that check trust (e.g. the opencode plugin).', flags)
+  outputInfo('Recorded in folders.yaml, and in trust.yaml for adapters on an older core (the opencode plugin). A .plur.yaml in this directory (or below it) may now use the remote it names, and adapters that check trust honour its scope/domain.', flags)
 }

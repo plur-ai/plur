@@ -14,10 +14,13 @@ import { builtCliPath } from './helpers/built-cli.js'
 import { issueFolderNonce, findPlurMarker, safeSessionKey as coreSafeSessionKey } from '@plur-ai/core'
 import { isPlurConfigured } from '../src/lib/plur-configured.js'
 import { nonceRequired } from '../src/commands/folders.js'
-import { spawnSync } from 'child_process'
+import { spawnSync, spawn } from 'child_process'
+import yaml from 'js-yaml'
 import { safeSessionKey } from '../src/lib/session-key.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
+const hasPythonPty = process.platform !== 'win32' &&
+  spawnSync('python3', ['-c', 'import pty'], { encoding: 'utf-8' }).status === 0
 
 describe('plur folders (#1347)', () => {
   let dir: string
@@ -75,8 +78,6 @@ describe('plur folders (#1347)', () => {
 
   // A real pseudo-terminal (Python's pty module; script(1) needs a terminal
   // of its own on macOS): an interactive user needs no nonce.
-  const hasPythonPty = process.platform !== 'win32' &&
-    spawnSync('python3', ['-c', 'import pty'], { encoding: 'utf-8' }).status === 0
   it.skipIf(!hasPythonPty)(
     'in an interactive terminal, set without --nonce is accepted',
     () => {
@@ -90,6 +91,48 @@ describe('plur folders (#1347)', () => {
     },
     60_000,
   )
+
+  // Audit follow-up (adversarial L1, data-loss F6): writes are serialised.
+  function runAsync(args: string[]): Promise<{ code: number | null; stdout: string }> {
+    return new Promise(res => {
+      const child = spawn('node', [CLI, ...args, '--json'], {
+        env: { ...process.env, HOME: dir, USERPROFILE: dir, TMPDIR: join(dir, 'tmp'), PLUR_PATH: plurHome },
+        cwd: dir,
+      })
+      let stdout = ''
+      child.stdout.on('data', c => { stdout += c })
+      child.on('close', code => res({ code, stdout }))
+    })
+  }
+
+  it('12 parallel folders set: every success is recorded', async () => {
+    const dirs = Array.from({ length: 12 }, (_, i) => { const d = join(dir, `par-${i}`); mkdirSync(d); return d })
+    const nonces = dirs.map(d => nonceFor(d))
+    const results = await Promise.all(dirs.map((d, i) => runAsync(['folders', 'set', d, '--off', '--nonce', nonces[i]])))
+    const ok = results.filter(r => r.code === 0).length
+    const saved = (yaml.load(readFileSync(join(plurHome, 'folders.yaml'), 'utf8')) as { folders: unknown[] }).folders.length
+    expect(ok).toBe(12)
+    expect(saved).toBe(ok)
+  }, 120_000)
+
+  it('8 parallel plur trust: every grant lands in both files', async () => {
+    const dirs = Array.from({ length: 8 }, (_, i) => { const d = join(dir, `tpar-${i}`); mkdirSync(d); return d })
+    const results = await Promise.all(dirs.map(d => runAsync(['trust', d])))
+    expect(results.every(r => r.code === 0)).toBe(true)
+    expect(run(['trust', '--list']).out.count).toBe(8)
+    const legacy = yaml.load(readFileSync(join(plurHome, 'trust.yaml'), 'utf8')) as { trusted: string[] }
+    expect(legacy.trusted.sort()).toEqual([...dirs].sort())
+  }, 120_000)
+
+  it.skipIf(!hasPythonPty)('the empty list (text mode, in a terminal) does not promise an ask that no hook makes yet', () => {
+    const env = { ...process.env, HOME: dir, USERPROFILE: dir, TMPDIR: join(dir, 'tmp'), PLUR_PATH: plurHome }
+    const r = spawnSync('python3', [
+      '-c', 'import os,pty,sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))',
+      'node', CLI, 'folders', 'list',
+    ], { env, cwd: dir, encoding: 'utf-8', timeout: 60_000, input: '' })
+    expect(r.stdout).toContain('No folder decisions recorded.')
+    expect(r.stdout).not.toMatch(/ask once per session/)
+  }, 60_000)
 
   it('refuses a missing or stale nonce, and a nonce for a different folder', () => {
     const missing = run(['folders', 'set', target, '--on', '--nonce', 'deadbeef'])
@@ -126,7 +169,7 @@ describe('plur folders (#1347)', () => {
     expect(run(['folders', 'bogus']).status).toBe(1)
   }, 60_000)
 
-  it('plur trust / untrust work through the map; a legacy trust.yaml is imported and left alone', () => {
+  it('plur trust / untrust work through the map; a legacy trust.yaml is imported and kept in step', () => {
     mkdirSync(plurHome, { recursive: true })
     const legacyDir = join(dir, 'legacy')
     mkdirSync(legacyDir)
@@ -148,7 +191,8 @@ describe('plur folders (#1347)', () => {
 
     expect(run(['untrust', target]).out).toEqual({ success: true, removed: true })
     expect(run(['untrust', target]).out).toMatchObject({ removed: false, still_trusted: false })
-    expect(readFileSync(join(plurHome, 'trust.yaml'), 'utf8')).toBe(trustYaml)
+    // Dual-write: the grant and revocation of target passed through trust.yaml; the legacy entry is untouched.
+    expect(yaml.load(readFileSync(join(plurHome, 'trust.yaml'), 'utf8'))).toEqual({ version: 1, trusted: [legacyDir] })
   }, 60_000)
 
   it('trust refuses (exit 1) rather than overwriting a malformed folders.yaml', () => {
