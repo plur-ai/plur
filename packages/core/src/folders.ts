@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync } from 'fs'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -555,23 +555,27 @@ function sameFolderIgnoringCase(form: string, target: string): boolean {
  * an edit or removal must find it rather than add a second entry beside it.
  * Compared as written apart from letter case — never resolved on disk.
  */
-function findEntryIndex(entries: FolderEntry[], folder: string, home: string): { exact: number[]; caseOnly: number[] } {
-  if (hasGlob(folder)) return { exact: entries.flatMap((e, i) => (e.path === folder ? [i] : [])), caseOnly: [] }
+function findEntryIndex(entries: FolderEntry[], folder: string, home: string): { applied: number[]; nameOnly: number[] } {
+  if (hasGlob(folder)) return { applied: entries.flatMap((e, i) => (e.path === folder ? [i] : [])), nameOnly: [] }
   const raw = resolve(expandHome(folder, home))
   const target = canonicalize(raw)
-  // EVERY entry for this folder, not just the first. Two spellings of one
-  // folder (`~/dup` and its absolute form, both kept by the trust.yaml import)
-  // are two exact entries: revoking trust on one would leave the other's
-  // grant in force. Entries in another letter case likewise: a leftover
-  // mis-cased `off` would keep winning (through the loose `off` match) after
-  // the user set the folder on (#1357).
-  const exact: number[] = []
-  const caseOnly: number[] = []
+  // EVERY entry for this folder, not just the first: a second entry would
+  // keep a decision the user just changed (a revoked grant, a replaced `off`).
+  //
+  // `applied`: the entry covers the canonical target under the strict,
+  // fail-closed comparison, so its `trusted` and `scope` are in effect now.
+  // `nameOnly`: the entry names the folder only by another spelling — as
+  // typed, through a symlink, or in another letter case (identity-checked,
+  // #1357). The strict comparison never matched it, so its grant and scope
+  // never applied; only an `off` did, through the loose match `off` uses.
+  const applied: number[] = []
+  const nameOnly: number[] = []
   entries.forEach((e, i) => {
-    if (entryIsFolder(e, folder, raw, target, home)) exact.push(i)
-    else if (!hasGlob(e.path) && entryForms(e.path, home, false).some(f => sameFolderIgnoringCase(f, target))) caseOnly.push(i)
+    if (!hasGlob(e.path) && entryForms(e.path, home, false).includes(target)) applied.push(i)
+    else if (entryIsFolder(e, folder, raw, target, home) ||
+      (!hasGlob(e.path) && entryForms(e.path, home, false).some(f => sameFolderIgnoringCase(f, target)))) nameOnly.push(i)
   })
-  return { exact, caseOnly }
+  return { applied, nameOnly }
 }
 
 /** The most restrictive of the modes: off, then ask, then on. */
@@ -620,30 +624,32 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   const map = loadForWrite(root)
   const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, opts.now) : null
   const key = folderEntryKey(folder, home)
-  const { exact, caseOnly } = findEntryIndex(map.folders, folder, home)
-  // Every entry for this folder merges into ONE, so no second entry keeps a
-  // decision the user just changed (a revoked grant, a replaced `off`).
-  //
-  // Exact entries all applied, so they merge whole: the most restrictive
-  // mode, `trusted` if any had it, the first scope; the first one's path.
-  //
-  // Entries in another letter case are rewritten to the on-disk spelling, so
-  // the strict (fail-closed) comparison matches the result from now on
-  // (#1357). Of those only an `off` ever applied (through the loose match
-  // `off` alone uses); their `ask`/`on`, `trusted` and `scope` never did.
-  // Their mode still carries over, as the more restrictive side; their grant
-  // and scope do not, so rewriting the path never brings a dormant grant (or
-  // one `plur untrust` just cleared) to life.
-  //
-  // A mode this change sets wins over all of them, and `--scope` without a
-  // mode means `on` — also when it replaces a merged mis-cased `off`.
-  const entry: FolderEntry = exact.length ? { ...map.folders[exact[0]] } : { path: key }
-  for (const i of exact.slice(1)) {
-    const e = map.folders[i]
-    if (e.trusted === true) entry.trusted = true
-    if (entry.scope === undefined && e.scope !== undefined) entry.scope = e.scope
-  }
-  const mode = mostRestrictive([...exact, ...caseOnly].map(i => map.folders[i].plur))
+  const { applied, nameOnly } = findEntryIndex(map.folders, folder, home)
+  // Every entry for this folder merges into ONE, which keeps exactly what is
+  // in effect now, except what this change sets:
+  //  - path, `trusted` and `scope` come ONLY from entries that applied. The
+  //    scope is the one the resolver picks among them (`mostSpecific`), so a
+  //    merge never reroutes writes; the grant is kept when any applied entry
+  //    had one, as `isTrustedInMap` does. With none, the path is the canonical
+  //    key and there is no grant or scope.
+  //  - entries matched only by name (typed spelling, symlink, letter case)
+  //    contribute their mode at most. Their grant and scope never applied,
+  //    and a merge must not bring them to life (#778, #1357).
+  //  - the mode is the most restrictive of the applied modes and the
+  //    name-only `off`/`ask` (never a name-only `on`); a mode this change sets
+  //    wins, and `--scope` without a mode means `on` — also when it replaces a
+  //    merged `off`.
+  const appliedEntries = applied.map(i => ({ e: map.folders[i], i }))
+  const entry: FolderEntry = { path: appliedEntries[0]?.e.path ?? key }
+  if (appliedEntries.some(c => c.e.trusted === true)) entry.trusted = true
+  const scope = mostSpecific(appliedEntries.filter(c => c.e.scope !== undefined), home)?.scope
+  if (scope !== undefined) entry.scope = scope
+  // A name-only entry can only make the mode MORE restrictive: its `on` never
+  // applied (only `off` matches loosely), so it must not become the mode.
+  const mode = mostRestrictive([
+    ...applied.map(i => map.folders[i].plur),
+    ...nameOnly.map(i => map.folders[i].plur).filter(m => m !== 'on'),
+  ])
   if (mode !== undefined) entry.plur = mode
   if (change.scope !== undefined) {
     entry.scope = change.scope
@@ -652,17 +658,21 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   if (change.mode !== undefined) entry.plur = change.mode
   if (change.trusted === true) entry.trusted = true
   if (change.trusted === false) delete entry.trusted
-  const matched = [...exact, ...caseOnly]
+  const matched = [...applied, ...nameOnly]
   if (matched.length) {
     const at = Math.min(...matched)
     map.folders = map.folders.flatMap((e, i) => (i === at ? [entry] : matched.includes(i) ? [] : [e]))
   } else map.folders.push(entry)
   saveFolderMap(root, map)
+  // Decision F3: the nonce is used up as soon as the map is saved — the
+  // decision it authorised is now recorded — and BEFORE the trust.yaml write.
+  // If that write then fails, the caller sees the error and a retry needs a
+  // fresh ask; the nonce is never left valid for a second use.
+  consume?.()
   // Dual-write (see addLegacyTrustEntry): keep trust.yaml in step for
   // adapters on the previous core.
   if (change.trusted === true && !hasGlob(entry.path)) addLegacyTrustEntryUnlocked(root, entry.path)
   if (change.trusted === false) removeLegacyTrustEntryUnlocked(root, folder, home)
-  consume?.()
   return cleanEntry(entry)
 }
 
@@ -682,12 +692,18 @@ function removeFolderEntryUnlocked(
 ): boolean {
   const map = loadForWrite(root)
   const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, opts.now) : null
-  const { exact, caseOnly } = findEntryIndex(map.folders, folder, home)
-  const matched = [...exact, ...caseOnly]
+  const { applied, nameOnly } = findEntryIndex(map.folders, folder, home)
+  const matched = [...applied, ...nameOnly]
   if (matched.length === 0) return false
+  const removedEntries = map.folders.filter((_, i) => matched.includes(i))
   map.folders = map.folders.filter((_, i) => !matched.includes(i))
   saveFolderMap(root, map)
-  consume?.()
+  consume?.()   // F3: consumed once the map is saved, before trust.yaml
+  // Decision F2: removing a trusted entry is a revocation, so it is completed
+  // in trust.yaml too (never an addition).
+  for (const removed of removedEntries) {
+    if (removed.trusted === true) removeLegacyTrustEntryUnlocked(root, removed.path, home)
+  }
   return true
 }
 
@@ -734,6 +750,31 @@ function addLegacyTrustEntryUnlocked(root: string, path: string): void {
   atomicWrite(legacyTrustPath(root), yaml.dump({ version: 1, trusted: [...entries, path].sort() }))
 }
 
+function nativeRealpath(p: string): string | null {
+  try { return realpathSync.native(p) } catch { return null }
+}
+
+/**
+ * Whether a trust.yaml `line` names the same folder as `folder`, for a
+ * REVOCATION (decision F2). It uses the map's own matcher: `~` expands against
+ * the home (as given and canonical), both spellings are normalised the way the
+ * map compares paths (case-folded on win32), and each side is also compared
+ * in its canonical and on-disk forms, so a differently-cased line on a
+ * case-insensitive filesystem goes too. Matching wide is the safe direction
+ * here: this only ever REMOVES a grant.
+ */
+function namesSameFolder(line: string, folder: string, home: string): boolean {
+  if (hasGlob(line)) return false
+  const f = expandHome(folder, home)
+  const targets = [resolve(f), canonicalize(f), nativeRealpath(f)].filter((x): x is string => !!x)
+  const forms = entryForms(line, home, true)
+  for (const form of [...forms]) {
+    const n = nativeRealpath(form)
+    if (n) forms.push(n)
+  }
+  return forms.some(a => targets.some(b => norm(a, process.platform) === norm(b, process.platform)))
+}
+
 /**
  * Remove the grant for `folder` from the pre-#1347 `trust.yaml`, if it lists
  * one (the stored string, its plain spelling, or its canonical form). Without
@@ -749,9 +790,7 @@ function removeLegacyTrustEntryUnlocked(root: string, folder: string, home: stri
   const file = legacyTrustPath(root)
   if (!existsSync(file)) return false
   const entries = readLegacyTrustEntries(root)
-  const raw = resolve(expandHome(folder, home))
-  const target = canonicalize(raw)
-  const kept = entries.filter(t => !(t === folder || t === raw || t === target))
+  const kept = entries.filter(t => !namesSameFolder(t, folder, home))
   if (kept.length === entries.length) return false
   atomicWrite(file, yaml.dump({ version: 1, trusted: kept }))
   return true

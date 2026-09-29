@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir, parsePayload, readStdinRaw } from '../lib/folder-gate.js'
 
 /**
  * plur hook-session-remind — SessionStart hook.
@@ -8,13 +8,14 @@ import { isPlurConfigured } from '../lib/plur-configured.js'
  * before any other action. Combined with hook-session-guard (which blocks
  * tool calls), this creates an unavoidable enforcement loop.
  *
- * Input: JSON on stdin (Claude Code SessionStart hook format, ignored)
+ * Input: JSON on stdin (Claude Code SessionStart hook format; only `cwd` is read)
  * Output: JSON with additionalContext
  */
 
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
-  // Silent pass-through for projects without plur configured (#95).
-  if (!isPlurConfigured()) return
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
+  // Silent unless the folder map says on (#1347; was #95's project gate).
+  // An `ask` folder is asked by hook-inject on the first prompt instead.
+  if (!hookFolderOn(payloadDir(parsePayload(readStdinRaw())), flags)) return
 
   const output = {
     hookSpecificOutput: {

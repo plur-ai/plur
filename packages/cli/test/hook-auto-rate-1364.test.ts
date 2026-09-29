@@ -33,11 +33,25 @@ describe('#1364: hook-auto-rate is one of PLUR\'s hooks', () => {
     expect(mcpIsPlurHookCommand(cmd)).toBe(true)
   })
 
+  // Decision F4: the exec form counts only when its js entry is the one init
+  // recorded in ~/.plur/bin/plur-hook.meta.json, so the test records it.
   it('claims the Windows exec form of the auto-rate hook', () => {
-    expect(isPlurHookSpec({
-      command: 'C:\\Program Files\\nodejs\\node.exe',
-      args: ['C:\\Users\\Test User\\AppData\\Roaming\\npm\\node_modules\\@plur-ai\\cli\\dist\\index.js', 'hook-auto-rate', 'claude'],
-    })).toBe(true)
+    const entry = 'C:\\Users\\Test User\\AppData\\Roaming\\npm\\node_modules\\@plur-ai\\cli\\dist\\index.js'
+    const saved = process.env.HOME
+    const home = mkdtempSync(join(tmpdir(), 'plur-1364-exec-'))
+    try {
+      process.env.HOME = home
+      mkdirSync(join(home, '.plur', 'bin'), { recursive: true })
+      writeFileSync(join(home, '.plur', 'bin', 'plur-hook.meta.json'), JSON.stringify({ entrypoint: entry }))
+      expect(isPlurHookSpec({
+        command: 'C:\\Program Files\\nodejs\\node.exe',
+        args: [entry, 'hook-auto-rate', 'claude'],
+      })).toBe(true)
+    } finally {
+      if (saved === undefined) delete process.env.HOME
+      else process.env.HOME = saved
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })
 

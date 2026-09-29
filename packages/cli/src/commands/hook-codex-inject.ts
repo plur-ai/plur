@@ -1,5 +1,5 @@
-import { createPlur, trustedProjectScope, type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { createPlur, type GlobalFlags } from '../plur.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, isSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
@@ -26,13 +26,24 @@ import { recordInjected } from '../lib/auto-rate.js'
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex inject', async () => {
-    if (!isPlurConfigured()) return
-
     const input = readStdinJson()
     const sessionId = codexSessionId(input)
     const prompt = String(input.prompt ?? '').trim()
 
-    // The trust / remote-refusal notices belong to the session's FIRST
+    // #1347: off is silent; ask prints the one question on the first prompt
+    // of the session (no memories, no sentinel), then nothing.
+    const dir = payloadDir(input)
+    const policy = hookFolderPolicy(dir, flags)
+    if (policy.mode === 'off') return
+    if (policy.mode === 'ask') {
+      let askPlur = null
+      try { askPlur = createPlur(flags, { readonly: true }) } catch { /* the question works without the ranker */ }
+      const ask = folderAskOnce({ dir, policy, sessionId, flags, plur: askPlur, prompt })
+      if (ask) emitContext('UserPromptSubmit', ask)
+      return
+    }
+
+    // The remote-refusal notice belongs to the session's FIRST
     // context, not every prompt (audit 1228-c #6): SessionStart says them,
     // and this hook repeats them only when it is the first hook this session
     // saw (a resumed or forked session may deliver no SessionStart). Read
@@ -52,12 +63,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // `plur init-remote` onboarding got memory on Claude Code and silence
       // here. The helper carries #1196's trust gate with the capability, so
       // adding it cannot reintroduce the exfiltration path.
-      const projectRemote = resolveProjectRemote(plur)
-      // Decision E3: scope from an untrusted directory is ignored, and said.
-      const projectScope = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
+      const projectRemote = resolveProjectRemote(plur, dir)
+      const { scope } = sessionSettings(policy, projectRemote.config)
       const injectOpts = {
         budget: 2000,
-        ...(projectScope.scope ? { scope: projectScope.scope } : {}),
+        ...(scope ? { scope } : {}),
         ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
       }
 
@@ -69,7 +79,6 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // failure mode this is meant to end — once per session, not per prompt.
       const notices = !firstForSession ? [] : [
         projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
-        projectScope.notice ?? null,
       ].filter((n): n is string => n !== null)
       if (result.count === 0 || !body) {
         if (notices.length > 0) emitContext('UserPromptSubmit', notices.join('\n'))

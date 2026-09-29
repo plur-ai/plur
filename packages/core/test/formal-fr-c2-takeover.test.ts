@@ -1,6 +1,8 @@
 /**
- * Formal-verification replay, field report 2026-09-29, cluster 2 — OPEN CONFLICT G
- * (spec/formal/PlurSpec/R2Persist.lean §6 `TakeoverG`, findings/persistence.md G).
+ * Regression replay from formal verification, field report 2026-09-29, conflict G
+ * (spec/formal/PlurSpec/R2Persist.lean §6 `TakeoverG` `combined_mutex`,
+ * findings/persistence.md §G, on formal/field-report-2026-09-29). Resolved by owner
+ * decision C1: #1398's lock with #1228's steal-guard ladder.
  *
  * Two schedules that put two live holders in the critical section of one of the
  * designs being combined here, and that the combined design must survive:

@@ -1,5 +1,6 @@
-import { createPlur, trustedProjectScope, type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { createPlur, type GlobalFlags } from '../plur.js'
+import { hookFolderPolicy, sessionSettings, folderAskOnce } from '../lib/folder-gate.js'
+import type { FolderPolicy } from '@plur-ai/core'
 import {
   readStdinJson,
   runAgyHook,
@@ -61,8 +62,10 @@ import { recordInjected } from '../lib/auto-rate.js'
  * isPlurConfigured() can never be true (its walk deliberately skips
  * $HOME-level configs, #247/#521). The install itself is the opt-in here:
  * these hooks exist only because the user ran `plur init --antigravity`,
- * and they fire only inside agy. When the payload names a workspace, we do
- * respect a per-project opt-out by checking that path instead.
+ * and they fire only inside agy. When the payload names a workspace, the
+ * folder map decides for that path (#1347): off is silent, ask puts the one
+ * question into the first turn of the conversation (replayed within that
+ * turn, like memory), and on works as below with the policy's scope.
  *
  * Input:  camelCase JSON — { conversationId, invocationNum, transcriptPath, workspacePaths, ... }
  * Output: {"injectSteps":[{"ephemeralMessage": "..."}]} or nothing.
@@ -76,7 +79,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
     const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths as string[] : []
     const workspace = (workspaces.length > 0 && typeof workspaces[0] === 'string') ? workspaces[0] : null
-    if (workspace && !isPlurConfigured(workspace)) return
+    // No workspace: the install is the opt-in, as before (no folder to ask about).
+    const policy: FolderPolicy | null = workspace ? hookFolderPolicy(workspace, flags) : null
+    if (policy?.mode === 'off') return
 
     const conversationId = agyConversationId(input)
     if (!conversationId) return
@@ -123,6 +128,17 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       return
     }
 
+    if (workspace && policy?.mode === 'ask') {
+      // The question, once per conversation; an empty message after that. It
+      // is cached as this turn's message so mid-turn invocations replay it.
+      let askPlur = null
+      try { askPlur = createPlur(flags, { readonly: true }) } catch { /* the question works without the ranker */ }
+      const ask = folderAskOnce({ dir: workspace, policy, sessionId: conversationId, flags, plur: askPlur, prompt: user?.text ?? '' }) ?? ''
+      writeAgyTurnCache({ conversationId, step: user?.stepIndex ?? 0, textHash: userHash, message: ask })
+      if (ask) emitInjectSteps(ask)
+      return
+    }
+
     agyMarkSessionStarted(conversationId)
 
     const plur = createPlur(flags)
@@ -136,8 +152,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // hooks.json directory, where the `.plur.yaml` walk can never succeed.
     // The helper carries #1196's trust gate with the capability.
     const projectRemote = resolveProjectRemote(plur, workspace ?? process.cwd())
-    // Decision E3: scope from an untrusted directory is ignored, and said.
-    const projectConfig = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
+    // #1347: with a workspace, the session scope is the folder policy's.
+    const projectConfig = policy ? sessionSettings(policy, projectRemote.config) : projectRemote.config
     const injectOpts = {
       budget: isFirst ? 3000 : 2000,
       ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
@@ -159,7 +175,6 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const refusal = isFirst
         ? [
           projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
-          projectConfig.notice ?? null,
         ].filter(Boolean).map(n => `${n}\n\n`).join('')
         : ''
       // Only on the FIRST turn: the refusal persists until the user acts on it,

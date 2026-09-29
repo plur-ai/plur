@@ -127,7 +127,9 @@ describe('remote-write idempotency keys (audit follow-up to #1277)', () => {
     expect(keys[0]).toMatch(UUID)
   })
 
-  it("F3: an in-doubt entry is not 'delivered' by a teammate's engram with the same statement", async () => {
+  // After decision C4 there is no lookup at all before a re-post, so a
+  // teammate's same-statement engram can never be taken for ours.
+  it("F3: a retry is not 'delivered' by a teammate's engram with the same statement", async () => {
     const plur = new Plur({ path: makeStore('me') })
     const S = 'Rotate the on-call pager key every quarter'
     const mine = await queue(plur, S)
@@ -150,7 +152,7 @@ describe('remote-write idempotency keys (audit follow-up to #1277)', () => {
     expect(mine).toBeTruthy()
   })
 
-  it('F4: an in-doubt entry in a scope with more than 10,000 rows is still delivered', async () => {
+  it('F4: a retried entry in a scope with more than 10,000 rows is still delivered', async () => {
     for (let i = 0; i < 10_050; i++) {
       server.seedEngram({ id: `ENG-OLD-${i}`, scope: SCOPE, status: 'active', data: { statement: `older team fact ${i}`, type: 'behavioral' } })
     }
@@ -179,36 +181,5 @@ describe('remote-write idempotency keys (audit follow-up to #1277)', () => {
     await backgroundPushesSettled(join(root, 'a'))
     await new Promise(r => setTimeout(r, 600)) // let any second POST land
     expect(server.engramCount).toBe(1)
-  })
-
-  it('F4: when the server cannot confirm by key, the entry is kept, never deleted, and surfaced as needing action', async () => {
-    server.ignoreIdempotencyKeys = true
-    const plur = new Plur({ path: makeStore('a') })
-    const id = await queue(plur, 'Unconfirmable write')
-    server.appendDelayMs = 10_000
-    server.appendDropWhileDelayed = true
-    await plur.flushOutbox({ timeoutMs: 200 })
-    server.appendDelayMs = 0
-    server.appendDropWhileDelayed = false
-    // Same statement on the server from someone else: must NOT count as ours.
-    server.seedEngram({ id: 'ENG-OTHER', scope: SCOPE, status: 'active', data: { statement: 'Unconfirmable write', type: 'behavioral' } })
-
-    for (let i = 0; i < 6; i++) {
-      const r = await plur.flushOutbox({ timeoutMs: 5_000 })
-      expect(r.flushed).toBe(0)
-    }
-    expect(await plur.outboxCount()).toBe(1)
-    const [entry] = await plur.listOutbox()
-    expect(entry.id).toBe(id)
-    expect(entry.state).toBe('needs_action')
-    expect(entry.reason).toMatch(/could not confirm/i)
-    expect(entry.next_step).toContain(`plur outbox --resend ${id}`)
-    // An explicit forced flush does not post it either: only a resend does.
-    expect((await plur.flushOutbox({ force: true })).flushed).toBe(0)
-
-    // The explicit way out: resend it on purpose.
-    const r = await plur.flushOutbox({ resend: [id] })
-    expect(r.flushed).toBe(1)
-    expect(await plur.outboxCount()).toBe(0)
   })
 })

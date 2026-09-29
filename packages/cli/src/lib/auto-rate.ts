@@ -103,10 +103,18 @@ function readIds(path: string): string[] {
  * writes. Fail-open: a hook must never break because this bookkeeping could
  * not be written — the only cost is that the turn is not rated.
  */
-function appendIds(path: string, ids: string[]): void {
-  if (ids.length === 0) return
-  if (!ensureSessionDir(DIR)) return
-  try { appendFileSync(path, ids.join('\n') + '\n', { mode: 0o600 }) } catch { /* fail-open */ }
+function appendIds(path: string, ids: string[]): boolean {
+  if (ids.length === 0) return true
+  if (!ensureSessionDir(DIR)) return false
+  try {
+    appendFileSync(path, ids.join('\n') + '\n', { mode: 0o600 })
+    return true
+  } catch {
+    // Fail-open for the hook — but the caller learns the record did not land.
+    // For the write-ahead "rated" record that decides whether the verdict may
+    // be applied at all (decision H2).
+    return false
+  }
 }
 
 /** Record the ids an inject hook just delivered for this editor session. */
@@ -206,24 +214,74 @@ function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM' }
 }
 
-function acquireWorkerLock(path: string): boolean {
-  for (let attempt = 0; attempt < 2; attempt++) {
+/** This process's worker-lock token: pid first, so a reader can check liveness. */
+const WORKER_TOKEN = `${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`
+
+/**
+ * Take over a worker lock judged stale, atomically (decision H2). Mirrors
+ * core's `stealLock` (store/async-lock.ts): CLAIM the file by renaming it to
+ * a unique name — only one contender's rename can succeed — then check that
+ * the claimed file is the one judged stale. If it is not (another contender
+ * already took over, and this is now their live lock), put it back with an
+ * exclusive create and report failure. A plain unlink here would delete a
+ * lock another worker had created in the meantime — the pattern the formal
+ * model refutes (`InjectLock.old_removes_live`).
+ *
+ * Returns true only when the stale lock judged by `expected` was removed.
+ * Exported for tests.
+ */
+export function takeOverStaleWorkerLock(path: string, expected: string): boolean {
+  const claim = `${path}.steal.${process.pid}.${Math.random().toString(36).slice(2, 10)}`
+  try { renameSync(path, claim) } catch { return false }
+  try {
+    const current = readFileSync(claim, 'utf8')
+    if (current === expected) {
+      unlinkSync(claim)
+      return true
+    }
+    // A live holder's lock. Put it back — never over a lock acquired since.
     try {
       const fd = openSync(path, 'wx', 0o600)
-      try { writeSync(fd, String(process.pid)) } finally { closeSync(fd) }
+      try { writeSync(fd, current) } finally { closeSync(fd) }
+    } catch { /* someone acquired meanwhile; theirs wins */ }
+    try { unlinkSync(claim) } catch { /* best effort */ }
+    return false
+  } catch {
+    try { unlinkSync(claim) } catch { /* never leave the claim behind */ }
+    return false
+  }
+}
+
+/** Exported for tests. Acquire this session's worker lock, taking over a stale one. */
+export function acquireWorkerLock(path: string): boolean {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const fd = openSync(path, 'wx', 0o600)
+      try { writeSync(fd, WORKER_TOKEN) } finally { closeSync(fd) }
       return true
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
-      let stale = false
+      let observed: string
+      let stale: boolean
       try {
-        const owner = parseInt(readFileSync(path, 'utf8'), 10)
+        observed = readFileSync(path, 'utf8')
+        const owner = parseInt(observed, 10)
         stale = !pidAlive(owner) || Date.now() - statSync(path).mtimeMs > WORKER_STALE_MS
-      } catch { stale = true }
+      } catch {
+        continue // released between the create and the read: try the create again
+      }
       if (!stale) return false
-      try { unlinkSync(path) } catch { /* raced — retry decides */ }
+      takeOverStaleWorkerLock(path, observed) // win or lose, the next create decides
     }
   }
   return false
+}
+
+/** Release the worker lock only if it is still ours. */
+function releaseWorkerLock(path: string): void {
+  try {
+    if (readFileSync(path, 'utf8') === WORKER_TOKEN) unlinkSync(path)
+  } catch { /* already gone */ }
 }
 
 /**
@@ -269,7 +327,7 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
         try { unlinkSync(batch) } catch { if (existsSync(batch)) break }
       }
     } finally {
-      try { unlinkSync(lock) } catch { /* already gone */ }
+      releaseWorkerLock(lock)
     }
     // A hook may have queued a turn between the last drain and the unlock;
     // it saw the lock held and did not start a worker. Take it too.
@@ -335,8 +393,13 @@ export async function autoRateTurn(opts: {
       for (const v of verdicts) {
         // Write-ahead (#1318 audit F5/M1): recorded as rated BEFORE the
         // feedback is applied, so a kill between the two can lose this one
-        // signal but can never apply it twice.
-        appendIds(ratedFile, [v.id])
+        // signal but can never apply it twice. And only if the record landed
+        // (decision H2): a verdict whose record failed is skipped, because
+        // nothing would stop the next turn from applying it again.
+        if (!appendIds(ratedFile, [v.id])) {
+          process.stderr.write(`[plur] auto-rate: ${v.id} skipped (could not record it as rated)\n`)
+          continue
+        }
         try {
           await plur.feedback(v.id, v.signal, undefined, { source: 'auto' })
           outcome.rated.push(v)

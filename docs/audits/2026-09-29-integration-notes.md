@@ -41,6 +41,75 @@ duplicate-primary-store fix, and no trust changes. Some PR branches were
 pushed during the build: #1300 and #1307 each moved twice. The table lists
 the exact heads that were merged.
 
+## Refresh 3 — 2026-09-29 (final pass), heads as of the start
+
+`origin/main` is still `05bcb51b` (already merged). Heads already contained
+by the branch are unchanged: #1272 41b8737e, #1276 58ac8904, #1340 d1c072b5,
+#1349 869adc29, #1353 2fd0d575, #1396 7f95a958, #1398 c1e288cd, #1400
+dcf84245, #1414 30dfdb5b (fix/inject-embedding-warmup, now open). Merged
+`--no-ff`, in this order:
+
+| PR | Branch | Head | Conflicts |
+|---|---|---|---|
+| #1273 | fix/1264-learn-delivery | d0056acd | none |
+| #1275 | fix/1268-shared-recurrence | ce0cc05a | none |
+| #1318 | feat/1310-auto-rate | d2073268 | none |
+| #1334 | fix/1319-duplicate-primary-store | 8f83367c | none |
+| #1403 | feat/1347-folder-map-core | 079d79b9 | core `folders.ts` |
+| #1415 | feat/plur-remote | 799ca13a | CHANGELOG, cli `index.ts` |
+| #1270 | fix/1267-windows-init | ed993537 | none |
+| #1277 | fix/1269-hook-outbox-flush | 29169332 | none |
+| #1395 | fix/inject-task-file-perms | 673e5bfb | cli `hook-inject.ts`, `hook-learn-check.ts` |
+| #1418 | feat/1347-folder-map-hooks | 2b29c209 | CHANGELOG + 6 cli hook/init files, a fixture |
+| #1422 | fix/hook-stdout-silent | 2e918855 | CHANGELOG |
+| #1424 | fix/1354-lock-ladder | df11964d | none |
+
+### Refresh 3 resolutions
+
+- **CHANGELOG.md**: every Unreleased entry of both sides kept. Where both
+  sides changed one entry, the branch side was a superset (it already carried
+  the later PR's text), so it was kept.
+- **core `folders.ts` (#1334 × #1403) — code change:** #1334 made
+  `findEntryIndex` return every matching entry (`applied`, `nameOnly`); #1403
+  (decision F2) revokes the `trust.yaml` line of a removed trusted entry.
+  Combined: `removeFolderEntryUnlocked` removes every matched entry and
+  revokes each removed trusted one. Imports: `lstatSync` (#1334) and
+  `realpathSync` (#1403). Carry in: whichever of #1334/#1403 lands second.
+- **cli `index.ts` help (#1415 × #1334):** `stores prune` (#1334) kept and
+  #1415's `remote` lines added; #1415 hides `trust`/`untrust` from `--help`
+  on purpose, so those two lines go. Carry in: whichever lands second.
+- **cli `hook-inject.ts` (#1395 × #1277/#1353/#1318) — code change:** #1395
+  now makes every session-state path nullable (decision H3: no usable dir →
+  persist nothing). The H1 legacy-key reader (`readableMarkerPath`), the
+  attempts counter (`attemptsPath`, #1353) and `skipCappedSession` take the
+  nullable path; `heldInjectLock` (#1353) is set only when a lock was taken.
+  Carry in: #1395 (stacked on #1276, which holds #1353's base) — or the H1
+  PR (#1396) if it lands after.
+- **cli `hook-learn-check.ts` (#1395 × #1396):** H1's `hookSessionKey` plus
+  #1395's `hookSessionDir`/`ensureSessionDir` imports.
+- **#1418 (folder-map hooks) × #1277 (outbox flush) — code change:** #1418
+  replaces the `isPlurConfigured()` gate with the folder map; #1277 adds the
+  outbox flush to the stop and session-end hooks. Combined in
+  `hook-cursor-stop.ts`, `hook-codex-session-end.ts` and `hook-session-end.ts`:
+  the flush runs only when the folder map says on (a folder that is off stays
+  silent, as #1418 intends). `hook-session-end.ts`: `closeSession` returns
+  false when the folder gate is off, and `run` then skips the flush. Carry
+  in: whichever of #1277/#1418 lands second.
+- **cli `hook-inject.ts` (#1418 × #1414) — code change:** the
+  `--warm-embeddings` background run has no stdin and no payload, so it is
+  checked before stdin is read and before the folder gate (after the gate, an
+  off/ask policy from the warmup's cwd would skip the warmup). Carry in:
+  whichever of #1414/#1418 lands second.
+- **cli `init.ts` (#1418 × #1270/#1276):** the exported
+  `buildEnforcementHooks(launch: HookLaunch | string)` keeps #1418's comment
+  (folder map, not `isPlurConfigured`).
+- **fixture `cli/test/fixtures/plur-yaml/untrusted-remote.txt`:** deleted by
+  #1418 (its golden moved into the folder-map tests); the branch's edit of it
+  is dropped with it.
+
+Build after refresh 3: `pnpm -r build` exit 0; `tsc --noEmit` exit 0 in cli.
+Suites run on the formal branch (see the drift report).
+
 ## Refresh 2 — 2026-09-29 (quiet machine), heads as of the start
 
 `origin/main` @ `05bcb51b` (now includes #1348) merged first. Then, in this

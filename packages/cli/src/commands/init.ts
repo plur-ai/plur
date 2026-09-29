@@ -15,6 +15,7 @@ import {
   resolveShortPath,
   useClaudeExecForm,
   claudeVersionOutput,
+  nextRecordedEntries,
   type StringHookHost,
 } from '../lib/hook-command.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
@@ -174,9 +175,21 @@ function installHookBinary(): { shimPath: string; status: string } {
     try { chmodSync(target, 0o755) } catch { /* masked umask fallback */ }
   }
 
-  // Metadata for doctor diagnostics
-  const meta = { entrypoint, node: nodeBin, installed: new Date().toISOString() }
-  writeFileSync(join(binDir, 'plur-hook.meta.json'), JSON.stringify(meta, null, 2) + '\n')
+  // Metadata for doctor diagnostics, plus the history of CLI js entries PLUR
+  // has recorded (decision F4): an exec-form hook is claimed as PLUR's only
+  // when it names one of them, and keeping earlier ones lets re-init replace
+  // hooks an earlier install location wrote. Written before the hook merge,
+  // which reads it.
+  const metaPath = join(binDir, 'plur-hook.meta.json')
+  let previous: unknown = null
+  try { previous = JSON.parse(readFileSync(metaPath, 'utf8')) } catch { /* first install or unreadable */ }
+  const meta = {
+    entrypoint,
+    entrypoints: nextRecordedEntries(previous, entrypoint),
+    node: nodeBin,
+    installed: new Date().toISOString(),
+  }
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n')
 
   return { shimPath: target, status: 'installed' }
 }
@@ -283,8 +296,8 @@ function installMcpBinary(): { shimPath: string; status: string } {
 
 // Enforcement hooks ensure plur_session_start is always called first.
 // Installed into global ~/.claude/settings.json unconditionally (issue #95) so
-// they fire from any subdirectory project. Each hook silent-passes when
-// isPlurConfigured() is false, so projects without plur are unaffected.
+// they fire from any subdirectory project. Each hook silent-passes unless the
+// folder map says on (#1347), so folders without plur are unaffected.
 // Exported for the plur-mcp init tests (#1276), which pass the plain launcher
 // string; `plur init` passes #1270's HookLaunch (exec form on Windows).
 export function buildEnforcementHooks(launch: HookLaunch | string): Record<string, HookEntry[]> {

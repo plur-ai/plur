@@ -70,8 +70,9 @@ Commands:
   stores add <path>       Add a knowledge store
   stores add --url <u>    Add a remote store (verified; --scope, --token-env)
   stores prune            Remove config.yaml store entries that name the primary store file (#1356)
-  trust [dir]             Trust a directory's .plur.yaml scope/domain (default: cwd) [--list]
-  untrust [dir]           Revoke a directory's trust grant (default: cwd)
+  remote                  Show this folder's team-store connection and check it (#1413)
+  remote --url <u> --token <t> --scope <s>
+                          Connect this folder to a team store (verified; [--scopes a,b])
   folders list            Your per-folder decisions (~/.plur/folders.yaml, #1347)
   folders set <folder>    --scope <s> | --on | --off | --ask  [--trusted|--no-trusted] [--nonce <n>]
   folders rm <folder>     Remove a folder's entry
@@ -82,7 +83,6 @@ Commands:
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
-  init-remote             Opt this project into recall from a PLUR Enterprise server
   login --status          Enterprise token validity per host (probe + expiry) (#587)
   doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
@@ -169,6 +169,10 @@ const COMMANDS: Record<string, string> = {
   rescope: './commands/rescope.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
+  remote: './commands/remote.js',
+  // Hidden from --help (#1413, design r3): trust is granted by the ask flow,
+  // `plur folders set <dir> --trusted` or the trust.yaml import. Both keep
+  // working so existing scripts and runbooks do.
   trust: './commands/trust.js',
   untrust: './commands/untrust.js',
   folders: './commands/folders.js',
@@ -178,6 +182,7 @@ const COMMANDS: Record<string, string> = {
   'reindex-hashes': './commands/reindex-hashes.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',
+  // Hidden alias of `remote` (#1413); `--verify` is bare `plur remote`.
   'init-remote': './commands/init-remote.js',
   // `login` is registered for `--status` (#587: token validity per host). The
   // OAuth device flow itself (#532) stays GATED INSIDE the command — it is
@@ -281,6 +286,16 @@ try {
   // isn't, the fingerprint guard makes an unchanged YAML nearly free.
   await drainPendingIndexWork()
 } catch (err: any) {
+  // Hook commands never print errors to stdout (owner decision H1, formal
+  // field report cluster 5). An editor parses a hook's stdout as its result
+  // and shows a non-zero exit as a hook error, so an `{"error"}` document
+  // there — e.g. from an injection that threw after the watchdog had stopped
+  // the run — breaks the turn instead of failing open. Stderr, exit 0.
+  // Every other command keeps its error document and exit 1.
+  if (command.startsWith('hook-')) {
+    process.stderr.write(`[plur] ${command} failed: ${err?.message ?? 'unknown error'}\n`)
+    process.exit(0)
+  }
   if (shouldOutputJson(flags)) {
     outputJson({ error: err.message })
   } else {

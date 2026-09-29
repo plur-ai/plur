@@ -92,9 +92,8 @@ describe('existing .plur.yaml behaviour is unchanged by the folder map (#1347)',
     check('trusted-scope-hint', seedAndInject())
   }, 60_000)
 
-  // D1: an UNTRUSTED .plur.yaml that requests a scope resolves to ask. The
-  // hooks switch to the resolver in the hook-integration PR; until then this
-  // pins the resolver's answer for the same fixture.
+  // D1: an UNTRUSTED .plur.yaml that requests a scope resolves to ask; the
+  // hooks turn that into the one-time question (hook-folder-map.test.ts).
   it('an UNTRUSTED scope/domain .plur.yaml resolves to ask (D1)', () => {
     writeFileSync(join(repo, '.plur.yaml'), 'scope: project:fixture\ndomain: fixture.deploy\n')
     expect(resolveFolderPolicy(repo, { root: join(dir, '.plur'), home: dir })).toEqual({
@@ -103,7 +102,10 @@ describe('existing .plur.yaml behaviour is unchanged by the folder map (#1347)',
     })
   })
 
-  it('an untrusted remote .plur.yaml: same refusal notice as main, no dial', () => {
+  // Changed on purpose by the hook integration (#1347, decision D1): main
+  // printed a refusal line and applied the scope; now the untrusted request is
+  // ignored and the session asks once. No dial either way.
+  it('an untrusted remote .plur.yaml: asks once instead of the refusal notice (D1), no dial', () => {
     // Port 9 (discard) on loopback: nothing listens, and an untrusted remote
     // must not be dialled anyway.
     writeFileSync(join(repo, '.plur.yaml'), [
@@ -114,7 +116,13 @@ describe('existing .plur.yaml behaviour is unchanged by the folder map (#1347)',
       '  - project:fixture',
       '',
     ].join('\n'))
-    check('untrusted-remote', seedAndInject())
+    cli(['learn', 'Fixture deploys go through the blue staging lane before release',
+      '--scope', 'project:fixture', '--domain', 'fixture.deploy', '--json'])
+    const out = cli(['hook-inject'], JSON.stringify({ session_id: 'fixture-untrusted', prompt: 'how do fixture deploys reach release' }))
+    expect(out).toContain('.plur.yaml is not trusted')
+    expect(out).toContain('127.0.0.1:9')
+    expect(out).not.toContain('fixture-token')
+    expect(out).not.toContain('blue staging lane')
   }, 60_000)
 
   it('a remote .plur.yaml trusted in a legacy trust.yaml: same output as main (no refusal)', () => {

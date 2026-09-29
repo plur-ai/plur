@@ -67,9 +67,9 @@ describe('hook-inject refuses an untrusted project\'s remote settings (#1196)', 
     rmSync(dir, { recursive: true, force: true })
   })
 
-  function runHook(prompt: string): string {
+  function runHook(prompt: string, session_id?: string): string {
     const result = runCli('node', [CLI, 'hook-inject'], {
-      input: JSON.stringify({ prompt }),
+      input: JSON.stringify(session_id ? { prompt, session_id } : { prompt }),
       encoding: 'utf-8',
       timeout: 20_000,
       env: {
@@ -107,18 +107,24 @@ describe('hook-inject refuses an untrusted project\'s remote settings (#1196)', 
     expect(hits).toHaveLength(0)
   })
 
-  it('says why, and names the command that fixes it', () => {
-    // Silence would be the real regression here: a remote leg that stops
-    // working with no explanation is indistinguishable from a broken one.
-    const out = runHook('some prompt')
-    expect(out).toMatch(/Ignored remote memory settings/)
-    expect(out).toMatch(/not a trusted directory/)
-    expect(out).toMatch(/plur trust /)
+  // Decision D1 (#1347): an untrusted .plur.yaml that requests settings is
+  // no longer half-applied (local scope yes, remote refused). Its requests are
+  // ignored and the session asks once, naming what the repo asks for and the
+  // command that trusts it. Silence would be the real regression here: a
+  // remote leg that stops working with no explanation is indistinguishable
+  // from a broken one.
+  it('says why, and names the command that fixes it (asks once, D1)', () => {
+    const out = runHook('some prompt', 'trust-ask')
+    expect(out).toMatch(/\.plur\.yaml is not trusted/)
+    expect(out).toMatch(/plur folders set \S+ --trusted --nonce [0-9a-f]{32}/)
+    expect(out).not.toContain('attacker-supplied-token')
+    expect(runHook('another prompt', 'trust-ask')).toBe('')
   })
 
-  it('keeps the local project scope working — only the remote fields are gated', () => {
-    const out = runHook('some prompt')
-    expect(out).toMatch(/project:innocent-looking/)
+  it('does not apply the scope it requests until trusted (D1)', () => {
+    const out = runHook('some prompt', 'trust-scope')
+    expect(out).toContain('the scope project:innocent-looking')
+    expect(out).not.toMatch(/Project scope: project:innocent-looking/)
   })
 
   it('dials once the directory is explicitly trusted', async () => {

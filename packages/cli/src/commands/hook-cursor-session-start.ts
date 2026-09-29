@@ -1,5 +1,7 @@
-import { createPlur, trustedProjectScope, type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { createPlur, type GlobalFlags } from '../plur.js'
+import { existsSync, readFileSync, unlinkSync } from 'fs'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, isFolderAskText } from '../lib/folder-gate.js'
+import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
@@ -47,11 +49,29 @@ import { recordInjected } from '../lib/auto-rate.js'
  */
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
-  if (!isPlurConfigured()) return
-
   const input = readStdinJson()
+
+  // #1347: the folder map decides. off is silent; ask puts the one question
+  // where Cursor reads it (the rule file, plus additional_context) instead of
+  // memories, and marks nothing, so the guard stays silent too.
+  const dir = payloadDir(input)
+  const policy = hookFolderPolicy(dir, flags)
+  const rulePath = cursorContextRulePath(dir)
+  if (policy.mode !== 'on') removeStaleAsk(rulePath)
+  if (policy.mode === 'off') return
+
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't track this session — stay silent rather than guess
+
+  if (policy.mode === 'ask') {
+    let askPlur = null
+    try { askPlur = createPlur(flags, { readonly: true }) } catch { /* the question works without the ranker */ }
+    const ask = folderAskOnce({ dir, policy, sessionId: conversationId, flags, plur: askPlur })
+    if (!ask) return
+    writeContextRule(ask, rulePath)
+    process.stdout.write(JSON.stringify({ additional_context: ask }))
+    return
+  }
 
   // markSessionStarted (not a bare sentinel write) so the reminder timer also
   // resets here — otherwise hook-cursor-post-tool's isReminderDue() sees no
@@ -69,9 +89,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   let fullContext: string
   try {
     const plur = createPlur(flags)
-    const projectRemote = resolveProjectRemote(plur)
-    // Decision E3: scope from an untrusted directory is ignored, and said.
-    const projectConfig = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
+    const projectRemote = resolveProjectRemote(plur, dir)
+    const projectConfig = sessionSettings(policy, projectRemote.config)
     const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
     // NOT hybrid, and therefore NOT remote — see the BM25-only note in this
@@ -99,7 +118,6 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // for the trust reason here, and for #1200 regardless.
     const refusal = [
       projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
-      projectConfig.notice ?? null,
     ].filter(Boolean).map(n => `${n}\n\n`).join('')
     fullContext = refusal + (context ? `${header}\n\n${context}` : header)
   } catch (err: unknown) {
@@ -120,8 +138,20 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // Primary channel — always write, even at count 0 or on failure, so the
   // rule file reflects THIS session's real state rather than going stale
   // from a previous session's content.
-  writeContextRule(fullContext)
+  writeContextRule(fullContext, rulePath)
 
   // Secondary channel — harmless if broken, free upgrade if Cursor fixes it.
   process.stdout.write(JSON.stringify({ additional_context: fullContext }))
+}
+
+/**
+ * A question an earlier session left in the rule file must not outlive the
+ * decision: Cursor loads the file into every new conversation. Removed when
+ * the folder is not `on` (an `ask` session writes a fresh one). Only a file
+ * holding our own question is touched.
+ */
+function removeStaleAsk(rulePath: string): void {
+  try {
+    if (existsSync(rulePath) && isFolderAskText(readFileSync(rulePath, 'utf8'))) unlinkSync(rulePath)
+  } catch { /* best-effort */ }
 }

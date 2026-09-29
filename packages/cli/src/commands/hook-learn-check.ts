@@ -1,9 +1,10 @@
-import { readSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs'
+import { readSync, readFileSync, writeFileSync, existsSync, appendFileSync, statSync, renameSync, unlinkSync } from 'fs'
 import { join } from 'path'
-import { tmpdir, homedir } from 'os'
+import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir, parsePayload } from '../lib/folder-gate.js'
 import { hookSessionKey } from '../lib/session-key.js'
+import { hookSessionDir } from '../lib/session-task.js'
 import { ensureSessionDir, ticketCounter } from '../lib/codex-hook-io.js'
 
 /**
@@ -22,6 +23,11 @@ import { ensureSessionDir, ticketCounter } from '../lib/codex-hook-io.js'
  * (#1266). Claude Code does not export CLAUDE_SESSION_ID to hooks, and each
  * Stop runs in a fresh shell, so the old ppid fallback gave every Stop its own
  * counter and the nudge never fired.
+ *
+ * Directories (decision H3): the counter lives in the hook state dir
+ * (`hookSessionDir()`), and the checkpoint in `<PLUR root>/sessions`. Each is
+ * written only if its directory passes the ownership check. When no trusted
+ * directory exists, the hook persists nothing and prints nothing.
  *
  * Delivery (#1266, verified against a real Claude Code session): a Stop
  * hook's TOP-LEVEL `additionalContext` is ignored — recorded as plain hook
@@ -53,12 +59,13 @@ function sessionKey(payloadSessionId?: unknown): string {
   return hookSessionKey(payloadSessionId)
 }
 
-function counterPath(key: string): string {
-  const dir = join(tmpdir(), 'plur-sessions')
-  // Vetted (formal r2, cli#8): a symlinked or foreign dir is refused and the
-  // caller's fail-open branch passes the payload through untouched.
-  if (!ensureSessionDir(dir)) throw new Error('session state dir refused')
-  return join(dir, `${key}.stop-count`)
+// Decision H3: the counter lives in the hook state dir and follows its proved
+// rule (lib/session-task.ts hookSessionDir): the shared dir if it passes the
+// ownership check, else the private fallback if it passes, else null — and
+// null means persist nothing (formal conflict H).
+function counterPath(key: string): string | null {
+  const dir = hookSessionDir()
+  return dir ? join(dir, `${key}.stop-count`) : null
 }
 
 /**
@@ -83,14 +90,19 @@ export function checkpointRoot(flags: GlobalFlags): string {
   return flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
 }
 
-function checkpointDir(flags: GlobalFlags): string {
+// The checkpoint stays where its readers look (hook-session-end,
+// plur_session_end, hook-inject's deferred wrap-up), under the store root
+// createPlur resolves (cli#6), but is written only when that directory
+// passes the same check (H3): a planted symlink or a directory someone
+// else owns is refused, and the checkpoint is skipped.
+function checkpointDir(flags: GlobalFlags): string | null {
   const dir = join(checkpointRoot(flags), 'sessions')
-  mkdirSync(dir, { recursive: true })
-  return dir
+  return ensureSessionDir(dir) ? dir : null
 }
 
 function writeCheckpoint(id: string, count: number, cwd: string, flags: GlobalFlags): void {
   const dir = checkpointDir(flags)
+  if (!dir) return
   const path = join(dir, `${id}.checkpoint.json`)
 
   const now = new Date().toISOString()
@@ -155,9 +167,8 @@ export const LEARN_PROMPT = `[PLUR] Memory check: if your last response involved
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
 
-  // Silent pass-through for projects without plur configured (#247).
-  // Lets hooks be installed globally without affecting non-plur projects.
-  if (!isPlurConfigured()) return
+  // Silent unless the folder map says on (#1347; was #247's project gate).
+  if (!hookFolderOn(payloadDir(parsePayload(raw)), flags)) return
 
   // Parse stdin for cwd, session_id and stop_hook_active (Claude Code payload)
   let cwd = process.cwd()
@@ -179,9 +190,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // a Stop hook MUST NOT crash the response — print nothing and exit 0.
   // counterPath() creates the dir and incrementCounter() appends; either can
   // throw on an unwritable filesystem, so wrap both.
+  const counter = counterPath(key)
+  if (!counter) return // no trusted state dir: persist nothing, stay silent (H3)
   let count: number
   try {
-    count = incrementCounter(counterPath(key))
+    count = incrementCounter(counter)
   } catch {
     return
   }

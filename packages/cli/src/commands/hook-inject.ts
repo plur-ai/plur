@@ -3,9 +3,10 @@ import { dirname, join, resolve } from 'path'
 import { homedir, hostname, setPriority } from 'os'
 import { spawn } from 'child_process'
 import { randomUUID, randomBytes } from 'crypto'
-import { createPlur, trustedProjectScope, storeTrustCheck, type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { createPlur, storeTrustCheck, type GlobalFlags } from '../plur.js'
 import { recordInjected } from '../lib/auto-rate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce } from '../lib/folder-gate.js'
+import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey, hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, ensureSessionDir, cleanupStaleSessionFiles, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
 import { correctionReminder } from './hook-correction-detect.js'
@@ -236,14 +237,13 @@ function surfaceRemoteOutcomes(plur: Plur): string[] {
 }
 
 /**
- * The Claude Code hook family's state dir. #1395's `hookSessionDir`: 0700,
- * owned by this user, never a symlink; a refused shared dir falls back to a
- * private one under the PLUR root. #1228 (formal r2, cli#8) returned null for a
- * refused dir and every caller degraded to "no persistence"; the callers keep
- * that null handling, but #1395 never returns null — OPEN CONFLICT H in
- * spec/formal/survey/2026-09-29-field-report-drift.md.
+ * The Claude Code hook family's state dir: #1395's `hookSessionDir` —
+ * 0700, owned by this user, never a symlink; a refused shared dir falls back
+ * to a private one under the PLUR root, and null when both are refused
+ * (decision H3). Null means persist nothing: no marker, no reminder timer,
+ * no lock — every caller degrades to that (#1228, formal r2 cli#8).
  */
-function sessionDir(): string {
+function sessionDir(): string | null {
   return hookSessionDir()
 }
 
@@ -721,30 +721,48 @@ let heldInjectLock: InjectLockHold | undefined
 // the full injection on every prompt of the session.
 const MAX_INJECT_ATTEMPTS = 2
 
-function attemptsPath(key: string): string {
-  return join(sessionDir(), `${key}.attempts`)
+function attemptsPath(key: string): string | null {
+  return statePath(sessionDir(), key, 'attempts')
 }
 
 function readAttempts(key: string): number {
-  try { return parseInt(readFileSync(attemptsPath(key), 'utf8'), 10) || 0 } catch { return 0 }
+  const p = attemptsPath(key)
+  if (!p) return 0
+  try { return parseInt(readFileSync(p, 'utf8'), 10) || 0 } catch { return 0 }
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
-  // Silent pass-through for projects without plur configured (#247).
-  // Lets hooks be installed globally without affecting non-plur projects.
-  if (!isPlurConfigured()) return
-
+  const isRehydrate = args.includes('--rehydrate')
+  const eventIdx = args.indexOf('--event')
+  const event = eventIdx >= 0 ? args[eventIdx + 1] : null
   // Background embedding-cache build started by an earlier fallback (#1313
-  // audit). Not a hook invocation: no stdin, no output, its own ceiling.
+  // audit). Not a hook invocation: no stdin, no output, its own ceiling. Checked before
+  // stdin is read and before the folder gate (it has no payload to gate on).
   if (args.includes('--warm-embeddings')) {
     await warmEmbeddingCache(flags)
+    return
+  }
+
+  // Every path needs the payload (#1278): the session key comes from its
+  // `session_id`, and the folder decision from its `cwd`. Reading stdin is a
+  // single synchronous read.
+  const input = readStdinSync()
+
+  // The folder map (#1347) replaces the old isPlurConfigured() gate (#247):
+  // off is silent; ask is silent except for the one question on the first
+  // prompt of a session; on does the work below.
+  const dir = payloadDir(input)
+  const policy = hookFolderPolicy(dir, flags)
+  if (policy.mode === 'off') return
+  if (policy.mode === 'ask') {
+    if (!isRehydrate && !event) await askFolder(input, dir, policy, flags)
     return
   }
 
   // Watchdog: guarantee this process exits even if something in the hook run
   // hangs (#504) — remote calls are individually budgeted since #776, so this
   // is the ceiling on the WHOLE run (embedder load, fs stalls, stray async).
-  // Installed after isPlurConfigured() so it only fires for
+  // Installed after the folder gate so it only fires for
   // sessions that actually do work. unref() prevents it from delaying clean exit.
   runStartedAt = Date.now()
   // #1343: the watchdog can fire mid-way through a store write, and exiting
@@ -759,12 +777,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }, HOOK_CEILING_MS)
   watchdog.unref()
 
-  const isRehydrate = args.includes('--rehydrate')
-  const eventIdx = args.indexOf('--event')
-  const event = eventIdx >= 0 ? args[eventIdx + 1] : null
-  // Every path needs the payload now (#1278, #1228 cli#7): the session key
-  // comes from its `session_id`. Reading stdin is a single synchronous read.
-  const input = readStdinSync()
   // Vetted state dir (#1228 cli#8): null when symlinked/foreign — no marker,
   // no reminder timer, no lock.
   const stateDir = sessionDir()
@@ -826,11 +838,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const lines: string[] = []
     if (isReminderDue(reminderPath)) {
       touchReminder(reminderPath)
-      // Same trust gate as session start (#1228 decision E3): an untrusted
-      // .plur.yaml does not get to name the scope the model writes under.
-      const reminderRemote = resolveProjectRemote(storeTrustCheck(flags))
-      const projectConfig = trustedProjectScope(storeTrustCheck(flags), reminderRemote.config, reminderRemote.configDir)
-      const scopeHint = projectConfig.scope ? ` Use scope "${projectConfig.scope}" for plur_learn calls in this project.` : ''
+      // #1347: the scope hint is the folder policy's (the folder map holds
+      // trust now, so an untrusted .plur.yaml never names it).
+      const scope = policy.scope
+      const scopeHint = scope ? ` Use scope "${scope}" for plur_learn calls in this project.` : ''
       lines.push(`[PLUR Memory Reminder] If the user corrected you, stated a preference, or you discovered a pattern — call plur_learn now.${scopeHint} Call plur_session_end with engram_suggestions before the conversation ends.`)
     }
     const correction = promptCorrection(input)
@@ -864,9 +875,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
       // Counted BEFORE the heavy work: a run that is killed never gets to
       // record anything afterwards.
-      try { writeFileSync(attemptsPath(key), String(attempts + 1)) } catch { /* fail-open */ }
+      const ap = attemptsPath(key)
+      if (ap) try { writeFileSync(ap, String(attempts + 1)) } catch { /* fail-open */ }
     }
-    await injectSession(input, key, marker, reminderPath, stateDir, isRehydrate, flags)
+    await injectSession(input, key, marker, reminderPath, stateDir, isRehydrate, flags, dir, policy)
   } finally {
     releaseInjectLock(lock.hold)
     heldInjectLock = undefined
@@ -891,6 +903,25 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // the exit.
     await exitWhenStoreIdle(Math.min(EXIT_LOCK_WAIT_MS, left()))
   }
+}
+
+/**
+ * #1347: the folder has no decision yet (or its `.plur.yaml` is untrusted).
+ * On the first prompt of the session, print the one question and no memories;
+ * every later prompt of the session prints nothing. Keyed on the payload
+ * `session_id` (then CLAUDE_SESSION_ID), never ppid: a ppid key changes on
+ * every prompt and would ask every time.
+ */
+async function askFolder(input: Record<string, unknown>, dir: string, policy: FolderPolicy, flags: GlobalFlags): Promise<void> {
+  if (claudeHookEventName(input, { rehydrate: false, event: null }) !== 'UserPromptSubmit') return
+  const id = (typeof input.session_id === 'string' && input.session_id) || process.env.CLAUDE_SESSION_ID || ''
+  let plur: Plur | null = null
+  try { plur = createPlur(flags, { readonly: true }) } catch { /* the question still works without the ranker */ }
+  const ask = folderAskOnce({
+    dir, policy, sessionId: id, flags, plur,
+    prompt: typeof input.prompt === 'string' ? input.prompt : '',
+  })
+  if (ask) await emitContextConfirmed('UserPromptSubmit', ask)
 }
 
 // The hybrid search that missed its deadline and is still running (#1313).
@@ -930,6 +961,8 @@ async function injectSession(
   stateDir: string | null,
   isRehydrate: boolean,
   flags: GlobalFlags,
+  dir: string,
+  policy: FolderPolicy,
 ): Promise<void> {
   const hookEventName = claudeHookEventName(input, { rehydrate: isRehydrate, event: null })
   if (NO_CONTEXT_EVENTS.has(hookEventName)) return
@@ -947,7 +980,7 @@ async function injectSession(
   if (isRehydrate) {
     const summary = (input.compact_summary as string) || ''
     let original = readSessionTask(input.session_id)
-    if (!original) {
+    if (!original && marker) {
       try {
         if (!marker) throw new Error('no marker')
         const raw = readFileSync(marker, 'utf8')
@@ -988,8 +1021,11 @@ async function injectSession(
   // Resolves the config path once, reads it, and gates its remote fields on
   // directory trust (#1196). Fails closed; costs nothing when the project
   // declares no remote settings.
-  projectRemote = resolveProjectRemote(plur)
-  const projectConfig = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
+  projectRemote = resolveProjectRemote(plur, dir)
+  // #1347: the session scope is the folder policy's (a map scope beats the
+  // `.plur.yaml` hint); the domain is the `.plur.yaml`'s only when the policy
+  // came from it. A scope is also what makes core dial its team store.
+  const projectConfig = sessionSettings(policy, projectRemote.config)
   const remoteRefusedFrom = projectRemote.refusedFrom
 
   let injectSessionId: string | undefined = newSessionId
@@ -1065,8 +1101,6 @@ async function injectSession(
   // this gate could otherwise introduce — the user must be able to tell
   // "refused, here is the one command" from "quietly broken".
   if (remoteRefusedFrom) parts.push(projectRemoteRefusalNotice(remoteRefusedFrom, plur.storageRoot))
-  // E3: an ignored scope/domain is said too, naming the file and `plur trust`.
-  if (projectConfig.notice && !isRehydrate) parts.push(projectConfig.notice)
 
   if (context) {
     parts.push('')

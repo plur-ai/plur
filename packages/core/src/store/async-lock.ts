@@ -538,9 +538,16 @@ function isAbandoned(holder: string, mtimeMs: number, staleThreshold: number): b
 
 /**
  * Take over an abandoned lock (#1354), serialized by #1228's steal-guard LADDER
- * (spec/formal/findings/persistence.md candidate 3, r2-persist.md item 1;
- * proof: spec/formal/PlurSpec/R2Persist.lean `ladder_mutex`). Returns false when
- * another contender is taking over the same lock instance.
+ * (owner decision C1; proofs on formal/field-report-2026-09-29:
+ * spec/formal/PlurSpec/R2Persist.lean `ladder_mutex`, and §6 `TakeoverG`
+ * `combined_mutex` for this lock + ladder combination; findings
+ * spec/formal/findings/persistence.md §G). Returns false when another
+ * contender is taking over the same lock instance.
+ *
+ * This replaces a single `.takeover` guard file. That guard, abandoned by a
+ * crashed stealer, had to be removed by the same rename claim, unguarded: two
+ * stealers could then both be "under" it after a double crash (replayed in
+ * test/formal-fr-c2-takeover.test.ts).
  *
  * Why a guard at all: the rename claim in {@link stealLock} makes the steal
  * single-winner, but not the DECISION — two waiters that judged the same
@@ -556,8 +563,8 @@ function isAbandoned(holder: string, mtimeMs: number, staleThreshold: number): b
  *
  * Under the slot the lock is re-inspected; only a file with the same token AND
  * the same inode as the one judged (#1354: empty locks have equal contents) is
- * claimed. Integration of #1228 and #1398 on formal/field-report-2026-09-29 —
- * OPEN CONFLICT G in spec/formal/survey/2026-09-29-field-report-drift.md.
+ * claimed, and only if it is STILL abandoned (decision C2: a holder we cannot
+ * probe may have refreshed its mtime since we judged it).
  */
 async function takeOver(lockPath: string, staleThreshold: number): Promise<boolean> {
   const seen = await inspectLock(lockPath)
@@ -568,6 +575,10 @@ async function takeOver(lockPath: string, staleThreshold: number): Promise<boole
   try {
     const cur = await inspectLock(lockPath)
     if (!cur || cur.holder !== seen.holder || cur.ino !== seen.ino) return true
+    // Decision C2: still abandoned NOW, not only the same file. A holder we
+    // cannot probe proves it is alive only by refreshing its mtime, and it may
+    // have done so since we judged it.
+    if (!isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) return true
     if (await stealLock(lockPath, cur.holder, cur.ino)) await clearStealSlots(lockPath, seen.holder, slot)
     return true
   } finally {
@@ -585,6 +596,10 @@ export function takeOverSync(lockPath: string, staleThreshold: number): boolean 
   try {
     const cur = inspectLockSync(lockPath)
     if (!cur || cur.holder !== seen.holder || cur.ino !== seen.ino) return true
+    // Decision C2: still abandoned NOW, not only the same file. A holder we
+    // cannot probe proves it is alive only by refreshing its mtime, and it may
+    // have done so since we judged it.
+    if (!isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) return true
     if (stealLockSync(lockPath, cur.holder, cur.ino)) {
       for (let k = 0; k < STEAL_GUARD_SLOTS; k++) {
         const other = stealGuardPath(lockPath, seen.holder, k)

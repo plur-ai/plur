@@ -185,6 +185,55 @@ describe('learn delivery (#1264)', () => {
     })
   })
 
+  // Formal replay (field-report cluster 1, WritePath §7): with a url store and
+  // a path store registered for the SAME scope (url first — both load, as the
+  // duplicate-scope loader keeps different stores with one scope), a dedup hit
+  // on the PATH store's row was reported `remote` because the scope's first
+  // store entry had a url. Nothing was POSTed; the row lives in a local file.
+  describe('a hit is classified by the store that served its row', () => {
+    const mockNoPost = (posts: unknown[]) => {
+      fetchMock.mockImplementation((async (_u: string, init?: { method?: string; body?: string }) => {
+        if ((init?.method ?? 'GET') === 'POST') { posts.push(init?.body); throw new Error('must not POST') }
+        return { ok: true, status: 200, json: async () => ({ rows: [], total_count: 0 }), text: async () => '' } as Response
+      }) as any)
+    }
+
+    it('a dedup hit on a local path-store row is not reported remote (url store listed first)', async () => {
+      const teamDir = mkdtempSync(join(tmpdir(), 'plur-delivery-team-'))
+      try {
+        await new Plur({ path: teamDir }).learn('page the on-call before a schema migration', { scope: TEAM })
+        const posts: unknown[] = []
+        mockNoPost(posts)
+        writeStoresConfig(dir, [
+          { url: URL, token: 't', scope: TEAM, shared: true, readonly: false },
+          { path: join(teamDir, 'engrams.yaml'), scope: TEAM, shared: true },
+        ])
+        const plur = new Plur({ path: dir })
+        const e = await plur.learn('page the on-call before a schema migration', { scope: TEAM })
+        expect((e as any)._storeScope, 'fixture: the hit is the path-store row').toBe(TEAM)
+        expect(posts).toHaveLength(0)
+        expect(plur.deliveryOf(e, TEAM).delivery).not.toBe('remote')
+      } finally { rmSync(teamDir, { recursive: true, force: true }) }
+    })
+
+    it('the same with the path store listed first', async () => {
+      const teamDir = mkdtempSync(join(tmpdir(), 'plur-delivery-team-'))
+      try {
+        await new Plur({ path: teamDir }).learn('page the on-call before a schema migration', { scope: TEAM })
+        const posts: unknown[] = []
+        mockNoPost(posts)
+        writeStoresConfig(dir, [
+          { path: join(teamDir, 'engrams.yaml'), scope: TEAM, shared: true },
+          { url: URL, token: 't', scope: TEAM, shared: true, readonly: false },
+        ])
+        const plur = new Plur({ path: dir })
+        const e = await plur.learn('page the on-call before a schema migration', { scope: TEAM })
+        expect((e as any)._storeScope).toBe(TEAM)
+        expect(plur.deliveryOf(e, TEAM).delivery).not.toBe('remote')
+      } finally { rmSync(teamDir, { recursive: true, force: true }) }
+    })
+  })
+
   it('a duplicate of a local shared-scope engram still reports local and warns', async () => {
     const plur = new Plur({ path: dir })
     await plur.learn('team fact written twice', { scope: TEAM, type: 'behavioral' })

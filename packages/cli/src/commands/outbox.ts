@@ -23,8 +23,6 @@ function usage(): never {
     'Usage:',
     '  plur outbox             Show team-scoped writes queued for an unreachable store',
     '  plur outbox --flush     Retry them now (including ones marked "needs action")',
-    '  plur outbox --resend <id>  Post one write whose delivery could not be confirmed,',
-    '                          after you have checked the team store; then flush',
     '',
     'Writes to a remote scope queue locally when their store cannot be reached.',
     'They also retry automatically on session start and end, and on `plur sync`.',
@@ -36,12 +34,7 @@ function usage(): never {
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) usage()
-  // --resend <id>: the user checked the team store and the write is missing,
-  // so post it even though an earlier attempt may have landed (audit follow-up).
-  const resendAt = args.indexOf('--resend')
-  const resend = resendAt !== -1 ? args[resendAt + 1] : undefined
-  if (resendAt !== -1 && (!resend || resend.startsWith('--'))) usage()
-  const flush = args.includes('--flush') || resend !== undefined
+  const flush = args.includes('--flush')
 
   // Read-only unless flushing — a command people run to LOOK at a queue must
   // not be able to modify the store it is reporting on.
@@ -75,9 +68,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // Explicit: retries needs_action entries too — the user may just have
   // fixed the cause, and should not wait out the daily back-off (#1299).
-  // `--resend` additionally posts the named write whose delivery could not be
-  // confirmed (audit follow-up); `force` alone never does.
-  const result = await plur.flushOutbox({ force: true, ...(resend ? { resend: [resend] } : {}) })
+  const result = await plur.flushOutbox({ force: true })
   const stillPending = await plur.outboxCount()
 
   if (shouldOutputJson(flags)) {
@@ -125,7 +116,6 @@ export function formatOutboxText(entries: OutboxEntry[]): string {
     if (e.state === 'needs_action') {
       lines.push(`      will not deliver: ${e.reason}`)
       if (e.next_retry_at) lines.push(`      next automatic retry after ${e.next_retry_at}`)
-      else if (e.next_step) lines.push(`      next step: ${e.next_step}`)
     }
   }
   lines.push('')

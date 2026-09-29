@@ -1,5 +1,5 @@
-import { createPlur, trustedProjectScope, type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { createPlur, type GlobalFlags } from '../plur.js'
+import { hookFolderPolicy, payloadDir, sessionSettings } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
@@ -28,9 +28,12 @@ import { recordInjected } from '../lib/auto-rate.js'
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex session-start', async () => {
-    if (!isPlurConfigured()) return
-
     const input = readStdinJson()
+    // #1347: only an `on` folder gets a session batch. An `ask` folder is
+    // asked by hook-codex-inject on the first prompt; `off` is silent.
+    const dir = payloadDir(input)
+    const policy = hookFolderPolicy(dir, flags)
+    if (policy.mode !== 'on') return
     const sessionId = codexSessionId(input)
     if (!sessionId) return
 
@@ -46,11 +49,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // #1198: carry the project's remote settings so Enterprise team memory
       // reaches Codex at session start too. The helper carries #1196's trust
       // gate, so this cannot reintroduce the exfiltration path.
-      const projectRemote = resolveProjectRemote(plur)
-      // E3 (formal verification, 2026-09-26): a `.plur.yaml` scope/domain is
-      // adopted only from a directory the user trusted with `plur trust` —
-      // the same rule as every other hook. Untrusted → ignored, with a notice.
-      const projectConfig = trustedProjectScope(plur, projectRemote.config, projectRemote.configDir)
+      const projectRemote = resolveProjectRemote(plur, dir)
+      const projectConfig = sessionSettings(policy, projectRemote.config)
       const injectOpts = {
         budget: 3000,
         ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
@@ -71,8 +71,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const refusal = projectRemote.refusedFrom
         ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)}\n\n`
         : ''
-      const trustNotice = projectConfig.notice ? `${projectConfig.notice}\n\n` : ''
-      context = refusal + trustNotice + (body ? `${header}\n\n${body}` : header)
+      context = refusal + (body ? `${header}\n\n${body}` : header)
     } catch (err: unknown) {
       context = '[PLUR Memory — injection FAILED at session start] ' +
         `(${(err as Error)?.message ?? 'unknown error'}). Recalled memory is unavailable; run ` +

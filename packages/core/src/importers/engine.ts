@@ -32,6 +32,7 @@ import { computeContentHash, isHashable } from '../content-hash.js'
 import { detectSecrets } from '../secrets.js'
 import { learnContextContent } from '../content-fields.js'
 import { scopesOverlap, domainSegmentsOverlap, subjectsOverlap } from '../tensions.js'
+import { isSharedScope } from '../scope-util.js'
 import type { ImportRecord, ImportRecordResult, MigrationReport } from './types.js'
 
 export interface RunImportOptions {

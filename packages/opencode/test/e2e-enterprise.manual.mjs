@@ -18,9 +18,12 @@
 //
 //   1. The local store is empty AND has no stores configured, so a passing
 //      run cannot be explained by local memory.
-//   2. The work dir is a git repo whose `.plur.yaml` is written by the real
-//      `plur init-remote`, which is the onboarding path a customer follows —
-//      including the directory-trust grant the remote fields require.
+//   2. The work dir is a git repo whose `.plur.yaml` carries the remote
+//      fields, trusted with the real `plur trust`. That is the LEGACY path:
+//      `plur remote` (#1413) keeps the URL and token in the user's
+//      config.yaml instead, and `plur init-remote` is now its alias, so
+//      neither writes `.plur.yaml` any more. Existing repos still carry
+//      these fields, and this gate checks they keep working.
 //
 // PLUR_E2E_QUESTION must be a question only the remote store can answer, and
 // PLUR_E2E_EXPECT a comma-separated list of phrases that appear in those
@@ -120,19 +123,24 @@ async function main() {
     execFileSync('npm', ['install', '--no-audit', '--no-fund'],
       { cwd: harness, stdio: 'pipe', timeout: 300_000 })
 
-    step('Step 3: `plur init-remote` writes .plur.yaml and grants trust')
-    // The product's own onboarding path, not a hand-written fixture: it also
-    // verifies connectivity against /api/v1/me and refuses to write a config
-    // it could not authenticate, so reaching Step 4 already proves the token.
+    step('Step 3: a legacy .plur.yaml with remote fields, trusted with `plur trust`')
+    // The legacy shape an existing repo carries (see the header). `plur
+    // remote` with no flags then probes that remote's /api/v1/me and exits
+    // non-zero if it cannot authenticate, so reaching Step 4 proves the token.
     execFileSync('git', ['init', '-q', '.'], { cwd: work })
     const cliEntry = join(REPO_ROOT, 'packages', 'cli', 'dist', 'index.js')
     if (!existsSync(cliEntry)) fail('setup', `CLI dist not found after build: ${cliEntry}`)
-    const init = spawnSync('node',
-      [cliEntry, 'init-remote', '--url', remoteUrl, '--token', token, '--scopes', remoteScope],
-      { cwd: work, env: { ...process.env, PLUR_PATH: plurStore }, encoding: 'utf8', timeout: 60_000 })
-    const initOut = `${init.stdout ?? ''}${init.stderr ?? ''}`.split(token).join('<TOKEN-REDACTED>')
-    console.log(initOut.trim().split('\n').slice(0, 6).join('\n'))
-    if (init.status !== 0) fail('init-remote', `exited ${init.status}:\n${initOut}`)
+    writeFileSync(join(work, '.plur.yaml'),
+      `remote_url: ${remoteUrl}\nremote_token: ${token}\nremote_scopes:\n  - ${remoteScope}\n`)
+    const cliEnv = { ...process.env, PLUR_PATH: plurStore }
+    const trust = spawnSync('node', [cliEntry, 'trust', work],
+      { cwd: work, env: cliEnv, encoding: 'utf8', timeout: 60_000 })
+    if (trust.status !== 0) fail('trust', `exited ${trust.status}:\n${trust.stdout ?? ''}${trust.stderr ?? ''}`)
+    const check = spawnSync('node', [cliEntry, 'remote'],
+      { cwd: work, env: cliEnv, encoding: 'utf8', timeout: 60_000 })
+    const checkOut = `${check.stdout ?? ''}${check.stderr ?? ''}`.split(token).join('<TOKEN-REDACTED>')
+    console.log(checkOut.trim().split('\n').slice(0, 6).join('\n'))
+    if (check.status !== 0) fail('remote', `exited ${check.status}:\n${checkOut}`)
 
     step('Step 4: assert the local store cannot answer')
     // No engrams, and no stores: with both empty, remote is the ONLY route.
@@ -181,8 +189,8 @@ export default PlurEnterpriseObserver
     // Minimal env allowlist, NOT ...process.env — the sibling gate observed
     // the agent run `env` while exploring, and a blanket spread would hand
     // every ambient secret to a model tool call. The token is NOT here: it
-    // reached init-remote above and now lives only in the temp .plur.yaml,
-    // which is what the plugin is supposed to read.
+    // lives only in the temp .plur.yaml written above, which is what the
+    // plugin is supposed to read.
     const SAFE_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'USER', 'LOGNAME']
     const env = {}
     for (const k of SAFE_ENV_KEYS) if (process.env[k] !== undefined) env[k] = process.env[k]

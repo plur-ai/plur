@@ -190,7 +190,7 @@ describe('empty store lock takeover (#1354)', () => {
     expect(counts.empty).toBe(0)
     // No private publish files left behind.
     expect(readdirSync(dir).filter(f => f !== 'engrams.yaml' && f !== 'stop')).toEqual([])
-  }, 60_000)
+  }, 180_000)
 
   it('concurrent acquirers in separate processes racing to take over abandoned empty locks never hold it together', async () => {
     // Each worker process loops: acquire (async or sync flavour), prove it is

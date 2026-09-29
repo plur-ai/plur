@@ -242,6 +242,67 @@ describe('resolveFolderPolicy', () => {
     expect(trusted()).toBe(false)
   })
 
+  it('a merge never activates the grant or scope of an entry spelled through a symlink (#778)', () => {
+    const real = join(base, 'real')
+    mkdirSync(join(real, 'proj'), { recursive: true })
+    const link = join(base, 'link')
+    symlinkSync(real, link)
+    writeMap([
+      { path: join(real, 'proj'), plur: 'ask' },
+      { path: join(link, 'proj'), trusted: true, scope: 'project:dormant' },
+    ])
+    const trusted = () => isTrustedInMap(loadFolderMap(root).folders, join(real, 'proj'), home)
+    expect(trusted()).toBe(false)
+    expect(policy(join(real, 'proj'))).toEqual({ mode: 'ask', remoteAllowed: false, source: 'map' })
+
+    expect(setFolderEntry(root, join(link, 'proj'), { mode: 'ask' }, { configuredScopes: [], home }))
+      .toEqual({ path: join(real, 'proj'), plur: 'ask' })
+    expect(trusted()).toBe(false)
+    expect(policy(join(real, 'proj')).scope).toBeUndefined()
+
+    // With no applied entry at all, the dormant grant is dropped, not revived.
+    writeMap([{ path: join(link, 'proj'), trusted: true, scope: 'project:dormant' }])
+    expect(setFolderEntry(root, join(link, 'proj'), { mode: 'on' }, { configuredScopes: [], home }))
+      .toEqual({ path: join(real, 'proj'), plur: 'on' })
+    expect(trusted()).toBe(false)
+  })
+
+  it('a name-only `on` (spelled through a symlink) never becomes the mode through trust/untrust or a merge', () => {
+    const real = join(base, 'real-on')
+    mkdirSync(join(real, 'proj'), { recursive: true })
+    const link = join(base, 'link-on')
+    symlinkSync(real, link)
+    const target = join(real, 'proj')
+    writeMap([{ path: join(link, 'proj'), plur: 'on' }])
+    expect(policy(target).mode).toBe('ask')
+
+    trustDirectory(target, root)
+    expect(untrustDirectory(target, root)).toBe(true)
+    expect(policy(target).mode).toBe('ask')
+
+    writeMap([{ path: join(link, 'proj'), plur: 'on' }])
+    setFolderEntry(root, join(link, 'proj'), { trusted: false }, { configuredScopes: [], home })
+    expect(policy(target).mode).toBe('ask')
+
+    // A name-only `off` still carries over: it applied through the loose match.
+    writeMap([{ path: join(link, 'proj'), plur: 'off' }])
+    expect(setFolderEntry(root, join(link, 'proj'), { trusted: true }, { configuredScopes: [], home }))
+      .toEqual({ path: target, plur: 'off', trusted: true })
+  })
+
+  it('a merge that sets no scope keeps the scope the resolver applied', () => {
+    const d = mk('dup')
+    const two = () => writeMap([{ path: '~/dup', scope: 'group:team' }, { path: d, scope: 'project:local' }])
+    two()
+    expect(policy(d).scope).toBe('project:local')
+    setFolderEntry(root, d, { mode: 'on' }, { configuredScopes: [], home })
+    expect(policy(d).scope).toBe('project:local')
+    expect(loadFolderMap(root).folders).toEqual([{ path: '~/dup', scope: 'project:local', plur: 'on' }])
+    two()
+    trustDirectory(d, root)
+    expect(policy(d).scope).toBe('project:local')
+  })
+
   // #1357: `Ⓟ`/`ⓟ` and `Ⅱ`/`ⅱ` are cased but not letters (no \p{L}), so a
   // check that swaps only letters compared such a folder with itself. On a
   // case-sensitive filesystem they are sibling folders; no edit of one may
@@ -381,6 +442,32 @@ describe('resolveFolderPolicy', () => {
       many()
       expect(removeFolderEntry(root, onDisk, home)).toBe(true)
       expect(loadFolderMap(root).folders).toEqual([unrelated])
+    })
+
+    it('a mis-cased `on` never becomes the mode through trust then untrust', ({ skip }) => {
+      if (!caseInsensitive()) skip()
+      const w = mk('R6')
+      const onDisk = join(w, 'Proj')
+      mkdirSync(onDisk)
+      writeMap([{ path: join(w, 'pROJ'), plur: 'on' }])
+      expect(policy(onDisk).mode).toBe('ask')
+      trustDirectory(onDisk, root)
+      expect(untrustDirectory(onDisk, root)).toBe(true)
+      expect(policy(onDisk).mode).toBe('ask')
+    })
+
+    it('a merge never activates the grant or scope of an entry matched only in another case', ({ skip }) => {
+      if (!caseInsensitive()) skip()
+      const w = mk('R1')
+      const onDisk = join(w, 'Proj')
+      mkdirSync(onDisk)
+      writeMap([{ path: onDisk, plur: 'ask' }, { path: join(w, 'PROJ'), trusted: true, scope: 'project:dormant' }])
+      expect(isTrustedInMap(loadFolderMap(root).folders, onDisk, home)).toBe(false)
+      expect(setFolderEntry(root, join(w, 'PROJ'), { mode: 'on' }, { configuredScopes: [], home }))
+        .toEqual({ path: onDisk, plur: 'on' })
+      expect(isTrustedInMap(loadFolderMap(root).folders, onDisk, home)).toBe(false)
+      expect(isDirectoryTrusted(onDisk, root)).toBe(false)
+      expect(policy(onDisk)).toEqual({ mode: 'on', remoteAllowed: false, source: 'map' })
     })
 
     it('a `trusted` entry covers every case spelling of its folder, and a mis-cased entry fails closed', ({ skip }) => {
@@ -659,6 +746,93 @@ describe('dual-write to trust.yaml for adapters on the previous core', () => {
     expect(oldReader(d)).toBe(true)
     expect(untrustDirectory(d, root)).toBe(true)
     expect(oldReader(d)).toBe(false)
+  })
+
+  // Owner decision F2: revocations are complete in both files.
+  function writeLegacy(lines: string[]): void {
+    writeFileSync(join(root, 'trust.yaml'), yaml.dump({ version: 1, trusted: lines }))
+  }
+  const legacyLines = () =>
+    (yaml.load(readFileSync(join(root, 'trust.yaml'), 'utf8')) as { trusted: string[] }).trusted
+
+  it('F2: folders rm of a trusted entry also removes its trust.yaml line; no re-import', () => {
+    const d = mk('rm-trusted')
+    trustDirectory(d, root)
+    expect(oldReader(d)).toBe(true)
+    expect(removeFolderEntry(root, d, home)).toBe(true)
+    expect(oldReader(d)).toBe(false)
+    rmSync(folderMapPath(root))
+    expect(isDirectoryTrusted(d, root)).toBe(false)
+  })
+
+  it('F2: untrust removes a ~-spelled trust.yaml line (the map matcher, not string equality)', () => {
+    const d = mk('tilde-proj')
+    trustDirectory(d, root)
+    // An older tool, or a hand edit, recorded the same folder as ~/tilde-proj.
+    writeLegacy([...legacyLines(), '~/tilde-proj'])
+    // untrustDirectory expands `~` against os.homedir(): point HOME at the
+    // temp home for this call only (never the real one).
+    const savedHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      expect(untrustDirectory(d, root)).toBe(true)
+    } finally {
+      process.env.HOME = savedHome
+    }
+    expect(legacyLines()).toEqual([])
+    rmSync(folderMapPath(root))
+    expect(isDirectoryTrusted(d, root)).toBe(false)
+  })
+
+  it('F2: folders rm removes a ~-spelled trust.yaml line too', () => {
+    const d = mk('tilde-rm')
+    setFolderEntry(root, d, { mode: 'on', trusted: true }, { configuredScopes: [], home })
+    writeLegacy([...legacyLines(), '~/tilde-rm'])
+    expect(removeFolderEntry(root, d, home)).toBe(true)
+    expect(legacyLines()).toEqual([])
+  })
+
+  const caseInsensitiveFs = (() => {
+    const probe = mkdtempSync(join(tmpdir(), 'plur-case-'))
+    try {
+      mkdirSync(join(probe, 'Ab'))
+      return existsSync(join(probe, 'AB'))
+    } finally {
+      rmSync(probe, { recursive: true, force: true })
+    }
+  })()
+
+  it.skipIf(!caseInsensitiveFs)('F2: untrust removes a differently-cased trust.yaml line on a case-insensitive filesystem', () => {
+    const d = mk('CaseProj')
+    trustDirectory(d, root)
+    writeLegacy([...legacyLines(), join(realpathSync(home), 'CASEPROJ')])
+    expect(untrustDirectory(d, root)).toBe(true)
+    expect(legacyLines()).toEqual([])
+    expect(oldReader(join(home, 'CASEPROJ'))).toBe(false)
+  })
+
+  it('F2: a revocation never adds to trust.yaml and leaves unrelated lines alone', () => {
+    const keep = mk('keep-me')
+    const d = mk('revoke-me')
+    writeLegacy([realpathSync(keep)])
+    setFolderEntry(root, d, { mode: 'off' }, { configuredScopes: [], home })
+    expect(removeFolderEntry(root, d, home)).toBe(true)
+    expect(untrustDirectory(d, root)).toBe(false)
+    expect(legacyLines()).toEqual([realpathSync(keep)])
+  })
+
+  // Owner decision F3: the nonce is consumed right after folders.yaml is
+  // saved, before the trust.yaml write. A failed trust.yaml write then needs a
+  // fresh ask.
+  it('F3: a failed trust.yaml write after a saved map still consumes the nonce', () => {
+    const d = mk('f3')
+    mkdirSync(join(root, 'trust.yaml'))   // a directory: the trust.yaml write fails
+    const n = issueFolderNonce(root, 'sess-f3', d)
+    expect(() => setFolderEntry(root, d, { mode: 'on', trusted: true }, { configuredScopes: [], nonce: n, home })).toThrow()
+    expect(loadFolderMap(root).folders).toEqual([{ path: realpathSync(d), plur: 'on', trusted: true }])
+    rmSync(join(root, 'trust.yaml'), { recursive: true })
+    expect(() => setFolderEntry(root, d, { mode: 'on', trusted: true }, { configuredScopes: [], nonce: n, home }))
+      .toThrow(expect.objectContaining({ code: 'nonce-unknown' }))
   })
 
   it('a glob grant is not written to trust.yaml (the old reader cannot express it)', () => {

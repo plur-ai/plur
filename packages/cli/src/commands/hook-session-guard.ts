@@ -2,7 +2,7 @@ import { readSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
 import { safeSessionKey } from '../lib/session-key.js'
 import { ensureSessionDir, ownFileExists } from '../lib/codex-hook-io.js'
 
@@ -100,18 +100,17 @@ function incrementBlockCount(sessionId: string): number {
   return count
 }
 
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
-  // Silent pass-through for projects without plur configured. Lets the hook
-  // be installed globally without blocking tools in unrelated projects (#95).
-  if (!isPlurConfigured()) return
-
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
-  let data: { session_id?: string; tool_name?: string }
+  let data: { session_id?: string; tool_name?: string; cwd?: string }
   try {
     data = JSON.parse(raw)
   } catch {
     return // Can't parse — allow through
   }
+  // Silent unless the folder map says on (#1347; was #95's project gate):
+  // an off or ask folder never has its tools blocked.
+  if (!hookFolderOn(payloadDir(data as Record<string, unknown>), flags)) return
 
   const toolName = data.tool_name ?? ''
   const sessionId = data.session_id ?? ''
