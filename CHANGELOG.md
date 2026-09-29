@@ -314,11 +314,41 @@ Now flagged, each by the vendor's documented prefix, charset and length:
 - GitHub `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` (`github_token`) and
   `github_pat_` (`github_pat`).
 - GitLab `glpat-`, `gloas-`, `gldt-`, `glrt-`, `glrtr-`, `glcbt-`, `glptt-`,
-  `glft-`, `glimt-`, `glagent-`, `glsoat-`, `glffct-` (`gitlab_token`).
-- Slack `xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-` (`slack_token`).
+  `glft-`, `glimt-`, `glagent-`, `glwt-`, `glsoat-`, `glffct-`
+  (`gitlab_token`). GitLab bodies may legitimately contain `-` and `_`, so
+  the body must also look random (mixed case or digits); a hyphenated slug
+  after the prefix, as in a GitLab docs URL, stays clean.
+- Slack `xoxb-`, `xoxp-`, `xoxs-` (with their 8+ digit workspace id),
+  `xoxa-`, `xoxr-`, app-level `xapp-` and the token-rotation formats `xoxe-`,
+  `xoxe.xoxp-`, `xoxe.xoxb-` (`slack_token`); a prefix followed by a short
+  number and hyphenated words stays clean.
 - npm `npm_` (`npm_token`).
 - Stripe `sk_live_` and `rk_live_` (`stripe_live_key`).
 - AWS temporary access key ids, `ASIA…`, under the existing `aws_access_key`.
+  Because `ASIA` begins ordinary uppercase words, this branch needs exactly
+  20 characters with nothing alphanumeric on either side and at least one
+  digit, so region-like prose ("ASIAPACIFIC…") stays clean. The `AKIA` branch
+  is unchanged.
+
+Credentials are also matched against a percent-decoded copy of the text, so a
+token inside an encoded URL or query string (`access_token%3D` then the token,
+or an encoded `_` in the prefix) is found, and against a copy with JSON
+backslash escapes unfolded, so a token after a literal `\n`, `\t` or `\r` in
+JSON-escaped text or a pasted log is found (#1372). A token glued after a
+digit is found too.
+
+A credential finding no longer echoes the first 20 characters of the match,
+which for a GitHub or npm token was the prefix plus 16 of its 36 secret
+characters. It now shows the prefix (or the keyword of an assignment) and the
+last four characters, such as `ghp_...WXYZ`; a value shorter than 16
+characters after the prefix, such as a password, is not shown at all (#1373).
+This is the text pack-scan issue details carry.
+
+The `jwt` pattern no longer takes quadratic time on repeated `eyJ` input
+(#1397). As a regex it took about six minutes on 1 MiB, the size packs and
+engrams are scanned up to, so a crafted pack or engram could stall pack
+install, preview or `learn`; every added scan view made it worse. It is now
+matched in linear time, with the same results and no cap on segment length.
 
 The same patterns apply to the pack scanner, so a pack carrying one of these
 refuses to install (`docs/pack-scan-surface.md`). Text that only names a prefix,
@@ -2649,7 +2679,7 @@ PLUR's engram leak guard, scope isolation, pack/sync distribution, and remote-st
 
 `detectSensitive()` truncated its input to the first 64 KB before scanning, then silently passed the rest. The infra-topology detectors (`public_ipv4`, `public_ipv6`, `basic_auth_url`, `fqdn_port`, `ipv4_port`, `internal_host`) exist only in `detectSensitive`, so an engram whose first 64 KB was benign filler but which carried a public IP / basic-auth URL / internal host **after** byte 64 KB passed the write guard un-demoted and was written to a shared/remote store (and slipped past `filterPublishable`).
 
-- The scan window is raised from 64 KB to **1 MiB** — far above any realistic engram. The detector regexes are bounded/linear; a benign full-window pass is ~7ms/64KB but adversarial regex-dense input measured ~300–420 ms for a full 1 MiB pass (#386 review). Total scan work is capped at 1 MiB regardless of input size (bounded, linear — a per-write CPU cost on >64KB engrams, not a DoS).
+- The scan window is raised from 64 KB to **1 MiB** — far above any realistic engram. The detector regexes were described here as bounded/linear; that was wrong for `jwt`, which was quadratic on repeated `eyJ` (1 MiB took about six minutes) until #1397 replaced it with a linear matcher. A benign full-window pass is ~7ms/64KB but adversarial regex-dense input measured ~300–420 ms for a full 1 MiB pass (#386 review). Total scan work is capped at 1 MiB regardless of input size (bounded, linear — a per-write CPU cost on >64KB engrams, not a DoS).
 - Input larger than the ceiling is now **fail-closed**: `detectSensitive` appends a synthetic `scan_truncated` hit so `_guardSensitiveScope` demotes the write and `filterPublishable` excludes the engram — the unscanned tail can no longer be assumed clean. The `scan_truncated` signal is always offending regardless of a scope's `sensitivity` policy.
 - **Packs export inherits this** (via #389): `scanPrivacy` now routes through `detectSensitive` + `truncateToScanLimit`, so the raised window, the infra-family detectors, and the `scan_truncated` fail-closed all apply to `exportPack`/`installPack` too — the "...and packs" half of #386, delivered by the #389 packs-scan change rather than here.
 
