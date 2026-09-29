@@ -8,7 +8,7 @@
  * Explicit `plur_feedback` keeps promoting exactly as before.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
@@ -130,6 +130,29 @@ describe('Plur.feedback with source: "auto"', () => {
     } finally {
       rmSync(storeDir, { recursive: true, force: true })
     }
+  })
+
+  it('does not promote an engram held in an installed pack (#1365)', async () => {
+    const packDir = join(dir, 'packs', 'team-conventions')
+    mkdirSync(packDir, { recursive: true })
+    const id = 'ENG-2026-0929-777'
+    const packFile = join(packDir, 'engrams.yaml')
+    writeFileSync(packFile, yaml.dump({ engrams: [{
+      id, version: 2, status: 'active', consolidated: false, type: 'behavioral',
+      scope: 'global', visibility: 'private', statement: 'pack convention for auto rating',
+      commitment: 'exploring',
+      activation: { retrieval_strength: 0.5, storage_strength: 1.0, frequency: 0, last_accessed: '2026-09-01' },
+      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+      associations: [], derivation_count: 1, tags: [], pack: null, abstract: null,
+      derived_from: null, reference_count: 1, sources: [],
+    }] }))
+    const plur = new Plur({ path: dir })
+    await plur.feedback(id, 'positive', undefined, { source: 'auto' })
+    const stored = (yaml.load(readFileSync(packFile, 'utf8')) as { engrams: Array<Record<string, any>> }).engrams[0]
+    // The signal did reach the pack engram, so the unchanged commitment is the rule, not a miss.
+    expect(stored.feedback_signals.positive).toBe(1)
+    expect(stored.activation.retrieval_strength).toBeGreaterThan(0.5)
+    expect(stored.commitment).toBe('exploring')
   })
 
   it('refuses to send automatic feedback to a remote store', async () => {

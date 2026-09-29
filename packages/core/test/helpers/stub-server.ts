@@ -107,6 +107,12 @@ export class StubServer {
   feedbackBodies: Array<Record<string, unknown>> = []
   /** Number of GET /api/v1/me requests received (#1310 capability caching). */
   meCalls = 0
+  /** Number of GET /api/v1/engrams/:id requests received (#1318 review: remote
+   *  ids are fetched only from stores that advertise the capability). */
+  getByIdCalls = 0
+  /** Delay before answering POST /engrams/:id/feedback, ms — to simulate a
+   *  slow server a hook watchdog cuts off mid-way (#1318 review). */
+  feedbackDelayMs = 0
 
   // --- POST /api/v1/recall (#776 server-authoritative recall envelope) ---
   /** Rows served in the envelope's `results` (top-level engram shape, each
@@ -218,6 +224,8 @@ export class StubServer {
     this.lastAppendBody = null
     this.feedbackBodies = []
     this.meCalls = 0
+    this.getByIdCalls = 0
+    this.feedbackDelayMs = 0
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -346,6 +354,7 @@ export class StubServer {
     // GET /api/v1/engrams/:id — get by ID
     const idMatch = path.match(/^\/api\/v1\/engrams\/([^/]+)$/)
     if (method === 'GET' && idMatch) {
+      this.getByIdCalls++
       const id = decodeURIComponent(idMatch[1])
       const engram = this.engrams.get(id)
       if (!engram) {
@@ -428,7 +437,8 @@ export class StubServer {
         this.json(res, 404, { error: 'Not found' })
         return
       }
-      this.readBody(req, (body) => {
+      this.readBody(req, async (body) => {
+        if (this.feedbackDelayMs > 0) await new Promise(r => setTimeout(r, this.feedbackDelayMs))
         this.feedbackBodies.push(body)
         const signal = body.signal as string
         const data = engram.data as any

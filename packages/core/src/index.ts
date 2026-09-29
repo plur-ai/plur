@@ -992,6 +992,9 @@ export class AddRemoteStoreError extends Error {
  */
 export type LearnDelivery = 'remote' | 'outbox' | 'local'
 
+/** Most remote ids `getByIds` fetches from one store in one call (#1318 review). */
+const GET_BY_IDS_REMOTE_CAP = 20
+
 export class Plur {
   /**
    * Engrams a url store confirmed on the write path (#1264). The server's reply
@@ -4803,16 +4806,58 @@ export class Plur {
    * Get several engrams by ID (#1310). The primary store is read by primary
    * key; only ids it does not hold fall back to the full walk over stores and
    * packs, once. Ids that exist nowhere are simply absent from the result.
+   *
+   * Remote stores: the walk only peeks at their in-process cache, which is
+   * empty in a fresh process (a hook). With `remoteCapability`, ids still
+   * missing after the walk are fetched BY ID from each url store whose server
+   * advertises that capability, and whose namespace prefix the id carries
+   * (#1318 review). A store without the capability is never asked. Bounded:
+   * one GET per id (the REST surface has no batch-by-id route), in parallel,
+   * at most {@link GET_BY_IDS_REMOTE_CAP} per store, each on the driver's
+   * bounded fetch. Without the option nothing is fetched — unchanged.
    */
-  async getByIds(ids: string[]): Promise<Engram[]> {
+  async getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<Engram[]> {
     const wanted = [...new Set(ids.filter(Boolean))]
     if (wanted.length === 0) return []
     const primary = (await this._loadTargeted(wanted)).filter(e => wanted.includes(e.id))
     const found = new Set(primary.map(e => e.id))
-    const missing = wanted.filter(id => !found.has(id))
+    let missing = wanted.filter(id => !found.has(id))
     if (missing.length === 0) return primary
     const rest = (await this._loadAllEngrams()).filter(e => missing.includes(e.id))
-    return [...primary, ...rest]
+    for (const e of rest) found.add(e.id)
+    missing = missing.filter(id => !found.has(id))
+    const remote = options?.remoteCapability && missing.length > 0
+      ? await this._fetchRemoteByIds(missing, options.remoteCapability)
+      : []
+    return [...primary, ...rest, ...remote]
+  }
+
+  private async _fetchRemoteByIds(ids: string[], capability: string): Promise<Engram[]> {
+    const out: Engram[] = []
+    const taken = new Set<string>()
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url) continue
+      const prefixRe = new RegExp(`^(ENG|ABS|META)-${storePrefix(entry.scope)}-`)
+      const mine = ids.filter(id => !taken.has(id) && prefixRe.test(id)).slice(0, GET_BY_IDS_REMOTE_CAP)
+      if (mine.length === 0) continue
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      if (!(await driver.hasCapability(capability))) continue
+      const rows = await Promise.all(mine.map(async id => {
+        const row = await driver.getById(this._stripRemotePrefix(id, entry.scope))
+        return row ? { id, row } : null
+      }))
+      for (const hit of rows) {
+        if (!hit) continue
+        taken.add(hit.id)
+        const cloned = { ...hit.row } as Engram & { _originalId?: string; _storeScope?: string }
+        cloned._originalId = hit.row.id
+        cloned._storeScope = entry.scope
+        if (cloned.scope === 'global') cloned.scope = entry.scope
+        cloned.id = hit.id
+        out.push(cloned)
+      }
+    }
+    return out
   }
 
   /** List all active engrams, optionally filtered by scope/domain. No search — returns all matches. */

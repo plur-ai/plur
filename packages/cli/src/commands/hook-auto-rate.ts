@@ -1,7 +1,7 @@
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { readStdinJson, runCodexHook } from '../lib/codex-hook-io.js'
-import { autoRateTurn, agyReplySinceLastUser, type AutoRateEditor } from '../lib/auto-rate.js'
+import { enqueueTurn, hasLeftoverBatches, spawnWorker, runWorker, agyReplySinceLastUser, type AutoRateEditor } from '../lib/auto-rate.js'
 
 /**
  * plur hook-auto-rate <editor> — end-of-turn hook that rates the engrams
@@ -25,7 +25,13 @@ import { autoRateTurn, agyReplySinceLastUser, type AutoRateEditor } from '../lib
  * stderr line and exit 0.
  *
  * Skip-cheap: with nothing injected this session (and auto-capture off) no
- * store is opened — see `autoRateTurn`.
+ * store is opened — see `enqueueTurn`.
+ *
+ * Bounded (#1318 audit M1): the hook only queues the turn and starts a
+ * detached worker (`hook-auto-rate --worker <editor> <session>`), then exits.
+ * The store work runs in the worker, outside the editor's timeout, so a large
+ * store can no longer push the hook past its budget or get it killed while
+ * it holds the store lock.
  */
 
 const EDITORS: readonly AutoRateEditor[] = ['claude', 'codex', 'cursor', 'agy']
@@ -36,6 +42,12 @@ const EDITORS: readonly AutoRateEditor[] = ['claude', 'codex', 'cursor', 'agy']
  * unrated turn rather than a harness timeout error.
  */
 const CEILING_MS = parseInt(process.env.PLUR_AUTO_RATE_CEILING_MS ?? '', 10) || 9_000
+
+/**
+ * The worker's own ceiling: only an immortal-process guard (#504), far above
+ * any real run. It is checked between turns, never inside a store write.
+ */
+const WORKER_CEILING_MS = parseInt(process.env.PLUR_AUTO_RATE_WORKER_CEILING_MS ?? '', 10) || 15 * 60_000
 
 interface Turn {
   sessionId: string
@@ -75,6 +87,16 @@ export function readTurn(editor: AutoRateEditor, input: Record<string, unknown>)
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  if (args[0] === '--worker') {
+    const editor = args[1] as AutoRateEditor
+    const sessionId = args[2] ?? ''
+    if (!EDITORS.includes(editor) || !sessionId) return
+    const guard = setTimeout(() => process.exit(0), WORKER_CEILING_MS)
+    guard.unref()
+    await runCodexHook('auto-rate worker', async () => { await runWorker(editor, sessionId, flags) })
+    return
+  }
+
   const watchdog = setTimeout(() => process.exit(0), CEILING_MS)
   watchdog.unref()
 
@@ -97,6 +119,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       return
     }
 
-    await autoRateTurn({ editor, sessionId: turn.sessionId, reply: turn.reply, flags, cwd: turn.cwd })
+    const queued = enqueueTurn({ editor, sessionId: turn.sessionId, reply: turn.reply, cwd: turn.cwd })
+    if (!queued && !hasLeftoverBatches(editor, turn.sessionId)) return
+    // If the worker cannot be started, do the work inline rather than drop
+    // it — the pre-worker behaviour, bounded by the watchdog above.
+    if (!spawnWorker(editor, turn.sessionId, flags)) {
+      await runWorker(editor, turn.sessionId, flags)
+    }
   })
 }

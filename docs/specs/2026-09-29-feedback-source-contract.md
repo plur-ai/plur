@@ -79,7 +79,45 @@ treated as explicit feedback or rejected with `400`. It must never be treated
 as permission to change commitment on the strength of a signal the server did
 not understand.
 
-## 4. Compatibility
+## 4. Known effects of automatic positives (reference client)
+
+"Ranking only" does not mean "no lasting effect". In the reference client an
+automatic verdict is capped at one per engram per session, but nothing caps it
+across sessions, and it lands in the same `feedback_signals` counters as
+explicit feedback. Those counters, and the fields a positive verdict touches,
+feed the following:
+
+- `computeConfidence` (`confidence.ts`), the `confidence_score` shown to
+  agents with each injected engram, is derived from the positive and negative
+  counts.
+- The injection score gets a boost of 5% per net positive signal, up to +30%
+  (`inject.ts`).
+- `net_feedback` in the pinned-budget report is positive minus negative.
+- Meta-engram extraction treats an engram as failure-driven, and processes it
+  first, when its negatives outnumber its positives
+  (`meta/structural-analysis.ts`).
+- Each positive adds +0.05 to `retrieval_strength` and re-anchors
+  `last_accessed`, which resets read-time decay and the extra decay for
+  engrams with no recent positive feedback.
+- Engrams in installed packs skip both kinds of decay: injection scores them on
+  their raw `retrieval_strength`, and `confidenceDecay` does not apply to them
+  (`inject.ts`). An automatic positive on a pack engram therefore raises its
+  score and does not fade over time.
+- Automatic negatives act the same way in the other direction. Each one takes
+  0.10 off `retrieval_strength` (clamped at 0) and re-anchors `last_accessed`,
+  and the injection score drops by 10% per net negative signal, to at most half
+  (`inject.ts`). Negatives also lower `confidence_score` and can make an engram
+  count as failure-driven in meta-engram extraction.
+
+So the loop can reinforce itself: an engram is injected, the reply repeats it,
+the reply is rated positive, and the engram is injected more often. A wrong
+negative verdict pushes the other way, and the engram is injected less often.
+`commitment` is not affected. Whether to count automatic signals separately or
+cap them across sessions is tracked in #1363 and not decided here. A server
+implementing section 3 should expect the same effect from its own ranking
+state.
+
+## 5. Compatibility
 
 | Server | Client behaviour |
 |---|---|

@@ -22,13 +22,18 @@ Claude Code's `hook-inject` was async with a 90s timeout until #1313.
 Codex's own default is 600s. PLUR's are deliberately tight so a wedged hook
 cannot hang a turn.
 
-The auto-rate hook opens the store only when the session injected something
-that has not been rated yet; otherwise its cost is a Node start and one small
-file read. When it does open the store, it reads the pending ids and writes one
-feedback signal per verdict. It dials a remote store only to rate one of its
-engrams. That costs at most one bounded `/me` call per process, to check for the
-`feedback.source` capability, plus the feedback call if the server has it. `PLUR_AUTO_RATE=0` turns
-it off, and `PLUR_AUTO_RATE_CEILING_MS` moves its self-cap.
+The auto-rate hook never opens the store. It costs a Node start, a few small
+file reads, and when something is pending, one queue append and the start of a
+detached worker. The worker does the store work outside the editor's budget:
+it reads the pending ids and writes one feedback signal per verdict. It dials
+a remote store only to rate one of that store's engrams. That costs at most one
+bounded `/me` call per process, to check for the `feedback.source` capability,
+plus the feedback call if the server has it.
+
+- `PLUR_AUTO_RATE=0` turns auto-rate off.
+- `PLUR_AUTO_RATE_CEILING_MS` moves the hook's self-cap.
+- `PLUR_AUTO_RATE_WORKER_CEILING_MS` (default 15 min) moves the worker's
+  guard against an immortal process.
 
 In Claude Code only the first prompt of a session and the rehydrate after
 compaction do the full injection. Later prompts check the session marker and
