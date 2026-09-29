@@ -81,6 +81,9 @@ export class StubServer {
   /** Delay before answering POST /engrams, ms — a slow-but-alive remote, for
    *  bounded-flush tests (#1269). The write is still applied when it answers. */
   appendDelayMs = 0
+  /** Number of POST /api/v1/engrams requests received, answered or refused
+   *  (#1299: proves a backed-off outbox entry did not dial the server). */
+  appendCalls = 0
   /** When set, PATCH /engrams/:id still applies the update server-side but
    *  echoes this value as the {engram: ...} body — to simulate a server whose
    *  echoed row fails RemoteRowSchema validation (#327). */
@@ -186,6 +189,7 @@ export class StubServer {
     this.badAppendId = null
     this.appendErrorResponse = null
     this.appendDelayMs = 0
+    this.appendCalls = 0
     this.badPatchEcho = null
     this.recallRows = []
     this.recallStatus = null
@@ -276,6 +280,7 @@ export class StubServer {
 
     // POST /api/v1/engrams — create
     if (method === 'POST' && path === '/api/v1/engrams') {
+      this.appendCalls++
       if (this.appendErrorResponse !== null) {
         const { status, body } = this.appendErrorResponse
         res.writeHead(status, { 'Content-Type': 'text/plain' })

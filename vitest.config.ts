@@ -63,6 +63,7 @@ export default defineConfig({
             'test/sync.test.ts',
             'test/timeline.test.ts',
             'test/hook-outbox-flush.test.ts',
+            'test/outbox-needs-action.test.ts',
           ],
           // The whole point: one file at a time, so no two batches of CLI
           // processes are spawning concurrently.

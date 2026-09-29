@@ -404,6 +404,43 @@ installed". It now removes a PLUR `PostCompact` entry and adds the
 hooks, are left in place. Installs that use the local `~/.plur/bin/plur-hook`
 shim now count as installed too, so re-running no longer adds a second set.
 
+### Queued writes that can never succeed now say so
+
+**A queued team write the store keeps refusing was silent** (#1299). On one
+developer store, ten writes had been refused with `403 Cannot write to scope`
+on every attempt for twelve days, one of them 103 times. Session start,
+`plur status`, `plur doctor` and the hooks said nothing. Only `plur outbox`
+listed them, and only to someone who knew to look.
+
+**Each outbox entry is now classified by its last failure.** `retrying` covers
+the network, 5xx, 429 and timeouts, and those are retried as before.
+`needs_action` covers 401, 403, 404, 422, an explicit "cannot write to scope"
+refusal, and a scope with no writable store: retrying cannot fix any of these.
+A failed push now records its HTTP status on the entry (`last_status`, an
+additive field). Entries queued before this are classified from their error
+text, and anything unclear counts as `retrying`.
+
+**The `needs_action` entries are reported**, with count, scope, a one-line
+reason and a next step, in:
+- the MCP `plur_session_start` result (`outbox_needs_action`, plus a line in `guide`);
+- `plur status` and `plur_status` (`outbox_needs_action`, `outbox_attention`);
+- `plur doctor`, as a failing `outbox` check. A write that only failed on the
+  network does not trip it;
+- `plur outbox` / `plur_outbox`: `state`, `reason`, `next_step` and
+  `next_retry_at` on each entry, plus `retrying` / `needs_action` counts.
+
+The next step names real commands: get write access and run `plur outbox
+--flush`, check `plur stores list`, or move the entry with `plur rescope <id>
+--to <scope>`.
+
+**Back-off:** automatic flushes (session start and end, stop hooks,
+`plur sync`) retry a `needs_action` entry at most once a day. They return the
+number held back as `held`. An explicit flush (`plur outbox --flush`,
+`plur_outbox { flush: true }`, or `flushOutbox({ force: true })`) retries it
+at once. **Nothing is dropped, rescoped or rewritten automatically.** Only the
+retry bookkeeping changes: `attempt_count`, `last_attempt`, `last_error` and
+`last_status`.
+
 ### SessionEnd finds the checkpoint for session ids with unusual characters
 
 **`plur hook-session-end` could miss the session checkpoint, so the session

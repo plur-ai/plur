@@ -22,7 +22,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction } from '@plur-ai/core'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -177,6 +177,21 @@ interface DoctorReport {
    * has opencode installed somewhere, not that this project depends on it.
    */
   opencode: OpencodeReport | null
+  /**
+   * Queued team writes (#1299). `ok` is false when any entry is
+   * `needs_action` — refused in a way retrying cannot fix (401/403/404/422, a
+   * write refusal, no writable store) — and that FAILS `overall`: those
+   * writes will never leave this machine as things stand, which is the
+   * silent failure doctor exists to catch. Entries that only failed on the
+   * network are `retrying` and do not. `null` when the store could not be read.
+   */
+  outbox?: {
+    ok: boolean
+    pending: number
+    retrying: number
+    needs_action: number
+    scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
+  } | null
   overall: 'ok' | 'fail'
 }
 
@@ -338,6 +353,16 @@ function countStaleContentHashes(flags: GlobalFlags): number {
     return count
   } catch {
     return 0
+  }
+}
+
+/** #1299: classify the outbox. Local read only; never throws. */
+async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> {
+  try {
+    const summary = await createPlur(flags, { readonly: true }).outboxSummary()
+    return { ok: summary.needs_action === 0, ...summary }
+  } catch {
+    return null
   }
 }
 
@@ -974,10 +999,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // reported separately as a warning — a degraded embedder doesn't fail
     // the overall doctor check (BM25 still works); it just signals semantic
     // recall is disabled until the model loads.
+    const outbox = await checkOutbox(flags)
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
       brokenNodeMcp.length === 0 &&
-      (!cursorProjectDetected || cursorWired)
+      (!cursorProjectDetected || cursorWired) &&
+      // #1299: a queued write no retry will deliver is a real failure.
+      (outbox?.ok ?? true)
         ? 'ok' : 'fail'
     // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
     // The two detections are not the same kind of signal. A `.cursor/`
@@ -1033,7 +1061,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, opencode, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, opencode, outbox, overall,
     }
   })
 }
@@ -1068,6 +1096,15 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   outputText('')
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
+  // #1299
+  if (report.outbox && report.outbox.pending > 0) {
+    const o = report.outbox
+    outputText(`${tick(o.ok)} Outbox: ${o.pending} queued write(s)` + (o.needs_action > 0 ? `, ${o.needs_action} will not deliver by retrying` : ', retrying'))
+    if (!o.ok) {
+      for (const line of describeNeedsAction({ ...o })) outputText(`  ${line}`)
+      outputText('  Nothing is dropped automatically. `plur outbox` lists them.')
+    }
+  }
   outputText(`${tick(report.mcpRegistered)} plur MCP server registered`)
 
   if (report.cursorProjectDetected) {
@@ -1288,6 +1325,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  Fix: ensure `npx` is reachable from Claude Desktop')
       outputText('       — try launching Claude from your terminal once,')
       outputText('       — or replace the plur entry command with an absolute path to your shell.')
+    }
+    if (report.outbox && !report.outbox.ok) {
+      outputText('  Fix: see the Outbox line above — queued team writes need a person to act.')
     }
     if (report.cursorProjectDetected && !report.cursorWired) {
       outputText('  Fix: run `plur init --cursor` from this project — this project\'s own')

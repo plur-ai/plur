@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
+import { describeNeedsAction } from '@plur-ai/core'
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // Pure query — a read-only engine guarantees no lazy write side-effects.
@@ -22,6 +23,20 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`  Events:       co_injection ${ev.co_injection} · outcomes ${ev.injection_outcome} (+${ev.outcome_positive}/-${ev.outcome_negative})`)
     }
     outputText(`  Storage root: ${result.storage_root}`)
+    // #1299: queued writes are otherwise invisible here — and the ones no
+    // retry will deliver are exactly the ones a person has to act on.
+    if (result.outbox_count) {
+      const needs = result.outbox_needs_action ?? 0
+      outputText(`  Outbox:       ${result.outbox_count} queued` + (needs > 0 ? ` (${needs} need action)` : ''))
+    }
+    if (result.outbox_attention && result.outbox_attention.length > 0) {
+      outputText('')
+      const needs = result.outbox_attention.reduce((n, s) => n + s.count, 0)
+      for (const line of describeNeedsAction({ pending: result.outbox_count ?? 0, retrying: 0, needs_action: needs, scopes: result.outbox_attention })) {
+        outputText(`  ⚠️  ${line}`)
+      }
+      outputText('      Nothing is dropped automatically. `plur outbox` lists them.')
+    }
     // Discoverability, not decoration: the dashboard is on-demand by design
     // (it serves the whole store with no auth, so nothing auto-starts it),
     // which means the one place a user learns it exists is a hint like this.

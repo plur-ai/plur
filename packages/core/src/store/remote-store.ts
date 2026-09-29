@@ -221,6 +221,22 @@ export class RemoteAbortedError extends Error {
 }
 
 /**
+ * The remote answered a write with a non-2xx status (#1299).
+ *
+ * Same message as the plain Error it replaces, so nothing that reads the text
+ * changes; the status is carried as a field so the outbox can record it and
+ * tell a refusal (403) from a transient failure (503) without parsing prose.
+ */
+export class RemoteHttpError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'RemoteHttpError'
+    this.status = status
+  }
+}
+
+/**
  * A response whose body has already been read, inside the request deadline.
  *
  * `json` is present only for a 2xx (and is `undefined` when the payload would
@@ -760,7 +776,7 @@ export class RemoteStore {
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body,
     }, RemoteStore.readBounded, opts?.signal)
-    if (!r.ok) throw new Error(`Remote store append failed: ${r.status} ${r.text}`)
+    if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
     const data = (r.json ?? {}) as { id?: unknown }
     // #404: validate the server-assigned id's SHAPE, not just truthiness. It
     // becomes this engram's id (cached, rendered, used as a key), so a non-string,

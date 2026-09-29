@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, renderProvenanceSummary, type LearnContext } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, renderProvenanceSummary, describeNeedsAction, summarizeOutbox, type LearnContext, type OutboxSummary } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -2244,9 +2244,20 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // caller nothing about what just moved.
         const before = await plur.listOutbox()
         if (args.flush !== true) {
-          return { pending: before.length, entries: before }
+          // #1299: counts by state, so a caller can tell "will deliver when
+          // the network is back" from "will never deliver as it stands".
+          const summary = summarizeOutbox(before)
+          return {
+            pending: before.length,
+            retrying: summary.retrying,
+            needs_action: summary.needs_action,
+            ...(summary.needs_action > 0 ? { needs_action_scopes: summary.scopes } : {}),
+            entries: before,
+          }
         }
-        const result = await plur.flushOutbox()
+        // An explicit flush retries needs_action entries too (#1299): the
+        // caller may just have fixed the cause.
+        const result = await plur.flushOutbox({ force: true })
         return {
           pending: await plur.outboxCount(),
           flushed: result.flushed,
@@ -2476,6 +2487,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           tension_count: status.tension_count,
           versioned_engram_count: status.versioned_engram_count ?? 0,
           outbox_count: status.outbox_count ?? 0,
+          // #1299: queued writes a retry cannot deliver, per scope.
+          outbox_needs_action: status.outbox_needs_action ?? 0,
+          ...(status.outbox_attention ? { outbox_attention: status.outbox_attention } : {}),
           // Injection-provenance event/label counts (#452) — #202's volume gate.
           history_events: status.history_events ?? {
             co_injection: 0,
@@ -3019,6 +3033,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // `flushOutbox` is not a report to the caller.
           outbox_error = (err as Error).message
         }
+        // #1299: queued writes that no retry will deliver (401/403/404/422, a
+        // write refusal, no writable store). Read AFTER the flush, so it
+        // reports what is still stuck. Best-effort: never fails session start.
+        let outbox_needs: OutboxSummary | undefined
+        try {
+          const summary = await plur.outboxSummary()
+          if (summary.needs_action > 0) outbox_needs = summary
+        } catch { /* reported via outbox_error when the store itself is the problem */ }
 
         // Surface writable remote scopes so AI caller knows what's available (#229)
         // NOTE: we do NOT auto-set session scope FROM REMOTE STORES — the AI
@@ -3325,6 +3347,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // is the first tool an agent calls — one line here tells it the
         // gateway exists BEFORE it ever misses a name and concludes the MCP
         // is down. Silent under 'full', where nothing is hidden.
+        if (outbox_needs) {
+          guide += `\n\n⚠️ OUTBOX: ${outbox_needs.needs_action} queued team write(s) cannot be delivered by retrying. `
+            + describeNeedsAction(outbox_needs).join(' ')
+            + ' Tell the user; nothing is dropped automatically. `plur outbox` lists them.'
+        }
+
         const session_tool_profile = activeToolProfile()
         if (session_tool_profile !== 'full') {
           guide += `\n\nTool profile "${session_tool_profile}": most plur_* tools are not exposed by name — ` +
@@ -3363,6 +3391,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
             outbox_warning:
               `The outbox flush failed — ${outbox_error}. Engrams routed to a remote store are `
               + `still queued locally and were NOT pushed. They retry on the next session_start or plur_sync.`,
+          } : {}),
+          // #1299: writes a retry cannot deliver — count, scope, reason, next step.
+          ...(outbox_needs ? {
+            outbox_needs_action: { count: outbox_needs.needs_action, scopes: outbox_needs.scopes },
           } : {}),
           // Version staleness warning (issue #151)
           ...(version_warning ? { version_warning, version: VERSION } : {}),
