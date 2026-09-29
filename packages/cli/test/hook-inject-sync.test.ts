@@ -8,6 +8,7 @@ import { injectForHook, waitForOwnStoreLock, HOOK_CEILING_DEFAULT_MS } from '../
 import { CLAUDE_INJECT_TIMEOUT_S } from '../src/lib/claude-inject-budget.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
+const LATE_LOCK = join(__dirname, 'helpers', 'late-store-lock.mjs')
 
 /**
  * #1313: the UserPromptSubmit and SessionStart(compact) injections are
@@ -24,9 +25,11 @@ describe('hook-inject bounds its sync first-prompt injection (#1313)', () => {
       inject: async () => bm25,
     }
     const started = Date.now()
-    const { result, mode } = await injectForHook(plur, 'task', {}, 100)
+    const { result, mode, hybrid } = await injectForHook(plur, 'task', {}, 100)
     expect(result).toBe(bm25)
     expect(mode).toBe('bm25')
+    // The still-running search is handed back so the exit can wait on it.
+    expect(hybrid).toBeInstanceOf(Promise)
     expect(Date.now() - started).toBeLessThan(2_000)
   })
 
@@ -75,6 +78,51 @@ describe('hook-inject bounds its sync first-prompt injection (#1313)', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   }, 90_000)
+
+  it('the exit waits for the abandoned hybrid search itself, not only for a lock already on disk', async () => {
+    // Deterministic form of the review finding: BM25 holds the store lock
+    // (3s, empty), the abandoned hybrid search queues behind it in-process,
+    // and its O_EXCL create is already in flight when the hook checks for a
+    // lock of its own — it lands 800ms later. A check-then-exit sees nothing,
+    // exits, and the create leaves an empty lock that core honours for 60s.
+    const dir = mkdtempSync(join(tmpdir(), 'plur-inject-late-lock-'))
+    try {
+      writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } }))
+      mkdirSync(join(dir, 'tmp'), { recursive: true })
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        HOME: dir, USERPROFILE: dir, TMPDIR: join(dir, 'tmp'), PLUR_PATH: join(dir, '.plur'),
+        PLUR_HOOK_HYBRID_DEADLINE_MS: '1',
+        PLUR_TEST_LOCK_PLAN: 'slow:3000,late:800',
+      }
+      delete env.PLUR_DISABLE_EMBEDDINGS
+      delete env.PLUR_HOOK_HYBRID
+      // The second engram is a semantic (not lexical) match, so the hybrid
+      // search injects a different set from BM25 and records its own
+      // injection — an identical set is deduplicated and writes nothing.
+      for (const statement of [
+        'codeword basalt-heron for the late lock test',
+        'The secret password for the staging vault lives in the team wiki',
+      ]) {
+        const seeded = runCli('node', [CLI, 'learn', statement, '--json'], {
+          encoding: 'utf-8', timeout: 20_000, env: { ...env, PLUR_DISABLE_EMBEDDINGS: '1', PLUR_TEST_LOCK_PLAN: '' }, cwd: dir,
+        })
+        expect(seeded.status).toBe(0)
+      }
+      const r = runCli('node', ['--import', LATE_LOCK, CLI, 'hook-inject'], {
+        input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'late-1', prompt: 'basalt-heron codeword' }),
+        encoding: 'utf-8', timeout: 30_000, env, cwd: dir,
+      })
+      expect(r.status).toBe(0)
+      expect(r.stderr).toContain('hybrid injection exceeded 1ms')
+      expect(JSON.parse(r.stdout).hookSpecificOutput.additionalContext).toContain('basalt-heron')
+      // Give a create that outlived the hook time to land.
+      await new Promise(res => setTimeout(res, 1_500))
+      expect(existsSync(join(dir, '.plur', 'engrams.yaml.lock'))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 60_000)
 
   describe('the exit past an abandoned hybrid waits for its own store lock', () => {
     const lockDir = () => mkdtempSync(join(tmpdir(), 'plur-inject-lock-'))

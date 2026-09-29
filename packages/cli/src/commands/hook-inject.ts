@@ -391,13 +391,45 @@ const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || 
  * turn when it is missed or hybrid throws — the same bound the Codex and
  * Antigravity hooks use.
  */
-export function injectForHook<O, R>(
+export async function injectForHook<O, R>(
   plur: Injectable<O, R>,
   task: string,
   opts: O,
   deadlineMs?: number,
-): Promise<InjectOutcome<R>> {
-  return injectWithFallback(plur, task, opts, deadlineMs)
+): Promise<InjectOutcome<R> & { hybrid: Promise<unknown> | null }> {
+  // Keep hold of the hybrid search: when it misses the deadline it is still
+  // running, and the exit must wait for it to finish its store write (#1313).
+  let hybrid: Promise<unknown> | null = null
+  const tracked: Injectable<O, R> = {
+    inject: (t, o) => plur.inject(t, o),
+    injectHybrid: (t, o) => {
+      const p = plur.injectHybrid(t, o)
+      hybrid = p.catch(() => undefined)
+      return p
+    },
+  }
+  const outcome = await injectWithFallback(tracked, task, opts, deadlineMs)
+  return { ...outcome, hybrid }
+}
+
+/**
+ * Before force-exiting past a missed hybrid deadline, how long to wait for
+ * the abandoned search to settle (#1313). When it is near the end it records
+ * its injection under `engrams.yaml.lock`; exiting while that lock's O_EXCL
+ * create is in flight leaves an empty lock core honours for 60s. When it is
+ * still embedding a store with no cache it will not settle in time, and it is
+ * not writing, so exiting at the bound is safe. Also capped by what is left
+ * of the watchdog budget, so the hook still ends before Claude Code's 20s kill.
+ */
+export const ABANDONED_HYBRID_WAIT_MS = 5_000
+
+/** Resolve when `p` settles or after `ms`, whichever comes first. */
+export function settleWithin(p: Promise<unknown>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined
+  return Promise.race([
+    p.then(() => undefined, () => undefined),
+    new Promise<void>(r => { timer = setTimeout(r, Math.max(0, ms)) }),
+  ]).finally(() => { if (timer) clearTimeout(timer) })
 }
 
 // How long before an inject lock is considered stale (defaults to HOOK_CEILING_MS).
@@ -418,6 +450,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // is the ceiling on the WHOLE run (embedder load, fs stalls, stray async).
   // Installed after isPlurConfigured() so it only fires for
   // sessions that actually do work. unref() prevents it from delaying clean exit.
+  runStartedAt = Date.now()
   const watchdog = setTimeout(() => process.exit(0), HOOK_CEILING_MS)
   watchdog.unref()
 
@@ -448,8 +481,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // burning CPU and injecting nothing. BM25 completes in a few seconds,
     // and event task strings ("skill: X", "agent: Y") are short keyword-ish
     // queries where BM25 holds its own against embeddings anyway. The main
-    // first-message injection keeps full hybrid — it runs async with room
-    // to breathe.
+    // first-message injection keeps hybrid, but it is sync too since #1313:
+    // hybrid on an 8s soft deadline, then BM25, under a 20s hook timeout.
     // Attribute the retrieval to this session when the marker is readable, so
     // the memory receipt can count (engram, session) pairs from hook traffic —
     // which is the large majority of all injections.
@@ -519,15 +552,21 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // synchronous hook, and the user's prompt, waiting. But not while this
   // process may be inside a store write: exiting there leaves the lock file
   // behind, and every writer (the next hook, the MCP server) then waits on it.
+  // Checking for the lock file alone is not enough — the abandoned search's
+  // O_EXCL create can be in flight at the check and land after it — so wait
+  // for the search itself, bounded, then for any lock of ours still on disk.
   if (abandonedHybrid) {
-    if (storeLockPath) await waitForOwnStoreLock(storeLockPath, 5_000)
+    const left = () => Math.max(0, runStartedAt + HOOK_CEILING_MS - 1_000 - Date.now())
+    await settleWithin(abandonedHybrid, Math.min(ABANDONED_HYBRID_WAIT_MS, left()))
+    if (storeLockPath) await waitForOwnStoreLock(storeLockPath, Math.min(5_000, left()))
     process.exit(0)
   }
 }
 
-// Set when the hybrid leg missed its deadline and is still running (#1313).
-let abandonedHybrid = false
+// The hybrid search that missed its deadline and is still running (#1313).
+let abandonedHybrid: Promise<unknown> | null = null
 let storeLockPath: string | null = null
+let runStartedAt = Date.now()
 
 /**
  * Wait (bounded) while this process may hold the store's cross-process lock.
@@ -647,11 +686,11 @@ async function injectSession(
   // #1313: bounded, because the hook is sync. On a missed deadline or a
   // hybrid failure, BM25 (local-only by design — inject() never dials)
   // serves the turn.
-  const { result, mode } = await injectForHook(plur, task, injectOpts)
+  const { result, mode, hybrid } = await injectForHook(plur, task, injectOpts)
   recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
   // A missed deadline leaves the hybrid search running; it must not hold
   // the process (and so the prompt) open until the watchdog.
-  abandonedHybrid = mode === 'bm25' && hybridEnabled()
+  abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : null
   storeLockPath = join(plur.storageRoot, 'engrams.yaml.lock')
   if (result.count > 0) {
     const parts: string[] = []

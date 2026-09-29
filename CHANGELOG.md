@@ -356,10 +356,13 @@ prompt took 2.3 to 2.5s, the rehydrate 2.3 to 2.7s, and a later prompt 68 to
 hybrid deadline is missed and BM25 answers in 9.1 to 9.3s.
 
 When the hook exits past a hybrid search that missed its deadline, it first
-waits for its own store lock to be released. Without that wait, 10 of 12
-runs on the same store left an empty `engrams.yaml.lock` behind. Core cannot
-tell who owns an empty lock, so every writer, including the next prompt's
-hook, waited out the 60s stale threshold.
+waits, for up to 5s, for that search to finish, and then for any store lock
+of its own still on disk. Without the wait, 10 of 12 runs on the same store
+left an empty `engrams.yaml.lock` behind. Core cannot tell who owns an empty
+lock, so every writer, including the next prompt's hook, waited out the 60s
+stale threshold. Checking for the lock file alone was not enough: the
+search's lock create can already be under way when the hook looks, and land
+after it.
 
 ### Claude Code: one full injection per session, and the reminder fires
 
