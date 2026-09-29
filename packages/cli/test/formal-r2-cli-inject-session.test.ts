@@ -44,13 +44,13 @@ describe('cli#7 session identity and inject lock (formal r2)', () => {
 
   it('/clear (same process, new session_id) gets its own session-start injection', () => {
     const a = inject({ prompt: 'first session', session_id: 'sess-A' })
-    expect(JSON.parse(a.stdout).additionalContext).toContain('session started')
+    expect(JSON.parse(a.stdout).hookSpecificOutput.additionalContext).toContain('session started')
     // Same ppid (this runner), new Claude session: before the fix the ppid
     // marker made this a mid-session prompt — no injection at all.
     const b = inject({ prompt: 'after clear', session_id: 'sess-B' })
     expect(b.status).toBe(0)
     expect(b.stdout).not.toBe('')
-    expect(JSON.parse(b.stdout).additionalContext).toContain('session started')
+    expect(JSON.parse(b.stdout).hookSpecificOutput.additionalContext).toContain('session started')
   }, 60_000)
 
   it('a second prompt in the SAME session is not re-injected', () => {

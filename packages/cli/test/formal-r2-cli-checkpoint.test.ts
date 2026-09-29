@@ -77,7 +77,7 @@ describe('cli#6 checkpoint lifecycle (formal r2)', () => {
     const cp = checkpoint('old-session', 30)
     const r = inject()
     expect(r.status).toBe(0)
-    expect(JSON.parse(r.stdout).additionalContext).toContain('ended without wrap-up')
+    expect(JSON.parse(r.stdout).hookSpecificOutput.additionalContext).toContain('ended without wrap-up')
     expect(existsSync(cp)).toBe(false)
     expect(episodes()).toContain('deferred-wrapup')
     expect(episodes()).toContain('old-session')

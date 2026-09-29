@@ -88,7 +88,7 @@ exports[`plur init on darwin/linux output is unchanged (#1267) > hook commands m
   ],
   "PostToolUse": [
     {
-      "matcher": "mcp__plur__plur_session_start",
+      "matcher": "mcp__.*__plur_session_start",
       "hooks": [
         {
           "type": "command",

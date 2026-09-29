@@ -3582,6 +3582,17 @@ export class Plur {
     return this._firstPersistableHit(allEngrams, pred, scope)
   }
 
+  /** Credit-only match for a write to a remote team store: a same-text
+   *  NON-shared engram the writer can persist (#1268 team validation). Never
+   *  absorbs — see learnRouted. */
+  private async _teamValidationMatch(
+    statement: string, allEngrams: Engram[], scope: string,
+  ): Promise<{ hit: Engram | null; foreign: Engram | null }> {
+    const pred = this._crossScopePredicate(statement, scope)
+    if (!pred || !isSharedScope(scope)) return { hit: null, foreign: null }
+    return this._firstPersistableHit(allEngrams, e => pred(e) && !isSharedScope(e.scope), scope)
+  }
+
   /**
    * Decision A: the write was stored as `storedAs` although its statement was
    * already held by `hit`, which the writer cannot persist (pack, readonly
@@ -4194,7 +4205,16 @@ export class Plur {
     // route, and an explicit write to a team store must reach it
     // (`_crossScopeRecurrenceApplies`). Only the same-scope match above
     // absorbs a write.
-    const { hit: crossMatch } = await this._crossScopeMatch(statement, allEngrams, scope)
+    //
+    // Integration of #1228 with #1268 (PR #1275): the write always reaches the
+    // team store (#1228), and a same-text NON-shared engram is still CREDITED
+    // as a team validation (#1275, owner decision 4) — crediting never absorbs.
+    // A same-text SHARED engram is not absorbed here either: #1275 absorbed it
+    // (shared↔shared recurrence), #1228 does not — OPEN CONFLICT, recorded in
+    // spec/formal/survey/2026-09-29-field-report-drift.md.
+    const { hit: crossMatch } = this._crossScopeRecurrenceApplies(scope)
+      ? await this._crossScopeMatch(statement, allEngrams, scope)
+      : await this._teamValidationMatch(statement, allEngrams, scope)
     if (crossMatch) {
       // #1268: decided BEFORE the recurrence is recorded, exactly as learn()
       // does — recording can broaden `crossMatch` to global, and reading the
