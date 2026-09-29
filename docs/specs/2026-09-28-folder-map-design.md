@@ -1,6 +1,6 @@
 # Folder map with "ask" — design note (revision 3)
 
-Status: **r2 approved (owner, 2026-09-29); r3 section below awaits approval.** Implementation: #1347 (core, PR #1348).
+Status: **r2 and r3 approved (owner, 2026-09-29).** Implementation: #1347 (core, PR #1348).
 Dates: r1 2026-09-28; r2 2026-09-29, which folds `trust.yaml` into the folder map; r3 2026-09-29, which adds `plur remote` and hides the trust commands.
 Triage: `docs/audits/2026-09-28-field-report-triage.md` item 3.
 

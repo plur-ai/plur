@@ -252,3 +252,20 @@ and `.plur.yaml`, which became r2 of the design note. r2 awaits approval.
 - **Shared file-path team stores:** they get the same protection as url stores. What is in a team store stays there; global duplicates may be created. Applied in PR #1275.
 - **Auto-rate for team-server memories:** A. The client sends `source: auto` only to servers that advertise support. The server contract goes in a public spec. PR #1318.
 - **Trust matching (#1334):** fail closed. A trust granted before its folder existed, under a symlinked parent, needs `plur trust` again.
+
+### Third round: formal-verification decisions (2026-09-29)
+
+These are the board answers (`docs/audits/2026-09-29-formal-decisions.yaml`). The saved answers are filed in
+the owner's private decision-board folder. The owner said "apply the decisions".
+
+| Id | Choice | Applied in |
+|---|---|---|
+| A1 | never: a team save is never absorbed into another team scope's engram | PR #1275 |
+| A2 | both: record the recurrence on the queued row AND create the linked global copy | PR #1275 |
+| A3 | allow, with the owner's note "it should be a policy setting". A config cap on ladder escalation defaults to `locked`; `decided` stops escalation below `locked` | PR #1275 |
+| D1 | ignore-ask: an untrusted `.plur.yaml`'s hints are ignored and the folder resolves to ask | PR #1348 |
+| H1 | payload: one shared helper keyed on the payload session id first; readers also try the legacy key forms | formal/field-report branch (#1228's code) |
+| H2 | prefix: any `hook-*` subcommand behind PLUR's own launcher is recognised | PR #1270 |
+| H3 | plan: Claude Code uses the exec form; other editors get an unquoted short path; a Windows CI job gates the merge | PR #1270 |
+
+Design note r3 (`plur remote`, trust commands hidden) is approved; it follows as a PR stacked on #1348 and #1272.
