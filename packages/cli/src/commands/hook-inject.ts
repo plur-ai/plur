@@ -133,12 +133,8 @@ const NO_CONTEXT_EVENTS = new Set(['PostCompact'])
  * for callers that send no session id at all.
  */
 function sessionKey(input: Record<string, unknown>): string {
-  const id = input.session_id
-  const raw =
-    (typeof id === 'string' && id) ||
-    process.env.CLAUDE_SESSION_ID ||
-    String(process.ppid || 'unknown')
-  return safeSessionKey(raw)
+  // Owner decision H1 ("payload", 2026-09-29): the one shared helper.
+  return hookSessionKey(input.session_id)
 }
 
 /**
@@ -182,6 +178,7 @@ const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 // ignored .plur.yaml because the reader lived in this CLI-only file).
 import { readProjectConfig, claimHookDegradationLines, type Plur } from '@plur-ai/core'
 import { resolveProjectRemote, projectRemoteRefusalNotice, type ProjectRemote } from '../lib/project-remote.js'
+import { hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js' // decision H1
 
 /**
  * #776: the former `tryRemoteInject` remote-first POST /api/v1/inject path
@@ -223,6 +220,22 @@ function sessionDir(): string {
 
 function sessionMarkerPath(key: string): string {
   return join(sessionDir(), `${key}.marker`)
+}
+
+/**
+ * The marker to READ for this session: the current key's, or — when it does
+ * not exist — one an older writer left under a legacy key (H1 upgrade path:
+ * #1228's `sid-` prefix, the uncapped or env-first forms), so a session that
+ * started before the upgrade is not injected twice. Writers use `key` only.
+ */
+function readableMarkerPath(key: string, input: Record<string, unknown>): string {
+  const current = sessionMarkerPath(key)
+  if (existsSync(current)) return current
+  for (const legacy of legacyHookSessionKeys(input.session_id)) {
+    const p = sessionMarkerPath(legacy)
+    if (existsSync(p)) return p
+  }
+  return current
 }
 
 function lastReminderPath(key: string): string {
@@ -454,7 +467,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // `session_id`. Reading stdin is a single synchronous read.
   const input = readStdinSync()
   const key = sessionKey(input)
-  const marker = sessionMarkerPath(key)
+  const marker = readableMarkerPath(key, input)
 
   // Contextual injection for specific events (plan_mode, skill, agent, subagent)
   if (event) {

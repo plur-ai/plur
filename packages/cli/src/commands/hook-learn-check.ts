@@ -3,7 +3,7 @@ import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
-import { safeSessionKey } from '../lib/session-key.js'
+import { hookSessionKey } from '../lib/session-key.js'
 
 /**
  * plur hook-learn-check — Stop hook that prompts learning reflection
@@ -45,11 +45,10 @@ const CHECKPOINT_INTERVAL = parseInt(process.env.PLUR_CHECKPOINT_INTERVAL || '10
  * precedence the checkpoint readers (hook-session-end, plur_session_end) use.
  */
 function sessionKey(payloadSessionId?: unknown): string {
-  const raw =
-    (typeof payloadSessionId === 'string' && payloadSessionId) ||
-    process.env.CLAUDE_SESSION_ID ||
-    String(process.ppid || 'unknown')
-  return safeSessionKey(raw).slice(0, 64)
+  // Owner decision H1 ("payload", 2026-09-29): the one shared helper, so the
+  // counter/checkpoint writer and every reader agree. The stop counter is not
+  // migrated from legacy keys: an orphaned counter delays one nudge at most.
+  return hookSessionKey(payloadSessionId)
 }
 
 function counterPath(key: string): string {
