@@ -24,7 +24,7 @@ function usage(): never {
     '  plur outbox --flush     Retry them now',
     '',
     'Writes to a remote scope queue locally when their store cannot be reached.',
-    'They also retry automatically on session start and on `plur sync`.',
+    'They also retry automatically on session start and end, and on `plur sync`.',
   ].join('\n'))
 }
 
@@ -60,7 +60,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       lines.push(`      queued ${age}, ${e.attempt_count} attempt(s)`
         + (e.last_error ? `, last error: ${e.last_error}` : ''))
     }
-    lines.push('', 'Run `plur outbox --flush` to retry now. They also retry on session start and `plur sync`.')
+    lines.push('', 'Run `plur outbox --flush` to retry now. They also retry on session start and end, and on `plur sync`.')
     outputText(lines.join('\n'))
     return
   }

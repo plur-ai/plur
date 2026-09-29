@@ -42,6 +42,9 @@ describe('hook-cursor-stop', () => {
   function stop(conversationId: string, status = 'completed'): string {
     return execSync(`node ${CLI} hook-cursor-stop`, {
       cwd: projectDir,
+      // The hook now also flushes the outbox (#1269) — keep it off the
+      // developer's real store, which may hold queued writes.
+      env: { ...process.env, PLUR_PATH: join(projectDir, '.plur-store') },
       input: JSON.stringify({ conversation_id: conversationId, status }),
       encoding: 'utf-8',
     })

@@ -404,6 +404,44 @@ installed". It now removes a PLUR `PostCompact` entry and adds the
 hooks, are left in place. Installs that use the local `~/.plur/bin/plur-hook`
 shim now count as installed too, so re-running no longer adds a second set.
 
+### SessionEnd finds the checkpoint for session ids with unusual characters
+
+**`plur hook-session-end` could miss the session checkpoint, so the session
+was not auto-closed.** The Stop hook writes the checkpoint under a key that
+**replaces** unsafe characters with `_`. The SessionEnd reader **stripped**
+them instead. For a session id such as `a.b:c/d`, the writer produced
+`a_b_c_d` and the reader looked for `abcd`. The reader now tries the `_` form
+first, then the stripped form older writers used. `plur_session_end` got the
+same fix earlier (#1301). Real Claude Code session ids are UUIDs, which both
+forms leave unchanged, so only unusual ids were affected.
+
+### Queued team writes now leave the laptop when a session ends
+
+**An enterprise deployment reported engrams that stayed on laptops** (#1269).
+A team-scoped write that cannot reach its store is queued locally (the
+outbox), and was retried only by the MCP tools `plur_session_start`,
+`plur_sync` and `plur_outbox`, or by `plur outbox --flush`. No editor hook
+retried it, and `plur sync` did not either — although `plur outbox` told you
+it did.
+
+**Session-end and stop hooks now flush the outbox**: Claude Code
+`SessionEnd`, Codex `SessionEnd`, and Cursor `stop`. Each flush has a budget
+that fits inside its hook's timeout (2.5s, 1.2s, 1.2s), and with nothing
+queued it is skipped after a single file read; Cursor's `stop`, which fires
+on every turn, retries at most once every five minutes. When the budget runs out the
+in-flight push is cut and the rest stays queued, unchanged; a failing remote
+leaves entries queued with the failure recorded, as before. The hook itself
+never fails over it. `PLUR_HOOK_OUTBOX_FLUSH=0` turns it off and
+`PLUR_HOOK_OUTBOX_FLUSH_MS` changes the budget.
+
+**`plur sync` now flushes too**, and reports what happened: `outbox` in
+`--json` output (`flushed`, `pending`, `warnings`), and a line for writes that
+are still queued.
+
+`flushOutbox()` takes an optional `{ timeoutMs }` and returns a new `deferred`
+count — entries it did not get to. A cut is not counted as an attempt or as a
+failure against the host.
+
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
 **The Stop hook's "did you learn something?" nudge was never shown to the

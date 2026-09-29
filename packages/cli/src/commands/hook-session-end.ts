@@ -4,6 +4,8 @@ import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { createPlur } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
+import { safeSessionKey } from '../lib/session-key.js'
+import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
 
 /**
  * plur hook-session-end — Claude Code SessionEnd hook (shipped v1.0.85).
@@ -30,17 +32,26 @@ import { isPlurConfigured } from '../lib/plur-configured.js'
  * If the checkpoint is absent, plur_session_end already ran (clean close) or
  * the session was too short to checkpoint — either way there is nothing to do.
  *
+ * It also retries queued team writes (the outbox, #1269), within a bounded
+ * budget, on every exit path — including the clean-close one, where there is
+ * no checkpoint to act on.
+ *
  * Input: JSON on stdin (Claude Code SessionEnd hook format: session_id, cwd,
  *        reason). Never blocks; SessionEnd output is advisory.
  */
 
 function sessionKeys(payloadSessionId?: string): string[] {
   // Mirror plur_session_end's key resolution (tools.ts): payload session_id
-  // first, then CLAUDE_SESSION_ID, then ppid — sanitized the same way as
-  // hook-learn-check writes them.
+  // first, then CLAUDE_SESSION_ID, then ppid. hook-learn-check writes the
+  // checkpoint under safeSessionKey(id), which REPLACES unsafe characters with
+  // '_' — try that form first, then the stripped form older writers used
+  // (#1278 follow-up; #1301 fixed the same mismatch in plur_session_end).
   return [payloadSessionId, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
     .filter(Boolean)
-    .map(k => k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+    .flatMap(k => [
+      safeSessionKey(k!).slice(0, 64),
+      k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64),
+    ])
     .filter(Boolean)
 }
 
@@ -72,6 +83,13 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // hook be installed globally without touching unrelated projects.
   if (!isPlurConfigured()) return
 
+  await closeSession(flags)
+  // #1269: after the close, never instead of it — the checkpoint work is the
+  // cheaper, more important half, and the flush has the rest of the budget.
+  await flushOutboxForHook(flags, { hook: 'hook-session-end', budgetMs: HOOK_OUTBOX_BUDGET_MS.claudeSessionEnd })
+}
+
+async function closeSession(flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
   let payload: { session_id?: string; cwd?: string; reason?: string } = {}
   try {

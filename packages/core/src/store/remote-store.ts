@@ -207,6 +207,20 @@ export class RemoteTimeoutError extends Error {
 }
 
 /**
+ * The CALLER's budget ran out, not the remote's (#1269).
+ *
+ * Distinct from {@link RemoteTimeoutError} on purpose: a request cut because a
+ * hook had 1.5s left says nothing about whether the host is reachable, so it
+ * must not mark the host down or feed the circuit breaker.
+ */
+export class RemoteAbortedError extends Error {
+  constructor(url: string) {
+    super(`request to ${url} was cut at the caller's time budget`)
+    this.name = 'RemoteAbortedError'
+  }
+}
+
+/**
  * A response whose body has already been read, inside the request deadline.
  *
  * `json` is present only for a 2xx (and is `undefined` when the payload would
@@ -349,6 +363,9 @@ export class RemoteStore {
     url: string,
     init: RequestInit,
     consume: (res: Response) => Promise<T>,
+    /** The caller's own budget (#1269). Aborting it cuts the request with a
+     *  {@link RemoteAbortedError}, which does not mark the host down. */
+    callerSignal?: AbortSignal,
   ): Promise<T> {
     // #1069: a network-level failure here MARKS the host down (so the passive
     // read path fast-fails), but this method never fast-fails itself. It
@@ -359,12 +376,19 @@ export class RemoteStore {
     // clean; on failure the mark is refreshed.
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
-    const timedOut = () => new RemoteTimeoutError(url, LOAD_FETCH_TIMEOUT_MS)
+    const timedOut = () => callerSignal?.aborted
+      ? new RemoteAbortedError(url)
+      : new RemoteTimeoutError(url, LOAD_FETCH_TIMEOUT_MS)
+    const onCallerAbort = () => ctrl.abort()
+    if (callerSignal?.aborted) ctrl.abort()
+    else callerSignal?.addEventListener('abort', onCallerAbort, { once: true })
     try {
       let res: Response
       try {
         res = await fetch(url, { ...init, signal: ctrl.signal })
       } catch (err) {
+        // A cut at the CALLER's budget says nothing about the host (#1269).
+        if (callerSignal?.aborted) throw new RemoteAbortedError(url)
         // fetch only throws on network-level failures (and our abort) — an HTTP
         // error status resolves normally — so any throw here marks the host.
         markRemoteHostDown(url)
@@ -392,6 +416,7 @@ export class RemoteStore {
       }
     } finally {
       clearTimeout(timer)
+      callerSignal?.removeEventListener('abort', onCallerAbort)
     }
   }
 
@@ -653,7 +678,7 @@ export class RemoteStore {
    * placeholder will fail — the engram only exists on the server with
    * the server's ID.
    */
-  async appendAndGetServerId(engram: Engram): Promise<{ id: string }> {
+  async appendAndGetServerId(engram: Engram, opts?: { signal?: AbortSignal }): Promise<{ id: string }> {
     // #768: transmit the full engram, not just the core four — pinned,
     // rationale, tags, commitment, validity windows and supersedes were
     // silently dropped, so team-scope pins never round-tripped. Optional
@@ -734,7 +759,7 @@ export class RemoteStore {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body,
-    }, RemoteStore.readBounded)
+    }, RemoteStore.readBounded, opts?.signal)
     if (!r.ok) throw new Error(`Remote store append failed: ${r.status} ${r.text}`)
     const data = (r.json ?? {}) as { id?: unknown }
     // #404: validate the server-assigned id's SHAPE, not just truthiness. It

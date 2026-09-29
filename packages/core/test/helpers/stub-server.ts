@@ -78,6 +78,9 @@ export class StubServer {
   /** When set, POST /engrams short-circuits to this error response BEFORE reading
    *  the body — to simulate a server that rejects the write (#912 sanitise test). */
   appendErrorResponse: { status: number; body: string } | null = null
+  /** Delay before answering POST /engrams, ms — a slow-but-alive remote, for
+   *  bounded-flush tests (#1269). The write is still applied when it answers. */
+  appendDelayMs = 0
   /** When set, PATCH /engrams/:id still applies the update server-side but
    *  echoes this value as the {engram: ...} body — to simulate a server whose
    *  echoed row fails RemoteRowSchema validation (#327). */
@@ -143,6 +146,9 @@ export class StubServer {
   async stop(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.server) return resolve()
+      // Drop connections a delayed response is still holding, or close() waits
+      // for them (#1269 bounded-flush tests leave one open on purpose).
+      this.server.closeAllConnections?.()
       this.server.close(() => {
         this.server = null
         this.engrams.clear()
@@ -179,6 +185,7 @@ export class StubServer {
     this.idCounter = 0
     this.badAppendId = null
     this.appendErrorResponse = null
+    this.appendDelayMs = 0
     this.badPatchEcho = null
     this.recallRows = []
     this.recallStatus = null
@@ -296,7 +303,13 @@ export class StubServer {
         // Normally the server returns the real assigned id; badAppendId lets a
         // test make it return a malformed one (#404).
         const returnedId = this.badAppendId !== null ? this.badAppendId : id
-        this.json(res, 201, { id: returnedId, scope: engram.scope, status: engram.status, data: engram.data })
+        const respond = () => {
+          if (!res.writableEnded && !res.destroyed) {
+            this.json(res, 201, { id: returnedId, scope: engram.scope, status: engram.status, data: engram.data })
+          }
+        }
+        if (this.appendDelayMs > 0) setTimeout(respond, this.appendDelayMs).unref()
+        else respond()
       })
       return
     }

@@ -192,4 +192,47 @@ describe('hook-session-end (#217 — SessionEnd auto-close)', () => {
     const secondCount = (afterSecond.match(/auto-closed on SessionEnd/g) ?? []).length
     expect(secondCount).toBe(1)
   })
+
+  // #1278 / #1301 follow-up: the Stop hook (hook-learn-check) writes the
+  // checkpoint under safeSessionKey(id), which REPLACES unsafe characters with
+  // '_'. This reader used to STRIP them, so for a non-UUID id such as
+  // `a.b:c/d` the writer produced `a_b_c_d` and the reader looked for `abcd`:
+  // the checkpoint was never found and the session never auto-closed.
+  const UNSAFE_ID = 'a.b:c/d'
+
+  it('finds the checkpoint the Stop hook wrote for a session id with unsafe characters', () => {
+    // Write it with the real writer, not a hand-computed name.
+    const stop = runCli('node', [CLI, 'hook-learn-check'], {
+      input: JSON.stringify({ session_id: UNSAFE_ID, cwd: '/Users/test/project', stop_hook_active: false }),
+      encoding: 'utf-8',
+      timeout: 15000,
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        TMPDIR: join(home, 'tmp'),
+        PLUR_PATH: join(home, '.plur'),
+        CLAUDE_SESSION_ID: 'end-test-session',
+        PLUR_CHECKPOINT_INTERVAL: '1',
+      },
+      cwd: home,
+    })
+    expect(stop.status).toBe(0)
+    const cpPath = join(home, '.plur', 'sessions', 'a_b_c_d.checkpoint.json')
+    expect(existsSync(cpPath), 'the Stop hook writes the `_` form').toBe(true)
+
+    const { status } = runSessionEnd({ session_id: UNSAFE_ID, reason: 'clear' })
+    expect(status).toBe(0)
+    expect(existsSync(cpPath)).toBe(false)
+    expect(readEpisodes()).toContain('auto-closed on SessionEnd')
+  })
+
+  it('still finds a checkpoint an older writer left under the stripped key', () => {
+    const cpPath = writeCheckpoint('abcd')
+
+    const { status } = runSessionEnd({ session_id: UNSAFE_ID, reason: 'clear' })
+    expect(status).toBe(0)
+    expect(existsSync(cpPath)).toBe(false)
+    expect(readEpisodes()).toContain('auto-closed on SessionEnd')
+  })
 })

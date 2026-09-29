@@ -38,6 +38,8 @@ export const SPAWN_SUITES = [
   'test/rescope.test.ts',
   'test/sync.test.ts',
   'test/timeline.test.ts',
+  // #1269: spawns every editor hook against a real-HTTP stub, wall-clock timed.
+  'test/hook-outbox-flush.test.ts',
 ]
 
 export default defineConfig({

@@ -53,7 +53,7 @@ import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity } from './expiry.js'
 import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
-import { RemoteStore, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY } from './store/remote-store.js'
+import { RemoteStore, RemoteAbortedError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY } from './store/remote-store.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
@@ -8080,9 +8080,34 @@ export class Plur {
    * On success: removes the local copy (remote is source of truth).
    * On failure: updates attempt metadata for next retry.
    * After 7 days: includes warning in expired_warnings.
+   *
+   * `timeoutMs` (#1269) bounds the NETWORK part of the flush, for callers that
+   * run under a harness timeout (editor session-end and stop hooks). When it
+   * runs out, the in-flight push is cut and nothing further is started; every
+   * entry not delivered is counted in `deferred` and left queued exactly as it
+   * was — no attempt recorded, no strike against the host, because running out
+   * of OUR time says nothing about THEIRS. The local load before and the
+   * merge-back after are not covered: the merge-back must run to completion or
+   * a delivered entry would be pushed again next time.
    */
-  async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
+  async flushOutbox(options: { timeoutMs?: number } = {}): Promise<{
+    flushed: number; failed: number; deferred: number; expired_warnings: string[]
+  }> {
     this._assertWritable()
+    const budget = new AbortController()
+    const budgetTimer = options.timeoutMs !== undefined
+      ? setTimeout(() => budget.abort(), Math.max(0, options.timeoutMs))
+      : undefined
+    try {
+      return await this._flushOutbox(budget.signal)
+    } finally {
+      if (budgetTimer) clearTimeout(budgetTimer)
+    }
+  }
+
+  private async _flushOutbox(budget: AbortSignal): Promise<{
+    flushed: number; failed: number; deferred: number; expired_warnings: string[]
+  }> {
     const engrams = await this._primaryStore.load()
     // #766: skip retired engrams — a retired engram must not be pushed to the
     // remote and resurrected. The cancel-outbox path in forget() strips _outbox
@@ -8091,7 +8116,7 @@ export class Plur {
     const pending = engrams.filter(e =>
       (e as any).structured_data?._outbox && e.status !== 'retired'
     )
-    if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
+    if (pending.length === 0) return { flushed: 0, failed: 0, deferred: 0, expired_warnings: [] }
 
     // #863: push supersedes TARGETS before the engrams that supersede them.
     //
@@ -8133,6 +8158,7 @@ export class Plur {
 
     let flushed = 0
     let failed = 0
+    let deferred = 0
     let skipped = 0
     /** Warn once per host, not once per queued engram (#785). */
     const cooldownSkippedHosts = new Set<string>()
@@ -8152,6 +8178,8 @@ export class Plur {
     const TTL_MS = 7 * 24 * 60 * 60 * 1000
 
     for (const engram of pending) {
+      // #1269: out of budget — leave the rest queued, untouched, for next time.
+      if (budget.aborted) { deferred++; continue }
       const outbox = (engram as any).structured_data._outbox as {
         target_url: string; target_scope: string; queued_at: string
         last_attempt: string; attempt_count: number; last_error: string
@@ -8304,7 +8332,7 @@ export class Plur {
       }
 
       try {
-        const pushed = await driver.appendAndGetServerId(cleanEngram)
+        const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget })
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
         if (pushed?.id) {
@@ -8326,6 +8354,15 @@ export class Plur {
         })
         this._maybeWriteProvenance(engram.id)
       } catch (err) {
+        // #1269: cut at the caller's budget. Not a failure of the remote, so
+        // no attempt is recorded and the breaker is not fed. The remote MAY
+        // have applied the write before the cut; that is the same exposure a
+        // request timeout already has, and the entry is retried as before.
+        if (err instanceof RemoteAbortedError) {
+          deferred++
+          logger.warning(`[plur:outbox] ${engram.id}: flush budget ran out mid-push — left queued`)
+          continue
+        }
         outbox.last_attempt = now.toISOString()
         outbox.attempt_count += 1
         outbox.last_error = (err as Error).message
@@ -8402,7 +8439,7 @@ export class Plur {
     // the file on every no-op flush.
     if (idMapDirty) this._writeOutboxIdMap(persistedIdMap)
 
-    return { flushed, failed, expired_warnings }
+    return { flushed, failed, deferred, expired_warnings }
   }
 
   /**

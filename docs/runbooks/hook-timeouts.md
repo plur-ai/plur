@@ -104,3 +104,29 @@ time plur inject 'test'     # BM25-only cost for your store
 
 A store whose BM25 pass alone approaches the harness budget wants
 `plur forget`/decay attention, not a larger timeout.
+
+## Outbox flush at session end (#1269)
+
+Session-end and stop hooks also retry queued team writes (the outbox). They
+are bounded so they cannot cost the hook its budget:
+
+| Harness | Hook | Hook timeout | Flush budget |
+|---|---|---|---|
+| Claude Code | `SessionEnd` | 5s | 2.5s |
+| Codex | `SessionEnd` | 3s (clamped by Codex) | 1.2s |
+| Cursor | `stop` | 3s | 1.2s |
+
+With nothing queued the flush is skipped after one file read. Cursor's `stop`
+fires on every turn, so it retries at most once every five minutes. When the budget
+runs out the in-flight push is cut, nothing further starts, and every
+undelivered write stays queued with its attempt count unchanged: a cut is our
+time running out, not a failure of the remote, so it does not count toward
+the host's circuit breaker either.
+
+```sh
+PLUR_HOOK_OUTBOX_FLUSH=0        # turn the hook flush off
+PLUR_HOOK_OUTBOX_FLUSH_MS=800   # smaller budget; keep it well below the hook timeout
+```
+
+`plur sync` and `plur outbox --flush` flush without a budget (each request is
+still bounded at 30s).

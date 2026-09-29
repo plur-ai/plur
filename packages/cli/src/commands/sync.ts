@@ -12,6 +12,11 @@ import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.
  * every row in the index (SQLite or PGLite) and replays the YAML file. Use
  * after upgrading the embedder, after a schema migration, or whenever the
  * index looks out of sync with what `list()` and `recall()` report.
+ *
+ * Then retries queued team writes (the outbox), as MCP `plur_sync` does
+ * (#1269). A failed flush does not fail the sync — the repository and index
+ * work already happened — but it is reported, never swallowed: entries stay
+ * queued.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -40,8 +45,30 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       ? (plur as { lastIndexError: () => IndexSyncError | null }).lastIndexError()
       : null
 
+  // #1269: flush after the repository sync, same order as MCP plur_sync.
+  let outbox: { flushed: number; pending: number; warnings: string[] } | undefined
+  let outboxError: string | undefined
+  try {
+    const flushed = await plur.flushOutbox()
+    if (flushed.flushed > 0 || flushed.failed > 0 || flushed.deferred > 0) {
+      outbox = {
+        flushed: flushed.flushed,
+        pending: await plur.outboxCount(),
+        warnings: flushed.expired_warnings,
+      }
+    }
+  } catch (err) {
+    outboxError = (err as Error).message
+  }
+
   if (shouldOutputJson(flags)) {
-    outputJson({ ...result, full, ...(indexError ? { index_error: indexError } : {}) })
+    outputJson({
+      ...result,
+      full,
+      ...(indexError ? { index_error: indexError } : {}),
+      ...(outbox ? { outbox } : {}),
+      ...(outboxError ? { outbox_error: outboxError } : {}),
+    })
   } else {
     // Status/confirmation lines → suppressed by --quiet (#730)…
     outputInfo(`Sync: ${result.action}${full ? ' (full reindex)' : ''}`, flags)
@@ -52,6 +79,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // …but a failed index pass is an outcome-differs warning — never suppressed.
       outputText(`  Warning: index ${indexError.op} failed — ${indexError.message}`)
       outputText("  YAML is still the source of truth. Run 'plur sync --full' to rebuild the index.")
+    }
+    if (outbox) {
+      if (outbox.flushed > 0) outputInfo(`  Outbox: ${outbox.flushed} queued write(s) delivered.`, flags)
+      // Undelivered writes are an outcome that differs from "synced" — never suppressed.
+      if (outbox.pending > 0) {
+        outputText(`  Outbox: ${outbox.pending} write(s) still queued — the remote store is unreachable or refused them. Run 'plur outbox' for details.`)
+      }
+      for (const w of outbox.warnings) outputText(`    ${w}`)
+    }
+    if (outboxError) {
+      outputText(`  Warning: outbox flush failed — ${outboxError}. Queued writes were NOT pushed and stay queued.`)
     }
   }
 }
