@@ -429,7 +429,16 @@ repo's request. Only the CLI writes the map.
   covers `plur trust`, `plur untrust`, `plur folders set --trusted` and
   `--no-trusted`.
   - A revocation lands in both files, so neither an older reader, a downgrade
-    nor a fresh import brings it back.
+    nor a fresh import brings it back. This applies to `plur untrust`, to
+    `--no-trusted`, and to `plur folders rm` of a trusted entry (owner decision
+    F2). A `trust.yaml` line counts as the same folder under the map's own
+    matching, so a `~/…` spelling, or a differently-cased spelling on a
+    case-insensitive disk, is removed too. A revocation never adds anything to
+    `trust.yaml`.
+  - The one-time code is used up as soon as `folders.yaml` is saved, before
+    `trust.yaml` is written (owner decision F3). If the `trust.yaml` write
+    fails, the command reports the error, and the code cannot be used again;
+    the next attempt needs a fresh ask.
   - Glob grants are recorded only in the map, because the old reader cannot
     express them.
   - A grant that an older core adds to `trust.yaml` after the import is not

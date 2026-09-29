@@ -748,6 +748,93 @@ describe('dual-write to trust.yaml for adapters on the previous core', () => {
     expect(oldReader(d)).toBe(false)
   })
 
+  // Owner decision F2: revocations are complete in both files.
+  function writeLegacy(lines: string[]): void {
+    writeFileSync(join(root, 'trust.yaml'), yaml.dump({ version: 1, trusted: lines }))
+  }
+  const legacyLines = () =>
+    (yaml.load(readFileSync(join(root, 'trust.yaml'), 'utf8')) as { trusted: string[] }).trusted
+
+  it('F2: folders rm of a trusted entry also removes its trust.yaml line; no re-import', () => {
+    const d = mk('rm-trusted')
+    trustDirectory(d, root)
+    expect(oldReader(d)).toBe(true)
+    expect(removeFolderEntry(root, d, home)).toBe(true)
+    expect(oldReader(d)).toBe(false)
+    rmSync(folderMapPath(root))
+    expect(isDirectoryTrusted(d, root)).toBe(false)
+  })
+
+  it('F2: untrust removes a ~-spelled trust.yaml line (the map matcher, not string equality)', () => {
+    const d = mk('tilde-proj')
+    trustDirectory(d, root)
+    // An older tool, or a hand edit, recorded the same folder as ~/tilde-proj.
+    writeLegacy([...legacyLines(), '~/tilde-proj'])
+    // untrustDirectory expands `~` against os.homedir(): point HOME at the
+    // temp home for this call only (never the real one).
+    const savedHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      expect(untrustDirectory(d, root)).toBe(true)
+    } finally {
+      process.env.HOME = savedHome
+    }
+    expect(legacyLines()).toEqual([])
+    rmSync(folderMapPath(root))
+    expect(isDirectoryTrusted(d, root)).toBe(false)
+  })
+
+  it('F2: folders rm removes a ~-spelled trust.yaml line too', () => {
+    const d = mk('tilde-rm')
+    setFolderEntry(root, d, { mode: 'on', trusted: true }, { configuredScopes: [], home })
+    writeLegacy([...legacyLines(), '~/tilde-rm'])
+    expect(removeFolderEntry(root, d, home)).toBe(true)
+    expect(legacyLines()).toEqual([])
+  })
+
+  const caseInsensitiveFs = (() => {
+    const probe = mkdtempSync(join(tmpdir(), 'plur-case-'))
+    try {
+      mkdirSync(join(probe, 'Ab'))
+      return existsSync(join(probe, 'AB'))
+    } finally {
+      rmSync(probe, { recursive: true, force: true })
+    }
+  })()
+
+  it.skipIf(!caseInsensitiveFs)('F2: untrust removes a differently-cased trust.yaml line on a case-insensitive filesystem', () => {
+    const d = mk('CaseProj')
+    trustDirectory(d, root)
+    writeLegacy([...legacyLines(), join(realpathSync(home), 'CASEPROJ')])
+    expect(untrustDirectory(d, root)).toBe(true)
+    expect(legacyLines()).toEqual([])
+    expect(oldReader(join(home, 'CASEPROJ'))).toBe(false)
+  })
+
+  it('F2: a revocation never adds to trust.yaml and leaves unrelated lines alone', () => {
+    const keep = mk('keep-me')
+    const d = mk('revoke-me')
+    writeLegacy([realpathSync(keep)])
+    setFolderEntry(root, d, { mode: 'off' }, { configuredScopes: [], home })
+    expect(removeFolderEntry(root, d, home)).toBe(true)
+    expect(untrustDirectory(d, root)).toBe(false)
+    expect(legacyLines()).toEqual([realpathSync(keep)])
+  })
+
+  // Owner decision F3: the nonce is consumed right after folders.yaml is
+  // saved, before the trust.yaml write. A failed trust.yaml write then needs a
+  // fresh ask.
+  it('F3: a failed trust.yaml write after a saved map still consumes the nonce', () => {
+    const d = mk('f3')
+    mkdirSync(join(root, 'trust.yaml'))   // a directory: the trust.yaml write fails
+    const n = issueFolderNonce(root, 'sess-f3', d)
+    expect(() => setFolderEntry(root, d, { mode: 'on', trusted: true }, { configuredScopes: [], nonce: n, home })).toThrow()
+    expect(loadFolderMap(root).folders).toEqual([{ path: realpathSync(d), plur: 'on', trusted: true }])
+    rmSync(join(root, 'trust.yaml'), { recursive: true })
+    expect(() => setFolderEntry(root, d, { mode: 'on', trusted: true }, { configuredScopes: [], nonce: n, home }))
+      .toThrow(expect.objectContaining({ code: 'nonce-unknown' }))
+  })
+
   it('a glob grant is not written to trust.yaml (the old reader cannot express it)', () => {
     setFolderEntry(root, '~/work/**', { trusted: true }, { configuredScopes: [], home })
     expect(existsSync(join(root, 'trust.yaml'))).toBe(false)

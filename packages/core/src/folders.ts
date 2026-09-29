@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync } from 'fs'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -664,11 +664,15 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
     map.folders = map.folders.flatMap((e, i) => (i === at ? [entry] : matched.includes(i) ? [] : [e]))
   } else map.folders.push(entry)
   saveFolderMap(root, map)
+  // Decision F3: the nonce is used up as soon as the map is saved — the
+  // decision it authorised is now recorded — and BEFORE the trust.yaml write.
+  // If that write then fails, the caller sees the error and a retry needs a
+  // fresh ask; the nonce is never left valid for a second use.
+  consume?.()
   // Dual-write (see addLegacyTrustEntry): keep trust.yaml in step for
   // adapters on the previous core.
   if (change.trusted === true && !hasGlob(entry.path)) addLegacyTrustEntryUnlocked(root, entry.path)
   if (change.trusted === false) removeLegacyTrustEntryUnlocked(root, folder, home)
-  consume?.()
   return cleanEntry(entry)
 }
 
@@ -691,9 +695,15 @@ function removeFolderEntryUnlocked(
   const { applied, nameOnly } = findEntryIndex(map.folders, folder, home)
   const matched = [...applied, ...nameOnly]
   if (matched.length === 0) return false
+  const removedEntries = map.folders.filter((_, i) => matched.includes(i))
   map.folders = map.folders.filter((_, i) => !matched.includes(i))
   saveFolderMap(root, map)
-  consume?.()
+  consume?.()   // F3: consumed once the map is saved, before trust.yaml
+  // Decision F2: removing a trusted entry is a revocation, so it is completed
+  // in trust.yaml too (never an addition).
+  for (const removed of removedEntries) {
+    if (removed.trusted === true) removeLegacyTrustEntryUnlocked(root, removed.path, home)
+  }
   return true
 }
 
@@ -740,6 +750,31 @@ function addLegacyTrustEntryUnlocked(root: string, path: string): void {
   atomicWrite(legacyTrustPath(root), yaml.dump({ version: 1, trusted: [...entries, path].sort() }))
 }
 
+function nativeRealpath(p: string): string | null {
+  try { return realpathSync.native(p) } catch { return null }
+}
+
+/**
+ * Whether a trust.yaml `line` names the same folder as `folder`, for a
+ * REVOCATION (decision F2). It uses the map's own matcher: `~` expands against
+ * the home (as given and canonical), both spellings are normalised the way the
+ * map compares paths (case-folded on win32), and each side is also compared
+ * in its canonical and on-disk forms, so a differently-cased line on a
+ * case-insensitive filesystem goes too. Matching wide is the safe direction
+ * here: this only ever REMOVES a grant.
+ */
+function namesSameFolder(line: string, folder: string, home: string): boolean {
+  if (hasGlob(line)) return false
+  const f = expandHome(folder, home)
+  const targets = [resolve(f), canonicalize(f), nativeRealpath(f)].filter((x): x is string => !!x)
+  const forms = entryForms(line, home, true)
+  for (const form of [...forms]) {
+    const n = nativeRealpath(form)
+    if (n) forms.push(n)
+  }
+  return forms.some(a => targets.some(b => norm(a, process.platform) === norm(b, process.platform)))
+}
+
 /**
  * Remove the grant for `folder` from the pre-#1347 `trust.yaml`, if it lists
  * one (the stored string, its plain spelling, or its canonical form). Without
@@ -755,9 +790,7 @@ function removeLegacyTrustEntryUnlocked(root: string, folder: string, home: stri
   const file = legacyTrustPath(root)
   if (!existsSync(file)) return false
   const entries = readLegacyTrustEntries(root)
-  const raw = resolve(expandHome(folder, home))
-  const target = canonicalize(raw)
-  const kept = entries.filter(t => !(t === folder || t === raw || t === target))
+  const kept = entries.filter(t => !namesSameFolder(t, folder, home))
   if (kept.length === entries.length) return false
   atomicWrite(file, yaml.dump({ version: 1, trusted: kept }))
   return true

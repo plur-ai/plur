@@ -32,8 +32,8 @@ import { loadFolderMap, isTrustedInMap, setFolderEntry, clearFolderTrust, remove
  *
  * Hierarchical: trusting a repo root also trusts everything below it (VS
  * Code's workspace-trust shape). The target is canonicalised; stored entries
- * are matched as written or with their parent canonicalised (#778, #1334 —
- * fails closed).
+ * are matched as written (fails closed) — neither an entry nor its parent is
+ * resolved at compare time (#778, #1334).
  */
 export function isDirectoryTrusted(dir: string, root: string): boolean {
   return isTrustedInMap(loadFolderMap(root).folders, dir)
