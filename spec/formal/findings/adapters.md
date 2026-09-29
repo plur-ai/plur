@@ -704,3 +704,101 @@ updated (drift check lists it).
   short names" fails because #1318's `hook-auto-rate codex` / `agy` hooks do not
   start with `hook-codex-` / `hook-agy-`; the test must allow them (carry in
   whichever of #1270 and #1318 lands second).
+
+## Field report pass, cluster 4 (2026-09-29): decisions H2 and H3 — §10, §11
+
+Model additions: `PlurSpec/Adapters.lean` §10 (the H2 matcher, at token level) and
+§11 (the H3 command form table). The §3 and §9b docstrings are updated for the
+field-report code: §3 still holds as written, and §9b's grant now lives in
+folders.yaml. Checked with `lake env lean PlurSpec/Adapters.lean` (exit 0).
+Replays: `packages/cli/test/formal-fr-c4-hooks.test.ts`, run with
+`cd packages/cli && HOME=<scratch> npx vitest run test/formal-fr-c4-hooks.test.ts`
+→ **12 passed**. No `packages/*/src` file was changed (brief override).
+
+### H2: `isPlurHookCommand` accepts PLUR's launcher + any `hook-*` — REFUTED for the written forms; CONFIRMED + NEEDS-OWNER for "never a user hook"
+
+Proved:
+- `claims_sound`: the matcher claims exactly the commands with a launcher token
+  directly followed by a `hook-*` token.
+- `written_claimed`: every launcher layout some version of init wrote is claimed,
+  with any subcommand and any arguments. The layouts come from the git history of
+  init.ts, mcp index.ts and the editor installers: `npx @plur-ai/cli`,
+  `npx -y @plur-ai/cli@<v>`, the shim in every slash, quote, case and 8.3 form, a
+  spaced unquoted path, `& "<path>"`.
+- `upgrade_strips_old`, `rerun_idempotent`: re-running init from any older layout
+  leaves one PLUR set per event (through `specOf_plur` into §3's
+  `merge_idempotent`).
+- `lookalikes_not_claimed`: `plur-hook-backup.ps1`, `@plur-ai/cli-extras`, another
+  binary's `hook-foo`, `<shim> status` and `<shim> hook-` are not claimed.
+- `exec_written_claimed`: the Claude Code exec form init writes is claimed.
+
+Replays for these (all pass): 12 historic launchers × 5 subcommands are claimed.
+Codex and Cursor re-merges are idempotent from every older layout and keep the
+user's `mytool hook-foo`. Antigravity replaces only its named set. The Claude
+guard never throws on a non-string command.
+
+Defect: the regexes are unanchored `.test`s, so a user command that CONTAINS a
+PLUR invocation is claimed too (`embedded_claimed`). Examples:
+- `<shim> hook-inject && ~/bin/notify.sh` (a chained step);
+- `nice -n 10 <shim> hook-inject` (a wrapper);
+- `echo <shim> hook-inject >> log`;
+- `echo run npx @plur-ai/cli hook-inject later`.
+
+Re-running init strips the whole spec, so the user's part is deleted. Replay
+"re-running the Codex install deletes the user's chained step" confirms it. A
+quoted mention (`echo "<shim> hook-inject"`) is NOT claimed, because the
+subcommand must end at whitespace; the replay pins that too. In exec form, any
+checkout whose entry ends in `/packages/cli/dist/index.js` is claimed
+(`exec_foreign_checkout_claimed`, replayed with `C:/work/mytool/packages/cli/…
+hook-deploy`).
+
+Option modelled: anchor the END — only arguments may follow the subcommand
+(`claimsEnd`). `end_anchor_keeps_written` shows it still claims every written
+form. `end_anchor_rejects_chain` shows it rejects the chained step. The wrapper
+case needs a start anchor on a path-shaped first token. The start cannot simply
+be anchored, because pre-#1267 Windows wrote spaced paths unquoted
+(`C:/Users/John Smith/.plur/bin/plur-hook.cmd hook-inject`).
+
+Question for the owner: should H2 also require that the command ends after the
+subcommand and its arguments (no `&&`, `;`, `|`, `>`)? Should it require a
+path-shaped start? Or is a user who edits PLUR's own hook line accepted to lose
+the edit on re-init? And should the exec-form `…/packages/cli/dist/index.js`
+suffix be limited to the recorded entry (`plur-hook.meta.json`)?
+
+Mutation check:
+- A1 (a look-alike counts as a launcher) breaks `lookalikes_not_claimed`.
+- A2 (no `hook-*` requirement) breaks `claims_sound` and `lookalikes_not_claimed`.
+- A3 (shim only, no npx) breaks `written_claimed` and `end_anchor_keeps_written`.
+- A6 (end anchor dropped) breaks `end_anchor_rejects_chain`.
+
+### H3: the command form per editor and version matches the documented table — REFUTED (holds, proved)
+
+`chosen` models init.ts `run` branch for branch, through `hookCommandPrefix`,
+`windowsHookCommand`, `useClaudeExecForm` and `claudeHookSpec`. `table` is the
+H3 decision and the docstrings, row by row. Proved:
+- `chosen_matches_table`: they agree for every editor, platform, shim, whitespace,
+  short-name and version combination (384 cases).
+- `win_quote_only_fallback`: on Windows the only quoted form is the documented
+  PowerShell fallback `& "<path>"` (spaced path, no short name, not Antigravity).
+- `exec_needs_support` and `old_never_exec`: the exec form is written only for a
+  known Claude Code ≥ 2.1.139, or for an unknown version whose string form would
+  be the fallback.
+- `every_form_claimed`: every string form H3 writes is claimed by H2, so the two
+  decisions compose and re-init strips its own H3 output.
+
+Replays: the `hookCommandPrefix` quoting, `windowsHookCommand` for
+codex/cursor/agy (plain, short and fallback), and `useClaudeExecForm` at
+2.1.138/2.1.139/unknown all pass. Mutation check: A4 (exec form for any unknown
+version) and A5 (Antigravity quoted like PowerShell) break
+`chosen_matches_table`.
+
+Not verified: that these strings run in the real shells. The model checks the
+choice, not bash, pwsh or cmd. One note: with a known-old Claude Code and no
+8.3 name, the Claude string form is `& "<path>"`, which works only if Claude
+Code uses PowerShell, not Git Bash. That is the documented fallback, and the
+Windows CI job H3 asks for would settle it.
+
+Files: `spec/formal/PlurSpec/Adapters.lean` (§3 and §9b docstrings, new §10 and
+§11); `packages/cli/test/formal-fr-c4-hooks.test.ts`; `spec/formal/verify.yaml`
+(appended an Adapters entry covering cli `lib/hook-command.ts`, mcp
+`hook-command.ts`, `codex-hooks.ts` and `antigravity-hooks.ts`).

@@ -515,6 +515,51 @@ def pendingOrig (listed : List OEntry) : Nat := (listed.filter (fun e => !e.reti
 theorem pending_counts_every_listed (l : List OEntry) : pendingFixed l = l.length := rfl
 theorem orig_pending_misses_retire : pendingOrig [⟨true⟩] = 0 ∧ pendingFixed [⟨true⟩] = 1 := ⟨rfl, rfl⟩
 
+/-! ### Field report (2026-09-29): outbox states and the session-end checkpoint key
+
+`plur_outbox` still reports `pending = before.length` (theorem above). #1299 adds
+`retrying` / `needs_action` from core `summarizeOutbox` (outbox-health.ts): a
+`needs_action` entry is counted once, everything else is retrying. -/
+
+inductive OState | retrying | needsAction deriving DecidableEq
+
+/-- `summarizeOutbox`: (pending, retrying, needs_action). -/
+def summaryOf (l : List OState) : Nat × Nat × Nat :=
+  let needs := (l.filter (· == .needsAction)).length
+  (l.length, l.length - needs, needs)
+
+/-- The two counts partition the listed entries: nothing is double-counted or lost. -/
+theorem summary_partition (l : List OState) :
+    (summaryOf l).2.1 + (summaryOf l).2.2 = (summaryOf l).1 := by
+  simp only [summaryOf]
+  have : (l.filter (· == .needsAction)).length ≤ l.length := List.length_filter_le _ _
+  omega
+
+theorem summary_example : summaryOf [.retrying, .needsAction, .retrying] = (3, 2, 1) := by decide
+
+/-- `plur_session_end` removes the Stop hook's checkpoint. #1278 / H1: the hook writes
+it under `safeSessionKey(id).slice(0, 64)` (`_` for each unsafe character, `unknown`
+when empty); the MCP reader tries that AND the older stripped form, per candidate id.
+Characters are abstracted by the `safe` predicate both regexes share. -/
+def writerKey (safe : Char → Bool) (k : List Char) : List Char :=
+  let r := k.map (fun c => if safe c then c else '_')
+  (if r.isEmpty then "unknown".toList else r).take 64
+
+def readerKeys (safe : Char → Bool) (k : List Char) : List (List Char) :=
+  [(let r := k.map (fun c => if safe c then c else '_'); if r.isEmpty then "unknown".toList else r).take 64,
+   (k.filter safe).take 64]
+
+/-- The reader always tries the key the writer used, for every raw id. -/
+theorem reader_finds_writer (safe : Char → Bool) (k : List Char) :
+    writerKey safe k ∈ readerKeys safe k := by
+  simp [writerKey, readerKeys]
+
+/-- ORIGINAL reader (strip only) missed the writer's key whenever the id had an
+unsafe character: `a:b` → writer `a_b`, reader `ab`. -/
+theorem orig_strip_reader_misses :
+    writerKey (fun c => c != ':') "a:b".toList ≠ ("a:b".toList.filter (fun c => c != ':')).take 64 := by
+  decide
+
 /-! ## 4. migrate codemod (packages/migrate/src/scan.ts `applyFixes`, index.ts `run`; mcp#8)
 
 A line is edited right-to-left. An insertion `(p, n)` puts `n` characters

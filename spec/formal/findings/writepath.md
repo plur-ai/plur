@@ -374,3 +374,70 @@ file are not yet updated (drift check lists WritePath and R2CoreA).
   save matches a team copy (shared hits are preferred) rather than the promoted
   engram, so that engram stops at `decided`. The fixture needs to reach `locked`
   through saves that match the same engram (for example non-shared scopes).
+
+## Field report 2026-09-29 — cluster 1 (A3, tension gate, delivery)
+
+Model: `PlurSpec/WritePath.lean` §5b and §7. Code: `index.ts` `_stepCommitment`,
+`_maxRecurrenceCommitment`, `_recordCrossScopeRecurrence` / `_promoteTeamCopy`,
+`deliveryOf`. Replays: `packages/core/test/formal-fr-c1-replays.test.ts`. No source
+file was edited.
+
+### 5b. A3 — ceiling and tension gate
+
+- **Ceiling (default `locked`): REFUTED (claim proved).** `a3_never_past_cap` (a
+  step never goes past `max(current, max_commitment)`), `a3_decided_cap_holds`,
+  `a3_default_can_lock`, `gate_blocks` (with `lockBlocked` nothing enters `locked`).
+- **`draft` stepped into `locked`: CONFIRMED (regression, #1275).** `_stepCommitment`
+  sends every value other than locked/exploring/leaning/unset to the `decided`
+  branch, so `draft` (pending human approval, never injected) becomes `locked` on
+  the second cross-scope recurrence. main's ladder kept it (`e.commitment ?? 'leaning'`),
+  and `nextCommitment` leaves it untouched on purpose. Theorem `draft_escalates`; fix
+  `stepFixed` (return unknown values unchanged) with `fixed_keeps_draft`,
+  `fixed_never_past_cap`, `fixed_gate`. Replay: "a draft engram hit by the ladder
+  stays draft" → `expected 'locked' to be 'draft'`. Owning PR: #1275.
+- **Copy-on-promote skips the tension gate: CONFIRMED.** `_promoteTeamCopy` steps the
+  new global copy with `lockBlocked = false`; the hit's unresolved tension is never
+  read. A `decided` team engram in tension, queued for its store, yields a `locked`
+  global copy; the same engram not team-bound is promoted in place and stays
+  `decided` (`copy_skips_gate`). Fix: gate every site on the hit's tension
+  (`gateFixed`, `gate_fixed_every_site`, `gate_fixed_clean_locks`). Replay:
+  "copy-on-promote honours the hit's tension" → `expected 'locked' not to be
+  'locked'`; good-case "in-place promotion honours the hit's tension" passes. The
+  twin path (`hasUnresolvedTension(twin.id)` only) has the same shape but is not
+  replayed; whether the hit's tension should also block crediting an existing twin
+  is an owner call. Owning PR: #1275.
+
+### 7. Delivery (`deliveryOf`)
+
+- **`remote` only with a server id: CONFIRMED (edge case).** Proved under the
+  hypothesis that the first config entry for a stamped row's scope is the store that
+  served it (`remote_has_server_id`, general form `remote_has_server_id_with`). The
+  hypothesis fails when a url store and a path store are registered for the same
+  scope with the url one first: a dedup hit on the PATH row is reported `remote`
+  with nothing POSTed (`duplicate_scope_misreports`). Fix: classify a stamped row by
+  the store that served it (`remote_has_server_id_fixed`, unconditional). Replay:
+  "a dedup hit on a local path-store row is not reported remote" → `expected
+  'remote' not to be 'remote'`, 0 POSTs. Owning PRs: #1264 × #1319/#1334.
+- **`outbox` iff an outbox entry exists: REFUTED (claim proved)** as a snapshot at
+  return time (`outbox_iff`, given learnRouted's success object has no `_outbox`
+  and the save returned in the requested scope, which §9a of R2CoreA guarantees for
+  shared scopes). learn()'s background push can remove the row later;
+  `learn-delivery.test.ts` pins `outbox` then — design, not a defect.
+- **Shared scope reported `local` carries a warning: REFUTED (claim proved).**
+  `shared_local_warns` (warning, or a demotion that carries its own `_demoted`
+  notice). Minor, not a defect of the claim: for a dedup hit on a `shared: true`
+  path store the warning text says "saved on this machine only" although the file
+  may be synced to others.
+- Non-vacuity: `delivery_reachable`.
+
+### Mutation checks (scratch copies, `lake env lean`)
+
+| Mutation | Broken theorems |
+|---|---|
+| `max_commitment` ignored | `a3_never_past_cap`, `a3_decided_cap_holds`, `fixed_never_past_cap` |
+| `lockBlocked` ignored | `gate_blocks`, `fixed_gate`, `copy_skips_gate` |
+| draft fix undone | `fixed_keeps_draft` |
+| new copy gated `false` again | `gate_fixed_every_site` |
+| stamped row always `remote` | `remote_has_server_id_with`, `outbox_iff` |
+| outbox reported `local` | `outbox_iff`, `delivery_reachable` |
+| no warning on `local` | `shared_local_warns`, `delivery_reachable` |

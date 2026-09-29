@@ -405,3 +405,23 @@ Theorems (§7): `norm_idempotent`, `norm_unwraps_single` (non-vacuity),
 Files: packages/ui/src/server.ts.
 Test: packages/ui/test/formal-r2-integrations-host.test.ts (20): 3 failed
 before, 20/20 after; whole ui package 6 files 154/154. No pre-existing test changed.
+
+## Field report pass, cluster 4 (2026-09-29): tools.ts drift — REFUTED (holds, proved)
+
+The drift is mcp `tools.ts`: #1264 delivery fields, #1299 outbox states, #1278
+checkpoint keys. The existing §3 outbox theorem `pending_counts_every_listed`
+still holds, since `pending` is still `before.length`. Added to §3:
+- `summary_partition`: core `summarizeOutbox` splits the listed entries into
+  `retrying + needs_action = pending`. Example: `summary_example`.
+- `reader_finds_writer`: `plur_session_end` tries the Stop hook's
+  `safeSessionKey(id).slice(0,64)` key (`_` per unsafe character, `unknown` when
+  empty) for every raw id, alongside the older stripped form.
+  `orig_strip_reader_misses` is the pre-#1278 reader, which tried only the
+  stripped form (from the diff against `origin/verify/formal-lean`; not replayed
+  in this pass).
+
+The #1264 `delivery` / `delivery_warning` fields do not change §1's claims:
+`outbox: true` is still set iff the row carries `_outbox` (Adapters §1
+`warning_truthful`). Mutation check: dropping the `_` form from the reader
+breaks `reader_finds_writer`; `retrying := pending` breaks `summary_partition`.
+Checked with `lake env lean PlurSpec/R2Integrations.lean` (exit 0).

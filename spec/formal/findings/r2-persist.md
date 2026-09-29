@@ -71,6 +71,13 @@ bypassed (sync twin times out instead). Regression: `formal-persistence-lock`, `
 Residue: slots created by a stealer that arrives after the ladder was cleared, and then crashes, are
 left as files. They are keyed by a token that never returns, so they are harmless.
 
+Field report 2026-09-29 (refresh 2, conflict G): the ladder moved into `takeOver`/`takeOverSync` on
+top of #1398's complete-on-publish lock; its steps are unchanged, so `ladder_mutex` still holds of
+the ladder. The composition (token-and-inode re-check, `link` put-back, empty locks from other
+clients) is `R2Persist.lean` §6 `TakeoverG` — `combined_mutex` PROVED; #1398's single guard alone
+`pr1398_two_holders` and #1228 alone `pr1228_two_holders` both CONFIRMED broken (replayed). See
+findings/persistence.md §G.
+
 ---
 
 ## 2. Store-shape and duplicate-id rules drift across readers (core-persistence#11)

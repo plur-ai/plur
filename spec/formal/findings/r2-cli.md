@@ -310,3 +310,224 @@ Decision H1 carried by: #1396 (helpers and hook-inject/hook-learn-check keys, ag
 #1276's branch), #1400 (hook-session-end reader, against #1277's branch) and #1401 (this
 branch's writers, against `verify/formal-lean`). All three carry a byte-identical
 `lib/session-key.ts`.
+
+---
+
+# Field report cluster 5 — the CLI hook lifecycle (2026-09-29)
+
+Model: `PlurSpec/R2CLI.lean`, namespace `PlurSpec.R2CLI.FR5` (sections 5.1 to 5.4,
+about 470 lines appended). Checked with
+`cd spec/formal && ~/.elan/bin/lake env lean PlurSpec/R2CLI.lean`: no errors, no
+warnings, no `sorry`/`admit`/`axiom`/`native_decide`. No source under
+`packages/*/src` was edited (coordinator override). CONFIRMED defects carry an
+`it.fails` replay. The body asserts the intended behaviour, so vitest reports it as
+unexpectedly passing once the owning PR fixes it.
+
+Replays run in-process under vitest, importing `src/`. TMPDIR, HOME and PLUR_PATH are
+temp dirs. Each `it.fails` body was also run as a plain `it` (a scratch probe copy,
+deleted afterwards) to see the failure message; those messages are quoted below.
+
+## C5-1. H1: one key for every writer and reader — REFUTED (holds, proved); one minor legacy gap CONFIRMED
+
+The code: every Claude Code state file is written under `hookSessionKey`. That covers
+hook-inject's marker, reminder, lock and attempts, and hook-learn-check's stop counter
+and checkpoint. The readers try the same key first. The marker reader then tries
+`legacyHookSessionKeys`. The checkpoint reader (hook-session-end) tries the legacy
+forms and then its own per-candidate forms. Two other state files have their own
+single key function, and each one's writer and reader call that same function: the
+session task (`safeSessionKey(payload id)`, in session-task.ts) and the auto-rate
+lists (`<editor>-safeSessionKey(id)`).
+
+Theorems:
+- `Key.h1_same_payload`: two processes with the same payload id derive a key that the
+  reader tries, for every state file, whatever their `CLAUDE_SESSION_ID` and ppid.
+- `Key.h1_same_ctx`: without a payload id, the same process context still agrees.
+- Legacy forms found: `legacy_sid_found` (#1228 `sid-`), `legacy_uncapped_found`
+  (#1301), `legacy_envfirst_found` (main's and #1228's checkpoint and counter key),
+  `legacy_ppid_found_without_env`, `checkpoint_ppid_found`.
+- Non-vacuity: `current_only_misses_sid`. A reader that tried only the current key
+  would miss a pre-H1 marker, so the legacy list is needed.
+
+CONFIRMED (minor): `legacy_ppid_missed_with_env`. With `CLAUDE_SESSION_ID` set, a
+marker keyed by the bare ppid is not among the marker reader's keys. Released builds
+wrote that key, and so did #1228 when the payload had no id. hook-session-end's
+checkpoint reader does have the ppid form. Replay: `formal-fr-c5-session.test.ts` ›
+"with CLAUDE_SESSION_ID set, the marker reader still tries the ppid key", which gives
+`expected [ Array(3) ] to include '3547'`. Impact: Claude Code does not export
+`CLAUDE_SESSION_ID`, and ppid markers were never stable across prompts (#1278), so at
+worst a session gets one extra injection after the upgrade.
+
+Observation, not replayed: the Codex writer keys auto-rate by
+`session_id ?? conversation_id` (`codexSessionId`). The reader, `readTurn('codex')`,
+uses `session_id` only. Codex always sends `session_id`, so this only matters for a
+payload that Codex does not send today.
+
+## C5-2. The state directory, property 5 and OPEN CONFLICT H — CONFIRMED + NEEDS-OWNER
+
+`hookSessionDir()` (session-task.ts, from #1395) computes `ensureSessionDir(fallback)`
+and then returns the fallback whatever the answer was. If both
+`$TMPDIR/plur-sessions` and `$PLUR_PATH/hook-sessions` are planted symlinks (this needs
+PLUR_PATH in a shared location), the session task (a copy of the user's prompt), the
+marker, the reminder, the lock and the attempts file are all written through the
+symlink. The docstring's promise that "state goes to a private directory" is then
+false. The existing hardening checks the last path component only, so a symlinked
+fallback is the hole.
+
+Theorems (`ok d` = `ensureSessionDir(d)`; §1 `trusted_iff_not_plantable` ties it to
+"owned, not a symlink"):
+- `Dir.dir1395_unsafe`: #1395's policy is not Safe.
+- `Dir.dir1228_not_persist`: #1228's policy (return null) is Safe but not Persists. A
+  planted shared dir leaves no marker and no attempt cap, even when a vetted private
+  dir was available. Combined with `Life.unwritable_unbounded`, every prompt of that
+  session then runs the full injection.
+- `Dir.dirH_safe`, `Dir.dirH_persists` and **`Dir.conflict_H_unique`**. Among policies
+  that prefer the shared dir, exactly one is both Safe and Persists: shared dir, else
+  the private dir **if it passes the check**, else no persistence.
+
+Replay: `formal-fr-c5-session.test.ts` › "state never lands in a refused fallback dir",
+which gives `expected [ 's2.task' ] to deeply equal []`. The good case of the composed
+policy is pinned by "a planted shared dir is refused and state goes to a private 0700
+dir".
+
+**Conflict H: which behaviour the proofs support.** Neither side alone.
+- #1395 (fall back to a private dir) is needed for the lifecycle properties: without a
+  writable dir, the marker and the attempt cap do nothing.
+- #1228's refusal (null, meaning no persistence) is needed as the last step, when the
+  private dir is also refused.
+
+The proved policy is `dirH`. As a code change in `hookSessionDir`:
+`return ensureSessionDir(fallback) ? fallback : null`, with a `string | null` return
+type. The callers of `statePath` already handle null. `attemptsPath` and `taskPath`
+would need a null guard. Today `attemptsPath` calls `join(null)`, which throws inside
+its try, so the cap fails open, as in `unwritable_unbounded`.
+
+NEEDS-OWNER (I own no source here):
+- (a) Adopt `dirH` in whichever PR carries #1395?
+- (b) Should hook-learn-check's stop counter follow the same policy? It still refuses
+  the shared dir with no fallback, which is #1228's policy. That is safe, but it
+  degrades differently from hook-inject.
+
+## C5-3. Marker only after delivery, no lock or marker after a stop or kill, attempt cap — REFUTED (holds), with two DOWNGRADED sub-claims
+
+`Life` models one first-prompt run branch for branch: `run`, `skipCappedSession`,
+`injectSession`, `finally`, the dispatcher's report. A kill stops the run before any
+step `k`. The watchdog fires before any step `w`: it releases the lock and sets
+`stopping`, then either exits at once (store idle) or keeps running while the exit
+waits.
+
+Proved, for every configuration (dir writable, throws, pipe ok), every kill point and
+every watchdog point:
+- `marker_needs_delivery`: an `injected` marker implies the context was delivered.
+- `watchdog_no_lock` and `finish_no_lock`: a stopped or finished run leaves no lock.
+- `watchdog_before_emit_no_marker`: a watchdog that fires before the emit leaves no
+  marker.
+- `prompt_inv` and **`cap_bounds_work`**: with a writable state dir, at most `cap` full
+  injections run per session, whatever mix of successes, throws, kills and stops.
+  Runs are serialised by the O_EXCL lock, `excl_at_most_one` in §3.
+- Non-vacuity: `good_first_prompt`.
+
+DOWNGRADED:
+- "A watchdog-stopped run leaves no marker": `watchdog_after_handoff_marks`. If the
+  stdout write was handed off before the watchdog fired and its callback arrives
+  after, the marker is written. The context was delivered, so the marker is true;
+  the claim that is actually needed is `marker_needs_delivery`. Pinned by
+  `formal-fr-c5-inject-lifecycle.test.ts` › "a context handed to stdout before the
+  stop is delivered and marked".
+- "A killed run leaves no lock": a SIGKILL cannot run a release (`kill_leaves_lock`).
+  The lock goes stale after LOCK_STALE_MS and the next prompt takes it over
+  (`InjectLock.new_removes_stale`).
+- "Marker only after delivery" on the capped path: `capped_marker_before_notice`. The
+  `skipped` marker is written before the notice, by design, so that the cap holds even
+  if the notice is lost (`hook-inject-session-key.test.ts` pins this).
+- The cap is fail-open when the state dir is unusable (`unwritable_unbounded`). This
+  is documented ("an unwritable state dir just means the next prompt re-injects").
+  See C5-2 for the case where that happens under attack.
+
+Replay of the good cases: `formal-fr-c5-inject-lifecycle.test.ts` › "the watchdog
+fires before the emit…". It shows nothing printed, no marker and no lock, with
+attempts = 1.
+
+Residual, not modelled: the marker is checked before the lock is taken, so a run that
+checks just before another run writes its marker and releases the lock can inject
+again. That second injection is still counted against the cap. Separately, a session
+longer than 7 days can have its marker swept while the attempts file is not reset;
+the cap notice then says "did not finish" about attempts that did finish.
+
+## C5-4. A stopped run prints nothing — CONFIRMED + NEEDS-OWNER
+
+`emitContext` and `emitContextConfirmed` do honour `stopping`, proved by
+`stopped_prints_only_errors`. But if the store is busy when the watchdog fires, its
+exit waits for up to 3 s, and the main flow keeps running during that wait. If the
+injection throws in that window, `run()` rejects before the exit, and the CLI
+dispatcher (`src/index.ts`) prints `{"error": …}` on stdout and exits 1. The result
+is a stopped run that prints, and the editor shows a hook error.
+- Counterexample: `stopped_throw_prints`.
+- Fixed variant: `gated_stopped_run_silent`, where the report honours `stopping`.
+
+Replay: `formal-fr-c5-inject-lifecycle.test.ts` › "a stopped run whose injection then
+throws…". It shows `outcome: 'rejected'` with `exitsBefore: 0` and nothing printed by
+the hook itself, so the dispatcher's catch runs. That catch prints `{"error"}` for any
+rejected hook run; the real binary shows it in `hook-inject-session-key.test.ts`,
+whose assertions expect `"error"` on stdout.
+
+NEEDS-OWNER: where should the fix go?
+- (a) hook-inject catches its own error when `stopping` is set and returns quietly, or
+- (b) the dispatcher stays silent for hook commands?
+
+Note that `hook-inject-session-key.test.ts` pins `"error"` on stdout for failed
+(unstopped) runs, which is itself questionable for a hook, so (b) needs an owner call.
+
+## C5-5. Auto-rate gives at most one verdict per engram per session — CONFIRMED + NEEDS-OWNER
+
+The write-ahead order is right: the id is recorded as rated before the feedback is
+applied, so a kill between the two loses one signal and never duplicates it
+(`kill_loses_not_duplicates`, `orig_ok_when_recorded`). But `appendIds` fails open,
+and `autoRateTurn` applies the verdict whether or not the record landed. Every later
+turn then rates the engram again (`orig_applies_twice`).
+
+Proved for the fix (apply only when the record landed): `fixed_at_most_once`, for any
+sequence of record failures and kills. Non-vacuity: `fixed_reachable`.
+
+Replay: `formal-fr-c5-auto-rate.test.ts` › "a verdict whose write-ahead record failed
+is not applied again next turn". The `.rated` path is made a directory; the result is
+`expected 2 to be less than or equal to 1`. Real-world triggers are a full disk or a
+quota. Good case pinned: "the same reply twice: one verdict".
+
+NEEDS-OWNER (#1318's file): should `appendIds` return whether it wrote, with the
+verdict skipped when it did not?
+
+Residual, not replayed: `acquireWorkerLock` takes over a stale worker lock with a
+plain `unlink`. This is the pattern `InjectLock.old_removes_live` refutes. Two workers
+that both judged a dead lock stale can both run, and the second picks up the first
+one's `queue.<pid>` batch as an orphan, so a verdict can be applied twice. The window
+needs a dead worker and two workers starting within microseconds.
+
+## Other observation (not replayed)
+
+`hook-outbox-flush.ts` `storeRoot` uses `??`, while every other root in this cluster
+uses `||`. With `PLUR_PATH=""` the flush looks at `./engrams.yaml` in the current
+directory. This is the same class as the earlier MCP NEEDS-FILE entry.
+
+## Mutation checks (`scratchpad/c5mut/run.py`)
+
+Each mutation puts the bug back into a scratch copy of `R2CLI.lean`. A theorem counts
+as broken when it fails, or when `#print axioms` shows that it now depends on
+`sorryAx`. All 7 mutations broke their target:
+
+| Mutation | Theorem that stops proving |
+|---|---|
+| readers derive the key env-first (pre-H1 split) | `h1_same_payload` (via `head_mem`) |
+| fallback verdict ignored (#1395) | `dirH_safe`, `conflict_H_unique` |
+| marker written without the delivery check | `marker_needs_delivery` |
+| watchdog does not release the lock | `watchdog_no_lock` |
+| emit not gated by `stopping` | `gated_stopped_run_silent`, `stopped_prints_only_errors` |
+| attempt counted after the work | `prompt_inv` (so `cap_bounds_work`) |
+| verdict applied although its record failed | `fixed_at_most_once` (via `fixed_step`) |
+
+## Tests (new, cluster 5)
+
+`packages/cli/test/formal-fr-c5-session.test.ts` (5: 3 pinned, 2 `it.fails`),
+`formal-fr-c5-auto-rate.test.ts` (3: 2 pinned, 1 `it.fails`),
+`formal-fr-c5-inject-lifecycle.test.ts` (3: 2 pinned, 1 `it.fails`).
+Targeted run, with these three files plus `session-key-h1`, `hook-session-end-h1`,
+`hook-inject-session-key` and `hook-auto-rate`: 7 files, 40 passed, 4 expected fail.

@@ -38,7 +38,17 @@ where a process that takes the guard never dies. Its residual: a guard abandoned
 a crashed stealer was removed by an unguarded read-then-unlink, and a double fault
 reopened the race. Here processes die at any step (`dead` is state, monotone), and
 the guard is the fixed code's ladder: slot `k` of the ladder for judged token `h` is
-`slot h k`; its owner is the token written into it. -/
+`slot h k`; its owner is the token written into it.
+
+Checked against formal/field-report-2026-09-29 (refresh 2, #1228 × #1398): the ladder
+steps (`acquireStealSlot`, `clearStealSlots`, dead slots walked past, never deleted
+while their token is at the lock) are unchanged and moved into `takeOver`/`takeOverSync`,
+so this section still holds of the ladder itself. What changed around it — the lock is
+now published complete by `link`, the re-check under the slot and the claim compare
+token AND inode, the put-back is `link` — is modelled in §6 `TakeoverG` (conflict G),
+where this section's `ladder_guard_excl` is the justification for abstracting the ladder
+to one live holder per judged contents. Identifying a lock instance by its holder, as
+here, cannot express two EMPTY locks (same contents, different files); §6 can. -/
 namespace Guard
 
 /-! ### Before the fix: one guard, cleared by read-then-unlink (executable). -/
@@ -1481,5 +1491,811 @@ theorem warns_iff (T B : Nat) : warns T B = false ↔ T / 3 + B < T := by
 theorem warns_examples : warns 40000 30000 = true ∧ warns 60000 30000 = false := by decide
 
 end Followups
+
+/-! ## 6. Conflict G — who serializes a lock takeover (async-lock.ts `takeOver`,
+`takeOverSync`, `acquireStealSlot`, `stealLock`, `publishLockFile`; sync.ts `withLock`)
+
+One model, three designs, crashes at any step:
+
+* `combined` — this branch: #1398's complete-on-publish lock (`link`), #1228's ladder,
+  re-check under the slot by token AND inode, rename claim confirmed by token AND inode,
+  put-back by `link`.
+* `pr1398` — #1398 alone: one `.takeover` guard, published like a lock; a guard whose
+  owner is dead is removed by the same rename-claim steal, unguarded; under the guard
+  the lock is re-judged and the file then seen is the one expected.
+* `pr1228` — #1228 alone: create-then-write lock (`O_EXCL` `writeFile`), the ladder,
+  re-check and claim by token only, put-back by `open(wx)` + write.
+
+A file is `⟨ino, own, tok⟩`: its inode, its creator, whether the creator's token has been
+written into it. Inodes come from a counter, so they are never reused (APFS; on a
+filesystem that reuses inodes see findings/persistence.md G). `create`/`write` are other
+clients that create first and write second (older cores, and core's own `pr1228` path).
+
+The ladder is abstracted to one steal-guard holder per judged contents (`key`): a slot is
+taken when free or held by a dead stealer (walking past an abandoned slot). That is what
+`Guard.ladder_guard_excl` proves of the ladder while the judged lock is in place; the
+early release on a confirmed claim over-approximates `clearStealSlots`.
+
+Judgement is sound: a lock (or guard) is judged abandoned only when its owner is dead —
+the pid probe, or, for age-judged locks, the heartbeat and grace bounds
+(`Persistence.Heartbeat.sync_age_bound`, `grace_*` below). Under that assumption only
+the designs' serialization differs, which is conflict G. -/
+namespace TakeoverG
+
+inductive Design | combined | pr1398 | pr1228
+  deriving DecidableEq
+
+structure F where
+  ino : Nat
+  own : Nat
+  tok : Bool
+  deriving DecidableEq
+
+/-- What `readFile(...).trim()` returns: the owner's token, or `''`. -/
+def F.contents (f : F) : Option Nat := if f.tok then some f.own else none
+
+inductive Pc where
+  | idle
+  | crit
+  /-- created, token not yet written -/
+  | gap (i : Nat)
+  /-- judged `f` abandoned -/
+  | seen (f : F)
+  /-- #1398: the guard exists and its owner `g` is dead -/
+  | gSeen (g : F)
+  /-- #1398: renamed guard file `x` aside, judged `g` -/
+  | gClaimed (g x : F)
+  /-- holds the steal guard for `f` -/
+  | inG (f : F)
+  /-- re-checked: about to rename the lock, expecting `f` -/
+  | toRen (f : F)
+  /-- renamed lock file `x` aside, expecting `f` -/
+  | claimed (f x : F)
+  /-- about to release the steal guard -/
+  | out (f : F)
+  deriving DecidableEq
+
+def Pc.judged : Pc → Option F
+  | .seen f | .inG f | .toRen f | .claimed f _ => some f
+  | _ => none
+
+structure S where
+  lock  : Option F
+  guard : Option F
+  key   : Option Nat → Option Nat
+  next  : Nat
+  dead  : Nat → Bool
+  pc    : Nat → Pc
+
+inductive Act where
+  | acq (p : Nat) | create (p : Nat) | write (p : Nat) | rel (p : Nat)
+  | judge (p : Nat) | giveUp (p : Nat) | enter (p : Nat)
+  | gJudge (p : Nat) | gRen (p : Nat) | gFin (p : Nat)
+  | check (p : Nat) | ren (p : Nat) | fin (p : Nat) | leave (p : Nat) | die (p : Nat)
+
+def updK (k : Option Nat → Option Nat) (a v : Option Nat) : Option Nat → Option Nat :=
+  fun b => if b = a then v else k b
+
+def keyFree (s : S) (k : Option Nat) : Bool :=
+  match s.key k with
+  | none => true
+  | some q => s.dead q
+
+/-- Release the steal guard for contents `k` iff `p` holds it (`releaseIfOurs(slot)`). -/
+def relKey (s : S) (k : Option Nat) (p : Nat) : Option Nat → Option Nat :=
+  if s.key k = some p then updK s.key k none else s.key
+
+def writeTok (l : Option F) (i : Nat) : Option F :=
+  match l with
+  | some c => if c.ino = i then some { c with tok := true } else some c
+  | none => none
+
+def relLock (l : Option F) (p : Nat) : Option F :=
+  match l with
+  | some c => if c.contents = some p then none else some c
+  | none => none
+
+def relGuard (g : Option F) (p : Nat) : Option F :=
+  match g with
+  | some c => if c.own = p then none else some c
+  | none => none
+
+def step (d : Design) (s : S) : Act → Option S
+  | .acq p =>
+    if s.dead p = false ∧ s.pc p = .idle ∧ s.lock = none then
+      if d = .pr1228 then
+        some { s with lock := some ⟨s.next, p, false⟩, next := s.next + 1,
+                      pc := upd s.pc p (.gap s.next) }
+      else
+        some { s with lock := some ⟨s.next, p, true⟩, next := s.next + 1, pc := upd s.pc p .crit }
+    else none
+  | .create p =>
+    if s.dead p = false ∧ s.pc p = .idle ∧ s.lock = none then
+      some { s with lock := some ⟨s.next, p, false⟩, next := s.next + 1,
+                    pc := upd s.pc p (.gap s.next) }
+    else none
+  | .write p => match s.pc p with
+    | .gap i => if s.dead p = false then
+        some { s with lock := writeTok s.lock i, pc := upd s.pc p .crit } else none
+    | _ => none
+  | .rel p =>
+    if s.dead p = false ∧ s.pc p = .crit then
+      some { s with lock := relLock s.lock p, pc := upd s.pc p .idle }
+    else none
+  | .judge p => match s.lock with
+    | some f => if s.dead p = false ∧ s.pc p = .idle ∧ s.dead f.own = true then
+        some { s with pc := upd s.pc p (.seen f) } else none
+    | none => none
+  | .giveUp p => match s.pc p with
+    | .seen _ => if s.dead p = false then some { s with pc := upd s.pc p .idle } else none
+    | _ => none
+  | .enter p => match s.pc p with
+    | .seen f => if s.dead p = false then
+        if d = .pr1398 then
+          (if s.guard = none then
+            some { s with guard := some ⟨s.next, p, true⟩, next := s.next + 1,
+                          pc := upd s.pc p (.inG f) }
+          else none)
+        else if keyFree s f.contents = true then
+          some { s with key := updK s.key f.contents (some p), pc := upd s.pc p (.inG f) }
+        else none
+      else none
+    | _ => none
+  | .gJudge p => match s.pc p, s.guard with
+    | .seen _, some g => if d = .pr1398 ∧ s.dead p = false ∧ s.dead g.own = true then
+        some { s with pc := upd s.pc p (.gSeen g) } else none
+    | _, _ => none
+  | .gRen p => match s.pc p with
+    | .gSeen g => if d = .pr1398 ∧ s.dead p = false then
+        match s.guard with
+        | some x => some { s with guard := none, pc := upd s.pc p (.gClaimed g x) }
+        | none => some { s with pc := upd s.pc p .idle }
+      else none
+    | _ => none
+  | .gFin p => match s.pc p with
+    | .gClaimed g x => if d = .pr1398 ∧ s.dead p = false then
+        if x = g then some { s with pc := upd s.pc p .idle }
+        else some { s with guard := (if s.guard = none then some x else s.guard),
+                           pc := upd s.pc p .idle }
+      else none
+    | _ => none
+  | .check p => match s.pc p with
+    | .inG f => if s.dead p = false then
+        match s.lock with
+        | some c =>
+          if d = .pr1398 then
+            (if s.dead c.own = true then some { s with pc := upd s.pc p (.toRen c) }
+             else some { s with pc := upd s.pc p (.out f) })
+          else if c.contents = f.contents ∧ (d = .pr1228 ∨ c.ino = f.ino) then
+            some { s with pc := upd s.pc p (.toRen f) }
+          else some { s with pc := upd s.pc p (.out f) }
+        | none => some { s with pc := upd s.pc p (.out f) }
+      else none
+    | _ => none
+  | .ren p => match s.pc p with
+    | .toRen f => if s.dead p = false then
+        match s.lock with
+        | some x => some { s with lock := none, pc := upd s.pc p (.claimed f x) }
+        | none => some { s with pc := upd s.pc p (.out f) }
+      else none
+    | _ => none
+  | .fin p => match s.pc p with
+    | .claimed f x => if s.dead p = false then
+        if x.contents = f.contents ∧ (d = .pr1228 ∨ x.ino = f.ino) then
+          some { s with key := (if d = .pr1398 then s.key else relKey s f.contents p),
+                        pc := upd s.pc p (.out f) }
+        else if d = .pr1228 then
+          some { s with lock := (if s.lock = none then some ⟨s.next, x.own, x.tok⟩ else s.lock),
+                        next := s.next + 1, pc := upd s.pc p (.out f) }
+        else
+          some { s with lock := (if s.lock = none then some x else s.lock),
+                        pc := upd s.pc p (.out f) }
+      else none
+    | _ => none
+  | .leave p => match s.pc p with
+    | .out f => if s.dead p = false then
+        if d = .pr1398 then some { s with guard := relGuard s.guard p, pc := upd s.pc p .idle }
+        else some { s with key := relKey s f.contents p, pc := upd s.pc p .idle }
+      else none
+    | _ => none
+  | .die p => if s.dead p = false then some { s with dead := upd s.dead p true } else none
+
+def run (d : Design) : S → List Act → Option S
+  | s, [] => some s
+  | s, a :: as => match step d s a with
+    | some s' => run d s' as
+    | none => none
+
+/-! ### (ii) #1398 alone: REFUTED (replayed, scratch `replay-guard.mts`: maxInCS 2).
+
+H=9 holds the lock and is dead; stealer 5 died holding the `.takeover` guard. Stealers 1
+and 2 both judge the guard abandoned; 1 claims it, confirms it, takes a fresh guard and
+re-judges the lock; 2's rename, judged on the dead guard, moves 1's LIVE guard aside;
+4 publishes a guard at the free path and re-judges too; 2's put-back loses. Two live
+stealers are under "the" guard: 1 claims H and acquires; 4's rename moves 1's live lock
+aside; 3 acquires the free path; 4's put-back loses. 1 and 3 are both in the critical
+section, and 1's lock is gone — a live owner stolen from. -/
+def init98 : S :=
+  ⟨some ⟨0, 9, true⟩, some ⟨1, 5, true⟩, fun _ => none, 2, fun p => p == 9 || p == 5,
+   fun _ => .idle⟩
+
+def trace98 : List Act :=
+  [.judge 1, .judge 2, .gJudge 1, .gJudge 2, .gRen 1, .gFin 1,
+   .judge 1, .enter 1, .check 1, .gRen 2, .judge 4, .enter 4, .check 4, .gFin 2,
+   .ren 1, .fin 1, .leave 1, .acq 1, .ren 4, .acq 3, .fin 4]
+
+theorem pr1398_two_holders :
+    (run .pr1398 init98 trace98).map (fun s => (s.pc 1, s.pc 3, s.dead 1, s.dead 3, s.lock.map F.own))
+      = some (.crit, .crit, false, false, some 3) := by decide
+
+/-! ### (iii) #1228 alone: REFUTED with ONE crash (replayed, scratch `replay-empty.mts`:
+maxInCS 2). Creator 9 died between create and token write, leaving empty lock E0.
+Stealers 1 and 2 judge it. 1 claims it, clears the ladder, and creates its own lock E1 —
+empty until its write. 2 takes the (cleared) slot and re-checks: E1 reads `''`, as judged,
+so 2 claims 1's live file, confirms it by contents and acquires; 1's write lands in the
+unlinked file and it proceeds. Two holders. -/
+def init28 : S := ⟨some ⟨0, 9, false⟩, none, fun _ => none, 1, fun p => p == 9, fun _ => .idle⟩
+
+def trace28 : List Act :=
+  [.judge 1, .judge 2, .enter 1, .check 1, .ren 1, .fin 1, .leave 1, .acq 1,
+   .enter 2, .check 2, .ren 2, .fin 2, .leave 2, .acq 2, .write 2, .write 1]
+
+theorem pr1228_two_holders :
+    (run .pr1228 init28 trace28).map (fun s => (s.pc 1, s.pc 2, s.dead 1, s.dead 2, s.lock.map F.own))
+      = some (.crit, .crit, false, false, some 2) := by decide
+
+/-- The same schedule in the combined design: 2's re-check sees another inode and backs
+off (here 1's lock is complete anyway), so 2 never claims. -/
+theorem combined_backs_off :
+    (run .combined init28 (trace28.take 10)).map (fun s => s.pc 2) = some (.out ⟨0, 9, false⟩) := by
+  decide
+
+/-- An older client (create, then write) in place of core's acquisition: the inode check
+still makes 2 back off. With the inode comparison removed from the re-check (mutation M1
+in findings/persistence.md G), this schedule, continued, gives two holders. -/
+theorem combined_legacy_backs_off :
+    (run .combined init28 [.judge 1, .judge 2, .enter 1, .check 1, .ren 1, .fin 1, .leave 1,
+      .create 1, .enter 2, .check 2]).map (fun s => s.pc 2) = some (.out ⟨0, 9, false⟩) := by
+  decide
+
+/-! ### (i) The combined design: mutual exclusion PROVED, crashes and legacy creators
+included. -/
+
+structure Inv (s : S) : Prop where
+  nx   : ∀ c, s.lock = some c → c.ino < s.next
+  nxJ  : ∀ p f, s.dead p = false → (s.pc p).judged = some f → f.ino < s.next
+  crit : ∀ p, s.dead p = false → s.pc p = .crit → ∃ c, s.lock = some c ∧ c.own = p
+  gap  : ∀ p i, s.dead p = false → s.pc p = .gap i → ∃ c, s.lock = some c ∧ c.ino = i ∧ c.own = p
+  dj   : ∀ p f, s.dead p = false → (s.pc p).judged = some f → s.dead f.own = true
+  j    : ∀ p f c, s.dead p = false → (s.pc p).judged = some f → s.lock = some c →
+           c.ino = f.ino → c = f
+  key  : ∀ p f, s.dead p = false → (s.pc p = .inG f ∨ s.pc p = .toRen f) →
+           s.key f.contents = some p
+  ren  : ∀ p f, s.dead p = false → s.pc p = .toRen f → s.lock = some f
+  clm  : ∀ p f x, s.dead p = false → s.pc p = .claimed f x → x = f
+
+
+theorem upd_same {β : Type} (f : Nat → β) (p : Nat) (v : β) : upd f p v p = v := by simp [upd]
+theorem upd_other {β : Type} (f : Nat → β) (p q : Nat) (v : β) (h : q ≠ p) : upd f p v q = f q := by
+  simp [upd, h]
+
+/-- A step that changes `p`'s program counter to `c` and the steal-guard map to `k'`. -/
+theorem inv_pk (s : S) (hi : Inv s) (p : Nat) (c : Pc) (k' : Option Nat → Option Nat)
+    (hp : s.dead p = false)
+    (hnx : ∀ f, c.judged = some f → f.ino < s.next)
+    (hcrit : c = .crit → ∃ l, s.lock = some l ∧ l.own = p)
+    (hgap : ∀ i, c = .gap i → ∃ l, s.lock = some l ∧ l.ino = i ∧ l.own = p)
+    (hdj : ∀ f, c.judged = some f → s.dead f.own = true)
+    (hj : ∀ f l, c.judged = some f → s.lock = some l → l.ino = f.ino → l = f)
+    (hkey : ∀ f, (c = .inG f ∨ c = .toRen f) → k' f.contents = some p)
+    (hkeys : ∀ q g, q ≠ p → s.dead q = false → (s.pc q = .inG g ∨ s.pc q = .toRen g) →
+      k' g.contents = some q)
+    (hren : ∀ f, c = .toRen f → s.lock = some f)
+    (hclm : ∀ f x, c = .claimed f x → x = f) :
+    Inv { s with key := k', pc := upd s.pc p c } := by
+  refine ⟨hi.nx, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> dsimp only
+  · intro q f hq h; by_cases e : q = p
+    · subst e; rw [upd_same] at h; exact hnx f h
+    · rw [upd_other _ _ _ _ e] at h; exact hi.nxJ q f hq h
+  · intro q hq h; by_cases e : q = p
+    · subst e; rw [upd_same] at h; exact hcrit h
+    · rw [upd_other _ _ _ _ e] at h; exact hi.crit q hq h
+  · intro q i hq h; by_cases e : q = p
+    · subst e; rw [upd_same] at h; exact hgap i h
+    · rw [upd_other _ _ _ _ e] at h; exact hi.gap q i hq h
+  · intro q f hq h; by_cases e : q = p
+    · subst e; rw [upd_same] at h; exact hdj f h
+    · rw [upd_other _ _ _ _ e] at h; exact hi.dj q f hq h
+  · intro q f l hq h hl hi'; by_cases e : q = p
+    · subst e; rw [upd_same] at h; exact hj f l h hl hi'
+    · rw [upd_other _ _ _ _ e] at h; exact hi.j q f l hq h hl hi'
+  · intro q f hq h; by_cases e : q = p
+    · subst e; simp only [upd_same] at h; exact hkey f h
+    · simp only [upd_other _ _ _ _ e] at h; exact hkeys q f e hq h
+  · intro q f hq h; by_cases e : q = p
+    · subst e; rw [upd_same] at h; exact hren f h
+    · rw [upd_other _ _ _ _ e] at h; exact hi.ren q f hq h
+  · intro q f x hq h; by_cases e : q = p
+    · subst e; rw [upd_same] at h; exact hclm f x h
+    · rw [upd_other _ _ _ _ e] at h; exact hi.clm q f x hq h
+
+/-- A step that changes only `p`'s program counter. -/
+theorem inv_pc (s : S) (hi : Inv s) (p : Nat) (c : Pc) (hp : s.dead p = false)
+    (hnx : ∀ f, c.judged = some f → f.ino < s.next)
+    (hcrit : c = .crit → ∃ l, s.lock = some l ∧ l.own = p)
+    (hgap : ∀ i, c = .gap i → ∃ l, s.lock = some l ∧ l.ino = i ∧ l.own = p)
+    (hdj : ∀ f, c.judged = some f → s.dead f.own = true)
+    (hj : ∀ f l, c.judged = some f → s.lock = some l → l.ino = f.ino → l = f)
+    (hkey : ∀ f, (c = .inG f ∨ c = .toRen f) → s.key f.contents = some p)
+    (hren : ∀ f, c = .toRen f → s.lock = some f)
+    (hclm : ∀ f x, c = .claimed f x → x = f) :
+    Inv { s with pc := upd s.pc p c } :=
+  inv_pk s hi p c s.key hp hnx hcrit hgap hdj hj hkey
+    (fun q g _ hq h => hi.key q g hq h) hren hclm
+
+/-- Releasing the steal guard of contents `k` held by `p` leaves every other holder's. -/
+theorem relKey_keeps (s : S) (hi : Inv s) (p : Nat) (k : Option Nat) (q : Nat) (g : F)
+    (e : q ≠ p) (hq : s.dead q = false) (h : s.pc q = .inG g ∨ s.pc q = .toRen g) :
+    relKey s k p g.contents = some q := by
+  have hk := hi.key q g hq h
+  unfold relKey
+  by_cases hkp : s.key k = some p
+  · rw [if_pos hkp]; unfold updK
+    by_cases hg : g.contents = k
+    · rw [hg] at hk; rw [hk] at hkp; cases hkp; exact absurd rfl e
+    · rw [if_neg hg]; exact hk
+  · rw [if_neg hkp]; exact hk
+
+set_option maxHeartbeats 2000000 in
+theorem inv_step (s s' : S) (a : Act) (hi : Inv s) (h : step .combined s a = some s') : Inv s' := by
+  cases a with
+  | acq p =>
+    simp only [step] at h
+    split at h
+    · rename_i hc; obtain ⟨hp, hpc, hl⟩ := hc
+      simp only [reduceCtorEq, if_false] at h; cases h
+      refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> dsimp only
+      · intro c hc; cases hc; simp
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; have := hi.nxJ q f hq hf; omega
+      · intro q hq hc; by_cases e : q = p
+        · exact ⟨_, rfl, e.symm ▸ rfl⟩
+        · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', _⟩ := hi.crit q hq hc; rw [hl] at hl'; cases hl'
+      · intro q i hq hc; by_cases e : q = p
+        · subst e; rw [upd_same] at hc; cases hc
+        · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', _⟩ := hi.gap q i hq hc; rw [hl] at hl'; cases hl'
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; exact hi.dj q f hq hf
+      · intro q f c hq hf hc hino; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; cases hc
+          have := hi.nxJ q f hq hf; simp only at hino; omega
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; simp only [upd_same] at hf; rcases hf with hf | hf <;> cases hf
+        · simp only [upd_other _ _ _ _ e] at hf; exact hi.key q f hq hf
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; have := hi.ren q f hq hf; rw [hl] at this; cases this
+      · intro q f x hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; exact hi.clm q f x hq hf
+    · cases h
+  | create p =>
+    simp only [step] at h
+    split at h
+    · rename_i hc; obtain ⟨hp, hpc, hl⟩ := hc
+      cases h
+      refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> dsimp only
+      · intro c hc; cases hc; simp
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; have := hi.nxJ q f hq hf; omega
+      · intro q hq hc; by_cases e : q = p
+        · subst e; rw [upd_same] at hc; cases hc
+        · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', _⟩ := hi.crit q hq hc; rw [hl] at hl'; cases hl'
+      · intro q i hq hc; by_cases e : q = p
+        · subst e; rw [upd_same] at hc; cases hc; exact ⟨_, rfl, rfl, rfl⟩
+        · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', _⟩ := hi.gap q i hq hc; rw [hl] at hl'; cases hl'
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; exact hi.dj q f hq hf
+      · intro q f c hq hf hc hino; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; cases hc
+          have := hi.nxJ q f hq hf; simp only at hino; omega
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; simp only [upd_same] at hf; rcases hf with hf | hf <;> cases hf
+        · simp only [upd_other _ _ _ _ e] at hf; exact hi.key q f hq hf
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; have := hi.ren q f hq hf; rw [hl] at this; cases this
+      · intro q f x hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; exact hi.clm q f x hq hf
+    · cases h
+  | write p =>
+    simp only [step] at h
+    split at h
+    · rename_i i hpc
+      split at h
+      · rename_i hp; cases h
+        obtain ⟨c, hl, hci, hco⟩ := hi.gap p i hp hpc
+        have hw : writeTok s.lock i = some { c with tok := true } := by
+          rw [hl]; simp [writeTok, hci]
+        rw [hw]
+        refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> dsimp only
+        · intro c' hc'; cases hc'; exact hi.nx c hl
+        · intro q f hq hf; by_cases e : q = p
+          · subst e; rw [upd_same] at hf; cases hf
+          · rw [upd_other _ _ _ _ e] at hf; exact hi.nxJ q f hq hf
+        · intro q hq hc; by_cases e : q = p
+          · subst e; exact ⟨_, rfl, hco⟩
+          · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', ho⟩ := hi.crit q hq hc
+            rw [hl] at hl'; cases hl'; exact absurd (ho.symm.trans hco) e
+        · intro q j hq hc; by_cases e : q = p
+          · subst e; rw [upd_same] at hc; cases hc
+          · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', _, ho⟩ := hi.gap q j hq hc
+            rw [hl] at hl'; cases hl'; exact absurd (ho.symm.trans hco) e
+        · intro q f hq hf; by_cases e : q = p
+          · subst e; rw [upd_same] at hf; cases hf
+          · rw [upd_other _ _ _ _ e] at hf; exact hi.dj q f hq hf
+        · intro q f c' hq hf hc' hino; by_cases e : q = p
+          · subst e; rw [upd_same] at hf; cases hf
+          · rw [upd_other _ _ _ _ e] at hf; cases hc'
+            have hcf := hi.j q f c hq hf hl hino
+            have hd := hi.dj q f hq hf; rw [← hcf, hco, hp] at hd; cases hd
+        · intro q f hq hf; by_cases e : q = p
+          · subst e; simp only [upd_same] at hf; rcases hf with hf | hf <;> cases hf
+          · simp only [upd_other _ _ _ _ e] at hf; exact hi.key q f hq hf
+        · intro q f hq hf; by_cases e : q = p
+          · subst e; rw [upd_same] at hf; cases hf
+          · rw [upd_other _ _ _ _ e] at hf; have hr := hi.ren q f hq hf; rw [hl] at hr; cases hr
+            have hd := hi.dj q c hq (by rw [hf]; rfl); rw [hco, hp] at hd; cases hd
+        · intro q f x hq hf; by_cases e : q = p
+          · subst e; rw [upd_same] at hf; cases hf
+          · rw [upd_other _ _ _ _ e] at hf; exact hi.clm q f x hq hf
+      · cases h
+    · cases h
+  | rel p =>
+    simp only [step] at h
+    split at h
+    · rename_i hc; obtain ⟨hp, hpc⟩ := hc; cases h
+      obtain ⟨c, hl, hco⟩ := hi.crit p hp hpc
+      have hsub : ∀ c', relLock s.lock p = some c' → c' = c := by
+        intro c' h'; rw [hl] at h'; simp only [relLock] at h'; split at h' <;> cases h'; rfl
+      have hsub' : ∀ c', relLock s.lock p = some c' → s.lock = some c' := by
+        intro c' h'; rw [hsub c' h']; exact hl
+      refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> dsimp only
+      · intro c' hc'; exact hi.nx c' (hsub' c' hc')
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; exact hi.nxJ q f hq hf
+      · intro q hq hc; by_cases e : q = p
+        · subst e; rw [upd_same] at hc; cases hc
+        · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', ho⟩ := hi.crit q hq hc
+          rw [hl] at hl'; cases hl'; exact absurd (ho.symm.trans hco) e
+      · intro q j hq hc; by_cases e : q = p
+        · subst e; rw [upd_same] at hc; cases hc
+        · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', _, ho⟩ := hi.gap q j hq hc
+          rw [hl] at hl'; cases hl'; exact absurd (ho.symm.trans hco) e
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; exact hi.dj q f hq hf
+      · intro q f c' hq hf hc' hino; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; exact hi.j q f c' hq hf (hsub' c' hc') hino
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; simp only [upd_same] at hf; rcases hf with hf | hf <;> cases hf
+        · simp only [upd_other _ _ _ _ e] at hf; exact hi.key q f hq hf
+      · intro q f hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; have hr := hi.ren q f hq hf; rw [hl] at hr; cases hr
+          have hd := hi.dj q c hq (by rw [hf]; rfl); rw [hco, hp] at hd; cases hd
+      · intro q f x hq hf; by_cases e : q = p
+        · subst e; rw [upd_same] at hf; cases hf
+        · rw [upd_other _ _ _ _ e] at hf; exact hi.clm q f x hq hf
+    · cases h
+  | judge p =>
+    simp only [step] at h
+    split at h
+    · rename_i f hl
+      split at h
+      · rename_i hc; obtain ⟨hp, _, hdf⟩ := hc; cases h
+        apply inv_pc s hi p _ hp
+        · intro f' e; cases e; exact hi.nx f hl
+        · intro e; cases e
+        · intro i e; cases e
+        · intro f' e; cases e; exact hdf
+        · intro f' l e hl' _; cases e; rw [hl] at hl'; cases hl'; rfl
+        · intro f' e; rcases e with e | e <;> cases e
+        · intro f' e; cases e
+        · intro f' x e; cases e
+      · cases h
+    · cases h
+  | giveUp p =>
+    simp only [step] at h
+    split at h
+    · split at h
+      · rename_i hp; cases h
+        apply inv_pc s hi p _ hp <;> intros <;> simp_all [Pc.judged]
+      · cases h
+    · cases h
+  | enter p =>
+    simp only [step] at h
+    split at h
+    · rename_i f hpc
+      split at h
+      · rename_i hp
+        simp only [reduceCtorEq, if_false] at h
+        split at h
+        · rename_i hfree; cases h
+          have hj0 : (s.pc p).judged = some f := by rw [hpc]; rfl
+          apply inv_pk s hi p _ _ hp
+          · intro f' e; cases e; exact hi.nxJ p f hp hj0
+          · intro e; cases e
+          · intro i e; cases e
+          · intro f' e; cases e; exact hi.dj p f hp hj0
+          · intro f' l e hl hino; cases e; exact hi.j p f l hp hj0 hl hino
+          · intro f' e; rcases e with e | e <;> cases e; simp [updK]
+          · intro q g e hq hg
+            have hk := hi.key q g hq hg
+            simp only [updK]
+            by_cases hc : g.contents = f.contents
+            · rw [hc] at hk; simp only [keyFree, hk] at hfree; rw [hq] at hfree; cases hfree
+            · rw [if_neg hc]; exact hk
+          · intro f' e; cases e
+          · intro f' x e; cases e
+        · cases h
+      · cases h
+    · cases h
+  | gJudge p =>
+    simp only [step] at h
+    split at h
+    · split at h
+      · rename_i hc; exact absurd hc.1 (by decide)
+      · cases h
+    · cases h
+  | gRen p =>
+    simp only [step] at h
+    split at h
+    · split at h
+      · rename_i hc; exact absurd hc.1 (by decide)
+      · cases h
+    · cases h
+  | gFin p =>
+    simp only [step] at h
+    split at h
+    · split at h
+      · rename_i hc; exact absurd hc.1 (by decide)
+      · cases h
+    · cases h
+  | check p =>
+    simp only [step] at h
+    split at h
+    · rename_i f hpc
+      have hj0 : (s.pc p).judged = some f := by rw [hpc]; rfl
+      split at h
+      · rename_i hp
+        split at h
+        · rename_i c hl
+          simp only [reduceCtorEq, if_false, false_or] at h
+          split at h
+          · rename_i hm; cases h
+            have hcf : c = f := hi.j p f c hp hj0 hl hm.2
+            apply inv_pc s hi p _ hp
+            · intro f' e; cases e; exact hi.nxJ p f hp hj0
+            · intro e; cases e
+            · intro i e; cases e
+            · intro f' e; cases e; exact hi.dj p f hp hj0
+            · intro f' l e hl' hino; cases e; exact hi.j p f l hp hj0 hl' hino
+            · intro f' e; rcases e with e | e <;> cases e; exact hi.key p f hp (Or.inl hpc)
+            · intro f' e; cases e; rw [hl, hcf]
+            · intro f' x e; cases e
+          · cases h
+            apply inv_pc s hi p _ hp <;> intros <;> simp_all [Pc.judged]
+        · rename_i hl; cases h
+          apply inv_pc s hi p _ hp <;> intros <;> simp_all [Pc.judged]
+      · cases h
+    · cases h
+  | ren p =>
+    simp only [step] at h
+    split at h
+    · rename_i f hpc
+      split at h
+      · rename_i hp
+        have hlf := hi.ren p f hp hpc
+        have hj0 : (s.pc p).judged = some f := by rw [hpc]; rfl
+        have hdf := hi.dj p f hp hj0
+        have hkp := hi.key p f hp (Or.inr hpc)
+        split at h
+        · rename_i x hl; rw [hlf] at hl; cases hl; cases h
+          refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> dsimp only
+          · intro c hc; cases hc
+          · intro q g hq hg; by_cases e : q = p
+            · subst e; rw [upd_same] at hg; cases hg; exact hi.nxJ _ _ hq hj0
+            · rw [upd_other _ _ _ _ e] at hg; exact hi.nxJ q g hq hg
+          · intro q hq hc; by_cases e : q = p
+            · subst e; rw [upd_same] at hc; cases hc
+            · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', ho⟩ := hi.crit q hq hc
+              rw [hlf] at hl'; cases hl'; rw [ho, hq] at hdf; cases hdf
+          · intro q j hq hc; by_cases e : q = p
+            · subst e; rw [upd_same] at hc; cases hc
+            · rw [upd_other _ _ _ _ e] at hc; obtain ⟨l, hl', _, ho⟩ := hi.gap q j hq hc
+              rw [hlf] at hl'; cases hl'; rw [ho, hq] at hdf; cases hdf
+          · intro q g hq hg; by_cases e : q = p
+            · subst e; rw [upd_same] at hg; cases hg; exact hdf
+            · rw [upd_other _ _ _ _ e] at hg; exact hi.dj q g hq hg
+          · intro q g c hq _ hc; cases hc
+          · intro q g hq hg; by_cases e : q = p
+            · subst e; simp only [upd_same] at hg; rcases hg with hg | hg <;> cases hg
+            · simp only [upd_other _ _ _ _ e] at hg; exact hi.key q g hq hg
+          · intro q g hq hg; by_cases e : q = p
+            · subst e; rw [upd_same] at hg; cases hg
+            · rw [upd_other _ _ _ _ e] at hg
+              have hr := hi.ren q g hq hg; rw [hlf] at hr; cases hr
+              have hk := hi.key q f hq (Or.inr hg); rw [hkp] at hk; cases hk; exact absurd rfl e
+          · intro q g y hq hg; by_cases e : q = p
+            · subst e; rw [upd_same] at hg; cases hg; rfl
+            · rw [upd_other _ _ _ _ e] at hg; exact hi.clm q g y hq hg
+        · rename_i hl; rw [hlf] at hl; cases hl
+      · cases h
+    · cases h
+  | fin p =>
+    simp only [step] at h
+    split at h
+    · rename_i f x hpc
+      split at h
+      · rename_i hp
+        have hxf := hi.clm p f x hp hpc; subst hxf
+        rw [if_pos ⟨rfl, Or.inr rfl⟩] at h
+        simp only [reduceCtorEq, if_false] at h
+        cases h
+        apply inv_pk s hi p _ _ hp
+        · intro f' e; cases e
+        · intro e; cases e
+        · intro i e; cases e
+        · intro f' e; cases e
+        · intro f' l e; cases e
+        · intro f' e; rcases e with e | e <;> cases e
+        · intro q g e hq hg; exact relKey_keeps s hi p _ q g e hq hg
+        · intro f' e; cases e
+        · intro f' y e; cases e
+      · cases h
+    · cases h
+  | leave p =>
+    simp only [step] at h
+    split at h
+    · rename_i f hpc
+      split at h
+      · rename_i hp
+        simp only [reduceCtorEq, if_false] at h
+        cases h
+        apply inv_pk s hi p _ _ hp
+        · intro f' e; cases e
+        · intro e; cases e
+        · intro i e; cases e
+        · intro f' e; cases e
+        · intro f' l e; cases e
+        · intro f' e; rcases e with e | e <;> cases e
+        · intro q g e hq hg; exact relKey_keeps s hi p _ q g e hq hg
+        · intro f' e; cases e
+        · intro f' y e; cases e
+      · cases h
+    · cases h
+  | die p =>
+    simp only [step] at h
+    split at h
+    · rename_i hp; cases h
+      have kl : ∀ q, upd s.dead p true q = false → s.dead q = false := by
+        intro q hq; by_cases e : q = p
+        · rw [e, upd_same] at hq; cases hq
+        · rwa [upd_other _ _ _ _ e] at hq
+      have kd : ∀ q, s.dead q = true → upd s.dead p true q = true := by
+        intro q hq; by_cases e : q = p
+        · rw [e, upd_same]
+        · rwa [upd_other _ _ _ _ e]
+      refine ⟨hi.nx, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> dsimp only
+      · intro q f hq; exact hi.nxJ q f (kl q hq)
+      · intro q hq; exact hi.crit q (kl q hq)
+      · intro q i hq; exact hi.gap q i (kl q hq)
+      · intro q f hq hf; exact kd _ (hi.dj q f (kl q hq) hf)
+      · intro q f c hq; exact hi.j q f c (kl q hq)
+      · intro q f hq; exact hi.key q f (kl q hq)
+      · intro q f hq; exact hi.ren q f (kl q hq)
+      · intro q f x hq; exact hi.clm q f x (kl q hq)
+    · cases h
+
+inductive Reach (d : Design) (s0 : S) : S → Prop
+  | refl : Reach d s0 s0
+  | step (s s' : S) (a : Act) : Reach d s0 s → step d s a = some s' → Reach d s0 s'
+
+theorem reach_inv (s0 s : S) (h0 : Inv s0) (hr : Reach .combined s0 s) : Inv s := by
+  induction hr with
+  | refl => exact h0
+  | step s s' a _ hs ih => exact inv_step s s' a ih hs
+
+/-- **Mutual exclusion, combined design (PROVED).** From any state satisfying the
+invariant — a dead holder's lock (complete or empty), any number of stealers dead in the
+ladder, older clients creating first and writing second — never two live holders. -/
+theorem combined_mutex (s0 s : S) (h0 : Inv s0) (hr : Reach .combined s0 s) (p q : Nat)
+    (hp : s.dead p = false) (hq : s.dead q = false)
+    (hcp : s.pc p = .crit) (hcq : s.pc q = .crit) : p = q := by
+  have hi := reach_inv s0 s h0 hr
+  obtain ⟨c, hc, hco⟩ := hi.crit p hp hcp
+  obtain ⟨c', hc', hco'⟩ := hi.crit q hq hcq
+  rw [hc] at hc'; cases hc'; exact hco.symm.trans hco'
+
+/-- **A live owner is never stolen from (PROVED).** While a live process holds the lock,
+its own file is the one at the lock path. -/
+theorem combined_owner_kept (s0 s : S) (h0 : Inv s0) (hr : Reach .combined s0 s) (p : Nat)
+    (hp : s.dead p = false) (hc : s.pc p = .crit) : ∃ c, s.lock = some c ∧ c.own = p :=
+  (reach_inv s0 s h0 hr).crit p hp hc
+
+/-- **Nor is a creator between its create and its write** (an older client, or the
+no-hard-link path): its file stays in place until it writes. -/
+theorem combined_creator_kept (s0 s : S) (h0 : Inv s0) (hr : Reach .combined s0 s) (p i : Nat)
+    (hp : s.dead p = false) (hc : s.pc p = .gap i) :
+    ∃ c, s.lock = some c ∧ c.ino = i ∧ c.own = p :=
+  (reach_inv s0 s h0 hr).gap p i hp hc
+
+/-- Dead holder 9; stealer 5 died holding the ladder slot for 9's token. -/
+def initC : S :=
+  ⟨some ⟨0, 9, true⟩, none, fun k => if k = some 9 then some 5 else none, 1,
+   fun p => p == 9 || p == 5, fun _ => .idle⟩
+
+theorem initC_inv : Inv initC := by
+  refine ⟨fun c hc => by simp only [initC, Option.some.injEq] at hc; subst hc; decide,
+    ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intros <;> simp_all [initC, Pc.judged]
+
+theorem init28_inv : Inv init28 := by
+  refine ⟨fun c hc => by simp only [init28, Option.some.injEq] at hc; subst hc; decide,
+    ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intros <;> simp_all [init28, Pc.judged]
+
+/-- Non-vacuity: recovery happens — 1 walks past the dead stealer's slot, claims the dead
+holder's lock and acquires. -/
+theorem combined_recovers :
+    (run .combined initC [.judge 1, .enter 1, .check 1, .ren 1, .fin 1, .leave 1, .acq 1]).map
+      (fun s => s.pc 1) = some .crit := by decide
+
+/-- ...and from the dead creator's EMPTY lock too. -/
+theorem combined_recovers_empty :
+    (run .combined init28 [.judge 1, .enter 1, .check 1, .ren 1, .fin 1, .leave 1, .acq 1]).map
+      (fun s => s.pc 1) = some .crit := by decide
+
+/-- Core's own acquisition never exposes an empty lock (#1354's complete-on-publish). -/
+theorem combined_publish_complete (s s' : S) (p : Nat) (h : step .combined s (.acq p) = some s') :
+    ∃ c, s'.lock = some c ∧ c.tok = true := by
+  simp only [step] at h
+  split at h
+  · simp only [reduceCtorEq, if_false] at h; cases h; exact ⟨_, rfl, rfl⟩
+  · cases h
+
+/-! ### Grace window (`abandonedByAge`, `EMPTY_LOCK_GRACE_MS`). -/
+
+def graceMs : Nat := 10000
+
+/-- #1398 / combined: an empty lock is abandoned after `min(grace, T)`, a token after `T`. -/
+def abandonedByAge (empty : Bool) (age T : Nat) : Bool :=
+  if empty then decide (age > min graceMs T) else decide (age > T)
+
+/-- #1228: one rule for every unprobeable lock. -/
+def abandoned1228 (age T : Nat) : Bool := decide (age > T)
+
+/-- A creator that died between create and write blocks nobody past the grace window,
+whatever the stale threshold. -/
+theorem grace_bound (age T : Nat) (h : age > graceMs) : abandonedByAge true age T = true := by
+  simp [abandonedByAge, graceMs] at *; omega
+
+/-- A lock carrying a token keeps the full threshold (the grace is for empty locks only). -/
+theorem grace_token_keeps_threshold (age T : Nat) :
+    abandonedByAge false age T = decide (age > T) := by simp [abandonedByAge]
+
+/-- **#1228 alone (replayed, scratch `replay-grace.mts`):** a 15 s old empty lock under the
+60 s default is not abandoned, so the next writer waits out the stale threshold. -/
+theorem pr1228_blocks_past_grace : abandoned1228 15000 60000 = false := by decide
+
+end TakeoverG
 
 end PlurSpec.R2Persist

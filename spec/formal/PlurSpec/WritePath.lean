@@ -1710,4 +1710,252 @@ theorem old_batch_aborts :
 theorem old_vanished_history :
     rescopeOneOld .landed .vanished = some ⟨.rescoped, true, true⟩ := rfl
 
+/-! ## 5b. Field report 2026-09-29 — A3 ceiling, `draft`, and the gate at every ladder site
+
+Code: `_stepCommitment(c, lockBlocked)` (index.ts, #1275):
+`locked → locked`; `exploring → leaning`; `unset → leaning`; `leaning → decided`;
+anything else (`decided`, and `draft`) → `decided` if `lockBlocked` or
+`recurrence.max_commitment = decided`, else `locked`. `_maxRecurrenceCommitment`
+defaults to `locked` (config schema default). Callers and the `lockBlocked` they pass:
+in-place `applyMutation` → `hasUnresolvedTension(hit.id)`; `_promoteTeamCopy` twin →
+`hasUnresolvedTension(twin.id)`; `_promoteTeamCopy` new copy → literal `false`.
+Section 5's `nextCommit` is the pre-#1275 ladder; its theorems still describe
+`hasUnresolvedTension`, which is unchanged. -/
+
+inductive Cmt where
+  | unset | exploring | leaning | decided | locked | draft
+  deriving DecidableEq, Repr
+
+inductive Cap where
+  | locked | decided
+  deriving DecidableEq, Repr
+
+def rank : Cmt → Nat
+  | .unset | .draft => 0
+  | .exploring => 1
+  | .leaning => 2
+  | .decided => 3
+  | .locked => 4
+
+def capRank : Cap → Nat
+  | .locked => 4
+  | .decided => 3
+
+/-- `_stepCommitment`, branch for branch. -/
+def stepCode (cap : Cap) (blocked : Bool) : Cmt → Cmt
+  | .locked => .locked
+  | .exploring => .leaning
+  | .unset => .leaning
+  | .leaning => .decided
+  | .decided | .draft => if blocked || cap == .decided then .decided else .locked
+
+/-- **A3.** One ladder step never goes past `max_commitment` (an engram already above
+it — only `locked`, set by a person — stays where it is). -/
+theorem a3_never_past_cap (cap : Cap) (b : Bool) (c : Cmt) :
+    rank (stepCode cap b c) ≤ max (rank c) (capRank cap) := by
+  cases cap <;> cases b <;> cases c <;> decide
+
+/-- **A3, default `locked`:** the default still lets the ladder lock (non-vacuity). -/
+theorem a3_default_can_lock : stepCode .locked false .decided = .locked := rfl
+theorem a3_decided_cap_holds (b : Bool) (c : Cmt) (h : c ≠ .locked) : stepCode .decided b c ≠ .locked := by
+  cases b <;> cases c <;> simp_all [stepCode]
+
+/-- **Tension gate:** with `lockBlocked` no step enters `locked`. -/
+theorem gate_blocks (cap : Cap) (c : Cmt) (h : c ≠ .locked) : stepCode cap true c ≠ .locked := by
+  cases cap <;> cases c <;> simp_all [stepCode]
+
+/-- **CONFIRMED (replayed: "a draft engram hit by the ladder stays draft").** `draft`
+(pending human approval, never injected — schemas/engram.ts; feedback.ts leaves it
+untouched on purpose) falls into the `decided` branch and is stepped to `locked`.
+main's ladder (`e.commitment ?? 'leaning'`) kept it: a #1275 regression. -/
+theorem draft_escalates : stepCode .locked false .draft = .locked := rfl
+
+/-- The fix: `draft` (any unknown value) is not the ladder's to advance. -/
+def stepFixed (cap : Cap) (blocked : Bool) : Cmt → Cmt
+  | .draft => .draft
+  | c => stepCode cap blocked c
+
+theorem fixed_keeps_draft (cap : Cap) (b : Bool) : stepFixed cap b .draft = .draft := rfl
+theorem fixed_never_past_cap (cap : Cap) (b : Bool) (c : Cmt) :
+    rank (stepFixed cap b c) ≤ max (rank c) (capRank cap) := by
+  cases cap <;> cases b <;> cases c <;> decide
+theorem fixed_gate (cap : Cap) (c : Cmt) (h : c ≠ .locked) : stepFixed cap true c ≠ .locked := by
+  cases cap <;> cases c <;> simp_all [stepFixed, stepCode]
+
+/-! ### The gate at each ladder site -/
+
+inductive Site where
+  | inPlace | twin | newCopy
+  deriving DecidableEq, Repr
+
+/-- `lockBlocked` as passed; `tHit` / `tTwin` = `hasUnresolvedTension` of the hit / twin. -/
+def gateCode (tHit tTwin : Bool) : Site → Bool
+  | .inPlace => tHit
+  | .twin => tTwin
+  | .newCopy => false
+
+/-- **CONFIRMED (replayed: "copy-on-promote honours the hit's tension").** The hit is in
+an unresolved tension and `decided`; queued for a team store, its promotion goes through
+`_promoteTeamCopy`, and the new global copy (carrying the hit's commitment and text)
+locks. The same engram NOT team-bound is promoted in place and stays `decided`. -/
+theorem copy_skips_gate :
+    stepCode .locked (gateCode true false .newCopy) .decided = .locked
+    ∧ stepCode .locked (gateCode true false .inPlace) .decided = .decided := by decide
+
+/-- The fix: the hit's tension gates every site (the copy is the hit's statement). -/
+def gateFixed (tHit tTwin : Bool) : Site → Bool
+  | .inPlace => tHit
+  | .twin => tHit || tTwin
+  | .newCopy => tHit
+
+theorem gate_fixed_every_site (cap : Cap) (tTwin : Bool) (site : Site) (c : Cmt) (h : c ≠ .locked) :
+    stepFixed cap (gateFixed true tTwin site) c ≠ .locked := by
+  cases site <;> simp only [gateFixed, Bool.true_or] <;> exact fixed_gate cap c h
+
+/-- Non-vacuity: with no tension anywhere every site may still lock by default. -/
+theorem gate_fixed_clean_locks (site : Site) : stepFixed .locked (gateFixed false false site) .decided = .locked := by
+  cases site <;> rfl
+
+/-! ## 7. `deliveryOf` — where a learn result went (#1264, audit F8)
+
+Code: `deliveryOf(engram, requestedScope)`. (1) requested shared scope ≠ returned
+scope and not demoted → `local` + warning. (2) otherwise `remote` if
+`_remoteDelivered.has(engram)` (learnRouted got a server id), else `outbox` if the
+returned object carries `_outbox`, else for a `_storeScope`-stamped row `remote` iff
+the FIRST config entry with that scope has a url, else `local`; a `local` shared
+scope gets a warning. Ground truth `fromUrl` = the row really came from a url
+store's cache (the server's row). The report is a snapshot at return time: learn()'s
+background push may remove the outbox row afterwards (learn-delivery.test pins
+`outbox` then). -/
+
+structure StoreE where
+  scope : Nat
+  url : Bool
+  deriving DecidableEq, Repr
+
+structure Ret where
+  scope : Nat
+  remoteDelivered : Bool
+  outbox : Bool
+  storeScope : Option Nat
+  fromUrl : Bool
+  demoted : Bool
+  deriving DecidableEq, Repr
+
+inductive Dlv where
+  | remote | outbox | localD
+  deriving DecidableEq, Repr
+
+def firstUrl (stores : List StoreE) (s : Nat) : Bool :=
+  match stores.find? (fun e => e.scope == s) with
+  | some e => e.url
+  | none => false
+
+def baseDelivery (byStore : Nat → Bool) (r : Ret) : Dlv :=
+  if r.remoteDelivered then .remote
+  else if r.outbox then .outbox
+  else match r.storeScope with
+    | some s => if byStore s then .remote else .localD
+    | none => .localD
+
+/-- Branch (1): the save came back in another scope than the shared one asked for. -/
+def mismatch (shared : Nat → Bool) (req : Option Nat) (r : Ret) : Bool :=
+  match req with
+  | some q => q != r.scope && shared q && !r.demoted
+  | none => false
+
+def deliveryWith (byStore : Nat → Bool) (shared : Nat → Bool) (req : Option Nat) (r : Ret) : Dlv × Bool :=
+  if mismatch shared req r then (.localD, true)
+  else (baseDelivery byStore r, baseDelivery byStore r == .localD && shared r.scope)
+
+def deliveryCode (stores : List StoreE) := deliveryWith (firstUrl stores)
+
+/-- The server assigned this engram's id: this call's POST, or a server row. -/
+def serverId (r : Ret) : Bool := r.remoteDelivered || (r.storeScope.isSome && r.fromUrl)
+
+theorem remote_has_server_id_with (byStore shared : Nat → Bool) (req : Option Nat) (r : Ret)
+    (agree : ∀ s, r.storeScope = some s → byStore s = r.fromUrl)
+    (h : (deliveryWith byStore shared req r).1 = .remote) : serverId r = true := by
+  unfold deliveryWith at h
+  cases hm : mismatch shared req r
+  · simp only [hm] at h
+    unfold baseDelivery at h
+    unfold serverId
+    cases h1 : r.remoteDelivered
+    · cases h2 : r.outbox
+      · cases hs : r.storeScope with
+        | none => simp [h1, h2, hs] at h
+        | some s =>
+          have ha := agree s hs
+          simp [h1, h2, hs] at h
+          simp [← ha, h]
+      · simp [h1, h2] at h
+    · simp
+  · simp [hm] at h
+
+/-- **Claim 5a, conditional:** `remote` implies a server-assigned id WHEN the
+first-entry lookup agrees with the store the row came from — i.e. no scope has a
+url entry listed ahead of a path entry for the same scope. -/
+theorem remote_has_server_id (stores : List StoreE) (shared : Nat → Bool) (req : Option Nat) (r : Ret)
+    (agree : ∀ s, r.storeScope = some s → firstUrl stores s = r.fromUrl)
+    (h : (deliveryCode stores shared req r).1 = .remote) : serverId r = true :=
+  remote_has_server_id_with _ shared req r agree h
+
+/-- **CONFIRMED (replayed: "a dedup hit on a local path-store row is not reported
+remote").** url and path store registered for one scope (url first); the dedup hit
+is the PATH row: reported `remote`, no server id, nothing POSTed. -/
+theorem duplicate_scope_misreports :
+    let stores := [{ scope := 5, url := true }, { scope := 5, url := false : StoreE }]
+    let r : Ret := { scope := 5, remoteDelivered := false, outbox := false,
+                     storeScope := some 5, fromUrl := false, demoted := false }
+    (deliveryCode stores (fun _ => true) (some 5) r).1 = .remote ∧ serverId r = false := by decide
+
+/-- The fix: classify a stamped row by the store that served it (unconditional). -/
+theorem remote_has_server_id_fixed (shared : Nat → Bool) (req : Option Nat) (r : Ret)
+    (h : (deliveryWith (fun _ => r.fromUrl) shared req r).1 = .remote) : serverId r = true :=
+  remote_has_server_id_with _ shared req r (fun _ _ => rfl) h
+
+/-- **Claim 5b.** `outbox` iff the returned engram carries an outbox entry — given
+learnRouted's success object carries none (`remoteDelivered → ¬outbox`) and the
+save came back in the requested scope (A1, R2CoreA `a1_learn`/`a1_routed`). -/
+theorem outbox_iff (byStore shared : Nat → Bool) (req : Option Nat) (r : Ret)
+    (wf : r.remoteDelivered = true → r.outbox = false)
+    (same : req = none ∨ req = some r.scope) :
+    (deliveryWith byStore shared req r).1 = .outbox ↔ r.outbox = true := by
+  have hm : mismatch shared req r = false := by
+    rcases same with h | h <;> subst h <;> simp [mismatch]
+  unfold deliveryWith baseDelivery
+  simp only [hm]
+  cases h1 : r.remoteDelivered <;> cases h2 : r.outbox <;> simp_all
+  cases r.storeScope <;> simp
+  split <;> simp
+
+/-- **Claim 5c.** A shared scope (requested or returned) reported `local` always
+carries a warning — or is a sensitive-content demotion, which carries its own
+(`_demoted`, surfaced by the MCP/CLI). -/
+theorem shared_local_warns (byStore shared : Nat → Bool) (req : Option Nat) (r : Ret)
+    (hl : (deliveryWith byStore shared req r).1 = .localD)
+    (hs : shared r.scope = true ∨ ∃ q, req = some q ∧ shared q = true ∧ q ≠ r.scope) :
+    (deliveryWith byStore shared req r).2 = true ∨ r.demoted = true := by
+  unfold deliveryWith at hl ⊢
+  cases hm : mismatch shared req r
+  · simp only [hm, Bool.false_eq_true, ite_false] at hl ⊢
+    rw [hl]
+    rcases hs with h | ⟨q, rfl, hq, hne⟩
+    · simp [h]
+    · cases hd : r.demoted
+      · simp [mismatch, hq, hne, hd] at hm
+      · simp
+  · simp
+
+/-- Non-vacuity: each delivery value is reachable. -/
+theorem delivery_reachable :
+    (deliveryCode [] (fun _ => true) none
+      { scope := 1, remoteDelivered := true, outbox := false, storeScope := none, fromUrl := false, demoted := false }).1 = .remote
+    ∧ (deliveryCode [] (fun _ => true) none
+      { scope := 1, remoteDelivered := false, outbox := true, storeScope := none, fromUrl := false, demoted := false }).1 = .outbox
+    ∧ deliveryCode [] (fun _ => true) none
+      { scope := 1, remoteDelivered := false, outbox := false, storeScope := none, fromUrl := false, demoted := false } = (.localD, true) := by
+  decide
+
 end PlurSpec.WritePath

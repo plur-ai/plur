@@ -12,6 +12,12 @@ decidable equality. Every theorem holds for every oracle.
 The outbox lease (#1231) only exports `LOAD_FETCH_TIMEOUT_MS` from
 remote-store.ts so the lease margin is built from it; the value and every
 behaviour modelled here are unchanged, so these theorems still hold.
+
+Field-report refresh (2026-09-29, cluster 3): §5–§7 model what #1269/#1277,
+#1299 and #1310 added to remote-store.ts — lookup by idempotency key, the
+caller's abort signal in `fetchBounded`, and the feedback `source` payload.
+The outbox flush that uses them is `Outbox.lean`; findings in
+`spec/formal/findings/outbox.md`.
 -/
 
 namespace PlurSpec.R2CoreB
@@ -367,5 +373,156 @@ theorem malformed_keeps_prior {α : Type} (prior part fresh : α) (b : Body) (hb
   cases b <;> simp_all [served, complete]
 
 end LoadBreaker
+
+/-! ## 5. Lookup by idempotency key (`RemoteStore.findByIdempotencyKey`, #1277)
+
+Pages of `GET /engrams?scope=…&idempotency_key=K&limit=200&offset=…`, as the
+server answered them in order (the list ends at the 50-page cap). A row is its
+`data.idempotency_key` and whether it is retired; `filtered` = the envelope
+echoed the key (the server applied the filter). -/
+namespace KeyLookup
+
+structure Page where
+  filtered : Bool
+  rows     : List (Nat × Bool)
+  total    : Option Nat
+
+inductive Ans where
+  | notOk          -- non-2xx, or a thrown fetch (caught: never throws)
+  | bad            -- no `rows` array
+  | page (p : Page)
+
+inductive V where
+  | found | absent | unknown
+  deriving DecidableEq
+
+def hit (key : Nat) (r : Nat × Bool) : Bool := r.1 == key && !r.2
+
+def lookup (key limit : Nat) : Nat → List Ans → V
+  | _, [] => .unknown
+  | off, a :: t =>
+    match a with
+    | .notOk | .bad => .unknown
+    | .page p =>
+      if p.rows.any (hit key) then .found
+      else if decide (p.rows.length < limit) || decide (off + p.rows.length ≥ p.total.getD 0) then
+        (if p.filtered then .absent else .unknown)
+      else lookup key limit (off + limit) t
+
+/-- `absent` (the one answer that lets the flush post again) needs a page on
+which the server echoed the filter. -/
+theorem absent_needs_filter (key limit : Nat) :
+    ∀ (as : List Ans) (off : Nat), lookup key limit off as = .absent →
+      ∃ p, Ans.page p ∈ as ∧ p.filtered = true := by
+  intro as
+  induction as with
+  | nil => intro off h; simp [lookup] at h
+  | cons a t ih =>
+    intro off h
+    cases a with
+    | notOk => simp [lookup] at h
+    | bad => simp [lookup] at h
+    | page p =>
+      simp only [lookup] at h
+      split at h
+      · cases h
+      · split at h
+        · split at h
+          · exact ⟨p, by simp, by assumption⟩
+          · cases h
+        · obtain ⟨q, hq, hf⟩ := ih _ h
+          exact ⟨q, by simp [hq], hf⟩
+
+/-- `found` needs a live row that carries the key — never a statement match. -/
+theorem found_needs_key (key limit : Nat) :
+    ∀ (as : List Ans) (off : Nat), lookup key limit off as = .found →
+      ∃ p r, Ans.page p ∈ as ∧ r ∈ p.rows ∧ r.1 = key ∧ r.2 = false := by
+  intro as
+  induction as with
+  | nil => intro off h; simp [lookup] at h
+  | cons a t ih =>
+    intro off h
+    cases a with
+    | notOk => simp [lookup] at h
+    | bad => simp [lookup] at h
+    | page p =>
+      simp only [lookup] at h
+      split at h
+      · rename_i hany
+        obtain ⟨r, hr, hk⟩ := List.any_eq_true.mp hany
+        simp [hit] at hk
+        exact ⟨p, r, by simp, hr, hk.1, hk.2⟩
+      · split at h
+        · split at h <;> cases h
+        · obtain ⟨q, r, hq, hr, hk⟩ := ih _ h
+          exact ⟨q, r, by simp [hq], hr, hk⟩
+
+/-- A key-ignoring server (never echoes, never records the key): always `unknown`. -/
+theorem ignoring_server_unknown (key limit : Nat) :
+    ∀ (as : List Ans) (off : Nat),
+      (∀ p, Ans.page p ∈ as → p.filtered = false ∧ ∀ r ∈ p.rows, r.1 ≠ key) →
+      lookup key limit off as = .unknown := by
+  intro as
+  induction as with
+  | nil => intro off _; rfl
+  | cons a t ih =>
+    intro off h
+    cases a with
+    | notOk => rfl
+    | bad => rfl
+    | page p =>
+      have ⟨hf, hr⟩ := h p (by simp)
+      have hany : p.rows.any (hit key) = false := by
+        cases hh : p.rows.any (hit key)
+        · rfl
+        · obtain ⟨r, hm, hk⟩ := List.any_eq_true.mp hh
+          simp [hit] at hk
+          exact absurd hk.1 (hr r hm)
+      simp only [lookup, hany, Bool.false_eq_true, ↓reduceIte, hf]
+      split
+      · rfl
+      · exact ih _ (fun q hq => h q (by simp [hq]))
+
+/-- Non-vacuity: a filtered, empty answer is a confirmed absence; a live row
+with the key is found. -/
+theorem lookup_reachable :
+    lookup 7 200 0 [.page ⟨true, [], some 0⟩] = .absent ∧
+    lookup 7 200 0 [.page ⟨true, [(7, false)], some 1⟩] = .found := by decide
+
+end KeyLookup
+
+/-! ## 6. `fetchBounded` and the in-process host mark (#1069, #1269)
+
+Only a thrown `fetch` that the CALLER did not cut marks the host down; an
+answered request (any status, any body) never does. -/
+namespace FetchBounded
+
+inductive R where
+  | thrown (callerAborted : Bool)
+  | answered (status : Nat)
+
+def marks : R → Bool
+  | .thrown ca => !ca
+  | .answered _ => false
+
+theorem answered_never_marks (s : Nat) : marks (.answered s) = false := rfl
+theorem caller_cut_never_marks : marks (.thrown true) = false := rfl
+theorem network_failure_marks : marks (.thrown false) = true := rfl
+
+end FetchBounded
+
+/-! ## 7. Feedback payload (`RemoteStore.feedback`, #1310)
+
+`source` is on the wire exactly when the caller passed `source: 'auto'`; an
+explicit rating's body is `{ signal }`, byte-identical to before. Which
+servers the caller sends an automatic rating to is `Outbox.lean` §9. -/
+namespace FeedbackPayload
+
+def payloadHasSource (auto : Bool) : Bool := auto
+
+theorem explicit_body_unchanged : payloadHasSource false = false := rfl
+theorem auto_body_marked : payloadHasSource true = true := rfl
+
+end FeedbackPayload
 
 end PlurSpec.R2CoreB

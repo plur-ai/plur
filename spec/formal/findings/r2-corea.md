@@ -213,3 +213,71 @@ another team's engram; the match is credited and the save is written to its own
 scope. Carried by #1275; on `formal/field-report-2026-09-29` the remote route keeps
 this file's rule (no cross-scope absorption of a team-store write) and credits the
 match (`_teamValidationMatch`). See writepath.md "Decisions applied" for A1–A3.
+
+## Field report 2026-09-29 — cluster 1 (A1, A2, automatic feedback)
+
+Model: `PlurSpec/R2CoreA.lean` §9 (and a note on §5b). Code: `index.ts` on
+`formal/field-report-2026-09-29` (refresh 2); `feedback.ts`. Replays:
+`packages/core/test/formal-fr-c1-replays.test.ts` (`it.fails` = confirmed defect, the
+body asserts the intended behaviour; drop `.fails` when the owning PR fixes it).
+No source file was edited.
+
+### 9a. A1 — a shared-scope save lands in its own scope
+
+- **learn() / learnRouted(): REFUTED (claim proved).** `a1_learn`, `a1_routed`; good
+  cases `a1_credit_reachable`, `nonshared_still_absorbed`; old #1275 shared↔shared
+  absorb kept as `old_shared_to_shared_absorbed`. §5b still holds for remote-write
+  scopes; A1 is its refinement to every shared scope.
+- **wouldDeduplicate / importer: CONFIRMED + NEEDS-OWNER.** `wouldDeduplicate()`
+  still answers any `_crossScopeMatch` hit, the pre-A1 rule, while learn() now writes
+  the team copy for a shared scope. The importer asks it before learn() (Decision R)
+  and skips, so a shared-scope record whose text exists in another scope never reaches
+  its own scope. `dedupScopeFor().acrossScopes` has the same drift (true for a shared,
+  non-remote scope). Theorems: `would_dedup_disagrees` (counterexample),
+  `would_dedup_fixed_parity`, `import_fixed_a1`, `import_fixed_still_skips` (fix:
+  count a cross hit only when `!isSharedScope(scope)`).
+  Replay (without `.fails`): `wouldDeduplicate(S, project:b)` → `expected
+  'ENG-2026-09-29-001' to be null`; `runImport(..., scope: project:b)` → `imported`
+  0, expected 1.
+  Owner question: the fix flips `formal-r2-corea-import-parity.test.ts` › "YAML store:
+  the same case is skipped in both", which pins the pre-A1 skip. Options: (a) apply
+  A1 to the importer: import into the shared scope and credit the other engram (flip
+  the test); (b) keep import as a true skip for cross-scope text (then the docstring
+  "would learn() resolve to an existing engram" must say importer-specific). Owning
+  PR: #1275 (carries A1).
+
+### 9b. A2 — a queued team engram hit by the ladder
+
+**REFUTED (claim proved).** `a2_row_kept` (scope + outbox kept, count +1),
+`a2_at_most_one`, `a2_exactly_one_linked` (from a fresh queued row with no global
+twin, after n ≥ 2 crediting saves: exactly one global engram, `derived_from` the row,
+count n), `a2_first_save_no_copy`; old copy-only witness `old_copy_only_row_stuck`.
+Scope of the model: the global twin search is the primary store (`_findGlobalTwin`);
+a pre-existing unrelated global twin is credited instead of a linked copy (by design,
+review finding 2); a flush that delivers the row between saves is out of model.
+Existing tests: `recurrence-decisions.test.ts` › A2 (passes).
+
+### 9c. Automatic feedback never changes commitment
+
+**REFUTED (claim proved), with one out-of-cluster lead.** `auto_feedback_keeps_commitment`
+(every destination: primary, secondary, pack apply `applyOpts`; a remote gets an auto
+signal only when it advertises `feedback.source`, whose contract is the hypothesis),
+`auto_not_sent_incapable`, `explicit_promotes`, `feedback_never_locks`,
+`feedback_keeps_draft`. Existing tests: `feedback-auto-source.test.ts`,
+`feedback-source-remote.test.ts` (pass).
+Lead, not replayed, outside this cluster: the Hermes plugin
+(`packages/hermes/plur_hermes/memory_provider.py` `sync_turn`, `__init__.py`) infers
+feedback from the reply text and sends it through the CLI bridge as ordinary
+feedback — `plur feedback` has no `source` option — so its automatic verdicts do
+promote commitment, contrary to decision A′. Needs an owner for the Python adapter
+and a CLI `--source auto` flag.
+
+### Mutation checks (scratch copies, `lake env lean`)
+
+| Mutation | Broken theorems |
+|---|---|
+| learn() absorbs a shared save (`!shared` dropped) | `a1_learn`, `a1_routed`, `import_fixed_a1`, … |
+| wouldDedup fix undone | `would_dedup_fixed_parity`, `import_fixed_a1` |
+| queued row not counted on promotion | `a2_row_kept`, `a2_exactly_one_linked` |
+| second global copy despite a twin | `a2_at_most_one`, `a2_exactly_one_linked` |
+| auto feedback promotes | `auto_feedback_keeps_commitment` |

@@ -416,7 +416,13 @@ abstracted to the features the classifier reads.
 Checked against round 2 (2026-09-27): still holds because `mergeHooks`,
 `stripPlurHooks` and `isPlurHookSpec` are not in the round-2 diff of init.ts; round 2
 only widened the PostToolUse session-mark MATCHER to `mcp__.*__plur_session_start`,
-which is a field of an installed spec, not the classifier. -/
+which is a field of an installed spec, not the classifier.
+
+Checked against the field report (2026-09-29): still holds. `isPlurClaudeHookSpec`
+is now #1228's null guard around lib/hook-command.ts `isPlurHookSpec` (decisions
+H2 "prefix" and H3), which is `plurSpec` at this abstraction: a string command,
+PLUR's launcher, any `hook-*`. §10 refines `plurBinary && hookSub` at token level
+and shows every launcher form init ever wrote satisfies it; §11 models H3. -/
 
 structure Spec where
   hasCommand : Bool   -- `command` is a string (false for `type: "prompt"`)
@@ -1074,7 +1080,9 @@ theorem orig_dsh_global : adoptScopeOrig .dsh true (some "global") = some "globa
 
 /-! ### 9b. The notice names a command that reaches the checked store (audit 1228-c #1)
 
-An adapter checks `<its store root>/trust.yaml`. The notice tells the user what to
+An adapter checks the grant in `<its store root>` — since #1347 the folder map
+`folders.yaml` (a pre-#1347 `trust.yaml` is imported once and dual-written; see
+PlurSpec/Folders.lean §3). The notice tells the user what to
 run; the CLI writes the grant to `--path`, else the SHELL's `PLUR_PATH`, else the
 default `~/.plur` (`createPlur`). The adapter's root comes from ITS environment (an
 MCP config's `env`, dsh's `path`, opencode's `PLUR_PATH`), which the user's shell
@@ -1132,5 +1140,321 @@ theorem remedy_honest (s : TrustSupport) : offersTrustAlone s = grantCanHelp s :
   cases s <;> rfl
 theorem orig_remedy_promises_the_impossible :
     offersTrustAloneOrig .noTrust = true ∧ grantCanHelp .noTrust = false := ⟨rfl, rfl⟩
+
+/-! ## 10. Decision H2 "prefix": which hook commands are PLUR's
+(cli/src/lib/hook-command.ts `isPlurHookCommand` / `isPlurHookSpec`, the
+byte-identical region in mcp/src/hook-command.ts; callers: init.ts
+`stripPlurHooks`, cursor-hooks.ts, codex-hooks.ts, doctor.ts, mcp index.ts)
+
+A command split at whitespace, as the token classes the regexes see after
+`\ → /` and lower-casing:
+- `shim`: ends in `/plur-hook` or `/plur-hook.cmd` (or starts with it, or with
+  `"` before it), optionally closed by `"`; or the 8.3 alias
+  `…/.plur/bin/plur-h~N.cmd` / `…/plur~N/bin/plur-h~N.cmd`;
+- `npx`: `@plur-ai/cli` or `@plur-ai/cli@<v>`, at a token start;
+- `sub`: `hook-<word>` that ends at whitespace or the end (`hook-inject"` is not one);
+- `frag`: part of a spaced path before the shim's own segment;
+- `word`: an argument PLUR itself writes (`npx`, `-y`, `&`, flags, `claude`);
+- `user`: anything else — `&&`, `nice`, `echo`, a user script;
+- `look`: a look-alike — `plur-hook-backup.ps1`, `@plur-ai/cli-extras`, `hook-`.
+`SHIM_FORM` / `NPX_FORM` are unanchored `.test`s: a launcher token directly
+followed by a `sub` token ANYWHERE in the command. Replays:
+packages/cli/test/formal-fr-c4-hooks.test.ts. -/
+
+inductive HTok | shim | npx | sub | frag | word | user | look deriving DecidableEq
+
+def isLauncher : HTok → Bool
+  | .shim => true
+  | .npx => true
+  | _ => false
+
+def claims : List HTok → Bool
+  | a :: b :: r => (isLauncher a && b == .sub) || claims (b :: r)
+  | _ => false
+
+/-- Every launcher layout some version of init wrote (git log of init.ts, mcp
+index.ts and the editor installers): what comes before the launcher, and the
+launcher. The 8.3 short path and the backslash form are `shim` with no lead. -/
+inductive Layout
+  | npxBare              -- `npx @plur-ai/cli` (2026-04)
+  | npxPinned            -- `npx -y @plur-ai/cli@<v>` (#1069)
+  | shim                 -- `<home>/.plur/bin/plur-hook[.cmd]`, any slashes, 8.3 alias
+  | shimSpaced (k : Nat) -- a spaced home, unquoted (pre-#1267; the H3 Antigravity fallback)
+  | shimQuoted (k : Nat) -- `"<spaced path>"` (hookCommandPrefix)
+  | pwsh (k : Nat)       -- `& "<spaced path>"` (the H3 PowerShell fallback)
+deriving DecidableEq
+
+def lead : Layout → List HTok
+  | .npxBare => [.word]
+  | .npxPinned => [.word, .word]
+  | .shim => []
+  | .shimSpaced k => List.replicate k .frag
+  | .shimQuoted k => List.replicate k .frag
+  | .pwsh k => .word :: List.replicate k .frag
+
+def launcherOf : Layout → HTok
+  | .npxBare => .npx
+  | .npxPinned => .npx
+  | _ => .shim
+
+/-- A command PLUR writes: the launcher, one hook subcommand, plain arguments. -/
+def written (l : Layout) (n : Nat) : List HTok := lead l ++ launcherOf l :: .sub :: List.replicate n .word
+def IsWritten (t : List HTok) : Prop := ∃ l n, t = written l n
+
+theorem claims_of_pair (pre r : List HTok) (x : HTok) (hx : isLauncher x = true) :
+    claims (pre ++ x :: .sub :: r) = true := by
+  induction pre with
+  | nil => simp [claims, hx]
+  | cons a t ih =>
+    cases h : t ++ x :: HTok.sub :: r with
+    | nil => simp at h
+    | cons b rest =>
+      simp only [List.cons_append, h, claims, Bool.or_eq_true]
+      right; rw [← h]; exact ih
+
+/-- What H2 claims, exactly: a launcher token immediately followed by a `sub` token. -/
+theorem claims_sound (t : List HTok) (h : claims t = true) :
+    ∃ pre x r, t = pre ++ x :: .sub :: r ∧ isLauncher x = true := by
+  induction t with
+  | nil => simp [claims] at h
+  | cons a t ih =>
+    cases t with
+    | nil => simp [claims] at h
+    | cons b r =>
+      simp only [claims, Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq] at h
+      rcases h with ⟨ha, hb⟩ | h
+      · exact ⟨[], a, r, by simp [hb], ha⟩
+      · obtain ⟨pre, x, r', he, hx⟩ := ih h
+        exact ⟨a :: pre, x, r', by simp [he], hx⟩
+
+/-- **Idempotence from every older layout**: whatever launcher form init wrote, with
+any hook subcommand and arguments, the matcher claims it — so a re-run strips it. -/
+theorem written_claimed (l : Layout) (n : Nat) : claims (written l n) = true :=
+  claims_of_pair _ _ _ (by cases l <;> rfl)
+
+/-- Look-alikes and other binaries stay the user's. -/
+theorem lookalikes_not_claimed :
+    claims [.look, .sub] = false ∧          -- plur-hook-backup.ps1 hook-inject / @plur-ai/cli-extras hook-inject
+    claims [.user, .sub] = false ∧          -- /usr/local/bin/mytool hook-inject
+    claims [.shim, .word] = false ∧         -- <shim> status
+    claims [.shim, .look] = false := by     -- <shim> hook-
+  decide
+
+theorem written_no_user (l : Layout) (n : Nat) : HTok.user ∉ written l n := by
+  cases l <;> simp [written, lead, launcherOf, List.mem_replicate]
+
+/-- `<shim> hook-x && ~/bin/notify.sh` — a user's chained step. -/
+def chainCmd : List HTok := [.shim, .sub, .user, .user]
+/-- `nice -n 10 <shim> hook-inject` — a user's wrapper. -/
+def wrapperCmd : List HTok := [.user, .word, .word, .shim, .sub]
+
+/-- **CONFIRMED (replayed), NEEDS-OWNER**: a user command that CONTAINS a PLUR
+invocation is claimed, though no version of init wrote it — so a re-run of init
+deletes the user's part ("user hooks stay untouched", H2, fails for these). -/
+theorem embedded_claimed :
+    (claims chainCmd = true ∧ ¬ IsWritten chainCmd) ∧
+    (claims wrapperCmd = true ∧ ¬ IsWritten wrapperCmd) := by
+  refine ⟨⟨by decide, ?_⟩, ⟨by decide, ?_⟩⟩ <;>
+  · rintro ⟨l, n, h⟩
+    exact written_no_user l n (h ▸ by decide)
+
+/-- Option (a) for the owner: anchor the END — after the subcommand only arguments
+may follow. It keeps every written form and rejects the chained step; a wrapper
+(`nice …`) needs a start anchor (a path-shaped first token), not modelled here,
+because at the string level `nice` and a spaced-path fragment look alike. -/
+def claimsEnd : List HTok → Bool
+  | a :: b :: r => (isLauncher a && b == .sub && r.all (· == .word)) || claimsEnd (b :: r)
+  | _ => false
+
+theorem claimsEnd_of_pair (pre : List HTok) (n : Nat) (x : HTok) (hx : isLauncher x = true) :
+    claimsEnd (pre ++ x :: .sub :: List.replicate n .word) = true := by
+  induction pre with
+  | nil => simp [claimsEnd, hx]
+  | cons a t ih =>
+    cases h : t ++ x :: HTok.sub :: List.replicate n .word with
+    | nil => simp at h
+    | cons b rest =>
+      simp only [List.cons_append, h, claimsEnd, Bool.or_eq_true]
+      right; rw [← h]; exact ih
+
+theorem end_anchor_keeps_written (l : Layout) (n : Nat) : claimsEnd (written l n) = true :=
+  claimsEnd_of_pair _ _ _ (by cases l <;> rfl)
+theorem end_anchor_rejects_chain : claimsEnd chainCmd = false := by decide
+
+/-- The Claude Code exec form (`isPlurHookSpec` with `args`): `node` + an entry +
+`hook-*`. The entry is PLUR's when it ends in `/@plur-ai/cli/dist/index.js`, in
+`/packages/cli/dist/index.js`, or equals the one init recorded. -/
+inductive XEntry | plurCli | packagesCli | recorded | other deriving DecidableEq
+def isPlurExec (node : Bool) (entry : XEntry) (sub : Bool) : Bool := node && sub && entry != .other
+
+theorem exec_written_claimed : isPlurExec true .plurCli true = true ∧ isPlurExec true .recorded true = true := by decide
+/-- **NEEDS-OWNER (replayed)**: `packagesCli` also names ANY checkout whose entry is
+`…/packages/cli/dist/index.js` — a user's own monorepo tool in exec form is claimed. -/
+theorem exec_foreign_checkout_claimed : isPlurExec true .packagesCli true = true := rfl
+
+/-- Bridge to §3: a command's classifier as a `Spec`; H2's matcher is `plurSpec`. -/
+def specOf (t : List HTok) : Spec := ⟨true, claims t, false, claims t⟩
+theorem specOf_plur (t : List HTok) : plurSpec (specOf t) = claims t := by
+  simp [plurSpec, specOf]
+
+/-- **Re-running init from an older layout leaves one PLUR set**: an entry holding
+any older written PLUR command is stripped whole, so merging over it keeps only the
+user's entries plus the new set; and a second run changes nothing (§3). -/
+theorem upgrade_strips_old (l : Layout) (n : Nat) :
+    strip [[specOf (written l n)]] = [] := by
+  apply strip_installable
+  intro e he
+  simp at he; subst he
+  refine ⟨by simp, ?_⟩
+  intro h hh; simp at hh; subst hh
+  rw [specOf_plur]; exact written_claimed l n
+
+theorem rerun_idempotent (es : List Entry) (cmds : List (List (List HTok)))
+    (hne : ∀ e ∈ cmds, e ≠ []) (hw : ∀ e ∈ cmds, ∀ t ∈ e, ∃ l n, t = written l n) :
+    merge (merge es (cmds.map (·.map specOf))) (cmds.map (·.map specOf)) =
+      merge es (cmds.map (·.map specOf)) := by
+  apply merge_idempotent
+  intro e he
+  simp only [List.mem_map] at he
+  obtain ⟨c, hc, rfl⟩ := he
+  refine ⟨by simpa using hne c hc, ?_⟩
+  intro h hh
+  simp only [List.mem_map] at hh
+  obtain ⟨t, ht, rfl⟩ := hh
+  obtain ⟨l, n, rfl⟩ := hw c hc t ht
+  rw [specOf_plur]; exact written_claimed l n
+
+/-! ## 11. Decision H3 "plan": the command form per editor and version
+(cli/src/commands/init.ts `run`; lib/hook-command.ts `hookCommandPrefix`,
+`windowsHookCommand`, `useClaudeExecForm`, `claudeHookSpec`)
+
+The documented table (decision H3; the docstrings of those functions; the
+Claude Code hooks docs, exec form since 2.1.139):
+- darwin/linux, every editor: the shim path, quoted only when it has whitespace;
+  no shim → the pinned `npx -y @plur-ai/cli@<v>`;
+- Windows Codex / Cursor / Antigravity: the unquoted forward-slash path; with
+  whitespace, its 8.3 short name; with no short name, `& "<path>"` for the
+  PowerShell editors and the plain spaced path for Antigravity (fallbacks);
+- Windows Claude Code: exec form (`node` + CLI entry + subcommand) when the
+  version is known ≥ 2.1.139; the string form (Codex's rules) when known older;
+  unknown → the string form, unless it would be a fallback, then exec form; no
+  shim → exec form through `cmd.exe /c npx …`. -/
+
+inductive Host | claude | codex | cursor | agy deriving DecidableEq
+inductive Plat | posix | win deriving DecidableEq
+inductive Ver | unknown | old | new deriving DecidableEq
+
+structure Inst where
+  plat   : Plat
+  shim   : Bool   -- the shim was installed (else the npx fallback)
+  spaced : Bool   -- the shim path contains whitespace
+  short  : Bool   -- a whitespace-free 8.3 short name exists
+  ver    : Ver    -- `claude --version` against CLAUDE_EXEC_FORM_MIN
+deriving DecidableEq
+
+inductive CForm
+  | shell (quoted : Bool) | npx | winPlain | winShort | pwshAmp | agySpaced | execNode | execCmdNpx
+deriving DecidableEq
+
+/-- `windowsHookCommand` → (form, fallback). -/
+def winString (h : Host) (spaced short : Bool) : CForm × Bool :=
+  if !spaced then (.winPlain, false)
+  else if short then (.winShort, false)
+  else if h == .agy then (.agySpaced, true) else (.pwshAmp, true)
+
+/-- `useClaudeExecForm`. -/
+def useExec (v : Ver) (fb : Bool) : Bool :=
+  match v with
+  | .new => true
+  | .old => false
+  | .unknown => fb
+
+/-- What init writes: `cmd`, `stringHookCmd`, `claudeString` / `claudeExecForm`,
+`claudeHookSpec`, branch for branch. -/
+def chosen (h : Host) (i : Inst) : CForm :=
+  match i.plat with
+  | .posix => if i.shim then .shell i.spaced else .npx
+  | .win =>
+    if h == .claude then
+      if i.shim then
+        if useExec i.ver (winString .codex i.spaced i.short).2 then .execNode
+        else (winString .codex i.spaced i.short).1
+      else .execCmdNpx
+    else if i.shim then (winString h i.spaced i.short).1 else .npx
+
+/-- The documented table, row by row. -/
+def table : Host → Inst → CForm
+  | _, ⟨.posix, false, _, _, _⟩ => .npx
+  | _, ⟨.posix, true, sp, _, _⟩ => .shell sp
+  | .claude, ⟨.win, false, _, _, _⟩ => .execCmdNpx
+  | .claude, ⟨.win, true, _, _, .new⟩ => .execNode
+  | .claude, ⟨.win, true, false, _, _⟩ => .winPlain
+  | .claude, ⟨.win, true, true, true, _⟩ => .winShort
+  | .claude, ⟨.win, true, true, false, .old⟩ => .pwshAmp
+  | .claude, ⟨.win, true, true, false, .unknown⟩ => .execNode
+  | _, ⟨.win, false, _, _, _⟩ => .npx
+  | _, ⟨.win, true, false, _, _⟩ => .winPlain
+  | _, ⟨.win, true, true, true, _⟩ => .winShort
+  | .agy, ⟨.win, true, true, false, _⟩ => .agySpaced
+  | _, ⟨.win, true, true, false, _⟩ => .pwshAmp
+
+/-- **H3 as built = H3 as documented**, for every editor, platform and version. -/
+theorem chosen_matches_table (h : Host) (i : Inst) : chosen h i = table h i := by
+  obtain ⟨p, s, sp, sh, v⟩ := i
+  cases h <;> cases p <;> cases s <;> cases sp <;> cases sh <;> cases v <;> rfl
+
+def quoted : CForm → Bool
+  | .shell q => q
+  | .pwshAmp => true
+  | _ => false
+
+/-- On Windows no hook relies on shell quoting, except the documented PowerShell
+fallback (spaced path, no short name, not Antigravity). -/
+theorem win_quote_only_fallback (h : Host) (i : Inst) (hw : i.plat = .win)
+    (hq : quoted (chosen h i) = true) :
+    chosen h i = .pwshAmp ∧ i.spaced = true ∧ i.short = false ∧ h ≠ .agy := by
+  obtain ⟨p, s, sp, sh, v⟩ := i
+  simp only at hw; subst hw
+  cases h <;> cases s <;> cases sp <;> cases sh <;> cases v <;> simp_all [chosen, winString, useExec, quoted]
+
+/-- Exec form only where Claude Code runs it: a known-new version, or an unknown
+one whose string form would be the fallback. -/
+theorem exec_needs_support (i : Inst) (h : chosen .claude i = .execNode) :
+    i.ver = .new ∨ (i.ver = .unknown ∧ i.spaced = true ∧ i.short = false) := by
+  obtain ⟨p, s, sp, sh, v⟩ := i
+  cases p <;> cases s <;> cases sp <;> cases sh <;> cases v <;> simp_all [chosen, winString, useExec]
+
+theorem old_never_exec (i : Inst) (hv : i.ver = .old) : chosen .claude i ≠ .execNode := by
+  intro h; rcases exec_needs_support i h with h' | ⟨h', _⟩ <;> rw [hv] at h' <;> cases h'
+
+/-- The tokens of each string form, before the subcommand (`none`: exec with node). -/
+def stringTokens : CForm → Option (List HTok)
+  | .shell false => some [.shim]
+  | .shell true => some [.frag, .shim]           -- `"/Users/J` `S/.plur/bin/plur-hook"`
+  | .npx => some [.word, .word, .npx]
+  | .winPlain => some [.shim]
+  | .winShort => some [.shim]
+  | .pwshAmp => some [.word, .frag, .shim]
+  | .agySpaced => some [.frag, .shim]
+  | .execCmdNpx => some [.word, .word, .npx]    -- the argv after `cmd.exe /c`
+  | .execNode => none
+
+/-- **H2 × H3**: every form H3 writes is one H2 claims, so re-running init after
+any H3 form strips it (string forms here; exec form by `exec_written_claimed`). -/
+theorem every_form_claimed (h : Host) (i : Inst) (pre : List HTok) (n : Nat)
+    (hs : stringTokens (chosen h i) = some pre) :
+    claims (pre ++ .sub :: List.replicate n .word) = true := by
+  generalize chosen h i = f at hs
+  cases f with
+  | shell q => cases q <;> simp [stringTokens] at hs <;> subst hs
+               · exact claims_of_pair [] _ _ rfl
+               · simpa using claims_of_pair [.frag] (List.replicate n .word) .shim rfl
+  | npx => simp [stringTokens] at hs; subst hs; simpa using claims_of_pair [.word, .word] (List.replicate n .word) .npx rfl
+  | winPlain => simp [stringTokens] at hs; subst hs; exact claims_of_pair [] _ _ rfl
+  | winShort => simp [stringTokens] at hs; subst hs; exact claims_of_pair [] _ _ rfl
+  | pwshAmp => simp [stringTokens] at hs; subst hs; simpa using claims_of_pair [.word, .frag] (List.replicate n .word) .shim rfl
+  | agySpaced => simp [stringTokens] at hs; subst hs; simpa using claims_of_pair [.frag] (List.replicate n .word) .shim rfl
+  | execCmdNpx => simp [stringTokens] at hs; subst hs; simpa using claims_of_pair [.word, .word] (List.replicate n .word) .npx rfl
+  | execNode => simp [stringTokens] at hs
 
 end PlurSpec.Adapters

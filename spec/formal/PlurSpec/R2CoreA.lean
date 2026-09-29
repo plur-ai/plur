@@ -520,7 +520,11 @@ theorem persistable_hit_durable (h : HitAt) (hp : persistable h = true) : durabl
 
 Code: `_crossScopeRecurrenceApplies(scope) = !_isRemoteWriteScope(scope)`,
 consulted by learn(), learnRouted()'s remote route and `wouldDeduplicate`.
-`sameScope` = a same-scope hash match exists; `cross` = a cross-scope one. -/
+`sameScope` = a same-scope hash match exists; `cross` = a cross-scope one.
+
+Field report (2026-09-29): still holds for a remote-write scope. Decision A1 extends
+"never absorbed" to every SHARED scope, remote or not; that refinement, and the
+`wouldDeduplicate` drift it exposes, is §9a (`learnRes`, `a1_learn`). -/
 
 /-- Outcome of a write: absorbed into an existing engram, or a new row (which,
 for a remote-write scope, is POSTed or queued). -/
@@ -748,5 +752,280 @@ theorem infile_cases :
 
 theorem old_infile_diverges :
     runF (dryStepOld false) [] [(5, 1), (5, 2)] ≠ runF (realStepF false) [] [(5, 1), (5, 2)] := by decide
+
+/-! ## 9. Field report 2026-09-29 — decisions A1, A2, automatic feedback
+
+Code (index.ts on `formal/field-report-2026-09-29`, refresh 2): `learn()`,
+`learnRouted()`, `_crossScopeMatch` / `_teamValidationMatch`, `_isTeamValidation`,
+`_recordCrossScopeRecurrence`, `_promoteTeamCopy`, `_findGlobalTwin`,
+`wouldDeduplicate`; feedback.ts `applyFeedbackSignal` / `nextCommitment`; the three
+local application sites and the remote gate in `Plur.feedback`. Replays:
+packages/core/test/formal-fr-c1-replays.test.ts. -/
+
+/-! ### 9a. A1 "never" — a shared-scope save lands in its own scope
+
+`shared` = `isSharedScope(requested)`; `remoteWrite` = `_isRemoteWriteScope`;
+`same` = a persistable same-scope hash match (`_learnHashMatch`); `cross` = a
+persistable cross-scope hit. learn(): `_crossScopeMatch` is empty for a
+remote-write scope; a hit absorbs only when `!_isTeamValidation(scope)` =
+`!shared`, otherwise it is credited and the own row is still written.
+learnRouted()'s remote route: `_teamValidationMatch` (shared scopes only) is
+credited and the placeholder POSTed (or queued); its local route IS learn(). -/
+
+inductive Res where
+  | ownRow   -- a new row in the requested scope (written, POSTed or queued)
+  | ownDup   -- absorbed into the same-scope duplicate (#107): the requested scope
+  | absorbed -- the cross-scope hit is returned: nothing lands in the requested scope
+  deriving DecidableEq, Repr
+
+def inOwnScope : Res → Bool
+  | .ownRow | .ownDup => true
+  | .absorbed => false
+
+/-- learn(), branch for branch (hash match; cross hit absorbed iff not a team validation). -/
+def learnRes (remoteWrite shared same cross : Bool) : Res :=
+  if same then .ownDup
+  else if cross && !remoteWrite && !shared then .absorbed
+  else .ownRow
+
+/-- The credited hit of a team validation (`recurrence_count`, `validated_by`). -/
+def learnCredits (remoteWrite shared same cross : Bool) : Bool :=
+  !same && cross && !remoteWrite && shared
+
+/-- learnRouted(): the remote route never returns the cross hit. -/
+def routedRes (remoteRoute remoteWrite shared same cross : Bool) : Res :=
+  if remoteRoute then (if same then .ownDup else .ownRow)
+  else learnRes remoteWrite shared same cross
+
+/-- **A1 (learn).** A shared-scope save always ends in its own scope. -/
+theorem a1_learn (rw same cross : Bool) : inOwnScope (learnRes rw true same cross) = true := by
+  cases rw <;> cases same <;> cases cross <;> rfl
+
+/-- **A1 (learnRouted).** Same on both routes. -/
+theorem a1_routed (rr rw same cross : Bool) : inOwnScope (routedRes rr rw true same cross) = true := by
+  cases rr <;> cases rw <;> cases same <;> cases cross <;> rfl
+
+/-- Non-vacuity: a shared save that matched elsewhere credits the hit, and a
+non-shared save is still absorbed by #176 cross-scope recurrence. -/
+theorem a1_credit_reachable : learnCredits false true false true = true := rfl
+theorem nonshared_still_absorbed : learnRes false false false true = .absorbed := rfl
+
+/-- #1275 before A1: a shared save matching another SHARED engram was absorbed. -/
+def learnResOld (remoteWrite shared hitShared same cross : Bool) : Res :=
+  if same then .ownDup
+  else if cross && !remoteWrite && (!shared || hitShared) then .absorbed
+  else .ownRow
+
+theorem old_shared_to_shared_absorbed : inOwnScope (learnResOld false true true false true) = false := rfl
+
+/-! #### `wouldDeduplicate` / the importer (Decision R)
+
+`wouldDeduplicate` promises "would learn() resolve to an EXISTING engram instead of
+writing a new one?". As coded it answers the same-scope match, else ANY
+`_crossScopeMatch` hit — the pre-A1 rule. The importer asks it first and skips on
+an id; `dedupScopeFor.acrossScopes` is likewise true for a shared, non-remote scope. -/
+
+def wouldDedupCode (remoteWrite _shared same cross : Bool) : Bool := same || (cross && !remoteWrite)
+
+def learnResolvesExisting (rw shared same cross : Bool) : Bool := learnRes rw shared same cross != .ownRow
+
+/-- After an import of one record: does its own scope hold the statement? -/
+def importHolds (wd : Bool → Bool → Bool → Bool → Bool) (rw shared same cross : Bool) : Bool :=
+  same || (!wd rw shared same cross && inOwnScope (learnRes rw shared same cross))
+
+/-- **CONFIRMED (replayed: formal-fr-c1-replays "wouldDeduplicate() agrees …" and
+"importer: …").** A shared record whose text exists only in another scope: the dry
+answer says "existing", learn() would write a new row, and the importer skips it —
+the requested scope never receives it. -/
+theorem would_dedup_disagrees :
+    wouldDedupCode false true false true = true ∧ learnResolvesExisting false true false true = false
+    ∧ importHolds wouldDedupCode false true false true = false := by decide
+
+/-- The fix: answer a cross hit only where learn() absorbs it (`!shared`). -/
+def wouldDedupFixed (remoteWrite shared same cross : Bool) : Bool := same || (cross && !remoteWrite && !shared)
+
+theorem would_dedup_fixed_parity (rw shared same cross : Bool) :
+    wouldDedupFixed rw shared same cross = learnResolvesExisting rw shared same cross := by
+  cases rw <;> cases shared <;> cases same <;> cases cross <;> rfl
+
+theorem import_fixed_a1 (rw same cross : Bool) : importHolds wouldDedupFixed rw true same cross = true := by
+  cases rw <;> cases same <;> cases cross <;> rfl
+
+/-- Non-vacuity: the fixed importer still skips a same-scope re-run (Decision R) and a
+non-shared cross-scope duplicate (the pinned YAML behaviour for personal scopes). -/
+theorem import_fixed_still_skips :
+    wouldDedupFixed false true true false = true ∧ wouldDedupFixed false false false true = true := by decide
+
+/-! ### 9b. A2 "both" — a queued team engram hit by the ladder
+
+State: the queued row (scope, `_outbox` marker, `recurrence_count`) and the
+active `global` engrams with its text in the primary store (what `_findGlobalTwin`
+searches). One save that credits the row (`_recordCrossScopeRecurrence`):
+
+- `count + 1 < 2`: `applyMutation` in place — count rises; no widen (below the
+  threshold, and `_isTeamStoreBound` holds for an `_outbox` row anyway).
+- `count + 1 ≥ 2` (shared, team-bound): `_promoteTeamCopy` — the row records the
+  recurrence on itself (A2) and the first twin is credited, else a copy
+  `derived_from: hid` is appended with `recurrence_count = row.count`. -/
+
+structure QRow where
+  scope : Nat
+  outbox : Bool
+  count : Nat
+  deriving DecidableEq, Repr
+
+structure GCopy where
+  derivedFrom : Option Nat
+  count : Nat
+  deriving DecidableEq, Repr
+
+structure St2 where
+  row : QRow
+  globals : List GCopy
+  deriving DecidableEq, Repr
+
+def hitQueued (hid : Nat) (s : St2) : St2 :=
+  let r' : QRow := { s.row with count := s.row.count + 1 }
+  if s.row.count + 1 ≥ 2 then
+    match s.globals with
+    | g :: gs => { row := r', globals := { g with count := g.count + 1 } :: gs }
+    | [] => { row := r', globals := [{ derivedFrom := some hid, count := r'.count }] }
+  else { s with row := r' }
+
+/-- **A2, one save:** scope and outbox entry kept, count up by one. -/
+theorem a2_row_kept (hid : Nat) (s : St2) :
+    (hitQueued hid s).row.scope = s.row.scope ∧ (hitQueued hid s).row.outbox = s.row.outbox
+    ∧ (hitQueued hid s).row.count = s.row.count + 1 := by
+  unfold hitQueued
+  split
+  · split <;> simp
+  · simp
+
+/-- At most one global engram with the text, preserved by every save. -/
+theorem a2_at_most_one (hid : Nat) (s : St2) (h : s.globals.length ≤ 1) :
+    (hitQueued hid s).globals.length ≤ 1 := by
+  unfold hitQueued
+  split
+  · split <;> simp_all
+  · simpa using h
+
+def saves (hid : Nat) : Nat → St2 → St2
+  | 0, s => s
+  | n + 1, s => saves hid n (hitQueued hid s)
+
+theorem saves_row (hid : Nat) : ∀ n (s : St2),
+    (saves hid n s).row = { s.row with count := s.row.count + n } := by
+  intro n
+  induction n with
+  | zero => intro s; simp [saves]
+  | succ n ih =>
+    intro s
+    simp only [saves, ih]
+    obtain ⟨a, b, c⟩ := a2_row_kept hid s
+    cases s with
+    | mk row gl =>
+      cases row
+      simp_all
+      omega
+
+/-- **A2, from a fresh queued row with no global twin:** after `n ≥ 2` crediting
+saves there is exactly ONE global engram, linked to the row, carrying the row's
+count; the row keeps its scope and outbox entry and counts every save. -/
+theorem a2_exactly_one_linked (hid sc : Nat) : ∀ n, 2 ≤ n →
+    saves hid n { row := { scope := sc, outbox := true, count := 0 }, globals := [] }
+      = { row := { scope := sc, outbox := true, count := n },
+          globals := [{ derivedFrom := some hid, count := n }] } := by
+  intro n hn
+  obtain ⟨k, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+  induction k with
+  | zero => simp [saves, hitQueued]
+  | succ k ih =>
+    have e : k + 1 + 2 = (k + 2) + 1 := by omega
+    rw [e]
+    have step : ∀ m (s : St2), saves hid (m + 1) s = hitQueued hid (saves hid m s) := by
+      intro m
+      induction m with
+      | zero => intro s; rfl
+      | succ m ihm => intro s; simp only [saves] at *; exact ihm _
+    rw [step, ih (by omega)]
+    simp [hitQueued]
+
+/-- Before the promotion threshold nothing global is made (one save = recurrence 1). -/
+theorem a2_first_save_no_copy (hid sc : Nat) :
+    (saves hid 1 { row := { scope := sc, outbox := true, count := 0 }, globals := [] }).globals = [] := rfl
+
+/-- #1275 copy-only (before A2): the queued row did not record the recurrence. -/
+def hitQueuedOld (hid : Nat) (s : St2) : St2 :=
+  if s.row.count + 1 ≥ 2 then
+    match s.globals with
+    | g :: gs => { s with globals := { g with count := g.count + 1 } :: gs }
+    | [] => { s with globals := [{ derivedFrom := some hid, count := s.row.count + 1 }] }
+  else { s with row := { s.row with count := s.row.count + 1 } }
+
+theorem old_copy_only_row_stuck :
+    (hitQueuedOld 7 { row := { scope := 1, outbox := true, count := 1 }, globals := [] }).row.count = 1 := rfl
+
+/-! ### 9c. Automatic feedback never changes commitment (#1310, decision A′)
+
+`applyFeedbackSignal(e, signal, today, { source })`: a positive signal advances
+`nextCommitment` unless `source === 'auto'`; negative / neutral never touch it.
+`Plur.feedback` passes the same `applyOpts` at all three local sites (primary,
+secondary file store, pack); a remote store receives an `auto` signal only when
+its server advertises `feedback.source` — a contract promising the same rule
+(`serverRule`, an oracle; docs/specs/2026-09-29-feedback-source-contract.md). -/
+
+inductive Cm where
+  | unset | exploring | leaning | decided | locked | draft
+  deriving DecidableEq, Repr
+
+def nextCommitment : Cm → Cm
+  | .unset | .exploring => .leaning
+  | .leaning | .decided => .decided
+  | .locked => .locked
+  | .draft => .draft
+
+inductive Sig where
+  | pos | neg | neu
+  deriving DecidableEq, Repr
+
+def fbCommit (auto : Bool) : Sig → Cm → Cm
+  | .pos, c => if auto then c else nextCommitment c
+  | _, c => c
+
+inductive Dest where
+  | primary | secondary | pack
+  | remote (capable : Bool)
+  deriving DecidableEq, Repr
+
+/-- `remoteAccepts`: an auto signal is sent only to a capable server. -/
+def delivers (auto : Bool) : Dest → Bool
+  | .remote cap => !auto || cap
+  | _ => true
+
+def afterFb (serverRule : Bool → Sig → Cm → Cm) (auto : Bool) (d : Dest) (s : Sig) (c : Cm) : Cm :=
+  if delivers auto d then
+    match d with
+    | .remote _ => serverRule auto s c
+    | _ => fbCommit auto s c
+  else c
+
+/-- **Claim 4.** Wherever it lands, an automatic signal leaves commitment as it
+was — given only that a capable server keeps its advertised contract. -/
+theorem auto_feedback_keeps_commitment (serverRule : Bool → Sig → Cm → Cm)
+    (contract : ∀ s c, serverRule true s c = c) (d : Dest) (s : Sig) (c : Cm) :
+    afterFb serverRule true d s c = c := by
+  cases d <;> simp [afterFb, delivers, contract] <;> cases s <;> simp [fbCommit]
+  all_goals (rename_i cap; cases cap <;> simp [contract])
+
+/-- An incapable server is never sent an automatic signal (no contract needed). -/
+theorem auto_not_sent_incapable (serverRule : Bool → Sig → Cm → Cm) (s : Sig) (c : Cm) :
+    afterFb serverRule true (.remote false) s c = c := by simp [afterFb, delivers]
+
+/-- Non-vacuity: explicit feedback still promotes, and never into `locked` or out of `draft`. -/
+theorem explicit_promotes : fbCommit false .pos .leaning = .decided := rfl
+theorem feedback_never_locks (a : Bool) (s : Sig) (c : Cm) (h : c ≠ .locked) : fbCommit a s c ≠ .locked := by
+  cases a <;> cases s <;> cases c <;> simp_all [fbCommit, nextCommitment]
+theorem feedback_keeps_draft (a : Bool) (s : Sig) : fbCommit a s .draft = .draft := by
+  cases a <;> cases s <;> rfl
 
 end PlurSpec.R2CoreA

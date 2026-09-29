@@ -164,3 +164,30 @@ Tests: `formal-r2-coreb-health.test.ts` §core-policy#10 (3 tests; 2 failed befo
 remote|tension|outbox|pack-double|salvage|drift|breaker|recall and `packages/cli/test/hook-remote-recall.test.ts`:
 34 files passed, 5 skipped (live/smoke/postgres); 548 tests passed, 36 skipped. The two new files alone: 19/19.
 `tsc --noEmit -p packages/core`: no errors in the changed files.
+
+---
+
+## Field-report refresh (2026-09-29, cluster 3)
+
+`remote-store.ts` drifted (#1269 abort signal, #1277 idempotency key and lookup,
+#1299 `RemoteHttpError.status`, #1310 feedback capability). The four models
+above cover code those PRs did not change; their theorems still hold. Added
+(check: `cd spec/formal && ~/.elan/bin/lake env lean PlurSpec/R2CoreB.lean`, exit 0):
+
+- **§5 `KeyLookup`** (`findByIdempotencyKey`) — REFUTED (holds):
+  `absent_needs_filter` (the only answer that lets the flush post again needs a
+  page on which the server echoed the key filter), `found_needs_key` (a live
+  row carrying the key, never a statement match), `ignoring_server_unknown`
+  (a server that ignores the key always yields `unknown`), `lookup_reachable`.
+  Boundary: with no `total_count`, a full first page ends the lookup; on a
+  filtered answer every row carries the key, so this only matters for a page of
+  200 retired rows with the key. Mutation: `absent` without the echo check →
+  `ignoring_server_unknown` / `absent_needs_filter` stop proving; counting
+  retired rows as found → `found_needs_key` stops proving.
+- **§6 `FetchBounded`** — REFUTED (holds): the in-process host mark fires only
+  on a thrown fetch the caller did not cut (`answered_never_marks`,
+  `caller_cut_never_marks`, `network_failure_marks`).
+- **§7 `FeedbackPayload`** — `source` is on the wire exactly for `source: 'auto'`.
+
+The outbox flush, the claims/leases question and the breaker legs are in
+`findings/outbox.md` (`PlurSpec/Outbox.lean`).

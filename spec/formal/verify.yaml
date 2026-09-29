@@ -108,3 +108,22 @@ models:
   - model: PlurSpec/PacksV2.lean
     covers:
       - packages/core/src/packs.ts
+  - model: PlurSpec/Folders.lean
+    covers:
+      - packages/core/src/folders.ts
+      - packages/core/src/trust.ts
+      - packages/core/src/project-config.ts
+      - packages/core/src/project-remote.ts
+  - model: PlurSpec/Adapters.lean
+    covers:
+      - packages/cli/src/lib/hook-command.ts
+      - packages/mcp/src/hook-command.ts
+      - packages/cli/src/codex-hooks.ts
+      - packages/cli/src/antigravity-hooks.ts
+  - model: PlurSpec/Outbox.lean
+    covers:
+      - packages/core/src/index.ts
+      - packages/core/src/outbox-health.ts
+      - packages/core/src/outbox-lease.ts
+      - packages/core/src/store/remote-store.ts
+      - packages/core/src/remote-recall.ts

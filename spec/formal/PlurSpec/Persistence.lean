@@ -516,7 +516,13 @@ slots keyed by the judged token (`acquireStealSlot`, `clearStealSlots`, sync twi
 `stealLockSync`); the current code, crashes included, is
 `R2Persist.Guard.ladder_mutex` / `ladder_guard_excl` / `ladder_recovers`.
 `fixed_mutex` below is a claim about the single-guard protocol only; `old_two_holders`
-stays as the record of the pre-guard race. -/
+stays as the record of the pre-guard race.
+
+Checked against formal/field-report-2026-09-29 (refresh 2, #1228 × #1398): still
+SUPERSEDED. #1398 reintroduced a single guard (`<lock>.takeover`, removed when abandoned
+by the same rename-claim steal); that design, crashes included, is refuted in
+`R2Persist.TakeoverG.pr1398_two_holders` (replayed). The branch's combined design is
+`R2Persist.TakeoverG.combined_mutex`. -/
 namespace Lock
 
 def upd {β : Type} (f : Nat → β) (p : Nat) (v : β) : Nat → β :=
@@ -752,7 +758,13 @@ touches every `max(1, floor(T/3))` ms and sync.ts `git()` still calls
 `heartbeatHeldLocks()` before each command, now with the timeout from the shared
 `GIT_COMMAND_TIMEOUT_MS` (30 s, = `B` here). Round 2 only added a one-time warning when
 `T/3 + 30 s ≥ T` (`R2Persist` §7 `warns_iff`), i.e. when `sync_age_bound`'s bound is
-not below the threshold. -/
+not below the threshold.
+
+Checked against formal/field-report-2026-09-29 (refresh 2): still holds. #1228's
+heartbeat was added back verbatim on top of #1398's lock; #1398 added a second age rule
+for EMPTY locks only (`abandonedByAge`: `min(EMPTY_LOCK_GRACE_MS, T)`), modelled in
+`R2Persist.TakeoverG.grace_bound` / `grace_token_keeps_threshold`. A lock carrying a token
+keeps the threshold this section reasons about. -/
 namespace Heartbeat
 
 /-- Pre-fix: the file is touched only at acquisition (time 0). -/

@@ -511,3 +511,118 @@ accept it as unreachable in practice (B)?
 
 ### Round-2 drift review lead — applied (coordinator, 2026-09-27)
 `initSchema` repeated the round-1 unlock pattern (best-effort unlock, bare `client.release()`). Replayed with the mock pool: after a failed init unlock the session went back to the pool still holding the init lock. Fixed as in `withExclusiveAccess`: a failed unlock destroys the session (`release(err)`). Test `packages/core/test/formal-gaps-pg-init-unlock.test.ts` (failed before, 2/2 after); Postgres suites 120/120 against pg16. The property is the same as candidate 5 (`PgLock.fixed_pool_never_locked`), now also for the init lock.
+
+---
+
+## G. Field report 2026-09-29 — lock takeover, OPEN CONFLICT G (#1228 × #1398)
+
+Branch `formal/field-report-2026-09-29` (refresh 2). Code: `packages/core/src/store/async-lock.ts`
+(`withFileLock`, `takeOver`, `takeOverSync`, `acquireStealSlot`, `stealLock`, `publishLockFile`,
+`abandonedByAge`) and `sync.ts` `withLock` (same protocol, sync twin). Compared with #1398 alone
+(`c1e288cd`) and #1228 alone (`verify/formal-lean` `420f4f25`).
+
+Model: `R2Persist.lean` §6 `TakeoverG` — ONE executable model, a `Design` parameter
+(`combined` / `pr1398` / `pr1228`), crashes at any step. A file is `⟨ino, own, tok⟩` (inode,
+creator, token written yet); inodes are never reused. Other clients that create first and write
+second (older cores, `pr1228`'s own path) are in every design. Assumptions, stated in the model:
+judgement is sound (abandoned ⇒ owner dead: the pid probe, or the heartbeat bound
+`Persistence.Heartbeat.sync_age_bound` and the grace bound below for age-judged locks); the
+ladder is abstracted to one live holder per judged contents, justified by
+`Guard.ladder_guard_excl`, with the release on a confirmed claim over-approximated.
+
+| Claim | combined (this branch) | #1398 alone | #1228 alone |
+|---|---|---|---|
+| never two live holders | **PROVED** `combined_mutex` | **CONFIRMED** broken, double fault: `pr1398_two_holders` | **CONFIRMED** broken, ONE crash: `pr1228_two_holders` |
+| a live owner is never stolen from | **PROVED** `combined_owner_kept`, `combined_creator_kept` | **CONFIRMED** broken (same trace: holder 1's lock replaced by 3's) | **CONFIRMED** broken (same trace) |
+| a crash between create and token write blocks nobody past the grace window | **PROVED** `combined_publish_complete` (core never exposes an empty lock) + `grace_bound` (an empty lock older than 10 s is abandoned whatever `T`); `grace_token_keeps_threshold` | **PROVED** (same functions) | **CONFIRMED** broken: `pr1228_blocks_past_grace` (15 s empty lock, 60 s rule) |
+
+Non-vacuity: `combined_recovers` (walks past a dead stealer's slot, claims the dead holder's
+lock, acquires), `combined_recovers_empty` (same from a dead creator's empty lock);
+`combined_backs_off`, `combined_legacy_backs_off` (the #1228 schedule: the inode check makes the
+second stealer back off). `initC_inv`, `init28_inv`: the invariant holds in the states the
+counterexamples start from, so the proof covers them.
+
+**Mechanisms.** #1398 alone: its `.takeover` guard is removed when abandoned by the same
+rename-claim steal, unguarded — two stealers judge the dead guard; the second renames the
+first's LIVE fresh guard aside, a third publishes a guard at the free path, the put-back
+loses; two stealers are then under "the" guard and the lock-level race the guard exists for
+reopens (the second renames the first's freshly acquired lock; a fourth takes the free path).
+This is `Guard.old_two_holders` one level up, with rename-claim in place of read-then-unlink.
+#1228 alone: the lock is `O_EXCL` create then write, so core itself makes empty locks; the
+re-check and the claim compare CONTENTS only, and two empty files read the same `''` — after
+the first stealer claims the dead creator's empty lock and clears the ladder, its own fresh lock
+is empty until its write; a delayed second stealer takes the cleared slot, reads `''`, claims
+the first's live file and both hold. The combined design is safe for two separate reasons, and
+the mutations show both are load-bearing: the ladder (a dead slot is walked past, never removed)
+and the inode in the identity check.
+
+**Replays** (only replayed counterexamples are CONFIRMED):
+- Committed: `packages/core/test/formal-fr-c2-takeover.test.ts` (3 tests: the #1398 double fault,
+  the #1228 empty-lock schedule, the same through the no-hard-link fallback). Several processes
+  in one, through symlinked directories; `rename`/`link`/`open`/`writeFile` wrapped to force the
+  interleaving, every wait bounded. `PLUR_FORMAL_LOCK_MODULE` runs it against another file:
+  `git show c1e288cd:packages/core/src/store/async-lock.ts > <dir>/src/store/async-lock.ts`
+  (plus `async-mutex.ts`, `logger.ts` from the same commit; likewise `420f4f25`), then
+  `PLUR_FORMAL_LOCK_MODULE=<dir>/src/store/async-lock.ts npx vitest run test/formal-fr-c2-takeover.test.ts`.
+  - branch: **3 passed**.
+  - #1398's file: **1 failed** — "lock holder and guard holder both dead…": `expected 2 to be 1` (maxInCS 2).
+  - #1228's file: **2 failed** — both empty-lock tests: `expected 2 to be 1`.
+- Scratch (session scratchpad, not committed), `tsx replay-*.mts <dir>`:
+  - `replay-guard.mts`: `r1398 maxInCS 2` (stealer 2 renames stealer 1's live guard; stealer 3
+    publishes one; stealer 3 renames the lock stealer 1 just acquired; a fourth enters),
+    `rbranch maxInCS 1, guardRenames 0`.
+  - `replay-empty.mts`: `r1228 maxInCS 2` (inodes 473522080 → 473522082; the second stealer claims
+    the first's live empty file), `rbranch 1`, `rbranch fallback 1`, `r1398 1`, `r1398 fallback 1`.
+  - `replay-grace.mts` (a real child `O_EXCL`-creates the lock and is SIGKILLed; lock aged 15 s;
+    default options): `r1228 threw "Failed to acquire lock … after 7 attempt(s) / 11s"`,
+    `r1398 acquired in 8 ms`, `rbranch acquired in 7 ms`.
+- #1398's own concurrency tests on the combined code (the survey said this was never run):
+  `async-lock-empty-takeover` (incl. "concurrent acquirers in separate processes racing to take
+  over abandoned empty locks never hold it together" and the paused-takeover race),
+  `async-lock-no-hardlink`, plus `formal-r2-persist-guard`, `formal-persistence-lock`,
+  `async-lock`, `async-lock-contention`, `lock`, `pending-store-lock-ops`, and the new file:
+  **9 files, 57 passed**.
+
+**Mutation check** (scratch copies of §6):
+- M1: the re-check compares contents only (drop `c.ino = f.ino`) ⇒ `inv_step` fails; a model trace
+  (scratch `m1_two_holders`, older client in place of core's acquisition) then gives two holders by `decide`.
+- M2: the ladder is ignored (`keyFree` replaced by `true`) ⇒ `inv_step` fails.
+- M3: judgement unsound (`judge` without `dead f.own`) ⇒ `inv_step` fails.
+- Test-level: the committed replay fails against #1398's and #1228's files (above).
+Restored: `lake env lean PlurSpec/R2Persist.lean` clean; axioms of `combined_mutex`,
+`combined_owner_kept`: `propext`, `Quot.sound` only.
+
+**Recommendation for conflict G — keep the combined design** (#1398's lock + #1228's ladder, as on
+this branch): #1398's complete-on-publish lock, `EMPTY_LOCK_GRACE_MS`, token-AND-inode identity
+and `link` put-back, with #1228's steal-guard ladder in place of #1398's single `.takeover` guard.
+Neither PR alone is correct: #1398 alone admits two holders after a double crash, #1228 alone after
+a single crash, and #1228 alone also holds every writer for 60 s behind an empty lock. The
+combination is the only design of the three with a proof (`combined_mutex`), and it passes
+#1398's concurrency tests. Natural home: a PR against #1398 that ports the ladder (the lock format
+change is #1398's; #1228 then drops its lock changes), as the survey suggests.
+
+**Residuals (not defects shown here; not verified):**
+1. The combined `takeOver` does not re-judge abandonment under the slot; #1398's did
+   (`isAbandoned(cur…)`). Under sound judgement this changes nothing — in the model, a check that
+   passes implies the file is the judged one and its owner dead. Outside it (an age-judged holder
+   on another host that starts touching again between the judgement and the re-check, i.e. after
+   the heartbeat already failed) #1398's re-judge closes a window the branch leaves open. One-line,
+   source change, not made (this run does not edit `src`). Check that would settle it: a replay
+   with an unprobeable token whose mtime is refreshed between `inspectLock` calls.
+2. Inode identity assumes no inode-number reuse while a stale judgement is outstanding. On a
+   filesystem without hard links (the fallback) that also reuses inode numbers, a stale
+   `(token '', ino)` could match a new empty file; the fallback's post-publish `stat` check catches
+   the steal unless the thief's own file reuses the same number again. Not replayable on APFS.
+3. The sync twin (`takeOverSync`, `withLock`) follows the same steps line for line (read) and is
+   covered by the model as the same protocol, but synchronous code cannot be interleaved in one
+   process: its concurrent schedules are not replayed (its recovery paths are, in
+   `formal-r2-persist-guard` and `async-lock-empty-takeover`).
+
+**NEEDS-OWNER.** (G1) Which PR carries the combined design: (a) a PR against #1398 porting the
+ladder [recommended], (b) #1228 rebased onto #1398's lock, or (c) this branch's `async-lock.ts` as
+its own PR? (G2) Restore #1398's re-judge (`isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)`)
+in the combined `takeOver`/`takeOverSync` check as belt and braces (yes / no)?
+
+Files changed: `spec/formal/PlurSpec/R2Persist.lean` (§6 `TakeoverG`, §1 drift note),
+`spec/formal/PlurSpec/Persistence.lean` (§3, §3b drift notes), this file, `r2-persist.md` (item 1
+note). Tests added: `packages/core/test/formal-fr-c2-takeover.test.ts` (3).
