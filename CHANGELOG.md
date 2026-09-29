@@ -210,7 +210,14 @@ store the store work takes seconds to tens of seconds; done inside the hook, it
 overran the editor's budget and was killed part-way, sometimes while holding
 the store lock. Each verdict is recorded as rated *before* it is applied, so a
 worker killed between the two loses that one signal and never applies it twice.
-The next worker takes over a dead worker's lock and finishes its queued turns.
+If that record can't be written (full disk, quota, an unwritable file), the
+verdict is skipped. Nothing else would stop the next turn from applying it
+again. The next worker takes over a dead worker's lock and finishes its queued
+turns. The takeover is atomic: it claims the lock by renaming it, the way the
+core store lock does. A second worker that also judged the lock dead can
+therefore never delete the lock the first one now holds. For Codex, the Stop
+hook reads the session id from the same fields the inject hook records it
+under (`session_id`, then `conversation_id`).
 
 Measured under a heavy machine load (load average about 220):
 - 20,000-engram store: the hook returns in 0.3–0.8 s. An earlier audit

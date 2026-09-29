@@ -1,6 +1,6 @@
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
-import { readStdinJson, runCodexHook } from '../lib/codex-hook-io.js'
+import { readStdinJson, runCodexHook, codexSessionId } from '../lib/codex-hook-io.js'
 import { enqueueTurn, hasLeftoverBatches, spawnWorker, runWorker, agyReplySinceLastUser, type AutoRateEditor } from '../lib/auto-rate.js'
 
 /**
@@ -67,7 +67,10 @@ export function readTurn(editor: AutoRateEditor, input: Record<string, unknown>)
       // A continuation Stop is the turn a Stop hook's own nudge forced; the
       // real reply was already rated on the Stop before it.
       if (input.stop_hook_active === true) return null
-      const sessionId = str(input.session_id)
+      // Codex: the same id source as the writer (hook-codex-inject records
+      // under codexSessionId, which falls back to conversation_id). Reading
+      // session_id alone would miss those lists (decision H2).
+      const sessionId = editor === 'codex' ? codexSessionId(input) : str(input.session_id)
       if (!sessionId) return null
       return { sessionId, reply: str(input.last_assistant_message), cwd: str(input.cwd) || undefined }
     }
