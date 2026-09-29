@@ -76,7 +76,11 @@ that engram exactly as it is and creates, once, a `global` copy in your local
 store instead. The copy points back at the team engram (`derived_from`), its
 first source records `promoted_from` the team scope, its commitment escalates
 as the ladder would but never to `locked`, and it is never queued for or pushed
-to a team store. Later recurrences credit the same copy. Before, the team
+to a team store. Later recurrences credit the same copy. The copy keeps the
+team engram's validity window, knowledge anchors and dual coding; it does not
+take its pin (a pin spends your own injection budget) or its relations (they
+name team-store ids). When a `global` engram with the same text already exists,
+the ladder credits that one rather than creating a second. Before, the team
 engram could be rewritten to `global` in the team's own file, or rewritten
 locally and then pushed to the team store as `scope: global`. Non-shared
 file-path stores still broaden in place.

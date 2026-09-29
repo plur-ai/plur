@@ -2277,71 +2277,86 @@ export class Plur {
   }
 
   /**
-   * #1268 copy-on-promote. `hit` is a team-store-bound engram the ladder would
-   * broaden to global. Instead: leave it exactly as it is (scope, store, file,
-   * outbox marker) and credit a `global` copy in the LOCAL primary store,
-   * creating it once.
+   * #1268 copy-on-promote. `hit` is an engram the ladder would broaden to
+   * global, but either it is bound for a team store (what is in a team store
+   * stays there) or a global engram with the same text already exists. Leave
+   * `hit` exactly as it is (scope, store, file, outbox marker) and credit a
+   * `global` engram in the LOCAL primary store instead — the existing twin if
+   * there is one, else a copy created now.
    *
-   * The copy links back with `derived_from: <team engram id>` (the existing
-   * lineage field) and its first source carries `promoted_from: <team scope>`.
-   * Its commitment is escalated as the ladder would, but never to `locked`.
-   * It is appended directly — never given an `_outbox` marker — and its scope
-   * is `global`, which no team store serves, so it is never pushed anywhere.
-   * A later recurrence finds the same copy (same content hash, `global`,
-   * `derived_from` the team engram) and credits it instead of adding another.
+   * The copy links back with `derived_from: <hit id>` (the existing lineage
+   * field) and its first source carries `promoted_from: <hit scope>`.
+   * Commitment is escalated as the ladder would, but never to `locked`. The
+   * copy is appended directly — never given an `_outbox` marker — and its
+   * scope is `global`, which no team store serves, so it is never pushed.
+   *
+   * Carried from `hit`: statement, type, domain, tags, rationale, the validity
+   * window (`valid_from`/`valid_until` — an expiring team engram must not yield
+   * a copy that never expires), `knowledge_anchors` and `dual_coding` (content
+   * that cites and explains the statement). NOT carried: `pinned` — a pin is
+   * the owner's own injection-budget choice and is quota-gated, so a
+   * teammate's pin must not spend it — and `relations`, whose edges name
+   * team-store ids and whose `supersedes` edges have side effects; the copy's
+   * one edge is `derived_from`.
+   *
+   * Uses the same id allocation and storage seams as `learn()`: on a store
+   * with the write-path seams it asks the store for the id and never loads the
+   * corpus (review finding 3).
    */
   private async _promoteTeamCopy(
     hit: Engram,
     engrams: Engram[],
     scope: string,
     context: LearnContext | undefined,
+    twin: Engram | null,
   ): Promise<Engram> {
-    // Under delegation `engrams` is an empty stand-in; this rare path takes the
-    // corpus so the append/update below are ordinary whole-store operations.
-    const corpus = engrams.length ? engrams : await this._primaryStore.load()
-    const hash = (hit as any).content_hash ?? computeContentHash(hit.statement)
     const capped = (c: Engram['commitment'] | undefined): Engram['commitment'] =>
       c === 'exploring' ? 'leaning' : 'decided'
     const source = this._buildSourceEntry(scope, context)
 
-    const existing = corpus.find(e => e.status === 'active'
-      && e.scope === 'global'
-      && (e as any).derived_from === hit.id
-      && (e as any).content_hash === hash)
-    if (existing) {
-      const e = existing as any
+    if (twin) {
+      const e = twin as any
       e.recurrence_count = (e.recurrence_count ?? 0) + 1
       e.write_count = (e.write_count ?? 1) + 1
       e.sources = [...(e.sources ?? []), source]
       if (e.commitment !== 'locked') e.commitment = capped(e.commitment)
-      await this._updateEngrams(corpus, [existing])
+      await this._updateEngrams(engrams, [twin])
       await this._syncIndex()
-      return existing
+      return twin
     }
 
     const now = new Date().toISOString()
-    const id = generateEngramId(corpus, this._mintedTodayIds())
+    const ps = this._primaryStore
+    const id = this._canDelegateLearn()
+      ? await ps.nextEngramId!(engramIdDatePrefix())
+      : generateEngramId(engrams, this._mintedTodayIds())
     this._rememberMintedId(id)
+    const h = hit as any
     const copy: Engram = {
       ...this._buildEngramShape(hit.statement, 'global', {
         scope: 'global',
         type: hit.type,
         domain: hit.domain,
         tags: hit.tags,
-        rationale: (hit as any).rationale,
+        rationale: h.rationale,
+        knowledge_anchors: h.knowledge_anchors?.length ? h.knowledge_anchors : undefined,
+        dual_coding: h.dual_coding,
         derived_from: hit.id,
         commitment: capped(hit.commitment),
-      } as LearnContext, now, undefined, eid => this._ancestorsOf(corpus, eid), 'default'),
+      } as LearnContext, now, {
+        ...(h.temporal?.valid_from ? { valid_from: h.temporal.valid_from } : {}),
+        ...(h.temporal?.valid_until ? { valid_until: h.temporal.valid_until } : {}),
+      }, eid => this._ancestorsOf(engrams, eid), 'default'),
       id,
     }
     const c = copy as any
-    c.recurrence_count = ((hit as any).recurrence_count ?? 0) + 1
-    c.write_count = ((hit as any).write_count ?? 1) + 1
+    c.recurrence_count = (h.recurrence_count ?? 0) + 1
+    c.write_count = (h.write_count ?? 1) + 1
     c.sources = [
       { scope: hit.scope, session_id: null, stored_at: now, promoted_from: hit.scope },
       source,
     ]
-    await this._appendEngram(corpus, copy)
+    await this._appendEngram(engrams, copy)
     await this._syncIndex()
     this._appendHistory({
       event: 'engram_created',
@@ -2350,6 +2365,27 @@ export class Plur {
       data: { type: copy.type, scope: 'global', source: copy.source, promoted_from: { engram_id: hit.id, scope: hit.scope } },
     })
     return copy
+  }
+
+  /** The store capability set `learn()` delegates on (#828) — see there. */
+  private _canDelegateLearn(): boolean {
+    const ps = this._primaryStore
+    return Boolean(ps.findActiveByContentHash && ps.nextEngramId && ps.append && ps.updateMany && ps.loadByIds)
+  }
+
+  /**
+   * An active `global` engram in the primary store with `hit`'s text (#1268
+   * review finding 2). Asked of the store when it has the seam, so this never
+   * loads the corpus there; otherwise found in the corpus in hand.
+   */
+  private async _findGlobalTwin(hit: Engram, engrams: Engram[]): Promise<Engram | null> {
+    if (!isHashable(hit.statement)) return null
+    const hash = (hit as any).content_hash ?? computeContentHash(hit.statement)
+    if (this._canDelegateLearn()) {
+      return await this._primaryStore.findActiveByContentHash!(hash, 'global')
+    }
+    return engrams.find(e => e.status === 'active' && e.scope === 'global'
+      && e.id !== hit.id && (e as any).content_hash === hash) ?? null
   }
 
   /** Record a cross-scope recurrence: append source, increment counters,
@@ -2379,9 +2415,16 @@ export class Plur {
     // store stays there. When this hit would broaden a team-bound engram to
     // global, the team engram is left untouched and a global copy in the local
     // primary store takes the promotion instead.
-    if (((hit as any).recurrence_count ?? 0) + 1 >= 2
-        && isSharedScope(hit.scope) && this._isTeamStoreBound(hit)) {
-      return await this._promoteTeamCopy(hit, engrams, scope, context)
+    //
+    // The same path handles a global twin (review finding 2): when a global
+    // engram with the same text already exists, broadening `hit` in place
+    // would make a second one. The existing global engram is credited instead
+    // and `hit` is left where it is.
+    if (((hit as any).recurrence_count ?? 0) + 1 >= 2 && isSharedScope(hit.scope)) {
+      const twin = await this._findGlobalTwin(hit, engrams)
+      if (twin || this._isTeamStoreBound(hit)) {
+        return await this._promoteTeamCopy(hit, engrams, scope, context, twin)
+      }
     }
 
     // Audit iter-4 fix (Critic + Data convergence): mutate ONCE on the canonical
@@ -3636,13 +3679,17 @@ export class Plur {
     // #176: cross-scope recurrence (same semantics as the local learn() path).
     const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
     if (crossMatch) {
+      // #1268: decided BEFORE the recurrence is recorded, exactly as learn()
+      // does — recording can broaden `crossMatch` to global, and reading the
+      // flag afterwards turned an absorbed save into a second team write.
+      const teamValidation = this._isTeamValidation(scope, crossMatch)
       const credited = await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
         return await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
       })
-      // #1268: a team validation of a non-shared engram does not stand in for
-      // the team write — fall through and POST the team copy.
-      if (!this._isTeamValidation(scope, crossMatch)) return credited
+      // A team validation of a non-shared engram does not stand in for the
+      // team write — fall through and POST the team copy.
+      if (!teamValidation) return credited
     }
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now, undefined, undefined, guarded.scopeSource)
