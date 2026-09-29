@@ -301,7 +301,7 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
 // Injection hooks pull relevant engrams into the conversation context. Installed
 // at the path chosen by --global/--project (default project) because per-project
 // domain/scope tuning may matter for what gets injected.
-function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
+export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
   return {
     // First message: inject engrams based on the prompt.
     // Subsequent messages: periodic reminder to call plur_learn (~1ms skip).
