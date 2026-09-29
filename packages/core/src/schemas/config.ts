@@ -325,6 +325,20 @@ export const PlurConfigSchema = z.object({
   /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */
   tensions: TensionsConfigSchema.default({}),
   /**
+   * Cross-scope recurrence ladder policy (#176, #1268).
+   *
+   * `max_commitment` caps how high the ladder may escalate an engram's
+   * commitment when the same statement recurs across scopes — team validation
+   * (a team save crediting a matching engram) and the global copy made by
+   * copy-on-promote included. `locked` (default) lets the ladder reach
+   * `locked`; `decided` stops it one step below, so only an explicit human act
+   * locks an engram. A config without this key behaves as `locked`. An
+   * unresolved tension still blocks the step into `locked` either way (#181).
+   */
+  recurrence: z.object({
+    max_commitment: z.enum(['locked', 'decided']).default('locked'),
+  }).default({}),
+  /**
    * Expiry handling at injection time (#347). `hard` (default) skips any
    * engram whose `temporal.valid_until` is in the past. `soft` keeps
    * injecting a recently-expired engram for `grace_days` days after expiry,

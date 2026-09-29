@@ -77,13 +77,15 @@ recurrence count and nothing reached the team scope. Found while triaging an
 enterprise deployment's report of team saves that never reached the team store.
 
 **A shared-scope save now always writes its team copy.** It is never absorbed
-into a non-shared engram — `local`, `global`, `user:`, `agent:` — including a
-`global` engram the recurrence ladder graduated. The personal counterpart is
-still credited: the team save is recorded on it as a recurrence (counted, with a
-source marked `validated_by` the team scope, and commitment escalated by the
-usual ladder, but never to `locked`). You may end up with two engrams — your own
-and the team's — and that is intended. That includes an engram you moved to
-`global` yourself with `rescope`.
+into another engram — not a personal or `global` one (including one the
+recurrence ladder graduated, or one you moved to `global` yourself with
+`rescope`), and not another team's engram either: a save to `group:a/ops` whose
+text matches an engram in `group:a/eng` now reaches the ops store instead of
+vanishing into the eng engram. The matching engram is still credited: the team
+save is recorded on it as a recurrence (counted, with a source marked
+`validated_by` the team scope, and commitment escalated by the usual ladder).
+You may end up with several engrams with the same text — your own and each
+team's — and that is intended.
 
 **What is in a team store stays there.** When the ladder would broaden a
 team-bound engram to `global` — one served by, queued for, or in the scope of
@@ -91,8 +93,10 @@ any team store, a url store or a `shared: true` file-path store — it now leave
 that engram exactly as it is and creates, once, a `global` copy in your local
 store instead. The copy points back at the team engram (`derived_from`), its
 first source records `promoted_from` the team scope, its commitment escalates
-as the ladder would but never to `locked`, and it is never queued for or pushed
-to a team store. Later recurrences credit the same copy. The copy keeps the
+as the ladder would, and it is never queued for or pushed to a team store.
+Later recurrences credit the same copy. A team engram still queued for its
+store also records the recurrence on itself (count and source; its scope and
+queue entry are kept). The copy keeps the
 team engram's validity window, knowledge anchors and dual coding; it does not
 take its pin (a pin spends your own injection budget) or its relations (they
 name team-store ids). When a `global` engram with the same text already exists,
@@ -101,8 +105,22 @@ engram could be rewritten to `global` in the team's own file, or rewritten
 locally and then pushed to the team store as `scope: global`. Non-shared
 file-path stores still broaden in place.
 
-Shared↔shared recurrence, personal→personal recurrence, and a personal save
-recurring onto a shared engram behave as before.
+Personal→personal recurrence, and a personal save recurring onto a shared
+engram, behave as before.
+
+**How far the ladder may escalate is now a setting.** `recurrence.max_commitment`
+in `config.yaml` caps the commitment the cross-scope ladder can reach — team
+validation and the promoted `global` copy included:
+
+```yaml
+recurrence:
+  max_commitment: locked   # default: the ladder may lock a rule
+  # max_commitment: decided  # stop one step below; only an explicit act locks
+```
+
+A config without the key behaves as `locked`, which is what the ladder has
+always done. An unresolved tension still blocks the step into `locked` either
+way.
 
 ### Editors now rate the memory they inject, from the reply
 

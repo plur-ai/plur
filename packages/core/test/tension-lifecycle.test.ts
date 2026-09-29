@@ -339,8 +339,11 @@ describe('lock-escalation gate (#181, audit item 3)', () => {
   /** Drive cross-scope recurrence to the point where the NEXT hit would lock. */
   async function escalateToDecided(): Promise<Engram> {
     await plur.learn(STMT, { scope: 'project:a' })            // create (leaning)
-    await plur.learn(STMT, { scope: 'project:b' })            // recurrence 1 — no escalation
-    const e = await plur.learn(STMT, { scope: 'project:c' })  // recurrence 2 — leaning → decided
+    // Personal saves drive the ladder: since decision A1 (2026-09-29) a shared
+    // save is credited, never absorbed, so `project:b`/`project:c` saves would
+    // each write their own engram and return it.
+    await plur.learn(STMT, { scope: 'user:b' })               // recurrence 1 — no escalation
+    const e = await plur.learn(STMT, { scope: 'user:c' })     // recurrence 2 — leaning → decided
     expect((await plur.getById(e.id) as any).commitment).toBe('decided')
     return e as Engram
   }
