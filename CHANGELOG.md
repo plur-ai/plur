@@ -166,13 +166,20 @@ ids, costing injection budget and splitting feedback between the two copies.
 Now:
 
 - Discovery and `addStore` compare canonical paths. `addStore` refuses the
-  primary file under any spelling, and a second spelling of an
-  already-registered local store returns `already_registered` with the
-  existing scope.
-- A `config.yaml` that already holds such an entry needs no edit: at load, a
-  local store entry that is the primary file, or the same file as an earlier
-  entry, is ignored with one warning. The entry stays in `config.yaml`, and
-  writebacks start from the file on disk, so nothing is removed.
+  primary file under any spelling. If `config.yaml` already lists the primary
+  file as a store, the error says that entry is ignored and can be removed.
+  A second spelling of an already-registered local store returns
+  `already_registered` with the scope of an entry that is actually loaded,
+  preferring the scope you asked for.
+- A `config.yaml` that already holds such an entry needs no edit. At load, a
+  local store entry is ignored, with one warning, when its file is the
+  primary file, or when both its file and its scope repeat an earlier entry.
+  The entry stays in `config.yaml`, and writebacks start from the file on
+  disk, so nothing is removed.
+- One file registered under two different scopes keeps loading under both,
+  as before, because each scope admits different engrams. A warning says the
+  two entries share a file, and that engrams scoped `global` in it appear
+  under both scopes.
 - Path comparison also holds for files that do not exist yet, such as a fresh
   install's `engrams.yaml`. `canonicalize` used to fall back to the path as
   written when it could not be resolved. It now resolves the deepest existing

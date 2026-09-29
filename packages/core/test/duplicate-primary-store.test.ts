@@ -129,22 +129,81 @@ describe('#1319 primary store is never registered as a secondary store', () => {
     expect(readFileSync(configPath, 'utf8')).toBe(configText)
   })
 
-  it('an existing config.yaml duplicate of another registered store is ignored at load', async () => {
+  it('an existing config.yaml duplicate of another store with the SAME scope is ignored at load', async () => {
     const teamReal = join(realHome, 'team', 'engrams.yaml')
     mkdirSync(join(realHome, 'team'), { recursive: true })
     writeFileSync(teamReal, 'engrams: []\n')
     const configPath = join(realHome, '.plur', 'config.yaml')
     const configText = yaml.dump({ stores: [
       { path: teamReal, scope: 'project:team', shared: true, readonly: false },
-      { path: join(linkHome, 'team', 'engrams.yaml'), scope: 'project:team-alias', shared: true, readonly: false },
+      { path: join(linkHome, 'team', 'engrams.yaml'), scope: 'project:team', shared: true, readonly: false },
     ] })
     writeFileSync(configPath, configText)
 
     const plur = new Plur({ cwd: projectDir, autoDiscover: false })
-    const scopes = (await plur.listStores()).map(s => s.scope)
-    expect(scopes).toContain('project:team')
-    expect(scopes).not.toContain('project:team-alias')
+    expect((await plur.listStores()).filter(s => s.scope === 'project:team').length).toBe(1)
+    expect(plur.ignoredDuplicateStores().map(s => s.path)).toEqual([join(linkHome, 'team', 'engrams.yaml')])
     expect(readFileSync(configPath, 'utf8')).toBe(configText)
+  })
+
+  /** Write one engram scoped `scope` into `file`, using a throwaway store to produce valid YAML. */
+  async function writeScopedEngram(file: string, scope: string, statement: string): Promise<void> {
+    const src = join(SCRATCH, `src-${Math.random().toString(36).slice(2)}`)
+    const p = new Plur({ path: src, autoDiscover: false })
+    await p.learn(statement, { scope: 'global' })
+    const text = readFileSync(join(src, 'engrams.yaml'), 'utf8').replace(/scope: global/g, `scope: ${scope}`)
+    mkdirSync(join(file, '..'), { recursive: true })
+    writeFileSync(file, text)
+  }
+
+  it('one file registered under two DIFFERENT scopes keeps loading under both (review finding 1)', async () => {
+    const teamReal = join(realHome, 'team', 'engrams.yaml')
+    await writeScopedEngram(teamReal, 'group:acme/eng', 'the billing service deploys with terraform plans')
+    const configPath = join(realHome, '.plur', 'config.yaml')
+    const configText = yaml.dump({ stores: [
+      { path: teamReal, scope: 'project:proj', shared: true, readonly: false },
+      { path: join(linkHome, 'team', 'engrams.yaml'), scope: 'group:acme/eng', shared: true, readonly: false },
+    ] })
+    writeFileSync(configPath, configText)
+
+    const plur = new Plur({ cwd: projectDir, autoDiscover: false })
+    expect(plur.ignoredDuplicateStores()).toEqual([])
+    const scopes = (await plur.listStores()).map(s => s.scope)
+    expect(scopes).toContain('project:proj')
+    expect(scopes).toContain('group:acme/eng')
+    const res = await plur.inject('how does the billing service deploy')
+    expect(`${res.directives}\n${res.constraints}\n${res.consider}`).toContain('terraform plans')
+    expect(readFileSync(configPath, 'utf8')).toBe(configText)
+  })
+
+  it('addStore on the path of an ignored duplicate says so, not "already registered" (review finding 2)', () => {
+    const configPath = join(realHome, '.plur', 'config.yaml')
+    const alias = join(realHome, '.plur', 'engrams.yaml')
+    writeFileSync(configPath, yaml.dump({ stores: [{ path: alias, scope: 'project:real-home', shared: true, readonly: false }] }))
+    const plur = new Plur({ cwd: projectDir, autoDiscover: false })
+    let message = ''
+    try { plur.addStore(alias, 'project:real-home', { shared: true }) } catch (e) { message = (e as Error).message }
+    expect(message).toMatch(/primary store/)
+    expect(message).toMatch(/ignored/)
+    expect(message).toContain('project:real-home')
+  })
+
+  it('addStore on another spelling of a same-scope ignored duplicate answers with the entry that is loaded', async () => {
+    const teamReal = join(realHome, 'team', 'engrams.yaml')
+    mkdirSync(join(realHome, 'team'), { recursive: true })
+    writeFileSync(teamReal, 'engrams: []\n')
+    const configPath = join(realHome, '.plur', 'config.yaml')
+    writeFileSync(configPath, yaml.dump({ stores: [
+      { path: join(linkHome, 'team', 'engrams.yaml'), scope: 'project:ghost', shared: true, readonly: false },
+      { path: teamReal, scope: 'project:team', shared: true, readonly: false },
+      { path: teamReal, scope: 'project:team', shared: false, readonly: true },
+    ] }))
+    const plur = new Plur({ cwd: projectDir, autoDiscover: false })
+    const loaded = (await plur.listStores()).map(s => s.scope)
+    const result = plur.addStore(teamReal, 'project:team', { shared: true })
+    expect(result.status).toBe('already_registered')
+    expect(loaded).toContain(result.scope)
+    expect(result.scope).toBe('project:team')
   })
 })
 
@@ -172,7 +231,7 @@ describe('#1319 persistScopeMetadata writeback keeps ignored duplicate entries',
         { path: `${dir}/./engrams.yaml`, scope: 'project:dup-primary', shared: true, readonly: false, note: 'dup' },
         { path: other, scope: 'project:other', shared: true, readonly: false },
         // The same file as the entry above under another spelling: also ignored.
-        { path: `${dir}/other/./engrams.yaml`, scope: 'project:dup-other', shared: false, readonly: true },
+        { path: `${dir}/other/./engrams.yaml`, scope: 'project:other', shared: false, readonly: true },
       ],
     }
     const configPath = join(dir, 'config.yaml')
@@ -180,7 +239,7 @@ describe('#1319 persistScopeMetadata writeback keeps ignored duplicate entries',
     writeFileSync(configPath, dump(original))
 
     const plur = new Plur({ path: dir, autoDiscover: false })
-    expect(plur.ignoredDuplicateStores().map(s => s.scope).sort()).toEqual(['project:dup-other', 'project:dup-primary'])
+    expect(plur.ignoredDuplicateStores().map(s => s.scope).sort()).toEqual(['project:dup-primary', 'project:other'])
 
     plur.persistScopeMetadata([{
       url, ok: true, authorized: ['group:acme/eng'], registered: ['group:acme/eng'], unregistered: [],
@@ -198,6 +257,6 @@ describe('#1319 persistScopeMetadata writeback keeps ignored duplicate entries',
     for (const i of [1, 2, 3]) expect(dump(after.stores[i])).toBe(dump(original.stores[i]))
     expect(dump(after.custom_top_level)).toBe(dump(original.custom_top_level))
     // Still ignored after the writeback.
-    expect(plur.ignoredDuplicateStores().map(s => s.scope).sort()).toEqual(['project:dup-other', 'project:dup-primary'])
+    expect(plur.ignoredDuplicateStores().map(s => s.scope).sort()).toEqual(['project:dup-primary', 'project:other'])
   })
 })

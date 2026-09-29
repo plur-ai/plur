@@ -1096,7 +1096,7 @@ export class Plur {
   /** Local store entries dropped at load because they name the primary file
    *  or a store already registered under another spelling (#1319). Kept on
    *  disk; see {@link _loadConfig}. */
-  private _ignoredDuplicateStores: StoreEntry[] = []
+  private _ignoredDuplicates: Array<{ entry: StoreEntry; duplicateOf: string }> = []
   private _warnedDuplicateStores = new Set<string>()
   /** Whether constructor-time cwd store discovery is enabled for this instance. */
   private _autoDiscover = true
@@ -9437,55 +9437,74 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /**
-   * Load config.yaml for in-memory use, dropping any LOCAL store entry whose
-   * file is the primary store or a store already registered earlier in the
-   * list, compared by canonical path (#1319).
+   * Load config.yaml for in-memory use, dropping a LOCAL store entry only when
+   * it would load engrams that are already loaded (#1319), compared by
+   * canonical path:
    *
-   * Such an entry makes the loader read the same file twice — once as the
-   * primary, once as a secondary with its ids namespaced — so every engram in
-   * it is injected twice and its feedback is split between two copies. The
-   * entry is only ignored here: config.yaml is not rewritten, and writebacks
-   * start from the raw file (addStore / persistScopeMetadata), so nothing is
-   * deleted from disk. `ignoredDuplicateStores()` reports what was skipped.
+   *  - its file is the primary store: every primary engram would load a
+   *    second time under namespaced ids and be injected twice; or
+   *  - its file AND scope repeat an earlier entry: the same engrams again.
+   *
+   * One file registered under two DIFFERENT scopes keeps loading under both,
+   * as it always has: each scope admits different engrams, so dropping one
+   * would make that scope's engrams vanish from recall. It gets an
+   * informational warning instead.
+   *
+   * A dropped entry is only ignored here: config.yaml is not rewritten, and
+   * writebacks start from the raw file (addStore / persistScopeMetadata), so
+   * nothing is deleted from disk. `ignoredDuplicateStores()` reports it.
    */
   private _loadConfig(): PlurConfig {
     const config = loadConfig(this.paths.config)
     const stores = config.stores ?? []
     if (!stores.some(s => s.path !== undefined && !s.url)) {
-      this._ignoredDuplicateStores = []
+      this._ignoredDuplicates = []
       return config
     }
     const primary = canonicalize(this.paths.engrams)
-    const seen = new Map<string, string>([[primary, 'the primary store']])
+    const scopesByFile = new Map<string, string[]>()
     const kept: StoreEntry[] = []
-    const ignored: StoreEntry[] = []
+    const ignored: Array<{ entry: StoreEntry; duplicateOf: string }> = []
+    const warnOnce = (key: string, message: string): void => {
+      if (this._warnedDuplicateStores.has(key)) return
+      this._warnedDuplicateStores.add(key)
+      logger.warning(message)
+    }
     for (const s of stores) {
       if (s.url || s.path === undefined) { kept.push(s); continue }
       const key = canonicalize(s.path)
-      const owner = seen.get(key)
-      if (owner !== undefined) {
-        ignored.push(s)
-        const warnKey = `${s.path}\0${s.scope}`
-        if (!this._warnedDuplicateStores.has(warnKey)) {
-          this._warnedDuplicateStores.add(warnKey)
-          logger.warning(
-            `[plur:config] ignoring store "${s.scope}" (${s.path}): it is the same file as ${owner}. ` +
-            `Loading it would inject its engrams twice. The entry is left in config.yaml.`,
-          )
-        }
+      const warnKey = `${s.path}\0${s.scope}`
+      if (key === primary) {
+        ignored.push({ entry: s, duplicateOf: 'the primary store' })
+        warnOnce(warnKey,
+          `[plur:config] ignoring store "${s.scope}" (${s.path}): it is the primary store file, which is always loaded. ` +
+          `Loading it again would inject every engram in it twice. The entry is left in config.yaml; remove it to silence this warning.`)
         continue
       }
-      seen.set(key, `store "${s.scope}"`)
+      const scopes = scopesByFile.get(key) ?? []
+      if (scopes.includes(s.scope)) {
+        ignored.push({ entry: s, duplicateOf: `store "${s.scope}"` })
+        warnOnce(warnKey,
+          `[plur:config] ignoring store "${s.scope}" (${s.path}): the same file is already registered under the same scope. ` +
+          `Loading it again would inject its engrams twice. The entry is left in config.yaml; remove it to silence this warning.`)
+        continue
+      }
+      if (scopes.length) {
+        warnOnce(warnKey,
+          `[plur:config] store "${s.scope}" (${s.path}) is the same file as store "${scopes[0]}". Both are loaded: ` +
+          `each scope admits its own engrams, and engrams scoped "global" in that file appear under both.`)
+      }
+      scopesByFile.set(key, [...scopes, s.scope])
       kept.push(s)
     }
-    this._ignoredDuplicateStores = ignored
+    this._ignoredDuplicates = ignored
     return ignored.length ? { ...config, stores: kept } : config
   }
 
   /** Local store entries in config.yaml that are ignored because they name the
-   *  primary file or an already-registered store (#1319). For `plur doctor`. */
+   *  primary file, or repeat an earlier entry's file and scope (#1319). */
   ignoredDuplicateStores(): StoreEntry[] {
-    return [...this._ignoredDuplicateStores]
+    return this._ignoredDuplicates.map(d => d.entry)
   }
 
   /**
@@ -9706,14 +9725,25 @@ Generate an improved version of the procedure that prevents this failure. Return
     // registering it loads every primary engram twice.
     const canonicalStorePath = isRemote ? '' : canonicalize(storePath)
     if (!isRemote && canonicalStorePath === canonicalize(this.paths.engrams)) {
+      const ignoredHere = this._ignoredDuplicates
+        .filter(d => d.duplicateOf === 'the primary store')
+        .map(d => `"${d.entry.scope}" (${d.entry.path})`)
       throw new Error(
-        `addStore: "${storePath}" is the primary store (${this.paths.engrams}); it is always loaded and cannot be registered again as "${scope}".`,
+        `addStore: "${storePath}" is the primary store (${this.paths.engrams}); it is always loaded and cannot be registered again as "${scope}".` +
+        (ignoredHere.length
+          ? ` config.yaml already lists it as ${ignoredHere.join(', ')}; that entry is ignored at load. Remove it from config.yaml to silence the warning.`
+          : ''),
       )
     }
-    const sameEntry = config.stores?.find(s =>
-      isRemote ? (s.url !== undefined && normalizeEndpointUrl(s.url) === normalizeEndpointUrl(options!.url!) && s.scope === scope)
-               : (s.path !== undefined && !s.url && (s.path === storePath || canonicalize(s.path) === canonicalStorePath)),
-    )
+    // Local stores answer from what is LOADED (this.config, which drops
+    // ignored duplicates), not the raw file: an entry that is ignored at load
+    // must never be reported as the registration that covers this path. Among
+    // loaded entries for the same file, one with the requested scope wins.
+    const localMatches = isRemote ? [] : (this.config.stores ?? []).filter(s =>
+      s.path !== undefined && !s.url && (s.path === storePath || canonicalize(s.path) === canonicalStorePath))
+    const sameEntry = isRemote
+      ? config.stores?.find(s => s.url !== undefined && normalizeEndpointUrl(s.url) === normalizeEndpointUrl(options!.url!) && s.scope === scope)
+      : (localMatches.find(s => s.scope === scope) ?? localMatches[0])
     if (sameEntry) {
       // Token rotation (#305): a matched remote endpoint with a NEW token means
       // the server-side token was rotated/expired and the caller is re-supplying
