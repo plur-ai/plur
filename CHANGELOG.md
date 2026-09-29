@@ -234,6 +234,63 @@ repo's request. Only the CLI writes the map.
 - A folders.yaml that cannot be read counts as empty and logs one warning. It
   never throws.
 
+### `plur init` sets up opencode by default
+
+**An enterprise deployment reported editors that were never set up** (#1311).
+`plur init` wired opencode only with `--opencode`, on the grounds that
+`@plur-ai/opencode` was not yet on npm. It is published now, so opencode is
+auto-detected like Cursor, Codex and Antigravity: whenever `~/.config/opencode`
+exists, init writes the `plugin` entry and the `mcp.plur` entry with no flag.
+`--opencode` still forces it when the directory does not exist; `--no-opencode`
+skips it.
+
+- **Windows:** `mcp.plur.command` is now built by the same builder as every
+  other host since #1267 — `node.exe` plus `@plur-ai/mcp`'s js entry, or the
+  pinned `cmd.exe /c npx` form when the entry cannot be resolved. It is never
+  a bare `npx`. darwin/linux keep the pinned `npx -y @plur-ai/mcp@<version>`.
+  Upgrading needs no manual step: re-running init on Windows replaces the
+  `command` of the bare-`npx` entry older versions wrote (exactly
+  `npx -y @plur-ai/mcp@<version>`), keeping its other fields. Any other
+  `mcp.plur` entry is left alone. The node.exe entry itself is repaired the
+  same way #1267 repairs the Claude Code one: when the node binary or
+  `@plur-ai/mcp` js entry it names no longer exists, or differs from what
+  resolves now (after a Node upgrade or a version-manager switch), init
+  rewrites its `command` and keeps its other fields.
+- Re-running init is idempotent, and an existing `opencode.json` keeps its
+  other keys. An existing `mcp.plur` is still left as it is, and an
+  `opencode.jsonc` with comments is still reported and left byte-for-byte
+  untouched.
+
+### `plur init` works on Windows, including home directories with a space
+
+**An enterprise deployment reported editors on Windows not set up, or set up
+twice** (#1267). Three separate faults:
+
+- **Hook commands were the bare shim path.** Harnesses run hooks through a
+  shell, so `C:\Users\Test User\.plur\bin\plur-hook.cmd hook-inject` split at
+  the space and every hook failed. The shim path is now quoted on Windows, and
+  on any platform where it contains whitespace. A macOS/Linux path without a
+  space is written byte-for-byte as before (pinned by a snapshot test).
+- **Re-running init did not recognise its own hooks.** The matcher looked for
+  `.plur/bin/plur-hook` with forward slashes only, so every re-run on Windows
+  appended another hook set. It now normalises slashes, quotes and case, and
+  claims a hook only when it runs PLUR's shim (or the `npx @plur-ai/cli`
+  fallback) with one of the subcommands init writes. Re-run `plur init` once:
+  it removes the duplicated, unquoted hooks older versions wrote and leaves
+  exactly one set per event. Your own hooks are untouched, including one that
+  shares an entry with a PLUR hook.
+  `plur doctor` uses the same matcher, so it no longer reports Windows hooks
+  as missing.
+- **The MCP entry launched a `.cmd`.** Current Node refuses to spawn a `.cmd`
+  directly (`spawn EINVAL`). On Windows the entry is now
+  `{ command: <node.exe>, args: [<@plur-ai/mcp js entry>] }`, for Claude Code,
+  Claude Desktop, Cursor, Codex and Antigravity alike. When the js entry cannot
+  be resolved (a CLI-only install), the pinned `cmd.exe /c npx` form remains
+  the fallback. Re-running init heals an existing `plur-mcp.cmd` entry that init
+  wrote, and a node-form entry whose `node.exe` or js entry no longer exists
+  (after a Node upgrade or a version-manager switch); `plur doctor` reports
+  such an entry as broken. A hand-written entry is never changed.
+
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
 **The Stop hook's "did you learn something?" nudge was never shown to the

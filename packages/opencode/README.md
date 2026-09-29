@@ -4,16 +4,11 @@
 
 Part of [PLUR](https://plur.ai) — the engram exchange layer connecting agents across tools. Compatible with the MCP server ([`@plur-ai/mcp`](https://npmjs.com/package/@plur-ai/mcp)) for Claude Code, Cursor, and Windsurf, and with [`@plur-ai/claw`](https://npmjs.com/package/@plur-ai/claw) for OpenClaw. One store, shared across every PLUR-compatible tool.
 
-> **This package must be published on npm before it works.** opencode resolves
-> a bare plugin name — `plugin: ["@plur-ai/opencode"]` — by having Bun fetch it
-> from the npm registry at plugin-load time. Until `@plur-ai/opencode` is on
-> npm, that entry silently resolves to nothing: **no error appears anywhere in
-> opencode's log.** The config looks correct, opencode starts normally, and no
-> memory ever reaches the model. This was found the hard way, by the live
-> acceptance gate below, before the package was published — see [Live
-> acceptance gate](#live-acceptance-gate). If you are reading this before the
-> npm listing exists, `plur init --opencode` will write a config entry that
-> does nothing yet.
+> opencode resolves a bare plugin name — `plugin: ["@plur-ai/opencode"]` — by
+> having Bun fetch it from the npm registry at plugin-load time, and logs **no
+> error anywhere** when that fetch finds nothing. The package is published, so
+> the entry resolves; if memory never reaches the model, run `plur doctor`,
+> which checks that the plugin name resolves.
 
 ## What it does
 
@@ -29,15 +24,15 @@ Everything is stored as plain YAML in `~/.plur/` — the same store `@plur-ai/mc
 ## Install
 
 ```sh
-npx @plur-ai/cli init --opencode
+npx @plur-ai/cli init
 ```
 
-This writes two things into opencode's global config (`~/.config/opencode/opencode.json`, or `.jsonc` if that's what you already have):
+When `~/.config/opencode` exists, this writes two things into opencode's global config (`~/.config/opencode/opencode.json`, or `.jsonc` if that's what you already have):
 
 - `plugin: ["@plur-ai/opencode"]` — the automatic layer described above.
-- `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`, for when you want the agent to query or teach memory on demand.
+- `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`, for when you want the agent to query or teach memory on demand. On Windows it launches `node.exe` with `@plur-ai/mcp`'s js entry, not a bare `npx`.
 
-Unlike `--cursor`/`--codex`/`--antigravity`, `plur init` does **not** auto-detect opencode from `~/.config/opencode` existing — you must pass `--opencode` explicitly. That's deliberate: until this package is published on npm, auto-enabling it would write a `plugin` entry that silently resolves to nothing (see the warning above) into every opencode user's config. `--no-opencode` is accepted too, as an explicit no-op.
+Like `--cursor`/`--codex`/`--antigravity`, opencode is auto-detected. `--opencode` sets it up even when `~/.config/opencode` does not exist yet; `--no-opencode` skips it. Re-running `plur init` is safe: it changes nothing that is already in place.
 
 ### Manual `opencode.json`
 
@@ -57,7 +52,7 @@ If you'd rather edit the config by hand, or `plur init` reports your config is i
 }
 ```
 
-`plur init --opencode` merges into an existing config — it only ever adds to `plugin` and sets `mcp.plur`, never touching your other keys (`model`, `theme`, `permission`, …). If your existing `opencode.json`/`.jsonc` doesn't parse as JSON, or `plugin`/`mcp` already hold something other than an array/object, it refuses and leaves the file untouched rather than guessing — add the two keys above by hand in that case.
+`plur init` merges into an existing config — it only ever adds to `plugin` and sets `mcp.plur`, never touching your other keys (`model`, `theme`, `permission`, …). If your existing `opencode.json`/`.jsonc` doesn't parse as JSON, or `plugin`/`mcp` already hold something other than an array/object, it refuses and leaves the file untouched rather than guessing — add the two keys above by hand in that case.
 
 ## Verified version
 

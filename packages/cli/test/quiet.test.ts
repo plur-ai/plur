@@ -170,6 +170,7 @@ describe('doctor --quiet (#730)', () => {
       datacoreCollision: false,
       staleNpxHooks: false,
       staleNpxMcp: false,
+      brokenNodeMcp: [],
       hookShim: { valid: false, shimPath: '/tmp/shim', error: 'shim not found — run `plur init` to create it' },
       mcpShim: { valid: true, shimPath: '/tmp/mcp-shim' },
       handshake: { ok: false, error: 'skipped (--no-handshake)' },

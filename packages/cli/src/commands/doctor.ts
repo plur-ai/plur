@@ -17,9 +17,10 @@ import {
   readConfig,
 } from '../mcp-config.js'
 import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
+import { isPlurHookCommand } from '../lib/hook-command.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
-import { codexHome } from '../mcp-config.js'
+import { codexHome, missingNodeEntryPaths } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig } from '@plur-ai/core'
 
@@ -63,6 +64,14 @@ interface DoctorReport {
   datacoreCollision: boolean
   staleNpxHooks: boolean
   staleNpxMcp: boolean
+  /**
+   * Config files whose `plur` entry is PLUR's own Windows node form
+   * (`{ command: <node.exe>, args: [<@plur-ai/mcp js entry>] }`, #1267) and
+   * names a path that no longer exists — typically the version-specific
+   * node binary after a Node upgrade. Checked statically, so it is reported
+   * under `--no-handshake` too, and it fails `overall`.
+   */
+  brokenNodeMcp: Array<{ label: string; path: string; missing: string[] }>
   hookShim: HookShimReport
   mcpShim: HookShimReport
   handshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }
@@ -214,7 +223,8 @@ function hasAnyPlurHook(config: Record<string, unknown>): boolean {
   for (const entries of Object.values(hooks)) {
     for (const entry of entries) {
       for (const h of entry.hooks ?? []) {
-        if (h.command && (h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'))) return true
+        // The same two-part matcher init uses: binary plus known subcommand (#1267).
+        if (h.command && isPlurHookCommand(h.command)) return true
       }
     }
   }
@@ -857,6 +867,22 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     return hasStaleNpxMcp(config)
   })
 
+  // PLUR's Windows node-form entry pins a version-specific node binary
+  // (#1267): a Node upgrade leaves it pointing at nothing.
+  const brokenNodeMcp: DoctorReport['brokenNodeMcp'] = []
+  const seenConfigs = new Set<string>()
+  for (const c of configs) {
+    if (!c.exists || !c.hasPlurMcp) continue
+    // Run from HOME, the project and global Claude Code settings are one file.
+    let real = c.path
+    try { real = realpathSync(c.path) } catch { /* keep the path as given */ }
+    if (seenConfigs.has(real)) continue
+    seenConfigs.add(real)
+    const entry = readPlurMcpEntry(readConfig(c.path))
+    const missing = entry ? missingNodeEntryPaths(entry) : []
+    if (missing.length > 0) brokenNodeMcp.push({ label: c.label, path: c.path, missing })
+  }
+
   const hookShim = validateHookShim()
   const mcpShim = validateMcpShim()
 
@@ -950,6 +976,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // recall is disabled until the model loads.
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
+      brokenNodeMcp.length === 0 &&
       (!cursorProjectDetected || cursorWired)
         ? 'ok' : 'fail'
     // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
@@ -1003,7 +1030,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       : null
 
     return {
-      configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
+      configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
       pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, opencode, overall,
@@ -1153,6 +1180,14 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText(`✓ MCP shim:  ${report.mcpShim.shimPath}`)
   } else {
     outputText(`✗ MCP shim:  ${report.mcpShim.error}`)
+  }
+
+  for (const b of report.brokenNodeMcp) {
+    outputText('')
+    outputText(`✗ plur MCP entry in ${b.label} (${b.path}) points at a path that no longer exists:`)
+    for (const m of b.missing) outputText(`   ${m}`)
+    outputText('   The node binary path is version-specific, so a Node upgrade or a version-manager')
+    outputText('   switch breaks it. Fix: re-run `plur init`, which rewrites the entry.')
   }
 
   if (report.staleNpxMcp) {

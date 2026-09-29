@@ -7,6 +7,7 @@ import { createInterface } from 'readline'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputInfo } from '../output.js'
 import { CLI_VERSION } from '../version.js'
+import { hookCommandPrefix, isPlurHookCommand } from '../lib/hook-command.js'
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
@@ -50,6 +51,8 @@ import {
 import {
   writeOpencodeConfig,
   opencodeConfigPath,
+  opencodeConfigDir,
+  opencodeMcpCommand,
 } from '../opencode-config.js'
 
 /**
@@ -75,11 +78,7 @@ import {
  *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
  *   plur init --antigravity | --agy / --no-antigravity
  *                             # force / skip Antigravity (auto: ~/.gemini/antigravity-cli exists)
- *   plur init --opencode / --no-opencode      # enable / skip opencode — OPT-IN ONLY, no
- *                             # auto-detection like the legs above: @plur-ai/opencode is not
- *                             # yet on npm, and opencode resolves a bare plugin name from the
- *                             # registry silently on a miss, so auto-enabling would write a
- *                             # dead plugin entry into every opencode user's config
+ *   plur init --opencode / --no-opencode      # force / skip opencode (auto: ~/.config/opencode exists)
  *   plur init --no-prompt     # never ask interactive questions (telemetry opt-in)
  *   plur init --domain X      # set default domain for this project (.plur.yaml)
  *   plur init --scope Y       # set default scope for this project (.plur.yaml)
@@ -700,9 +699,8 @@ function settingsRefusal(path: string): string {
 }
 
 function isPlurHook(entry: HookEntry): boolean {
-  return (entry.hooks ?? []).some((h) =>
-    h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'),
-  )
+  // The shim or npx fallback plus a known subcommand (#1267) — see isPlurHookCommand.
+  return (entry.hooks ?? []).some((h) => isPlurHookCommand(h.command ?? ''))
 }
 
 function hasPlurHooks(settings: Settings): boolean {
@@ -713,10 +711,21 @@ function hasPlurHooks(settings: Settings): boolean {
   return false
 }
 
+/**
+ * Remove PLUR's own hooks, hook by hook. An entry that also holds a user's
+ * hook keeps it (with its matcher); only an entry left with no hooks is
+ * dropped. Dropping the whole entry whenever one hook in it matched deleted
+ * the user's hook alongside a legacy PLUR one (#1267 review).
+ */
 function stripPlurHooks(settings: Settings): Settings {
   const hooks = { ...(settings.hooks ?? {}) }
   for (const [event, entries] of Object.entries(hooks)) {
-    const kept = entries.filter((e) => !isPlurHook(e))
+    const kept: HookEntry[] = []
+    for (const e of entries) {
+      if (!isPlurHook(e)) { kept.push(e); continue }
+      const own = e.hooks.filter((h) => !isPlurHookCommand(h.command ?? ''))
+      if (own.length > 0) kept.push({ ...e, hooks: own })
+    }
     if (kept.length > 0) {
       hooks[event] = kept
     } else {
@@ -1122,15 +1131,13 @@ function installAntigravity(cmd: string): string {
 // ── opencode ─────────────────────────────────────────────────────────────
 
 function shouldSetupOpencode(args: string[]): boolean {
-  // Opt-in ONLY — unlike --cursor/--codex/--antigravity, this leg never
-  // auto-detects from existsSync(opencodeConfigDir()). @plur-ai/opencode is
-  // not yet published to npm (see scripts/release.sh --opencode); opencode
-  // resolves a bare plugin name from the registry with no error on a miss,
-  // so auto-enabling here would silently write a dead `plugin` entry into
-  // every opencode user's config the day this CLI ships, before the package
-  // exists to resolve. `--no-opencode` still works as an explicit no-op.
+  // Auto-detected like --cursor/--codex/--antigravity (#1311). The leg was
+  // opt-in only while @plur-ai/opencode was unpublished: opencode resolves a
+  // bare plugin name from npm with no error on a miss, so auto-enabling
+  // would have written a dead entry. The package is published now.
   if (args.includes('--no-opencode')) return false
-  return args.includes('--opencode')
+  if (args.includes('--opencode')) return true
+  return existsSync(opencodeConfigDir())
 }
 
 /**
@@ -1164,11 +1171,17 @@ function installOpencode(cliVersion: string): string {
       'valid JSON document whose top level, or existing `plugin`/`mcp` field, is not the ' +
       `expected shape); add the entries by hand, then re-run \`plur init --opencode\`:\n` +
       `    "plugin": ["@plur-ai/opencode"]\n` +
-      `    "mcp": { "plur": { "type": "local", "command": ["npx", "-y", "@plur-ai/mcp@${cliVersion}"], "enabled": true } }`
+      `    "mcp": { "plur": { "type": "local", "command": ${JSON.stringify(opencodeMcpCommand(cliVersion))}, "enabled": true } }`
   }
 
   const status = result.created ? 'created' : result.changed ? 'updated' : 'already up to date'
-  const mcpNote = result.mcpPlurPreserved
+  const mcpNote = result.mcpPlurUpgraded
+    // #1311: PLUR's own older bare-npx entry on Windows, command replaced.
+    ? '\n  mcp.plur: upgraded to the Windows launcher (node.exe + @plur-ai/mcp), other fields kept'
+    : result.mcpPlurRepaired
+    // #1311: PLUR's own node-form entry on Windows had gone stale.
+    ? '\n  mcp.plur: repaired (the node.exe or @plur-ai/mcp path it named was stale), other fields kept'
+    : result.mcpPlurPreserved
     // B2 (0.20.0 audit): an existing mcp.plur (possibly a non-default
     // PLUR_PATH, or an enterprise remote store with bearer headers) is left
     // completely untouched rather than overwritten with PLUR's own local
@@ -1350,7 +1363,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Fallback PINNED, never floating (#1069 class, data-loss audit finding 7):
   // an unpinned spec re-resolves on every publish and races the npx cache
   // rewrite that SIGKILLs whatever pages in a native binary mid-rewrite.
-  const cmd = shim.shimPath || `npx -y @plur-ai/cli@${CLI_VERSION}` // fallback if shim failed
+  // The shim path is quoted on Windows (and wherever it contains a space):
+  // harnesses run hook commands through a shell, and an unquoted
+  // `C:\Users\Test User\...` splits at the space (#1267).
+  const cmd = shim.shimPath
+    ? hookCommandPrefix(shim.shimPath)
+    : `npx -y @plur-ai/cli@${CLI_VERSION}` // fallback if shim failed
 
   // Install local MCP shim — same fix pattern for MCP server launch (#234)
   const mcpShim = installMcpBinary()
@@ -1473,7 +1491,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const opencodeStatus = shouldSetupOpencode(args)
     ? containLeg('Opencode', () => installOpencode(CLI_VERSION))
-    : 'skipped (opt-in only — pass --opencode to enable once @plur-ai/opencode is installed/published)'
+    : 'Opencode: skipped (no ~/.config/opencode found — pass --opencode to force, --no-opencode to silence this)'
 
   // Contained like the harness legs: an unwritable skills dir must not abort
   // the hooks and MCP registration that are the point of `plur init`.
