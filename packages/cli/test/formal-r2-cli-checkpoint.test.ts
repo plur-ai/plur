@@ -130,7 +130,10 @@ describe('cli#6 checkpoint lifecycle (formal r2)', () => {
         cwd: home,
       })
     }
-    expect(existsSync(join(other, 'sessions', 'path-sess.checkpoint.json'))).toBe(true)
-    expect(existsSync(join(store, 'sessions', 'path-sess.checkpoint.json'))).toBe(false)
+    // Owner decision H1 ("payload"): the checkpoint is keyed by the payload
+    // session_id ('p') first, CLAUDE_SESSION_ID only as a fallback.
+    expect(existsSync(join(other, 'sessions', 'p.checkpoint.json'))).toBe(true)
+    expect(existsSync(join(store, 'sessions', 'p.checkpoint.json'))).toBe(false)
+    expect(existsSync(join(other, 'sessions', 'path-sess.checkpoint.json'))).toBe(false)
   }, 60_000)
 })

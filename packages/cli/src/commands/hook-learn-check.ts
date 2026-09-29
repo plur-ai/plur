@@ -3,7 +3,7 @@ import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
-import { safeSessionKey } from '../lib/session-key.js'
+import { hookSessionKey } from '../lib/session-key.js'
 import { ensureSessionDir, ticketCounter } from '../lib/codex-hook-io.js'
 
 /**
@@ -42,15 +42,15 @@ const LEARN_INTERVAL = 3 // Learning nudge every N stops
 const CHECKPOINT_INTERVAL = parseInt(process.env.PLUR_CHECKPOINT_INTERVAL || '10', 10)
 
 /**
- * Payload `session_id` first, then CLAUDE_SESSION_ID, then ppid — the same
- * precedence the checkpoint readers (hook-session-end, plur_session_end) use.
+ * Owner decision H1 ("payload"): the one shared helper — payload
+ * `session_id`, then CLAUDE_SESSION_ID, then ppid. The checkpoint readers
+ * (hook-session-end, plur_session_end, processDeferredWrapups) find it under
+ * this key and also try the legacy forms (legacyHookSessionKeys). The stop
+ * counter is not migrated: a counter left under an old key only delays the
+ * next nudge/checkpoint by at most one interval.
  */
 function sessionKey(payloadSessionId?: unknown): string {
-  const raw =
-    (typeof payloadSessionId === 'string' && payloadSessionId) ||
-    process.env.CLAUDE_SESSION_ID ||
-    String(process.ppid || 'unknown')
-  return safeSessionKey(raw).slice(0, 64)
+  return hookSessionKey(payloadSessionId)
 }
 
 function counterPath(key: string): string {

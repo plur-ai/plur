@@ -5,7 +5,7 @@ import { randomUUID, randomBytes } from 'crypto'
 import { createPlur, trustedProjectScope, storeTrustCheck, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { recordInjected } from '../lib/auto-rate.js'
-import { safeSessionKey } from '../lib/session-key.js'
+import { safeSessionKey, hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, ensureSessionDir, cleanupStaleSessionFiles, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
 import { correctionReminder } from './hook-correction-detect.js'
 import { checkpointRoot } from './hook-learn-check.js'
@@ -141,12 +141,23 @@ function sessionTaskPath(input: Record<string, unknown>): string | null {
  * for callers that send no session id at all.
  */
 function sessionKey(input: Record<string, unknown>): string {
-  const id = input.session_id
-  const raw =
-    (typeof id === 'string' && id) ||
-    process.env.CLAUDE_SESSION_ID ||
-    String(process.ppid || 'unknown')
-  return safeSessionKey(raw)
+  // Owner decision H1 ("payload"): the one shared helper.
+  return hookSessionKey(input.session_id)
+}
+
+/**
+ * The state file for `key`, or — for a READER, when it does not exist yet —
+ * the same file under a key an older writer used (H1 upgrade path: #1228's
+ * `sid-` prefix, the uncapped or env-first forms). Writers always use `key`.
+ */
+function readableStatePath(dir: string | null, input: Record<string, unknown>, key: string, ext: string): string | null {
+  const current = statePath(dir, key, ext)
+  if (!dir || !current || existsSync(current)) return current
+  for (const legacy of legacyHookSessionKeys(input.session_id)) {
+    const p = statePath(dir, legacy, ext)
+    if (p && existsSync(p)) return p
+  }
+  return current
 }
 
 /**
@@ -245,6 +256,11 @@ function sessionDir(): string | null {
  * and skipped injection entirely. The payload id is the identity; ppid is the
  * fallback for payloads without one (and keeps those paths byte-identical to
  * before). The `sid-` prefix keeps the two key spaces disjoint.
+ *
+ * LEGACY since owner decision H1 ("payload", 2026-09-29): the hook keys its
+ * state with `hookSessionKey` (lib/session-key.ts). This form is kept only as
+ * the key a pre-H1 #1228 writer used — `legacyHookSessionKeys` produces it for
+ * readers — and for its unit tests. Nothing writes under it.
  */
 export function injectSessionKey(input: Record<string, unknown>, ppid: number | string = process.ppid || 'unknown'): string {
   const sid = typeof input.session_id === 'string' ? input.session_id : ''
@@ -638,12 +654,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Vetted state dir (#1228 cli#8): null when symlinked/foreign — no marker,
   // no reminder timer, no lock.
   const stateDir = sessionDir()
-  // Key: #1301's sessionKey (session_id → CLAUDE_SESSION_ID → ppid, via
-  // safeSessionKey). OPEN CONFLICT with #1228's injectSessionKey (`sid-`
-  // prefix, ppid fallback, no CLAUDE_SESSION_ID) — see
-  // spec/formal/survey/2026-09-29-field-report-drift.md.
+  // Key: decision H1 ("payload") — hookSessionKey (session_id →
+  // CLAUDE_SESSION_ID → ppid). The marker READER also accepts a marker an
+  // older writer left under #1228's `sid-` key or another legacy form, so a
+  // session started before the upgrade is not injected twice. The reminder
+  // timer is written and read under the current key only (a missing timer
+  // just means one early reminder).
   const key = sessionKey(input)
-  const marker = statePath(stateDir, key, 'marker')
+  const marker = readableStatePath(stateDir, input, key, 'marker')
   const reminderPath = statePath(stateDir, key, 'reminded')
 
   // Contextual injection for specific events (plan_mode, skill, agent, subagent)
