@@ -2169,14 +2169,127 @@ export class Plur {
     // commitment. A false positive here is louder than a missed one.
     if (!isHashable(statement)) return null
     const hash = computeContentHash(statement)
+    // #1268: for a SHARED write, a shared hit is preferred. Callers absorb a
+    // shared hit as before (shared↔shared recurrence), but a non-shared hit —
+    // `local`, `global`, `user:*`, `agent:*` — is only CREDITED: the team copy
+    // is still written. See `_isTeamValidation`.
+    const sharedWrite = isSharedScope(currentScope)
+    let fallback: Engram | null = null
     for (const e of engrams) {
       if (e.status === 'active'
           && (e as any).content_hash === hash
           && e.scope !== currentScope) {
-        return e
+        if (!sharedWrite || isSharedScope(e.scope)) return e
+        fallback ??= e
       }
     }
-    return null
+    return fallback
+  }
+
+  /**
+   * #1268: a shared-scope save whose same-text match lives in a NON-shared
+   * scope. The match is credited as a recurrence (counted, a `validated_by`
+   * source, commitment escalated but never to `locked`) and the team copy is
+   * written anyway — a team save is never absorbed into a personal or global
+   * engram. The user may then hold two engrams; that is intended.
+   */
+  private _isTeamValidation(scope: string, hit: Engram): boolean {
+    return isSharedScope(scope) && !isSharedScope(hit.scope)
+  }
+
+  /**
+   * #1268 guard: an engram bound for a remote team store — queued in the
+   * outbox for one, served by one, or in a scope a url store is registered for
+   * — must never be rewritten to `global` by the recurrence ladder. Otherwise
+   * the outbox pushes `scope: global` into the team store.
+   */
+  private _isTeamStoreBound(e: Engram): boolean {
+    // Owner decision (2026-09-29): what is in a team store stays there. A team
+    // store is any url store or any `shared: true` file-path store; an engram
+    // it serves, or one queued for it, keeps its scope. The ladder may still
+    // credit it, and a personal/global copy can exist alongside.
+    const a = e as any
+    if (a.structured_data?._outbox) return true
+    const teamStores = (this.config.stores ?? []).filter(s => !!s.url || s.shared === true)
+    if (teamStores.some(s => isScopeWithin(e.scope, s.scope))) return true
+    if (typeof a._storeScope === 'string' && teamStores.some(s => s.scope === a._storeScope)) return true
+    return false
+  }
+
+  /**
+   * #1268 copy-on-promote. `hit` is a team-store-bound engram the ladder would
+   * broaden to global. Instead: leave it exactly as it is (scope, store, file,
+   * outbox marker) and credit a `global` copy in the LOCAL primary store,
+   * creating it once.
+   *
+   * The copy links back with `derived_from: <team engram id>` (the existing
+   * lineage field) and its first source carries `promoted_from: <team scope>`.
+   * Its commitment is escalated as the ladder would, but never to `locked`.
+   * It is appended directly — never given an `_outbox` marker — and its scope
+   * is `global`, which no team store serves, so it is never pushed anywhere.
+   * A later recurrence finds the same copy (same content hash, `global`,
+   * `derived_from` the team engram) and credits it instead of adding another.
+   */
+  private async _promoteTeamCopy(
+    hit: Engram,
+    engrams: Engram[],
+    scope: string,
+    context: LearnContext | undefined,
+  ): Promise<Engram> {
+    // Under delegation `engrams` is an empty stand-in; this rare path takes the
+    // corpus so the append/update below are ordinary whole-store operations.
+    const corpus = engrams.length ? engrams : await this._primaryStore.load()
+    const hash = (hit as any).content_hash ?? computeContentHash(hit.statement)
+    const capped = (c: Engram['commitment'] | undefined): Engram['commitment'] =>
+      c === 'exploring' ? 'leaning' : 'decided'
+    const source = this._buildSourceEntry(scope, context)
+
+    const existing = corpus.find(e => e.status === 'active'
+      && e.scope === 'global'
+      && (e as any).derived_from === hit.id
+      && (e as any).content_hash === hash)
+    if (existing) {
+      const e = existing as any
+      e.recurrence_count = (e.recurrence_count ?? 0) + 1
+      e.write_count = (e.write_count ?? 1) + 1
+      e.sources = [...(e.sources ?? []), source]
+      if (e.commitment !== 'locked') e.commitment = capped(e.commitment)
+      await this._updateEngrams(corpus, [existing])
+      await this._syncIndex()
+      return existing
+    }
+
+    const now = new Date().toISOString()
+    const id = generateEngramId(corpus, this._mintedTodayIds())
+    this._rememberMintedId(id)
+    const copy: Engram = {
+      ...this._buildEngramShape(hit.statement, 'global', {
+        scope: 'global',
+        type: hit.type,
+        domain: hit.domain,
+        tags: hit.tags,
+        rationale: (hit as any).rationale,
+        derived_from: hit.id,
+        commitment: capped(hit.commitment),
+      } as LearnContext, now, undefined, eid => this._ancestorsOf(corpus, eid), 'default'),
+      id,
+    }
+    const c = copy as any
+    c.recurrence_count = ((hit as any).recurrence_count ?? 0) + 1
+    c.write_count = ((hit as any).write_count ?? 1) + 1
+    c.sources = [
+      { scope: hit.scope, session_id: null, stored_at: now, promoted_from: hit.scope },
+      source,
+    ]
+    await this._appendEngram(corpus, copy)
+    await this._syncIndex()
+    this._appendHistory({
+      event: 'engram_created',
+      engram_id: id,
+      timestamp: now,
+      data: { type: copy.type, scope: 'global', source: copy.source, promoted_from: { engram_id: hit.id, scope: hit.scope } },
+    })
+    return copy
   }
 
   /** Record a cross-scope recurrence: append source, increment counters,
@@ -2200,6 +2313,16 @@ export class Plur {
   ): Promise<Engram> {
     const previousScope = hit.scope
     const previousCommitment = hit.commitment
+    const teamValidation = this._isTeamValidation(scope, hit)
+
+    // #1268 copy-on-promote (owner decision 2026-09-29): what is in a team
+    // store stays there. When this hit would broaden a team-bound engram to
+    // global, the team engram is left untouched and a global copy in the local
+    // primary store takes the promotion instead.
+    if (((hit as any).recurrence_count ?? 0) + 1 >= 2
+        && isSharedScope(hit.scope) && this._isTeamStoreBound(hit)) {
+      return await this._promoteTeamCopy(hit, engrams, scope, context)
+    }
 
     // Audit iter-4 fix (Critic + Data convergence): mutate ONCE on the canonical
     // writable target (primary or secondary store engram), then sync hit from
@@ -2216,7 +2339,9 @@ export class Plur {
     // applyMutation is pure-ish: takes everything it needs as parameters,
     // returns the new recurrence count so callers don't need to read back via
     // unsafe cast.
-    const sourceEntry = this._buildSourceEntry(scope, context)
+    const sourceEntry: { scope: string; session_id: string | null; stored_at: string; validated_by?: string } =
+      this._buildSourceEntry(scope, context)
+    if (teamValidation) sourceEntry.validated_by = scope
     const lockTimestamp = new Date().toISOString()
     // #181 (audit #213 item 3): an engram in an unresolved persisted tension
     // must not escalate INTO 'locked' — contradicted knowledge freezing at
@@ -2233,15 +2358,17 @@ export class Plur {
         // Only promote SHARED scopes (project:*, space:*, etc.) to global —
         // personal-family scopes (local, user:*) stay within their family.
         // See issue #362 item (ii): personal-scope ceiling for cross-scope recurrence.
-        if (isSharedScope(e.scope)) e.scope = 'global'
+        // #1268 guard: never broaden an engram bound for a remote team store.
+        if (isSharedScope(e.scope) && !this._isTeamStoreBound(e)) e.scope = 'global'
         if (e.commitment !== 'locked') {
           // Forward-only ladder: exploring → leaning → decided → locked.
+          // A team validation (#1268) escalates but never locks.
           e.commitment = e.commitment === 'exploring'
             ? 'leaning'
             : e.commitment === 'leaning'
               ? 'decided'
               : e.commitment === 'decided'
-                ? (lockBlockedByTension ? 'decided' : 'locked')
+                ? (lockBlockedByTension || teamValidation ? 'decided' : 'locked')
                 : (e.commitment ?? 'leaning')
           if (lockBlockedByTension && e.commitment === 'decided') {
             logger.info(`[plur:tensions] lock escalation blocked for ${e.id} — unresolved tension (#181)`)
@@ -2264,6 +2391,7 @@ export class Plur {
       ;(hit as any).recurrence_count = (mutated as any).recurrence_count
       hit.write_count = mutated.write_count
       ;(hit as any).sources = (mutated as any).sources
+      ;(hit as any).structured_data = (mutated as any).structured_data
       if (mutated.locked_at !== undefined) hit.locked_at = mutated.locked_at
       if (mutated.locked_reason !== undefined) hit.locked_reason = mutated.locked_reason
     }
@@ -3063,7 +3191,12 @@ export class Plur {
       // `engrams` is empty under delegation, so `_recordCrossScopeRecurrence`
       // takes its secondary-store branch — which is where every match it can
       // still see actually lives.
-      if (crossMatch) return await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
+      if (crossMatch && !this._isTeamValidation(scope, crossMatch)) {
+        return await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
+      }
+      // #1268: a shared save matching a non-shared engram credits that engram
+      // and then falls through to write the team copy below.
+      if (crossMatch) await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
 
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
@@ -3440,10 +3573,13 @@ export class Plur {
     // #176: cross-scope recurrence (same semantics as the local learn() path).
     const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
     if (crossMatch) {
-      return await this._withStoreLock(this.paths.engrams, async () => {
+      const credited = await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
         return await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
       })
+      // #1268: a team validation of a non-shared engram does not stand in for
+      // the team write — fall through and POST the team copy.
+      if (!this._isTeamValidation(scope, crossMatch)) return credited
     }
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now, undefined, undefined, guarded.scopeSource)

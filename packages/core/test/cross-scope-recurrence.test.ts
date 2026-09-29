@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
@@ -71,7 +71,10 @@ describe('cross-scope recurrence (#176)', () => {
       await plur.learn('repeated mistake', { scope: 'project:a' })
       await plur.learn('repeated mistake', { scope: 'project:b' })  // recurrence=1
       await plur.learn('repeated mistake', { scope: 'project:c' })  // recurrence=2: decided
-      const fourth = await plur.learn('repeated mistake', { scope: 'project:d' })  // recurrence=3: locked
+      // #1268: a 4th SHARED save would only credit the graduated global engram
+      // (never locking it) and write its own team copy, so the escalation to
+      // locked is driven by a personal save here.
+      const fourth = await plur.learn('repeated mistake', { scope: 'local' })  // recurrence=3: locked
 
       expect(fourth.recurrence_count).toBe(3)
       expect(fourth.commitment).toBe('locked')
@@ -83,9 +86,9 @@ describe('cross-scope recurrence (#176)', () => {
       await plur.learn('important rule', { scope: 'project:a' })
       await plur.learn('important rule', { scope: 'project:b' })
       await plur.learn('important rule', { scope: 'project:c' })
-      await plur.learn('important rule', { scope: 'project:d' })  // locked
+      await plur.learn('important rule', { scope: 'local' })  // locked (personal save, see #1268)
 
-      const fifth = await plur.learn('important rule', { scope: 'project:e' })
+      const fifth = await plur.learn('important rule', { scope: 'user:e' })
       expect(fifth.commitment).toBe('locked')  // still locked
       expect(fifth.recurrence_count).toBe(4)  // counter still increments
       // No additional locked_at updates after first lock
@@ -151,39 +154,25 @@ describe('cross-scope recurrence (#176)', () => {
         expect(after1.sources).toHaveLength(1)
         expect(after1.sources![0].scope).toBe('project:b')
 
-        // 2nd cross-scope hit — broadens to global, mutation should persist
-        // to the SECONDARY store (where the engram actually lives), and the
-        // stored engram's sources array must NOT be undefined after the round trip.
-        await plur.learn(legacyStmt, { scope: 'project:c' })
+        // The 1st hit landed on disk in the SECONDARY store (where the engram
+        // lives), and its sources array survived the round trip.
+        const afterFirst = loadEngrams(secondaryPath).find(e => e.id === 'ENG-LEGACY-001')!
+        expect((afterFirst as any).recurrence_count).toBe(1)
+        expect(Array.isArray((afterFirst as any).sources)).toBe(true)
+        expect((afterFirst as any).sources.length).toBe(1)
 
-        // Read the secondary store file directly to verify durability.
-        // This bypasses namespace lookup ambiguity and asserts the on-disk truth.
-        const storedEngrams = loadEngrams(secondaryPath)
-        const stored = storedEngrams.find(e => e.id === 'ENG-LEGACY-001')
-        expect(stored).toBeDefined()
-        expect(stored!.scope).toBe('global')
-        expect((stored as any).recurrence_count).toBe(2)
-        // Critical: sources is a real array with 2 entries, NOT undefined or empty.
-        // (Iter-3 bug: field-copy approach overwrote stored.sources with hit.sources,
-        // which would be [...defaultedEmpty, newEntry] losing nothing here BUT
-        // if hit.sources had been undefined (legacy not yet defaulted in caller chain)
-        // the stored array would be destroyed. Single-mutation re-applies from
-        // existing stored state.)
-        expect(Array.isArray((stored as any).sources)).toBe(true)
-        expect((stored as any).sources.length).toBe(2)
-
-        // Iter-4 (Critic medium): the history event for the broadening
-        // (2nd cross-scope hit) must record persisted_to='secondary' so an
-        // observability consumer can confirm the mutation landed on disk
-        // outside the primary store.
-        const broadenEvents = readHistoryForEngram(plur.getStorageRoot(), after1.id)
-          .filter(e => e.event === 'recurrence_detected')
-        // Exactly one event: the broadening at recurrence=2 (1st hit doesn't fire here
-        // because the engram is in a WRITABLE secondary store, so persisted_to='secondary'
-        // is durable and the no-material-change branch correctly skips emission).
-        expect(broadenEvents.length).toBe(1)
-        expect(broadenEvents[0].data.persisted_to).toBe('secondary')
-        expect(broadenEvents[0].data.new_scope).toBe('global')
+        // 2nd cross-scope hit. Owner decision (2026-09-29, #1268): what is in a
+        // team store stays there. This is a `shared: true` store, so instead of
+        // broadening the stored engram in place, the ladder leaves it exactly
+        // as it is and credits a `global` copy in the local primary store
+        // (copy-on-promote). Before, this test asserted the stored engram was
+        // rewritten to global in the team's own file.
+        const fileBefore = readFileSync(secondaryPath, 'utf8')
+        const promoted = await plur.learn(legacyStmt, { scope: 'project:c' })
+        expect(readFileSync(secondaryPath, 'utf8')).toBe(fileBefore)
+        expect(promoted.scope).toBe('global')
+        expect((promoted as any).derived_from).toBe(after1.id)
+        expect(promoted.recurrence_count).toBe(2)
       } finally {
         rmSync(secondaryDir, { recursive: true, force: true })
       }
@@ -210,21 +199,31 @@ describe('cross-scope recurrence (#176)', () => {
         // Cross-scope re-learn at primary scope. Engram match is in the
         // secondary store; mutation must persist there.
         await plur.learn('cross-store rule', { scope: 'project:primary-b' })  // recurrence=1, no scope change yet
-        const after = await plur.learn('cross-store rule', { scope: 'project:primary-c' })  // recurrence=2, broadens
+        const after = await plur.learn('cross-store rule', { scope: 'project:primary-c' })  // recurrence=2
 
-        // In-memory state shows broadening
-        expect(after.recurrence_count).toBe(2)
+        // Owner decision (2026-09-29, #1268): what is in a team store stays
+        // there. This store is `shared: true`, so the 2nd hit does not rewrite
+        // the stored engram to global; it creates a `global` copy in the local
+        // primary store (copy-on-promote). Before, this test asserted the team
+        // engram itself was broadened to global.
         expect(after.scope).toBe('global')
+        expect(after.id).not.toBe(seed.id)
+        expect(after.recurrence_count).toBe(2)
 
-        // Reload from disk to verify durability — the mutation should
-        // have been written to the SECONDARY store, not silently dropped
-        // (this was the iter-1 defect Critic + Data flagged).
+        // Reload from disk to verify durability: the 1st hit persisted in the
+        // SECONDARY store (the iter-1 defect was that it was silently dropped),
+        // and the promotion persisted as a copy in the primary store.
         const fresh = new Plur({ path: dir })
-        const reloaded = (await fresh.list({ scope: 'global' }))
-          .find(e => e.statement === 'cross-store rule')
-        expect(reloaded).toBeDefined()
-        expect(reloaded!.recurrence_count).toBe(2)
-        expect(reloaded!.scope).toBe('global')
+        const team = (await fresh.list({ scope: 'project:secondary-a' }))
+          .find(e => e.statement === 'cross-store rule' && e.id === seed.id)
+        expect(team).toBeDefined()
+        expect(team!.recurrence_count).toBe(1)
+        expect(team!.scope).toBe('project:secondary-a')
+        const copy = (await fresh.list({ scope: 'global' }))
+          .find(e => e.statement === 'cross-store rule' && e.scope === 'global')
+        expect(copy).toBeDefined()
+        expect(copy!.recurrence_count).toBe(2)
+        expect((copy as any).derived_from).toBe(seed.id)
       } finally {
         rmSync(secondaryDir, { recursive: true, force: true })
       }
@@ -269,7 +268,8 @@ describe('cross-scope recurrence (#176)', () => {
       expect((eng as any).write_count).toBe(1)
 
       // Cross-scope relearn → write_count=2, same engram returned
-      const relearned = await plur.learn('comms rule', { scope: 'group:team/comms' })
+      // Personal→personal (a shared write would not be absorbed, #1268).
+      const relearned = await plur.learn('comms rule', { scope: 'local' })
       expect(relearned.id).toBe(eng.id)  // cross-scope recurrence matched, same ID
       expect((relearned as any).write_count).toBe(2)
 
@@ -303,8 +303,10 @@ describe('cross-scope recurrence (#176)', () => {
       const first = await plur.learn('personal rule', { scope: 'local' })
       expect(first.scope).toBe('local')
 
-      await plur.learn('personal rule', { scope: 'project:a' })  // 1st cross-scope, recurrence=1
-      const third = await plur.learn('personal rule', { scope: 'project:b' })  // 2nd cross-scope
+      // Personal scopes only: since #1268 a shared write (project:*) is never
+      // absorbed into a personal engram, so it would not recur onto this one.
+      await plur.learn('personal rule', { scope: 'user:a' })  // 1st cross-scope, recurrence=1
+      const third = await plur.learn('personal rule', { scope: 'agent:b' })  // 2nd cross-scope
 
       // recurrence_count increments as normal
       expect(third.recurrence_count).toBe(2)
@@ -410,7 +412,7 @@ describe('cross-scope recurrence (#176)', () => {
       const first = await plur.learn('rule', { scope: 'project:a' })
       await plur.learn('rule', { scope: 'project:b' })  // recurrence_count=1, no event
       await plur.learn('rule', { scope: 'project:c' })  // recurrence_count=2, scope→global commit→decided EVENT
-      await plur.learn('rule', { scope: 'project:d' })  // recurrence_count=3, commit→locked EVENT
+      await plur.learn('rule', { scope: 'local' })  // recurrence_count=3, commit→locked EVENT (personal save, #1268)
 
       const eventsAfterLock = readHistoryForEngram(plur.getStorageRoot(), first.id)
         .filter(e => e.event === 'recurrence_detected')
@@ -418,8 +420,8 @@ describe('cross-scope recurrence (#176)', () => {
 
       // Subsequent learns at new scopes: counter increments, NO events
       // (engram already at global+locked, nothing further to escalate).
-      await plur.learn('rule', { scope: 'project:e' })
-      await plur.learn('rule', { scope: 'project:f' })
+      await plur.learn('rule', { scope: 'user:e' })
+      await plur.learn('rule', { scope: 'agent:f' })
 
       const finalEvents = readHistoryForEngram(plur.getStorageRoot(), first.id)
         .filter(e => e.event === 'recurrence_detected')

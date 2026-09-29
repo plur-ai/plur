@@ -50,6 +50,40 @@ Core exposes the same answer as `plur.deliveryOf(engram)`.
 
 Nothing about where engrams are written changes. The field is additive.
 
+### A team save is no longer swallowed by a personal note with the same text (#1268)
+
+**A shared-scope write whose text matched a personal engram was never
+written.** Cross-scope recurrence (#176) matched any active engram with the same
+content hash in a different scope, and on a match it updates that engram
+*instead* of writing a new one. So a `group:` or `project:` learn identical to
+something in `global`, `local`, `user:` or `agent:` bumped the personal note's
+recurrence count and nothing reached the team scope. Found while triaging an
+enterprise deployment's report of team saves that never reached the team store.
+
+**A shared-scope save now always writes its team copy.** It is never absorbed
+into a non-shared engram — `local`, `global`, `user:`, `agent:` — including a
+`global` engram the recurrence ladder graduated. The personal counterpart is
+still credited: the team save is recorded on it as a recurrence (counted, with a
+source marked `validated_by` the team scope, and commitment escalated by the
+usual ladder, but never to `locked`). You may end up with two engrams — your own
+and the team's — and that is intended. That includes an engram you moved to
+`global` yourself with `rescope`.
+
+**What is in a team store stays there.** When the ladder would broaden a
+team-bound engram to `global` — one served by, queued for, or in the scope of
+any team store, a url store or a `shared: true` file-path store — it now leaves
+that engram exactly as it is and creates, once, a `global` copy in your local
+store instead. The copy points back at the team engram (`derived_from`), its
+first source records `promoted_from` the team scope, its commitment escalates
+as the ladder would but never to `locked`, and it is never queued for or pushed
+to a team store. Later recurrences credit the same copy. Before, the team
+engram could be rewritten to `global` in the team's own file, or rewritten
+locally and then pushed to the team store as `scope: global`. Non-shared
+file-path stores still broaden in place.
+
+Shared↔shared recurrence, personal→personal recurrence, and a personal save
+recurring onto a shared engram behave as before.
+
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
 **The Stop hook's "did you learn something?" nudge was never shown to the

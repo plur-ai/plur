@@ -54,9 +54,11 @@ describe('PR-1 — RECURRENCE-INTERACTION under unscoped_default:local (#353, v2
     expect(first.scope).toBe('local')
 
     // 1st cross-scope hit: recurrence=1, scope unchanged
-    await plur.learn('recurrence-interaction probe statement', { scope: 'project:a' })
+    // Personal scopes only: since #1268 a shared-scope write is never absorbed
+    // into a personal engram, so the ceiling is exercised personal→personal.
+    await plur.learn('recurrence-interaction probe statement', { scope: 'user:a' })
     // 2nd cross-scope hit: recurrence=2, but personal-scope ceiling prevents global promotion
-    const after = await plur.learn('recurrence-interaction probe statement', { scope: 'project:b' }) as { scope: string; id: string }
+    const after = await plur.learn('recurrence-interaction probe statement', { scope: 'agent:b' }) as { scope: string; id: string }
     expect(after.id).toBe(first.id)
     // Personal-family scopes stay within their family — local does NOT escalate to global.
     expect(after.scope).toBe('local')
