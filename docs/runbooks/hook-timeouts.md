@@ -89,6 +89,24 @@ embeddings:
 The stderr message in case A recommends *raising* the deadline. That advice is
 correct for A and wrong for B — read which one you have before acting on it.
 
+## A hook that exits on its own must not leave the store lock
+
+Every Codex and Antigravity hook force-exits when it is done, and the Claude
+Code hook force-exits past a missed hybrid deadline and on its 15s watchdog.
+`process.exit()` does not wait for in-flight work, and the abandoned hybrid
+search still records its injection under `engrams.yaml.lock`. Exiting inside
+that write leaves the lock behind — often empty, which core cannot attribute,
+so every later writer waits out the 60s stale threshold and the next prompts
+come back with no memory.
+
+So each of those exits first waits, bounded, until the process has no lock
+operation in flight (core's `pendingStoreLockOps()`, which also sees a create
+that is issued but not yet on disk) and no lock file of its own
+(`lib/store-lock-exit.ts`): 5s after a finished run, 3s once the Claude Code
+watchdog has fired (15s + 3s stays below the 20s budget). A lock left by a
+hook that was *killed* at the harness budget is not covered — that is case B
+above. If one is there and no PLUR process is running, it is safe to delete.
+
 ## If the store is remote
 
 A slow or unreachable PLUR Enterprise host cannot hang the hook — the dial is

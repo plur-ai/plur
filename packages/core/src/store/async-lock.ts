@@ -654,8 +654,36 @@ export async function withAsyncLock<T>(
   fn: () => Promise<T>,
   options?: AsyncLockOptions,
 ): Promise<T> {
-  // Resolve so `./a/engrams.yaml` and `/abs/a/engrams.yaml` share one queue.
-  // The file lock gets that for free — the kernel resolves the path for
-  // O_EXCL — but the in-process key is a plain string and has to do it itself.
-  return processLocks.run(path.resolve(filePath), () => withFileLock(filePath, fn, options))
+  // Counted from the first synchronous line, before any await: the count must
+  // already be non-zero by the time an O_EXCL create could be in flight.
+  pendingOps++
+  try {
+    // Resolve so `./a/engrams.yaml` and `/abs/a/engrams.yaml` share one queue.
+    // The file lock gets that for free — the kernel resolves the path for
+    // O_EXCL — but the in-process key is a plain string and has to do it itself.
+    return await processLocks.run(path.resolve(filePath), () => withFileLock(filePath, fn, options))
+  } finally {
+    pendingOps--
+  }
+}
+
+/** Lock operations in this process: queued, acquiring, held or releasing. */
+let pendingOps = 0
+
+/**
+ * How many {@link withAsyncLock} operations this process has in progress —
+ * queued behind another in-process caller, acquiring the file lock, holding
+ * it, or releasing it (#1343).
+ *
+ * For a process about to force-exit (CLI hooks call `process.exit()`, which
+ * does not wait for in-flight work). The lock FILE cannot answer "is this
+ * process inside a store write?": between one caller's release and the next
+ * caller's O_EXCL create there is no file on disk, yet the create is already
+ * issued — and one that lands after the exit is an empty lock nobody will
+ * release, which every other writer waits out for the 60s stale threshold.
+ * Zero here, checked in the same synchronous step as the exit, means no such
+ * operation can be in flight.
+ */
+export function pendingStoreLockOps(): number {
+  return pendingOps
 }
