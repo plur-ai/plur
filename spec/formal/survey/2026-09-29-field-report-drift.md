@@ -7,6 +7,103 @@ merge notes in `docs/audits/2026-09-29-integration-notes.md`) merged
 touched. This is a workspace for auditing the two bodies of work together,
 not a candidate for main.
 
+## Refresh 2 (2026-09-29, quiet machine)
+
+Merged `--no-ff`: `integration/field-report-2026-09-29` @ `d159c6dd` (refresh 2,
+heads in `docs/audits/2026-09-29-integration-notes.md`), `origin/verify/formal-lean`
+@ `420f4f25` (already contained), #1401 `fix/h1-session-key-1228` @ `83d3ffdf`.
+
+### Refresh 2 resolutions
+
+- **core `store/async-lock.ts` + `sync.ts` (#1228 × #1398)** — code change. #1398's
+  file is the base: complete-on-publish locks (`publishLockFile`, hard link),
+  `EMPTY_LOCK_GRACE_MS`, inode-checked steal with link restore, `takeOver` /
+  `takeOverSync` shared by both locks. #1228's heartbeat (decision P1) is added
+  back verbatim, and #1228's steal-guard LADDER (persistence candidate 3,
+  r2-persist item 1, `R2Persist.lean ladder_mutex`) replaces #1398's single
+  `.takeover` guard inside `takeOver`: slot keyed by the judged token,
+  re-inspect (token AND inode) under the slot, claim, clear the ladder. sync.ts
+  takes #1398's `withLock` (publish, `abandonedByAge`, `takeOverSync`) with #1228's
+  heartbeat; its private steal/ladder helpers move into async-lock.ts.
+  **OPEN CONFLICT G** — two designs for the same takeover race: #1398's single
+  guard is removed by a read-then-steal of an abandoned guard, the double fault
+  #1228's ladder closes; the composition here is untested against #1398's
+  concurrency proofs and unmodelled (Persistence, R2Persist drift). Needs a
+  decision on which PR carries it (a PR against #1398 porting the ladder is the
+  natural home).
+- **core `index.ts` `flushOutbox` (#1228 × #1277's 2026-09-29 audit rework)** —
+  code change. #1228's lease skeleton (D1/D2) with #1277's per-entry claims,
+  random persisted idempotency key, lookup by key for in-doubt entries, `resend`,
+  `unconfirmed` (+ `OUTBOX_INCONCLUSIVE_LIMIT`), `RemoteTimeoutError` as in doubt
+  (and a host failure). learn()'s immediate push carries both the D2 lease and
+  the claim + key. A thrown flush now also releases the claims of entries whose
+  POST never landed (commit `c329872d`), or #1228's finding-4 test fails.
+  **OPEN CONFLICT I** — two mechanisms for one property (no duplicate push):
+  #1228's row leases, taken under the store lock, and #1277's claims, taken
+  without it. They coexist here, but #1277's `hook-outbox-flush.test.ts` › "a hook
+  abandoned after its POST landed…" fails: it holds the store lock and expects
+  the POST to land first; with the lease the flush waits for the lock before
+  posting, so nothing is posted (no duplicate either way). Needs an owner call on
+  whether both stay.
+- **cli `hook-inject.ts` (#1228 × #1395 × #1353 × #1349 × warmup)**: #1395's
+  `hookSessionDir` (0700 dir, falls back to a private dir) replaces #1228's
+  null-returning vetted dir — **OPEN CONFLICT H** (degrade to no persistence vs
+  fall back to a private dir; both refuse a planted marker). #1228's O_EXCL
+  `takeInjectLock` stays; #1353's attempt cap and watchdog release use its
+  ownership-checked hold. #1395's `session-task.js` replaces `sessionTaskPath`.
+- **cli `init.ts` / `doctor.ts` (#1228 × #1270 H2/H3)**: #1270's `isPlurHookSpec`
+  (exec form, any `hook-*`) with #1228's null guard (`isPlurClaudeHookSpec`).
+- **core recurrence (#1228 × #1275 A1–A3)**: A1 makes every shared-save hit
+  credit-only; `_teamValidationMatch` (remote route) now credits any-scope hits;
+  `_crossScopeMatch` keeps the shared-hit preference.
+- **stub-server**: #1277's idempotency replay, key list and `ignoreIdempotencyKeys`
+  inside #1228's `appendHook` wrapper; #1318's `getByIdCalls` / `feedbackDelayMs`.
+- **#1401**: the formal branch already had H1; its reader/writer edits resolved to
+  the existing code, its tests and the r2-cli note kept.
+
+### Formal check (refresh 2)
+
+`lake build` → Build completed successfully (14 jobs).
+`formal_check.py --base origin/verify/formal-lean` → build ok, no gaps, 2236 theorems,
+0 using axioms outside `propext`/`Classical.choice`/`Quot.sound`; drift: 8 models —
+WritePath (core `index.ts`, `store/remote-store.ts`), **Persistence** (`sync.ts`,
+`store/async-lock.ts`), Adapters (cli `hook-agy-pre-invocation`,
+`hook-cursor-session-start`, `hook-codex-inject`, `hook-inject`, `learn`, `doctor`,
+`init`, `cursor-hooks`, `mcp-config`; mcp `tools.ts`), R2CoreA (core `index.ts`),
+R2CoreB (`store/remote-store.ts`), **R2Persist** (`store/async-lock.ts`, `sync.ts`),
+R2CLI (cli `lib/codex-hook-io.ts`, `hook-inject`, `hook-learn-check`,
+`hook-session-end`, `hook-agy-pre-invocation`, `doctor`), R2Integrations (mcp
+`tools.ts`).
+
+### Suites (refresh 2; sequential, default timeouts, load ~15–45)
+
+| Suite | First run | Rerun of failures alone |
+|---|---|---|
+| core | 309/317 files, 4404 passed, 3 failed, 1 expected fail, 46 skipped | 3/3 failed again → fixed the lease/claim one (`c329872d`); full rerun 310/317, 4405 passed, 2 failed |
+| core-pglite | 11 passed, 10 skipped; 115 passed | — |
+| mcp | 54/54, 608 passed | — |
+| cli | 112/115, 1203 passed, 3 failed, 4 skipped | 3/3 failed again |
+| cli-spawn | 11/12, 81 passed, 1 failed | failed again (18 passed, 1 failed) |
+| migrate | 6/6, 106 passed | — |
+
+Remaining failures, all deterministic, none caused by load:
+- core `formal-r2-apply-core-always-store` › "good case … cross-scope #176" — A1
+  changes what it pins (carry: #1228).
+- core `formal-writepath-tension` › "a missing tensions.yaml … may lock" — A3
+  default holds, but the A1 team copies change which engram the fourth save
+  matches (carry: #1228 fixture, or #1275).
+- cli `hook-force-exit-lock` › "hook-inject, when its watchdog fires mid-write" —
+  #1349's slow-lock preload patches `writeFile(O_EXCL)`, which #1398's
+  `publishLockFile` (hard link) no longer calls, so no delay happens and the hook
+  finishes before its watchdog (carry: whichever of #1349 and #1398 lands second;
+  not verified on the integration branch).
+- cli `init-windows-h3` › "a spaced home without short names" — #1318's
+  `hook-auto-rate` hooks break its per-editor prefix check (carry: #1270/#1318).
+- cli `plur-yaml-fixture` › "an untrusted remote .plur.yaml" — D1 golden vs #1228's
+  E3 notice line (carry: whichever of #1403 and #1228 lands second).
+- cli-spawn `hook-outbox-flush` › "a hook abandoned after its POST landed…" —
+  OPEN CONFLICT I.
+
 ## Formal check
 
 `cd spec/formal && lake build` → **Build completed successfully (14 jobs)**.

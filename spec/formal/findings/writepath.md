@@ -342,3 +342,35 @@ Tests (`formal-outbox-lease.test.ts`): "a failed learn() push does not release t
 Mutation checks: reverting both `learn()` fixes makes the interleaving test fail (the remote accepts two copies). Reverting only the early claim release, with the nonce kept, leaves it green, because either fix alone closes this interleaving. Removing either margin gate fails its own test. `dropLease` matching by holder only fails the unit test.
 
 Not done: #1248 (the in-process mutex queue in front of the file lock has no bound, so the margin's lock-wait budget covers only the file-lock part). Bounding it changes every store writer, not only the outbox, so it stays filed.
+
+## Decisions applied — field-report formal board (2026-09-29)
+
+Source: `docs/audits/2026-09-29-formal-decisions.yaml` (branch `docs/field-report-triage`).
+Integrated and tested on branch `formal/field-report-2026-09-29`; the models in this
+file are not yet updated (drift check lists WritePath and R2CoreA).
+
+- **Decision A1 applied: a team save is never absorbed** ("never"). A save to a
+  shared scope that matches an engram in any other scope (personal, global, or
+  another team's) credits that engram as a recurrence and still writes its own
+  row in its own scope, so it reaches its team store (`_isTeamValidation` is true for
+  every shared-scope save). Carried by **#1275**. On the formal branch the
+  remote route (`learnRouted`) keeps #1228's rule that cross-scope recurrence never
+  absorbs a team-store write, and credits the match (`_teamValidationMatch`).
+  #1228's `formal-r2-apply-core-always-store.test.ts` › "good case … cross-scope
+  #176" still expects `project:a → project:b` to absorb and needs the A1
+  expectation (two rows, the first credited).
+- **Decision A2 applied: record on the queued row AND make the global copy**
+  ("both"). A team engram still queued for its store (`_outbox`, D3) that the
+  ladder would promote keeps its scope, records the recurrence on its own row, and
+  the promotion goes to a linked global copy. Carried by **#1275**
+  (`recurrence-decisions.test.ts` › "A2"). #1228's D3 test passes unchanged.
+- **Decision A3 applied: `locked` is a policy setting, allowed by default**
+  ("allow" as a setting). `recurrence.max_commitment` (config) caps the ladder;
+  the default `locked` lets repeated validation reach `locked`, `decided` stops
+  below it, also for the copy-on-promote global copy. Carried by **#1275**
+  (`recurrence-decisions.test.ts` › "A3"). On the formal branch #1228's
+  `formal-writepath-tension.test.ts` › "a missing tensions.yaml … may lock" still
+  fails: under A1 the project:b/c/d saves each write a team copy, and the fourth
+  save matches a team copy (shared hits are preferred) rather than the promoted
+  engram, so that engram stops at `decided`. The fixture needs to reach `locked`
+  through saves that match the same engram (for example non-shared scopes).

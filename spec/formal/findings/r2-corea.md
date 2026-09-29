@@ -208,3 +208,8 @@ Model (§8): `async_target_persistable` (any target the LLM oracle picks from th
 Mutation: candidate filter removed ⇒ `async_target_persistable`, `async_own_kept` fail; unknown previous status mapped to no event ⇒ `remote_retire_traced` fails; dry key back to scope-blind ⇒ `dryStepF_eq`/`infile_parity` fail.
 Regression: 99 core test files (dedup, packs, readonly, learn*, recurrence, routing, outbox, import*, formal-r2-*, formal-apply-core-*, formal-writepath-*, rescope, tension, meta, update, promote, …) → 1353 passed, 0 failed. `npx tsc --noEmit -p packages/core` clean; core build OK.
 
+Decision A1 applied (2026-09-29, "never"): no team save is absorbed, not even into
+another team's engram; the match is credited and the save is written to its own
+scope. Carried by #1275; on `formal/field-report-2026-09-29` the remote route keeps
+this file's rule (no cross-scope absorption of a team-store write) and credits the
+match (`_teamValidationMatch`). See writepath.md "Decisions applied" for A1–A3.

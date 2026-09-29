@@ -672,3 +672,35 @@ counterexamples kept.
 | 9 `.plur.yaml` trust | a | `readTrustedProjectConfig`, `trustedWorkspaceScope`, `trustedProjectScope` calls unchanged; the hook edits are session identity/lock/turn cache (R2CLI) |
 
 `lake env lean PlurSpec/Adapters.lean`: clean.
+
+## Decisions applied — field-report formal board (2026-09-29)
+
+Source: `docs/audits/2026-09-29-formal-decisions.yaml` (branch `docs/field-report-triage`).
+Integrated on branch `formal/field-report-2026-09-29`; `Adapters.lean` is not yet
+updated (drift check lists it).
+
+- **Decision D1 applied: an untrusted `.plur.yaml` hint is ignored until the folder
+  is trusted, and the folder map asks once** ("ignore-ask"). E3 above stands: the
+  scope/domain of an untrusted `.plur.yaml` never becomes the session default; the
+  folder map's one-time question (Q-A) turns a yes into a trust grant. Carried by
+  **#1403** (the folder map; #1348 is merged). On the formal branch
+  `plur-yaml-fixture.test.ts` › "an untrusted remote .plur.yaml" still fails: its
+  golden has the remote-refusal line only, while E3 adds the "Ignored the scope"
+  line — the golden must be regenerated once both are on one branch.
+- **Decision H2 applied: PLUR's hooks are recognised by prefix** ("prefix"). A hook
+  is PLUR's when PLUR's own launcher (the `plur-hook` shim as a whole path segment,
+  the `@plur-ai/cli` npx command, or the Windows exec form) runs any `hook-*`
+  subcommand; there is no allow-list, and a user's `plur-hook-backup.ps1` stays
+  theirs. This supersedes the S4 two-part matcher above and #1270's allow-list.
+  Carried by **#1270** (`lib/hook-command.ts` `isPlurHookSpec`, and the
+  byte-identical copy in `packages/mcp/src/hook-command.ts`). The formal branch keeps
+  S4's null/non-string guard around it (`isPlurClaudeHookSpec` in init.ts).
+- **Decision H3 applied: Windows hook commands** ("plan"). Claude Code gets the exec
+  form (`command` + `args`, no shell quoting); the string editors get the unquoted
+  8.3 short path, falling back to `& "<path>"` (Codex, Cursor) when no short name
+  exists, and `plur doctor` names each editor on the fallback; a Windows CI job runs
+  the generated strings through bash, pwsh and cmd (`PLUR_HOOK_PROBE`). Carried by
+  **#1270**. On the formal branch `init-windows-h3.test.ts` › "a spaced home without
+  short names" fails because #1318's `hook-auto-rate codex` / `agy` hooks do not
+  start with `hook-codex-` / `hook-agy-`; the test must allow them (carry in
+  whichever of #1270 and #1318 lands second).

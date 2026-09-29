@@ -305,3 +305,8 @@ Tests: `test/formal-r2-cli-misc.test.ts` "`--`" (2). BEFORE: 2 failed. AFTER: pa
 domain" at 13 s under full parallel load. `list.ts` is not touched here, and that file
 passes alone (4/4). The previous full run had it green (874 passed plus the 3
 antigravity shape assertions fixed since).
+
+Decision H1 carried by: #1396 (helpers and hook-inject/hook-learn-check keys, against
+#1276's branch), #1400 (hook-session-end reader, against #1277's branch) and #1401 (this
+branch's writers, against `verify/formal-lean`). All three carry a byte-identical
+`lib/session-key.ts`.
