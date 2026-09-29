@@ -59,6 +59,37 @@ describe('plur init on win32 with a home dir containing a space (#1267)', { time
   const settingsPath = () => join(home, '.claude', 'settings.json')
   const readSettings = (): Settings => JSON.parse(readFileSync(settingsPath(), 'utf-8'))
 
+  // F4 follow-up: a CLI install that moved (npm prefix change, upgrade into a
+  // new directory) left exec-form hooks naming the OLD js entry. Re-init must
+  // replace them, not add a second set; a foreign checkout stays the user's.
+  it('re-init after the CLI entry changed leaves exactly one hook set per event', () => {
+    runInit()
+    const current = readSettings()
+    const oldEntry = 'C:\\old-prefix\\node_modules\\@plur-ai\\cli\\dist\\index.js'
+    const foreign = 'C:\\src\\someone\\packages\\cli\\dist\\index.js'
+    // Rewrite every PLUR hook to the old entry, as the earlier install wrote
+    // them, with the legacy single-entry meta file that install left behind.
+    const moved = JSON.parse(JSON.stringify(current)) as Settings
+    for (const h of allSpecs(moved)) if (h.args) h.args[0] = oldEntry
+    moved.hooks!.UserPromptSubmit!.push({ hooks: [{ command: process.execPath, args: [foreign, 'hook-inject'] }] })
+    writeFileSync(settingsPath(), JSON.stringify(moved, null, 2))
+    writeFileSync(join(home, '.plur', 'bin', 'plur-hook.meta.json'), JSON.stringify({ entrypoint: oldEntry }))
+
+    runInit()
+    const after = readSettings()
+    const specs = allSpecs(after)
+    expect(specs.some((h) => h.args?.[0] === oldEntry)).toBe(false)
+    // Exactly the fresh set plus the foreign hook, which is kept.
+    expect(specs.filter((h) => h.args?.[0] === foreign)).toHaveLength(1)
+    expect(specs.length).toBe(allSpecs(current).length + 1)
+    for (const [event, entries] of Object.entries(current.hooks ?? {})) {
+      expect(after.hooks?.[event]?.filter((e) => e.hooks.every((h) => h.args?.[0] !== foreign))).toHaveLength(entries.length)
+    }
+    const meta = JSON.parse(readFileSync(join(home, '.plur', 'bin', 'plur-hook.meta.json'), 'utf-8'))
+    expect(meta.entrypoints[0]).toBe(oldEntry)
+    expect(meta.entrypoints[meta.entrypoints.length - 1]).toBe(meta.entrypoint)
+  })
+
   // Decision H3: Claude Code hooks use the documented exec form on Windows
   // (https://code.claude.com/docs/en/hooks) — no shell, so no quoting.
   it('writes every Claude Code hook in exec form: node + the CLI js entry + hook-*', () => {
@@ -219,6 +250,11 @@ describe('plur doctor sees Windows hooks (#1267)', { timeout: 60000 }, () => {
       args: ['C:\\npm\\node_modules\\@plur-ai\\cli\\dist\\index.js', 'hook-inject'],
     }],
   ])('reports hooksInstalled for a %s hook', (_label, spec) => {
+    // Decision F4: an exec-form hook is PLUR's only when its js entry is the
+    // one init recorded next to the shim.
+    mkdirSync(join(home, '.plur', 'bin'), { recursive: true })
+    writeFileSync(join(home, '.plur', 'bin', 'plur-hook.meta.json'),
+      JSON.stringify({ entrypoint: 'C:\\npm\\node_modules\\@plur-ai\\cli\\dist\\index.js' }))
     mkdirSync(join(home, '.claude'), { recursive: true })
     writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({
       hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', ...spec }] }] },

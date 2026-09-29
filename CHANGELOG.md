@@ -601,6 +601,17 @@ twice** (#1267). Three separate faults:
   appended another hook set. It now normalises slashes, quotes and case, and
   claims a hook when PLUR's own launcher — the shim, the `npx @plur-ai/cli`
   fallback, or the Claude Code exec form — runs any `hook-*` subcommand. The
+  match covers the whole command: PLUR's launcher, the subcommand, then
+  plain arguments only. A command that chains, pipes, redirects or
+  substitutes (`&&`, `;`, `|`, `>`, backticks, `$(`), or that wraps the shim
+  (`echo`, `nice`, `env`), is yours and is left alone. An exec-form hook counts
+  only when its js entry is one that init itself recorded in
+  `~/.plur/bin/plur-hook.meta.json`. That file now keeps the last 10 entries
+  PLUR has recorded (a single-entry file from an older version becomes a list
+  of one), so after the CLI moves — an npm prefix change, an upgrade into a
+  new directory — re-running init still replaces the old hooks instead of
+  adding a second set, while a checkout PLUR never recorded is never claimed.
+  The
   shim also counts under its 8.3 short path, where Windows shortens the file
   name too (`.../PLUR~1/bin/PLUR-H~1.CMD`); the short alias is claimed only
   inside PLUR's own bin directory. Re-running init therefore leaves the hook
