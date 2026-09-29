@@ -611,6 +611,16 @@ stale threshold. Checking for the lock file alone was not enough: the
 search's lock create can already be under way when the hook looks, and land
 after it.
 
+**A cold embedding cache now warms itself.** Core saves the embedding cache
+only when a hybrid search finishes. A first prompt that falls back to BM25
+exits before that, so a store with no cache stayed without one, and every
+session's first prompt missed the deadline again. When the abandoned search
+is still running at exit, the hook now starts one background build of the
+cache: detached, at the lowest CPU priority, one per store at a time (the
+`.embeddings-warming` marker), stopped after 60 minutes
+(`PLUR_WARM_CEILING_MS`). It takes no store write lock. The next session's
+hybrid search then meets its deadline.
+
 ### Codex and Antigravity hooks no longer leave a stale store lock
 
 **The Codex `SessionStart` / `UserPromptSubmit` hooks and the Antigravity
@@ -707,10 +717,10 @@ through an exclusive, no-follow temp file and a rename, so a symlink at its path
 is replaced, never followed. It keeps only the first 1000 characters, and the
 SessionEnd hook deletes it. On Linux `$TMPDIR` is usually the shared `/tmp`.
 
-`UserPromptSubmit` stays `async: true`. Async context does arrive, but at the
-next safe point (after a tool result, or before the next prompt), not on the
-turn that triggered it. A first message that needs no tools is answered
-without memory. In a one-shot `claude -p` run, that means no memory at all.
+This fix alone kept both registrations `async: true`, so the context arrived
+only at the next safe point, not on the turn that triggered it. Both are now
+synchronous: see "Claude Code: memory is in place for the first reply" above
+(#1313).
 
 An unknown `--event` no longer echoes the hook payload back to stdout.
 

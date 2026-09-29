@@ -40,6 +40,13 @@ compaction do the full injection. Later prompts check the session marker and
 exit: 68 to 101ms on a 10,000-engram store, against 34ms for a bare
 `node -e 0`. Re-run `plur init` to move an existing async registration to sync.
 
+A store with no embedding cache misses the hybrid deadline on its first
+prompt, because the cache is saved only when a hybrid search finishes. The
+Claude Code hook then starts one background build of the cache
+(`hook-inject --warm-embeddings`, lowest CPU priority, marker
+`.embeddings-warming` in the store, stopped after `PLUR_WARM_CEILING_MS`), so
+the next session's first prompt takes the hybrid path.
+
 ## What actually consumes the budget
 
 A synchronous injection runs hybrid search first and falls back to BM25 on a

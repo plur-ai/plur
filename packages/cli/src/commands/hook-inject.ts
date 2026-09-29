@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, readSync, statSync, readdirSync, unlinkSync } from 'fs'
 import { dirname, join, resolve } from 'path'
-import { homedir } from 'os'
+import { homedir, hostname, setPriority } from 'os'
+import { spawn } from 'child_process'
 import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
@@ -422,7 +423,8 @@ export async function injectForHook<O, R>(
     inject: (t, o) => plur.inject(t, o),
     injectHybrid: (t, o) => {
       const p = plur.injectHybrid(t, o)
-      hybrid = p.catch(() => undefined)
+      hybridInFlight = true
+      hybrid = p.catch(() => undefined).finally(() => { hybridInFlight = false })
       return p
     },
   }
@@ -441,13 +443,85 @@ export async function injectForHook<O, R>(
  */
 export const ABANDONED_HYBRID_WAIT_MS = 5_000
 
-/** Resolve when `p` settles or after `ms`, whichever comes first. */
-export function settleWithin(p: Promise<unknown>, ms: number): Promise<void> {
+/** Resolve true when `p` settles, or false after `ms`, whichever comes first. */
+export function settleWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined
   return Promise.race([
-    p.then(() => undefined, () => undefined),
-    new Promise<void>(r => { timer = setTimeout(r, Math.max(0, ms)) }),
+    p.then(() => true, () => true),
+    new Promise<boolean>(r => { timer = setTimeout(() => r(false), Math.max(0, ms)) }),
   ]).finally(() => { if (timer) clearTimeout(timer) })
+}
+
+/**
+ * Background build of the embedding cache (#1313 audit).
+ *
+ * Core saves `.embeddings-cache.json` only when a hybrid search runs to the
+ * end. A first prompt whose search misses the deadline exits before that, so
+ * on a store with a cold cache every session's first prompt missed the
+ * deadline again and never got faster. After such a fallback the hook starts
+ * `hook-inject --warm-embeddings`: detached, lowest CPU priority, one at a
+ * time per store (the `.embeddings-warming` marker), bounded by
+ * PLUR_WARM_CEILING_MS. It runs core's `similaritySearch`, which embeds every
+ * active engram through the cache and saves it. That path takes no store
+ * write lock at all; the cache file is written atomically.
+ */
+const WARM_MARKER = '.embeddings-warming'
+// 60 min: the cache is saved only once the whole store is embedded, and at the
+// lowest priority a 10,000-engram store did not finish inside 10 min on a busy
+// machine. A dead holder is detected at once, so this bounds only a stuck build.
+export const WARM_CEILING_MS = parseInt(process.env.PLUR_WARM_CEILING_MS ?? '', 10) || 60 * 60_000
+
+/** Take the single-flight marker, or false when a live build holds it. */
+export function claimWarmMarker(path: string, now = Date.now()): boolean {
+  const token = `${hostname()}:${process.pid}:${now}`
+  try { writeFileSync(path, token, { flag: 'wx' }); return true } catch (err: any) {
+    if (err?.code !== 'EEXIST') return false
+  }
+  try {
+    const [host, pidRaw, tsRaw] = readFileSync(path, 'utf8').trim().split(':')
+    const age = now - Number(tsRaw)
+    let alive = host !== hostname() // another host: cannot probe, trust the age
+    if (host === hostname()) {
+      try { process.kill(Number(pidRaw), 0); alive = true } catch (e: any) { alive = e?.code === 'EPERM' }
+    }
+    if (alive && Number.isFinite(age) && age < WARM_CEILING_MS) return false
+    unlinkSync(path)
+    writeFileSync(path, token, { flag: 'wx' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function warmEmbeddingCache(flags: GlobalFlags): Promise<void> {
+  const plur = createPlur(flags)
+  const marker = join(plur.storageRoot, WARM_MARKER)
+  if (!claimWarmMarker(marker)) return
+  const release = () => {
+    try { if (readFileSync(marker, 'utf8').includes(`:${process.pid}:`)) unlinkSync(marker) } catch { /* gone */ }
+  }
+  const ceiling = setTimeout(() => { release(); process.exit(0) }, WARM_CEILING_MS)
+  ceiling.unref()
+  // Lowest priority by default: the build must never compete with the editor.
+  // PLUR_WARM_NICE (0–19) lets a user who wants it done sooner raise it.
+  const nice = parseInt(process.env.PLUR_WARM_NICE ?? '', 10)
+  try { setPriority(Number.isInteger(nice) && nice >= 0 && nice <= 19 ? nice : 19) } catch { /* not permitted — run at normal priority */ }
+  try {
+    await plur.similaritySearch('embedding cache warm-up', { limit: 1 })
+  } catch { /* best-effort: the next fallback tries again */ } finally {
+    release()
+  }
+}
+
+function startEmbeddingWarmup(storageRoot: string, flags: GlobalFlags): void {
+  // Cheap single-flight check here; the child re-checks atomically.
+  if (existsSync(join(storageRoot, WARM_MARKER))) return
+  const entry = process.argv[1]
+  if (!entry) return
+  const args = [entry, 'hook-inject', '--warm-embeddings', ...(flags.path ? ['--path', flags.path] : [])]
+  try {
+    spawn(process.execPath, args, { detached: true, stdio: 'ignore', cwd: process.cwd(), env: process.env }).unref()
+  } catch { /* fail-open: the next fallback tries again */ }
 }
 
 // How long before an inject lock is considered stale (defaults to HOOK_CEILING_MS).
@@ -483,6 +557,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Lets hooks be installed globally without affecting non-plur projects.
   if (!isPlurConfigured()) return
 
+  // Background embedding-cache build started by an earlier fallback (#1313
+  // audit). Not a hook invocation: no stdin, no output, its own ceiling.
+  if (args.includes('--warm-embeddings')) {
+    await warmEmbeddingCache(flags)
+    return
+  }
+
   // Watchdog: guarantee this process exits even if something in the hook run
   // hangs (#504) — remote calls are individually budgeted since #776, so this
   // is the ceiling on the WHOLE run (embedder load, fs stalls, stray async).
@@ -494,6 +575,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const watchdog = setTimeout(() => {
     stopping = true
     if (heldInjectLock) try { unlinkSync(heldInjectLock) } catch { /* fail-open */ }
+    // A hybrid search still running at the ceiling is embedding a cold store:
+    // same as a missed deadline, the cache would stay cold (#1313 audit).
+    if (hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
     void exitWhenStoreIdle(WATCHDOG_LOCK_WAIT_MS)
   }, HOOK_CEILING_MS)
   watchdog.unref()
@@ -610,7 +694,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // for the search itself, bounded, then for any lock of ours still on disk.
   if (abandonedHybrid) {
     const left = () => Math.max(0, runStartedAt + HOOK_CEILING_MS - 1_000 - Date.now())
-    await settleWithin(abandonedHybrid, Math.min(ABANDONED_HYBRID_WAIT_MS, left()))
+    const settled = await settleWithin(abandonedHybrid, Math.min(ABANDONED_HYBRID_WAIT_MS, left()))
+    // Still running = still embedding the store: the cache is cold and would
+    // stay cold, since it is saved only when a search finishes. Build it in
+    // the background so the next session's hybrid search meets the deadline.
+    if (!settled && storeRoot) startEmbeddingWarmup(storeRoot, flags)
     // Then the general guard (#1343): no lock operation of this process in
     // flight and no lock file of ours on disk, checked in the same step as
     // the exit.
@@ -620,6 +708,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
 // The hybrid search that missed its deadline and is still running (#1313).
 let abandonedHybrid: Promise<unknown> | null = null
+let storeRoot: string | null = null
+let runFlags: GlobalFlags = {}
+// True while a hybrid search started by injectForHook has not settled.
+let hybridInFlight = false
 let runStartedAt = Date.now()
 
 // Moved to lib/store-lock-exit.ts (#1343) so every force-exiting hook shares it.
@@ -694,6 +786,9 @@ async function injectSession(
   // now — not later where it's only used for the label — so the injection is
   // attributed to this session on the co_injection event the receipt reads.
   const plur = createPlur(flags)
+  // Known before the search starts, so the watchdog can start a cache build too.
+  storeRoot = plur.storageRoot
+  runFlags = flags
 
   // Resolves the config path once, reads it, and gates its remote fields on
   // directory trust (#1196). Fails closed; costs nothing when the project
@@ -734,6 +829,7 @@ async function injectSession(
   // A missed deadline leaves the hybrid search running; it must not hold
   // the process (and so the prompt) open until the watchdog.
   abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : null
+  storeRoot = plur.storageRoot
   if (result.count > 0) {
     const parts: string[] = []
     if (result.directives) parts.push(result.directives)
