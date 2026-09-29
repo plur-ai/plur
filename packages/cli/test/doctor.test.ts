@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -113,6 +113,42 @@ describe('plur doctor', () => {
     // Config route selects pglite → not an orphan (the #1061 half).
     expect(orphan({}, 'backend: pglite\n')).toBeNull()
   }, 30000)
+
+  it('reports config.yaml store entries ignored as duplicates, and `plur stores prune` removes only the primary ones (#1356)', () => {
+    const store = mkdtempSync(join(tmpdir(), 'plur-1356-store-'))
+    try {
+      const other = join(store, 'other.yaml')
+      writeFileSync(join(store, 'engrams.yaml'), 'engrams: []\n')
+      writeFileSync(other, 'engrams: []\n')
+      const keep = `  - path: ${other}\n    scope: project:o\n`
+      writeFileSync(join(store, 'config.yaml'),
+        `# comment\nstores:\n${keep}  - path: ${join(store, '.', 'engrams.yaml')}\n    scope: project:home\n${keep}`)
+      const env = { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: store, PLUR_DISABLE_EMBEDDINGS: '1' }
+      const doctor = () => {
+        let out = ''
+        try {
+          out = execSync(`node ${CLI} doctor --no-handshake --json`, { encoding: 'utf-8', timeout: 15000, cwd: home, env })
+        } catch (err: any) { out = err.stdout?.toString() ?? '' }
+        return JSON.parse(out)
+      }
+      const report = doctor()
+      expect(report.ignoredDuplicateStores).toEqual([
+        { path: join(store, '.', 'engrams.yaml'), scope: 'project:home', duplicateOf: 'the primary store', primary: true },
+        { path: other, scope: 'project:o', duplicateOf: 'store "project:o"', primary: false },
+      ])
+      expect(report.overall).toBe('fail') // empty env; the advisory alone never decides it
+
+      const pruned = JSON.parse(execSync(`node ${CLI} stores prune --json`, { encoding: 'utf-8', timeout: 15000, cwd: home, env }))
+      expect(pruned).toEqual({ removed: [{ path: join(store, '.', 'engrams.yaml'), scope: 'project:home' }], count: 1 })
+      // Only the primary entry went; the same-scope duplicate of another store stays.
+      expect(readFileSync(join(store, 'config.yaml'), 'utf8')).toBe(`# comment\nstores:\n${keep}${keep}`)
+      expect(doctor().ignoredDuplicateStores).toEqual([
+        { path: other, scope: 'project:o', duplicateOf: 'store "project:o"', primary: false },
+      ])
+    } finally {
+      rmSync(store, { recursive: true, force: true })
+    }
+  }, 60000)
 
   it('reports ok when both hooks and plur MCP are present', () => {
     writeGlobalSettings({

@@ -22,7 +22,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpEntry, isOwnWin32CmdShimEntry } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates } from '@plur-ai/core'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -166,6 +166,15 @@ interface DoctorReport {
    * only: does not fail the overall check.
    */
   pgliteOrphan: { path: string } | null
+  /**
+   * Local store entries in config.yaml that are ignored at load (#1319,
+   * #1356): the entry names the primary engrams file (`primary: true`,
+   * removable with `plur stores prune`), or repeats an earlier entry's file
+   * and scope. The same list `Plur.ignoredDuplicateStores()` returns, computed
+   * from config.yaml without opening the stores. Advisory only: does not fail
+   * the overall check.
+   */
+  ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
   /**
    * opencode leg. Owner-approved pre-publish requirement (2026-09-16): until
    * `@plur-ai/opencode` is published, opencode's `plugin: ["@plur-ai/opencode"]`
@@ -369,6 +378,22 @@ async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> 
     return { ok: summary.needs_action === 0, ...summary }
   } catch {
     return null
+  }
+}
+
+/**
+ * #1356: the config.yaml store entries a Plur instance would ignore at load.
+ * Reads config.yaml only — no store is opened and no directory is created.
+ */
+function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDuplicateStores'] {
+  try {
+    const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+    const stores = loadConfig(join(root, 'config.yaml')).stores ?? []
+    return classifyStoreDuplicates(stores, join(root, 'engrams.yaml')).ignored.map(d => ({
+      path: d.entry.path ?? '', scope: d.entry.scope, duplicateOf: d.duplicateOf, primary: d.primary,
+    }))
+  } catch {
+    return []
   }
 }
 
@@ -1072,11 +1097,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       ? { path: orphanPglitePath }
       : null
 
+    const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
+
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, opencode, outbox, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, opencode, outbox, overall,
     }
   })
 }
@@ -1273,6 +1300,24 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   old value are absorbed into the wrong engram. Pure-ASCII stores are unaffected.')
     outputText('   Fix: run `plur migrate` (migration 006 recomputes them, with backup and rollback)')
     outputText('   or `plur reindex-hashes --apply` for the repair alone.')
+  }
+
+  if (report.ignoredDuplicateStores.length > 0) {
+    const n = report.ignoredDuplicateStores.length
+    outputText('')
+    outputText(`⚠  config.yaml lists ${n} store entr${n === 1 ? 'y' : 'ies'} that ${n === 1 ? 'is' : 'are'} ignored at load (#1319):`)
+    for (const d of report.ignoredDuplicateStores) {
+      outputText(`   - "${d.scope}" (${d.path}): the same file as ${d.duplicateOf}`)
+    }
+    outputText(n === 1
+      ? '   Loading it would inject the same engrams twice, so plur skips it and warns on every run.'
+      : '   Loading them would inject the same engrams twice, so plur skips them and warns on every run.')
+    if (report.ignoredDuplicateStores.some(d => d.primary)) {
+      outputText('   Fix: run `plur stores prune` to remove the entries that name the primary store file.')
+    }
+    if (report.ignoredDuplicateStores.some(d => !d.primary)) {
+      outputText('   Remove an entry that repeats another store\'s file and scope from config.yaml by hand.')
+    }
   }
 
   outputText('')

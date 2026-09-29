@@ -191,6 +191,26 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
+  if (subcommand === 'prune') {
+    // #1356: removes ONLY entries that name the primary engrams file. They are
+    // ignored at load already (#1319) but keep warning on every run until
+    // they are gone. Any other store is left alone.
+    let removed
+    try {
+      removed = plur.removeDuplicatePrimaryStores()
+    } catch (err) {
+      exit(1, `plur stores prune: ${(err as Error).message}`)
+    }
+    if (shouldOutputJson(flags)) {
+      outputJson({ removed: removed.map(s => ({ path: s.path, scope: s.scope })), count: removed.length })
+    } else if (removed.length === 0) {
+      outputText('Nothing to prune: config.yaml lists no store that is the primary store file.')
+    } else {
+      for (const s of removed) outputText(`Removed store "${s.scope}" (${s.path}): it is the primary store file, which is always loaded.`)
+    }
+    return
+  }
+
   if (!subcommand || subcommand === 'list') {
     // Async variant — accurate remote store engram_count (issue #184)
     const storeList = await plur.listStoresAsync()
@@ -209,5 +229,5 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  exit(1, 'Usage: plur stores <add|list|discover>')
+  exit(1, 'Usage: plur stores <add|list|discover|prune>')
 }

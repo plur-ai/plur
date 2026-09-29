@@ -8,10 +8,10 @@
  * tail re-appended after normalising `.` and `..`.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, realpathSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, realpathSync, writeFileSync, existsSync } from 'fs'
 import { join, sep } from 'path'
 import { tmpdir } from 'os'
-import { canonicalize } from '../src/project-config.js'
+import { canonicalize, canonicalSpellings } from '../src/project-config.js'
 
 describe('canonicalize', () => {
   let base: string
@@ -51,5 +51,44 @@ describe('canonicalize', () => {
 
   it('makes both spellings of a missing file under a symlinked dir equal', () => {
     expect(canonicalize(join(link, 'x', 'engrams.yaml'))).toBe(canonicalize(join(real, 'x', 'engrams.yaml')))
+  })
+})
+
+/**
+ * Letter case on a case-insensitive filesystem (#1357). The JavaScript
+ * `realpathSync` keeps the caller's case, so `…/Store` and `…/store` naming
+ * the same folder compared unequal. Skipped where the filesystem is
+ * case-sensitive (most Linux CI), since there the two are different paths.
+ */
+describe('canonicalize folds letter case on a case-insensitive filesystem', () => {
+  let base: string
+  let caseInsensitive: boolean
+
+  beforeEach(() => {
+    base = realpathSync(mkdtempSync(join(tmpdir(), 'plur-canon-case-')))
+    mkdirSync(join(base, 'MixedCase', 'Inner'), { recursive: true })
+    caseInsensitive = existsSync(join(base, 'mixedcase'))
+  })
+
+  afterEach(() => { rmSync(base, { recursive: true, force: true }) })
+
+  it('returns the on-disk case for an existing path', ({ skip }) => {
+    if (!caseInsensitive) skip()
+    writeFileSync(join(base, 'MixedCase', 'Inner', 'engrams.yaml'), '')
+    const expected = join(base, 'MixedCase', 'Inner', 'engrams.yaml')
+    expect(canonicalize(join(base, 'mixedcase', 'INNER', 'engrams.yaml'))).toBe(expected)
+    expect(canonicalize(join(base, 'MIXEDCASE', 'inner'))).toBe(join(base, 'MixedCase', 'Inner'))
+  })
+
+  it('folds the existing ancestors of a missing path and keeps the missing tail', ({ skip }) => {
+    if (!caseInsensitive) skip()
+    expect(canonicalize(join(base, 'mixedcase', 'inner', 'missing', 'engrams.yaml')))
+      .toBe(join(base, 'MixedCase', 'Inner', 'missing', 'engrams.yaml'))
+  })
+
+  it('canonicalSpellings keeps the case-preserving spelling next to the folded one', ({ skip }) => {
+    if (!caseInsensitive) skip()
+    const variant = join(base, 'mixedcase', 'inner')
+    expect(canonicalSpellings(variant).sort()).toEqual([join(base, 'MixedCase', 'Inner'), variant].sort())
   })
 })

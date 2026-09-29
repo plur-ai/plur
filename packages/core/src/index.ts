@@ -8,6 +8,7 @@ import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
 import { canonicalize } from './project-config.js'
+import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
@@ -233,6 +234,7 @@ export { detectPlurStorage, type PlurPaths } from './storage.js'
 // `plur reindex-tokens` came to report a false all-clear on a store whose
 // connection lived in config.yaml rather than the environment.
 export { loadConfig } from './config.js'
+export { classifyStoreDuplicates, removePrimaryStoreEntries, type IgnoredStoreEntry, type StoreDuplicateReport } from './store-duplicates.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
 export type {
@@ -9609,41 +9611,23 @@ Generate an improved version of the procedure that prevents this failure. Return
       this._ignoredDuplicates = []
       return config
     }
-    const primary = canonicalize(this.paths.engrams)
-    const scopesByFile = new Map<string, string[]>()
-    const kept: StoreEntry[] = []
-    const ignored: Array<{ entry: StoreEntry; duplicateOf: string }> = []
+    const { kept, ignored, sharedFile } = classifyStoreDuplicates(stores, this.paths.engrams)
     const warnOnce = (key: string, message: string): void => {
       if (this._warnedDuplicateStores.has(key)) return
       this._warnedDuplicateStores.add(key)
       logger.warning(message)
     }
-    for (const s of stores) {
-      if (s.url || s.path === undefined) { kept.push(s); continue }
-      const key = canonicalize(s.path)
-      const warnKey = `${s.path}\0${s.scope}`
-      if (key === primary) {
-        ignored.push({ entry: s, duplicateOf: 'the primary store' })
-        warnOnce(warnKey,
-          `[plur:config] ignoring store "${s.scope}" (${s.path}): it is the primary store file, which is always loaded. ` +
-          `Loading it again would inject every engram in it twice. The entry is left in config.yaml; remove it to silence this warning.`)
-        continue
-      }
-      const scopes = scopesByFile.get(key) ?? []
-      if (scopes.includes(s.scope)) {
-        ignored.push({ entry: s, duplicateOf: `store "${s.scope}"` })
-        warnOnce(warnKey,
-          `[plur:config] ignoring store "${s.scope}" (${s.path}): the same file is already registered under the same scope. ` +
+    for (const { entry: s, primary } of ignored) {
+      warnOnce(`${s.path}\0${s.scope}`, primary
+        ? `[plur:config] ignoring store "${s.scope}" (${s.path}): it is the primary store file, which is always loaded. ` +
+          `Loading it again would inject every engram in it twice. The entry is left in config.yaml; run \`plur stores prune\` to remove it.`
+        : `[plur:config] ignoring store "${s.scope}" (${s.path}): the same file is already registered under the same scope. ` +
           `Loading it again would inject its engrams twice. The entry is left in config.yaml; remove it to silence this warning.`)
-        continue
-      }
-      if (scopes.length) {
-        warnOnce(warnKey,
-          `[plur:config] store "${s.scope}" (${s.path}) is the same file as store "${scopes[0]}". Both are loaded: ` +
-          `each scope admits its own engrams, and engrams scoped "global" in that file appear under both.`)
-      }
-      scopesByFile.set(key, [...scopes, s.scope])
-      kept.push(s)
+    }
+    for (const { entry: s, firstScope } of sharedFile) {
+      warnOnce(`${s.path}\0${s.scope}`,
+        `[plur:config] store "${s.scope}" (${s.path}) is the same file as store "${firstScope}". Both are loaded: ` +
+        `each scope admits its own engrams, and engrams scoped "global" in that file appear under both.`)
     }
     this._ignoredDuplicates = ignored
     return ignored.length ? { ...config, stores: kept } : config
@@ -9653,6 +9637,22 @@ Generate an improved version of the procedure that prevents this failure. Return
    *  primary file, or repeat an earlier entry's file and scope (#1319). */
   ignoredDuplicateStores(): StoreEntry[] {
     return this._ignoredDuplicates.map(d => d.entry)
+  }
+
+  /**
+   * Remove the config.yaml store entries that name the primary engrams file
+   * (`plur stores prune`, #1356). They are already ignored at load; this stops
+   * the warning for good. Only those entries are removed and the rest of
+   * config.yaml is kept byte for byte — see {@link removePrimaryStoreEntries}.
+   * Returns the removed entries.
+   */
+  removeDuplicatePrimaryStores(): StoreEntry[] {
+    const removed = removePrimaryStoreEntries(this.paths.config, this.paths.engrams)
+    if (removed.length) {
+      this.config = this._loadConfig()
+      this.configMtimeMs = this.statConfigMtime()
+    }
+    return removed
   }
 
   /**
@@ -9879,7 +9879,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       throw new Error(
         `addStore: "${storePath}" is the primary store (${this.paths.engrams}); it is always loaded and cannot be registered again as "${scope}".` +
         (ignoredHere.length
-          ? ` config.yaml already lists it as ${ignoredHere.join(', ')}; that entry is ignored at load. Remove it from config.yaml to silence the warning.`
+          ? ` config.yaml already lists it as ${ignoredHere.join(', ')}; that entry is ignored at load. Run \`plur stores prune\` to remove it.`
           : ''),
       )
     }

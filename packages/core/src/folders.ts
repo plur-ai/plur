@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync } from 'fs'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -6,7 +6,7 @@ import yaml from 'js-yaml'
 import { z } from 'zod'
 import { logger } from './logger.js'
 import { atomicWrite } from './sync.js'
-import { canonicalize, findProjectConfigPath, readProjectConfigFromPath } from './project-config.js'
+import { canonicalize, canonicalSpellings, findProjectConfigPath, readProjectConfigFromPath } from './project-config.js'
 import { resolveProjectRemoteFromConfig } from './project-remote.js'
 import { isSharedScope } from './scope-util.js'
 import { isLocalOnlyScope } from './scope-target.js'
@@ -200,8 +200,10 @@ function entryForms(entryPath: string, home: string, lax: boolean): string[] {
     forms.add(literal + tail)
     if (lax) {
       const parent = dirname(literal)
-      if (parent !== literal) forms.add(join(canonicalize(parent), basename(literal)) + tail)
-      forms.add(canonicalize(literal) + tail)
+      // Both canonical spellings (#1357): the case-folded one and the
+      // case-preserving one, so folding case never drops an `off` match.
+      if (parent !== literal) for (const c of canonicalSpellings(parent)) forms.add(join(c, basename(literal)) + tail)
+      for (const c of canonicalSpellings(literal)) forms.add(c + tail)
     }
   }
   return [...forms]
@@ -373,7 +375,7 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   const home = opts.home ?? homedir()
   const entries = loadFolderMap(opts.root).folders
   const strict = [canonicalize(dir)]
-  const lax = [...new Set([strict[0], resolve(dir)])]
+  const lax = [...new Set([strict[0], ...canonicalSpellings(dir), resolve(dir)])]
 
   if (entries.some(e => e.plur === 'off' && entryCovers(e, lax, home, true))) {
     return { mode: 'off', remoteAllowed: false, source: 'map' }
@@ -445,14 +447,77 @@ export function folderEntryKey(folder: string, home: string = homedir()): string
   return hasGlob(folder) ? folder : canonicalize(expandHome(folder, home))
 }
 
-function findEntryIndex(entries: FolderEntry[], folder: string, home: string): number {
-  if (hasGlob(folder)) return entries.findIndex(e => e.path === folder)
+function entryIsFolder(e: FolderEntry, folder: string, raw: string, target: string, home: string): boolean {
+  return e.path === folder ||
+    (!hasGlob(e.path) && (resolve(expandHome(e.path, home)) === raw || entryForms(e.path, home, false).includes(target)))
+}
+
+/**
+ * True when stored entry form `form` names the folder `target` (canonical,
+ * existing) and differs from it only in letter case (#1357).
+ *
+ * Every path component that differs is checked for IDENTITY, not existence:
+ * under the target's canonical parent, the target's component and the
+ * entry's own spelling of it must be the same directory entry (same device
+ * and inode, by lstat). On a case-sensitive filesystem `Proj` and `pROJ` —
+ * or `Ⓟ` and `ⓟ`, which are cased but not letters — can be two sibling
+ * folders, and treating one's entry as the other's would move an `off` or a
+ * trust grant to the wrong folder. lstat does not follow a symlink, so a
+ * link at the entry's spelling has its own inode and never matches, and the
+ * parent is the target's canonical one: the stored entry is never resolved
+ * through a link (#778). Device and inode are compared as bigints (a 64-bit
+ * NTFS file id can exceed 2^53). Any error: false.
+ */
+function sameFolderIgnoringCase(form: string, target: string): boolean {
+  if (form === target || form.toLowerCase() !== target.toLowerCase()) return false
+  const a = form.split(sep)
+  const b = target.split(sep)
+  if (a.length !== b.length) return false
+  for (let i = 0; i < b.length; i++) {
+    if (a[i] === b[i]) continue
+    const prefix = b.slice(0, i)
+    try {
+      const x = lstatSync([...prefix, b[i]].join(sep) || sep, { bigint: true })
+      const y = lstatSync([...prefix, a[i]].join(sep) || sep, { bigint: true })
+      if (x.dev !== y.dev || x.ino !== y.ino) return false
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * The entry a CLI edit of `folder` refers to. After #1357 a checked folder is
+ * canonical in its ON-DISK case, so an entry recorded in another case (by hand,
+ * or before #1357 from a mis-cased typed path) no longer equals it. On a
+ * case-insensitive filesystem such an entry is still this folder's entry, so
+ * an edit or removal must find it rather than add a second entry beside it.
+ * Compared as written apart from letter case — never resolved on disk.
+ */
+function findEntryIndex(entries: FolderEntry[], folder: string, home: string): { exact: number[]; caseOnly: number[] } {
+  if (hasGlob(folder)) return { exact: entries.flatMap((e, i) => (e.path === folder ? [i] : [])), caseOnly: [] }
   const raw = resolve(expandHome(folder, home))
   const target = canonicalize(raw)
-  return entries.findIndex(e =>
-    e.path === folder ||
-    (!hasGlob(e.path) && (resolve(expandHome(e.path, home)) === raw || entryForms(e.path, home, false).includes(target))),
-  )
+  // EVERY entry for this folder, not just the first. Two spellings of one
+  // folder (`~/dup` and its absolute form, both kept by the trust.yaml import)
+  // are two exact entries: revoking trust on one would leave the other's
+  // grant in force. Entries in another letter case likewise: a leftover
+  // mis-cased `off` would keep winning (through the loose `off` match) after
+  // the user set the folder on (#1357).
+  const exact: number[] = []
+  const caseOnly: number[] = []
+  entries.forEach((e, i) => {
+    if (entryIsFolder(e, folder, raw, target, home)) exact.push(i)
+    else if (!hasGlob(e.path) && entryForms(e.path, home, false).some(f => sameFolderIgnoringCase(f, target))) caseOnly.push(i)
+  })
+  return { exact, caseOnly }
+}
+
+/** The most restrictive of the modes: off, then ask, then on. */
+function mostRestrictive(modes: Array<FolderMode | undefined>): FolderMode | undefined {
+  for (const m of ['off', 'ask', 'on'] as const) if (modes.includes(m)) return m
+  return undefined
 }
 
 function loadForWrite(root: string): FolderMap {
@@ -487,8 +552,31 @@ export function setFolderEntry(root: string, folder: string, change: FolderChang
   const map = loadForWrite(root)
   const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, opts.now) : null
   const key = folderEntryKey(folder, home)
-  const idx = findEntryIndex(map.folders, folder, home)
-  const entry: FolderEntry = idx >= 0 ? { ...map.folders[idx] } : { path: key }
+  const { exact, caseOnly } = findEntryIndex(map.folders, folder, home)
+  // Every entry for this folder merges into ONE, so no second entry keeps a
+  // decision the user just changed (a revoked grant, a replaced `off`).
+  //
+  // Exact entries all applied, so they merge whole: the most restrictive
+  // mode, `trusted` if any had it, the first scope; the first one's path.
+  //
+  // Entries in another letter case are rewritten to the on-disk spelling, so
+  // the strict (fail-closed) comparison matches the result from now on
+  // (#1357). Of those only an `off` ever applied (through the loose match
+  // `off` alone uses); their `ask`/`on`, `trusted` and `scope` never did.
+  // Their mode still carries over, as the more restrictive side; their grant
+  // and scope do not, so rewriting the path never brings a dormant grant (or
+  // one `plur untrust` just cleared) to life.
+  //
+  // A mode this change sets wins over all of them, and `--scope` without a
+  // mode means `on` — also when it replaces a merged mis-cased `off`.
+  const entry: FolderEntry = exact.length ? { ...map.folders[exact[0]] } : { path: key }
+  for (const i of exact.slice(1)) {
+    const e = map.folders[i]
+    if (e.trusted === true) entry.trusted = true
+    if (entry.scope === undefined && e.scope !== undefined) entry.scope = e.scope
+  }
+  const mode = mostRestrictive([...exact, ...caseOnly].map(i => map.folders[i].plur))
+  if (mode !== undefined) entry.plur = mode
   if (change.scope !== undefined) {
     entry.scope = change.scope
     if (change.mode === undefined) delete entry.plur
@@ -496,8 +584,11 @@ export function setFolderEntry(root: string, folder: string, change: FolderChang
   if (change.mode !== undefined) entry.plur = change.mode
   if (change.trusted === true) entry.trusted = true
   if (change.trusted === false) delete entry.trusted
-  if (idx >= 0) map.folders[idx] = entry
-  else map.folders.push(entry)
+  const matched = [...exact, ...caseOnly]
+  if (matched.length) {
+    const at = Math.min(...matched)
+    map.folders = map.folders.flatMap((e, i) => (i === at ? [entry] : matched.includes(i) ? [] : [e]))
+  } else map.folders.push(entry)
   saveFolderMap(root, map)
   consume?.()
   return cleanEntry(entry)
@@ -513,9 +604,10 @@ export function removeFolderEntry(
 ): boolean {
   const map = loadForWrite(root)
   const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, opts.now) : null
-  const idx = findEntryIndex(map.folders, folder, home)
-  if (idx < 0) return false
-  map.folders.splice(idx, 1)
+  const { exact, caseOnly } = findEntryIndex(map.folders, folder, home)
+  const matched = [...exact, ...caseOnly]
+  if (matched.length === 0) return false
+  map.folders = map.folders.filter((_, i) => !matched.includes(i))
   saveFolderMap(root, map)
   consume?.()
   return true
@@ -531,8 +623,11 @@ export function clearFolderTrust(root: string, folder: string, home: string = ho
   const raw = resolve(expandHome(folder, home))
   const target = canonicalize(raw)
   map.folders = map.folders.filter(e => {
-    const hit = e.trusted === true && (e.path === folder ||
-      (!hasGlob(e.path) && (resolve(expandHome(e.path, home)) === raw || entryForms(e.path, home, false).includes(target))))
+    // Also an entry for this folder recorded in another letter case, checked
+    // for identity like findEntryIndex's fallback (#1357). Its grant never
+    // applied, but `plur untrust` must still clear it and say so.
+    const hit = e.trusted === true && (entryIsFolder(e, folder, raw, target, home) ||
+      (!hasGlob(e.path) && entryForms(e.path, home, false).some(f => sameFolderIgnoringCase(f, target))))
     if (!hit) return true
     changed = true
     delete e.trusted
