@@ -729,6 +729,48 @@ treats a match as delivered. Every create now also carries an
 `Idempotency-Key` (the local engram id) for servers that honour one. See
 `docs/remote-store-contract.md`.
 
+### A killed writer no longer stalls the store for a minute
+
+**A process killed while taking the store lock left an empty
+`engrams.yaml.lock` that blocked every other writer for the full 60s stale
+threshold** (#1354). The lock was created first and its owner token written
+second; a process killed in between (SIGKILL, a hook killed at its harness
+budget) left a file with no pid in it, so the liveness check that recovers
+from a dead holder at once had nothing to check. Hooks, the MCP server and the
+CLI all waited it out.
+
+Now:
+
+- Core publishes the lock complete. The token is written to a private file and
+  hard-linked into place, which fails on an existing lock exactly as the
+  exclusive create did. A kill at any point leaves either no lock or a lock
+  naming a dead pid, which is taken over at once. Measured: an observer
+  process polling the lock during 3,000 acquisitions saw an empty lock 4,115
+  times before this change and never after it.
+- An empty lock older than 10s is treated as abandoned and taken over. Empty
+  locks can still come from older clients sharing the store and from
+  filesystems without hard links. The 10s comes from measurement: over 20,000
+  create-then-write cycles the gap was at most 0.73s, p99 10–117ms depending
+  on event-loop load.
+- Takeovers are serialized by a short-lived guard file
+  (`engrams.yaml.lock.takeover`), and each one re-inspects the lock after
+  taking the guard. This closes an older race that applies to every takeover,
+  including the immediate one for a dead holder. Two waiters that judged the
+  same abandoned lock could both act on it. The second one moved the first
+  one's fresh, live lock aside, and while it was putting that lock back, a
+  third process could acquire it. A test that pauses a takeover at that point
+  shows two holders without the guard and none with it. The claim also checks
+  that the file it moved is the one it inspected, not just that the contents
+  match, and it puts a live owner's lock back by hard link, so the lock is
+  never briefly empty.
+- A lock carrying a token is unchanged. A live owner is never stolen from,
+  however old the lock. A token that cannot be checked, such as one from
+  another host, still gets the full 60s.
+
+This applies to the YAML store, and to PGLite, which keeps YAML as its source
+of truth and takes the same lock. A Postgres primary store serializes writers
+with a Postgres advisory lock and does not use this lock file.
+
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
 **The Stop hook's "did you learn something?" nudge was never shown to the

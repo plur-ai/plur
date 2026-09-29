@@ -5,8 +5,10 @@
  *
  *   in-process (KeyedAsyncMutex) — concurrent callers in THIS process queue
  *     FIFO. No polling, no backoff, no spurious failure.
- *   cross-process (O_EXCL + async retry) — another process holding the lock
- *     file is waited out with an async backoff.
+ *   cross-process (exclusive create + async retry) — another process holding
+ *     the lock file is waited out with an async backoff. The file is published
+ *     with its owner token already in it (hard link), never as an empty file
+ *     (#1354; see `publishLockFile`).
  *
  * Why the in-process level is not optional (convergence Phase 2): `O_EXCL`
  * hands a losing caller `EEXIST` and nothing else, so the only recovery is
@@ -27,8 +29,11 @@
  * mutex would wait on a lock its own caller is holding. Nesting on a
  * *different* path works but is a lock-ordering hazard; don't.
  */
-import { writeFile, unlink, stat, readFile, rename, open } from 'fs/promises'
-import { constants } from 'fs'
+import { writeFile, unlink, stat, readFile, rename, open, link } from 'fs/promises'
+import {
+  linkSync, openSync, writeSync, closeSync, fstatSync, statSync, unlinkSync,
+  writeFileSync, renameSync, readFileSync,
+} from 'fs'
 import { hostname } from 'os'
 import * as path from 'path'
 import { KeyedAsyncMutex } from '../async-mutex.js'
@@ -104,6 +109,126 @@ export const DEFAULT_STALE_THRESHOLD = 60_000
  * timeout must raise this too, or reopen the same hole.
  */
 export const DEFAULT_ACQUIRE_TIMEOUT = 180_000
+
+/**
+ * How old an EMPTY lock file must be before it is treated as abandoned (#1354).
+ *
+ * An empty lock is what a creator leaves when it dies between creating the file
+ * and writing its owner token. With no token there is no pid to probe, so before
+ * this every waiter sat out the full {@link DEFAULT_STALE_THRESHOLD} (60s): a
+ * hook SIGKILLed at its harness budget cost every later writer a minute.
+ *
+ * Core itself no longer produces empty locks: it publishes the lock complete
+ * (see {@link publishLockFile}). They still come from older clients sharing the
+ * store, from filesystems without hard links (the fallback there), and from
+ * anything else that creates first and writes second. For such a creator the
+ * create→write gap is the only time an empty lock is legitimately live, so the
+ * grace must clear that gap by a wide margin.
+ *
+ * Measured on a developer laptop, 20,000 O_EXCL create + token write cycles:
+ * idle event loop p50 0.3ms, p99 10–20ms, max 0.73s; with the loop busy in
+ * 20ms synchronous bursts, p99 117ms, max 0.68s. The tail is scheduling, not
+ * I/O (the write continuation waits for the event loop), so the grace must also
+ * cover a creator whose loop is blocked by a large synchronous YAML parse
+ * (~2.4s at 50,000 engrams, audit #794). 10s is >13x the worst measured gap and
+ * >4x that parse, and still recovers six times sooner than the stale threshold.
+ */
+export const EMPTY_LOCK_GRACE_MS = 10_000
+
+/** Errors from `link()` that mean "this filesystem has no hard links". */
+const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EINVAL'])
+
+/** A private, uniquely named sibling of the lock file. */
+function privateSibling(lockPath: string, kind: 'publish' | 'steal', token: string): string {
+  return `${lockPath}.${kind}.${token.replace(/[^\w.-]/g, '_')}`
+}
+
+function lostDuringAcquire(lockPath: string): Error {
+  return Object.assign(new Error(`EEXIST: lock taken over during acquire, '${lockPath}'`), { code: 'EEXIST' })
+}
+
+/**
+ * Create `lockPath` holding `token`, or throw `EEXIST` if it exists (#1354).
+ *
+ * The lock used to be `writeFile(lockPath, token, { flag: O_EXCL })`: an
+ * exclusive create followed by a separate write. Between the two the lock
+ * exists but is EMPTY, and a process killed there leaves a lock nobody can
+ * attribute. So the token is written to a private file first and hard-linked
+ * into place. `link()` fails with `EEXIST` exactly like `O_EXCL`, and the lock
+ * appears with its token already in it, or not at all.
+ *
+ * A kill at any point leaves at most the uniquely named private file behind,
+ * never an empty lock; that file is outside the lock protocol and inert.
+ *
+ * Filesystems without hard links fall back to create-then-write, plus a check
+ * that the path still names the file we wrote: if an empty-lock takeover moved
+ * it away during a stall longer than {@link EMPTY_LOCK_GRACE_MS}, report
+ * `EEXIST` and retry rather than proceed as a second holder.
+ */
+export async function publishLockFile(lockPath: string, token: string): Promise<void> {
+  const priv = privateSibling(lockPath, 'publish', token)
+  await writeFile(priv, token, { flag: 'wx' })
+  let fallback = false
+  try {
+    await link(priv, lockPath)
+  } catch (err: any) {
+    if (!LINK_UNSUPPORTED.has(err?.code)) throw err
+    fallback = true
+  } finally {
+    await unlink(priv).catch(() => {})
+  }
+  if (!fallback) return
+  const fd = await open(lockPath, 'wx')
+  let ino: number
+  try {
+    await fd.writeFile(token)
+    ino = (await fd.stat()).ino
+  } finally {
+    await fd.close()
+  }
+  const now = await stat(lockPath).catch(() => null)
+  if (now?.ino !== ino) throw lostDuringAcquire(lockPath)
+}
+
+/** Synchronous twin of {@link publishLockFile}, for `withLock` in `sync.ts`. */
+export function publishLockFileSync(lockPath: string, token: string): void {
+  const priv = privateSibling(lockPath, 'publish', token)
+  writeFileSync(priv, token, { flag: 'wx' })
+  let fallback = false
+  try {
+    linkSync(priv, lockPath)
+  } catch (err: any) {
+    if (!LINK_UNSUPPORTED.has(err?.code)) throw err
+    fallback = true
+  } finally {
+    try { unlinkSync(priv) } catch { /* already gone */ }
+  }
+  if (!fallback) return
+  const fd = openSync(lockPath, 'wx')
+  let ino: number
+  try {
+    writeSync(fd, token)
+    ino = fstatSync(fd).ino
+  } finally {
+    closeSync(fd)
+  }
+  let now: number | undefined
+  try { now = statSync(lockPath).ino } catch { /* gone */ }
+  if (now !== ino) throw lostDuringAcquire(lockPath)
+}
+
+/**
+ * Has a lock whose holder we CANNOT probe been untouched long enough to steal?
+ *
+ * Only for liveness `undefined`: a holder confirmed alive is never stolen from,
+ * a confirmed-dead one is stolen at once. An EMPTY lock (#1354) is abandoned
+ * after {@link EMPTY_LOCK_GRACE_MS}; anything carrying a token keeps the full
+ * stale threshold.
+ */
+export function abandonedByAge(holder: string, ageMs: number, staleThreshold: number): boolean {
+  if (holder === '') return ageMs > Math.min(EMPTY_LOCK_GRACE_MS, staleThreshold)
+  return ageMs > staleThreshold
+}
 
 /**
  * In-process lock queue, keyed by resolved path.
@@ -224,7 +349,7 @@ async function withFileLock<T>(
       }
     }
     try {
-      await writeFile(lockPath, token, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL })
+      await publishLockFile(lockPath, token)
       acquired = true
       break
     } catch (err: any) {
@@ -239,6 +364,11 @@ async function withFileLock<T>(
           readFile(lockPath, 'utf8').catch(() => ''),
         ])
         holder = contents.trim()
+        // Our OWN token: only possible on the no-hard-link fallback, when a
+        // takeover claimed our file mid-acquire, then found our token and put
+        // it back. The token is unique to this acquisition, so the lock is
+        // ours. Waiting on it would wait on ourselves until the deadline.
+        if (holder === token) { acquired = true; break }
         const alive = holderIsAlive(holder)
         // (1) The holder's process is gone. Definitive, and immediate — this is
         //     what keeps crash recovery fast despite the long stale threshold.
@@ -253,7 +383,11 @@ async function withFileLock<T>(
         //     live writer corrupts the corpus; waiting on a wedged one is a
         //     visible error after `acquireTimeout` that names the lock file.
         //     A loud stall beats silent corruption.
-        else if (alive === undefined && Date.now() - s.mtimeMs > staleThreshold) abandoned = true
+        //
+        //     An EMPTY lock gets a much shorter window (#1354). With no token
+        //     it can only be a creator between its create and its write
+        //     (milliseconds when alive), or one that died there.
+        else if (alive === undefined && abandonedByAge(holder, Date.now() - s.mtimeMs, staleThreshold)) abandoned = true
       } catch {
         // Vanished between the EEXIST and the check — the holder released.
         // Retry immediately; there is nothing to steal.
@@ -261,10 +395,12 @@ async function withFileLock<T>(
       }
 
       if (abandoned) {
-        // Remove only the file we just inspected. If the holder released and a
-        // third party re-locked in between, this deletes the newcomer's lock —
-        // so re-read and compare before unlinking.
-        await stealLock(lockPath, holder)
+        // What we saw is only a hint: the takeover re-inspects under its own
+        // guard before touching anything (see `takeOver`).
+        if (await takeOver(lockPath, staleThreshold)) continue
+        // Another process is mid-takeover. It holds its guard for a few
+        // syscalls; give it a moment rather than spin.
+        await sleep(Math.min(baseDelay, 50))
         continue
       }
 
@@ -287,6 +423,120 @@ async function withFileLock<T>(
   }
 }
 
+/** Would a waiter be entitled to take over a lock with this holder and mtime? */
+function isAbandoned(holder: string, mtimeMs: number, staleThreshold: number): boolean {
+  const alive = holderIsAlive(holder)
+  if (alive === false) return true
+  return alive === undefined && abandonedByAge(holder, Date.now() - mtimeMs, staleThreshold)
+}
+
+/** The guard that serializes takeovers of `lockPath` (#1354). */
+function takeoverGuardPath(lockPath: string): string {
+  return `${lockPath}.takeover`
+}
+
+/**
+ * Take over an abandoned lock — serialized against every other takeover
+ * (#1354). Returns false when another process holds the takeover guard.
+ *
+ * Why a guard. The rename claim in {@link stealLock} makes the steal itself
+ * single-winner, but not the DECISION. Two waiters that judged the same
+ * abandoned lock can both reach `rename`: the first claims it, removes it and
+ * acquires a fresh lock; the second's rename then moves THAT fresh, live lock
+ * aside. It sees the wrong file and puts it back — but while the path is free
+ * a third process can create a lock there, and then two processes believe
+ * they hold it. The concurrent-takeover test caught exactly this under load.
+ *
+ * Under the guard, only one process at a time inspects-and-removes. It
+ * re-inspects `lockPath` after taking the guard, so a decision made on an old
+ * inspection is never acted on. Between that re-inspection and its `rename`
+ * the file at `lockPath` cannot be replaced by a new-code acquirer: the path
+ * only frees when the abandoned file is removed, and only the guard holder
+ * removes abandoned files. (The file's owner could remove it only if it were
+ * alive after all, which for a dead pid is impossible and for the age rules
+ * means a holder stalled past the whole threshold.) Acquirers do NOT take the
+ * guard — the uncontended path stays one `link`.
+ *
+ * The guard is published like a lock (token included), held for a handful of
+ * syscalls, and a guard whose holder died is removed by the same rules as a
+ * lock. Clearing it returns false rather than proceeding, so the caller loops
+ * and competes for the guard afresh.
+ */
+async function takeOver(lockPath: string, staleThreshold: number): Promise<boolean> {
+  const guard = takeoverGuardPath(lockPath)
+  const token = makeToken()
+  try {
+    await publishLockFile(guard, token)
+  } catch (err: any) {
+    if (err?.code !== 'EEXIST') return false
+    const g = await inspectLock(guard)
+    if (g && isAbandoned(g.holder, g.mtimeMs, staleThreshold)) await stealLock(guard, g.holder, g.ino)
+    return false
+  }
+  try {
+    const cur = await inspectLock(lockPath)
+    if (cur && isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) {
+      await stealLock(lockPath, cur.holder, cur.ino)
+    }
+    return true
+  } finally {
+    await releaseIfOurs(guard, token)
+  }
+}
+
+/** Synchronous twin of {@link takeOver}, for `withLock` in `sync.ts`. */
+export function takeOverSync(lockPath: string, staleThreshold: number): boolean {
+  const guard = takeoverGuardPath(lockPath)
+  const token = makeToken()
+  try {
+    publishLockFileSync(guard, token)
+  } catch (err: any) {
+    if (err?.code !== 'EEXIST') return false
+    const g = inspectLockSync(guard)
+    if (g && isAbandoned(g.holder, g.mtimeMs, staleThreshold)) stealLockSync(guard, g.holder, g.ino)
+    return false
+  }
+  try {
+    const cur = inspectLockSync(lockPath)
+    if (cur && isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) {
+      stealLockSync(lockPath, cur.holder, cur.ino)
+    }
+    return true
+  } finally {
+    try {
+      if (readFileSync(guard, 'utf8').trim() === token) unlinkSync(guard)
+    } catch { /* already gone */ }
+  }
+}
+
+interface LockInspection { holder: string; mtimeMs: number; ino: number }
+
+async function inspectLock(p: string): Promise<LockInspection | null> {
+  try {
+    const s = await stat(p)
+    const holder = (await readFile(p, 'utf8')).trim()
+    // Re-stat: if the file was replaced between the two calls, the contents
+    // and the identity would describe different files. Treat as "look again".
+    const again = await stat(p)
+    if (again.ino !== s.ino) return null
+    return { holder, mtimeMs: again.mtimeMs, ino: s.ino }
+  } catch {
+    return null // gone — nothing to take over
+  }
+}
+
+function inspectLockSync(p: string): LockInspection | null {
+  try {
+    const s = statSync(p)
+    const holder = readFileSync(p, 'utf8').trim()
+    const again = statSync(p)
+    if (again.ino !== s.ino) return null
+    return { holder, mtimeMs: again.mtimeMs, ino: s.ino }
+  } catch {
+    return null
+  }
+}
+
 /**
  * Remove a lock believed abandoned — by CLAIMING it first (audit 2026-08-03,
  * finding 1).
@@ -306,33 +556,79 @@ async function withFileLock<T>(
  * deletes is not at `lockPath` any more.
  *
  * Losing the claim is not a failure: the caller loops, finds either a fresh
- * lock or none, and takes the normal `O_EXCL` path. Mutual exclusion is still
- * decided by that create, not by this function.
+ * lock or none, and takes the normal exclusive-create path
+ * ({@link publishLockFile}). Mutual exclusion is still decided by that create,
+ * not by this function.
  */
-async function stealLock(lockPath: string, expected: string): Promise<void> {
-  const claim = `${lockPath}.steal.${makeToken().replace(/[^\w.-]/g, '_')}`
+async function stealLock(lockPath: string, expected: string, expectedIno: number): Promise<void> {
+  const claim = privateSibling(lockPath, 'steal', makeToken())
   try {
     await rename(lockPath, claim)
   } catch {
     return // another contender claimed it, or the holder released — re-evaluate
   }
   try {
-    const current = (await readFile(claim, 'utf8')).trim()
-    if (current === expected) {
-      await unlink(claim) // confirmed the one we judged stale
+    // Same FILE, not just the same contents (#1354). Contents cannot tell two
+    // empty locks apart: if the old empty lock we judged was released and a
+    // creator made a fresh one before our rename, '' === '' would delete a
+    // lock whose owner is about to write its token.
+    const [current, s] = await Promise.all([readFile(claim, 'utf8'), stat(claim)])
+    if (current.trim() === expected && s.ino === expectedIno) {
+      await unlink(claim) // confirmed the one we judged abandoned
       return
     }
-    // Not the lock we judged stale — a live holder's. Put it back, but never on
-    // top of a lock someone has since acquired: `wx` fails rather than clobber.
+    // Not the lock we judged abandoned — a live holder's. Put it back.
     try {
-      const fd = await open(lockPath, 'wx')
-      try { await fd.writeFile(current) } finally { await fd.close() }
-    } catch { /* someone acquired meanwhile — theirs wins, drop ours */ }
+      // `link` restores the SAME file, token and all, in one step, and never
+      // overwrites: if someone took the free path meanwhile, EEXIST — theirs wins.
+      await link(claim, lockPath)
+    } catch (err: any) {
+      if (LINK_UNSUPPORTED.has(err?.code)) {
+        try {
+          const fd = await open(lockPath, 'wx')
+          try { await fd.writeFile(current.trim()) } finally { await fd.close() }
+        } catch { /* someone acquired meanwhile — theirs wins, drop ours */ }
+      }
+    }
     await unlink(claim).catch(() => {})
   } catch {
     // Never leave the claim file behind: it is uniquely named, so nothing else
     // would ever clean it up.
     await unlink(claim).catch(() => {})
+  }
+}
+
+/**
+ * Synchronous twin of {@link stealLock}, for `withLock` in `sync.ts`: the same
+ * single-winner rename claim, the same file-identity check, the same restore.
+ */
+function stealLockSync(lockPath: string, expected: string, expectedIno: number): void {
+  const claim = privateSibling(lockPath, 'steal', makeToken())
+  try {
+    renameSync(lockPath, claim)
+  } catch {
+    return // another contender claimed it, or the holder released — re-evaluate
+  }
+  try {
+    const current = readFileSync(claim, 'utf8')
+    if (current.trim() === expected && statSync(claim).ino === expectedIno) {
+      unlinkSync(claim)
+      return
+    }
+    try {
+      linkSync(claim, lockPath)
+    } catch (err: any) {
+      if (LINK_UNSUPPORTED.has(err?.code)) {
+        try {
+          const fd = openSync(lockPath, 'wx')
+          try { writeSync(fd, current.trim()) } finally { closeSync(fd) }
+        } catch { /* someone acquired meanwhile — theirs wins */ }
+      }
+    }
+    try { unlinkSync(claim) } catch { /* already gone */ }
+  } catch {
+    // The claim file is uniquely named; nothing else would ever clean it up.
+    try { unlinkSync(claim) } catch { /* already gone */ }
   }
 }
 

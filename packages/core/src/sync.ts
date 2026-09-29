@@ -3,7 +3,9 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkS
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
-import { DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken } from './store/async-lock.js'
+import {
+  DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken, publishLockFileSync, takeOverSync, abandonedByAge,
+} from './store/async-lock.js'
 
 export interface SyncStatus {
   initialized: boolean
@@ -733,47 +735,6 @@ export interface LockOptions {
  * `withAsyncLock`; this variant exists for the remaining synchronous callers
  * (tensions, config, episode capture), whose holds are short.
  */
-/**
- * Remove a lock believed abandoned — by CLAIMING it first (audit 2026-08-03,
- * finding 1). Synchronous twin of `stealLock` in `store/async-lock.ts`; see the
- * reasoning there.
- *
- * Read-compare-unlink left a window between the compare and the `unlink`: two
- * contenders judging the same lock stale can both pass the compare, the first
- * unlinks and acquires, and the second then unlinks the pathname — the first
- * one's LIVE lock — and acquires too. Both run the critical section.
- *
- * `rename` is atomic and single-winner, so a contender can only ever delete a
- * file it has already moved aside, never a lock another process created at
- * `lockPath`. Losing the claim is normal: the caller loops and takes the usual
- * O_EXCL path, which is what actually decides who holds the lock.
- */
-function stealLockSync(lockPath: string, expected: string, token: string): void {
-  const claim = `${lockPath}.steal.${token.replace(/[^\w.-]/g, '_')}`
-  try {
-    renameSync(lockPath, claim)
-  } catch {
-    return // another contender claimed it, or the holder released — re-evaluate
-  }
-  try {
-    const current = readFileSync(claim, 'utf8').trim()
-    if (current === expected) {
-      unlinkSync(claim) // confirmed the one we judged stale
-      return
-    }
-    // A live holder's lock, not the stale one. Put it back — but never over a
-    // lock someone has since acquired, so create exclusively and accept EEXIST.
-    try {
-      const fd = openSync(lockPath, 'wx')
-      try { writeFileSync(fd, current) } finally { closeSync(fd) }
-    } catch { /* someone acquired meanwhile — theirs wins */ }
-    try { unlinkSync(claim) } catch { /* already gone */ }
-  } catch {
-    // The claim file is uniquely named; nothing else would ever clean it up.
-    try { unlinkSync(claim) } catch { /* already gone */ }
-  }
-}
-
 export function withLock<T>(
   filePath: string,
   fn: () => T,
@@ -801,7 +762,9 @@ export function withLock<T>(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      writeFileSync(lockPath, token, { flag: 'wx' })
+      // Published complete, never as an empty file (#1354) — see
+      // `publishLockFile` in store/async-lock.ts.
+      publishLockFileSync(lockPath, token)
       acquired = true
       break
     } catch (err: any) {
@@ -813,18 +776,23 @@ export function withLock<T>(
         // without it would take crash recovery on THESE paths (episodes,
         // tensions, config) from 10s to 60s.
         const holder = readFileSync(lockPath, 'utf8').trim()
+        // Our own unique token, put back by a takeover on the no-hard-link
+        // fallback: the lock is ours (see withFileLock in store/async-lock.ts).
+        if (holder === token) { acquired = true; break }
         const alive = holderIsAlive(holder)
         // Age is consulted ONLY when liveness is unknown — another host, or the
         // bare pid an older client wrote. A confirmed-live holder is never
         // stolen from for being slow: that corrupts the artifact it is midway
         // through writing, whereas waiting on a wedged holder surfaces as a
-        // loud failure the operator can act on.
+        // loud failure the operator can act on. An EMPTY lock is judged on a
+        // short grace period instead of the full threshold (#1354).
         const steal = alive === false
-          || (alive === undefined && Date.now() - stat.mtimeMs > staleThreshold)
-        if (steal) {
-          stealLockSync(lockPath, holder, token)
-          continue
-        }
+          || (alive === undefined && abandonedByAge(holder, Date.now() - stat.mtimeMs, staleThreshold))
+        // A hint only: the takeover re-inspects under a guard shared with the
+        // async lock, and claims by single-winner rename (see `takeOver` in
+        // store/async-lock.ts; audit 2026-08-03 finding 1, #1354). When another
+        // process holds the guard, fall through to the normal backoff.
+        if (steal && takeOverSync(lockPath, staleThreshold)) continue
       } catch {
         continue
       }
