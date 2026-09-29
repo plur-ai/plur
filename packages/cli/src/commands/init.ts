@@ -130,6 +130,13 @@ interface HookEntry {
  */
 type HookLaunch = (sub: string, ...extra: string[]) => { command: string; args?: string[] }
 
+/** A plain launcher string (the plur-mcp init tests) as a string-form HookLaunch. */
+function hookLaunchOf(launch: HookLaunch | string): HookLaunch {
+  return typeof launch === 'string'
+    ? (sub, ...extra) => ({ command: [launch, sub, ...extra].join(' ') })
+    : launch
+}
+
 // ── Hook shim installation ──────────────────────────────────────────────────
 // Instead of using `npx @plur-ai/cli hook-*` (slow, races on version bumps),
 // plur init creates a local shim at ~/.plur/bin/plur-hook that calls
@@ -278,7 +285,10 @@ function installMcpBinary(): { shimPath: string; status: string } {
 // Installed into global ~/.claude/settings.json unconditionally (issue #95) so
 // they fire from any subdirectory project. Each hook silent-passes when
 // isPlurConfigured() is false, so projects without plur are unaffected.
-function buildEnforcementHooks(mk: HookLaunch): Record<string, HookEntry[]> {
+// Exported for the plur-mcp init tests (#1276), which pass the plain launcher
+// string; `plur init` passes #1270's HookLaunch (exec form on Windows).
+export function buildEnforcementHooks(launch: HookLaunch | string): Record<string, HookEntry[]> {
+  const mk = hookLaunchOf(launch)
   return {
     SessionStart: [
       {
@@ -328,9 +338,7 @@ function buildEnforcementHooks(mk: HookLaunch): Record<string, HookEntry[]> {
 // Exported for the plur-mcp init parity test (#1279), which passes the plain
 // launcher string; `plur init` passes #1270's HookLaunch (exec form on Windows).
 export function buildInjectionHooks(launch: HookLaunch | string): Record<string, HookEntry[]> {
-  const mk: HookLaunch = typeof launch === 'string'
-    ? (sub, ...extra) => ({ command: [launch, sub, ...extra].join(' ') })
-    : launch
+  const mk = hookLaunchOf(launch)
   return {
     // First message: inject engrams based on the prompt.
     // Subsequent messages: periodic reminder to call plur_learn (~0.1s).

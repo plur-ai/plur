@@ -672,8 +672,12 @@ An unknown `--event` no longer echoes the hook payload back to stdout.
 put rehydrate on `PostCompact`. It now uses `SessionStart` with matcher
 `compact`, `async: true`, `timeout: 90`, the same as `plur init`; a test fails
 if the two diverge. Re-running `plur-mcp init` used to stop at "already
-installed". It now removes PLUR's `PostCompact` hooks and adds the
-`SessionStart(compact)` one. It removes PLUR's hooks one at a time and only
+installed". It now removes PLUR's `PostCompact` hooks and, in the same file,
+puts the `SessionStart(compact)` one in place of the old rehydrate. A file
+with PLUR hooks but no rehydrate gets none added. That covers the global
+settings file, where `plur init` puts only its enforcement hooks, so
+rehydrate does not run twice. Hooks with no `command` (`type: "prompt"` or
+`"agent"`) no longer make init throw. It removes PLUR's hooks one at a time and only
 those: a hook counts as PLUR's when it runs the PLUR binary (the
 `~/.plur/bin/plur-hook` shim or `npx @plur-ai/cli`) with a subcommand init
 writes. Your own hooks, including your own `PostCompact` hooks and one that
