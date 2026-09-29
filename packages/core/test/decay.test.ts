@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decayedStrength, daysSince, shouldInject, reactivate } from '../src/decay.js'
+import { decayedStrength, daysSince, reactivate } from '../src/decay.js'
 
 describe('decay as deprioritization', () => {
   it('decays retrieval strength over time', () => {
@@ -21,21 +21,11 @@ describe('decay as deprioritization', () => {
     expect(daysSince('2025-09-19', now)).toBe(181)
   })
 
-  it('scope-matched engrams always inject regardless of decay', () => {
-    const result = shouldInject(
-      { retrieval_strength: 0.01, scope: 'project:myapp', last_accessed: '2025-01-01' },
-      { scope: 'project:myapp' }
-    )
-    expect(result).toBe(true)
-  })
-
-  it('global low-strength engrams are deprioritized', () => {
-    const result = shouldInject(
-      { retrieval_strength: 0.1, scope: 'global', last_accessed: '2025-01-01' },
-      { task: 'fix myapp bug' }
-    )
-    expect(result).toBe(false)
-  })
+  // The two `shouldInject` tests ('scope-matched engrams always inject
+  // regardless of decay', 'global low-strength engrams are deprioritized') were
+  // removed with the function (owner decision I7, formal run 2026-09-26): it was
+  // exported, had no caller, and matched scope by family prefix (`project:a`
+  // admitted `project:b`), contrary to isScopeWithin (#383).
 
   // Was 'reactivate bumps strength'. That bump is the defect (#846): passive
   // retrieval added +0.10 while a deliberate ★ added +0.05 and a ✗ subtracted

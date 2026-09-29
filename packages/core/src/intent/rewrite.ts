@@ -82,9 +82,17 @@ export function isQueryRewriteDisabled(): boolean {
   return lower === 'off' || v === '0' || lower === 'false'
 }
 
-/** Lowercased alphanumeric core of a whitespace token ("What's" -> "whats"). */
+/**
+ * Lowercased word-character core of a whitespace token ("What's" -> "whats").
+ *
+ * Unicode letters, numbers and marks — the same class `ftsTokenize` keeps.
+ * An ASCII-only class (`[^a-z0-9]`) gave every CJK / Cyrillic / Devanagari word
+ * an empty core, and `stripScaffolding` drops empty-core tokens, so
+ * "What is the 部署 process?" lost 部署 while the 2-token guard still passed
+ * (formal R2, core-retrieval#8).
+ */
 function tokenCore(word: string): string {
-  return word.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return word.toLowerCase().replace(/[^\p{L}\p{N}\p{M}]/gu, '')
 }
 
 /** True when the query reads as a question: trailing "?" or leading interrogative. */

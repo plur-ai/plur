@@ -293,7 +293,9 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
     PostToolUse: [
       // Session sentinel — creates marker file after plur_session_start succeeds
       {
-        matcher: 'mcp__plur__plur_session_start',
+        // Same rule as the guard's exemption (any `mcp__<server>__plur_session_start`),
+        // so a plugin-named server still marks the session started.
+        matcher: 'mcp__.*__plur_session_start',
         hooks: [
           { type: 'command', command: `${cmd} hook-session-mark`, timeout: 3 },
         ],
@@ -703,15 +705,40 @@ function settingsRefusal(path: string): string {
   return `skipped — ${path} exists but is not a JSON object; writing would discard your other settings (permissions, hooks, servers). Fix it by hand, then re-run \`plur init\``
 }
 
+/**
+ * A hook SPEC is PLUR's only if it BOTH names the PLUR binary AND runs one of
+ * its `hook-*` subcommands — the two-part test codex-hooks.ts and
+ * cursor-hooks.ts already use (formal Adapters #3). Three defects this closes:
+ *
+ * - the Windows shim is `C:\…\.plur\bin\plur-hook.cmd`; matching the literal
+ *   `.plur/bin/plur-hook` missed it, so every re-run of `plur init` on Windows
+ *   appended a second copy of every hook;
+ * - a binary-only match claimed a user's own `npx @plur-ai/cli learn …` hook
+ *   and deleted it;
+ * - a command-less hook (`type: "prompt"`) made `.includes` throw, aborting
+ *   init with the settings file untouched.
+ */
+function isPlurHookSpec(h: { command?: unknown } | null | undefined): boolean {
+  // Integration of #1228 (formal Adapters #3 / decision S4) and #1270 (#1267):
+  // #1228's guard — a command-less or non-string spec is never PLUR's and
+  // never throws — wrapped around #1270's matcher (lib/hook-command.ts): the
+  // shim as a whole path segment or the npx fallback, backslashes and case
+  // normalised, plus a KNOWN subcommand. OPEN CONFLICT (see
+  // spec/formal/survey/2026-09-29-field-report-drift.md): #1228 accepted any
+  // `hook-*` subcommand and a `.plur/bin/plur-hook` substring; #1270 accepts
+  // only the listed subcommands and rejects `plur-hook-backup.ps1`.
+  const raw = h?.command
+  return typeof raw === 'string' && isPlurHookCommand(raw)
+}
+
 function isPlurHook(entry: HookEntry): boolean {
-  // The shim or npx fallback plus a known subcommand (#1267) — see isPlurHookCommand.
-  return (entry.hooks ?? []).some((h) => isPlurHookCommand(h.command ?? ''))
+  return (entry?.hooks ?? []).some(isPlurHookSpec)
 }
 
 function hasPlurHooks(settings: Settings): boolean {
   const hooks = settings.hooks ?? {}
   for (const entries of Object.values(hooks)) {
-    if (entries.some(isPlurHook)) return true
+    if ((entries ?? []).some(isPlurHook)) return true
   }
   return false
 }
@@ -726,10 +753,10 @@ function stripPlurHooks(settings: Settings): Settings {
   const hooks = { ...(settings.hooks ?? {}) }
   for (const [event, entries] of Object.entries(hooks)) {
     const kept: HookEntry[] = []
-    for (const e of entries) {
+    for (const e of entries ?? []) {
       if (!isPlurHook(e)) { kept.push(e); continue }
-      const own = e.hooks.filter((h) => !isPlurHookCommand(h.command ?? ''))
-      if (own.length > 0) kept.push({ ...e, hooks: own })
+      const specs = (e.hooks ?? []).filter((h) => !isPlurHookSpec(h))
+      if (specs.length > 0) kept.push({ ...e, hooks: specs })
     }
     if (kept.length > 0) {
       hooks[event] = kept
@@ -1632,3 +1659,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // Never fail `init` over this. Staying unidentified is a working state.
   }
 }
+
+/** Test seams (formal Adapters #3). */
+export { mergeHooks as _mergeClaudeHooks }
+export { isPlurHookSpec as _isPlurClaudeHookSpec }
+
+export { buildEnforcementHooks as _buildEnforcementHooks }

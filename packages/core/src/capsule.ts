@@ -24,7 +24,9 @@ import {
 //   MAGIC(4) | FormatVersion(2) | Flags(2) | HeaderLen(4)
 //   Header(JSON, utf-8, HeaderLen bytes)
 //   Payload(opaque bytes — typically tar.gz of {manifest.yaml + engrams.yaml})
-//   Signature(64 bytes, Ed25519 — only if Flags.SIGNED is set; deferred for MVP)
+//   Signature(64 bytes, Ed25519 — only if Flags.SIGNED is set; deferred for MVP:
+//     carried and length-checked, never verified. The payload SHA-256 in the
+//     header covers the payload only — not the header, not the signature.)
 
 export interface WriteCapsuleOptions {
   payload: Buffer
@@ -163,6 +165,26 @@ export function readCapsule(buf: Buffer): ReadCapsuleResult {
   return { header, payload: Buffer.from(payload), signature: signature ? Buffer.from(signature) : null }
 }
 
+/**
+ * Is this a well-formed capsule whose payload matches its own header?
+ *
+ * True exactly when {@link readCapsule} accepts the buffer: the preamble and
+ * header parse, the SIGNED flag agrees with `header.signer`, the COMPRESSED flag
+ * agrees with `header.payload.compression`, and the payload's size and SHA-256
+ * equal the values the header states.
+ *
+ * What it does NOT check (formal R2, core-retrieval#11):
+ * - **The signature.** When SIGNED is set, any 64-byte trailer passes — the
+ *   Ed25519 signature is carried, never verified (verification is deferred,
+ *   spec plur-ai/plur#61).
+ * - **The header.** Nothing covers the header bytes: its SHA-256 describes the
+ *   payload only. Whoever can rewrite the file can change the header (name,
+ *   creator, producer, signer) and payload together and recompute the hash.
+ *
+ * So this detects accidental corruption and truncation of the payload; it is
+ * NOT an authenticity or tamper-evidence check, and a `true` result says
+ * nothing about who produced the capsule.
+ */
 export function verifyCapsuleIntegrity(buf: Buffer): boolean {
   try {
     readCapsule(buf)

@@ -91,7 +91,7 @@ plur trust --list   # see what's trusted
 plur untrust .      # revoke
 ```
 
-This is the same shape as `direnv allow`, `git config safe.directory`, and VS Code's workspace trust: a project file that changes behaviour requires a one-time, explicit, per-directory grant — stored under your PLUR home (`~/.plur/trust.yaml`, never inside the project, so a repo cannot grant itself trust). Trusting a directory also trusts everything below it, so trusting a repo's root covers a `.plur.yaml` anywhere in that repo.
+This is the same shape as `direnv allow`, `git config safe.directory`, and VS Code's workspace trust: a project file that changes behaviour requires a one-time, explicit, per-directory grant — stored under your PLUR home (`~/.plur/trust.yaml`, never inside the project, so a repo cannot grant itself trust). If opencode runs with its own `PLUR_PATH`, the grant must go to that store — `plur --path <store> trust .` — and the warning prints the command in that form. Trusting a directory also trusts everything below it, so trusting a repo's root covers a `.plur.yaml` anywhere in that repo.
 
 **Enterprise flow:** clone the company repo (whose `.plur.yaml` says `scope: group:acme/eng`), run `plur trust .` once, and recall/writes reach your team's store from then on — exactly as if you had configured the scope yourself.
 

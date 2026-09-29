@@ -52,7 +52,12 @@ export interface Config {
   autoLearn: boolean
   /** Record an episode summary at turn end. */
   autoCapture: boolean
-  /** Hard bound on any single PLUR call. */
+  /**
+   * How long a PLUR call is waited for. A write outlives it: it holds the
+   * write queue until it settles or the hard cap (`WRITE_HARD_CAP_MS`, or this
+   * if larger) elapses — decision S3. The 60 s cap itself is a constant, not a
+   * config key: only a larger `timeoutMs` raises it.
+   */
   timeoutMs: number
   /** Register the `/plur-memory` command that opens the memory viewer. */
   viewerEnabled: boolean

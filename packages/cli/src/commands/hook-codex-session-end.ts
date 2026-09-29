@@ -9,6 +9,8 @@ import {
   sentinelPath,
   counterPath,
   cleanupStaleSessionFiles,
+  sessionDirSafeToSweep,
+  sessionDir,
 } from '../lib/codex-hook-io.js'
 
 /**
@@ -38,13 +40,18 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
     const input = readStdinJson()
     const sessionId = codexSessionId(input)
+    // No early return: the outbox flush below (#1269) runs even without a
+    // session id. The unlink is skipped, not the hook, when the session dir is
+    // a symlink or someone else's (cli#8, #1228).
     if (sessionId) {
-      for (const p of [
-        sentinelPath(sessionId),
-        counterPath(sessionId, 'guard-count'),
-        counterPath(sessionId, 'tool-count'),
-      ]) {
-        try { unlinkSync(p) } catch { /* already gone */ }
+      if (sessionDirSafeToSweep(sessionDir())) {
+        for (const p of [
+          sentinelPath(sessionId),
+          counterPath(sessionId, 'guard-count'),
+          counterPath(sessionId, 'tool-count'),
+        ]) {
+          try { unlinkSync(p) } catch { /* already gone */ }
+        }
       }
       cleanupStaleSessionFiles()
     }

@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { PlurClient } from './client.js'
 import type { Config } from './config.js'
 import type { Counters } from './counters.js'
-import { guard, type WriteQueue } from './guard.js'
+import { contain, writable, type WriteQueue } from './guard.js'
 
 /**
  * High-precision correction and rule patterns.
@@ -135,14 +135,21 @@ export function registerLearning(ctx: Context, deps: LearnDeps): void {
     const candidate = detectLearning(text)
     if (!candidate) return
 
-    void queue(() => guard(async () => {
+    // The write holds the queue slot until it settles (or the queue's hard cap,
+    // decision S3); `contain` only reports a failure. No soft timeout here:
+    // nobody waits on a fire-and-forget write, and a soft timeout inside the
+    // queue released the slot while the write was still running.
+    void queue(() => contain(async () => {
       const scope = await resolveScope(session as CallerSession)
       // Only count a write that a real engine actually performed. Bumping
       // before checking meant an absent `learn` — the whole engine missing —
       // still reported captures.
-      if (typeof plur?.learn !== 'function') return
-      await plur.learn(candidate.statement, { scope })
+      // …and "a real engine" includes the facade's case: it always HAS
+      // `learn`, and resolves it to a no-op when core cannot load, so the
+      // typeof check alone never fired in production (formal Adapters #6).
+      if (!(await writable(plur, 'learn'))) return
+      await plur!.learn!(candidate.statement, { scope })
       counters.bump('learn_captured')
-    }, { timeoutMs: config.timeoutMs, onError: () => counters.bump('errors_swallowed') }))
+    }, () => counters.bump('errors_swallowed')))
   })
 }

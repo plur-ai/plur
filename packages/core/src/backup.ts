@@ -50,7 +50,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { createHash } from 'crypto'
 import * as yaml from 'js-yaml'
-import { EngramSchemaPassthrough } from './schemas/engram.js'
+import { parseEngramEntry } from './engrams.js'
 import { logger } from './logger.js'
 import { atomicWrite, withLock } from './sync.js'
 
@@ -121,6 +121,50 @@ function writeState(root: string, state: BackupState): void {
   fs.writeFileSync(p, JSON.stringify(state, null, 2) + '\n', 'utf8')
 }
 
+/**
+ * Where the count PLUR last wrote to a store file is recorded (owner decision
+ * P2, formal run 2026-09-26): `backups/.last-written.json` in the STORE FILE's
+ * directory — for the default layout that is the plur root, whose `backups/`
+ * is machine-local and git-ignored. Derived from the store path alone, so the
+ * writer ({@link recordLastWritten}, called by `saveEngrams`) and the reader
+ * ({@link maybeDailyBackup}) agree without being told the root.
+ */
+function lastWrittenPath(storePath: string): string {
+  return path.join(path.dirname(storePath), BACKUP_DIR, '.last-written.json')
+}
+
+/**
+ * Record how many engram records PLUR just wrote to `storePath`.
+ *
+ * Called by `saveEngrams` after its write lands (and by {@link restoreBackup}).
+ * Written only where a backup directory already exists next to the store — the
+ * first snapshot creates it — so a pack's or a migration's scratch store file
+ * never grows a `backups/` directory. Best-effort and never throws: a missing
+ * record only means the gate falls back to the last good snapshot's count, as
+ * before.
+ */
+export function recordLastWritten(storePath: string, count: number): void {
+  try {
+    const dir = path.join(path.dirname(storePath), BACKUP_DIR)
+    if (!fs.existsSync(dir)) return
+    const record = { file: path.basename(storePath), count }
+    fs.writeFileSync(lastWrittenPath(storePath), JSON.stringify(record) + '\n', 'utf8')
+  } catch {
+    /* the store write itself succeeded; the gate falls back to the snapshot baseline */
+  }
+}
+
+/** The count PLUR last wrote to `storePath`, or undefined when none is recorded. */
+function readLastWritten(storePath: string): number | undefined {
+  try {
+    const rec = JSON.parse(fs.readFileSync(lastWrittenPath(storePath), 'utf8'))
+    if (rec?.file !== path.basename(storePath)) return undefined
+    return typeof rec.count === 'number' && Number.isInteger(rec.count) && rec.count >= 0 ? rec.count : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function sha256(content: string | Buffer): string {
   return createHash('sha256').update(content).digest('hex')
 }
@@ -135,7 +179,7 @@ export function sha256(content: string | Buffer): string {
  *   (c) count is not far below the last known-good — catches the F1 truncation
  *       case, and is the ONLY check that can, since a truncated file is
  *       perfectly valid YAML describing a smaller corpus
- *   (d) ids unique and non-empty
+ *   (d) ids non-empty (a repeated id is resolved by the loader, owner decision P1)
  *   (e) non-zero size, and the file ends with a newline as PLUR's writer always
  *       does — a cheap tell for a write cut short
  *
@@ -182,19 +226,21 @@ export function validateStore(filePath: string, lastGoodCount?: number): StoreVa
   const count = entries.length
 
   // (b) — every entry typechecks
+  // The loader's per-entry rule (formal round
+  // 2, core-persistence#11): the gate must not judge entries by a different rule
+  // from the one that loads them.
   let invalid = 0
-  const ids = new Set<string>()
-  let duplicateIds = 0
   let missingIds = 0
   for (const entry of entries) {
-    if (!EngramSchemaPassthrough.safeParse(entry).success) invalid++
-    // (d) — ids unique and non-empty. Checked on the raw entry so a
-    // schema-invalid record still contributes its id to the uniqueness check.
+    if (parseEngramEntry(entry) === null) invalid++
     const id = (entry as any)?.id
     if (typeof id !== 'string' || id.length === 0) missingIds++
-    else if (ids.has(id)) duplicateIds++
-    else ids.add(id)
   }
+  // (d) — ids non-empty. A REPEATED id is no longer a failure (owner decision
+  // P1, 2026-09-27, "keep both, rename one"): the loader resolves it without
+  // loss — the later, different copy is read under a fresh id, an exact copy
+  // once — so a snapshot of such a file restores to the same engrams. Refusing
+  // it only left the store without a daily backup until the next write.
   if (invalid > 0) {
     failures.push('invalid-entries')
     reasons.push(`${invalid} entry/entries fail schema validation`)
@@ -203,10 +249,6 @@ export function validateStore(filePath: string, lastGoodCount?: number): StoreVa
     failures.push('missing-ids')
     reasons.push(`${missingIds} entry/entries have no id`)
   }
-  if (duplicateIds > 0) {
-    failures.push('duplicate-ids')
-    reasons.push(`${duplicateIds} duplicate id(s)`)
-  }
 
   // (c) — not materially smaller than the last known-good corpus
   if (typeof lastGoodCount === 'number' && lastGoodCount > 0) {
@@ -214,7 +256,7 @@ export function validateStore(filePath: string, lastGoodCount?: number): StoreVa
     if (count < floor) {
       failures.push('shrunk')
       reasons.push(
-        `holds ${count} engram(s) but the last good snapshot held ${lastGoodCount} — ` +
+        `holds ${count} engram(s) but the baseline (what PLUR last wrote, else the last good snapshot) is ${lastGoodCount} — ` +
         `a drop this large is how a truncation looks`,
       )
     }
@@ -278,7 +320,16 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
       (max, b) => (typeof b.count === 'number' && (max === undefined || b.count > max) ? b.count : max),
       undefined,
     )
-    const baseline = state.last_good_count ?? strongest
+    // LAST-WRITTEN first (owner decision P2, formal run 2026-09-26). The gate
+    // exists to catch a file that shrank WITHOUT PLUR writing it (a
+    // truncation). Compared against the last good SNAPSHOT, a legitimate
+    // >10% forget was indistinguishable from one, the baseline could never
+    // move, and backups stopped for good (replayed: days 2–40 refused).
+    // `saveEngrams` records the count it wrote, so a shrink PLUR made itself
+    // re-baselines, while a file smaller than what PLUR last wrote is still
+    // refused. No record yet (first run after upgrade, or a store whose
+    // directory has no backups/): the snapshot baseline, as before.
+    const baseline = readLastWritten(storePath) ?? state.last_good_count ?? strongest
     const validity = validateStore(storePath, baseline)
     if (!validity.ok) {
       // Deliberately NOT marked done: if the user repairs the store later
@@ -445,7 +496,8 @@ export interface RestorePlan {
   integrityOk: boolean
   /** Engram ids present in the CURRENT store but absent from the backup — restoring loses these. */
   wouldLose: string[]
-  /** Engram ids the history log records as created after the backup's stamp. */
+  /** Engram ids the history log records as created (`engram_created`) after the
+   *  backup's instant, not retired since, and absent from the backup. */
   unrecoverable: string[]
 }
 
@@ -499,8 +551,9 @@ function idsIn(filePath: string): string[] {
 }
 
 /**
- * Engram ids the append-only history records as created after `since`
- * (a full ISO instant, compared lexically — ISO-8601 UTC sorts correctly).
+ * Engram ids the append-only history records as created (`engram_created`)
+ * after `since` and not retired (`engram_retired`) since (a full ISO instant,
+ * compared lexically — ISO-8601 UTC sorts correctly).
  *
  * History is JSONL under `history/`, which the audit confirmed is the one
  * append-only artifact that survived every concurrency probe (P09C: 240/240
@@ -511,10 +564,14 @@ function idsIn(filePath: string): string[] {
  * learned after the morning's snapshot is unprotected by it; naming those
  * engrams is the only way the user learns what a restore costs them.
  */
+/** Canonical engram id shape (schemas/engram.ts: `^(ENG|ABS|META)-[A-Za-z0-9-]+$`). */
+const ENGRAM_ID = /^(?:ENG|ABS|META)-[A-Za-z0-9-]+$/
+
 function idsCreatedAfter(root: string, since: string): string[] {
   const dir = path.join(root, 'history')
   if (!fs.existsSync(dir)) return []
   const ids: string[] = []
+  const retired = new Set<string>()
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith('.jsonl')) continue
     let lines: string[]
@@ -526,11 +583,22 @@ function idsCreatedAfter(root: string, since: string): string[] {
       try {
         const ev = JSON.parse(line)
         if (typeof ev?.timestamp !== 'string' || ev.timestamp <= since) continue
-        if (typeof ev?.engram_id === 'string') ids.push(ev.engram_id)
+        // Engram ids only (formal-verification finding, persistence.md candidate 6):
+        // every history event carries `engram_id`, but co_injection rows put an
+        // injection id (INJ-…) there and session-level events put ''. Naming
+        // those as "engrams this restore loses" is a false alarm in the one
+        // warning a user reads before overwriting their store.
+        if (typeof ev?.engram_id !== 'string' || !ENGRAM_ID.test(ev.engram_id)) continue
+        // CREATED only, minus later retirements (owner decision P3, 2026-09-26).
+        // Feedback, updates or injections of an engram that predates the
+        // snapshot do not make it "created after" it, and an engram created and
+        // then retired after the snapshot is not something a restore loses.
+        if (ev.event === 'engram_created') ids.push(ev.engram_id)
+        else if (ev.event === 'engram_retired') retired.add(ev.engram_id)
       } catch { /* a partial trailing line is expected in an append-only log */ }
     }
   }
-  return [...new Set(ids)]
+  return [...new Set(ids)].filter(id => !retired.has(id))
 }
 
 export interface RestoreResult extends RestorePlan {
@@ -603,6 +671,9 @@ export function restoreBackup(
     }
     // tmp + fsync + rename, rather than truncating the live file in place.
     atomicWrite(storePath, fs.readFileSync(plan.backup.path, 'utf8'))
+    // A restore is a PLUR write: record its count so the backup gate does not
+    // read the (often smaller) restored corpus as a truncation (decision P2).
+    if (typeof plan.validity.count === 'number') recordLastWritten(storePath, plan.validity.count)
   })
 
   if (plan.wouldLose.length > 0) {

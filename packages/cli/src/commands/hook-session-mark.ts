@@ -1,9 +1,10 @@
-import { readSync, writeFileSync } from 'fs'
+import { readSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { safeSessionKey } from '../lib/session-key.js'
+import { writeFileNoFollow } from '../lib/codex-hook-io.js'
 
 /**
  * plur hook-session-mark — PostToolUse hook on mcp__plur__plur_session_start.
@@ -52,9 +53,9 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   // which reads this same sentinel): a `../`-laden session_id would otherwise
   // escape $TMPDIR and write the sentinel wherever it points (path traversal).
   const sentinel = join(tmpdir(), `plur-session-${safeSessionKey(sessionId)}`)
-  try {
-    writeFileSync(sentinel, '')
-  } catch {
-    // Best-effort — tmpdir should always be writable
-  }
+  // O_NOFOLLOW, 0600 (formal r2, cli#8): the sentinel sits directly in the
+  // shared tmpdir, and a plain writeFileSync followed a pre-planted
+  // `plur-session-<id>` symlink and TRUNCATED whatever it pointed at.
+  // Best-effort — a failed mark costs one extra nudge.
+  writeFileNoFollow(sentinel, '')
 }

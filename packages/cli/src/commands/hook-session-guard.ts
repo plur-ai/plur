@@ -1,9 +1,10 @@
-import { readSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { safeSessionKey } from '../lib/session-key.js'
+import { ensureSessionDir, ownFileExists } from '../lib/codex-hook-io.js'
 
 /**
  * plur hook-session-guard — PreToolUse hook that blocks all tools until
@@ -29,6 +30,18 @@ const EXEMPT_TOOLS = new Set([
   'mcp__plur__plur_session_start',
   'ToolSearch',
 ])
+
+/**
+ * Exempt by suffix as well as by exact name (formal r2, cli#8). Claude Code
+ * names MCP tools `mcp__<server>__<tool>`; a plur server registered under
+ * another name (a plugin install, `plur-local`, …) produced
+ * `mcp__<other>__plur_session_start`, and the guard DENIED the one call it
+ * exists to ask for. The Codex, Cursor and Antigravity guards already match by
+ * suffix; this brings the Claude guard in line.
+ */
+function isExempt(toolName: string): boolean {
+  return EXEMPT_TOOLS.has(toolName) || toolName.endsWith('__plur_session_start')
+}
 
 // Nudge at most once per session, then fail open. A hard deny-everything
 // guard collapses the agent's action space to the single exempt call
@@ -69,7 +82,10 @@ function sentinelPath(sessionId: string): string {
 
 function blockCountPath(sessionId: string): string {
   const dir = join(tmpdir(), 'plur-sessions')
-  mkdirSync(dir, { recursive: true })
+  // Vetted like every other hook family's state dir (#1060, extended to the
+  // Claude family by formal r2 cli#8): a symlinked or foreign dir is refused,
+  // and the caller's existing fail-open branch allows the tool through.
+  if (!ensureSessionDir(dir)) throw new Error('session state dir refused')
   return join(dir, `${safeSessionKey(sessionId)}.guard-count`)
 }
 
@@ -80,7 +96,7 @@ function incrementBlockCount(sessionId: string): number {
     count = parseInt(readFileSync(path, 'utf8'), 10) || 0
   } catch { /* file doesn't exist yet */ }
   count++
-  writeFileSync(path, String(count))
+  writeFileSync(path, String(count), { mode: 0o600 })
   return count
 }
 
@@ -101,13 +117,15 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   const sessionId = data.session_id ?? ''
 
   // Always allow exempt tools
-  if (EXEMPT_TOOLS.has(toolName)) return
+  if (isExempt(toolName)) return
 
   // No session ID — can't check, allow through
   if (!sessionId) return
 
   // Check sentinel
-  if (existsSync(sentinelPath(sessionId))) return
+  // The sentinel lives directly in the shared tmpdir, where anyone can create
+  // a file of that name: only this user's own regular file counts (cli#8).
+  if (ownFileExists(sentinelPath(sessionId))) return
 
   // Deadlock prevention (#199): if we've blocked too many times without a
   // session starting, the MCP server likely failed to load. Stop blocking

@@ -150,7 +150,9 @@ function isSameOrigin(req: { headers: Record<string, string | string[] | undefin
  */
 export function normaliseHostName(value: string): string {
   let v = String(value ?? '').trim().toLowerCase()
-  const bracketed = v.match(/^\[(.+)\](?::\d+)?$/)
+  // The inner value holds no bracket (formal R2, mcp#12): `[[::1]]` used to
+  // unwrap to `[::1]` and then, on a second pass, to `::1` — not idempotent.
+  const bracketed = v.match(/^\[([^[\]]+)\](?::\d+)?$/)
   if (bracketed) return bracketed[1]!.includes(':') ? bracketed[1]! : v
   if ((v.match(/:/g) ?? []).length === 1) v = v.replace(/:\d+$/, '')
   return v
@@ -260,8 +262,13 @@ function hostIsAllowed(
   req: { headers: Record<string, string | string[] | undefined> },
   allowed: readonly string[] = [],
 ): boolean {
-  const name = normaliseHostName(String(req.headers.host ?? ''))
-  if (name === '127.0.0.1' || name === 'localhost' || name === '::1' || name === '') return true
+  const rawHost = String(req.headers.host ?? '')
+  // Only an ABSENT (or empty) Host is the no-browser case. A present value
+  // that normalises to '' — `:80` — used to be allowed on that exemption
+  // (formal R2, mcp#12); it is not a name, so it matches nothing.
+  if (rawHost.trim() === '') return true
+  const name = normaliseHostName(rawHost)
+  if (name === '127.0.0.1' || name === 'localhost' || name === '::1') return true
   return allowed.some(a => normaliseHostName(a) === name)
 }
 

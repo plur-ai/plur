@@ -49,7 +49,7 @@ _PLUR_TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "statement": {"type": "string", "description": "The knowledge assertion"},
-                "scope": {"type": "string", "default": "global"},
+                "scope": {"type": "string", "description": "Target scope. Omit to let PLUR route it (auto-route rules, else the configured unscoped default)."},
                 "type": {
                     "type": "string",
                     "enum": ["behavioral", "terminological", "procedural", "architectural"],
@@ -713,7 +713,10 @@ class PlurMemoryProvider:
         if tool_name == "plur_learn":
             return bridge.learn(
                 args["statement"],
-                scope=args.get("scope", "global"),
+                # Omitted when the caller omits it (formal R2 #5): core's
+                # unscoped routing (auto-route / unscoped_default) decides,
+                # the contract bridge.learn documents.
+                scope=args.get("scope"),
                 type=args.get("type", "behavioral"),
                 domain=args.get("domain"),
                 tags=args.get("tags"),

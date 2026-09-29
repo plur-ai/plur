@@ -330,9 +330,13 @@ function hashStatement(statement: string): string {
  * Lives in this file because the cache format — meta header, entry shape,
  * hash function — is deliberately private to it.
  *
- * Existing entries win: an entry already in the cache was written by the
- * live embed path against the same text and is at least as fresh as the
- * import. Returns how many entries were written.
+ * Existing entries win only when they were computed from the SAME text as
+ * the import (equal `hashStatement` of the search text): then the live embed
+ * path already wrote a vector at least as fresh. An existing entry keyed to
+ * OTHER text is stale — the caller verified the import against the engram's
+ * current text — so the import replaces it; keeping it threw the verified
+ * vector away and forced the re-embed this merge exists to avoid (formal R2,
+ * core-retrieval#12). Returns how many entries were written.
  */
 export function mergeEmbeddingsIntoCache(
   storagePath: string,
@@ -344,8 +348,9 @@ export function mergeEmbeddingsIntoCache(
   let written = 0
   for (const imp of imports) {
     if (imp.embedding.length !== active.dim) continue
-    if (cache.entries[imp.engramId]) continue
-    cache.entries[imp.engramId] = { hash: hashStatement(imp.searchText), embedding: imp.embedding }
+    const hash = hashStatement(imp.searchText)
+    if (cache.entries[imp.engramId]?.hash === hash) continue
+    cache.entries[imp.engramId] = { hash, embedding: imp.embedding }
     written++
   }
   if (written > 0) saveCache(cachePath, cache)

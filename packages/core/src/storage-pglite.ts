@@ -24,11 +24,12 @@
  * in a future PR. We initialize the extension so it's ready for #200, but
  * the public adapter surface in this PR is relational + vector.
  */
-import { existsSync, statSync } from 'fs'
+import { existsSync, statSync, readFileSync } from 'fs'
+import { createHash } from 'crypto'
 import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
 import { normalizeEngramInput } from './normalize-engram.js'
-import { loadEngrams } from './engrams.js'
+import { loadEngrams, resolveDuplicateIds } from './engrams.js'
 import { searchEngrams } from './fts.js'
 import { logger } from './logger.js'
 import type {
@@ -52,6 +53,17 @@ const DEFAULT_VECTOR_DIM = 384
  * re-export keeps the historical import path (#271 tests, any consumer) valid.
  */
 import { AsyncMutex } from './async-mutex.js'
+
+/**
+ * A YAML fingerprint whose timestamps were within this window of the moment it
+ * was recorded is "racy": the file could change again inside the same timestamp
+ * tick without changing its stat identity (FAT: 2 s; HFS+: 1 s). Such a match is
+ * confirmed by hashing the bytes (formal round 2, core-persistence#9).
+ */
+const RACY_FINGERPRINT_MS = 3_000
+
+/** What `sync_state.yaml_fingerprint` records: stat identity, content hash, racy flag. */
+interface YamlFingerprint { stat: string; hash: string; racy: boolean }
 export { AsyncMutex }
 
 /** Lazy import wrapper so the PGLite WASM bundle only loads when needed. */
@@ -530,31 +542,49 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
-   * Cheap identity for the YAML file: size + mtime, no read.
+   * Cheap identity for the YAML file: size, mtime, ctime and inode — no read.
    *
-   * Deliberately not a content hash. The point of the guard below is to avoid
-   * touching the corpus at all when nothing changed, and PLUR rewrites this
-   * file wholesale on every mutation, so stat is sufficient to notice. If it
-   * is ever wrong the index is stale, not corrupt — YAML stays the source of
-   * truth and `plur sync --full` (reindex) is the documented recovery, which
-   * clears this row.
+   * Deliberately not a content hash on the hot path: the point of the guard in
+   * {@link syncFromYaml} is to avoid touching the corpus at all when nothing
+   * changed. But a stat identity alone CAN mask a change (formal round 2,
+   * core-persistence#9, replayed): a same-size rewrite inside one timestamp tick
+   * — a feedback counter going 1 → 2 on a filesystem with coarse timestamps, the
+   * reason yaml-primary-store.ts never trusts mtime alone (#25) — keeps every
+   * field. So the recorded fingerprint also carries a content hash and a `racy`
+   * flag, set when the file's timestamps were within {@link RACY_FINGERPRINT_MS}
+   * of the moment it was recorded (git's "racily clean" rule): a racy stat match
+   * is confirmed by re-hashing the bytes before it is trusted.
    */
-  private yamlFingerprint(): string | null {
+  private yamlStat(): { key: string; mtimeMs: number; ctimeMs: number } | null {
     try {
-      const st = statSync(this.yamlPath)
-      return `${st.size}:${st.mtimeMs}`
+      const st = statSync(this.yamlPath, { bigint: true })
+      return {
+        key: `${st.size}:${st.mtimeNs}:${st.ctimeNs}:${st.ino}`,
+        mtimeMs: Number(st.mtimeMs),
+        ctimeMs: Number(st.ctimeMs),
+      }
     } catch {
       return null // missing file — let the sync run and clear the table
     }
   }
 
-  private async readSyncedFingerprint(db: any): Promise<string | null> {
+  private async readSyncedFingerprint(db: any): Promise<YamlFingerprint | null> {
     try {
       const r = await db.query("SELECT v FROM sync_state WHERE k = 'yaml_fingerprint'")
-      return r.rows.length > 0 ? String(r.rows[0].v) : null
+      if (r.rows.length === 0) return null
+      const v = JSON.parse(String(r.rows[0].v))
+      return typeof v?.stat === 'string' && typeof v?.hash === 'string' && typeof v?.racy === 'boolean' ? v : null
     } catch {
-      return null // pre-#1046 store, table not created yet
+      return null // pre-#1046 store (no table), or a pre-round-2 `size:mtime` row
     }
+  }
+
+  private async writeSyncedFingerprint(db: any, fp: YamlFingerprint): Promise<void> {
+    await db.query(
+      `INSERT INTO sync_state (k, v) VALUES ('yaml_fingerprint', $1)
+       ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`,
+      [JSON.stringify(fp)],
+    )
   }
 
   /**
@@ -570,16 +600,39 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * For the hook family — a fresh process per hook — that is the whole budget,
    * and it degraded from slow to a hang as the corpus grew.
    *
-   * The fingerprint guard makes the unchanged case free. It cannot mask a real
-   * change: any write goes through the YAML file, which changes size or mtime.
+   * The fingerprint guard makes the unchanged case free. A stat match is
+   * trusted only when it is not racy; otherwise the bytes are hashed and
+   * compared (see {@link yamlStat}), so a same-size, same-tick rewrite is not
+   * mistaken for "unchanged".
    */
   async syncFromYaml(): Promise<void> {
     return this.mutex.run(async () => {
       const db = await this.getDb()
 
-      const fingerprint = this.yamlFingerprint()
-      if (fingerprint !== null && (await this.readSyncedFingerprint(db)) === fingerprint) {
+      const st = this.yamlStat()
+      const synced = await this.readSyncedFingerprint(db)
+      if (st && synced && synced.stat === st.key && !synced.racy) {
         return // index already reflects this exact YAML file
+      }
+      // Stat changed, or matched only racily: look at the bytes. Stat BEFORE the
+      // read, so a change landing in between is either visible in the hash or
+      // leaves this fingerprint racy (its timestamps are then within the window).
+      let fingerprint: YamlFingerprint | null = null
+      if (st) {
+        try {
+          const hash = createHash('sha256').update(readFileSync(this.yamlPath)).digest('hex')
+          const now = Date.now()
+          const racy = now - st.mtimeMs < RACY_FINGERPRINT_MS || now - st.ctimeMs < RACY_FINGERPRINT_MS
+          fingerprint = { stat: st.key, hash, racy }
+        } catch {
+          fingerprint = null // vanished or unreadable: run the sync, which decides
+        }
+      }
+      if (fingerprint && synced && synced.hash === fingerprint.hash) {
+        // Same bytes as last synced: only the stat identity moved (a rewrite of
+        // identical content, a touch). Refresh it; the index is already right.
+        await this.writeSyncedFingerprint(db, fingerprint)
+        return
       }
 
       await db.exec('BEGIN')
@@ -616,11 +669,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         // Inside the transaction: a rollback must not leave the index claiming
         // to be in sync with a file it never finished reading.
         if (fingerprint !== null) {
-          await db.query(
-            `INSERT INTO sync_state (k, v) VALUES ('yaml_fingerprint', $1)
-             ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`,
-            [fingerprint],
-          )
+          await this.writeSyncedFingerprint(db, fingerprint)
         } else {
           await db.exec("DELETE FROM sync_state WHERE k = 'yaml_fingerprint'")
         }
@@ -651,16 +700,25 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * headroom and keeps the parameter array small enough not to matter.
    */
   private async upsertEngramsTx(db: any, engrams: Engram[], source: string): Promise<void> {
-    // De-dupe by id, last-wins, BEFORE batching (data-loss audit F7).
-    // parseEngramFile does not reject duplicate ids, and a multi-row
+    // One row per id BEFORE batching (data-loss audit F7): a multi-row
     // `INSERT ... ON CONFLICT DO UPDATE` containing the same id twice is a
-    // Postgres ERROR ("cannot affect row a second time") — which turned a
-    // condition the old per-row loop silently tolerated into a permanently
-    // failing sync whose documented recovery (`plur sync --full`) hit the
-    // same error. Last-wins matches the per-row loop's observable behaviour.
-    const byId = new Map<string, Engram>()
-    for (const e of engrams) byId.set(e.id, e)
-    const unique = byId.size === engrams.length ? engrams : [...byId.values()]
+    // Postgres ERROR ("cannot affect row a second time"), which once turned a
+    // tolerated condition into a permanently failing sync.
+    //
+    // Owner decision P1 (2026-09-27, "keep both, rename one"): the SAME rule as
+    // the loader — the first copy keeps the id, a later different copy gets the
+    // loader's fresh id, an exact duplicate is kept once. This used to keep the
+    // LAST copy, so recall surfaced one engram while YAML-path feedback and
+    // forget acted on the other. Batches from `loadEngrams` are already
+    // resolved (and the rename recorded in history there); this is idempotent
+    // on them and only acts on a batch that did not come through the loader.
+    const { engrams: unique, renames } = resolveDuplicateIds(engrams)
+    if (renames.length > 0) {
+      logger.warning(
+        `[plur] ${renames.length} engram(s) in an index batch shared an id with an earlier, different engram; ` +
+        `indexed under fresh ids (${renames.slice(0, 5).map(r => `${r.from} -> ${r.to}`).join(', ')}${renames.length > 5 ? ', …' : ''}).`,
+      )
+    }
 
     const COLS = 7
     const CHUNK = 500

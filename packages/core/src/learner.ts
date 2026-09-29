@@ -128,7 +128,22 @@ const PREFERENCE_PATTERNS = [
   // the capturing group keeps the directive word attached to its tail, so
   // the stored statement is a complete, correctly-signed instruction when
   // rendered under memory-block.ts's "should apply" header.
-  { re: /((?:always|never)\s+.+)/i, type: 'behavioral' as const, confidence: 0.7 },
+  //
+  // Formal run 2026-09-23 (spec/formal/PlurSpec/ScopeInject.lean §4): the
+  // same inversion survived A1 from the LEFT. The pattern was unanchored, so
+  // (a) a negation directly before the directive word was cut off — "Don't
+  // always rerun the full suite" was stored as "always rerun the full suite" —
+  // and (b) the directive word matched inside another word — "Whenever you
+  // deploy, run the smoke tests" was stored as "never you deploy, run the
+  // smoke tests". The directive word now needs word boundaries, and a
+  // directly preceding negation is captured with it.
+  //
+  // Audit of #1228 (finding 3): "negation" is every contracted form
+  // (`\w+n't` — doesn't, can't, won't, shouldn't, isn't, mustn't …), the
+  // same forms typed without the apostrophe, and `cannot` — not only
+  // don't / do not / not, or "cannot always trust the cache" was stored as
+  // "always trust the cache". A word merely ending in -nt ("want") is not one.
+  { re: /((?:\b(?:\w+n['\u2019]t|(?:do|does|did|ca|wo|sha|should|could|would|must|need|is|are|was|were|has|have|had|ai)nt|cannot|do not|not)\s+)?\b(?:always|never)\b\s+.+)/i, type: 'behavioral' as const, confidence: 0.7 },
   { re: /((?:you should|you must|don't|do not)\s+.+)/i, type: 'behavioral' as const, confidence: 0.6 },
   { re: /(?:your purpose is|you are)\s+(.{15,})/i, type: 'behavioral' as const, confidence: 0.6 },
   { re: /(?:i want you to)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.6 },

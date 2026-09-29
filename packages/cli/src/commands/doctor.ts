@@ -245,12 +245,16 @@ function hasAnyPlurHook(config: Record<string, unknown>): boolean {
     for (const entry of entries) {
       for (const h of entry.hooks ?? []) {
         // The same two-part matcher init uses: binary plus known subcommand (#1267).
-        if (h.command && isPlurHookCommand(h.command)) return true
+        // Non-string commands never match and never throw (#1228 S4 guard).
+        if (typeof h.command === 'string' && isPlurHookCommand(h.command)) return true
       }
     }
   }
   return false
 }
+
+/** Test seam (formal apply S4.2). */
+export const _hasAnyPlurHook = hasAnyPlurHook
 
 function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
   const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
@@ -878,6 +882,25 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
   }
 }
 
+/**
+ * Which harnesses actually carry PLUR hooks, named by the config file's label
+ * ("Claude Code (global)" → "Claude Code"). Formal r2, cli#10: the healthy
+ * verdict said "ready to use in Claude Code" whenever ANY harness had hooks —
+ * `hooksInstalled` is a `.some()` over the Cursor, Codex and Antigravity
+ * files too — so a Codex-only machine was told Claude Code was ready.
+ */
+export function hookHarnesses(configs: Array<{ label: string; hasPlurHooks: boolean }>): string[] {
+  const names = configs.filter(c => c.hasPlurHooks).map(c => c.label.replace(/\s*\(.*$/, ''))
+  return [...new Set(names)]
+}
+
+/** The healthy verdict, naming only harnesses whose hooks are installed. */
+export function readyLine(harnesses: string[]): string {
+  if (harnesses.includes('Claude Code')) return '✓ Healthy. plur is ready to use in Claude Code.'
+  const where = harnesses.length ? harnesses.join(', ') : 'no harness'
+  return `✓ Healthy. plur is ready to use in ${where}. Claude Code has no plur hooks — run \`plur init\` to add them.`
+}
+
 function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<DoctorReport> {
   const configs = inspectConfigs()
   const hooksInstalled = configs.some((c) => c.hasPlurHooks)
@@ -1334,7 +1357,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   outputText('')
   if (report.overall === 'ok') {
-    outputText('✓ Healthy. plur is ready to use in Claude Code.')
+    outputText(readyLine(hookHarnesses(report.configs)))
   } else {
     outputText('✗ Issues detected.')
     if (!report.hooksInstalled || !report.mcpRegistered) {

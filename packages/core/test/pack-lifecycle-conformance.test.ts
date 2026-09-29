@@ -466,7 +466,11 @@ describe('invariant 7 — install reports what the provenance turned out to be',
     // per engram made this 2, and drove `engrams_without_record` to 0 — and
     // below zero on a pack with fewer records than engrams.
     expect(preview.provenance.record_count).toBe(1)
-    expect(preview.provenance.engrams_without_record).toBe(0)
+    // Owner decision P1 (2026-09-27, "keep both, rename one"): the loader now
+    // reads the second, different engram under a fresh id, so it is a distinct
+    // engram with no record of its own — the gap is 1 (it was pinned at 0 while
+    // both copies answered to one id). Still one record, still never negative.
+    expect(preview.provenance.engrams_without_record).toBe(1)
     expect(preview.provenance.engrams_without_record).toBeGreaterThanOrEqual(0)
   })
 })

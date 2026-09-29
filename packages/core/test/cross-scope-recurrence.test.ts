@@ -358,11 +358,14 @@ describe('cross-scope recurrence (#176)', () => {
       expect(recurrences[0].data.persisted_to).toBe('primary')
     })
 
-    it('emits in-memory history event on 1st hit when stored engram is in a remote/readonly store (audit iter-4 Data)', async () => {
-      // Set up a READONLY secondary store containing an engram. Cross-scope
-      // re-learn cannot persist there — mutation stays in-memory only. Even
-      // on the 1st hit (no scope/commitment change), the history event MUST
-      // fire so consumers can detect divergence.
+    it('a hit in a remote/readonly store does not absorb the write: new row + history-only event (Decision A, was audit iter-4 Data)', async () => {
+      // CHANGED by owner Decision A ("always store my write", 2026-09-27).
+      // Before: the cross-scope re-learn was absorbed into the READONLY row,
+      // mutated in memory only (`persisted_to: 'in-memory'`), and nothing was
+      // stored — uninstall the store and the write had never happened.
+      // Now: the write is stored as a new row in the requested scope, the
+      // readonly row is not mutated at all, and the recurrence is recorded
+      // against it in history only (`persisted_to: 'history-only'`).
       const readonlyDir = mkdtempSync(join(tmpdir(), 'plur-readonly-'))
       const readonlyPath = join(readonlyDir, 'engrams.yaml')
       const stmt = 'readonly-divergence rule'
@@ -389,18 +392,21 @@ describe('cross-scope recurrence (#176)', () => {
       try {
         plur.addStore(readonlyPath, 'project:readonly-a', { shared: true, readonly: true })
 
-        // 1st cross-scope re-learn — no scope/commitment change, but the
-        // mutation can't persist to the readonly store. Event SHOULD fire
-        // with persisted_to='in-memory'.
         const after = await plur.learn(stmt, { scope: 'project:b' })
-        expect(after.recurrence_count).toBe(1)
-        // Use the engram's full (possibly namespaced) id to fetch history
-        const events = readHistoryForEngram(plur.getStorageRoot(), after.id)
+        // A new row in the requested scope, not the readonly engram.
+        expect(after.scope).toBe('project:b')
+        expect(after.recurrence_count ?? 0).toBe(0)
+        const roRow = (await plur.list({ include_expired: true })).find(e => e.scope === 'project:readonly-a')!
+        expect(roRow.recurrence_count ?? 0).toBe(0)
+        expect(roRow.write_count ?? 1).toBe(1)
+        // The recurrence is recorded against the readonly hit, history only.
+        const events = readHistoryForEngram(plur.getStorageRoot(), roRow.id)
           .filter(e => e.event === 'recurrence_detected')
         expect(events.length).toBe(1)
-        expect(events[0].data.persisted_to).toBe('in-memory')
-        expect(events[0].data.recurrence_count).toBe(1)
-        // No material change yet, so previous/new should match
+        expect(events[0].data.persisted_to).toBe('history-only')
+        expect(events[0].data.stored_as).toBe(after.id)
+        expect(events[0].data.held_in).toBe('readonly')
+        expect(events[0].data.recurrence_count).toBe(0)
         expect(events[0].data.previous_scope).toBe(events[0].data.new_scope)
       } finally {
         rmSync(readonlyDir, { recursive: true, force: true })

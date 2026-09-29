@@ -122,7 +122,8 @@ describe('lastUserInput — transcript parsing', () => {
       { step_index: 5, type: 'USER_INPUT', content: '<USER_REQUEST>\nsecond question\n</USER_REQUEST>' },
       { step_index: 6, type: 'EPHEMERAL_MESSAGE', content: 'USER_INPUT mentioned here as a decoy' },
     ])
-    expect(lastUserInput(p)).toEqual({ stepIndex: 5, text: 'second question' })
+    // toMatchObject: formal r2 cli#12 added `offset`/`firstInTranscript` (turn identity).
+    expect(lastUserInput(p)).toMatchObject({ stepIndex: 5, text: 'second question' })
   })
 
   it('returns null for a missing file — the caller degrades, never throws', () => {
@@ -138,11 +139,11 @@ describe('lastUserInput — transcript parsing', () => {
       { step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>real question</USER_REQUEST>' },
       '{"step_index": 3, "type": "USER_INPUT", "content": "<USER_REQ', // torn mid-write
     ])
-    expect(lastUserInput(p)).toEqual({ stepIndex: 0, text: 'real question' })
+    expect(lastUserInput(p)).toMatchObject({ stepIndex: 0, text: 'real question' })
   })
 
   it('handles content without the wrapper', () => {
     const p = transcript([{ step_index: 2, type: 'USER_INPUT', content: 'bare text' }])
-    expect(lastUserInput(p)).toEqual({ stepIndex: 2, text: 'bare text' })
+    expect(lastUserInput(p)).toMatchObject({ stepIndex: 2, text: 'bare text' })
   })
 })

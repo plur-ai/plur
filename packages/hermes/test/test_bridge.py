@@ -238,12 +238,12 @@ class TestPlurBridge:
         recall_result = MagicMock()
         recall_result.returncode = 0
         recall_result.stdout = json.dumps({
-            "results": [{"id": "ENG-042", "statement": "Use tabs not spaces"}],
+            "results": [{"id": "ENG-042", "statement": "Use tabs not spaces", "scope": "global"}],
             "count": 1,
         })
 
         with patch("plur_hermes.bridge._run_in_process_group", return_value=recall_result) as mock_run:
-            result = bridge.learn("Use tabs not spaces")
+            result = bridge.learn("Use tabs not spaces", scope="global")
             assert result["id"] == "ENG-042"
             assert result["deduplicated"] is True
             assert mock_run.call_count == 1
@@ -256,11 +256,11 @@ class TestPlurBridge:
         recall_result = MagicMock()
         recall_result.returncode = 0
         recall_result.stdout = json.dumps({
-            "results": [{"id": "ENG-042", "statement": "Use tabs not spaces"}],
+            "results": [{"id": "ENG-042", "statement": "Use tabs not spaces", "scope": "global"}],
         })
 
         with patch("plur_hermes.bridge._run_in_process_group", return_value=recall_result):
-            result = bridge.learn("  use TABS not SPACES  ")
+            result = bridge.learn("  use TABS not SPACES  ", scope="global")
             assert result["deduplicated"] is True
             assert result["id"] == "ENG-042"
 
@@ -291,7 +291,7 @@ class TestPlurBridge:
         learn_response.stdout = json.dumps({"id": "ENG-100"})
 
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[recall_response, learn_response]) as mock_run:
-            result = bridge.learn("A brand new fact")
+            result = bridge.learn("A brand new fact", scope="global")
             assert result["id"] == "ENG-100"
             assert "deduplicated" not in result
             assert mock_run.call_count == 2
@@ -309,7 +309,7 @@ class TestPlurBridge:
         learn_response.stdout = json.dumps({"id": "ENG-200"})
 
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[failed_recall, learn_response]):
-            result = bridge.learn("Something to remember")
+            result = bridge.learn("Something to remember", scope="global")
             assert result["id"] == "ENG-200"
             assert "deduplicated" not in result
 
@@ -326,18 +326,18 @@ class TestPlurBridge:
         second_recall = MagicMock()
         second_recall.returncode = 0
         second_recall.stdout = json.dumps({
-            "results": [{"id": "ENG-501", "statement": "Prefer pnpm over npm"}],
+            "results": [{"id": "ENG-501", "statement": "Prefer pnpm over npm", "scope": "global"}],
         })
         third_recall = MagicMock()
         third_recall.returncode = 0
         third_recall.stdout = json.dumps({
-            "results": [{"id": "ENG-501", "statement": "Prefer pnpm over npm"}],
+            "results": [{"id": "ENG-501", "statement": "Prefer pnpm over npm", "scope": "global"}],
         })
 
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[first_recall, first_learn, second_recall, third_recall]):
-            r1 = bridge.learn("Prefer pnpm over npm")
-            r2 = bridge.learn("Prefer pnpm over npm")
-            r3 = bridge.learn("Prefer pnpm over npm")
+            r1 = bridge.learn("Prefer pnpm over npm", scope="global")
+            r2 = bridge.learn("Prefer pnpm over npm", scope="global")
+            r3 = bridge.learn("Prefer pnpm over npm", scope="global")
 
         assert r1["id"] == "ENG-501"
         assert "deduplicated" not in r1
@@ -356,12 +356,12 @@ class TestPlurBridge:
         first_learn.stdout = json.dumps({"id": "ENG-700", "statement": "Cache me"})
 
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, first_learn]) as mock_run:
-            r1 = bridge.learn("Cache me")
+            r1 = bridge.learn("Cache me", scope="global")
             assert r1["id"] == "ENG-700"
             assert mock_run.call_count == 2
 
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            r2 = bridge.learn("Cache me")
+            r2 = bridge.learn("Cache me", scope="global")
             assert r2 == {"id": "ENG-700", "statement": "Cache me", "deduplicated": True}
             assert mock_run.call_count == 0
 
@@ -377,10 +377,10 @@ class TestPlurBridge:
         first_learn.stdout = json.dumps({"id": "ENG-701", "statement": "Use TabSize 4"})
 
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, first_learn]):
-            bridge.learn("Use TabSize 4")
+            bridge.learn("Use TabSize 4", scope="global")
 
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            r = bridge.learn("  use tabsize 4  ")
+            r = bridge.learn("  use tabsize 4  ", scope="global")
             assert r["deduplicated"] is True
             assert r["id"] == "ENG-701"
             assert mock_run.call_count == 0
@@ -392,16 +392,16 @@ class TestPlurBridge:
         recall_hit = MagicMock()
         recall_hit.returncode = 0
         recall_hit.stdout = json.dumps({
-            "results": [{"id": "ENG-702", "statement": "Already known"}],
+            "results": [{"id": "ENG-702", "statement": "Already known", "scope": "global"}],
         })
 
         with patch("plur_hermes.bridge._run_in_process_group", return_value=recall_hit) as mock_run:
-            r1 = bridge.learn("Already known")
+            r1 = bridge.learn("Already known", scope="global")
             assert r1["deduplicated"] is True
             assert mock_run.call_count == 1
 
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            r2 = bridge.learn("Already known")
+            r2 = bridge.learn("Already known", scope="global")
             assert r2["deduplicated"] is True
             assert r2["id"] == "ENG-702"
             assert mock_run.call_count == 0
@@ -418,20 +418,20 @@ class TestPlurBridge:
         first_learn.stdout = json.dumps({"id": "ENG-800", "statement": "Twin"})
 
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, first_learn]):
-            bridge.learn("Twin")
+            bridge.learn("Twin", scope="global")
 
         forced_learn = MagicMock()
         forced_learn.returncode = 0
         forced_learn.stdout = json.dumps({"id": "ENG-801", "statement": "Twin"})
 
         with patch("plur_hermes.bridge._run_in_process_group", return_value=forced_learn) as mock_run:
-            r_forced = bridge.learn("Twin", force=True)
+            r_forced = bridge.learn("Twin", scope="global", force=True)
             assert r_forced["id"] == "ENG-801"
             assert "deduplicated" not in r_forced
             assert mock_run.call_count == 1
 
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            r_after = bridge.learn("Twin")
+            r_after = bridge.learn("Twin", scope="global")
             assert r_after["id"] == "ENG-801"
             assert r_after["deduplicated"] is True
             assert mock_run.call_count == 0
@@ -449,13 +449,13 @@ class TestPlurBridge:
         second_recall = MagicMock()
         second_recall.returncode = 0
         second_recall.stdout = json.dumps({
-            "results": [{"id": "ENG-900", "statement": "no cache"}],
+            "results": [{"id": "ENG-900", "statement": "no cache", "scope": "global"}],
         })
 
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, first_learn, second_recall]) as mock_run:
-            r1 = bridge.learn("no cache")
+            r1 = bridge.learn("no cache", scope="global")
             assert r1["id"] == "ENG-900"
-            r2 = bridge.learn("no cache")
+            r2 = bridge.learn("no cache", scope="global")
             assert r2["deduplicated"] is True
             assert mock_run.call_count == 3
 
@@ -474,13 +474,13 @@ class TestPlurBridge:
 
         seq = make_pair("ENG-A") + make_pair("ENG-B") + make_pair("ENG-C")
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=seq):
-            bridge.learn("ENG-A")
-            bridge.learn("ENG-B")
-            bridge.learn("ENG-C")
+            bridge.learn("ENG-A", scope="global")
+            bridge.learn("ENG-B", scope="global")
+            bridge.learn("ENG-C", scope="global")
 
-        assert "eng-a" not in bridge._dedup_cache
-        assert "eng-b" in bridge._dedup_cache
-        assert "eng-c" in bridge._dedup_cache
+        assert bridge._cache_key("eng-a", "global") not in bridge._dedup_cache
+        assert bridge._cache_key("eng-b", "global") in bridge._dedup_cache
+        assert bridge._cache_key("eng-c", "global") in bridge._dedup_cache
 
     def test_plur_path_passed_to_cli(self):
         bridge = PlurBridge(plur_path="/tmp/test-plur")
@@ -975,14 +975,14 @@ class TestDedupTtlCache:
         empty_recall = self._mock_json({"results": [], "count": 0})
         learn_ok = self._mock_json({"id": engram_id, "statement": statement})
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, learn_ok]):
-            r = bridge.learn(statement)
+            r = bridge.learn(statement, scope="global")
             assert r["id"] == engram_id
         return bridge
 
     def test_cache_hit_within_ttl_skips_subprocess(self):
         bridge = self._learned_bridge(ttl=60.0)
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            r = bridge.learn("Prefer pnpm over npm")
+            r = bridge.learn("Prefer pnpm over npm", scope="global")
             assert r == {"id": "ENG-120", "statement": "Prefer pnpm over npm",
                          "deduplicated": True}
             assert mock_run.call_count == 0
@@ -993,10 +993,10 @@ class TestDedupTtlCache:
         # Entry expired → bridge must revalidate via recall. Store still has
         # the engram, so the result is a dedup hit sourced from the store.
         recall_hit = self._mock_json({
-            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
+            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm", "scope": "global"}],
         })
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[recall_hit]) as mock_run:
-            r = bridge.learn("Prefer pnpm over npm")
+            r = bridge.learn("Prefer pnpm over npm", scope="global")
             assert r == {"id": "ENG-120", "statement": "Prefer pnpm over npm",
                          "deduplicated": True}
             assert mock_run.call_count == 1  # exactly one recall, no insert
@@ -1005,13 +1005,13 @@ class TestDedupTtlCache:
         bridge = self._learned_bridge(ttl=0.05)
         time.sleep(0.15)
         recall_hit = self._mock_json({
-            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
+            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm", "scope": "global"}],
         })
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[recall_hit]):
-            bridge.learn("Prefer pnpm over npm")
+            bridge.learn("Prefer pnpm over npm", scope="global")
         # Revalidation re-armed the entry — next call is a pure cache hit.
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            r = bridge.learn("Prefer pnpm over npm")
+            r = bridge.learn("Prefer pnpm over npm", scope="global")
             assert r["deduplicated"] is True
             assert mock_run.call_count == 0
 
@@ -1023,7 +1023,7 @@ class TestDedupTtlCache:
         empty_recall = self._mock_json({"results": [], "count": 0})
         relearn = self._mock_json({"id": "ENG-121", "statement": "Prefer pnpm over npm"})
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, relearn]) as mock_run:
-            r = bridge.learn("Prefer pnpm over npm")
+            r = bridge.learn("Prefer pnpm over npm", scope="global")
             assert r["id"] == "ENG-121"
             assert "deduplicated" not in r
             assert mock_run.call_count == 2  # recall miss + insert
@@ -1034,14 +1034,14 @@ class TestDedupTtlCache:
         bridge = self._learned_bridge(ttl=0.3)
         time.sleep(0.15)
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            assert bridge.learn("Prefer pnpm over npm")["deduplicated"] is True
+            assert bridge.learn("Prefer pnpm over npm", scope="global")["deduplicated"] is True
             assert mock_run.call_count == 0  # mid-TTL hit
         time.sleep(0.25)  # now past the original write deadline
         recall_hit = self._mock_json({
-            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
+            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm", "scope": "global"}],
         })
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[recall_hit]) as mock_run:
-            assert bridge.learn("Prefer pnpm over npm")["deduplicated"] is True
+            assert bridge.learn("Prefer pnpm over npm", scope="global")["deduplicated"] is True
             assert mock_run.call_count == 1  # the mid-TTL hit did not re-arm
 
     def test_ttl_zero_disables_expiry(self):
@@ -1049,7 +1049,7 @@ class TestDedupTtlCache:
         bridge = self._learned_bridge(ttl=0)
         time.sleep(0.1)
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            r = bridge.learn("Prefer pnpm over npm")
+            r = bridge.learn("Prefer pnpm over npm", scope="global")
             assert r["deduplicated"] is True
             assert mock_run.call_count == 0
 
@@ -1070,11 +1070,11 @@ class TestDedupTtlCache:
         time.sleep(0.15)
         forced = self._mock_json({"id": "ENG-122", "statement": "Prefer pnpm over npm"})
         with patch("plur_hermes.bridge._run_in_process_group", side_effect=[forced]) as mock_run:
-            r = bridge.learn("Prefer pnpm over npm", force=True)
+            r = bridge.learn("Prefer pnpm over npm", scope="global", force=True)
             assert r["id"] == "ENG-122"
             assert mock_run.call_count == 1  # no recall on force
         with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
-            r = bridge.learn("Prefer pnpm over npm")
+            r = bridge.learn("Prefer pnpm over npm", scope="global")
             assert r == {"id": "ENG-122", "statement": "Prefer pnpm over npm",
                          "deduplicated": True}
             assert mock_run.call_count == 0
@@ -1086,10 +1086,10 @@ class TestDedupTtlCache:
         for i, stmt in enumerate(("eng-a", "eng-b", "eng-c")):
             learn_ok = self._mock_json({"id": f"ENG-{i}", "statement": stmt})
             with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty, learn_ok]):
-                bridge.learn(stmt)
-        assert "eng-a" not in bridge._dedup_cache
-        assert "eng-b" in bridge._dedup_cache
-        assert "eng-c" in bridge._dedup_cache
+                bridge.learn(stmt, scope="global")
+        assert bridge._cache_key("eng-a", "global") not in bridge._dedup_cache
+        assert bridge._cache_key("eng-b", "global") in bridge._dedup_cache
+        assert bridge._cache_key("eng-c", "global") in bridge._dedup_cache
 
     def test_benchmark_repeat_learn_median_under_50ms(self, capsys):
         """Micro-benchmark for the #120 in-process AC reading: repeat learn()
@@ -1106,7 +1106,7 @@ class TestDedupTtlCache:
                    side_effect=AssertionError("subprocess on cache-hit path")):
             for _ in range(n):
                 t0 = time.perf_counter()
-                r = bridge.learn("Prefer pnpm over npm")
+                r = bridge.learn("Prefer pnpm over npm", scope="global")
                 samples.append(time.perf_counter() - t0)
                 assert r["deduplicated"] is True
         samples.sort()

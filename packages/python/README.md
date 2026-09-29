@@ -45,6 +45,12 @@ npm install -g @plur-ai/cli
 If the CLI isn't on `PATH`, the SDK falls back to `npx @plur-ai/cli`. You can
 also point at an explicit build with `Plur(binary=...)` or the `PLUR_CLI` env var.
 
+**CLI version.** A `recall` query or `inject` task that begins with `-` is sent
+after a `--` separator, which the CLI honours from the first `@plur-ai/cli`
+release after 0.20.1; an older CLI reads `--` as the query. Every other query is
+sent exactly as before, and a `learn` statement that begins with `-` goes on
+stdin, which every CLI version reads.
+
 ## How it compares to `plur-hermes`
 
 Both are Python and both bridge to the same CLI/store — the difference is audience:

@@ -107,6 +107,13 @@ export class StubServer {
   feedbackBodies: Array<Record<string, unknown>> = []
   /** Number of GET /api/v1/me requests received (#1310 capability caching). */
   meCalls = 0
+  // appendCalls (#1228 and #1307 both added it) is declared once, above.
+  /** Number of DELETE /engrams/:id requests received. */
+  deleteCalls = 0
+  /** When set, awaited before a POST /engrams is handled, with the 1-based call
+   *  number — lets a test hold one write on the wire while another client runs
+   *  (deterministic interleaving across two clients). */
+  appendHook: ((n: number) => Promise<void>) | null = null
 
   // --- POST /api/v1/recall (#776 server-authoritative recall envelope) ---
   /** Rows served in the envelope's `results` (top-level engram shape, each
@@ -294,52 +301,59 @@ export class StubServer {
 
     // POST /api/v1/engrams — create
     if (method === 'POST' && path === '/api/v1/engrams') {
-      this.appendCalls++
-      if (this.appendErrorResponse !== null) {
-        const { status, body } = this.appendErrorResponse
-        res.writeHead(status, { 'Content-Type': 'text/plain' })
-        res.end(body)
-        return
-      }
-      const idemKey = req.headers['idempotency-key']
-      this.lastAppendIdempotencyKey = typeof idemKey === 'string' ? idemKey : null
-      this.readBody(req, (body) => {
-        this.lastAppendBody = body
-        const { statement, scope, domain, type, source } = body
-        const refusal = typeof scope === 'string' ? this.appendErrorByScope[scope] : undefined
-        if (refusal) {
-          res.writeHead(refusal.status, { 'Content-Type': 'text/plain' })
-          res.end(refusal.body)
+      // Merge of the field-report stub (#1307 appendCalls/per-scope refusals,
+      // #1277 idempotency key + delayed/dropped answers) with #1228's
+      // appendHook (hold one write on the wire while another client runs).
+      const n = ++this.appendCalls
+      const handleAppend = (): void => {
+        if (this.appendErrorResponse !== null) {
+          const { status, body } = this.appendErrorResponse
+          res.writeHead(status, { 'Content-Type': 'text/plain' })
+          res.end(body)
           return
         }
-        const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
-        const now = new Date().toISOString()
-        const engram: StoredEngram = {
-          id,
-          // readBody yields Record<string, unknown>; narrow rather than trust
-          // the wire. A non-string scope falls back the same way a missing one does.
-          scope: typeof scope === 'string' ? scope : 'global',
-          status: 'active',
-          // `source` carries rescope provenance over the wire (#676) — keep it
-          // so tests can assert the pushed shape.
-          data: { statement, domain, type, ...(source !== undefined ? { source } : {}) },
-          created_at: now,
-          updated_at: now,
-        }
-        const store = () => this.engrams.set(id, engram)
-        if (!(this.appendDelayMs > 0 && this.appendDropWhileDelayed)) store()
-        // Normally the server returns the real assigned id; badAppendId lets a
-        // test make it return a malformed one (#404).
-        const returnedId = this.badAppendId !== null ? this.badAppendId : id
-        const respond = () => {
-          if (!res.writableEnded && !res.destroyed) {
-            if (this.appendDelayMs > 0 && this.appendDropWhileDelayed) store()
-            this.json(res, 201, { id: returnedId, scope: engram.scope, status: engram.status, data: engram.data })
+        const idemKey = req.headers['idempotency-key']
+        this.lastAppendIdempotencyKey = typeof idemKey === 'string' ? idemKey : null
+        this.readBody(req, (body) => {
+          this.lastAppendBody = body
+          const { statement, scope, domain, type, source } = body
+          const refusal = typeof scope === 'string' ? this.appendErrorByScope[scope] : undefined
+          if (refusal) {
+            res.writeHead(refusal.status, { 'Content-Type': 'text/plain' })
+            res.end(refusal.body)
+            return
           }
-        }
-        if (this.appendDelayMs > 0) setTimeout(respond, this.appendDelayMs).unref()
-        else respond()
-      })
+          const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
+          const now = new Date().toISOString()
+          const engram: StoredEngram = {
+            id,
+            // readBody yields Record<string, unknown>; narrow rather than trust
+            // the wire. A non-string scope falls back the same way a missing one does.
+            scope: typeof scope === 'string' ? scope : 'global',
+            status: 'active',
+            // `source` carries rescope provenance over the wire (#676) — keep it
+            // so tests can assert the pushed shape.
+            data: { statement, domain, type, ...(source !== undefined ? { source } : {}) },
+            created_at: now,
+            updated_at: now,
+          }
+          const store = () => this.engrams.set(id, engram)
+          if (!(this.appendDelayMs > 0 && this.appendDropWhileDelayed)) store()
+          // Normally the server returns the real assigned id; badAppendId lets a
+          // test make it return a malformed one (#404).
+          const returnedId = this.badAppendId !== null ? this.badAppendId : id
+          const respond = () => {
+            if (!res.writableEnded && !res.destroyed) {
+              if (this.appendDelayMs > 0 && this.appendDropWhileDelayed) store()
+              this.json(res, 201, { id: returnedId, scope: engram.scope, status: engram.status, data: engram.data })
+            }
+          }
+          if (this.appendDelayMs > 0) setTimeout(respond, this.appendDelayMs).unref()
+          else respond()
+        })
+      }
+      if (this.appendHook) void this.appendHook(n).then(handleAppend)
+      else handleAppend()
       return
     }
 
@@ -358,6 +372,7 @@ export class StubServer {
 
     // DELETE /api/v1/engrams/:id — retire
     if (method === 'DELETE' && idMatch) {
+      this.deleteCalls++
       const id = decodeURIComponent(idMatch[1])
       const engram = this.engrams.get(id)
       if (!engram) {

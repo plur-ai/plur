@@ -2,7 +2,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as yaml from 'js-yaml'
 import { join } from 'path'
-import { loadEngrams, saveEngrams } from '../engrams.js'
+import { loadEngrams, saveEngrams, engramStoreEntries } from '../engrams.js'
+import { recordLastWritten } from '../backup.js'
 import { atomicWrite, withLock, CONFIG_FILE_MODE } from '../sync.js'
 import { logger } from '../logger.js'
 import type { Migration } from './types.js'
@@ -125,9 +126,70 @@ function flushFile(filePath: string): void {
   }
 }
 
-/** Restore engrams.yaml from backup. */
-function restoreBackup(engramsPath: string, backupPath: string): void {
-  fs.copyFileSync(backupPath, engramsPath)
+/*
+ * There is deliberately no "restore from backup" on failure (formal-verification
+ * finding, spec/formal/findings/persistence.md candidate 2). `up()`/`down()` run
+ * on an in-memory copy and nothing is written until every one has succeeded, so
+ * when one throws the live engrams.yaml is still exactly what it was. The backup,
+ * by contrast, is never refreshed (the no-clobber rule above keeps the FIRST copy
+ * taken for a version), so copying it back replaced the live store with an older
+ * one — measured: 3 engrams -> 1 after a rollback and a failing re-run. The backup
+ * stays on disk for manual recovery; the failure path simply writes nothing.
+ */
+
+/**
+ * Write the corpus, then stamp the version it is now at — and if the stamp
+ * fails, put the corpus back (formal round 2, findings/r2-persist.md item 4).
+ *
+ * The two live in different files, so they cannot be one atomic write. Before,
+ * a stamp that threw (config lock held by another process, EACCES, a full
+ * disk) left a migrated corpus stamped with the OLD version — or, after a
+ * rollback, a rolled-back corpus still claiming the current version, which no
+ * later run would ever migrate again. The failure now leaves both files as they
+ * were, like every other failure of a run (see the note above). Only a crash
+ * between the two writes can still split them; that needs the version to live
+ * inside the store file and is not handled here.
+ */
+function saveAndStamp(
+  engramsPath: string,
+  engrams: Parameters<typeof saveEngrams>[1],
+  configPath: string,
+  fromVersion: number,
+  toVersion: number,
+): void {
+  const before = fs.existsSync(engramsPath) ? fs.readFileSync(engramsPath) : null
+  saveEngrams(engramsPath, engrams, { allowShrink: true })
+  try {
+    setSchemaVersion(configPath, toVersion)
+  } catch (stampErr) {
+    try {
+      if (before === null) fs.rmSync(engramsPath, { force: true })
+      else {
+        atomicWrite(engramsPath, before.toString("utf8"))
+        // The restore is a PLUR write too: keep the backup gate's baseline in step.
+        recordLastWritten(engramsPath, countEntries(engramsPath, before))
+      }
+    } catch (restoreErr) {
+      throw new Error(
+        `Recording schema_version ${toVersion} in ${configPath} failed (${stampErr}), and restoring ` +
+        `engrams.yaml afterwards failed too (${restoreErr}). engrams.yaml is at schema ${toVersion} but ` +
+        `config.yaml says ${fromVersion}: set schema_version: ${toVersion} in ${configPath} by hand, or ` +
+        `restore ${engramsPath} from its .bak.${fromVersion}.`,
+      )
+    }
+    throw new Error(
+      `Recording schema_version ${toVersion} in ${configPath} failed: ${stampErr}. ` +
+      `engrams.yaml was restored to its previous contents; nothing changed (still schema ${fromVersion}).`,
+    )
+  }
+}
+
+function countEntries(engramsPath: string, bytes: Buffer): number {
+  try {
+    return engramStoreEntries(engramsPath, bytes.toString('utf8'), bytes.length).length
+  } catch {
+    return 0
+  }
 }
 
 /**
@@ -135,7 +197,7 @@ function restoreBackup(engramsPath: string, backupPath: string): void {
  * - Checks schema_version in config
  * - Creates backup before running
  * - Applies each pending migration in order
- * - Rolls back to backup if any migration fails
+ * - If any migration fails, writes nothing (the live file is left as it was)
  * - Updates schema_version after success
  */
 export function runMigrations(
@@ -191,12 +253,9 @@ export function runMigrations(
         applied.push(migration.id)
       } catch (err) {
         logger.error(`Migration ${migration.id} failed: ${err}`)
-        // Restore from backup
-        if (backupPath) {
-          restoreBackup(engramsPath, backupPath)
-          logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
-        }
-        throw new Error(`Migration ${migration.id} failed: ${err}. Engrams restored from backup.`)
+        // Nothing has been written yet: the live file is untouched. Do NOT copy
+        // the (possibly older) backup over it — see the note above createBackup.
+        throw new Error(`Migration ${migration.id} failed: ${err}. engrams.yaml was not modified.`)
       }
     }
 
@@ -204,10 +263,9 @@ export function runMigrations(
       // Migrations rewrite the entire corpus by design, and a migration that
       // legitimately drops records would otherwise trip the save-side shrink
       // guard (#801). Declaring it here keeps the guard armed everywhere else.
-      saveEngrams(engramsPath, engrams, { allowShrink: true })
       // Inside the corpus lock: the corpus and the version it claims to be at
       // must become visible together, or they can disagree.
-      setSchemaVersion(configPath, currentVersion + applied.length)
+      saveAndStamp(engramsPath, engrams, configPath, currentVersion, currentVersion + applied.length)
     }
   })
 
@@ -258,18 +316,13 @@ export function rollbackMigrations(
         rolledBack.push(migration.id)
       } catch (err) {
         logger.error(`Rollback of ${migration.id} failed: ${err}`)
-        if (backupPath) {
-          restoreBackup(engramsPath, backupPath)
-          logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
-        }
-        throw new Error(`Rollback of ${migration.id} failed: ${err}. Engrams restored from backup.`)
+        throw new Error(`Rollback of ${migration.id} failed: ${err}. engrams.yaml was not modified.`)
       }
     }
 
     // A down() migration legitimately removes fields and can remove records;
     // the shrink guard must not veto a deliberate rollback.
-    saveEngrams(engramsPath, engrams, { allowShrink: true })
-    setSchemaVersion(configPath, targetVersion)
+    saveAndStamp(engramsPath, engrams, configPath, currentVersion, targetVersion)
   })
 
   if (noop) {
