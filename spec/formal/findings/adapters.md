@@ -802,3 +802,7 @@ Files: `spec/formal/PlurSpec/Adapters.lean` (§3 and §9b docstrings, new §10 a
 §11); `packages/cli/test/formal-fr-c4-hooks.test.ts`; `spec/formal/verify.yaml`
 (appended an Adapters entry covering cli `lib/hook-command.ts`, mcp
 `hook-command.ts`, `codex-hooks.ts` and `antigravity-hooks.ts`).
+
+## Round-2 decisions applied (2026-09-29, refresh 3 of formal/field-report-2026-09-29)
+
+Decision F4 applied: #1270 (fix/1267-windows-init @ ed993537). The PLUR-hook matcher is anchored (launcher, a `hook-*` subcommand, plain arguments only), and an exec-form spec is PLUR's only for a CLI entry `plur init` recorded in plur-hook.meta.json (bounded history). `embedded_claimed` and the Codex chained-step deletion are fixed.

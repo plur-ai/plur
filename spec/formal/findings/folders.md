@@ -180,3 +180,9 @@ the same nonce after a partial failure acceptable?
 - Appended: `import PlurSpec.Folders` in `spec/formal/PlurSpec.lean`; the
   `PlurSpec/Folders.lean` entry in `spec/formal/verify.yaml` (folders.ts,
   trust.ts, project-config.ts, project-remote.ts).
+
+## Round-2 decisions applied (2026-09-29, refresh 3 of formal/field-report-2026-09-29)
+
+Decision F2 applied: #1403 (feat/1347-folder-map-core @ 079d79b9). Revoking trust completes in trust.yaml with the map's matcher: `plur untrust`, `--no-trusted` and `plur folders rm` of a trusted entry remove the legacy line, `~` spellings included (§3 `rm_breaks_inv`, `tilde_breaks_inv` fixed). On the combined branch `folders rm` removes every matched entry (#1334) and revokes each trusted one.
+
+Decision F3 applied: #1403. The one-time code is consumed as soon as folders.yaml is saved, before the trust.yaml write (§4 `legacy_fail_two_writes` fixed).

@@ -626,3 +626,9 @@ in the combined `takeOver`/`takeOverSync` check as belt and braces (yes / no)?
 Files changed: `spec/formal/PlurSpec/R2Persist.lean` (§6 `TakeoverG`, §1 drift note),
 `spec/formal/PlurSpec/Persistence.lean` (§3, §3b drift notes), this file, `r2-persist.md` (item 1
 note). Tests added: `packages/core/test/formal-fr-c2-takeover.test.ts` (3).
+
+## Round-2 decisions applied (2026-09-29, refresh 3 of formal/field-report-2026-09-29)
+
+Decision C1 applied: #1424 (fix/1354-lock-ladder, stacked on #1398). #1398's one-step publish with #1228's takeover ladder (`ladder_mutex`, §6 `TakeoverG` `combined_mutex`); #1228 drops its own lock change. Replay `formal-fr-c2-takeover.test.ts` now lives in #1424 too and passes.
+
+Decision C2 applied: #1424. Under the ladder slot the lock is taken over only if it is still abandoned NOW (`isAbandoned` re-checked after the token/inode match), in `tryTakeover` and `tryTakeoverSync`.

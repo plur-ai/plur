@@ -288,3 +288,11 @@ duplicate-push guard; #1228's row leases left the push path.
   the bound fails; the 10-minute lease used to cover that case too.
 - Tests: `outbox-claim-takeover.test.ts` (new); `formal-outbox-lease.test.ts`
   updated (see the commit message for the list).
+
+## Round-2 decisions applied (2026-09-29, refresh 3 of formal/field-report-2026-09-29)
+
+Decision C4 applied: #1277 (fix/1269-hook-outbox-flush @ 29169332). A timed-out, cut or thrown push is retried on the next flush with the idempotency key already on its row: the key is minted and persisted before the first POST (`_persistMissingOutboxKeys`), and there is no in-doubt state, no lookup by key and no `--resend`. Claims are released however a flush ends; a same-host owner holds its claim while its process lives (age cap 15 min). Accepted residual (the owner's choice): a key-ignoring server may hold one duplicate per write, so replays `C1a (Outbox.firstLeg_timeout_dup)` ×2 and `C1b (Outbox.thrown_merge_loses_doubt)` stay `it.fails`.
+
+Decision C5 applied: #1277. A recall 422, like 401/403/404, neither counts toward nor resets the per-host breaker (same rule as the write leg, #1308). Replay `C4 (Outbox.recall_422_counts)` flipped to a plain test.
+
+C3 on refresh 3: the claim code is now #1277's (atomic takeover by rename with a stale-content re-check and a read-back; live same-host owners). The C3 entry above predates C4, so its orphan/in-doubt handling and its probe-by-key residual no longer apply. Kept from this branch: each instance remembers its claim token, so only the writer that took a claim releases it, and `listOutbox().leased_until` is derived from the claim file alone.

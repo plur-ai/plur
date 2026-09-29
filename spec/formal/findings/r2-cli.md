@@ -531,3 +531,11 @@ as broken when it fails, or when `#print axioms` shows that it now depends on
 `formal-fr-c5-inject-lifecycle.test.ts` (3: 2 pinned, 1 `it.fails`).
 Targeted run, with these three files plus `session-key-h1`, `hook-session-end-h1`,
 `hook-inject-session-key` and `hook-auto-rate`: 7 files, 40 passed, 4 expected fail.
+
+## Round-2 decisions applied (2026-09-29, refresh 3 of formal/field-report-2026-09-29)
+
+Decision H1 applied: #1422 (fix/hook-stdout-silent @ 2e918855). A throwing `hook-*` command writes `[plur] <command> failed: …` to stderr and exits 0; non-hook commands are unchanged. The fix is in the dispatcher (src/index.ts), so replay C5-4 (`a stopped run whose injection then throws hands the dispatcher nothing to print`) still fails: it asserts on `run()`, which still rejects. It stays `it.fails` until it is rewritten against the dispatcher.
+
+Decision H2 applied: #1318 (feat/1310-auto-rate @ d2073268). A verdict whose write-ahead record fails is not sent (at most one verdict per engram per session); replay C5-5 flipped.
+
+Decision H3 applied: #1395 (fix/inject-task-file-perms @ 673e5bfb). hook-learn-check's counter and checkpoint follow the proved state-dir rule (shared dir if safe, else private fallback if safe, else persist nothing); every Claude hook path is nullable. Replay C5-2 (`state never lands in a refused fallback dir`) flipped. Still `it.fails`: `with CLAUDE_SESSION_ID set, the marker reader still tries the ppid key` (minor legacy gap, not decided).
