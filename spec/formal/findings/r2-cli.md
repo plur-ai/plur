@@ -163,15 +163,17 @@ Tests: `test/formal-r2-cli-inject-session.test.ts`, first two describe blocks.
 BEFORE: 2 failed (/clear, lock released on throw). AFTER: all passed. The existing
 `hook-inject-lock.test.ts` (keyed by ppid) passes unchanged.
 
-Decision H1 applied (2026-09-29, branch `formal/field-report-2026-09-29`): the key
-is now the shared `hookSessionKey` in `lib/session-key.ts` — payload `session_id`,
-then `CLAUDE_SESSION_ID`, then ppid — used by hook-inject, hook-learn-check and the
-hook-session-end reader alike. The `sid-` form is a legacy READER key only
-(`legacyHookSessionKeys`); a marker left under it is honoured, never written. The
-properties above are unchanged (distinct sessions get distinct keys under
-`safe s1 ≠ safe s2`; same session, same key). The model (`R2CLI.lean` §3) still
-names the `sid-` key and is due for the post-decision remodel. Tests:
-`test/session-key-h1.test.ts`.
+Decision H1 applied (2026-09-29, owner decision "payload"): the key is now the
+shared `hookSessionKey` in `lib/session-key.ts` — payload `session_id`, then
+`CLAUDE_SESSION_ID`, then ppid — used by hook-inject, hook-learn-check (counter and
+checkpoint) and the hook-session-end reader alike. The `sid-` form and the env-first
+checkpoint key are legacy READER keys only (`legacyHookSessionKeys`): a marker or
+checkpoint left under one is honoured, never written. The properties above are
+unchanged (distinct sessions get distinct keys under `safe s1 ≠ safe s2`; same
+session, same key). `R2CLI.lean` §3 still names the `sid-` key and is due for the
+post-decision remodel. Tests: `test/session-key-h1.test.ts`,
+`test/hook-session-end-h1.test.ts`; `test/formal-r2-cli-checkpoint.test.ts` now
+expects the payload-keyed checkpoint.
 Residual, recorded: stale-lock takeover can still race (A unlinks the stale lock and
 creates its own, then B, having also seen the stale lock, unlinks A's). The window
 needs a crashed holder plus two firings inside the same few microseconds. The model
