@@ -1,79 +1,134 @@
 slug: plur-field-report-formal
 title: Field report — formal verification decisions
 eyebrow: PLUR · formal verification · 2026-09-29
-lede: Where the Lean pass (#1228) and today's field-report PRs disagree on behaviour. Each needs one answer before the six stale models are updated.
+lede: Where the Lean pass (#1228) and today's field-report PRs disagree on behaviour. Each needs one answer
+  before the six stale models are updated.
 sources:
-  - spec/formal/survey/2026-09-29-field-report-drift.md (branch formal/field-report-2026-09-29)
-  - docs/audits/2026-09-29-decision-brief.md
+- spec/formal/survey/2026-09-29-field-report-drift.md (branch formal/field-report-2026-09-29)
+- docs/audits/2026-09-29-decision-brief.md
 sections:
-  - key: recurrence
-    prefix: A
-    label: "Team saves and the recurrence ladder
-    hint: Both sides already carry owner decisions; these pick which wins where they meet.
-    rows:
-      - area: Team save matching another team's engram
-        title: May a save to one team scope be absorbed into an engram in a DIFFERENT team scope?
-        context: \"#1275 still lets a team save merge into another shared engram (as main does); #1228 never absorbs a write into anything outside the writer's own scope. Absorbing means the save never reaches its own team store — the field-report failure again.\"
-        ref: \"#1275", #1228 (owner principle: a write is always stored in the writer's own scope)"
-        suggested: never
-        options:
-          - {value: never, label: Never absorb — always write to own scope, consequence: "Team save always lands in its team store; the matching engram is credited (recurrence), not replaced. Matches #1228 and your decision 4."}
-          - {value: allow, label: "Keep #1275's shared-to-shared merge", consequence: "A save to group:a can vanish into an engram in group:b; teammates of group:a never see it."}
-      - area: Queued engram about to be promoted
-        title: When a team engram still queued for its store hits the ladder, what happens?
-        context: "#1275 leaves it untouched and credits a separate global copy (your 'duplicates for global can be created'); #1228's D3 records the recurrence on the queued row itself. They are compatible if both happen."
-        ref: "#1275 copy-on-promote, #1228 D3"
-        suggested: both
-        options:
-          - {value: both, label: Record on the queued row AND create the global copy, consequence: "Team engram keeps its count and stays in its scope; the promotion lives on a linked global copy. Satisfies both decisions."}
-          - {value: copy, label: "Copy only (#1275)", consequence: "The queued team row does not record the recurrence."}
-          - {value: row, label: "Row only (#1228)", consequence: "No global copy; the ladder stops for queued team engrams."}
-      - area: Team validation and 'locked'
-        title: Can team validation alone raise an engram to 'locked'?
-        context: "#1275 caps team-validated escalation below 'locked'; a #1228 tension-gate test expects a ladder path to reach 'locked'. Core's feedback rule already says 'locked' needs explicit human intent."
-        ref: "#1275, #1228 tension lock-gate test, core feedback.ts"
-        suggested: cap
-        options:
-          - {value: cap, label: Never 'locked' without a human, consequence: "The #1228 test is changed to reach 'locked' through an explicit human act."}
-          - {value: allow, label: Allow the ladder to reach 'locked', consequence: "Repeated automated saves can lock a rule nobody explicitly locked."}
-  - key: folders
-    prefix: D
-    label: "Repo settings and folders
-    rows:
-      - area: Untrusted .plur.yaml scope hint
-        title: Should a .plur.yaml's scope hint apply before the folder is trusted?
-        context: \"#1348 keeps today's behaviour (hint applies", only the remote needs trust) so existing .plur.yaml users see no change; #1228's E3 ignores every untrusted repo setting (your earlier decision). With the folder map, an untrusted .plur.yaml can trigger the one-time question (Q-A) — yes makes it trusted."
-        ref: "#1348, #1228 E3, design note r2/r3 Q-A"
-        suggested: ignore-ask
-        options:
-          - {value: ignore-ask, label: Ignore until trusted; ask once, consequence: "A cloned repo cannot steer your writes; your own repos get one question, then work as today. Existing users see one question per untrusted repo."}
-          - {value: honour, label: Honour the hint as today, consequence: "No change for existing users; a cloned repo can choose where your saves go (not where they are sent)."}
-  - key: hooks
-    prefix: H
-    label: Hook plumbing
-    rows:
-      - area: Session key
-        title: Which session id keys hook state (marker, counter, checkpoint)?
-        context: "#1301 uses the hook payload's session_id first; #1228 prefixes 'sid-' in hook-inject and prefers the environment variable in its checkpoint. Writers and readers must agree or state is lost."
-        ref: "#1301, #1228"
-        suggested: payload
-        options:
-          - {value: payload, label: Payload session_id first, one shared helper, consequence: "Every hook and reader uses the same function; readers also try the legacy forms so nothing is lost on upgrade."}
-          - {value: env, label: Environment variable first, consequence: "Breaks when the editor does not set it (Codex, Cursor), which is why #1301 moved away from it."}
-      - area: Recognising PLUR's own hooks
-        title: How does init recognise hooks it wrote (to avoid duplicates)?
-        context: "#1270 matches an allow-list of subcommands — every new hook must be added or re-running init duplicates it (#1318 already needed this); #1228 accepts any 'hook-*'."
-        ref: "#1270, #1228, #1318"
-        suggested: prefix
-        options:
-          - {value: prefix, label: Any hook-* behind PLUR's own launcher, consequence: "Matches the plur-hook shim or the @plur-ai/cli npx command followed by hook-*; new hooks need no list update; user hooks stay untouched."}
-          - {value: allowlist, label: Keep the allow-list, consequence: "Stricter, but forgetting one entry duplicates hooks on every init."}
-      - area: Windows hook shell (#1270)
-        title: How should hook commands run on Windows?
-        context: "Editors run hook commands through different shells (Git Bash / PowerShell / cmd /C); a quoted path breaks in PowerShell and in Antigravity's cmd /C. Not verified on real Windows."
-        ref: "docs/audits/2026-09-29-pr-review-summary.md"
-        suggested: plan
-        options:
-          - {value: plan, label: Exec form for Claude Code; unquoted short path elsewhere; Windows CI, consequence: "No shell quoting anywhere; a Windows CI job runs the exact strings through bash, pwsh and cmd before #1270 merges."}
-          - {value: stopgap, label: Quote only when the path has a space, consequence: "No regression for homes without spaces; homes with spaces stay broken on PowerShell editors."}
-          - {value: hold, label: "Hold #1270 until tested on a real Windows machine", consequence: "No Windows change ships until someone tests it by hand."}
+- key: recurrence
+  prefix: A
+  label: Team saves and the recurrence ladder
+  hint: Both sides already carry owner decisions; these pick which wins where they meet.
+  rows:
+  - area: Team save matching another team's engram
+    title: May a save to one team scope be absorbed into an engram in a DIFFERENT team scope?
+    context: '#1275 still lets a team save merge into another shared engram (as main does); #1228 never
+      absorbs a write into anything outside the writer''s own scope. Absorbing means the save never reaches
+      its own team store — the field-report failure again.'
+    ref: '#1275; #1228 (owner principle: a write is always stored in the writer''s own scope)'
+    suggested: never
+    options:
+    - value: never
+      label: Never absorb — always write to own scope
+      consequence: 'Team save always lands in its team store; the matching engram is credited (recurrence),
+        not replaced. Matches #1228 and your decision 4.'
+    - value: allow
+      label: 'Keep #1275''s shared-to-shared merge'
+      consequence: A save to group:a can vanish into an engram in group:b; teammates of group:a never
+        see it.
+  - area: Queued engram about to be promoted
+    title: When a team engram still queued for its store hits the ladder, what happens?
+    context: '#1275 leaves it untouched and credits a separate global copy (your ''duplicates for global
+      can be created''); #1228''s D3 records the recurrence on the queued row itself. They are compatible
+      if both happen.'
+    ref: '#1275 copy-on-promote; #1228 D3'
+    suggested: both
+    options:
+    - value: both
+      label: Record on the queued row AND create the global copy
+      consequence: Team engram keeps its count and stays in its scope; the promotion lives on a linked
+        global copy. Satisfies both decisions.
+    - value: copy
+      label: Copy only (#1275)
+      consequence: The queued team row does not record the recurrence.
+    - value: row
+      label: Row only (#1228)
+      consequence: No global copy; the ladder stops for queued team engrams.
+  - area: Team validation and 'locked'
+    title: Can team validation alone raise an engram to 'locked'?
+    context: '#1275 caps team-validated escalation below ''locked''; a #1228 tension-gate test expects
+      a ladder path to reach ''locked''. Core''s feedback rule already says ''locked'' needs explicit
+      human intent.'
+    ref: '#1275; #1228 tension lock-gate test; core feedback.ts'
+    suggested: cap
+    options:
+    - value: cap
+      label: Never 'locked' without a human
+      consequence: 'The #1228 test is changed to reach ''locked'' through an explicit human act.'
+    - value: allow
+      label: Allow the ladder to reach 'locked'
+      consequence: Repeated automated saves can lock a rule nobody explicitly locked.
+- key: folders
+  prefix: D
+  label: Repo settings and folders
+  rows:
+  - area: Untrusted .plur.yaml scope hint
+    title: Should a .plur.yaml's scope hint apply before the folder is trusted?
+    context: '#1348 keeps today''s behaviour (hint applies, only the remote needs trust) so existing .plur.yaml
+      users see no change; #1228''s E3 ignores every untrusted repo setting (your earlier decision). With
+      the folder map, an untrusted .plur.yaml can trigger the one-time question (Q-A) — yes makes it trusted.'
+    ref: '#1348; #1228 E3; design note r2/r3 Q-A'
+    suggested: ignore-ask
+    options:
+    - value: ignore-ask
+      label: Ignore until trusted; ask once
+      consequence: A cloned repo cannot steer your writes; your own repos get one question, then work
+        as today. Existing users see one question per untrusted repo.
+    - value: honour
+      label: Honour the hint as today
+      consequence: No change for existing users; a cloned repo can choose where your saves go (not where
+        they are sent).
+- key: hooks
+  prefix: H
+  label: Hook plumbing
+  rows:
+  - area: Session key
+    title: Which session id keys hook state (marker, counter, checkpoint)?
+    context: '#1301 uses the hook payload''s session_id first; #1228 prefixes ''sid-'' in hook-inject
+      and prefers the environment variable in its checkpoint. Writers and readers must agree or state
+      is lost.'
+    ref: '#1301; #1228'
+    suggested: payload
+    options:
+    - value: payload
+      label: Payload session_id first, one shared helper
+      consequence: Every hook and reader uses the same function; readers also try the legacy forms so
+        nothing is lost on upgrade.
+    - value: env
+      label: Environment variable first
+      consequence: 'Breaks when the editor does not set it (Codex, Cursor), which is why #1301 moved away
+        from it.'
+  - area: Recognising PLUR's own hooks
+    title: How does init recognise hooks it wrote (to avoid duplicates)?
+    context: '#1270 matches an allow-list of subcommands — every new hook must be added or re-running
+      init duplicates it (#1318 already needed this); #1228 accepts any ''hook-*''.'
+    ref: '#1270; #1228; #1318'
+    suggested: prefix
+    options:
+    - value: prefix
+      label: Any hook-* behind PLUR's own launcher
+      consequence: Matches the plur-hook shim or the @plur-ai/cli npx command followed by hook-*; new
+        hooks need no list update; user hooks stay untouched.
+    - value: allowlist
+      label: Keep the allow-list
+      consequence: Stricter, but forgetting one entry duplicates hooks on every init.
+  - area: Windows hook shell (#1270)
+    title: How should hook commands run on Windows?
+    context: Editors run hook commands through different shells (Git Bash / PowerShell / cmd /C); a quoted
+      path breaks in PowerShell and in Antigravity's cmd /C. Not verified on real Windows.
+    ref: docs/audits/2026-09-29-pr-review-summary.md
+    suggested: plan
+    options:
+    - value: plan
+      label: Exec form for Claude Code; unquoted short path elsewhere; Windows CI
+      consequence: 'No shell quoting anywhere; a Windows CI job runs the exact strings through bash, pwsh
+        and cmd before #1270 merges.'
+    - value: stopgap
+      label: Quote only when the path has a space
+      consequence: No regression for homes without spaces; homes with spaces stay broken on PowerShell
+        editors.
+    - value: hold
+      label: 'Hold #1270 until tested on a real Windows machine'
+      consequence: No Windows change ships until someone tests it by hand.
