@@ -1058,9 +1058,13 @@ Now:
   filesystems without hard links. The 10s comes from measurement: over 20,000
   create-then-write cycles the gap was at most 0.73s, p99 10–117ms depending
   on event-loop load.
-- Takeovers are serialized by a short-lived guard file
-  (`engrams.yaml.lock.takeover`), and each one re-inspects the lock after
-  taking the guard. This closes an older race that applies to every takeover,
+- Takeovers are serialized by a ladder of guard slots
+  (`engrams.yaml.lock.guard-<key>-<n>`, keyed by the token of the lock being
+  taken over). A slot left by a crashed stealer is stepped over, never
+  removed, so a crash inside a takeover cannot let two stealers in at once. A
+  single guard file had that flaw: after two crashes, two stealers could both
+  hold it. Under its slot, a stealer re-inspects the lock and claims it only if
+  it is the same file and still abandoned. This closes an older race that applies to every takeover,
   including the immediate one for a dead holder. Two waiters that judged the
   same abandoned lock could both act on it. The second one moved the first
   one's fresh, live lock aside, and while it was putting that lock back, a

@@ -32,9 +32,10 @@
 import { writeFile, unlink, stat, readFile, rename, open, link } from 'fs/promises'
 import {
   linkSync, openSync, writeSync, closeSync, fstatSync, statSync, unlinkSync,
-  writeFileSync, renameSync, readFileSync,
+  writeFileSync, renameSync, readFileSync, constants,
 } from 'fs'
 import { hostname } from 'os'
+import { createHash } from 'crypto'
 import * as path from 'path'
 import { KeyedAsyncMutex } from '../async-mutex.js'
 
@@ -430,83 +431,199 @@ function isAbandoned(holder: string, mtimeMs: number, staleThreshold: number): b
   return alive === undefined && abandonedByAge(holder, Date.now() - mtimeMs, staleThreshold)
 }
 
-/** The guard that serializes takeovers of `lockPath` (#1354). */
-function takeoverGuardPath(lockPath: string): string {
-  return `${lockPath}.takeover`
-}
-
 /**
- * Take over an abandoned lock — serialized against every other takeover
- * (#1354). Returns false when another process holds the takeover guard.
+ * Take over an abandoned lock (#1354), serialized by #1228's steal-guard LADDER
+ * (owner decision C1; proofs on formal/field-report-2026-09-29:
+ * spec/formal/PlurSpec/R2Persist.lean `ladder_mutex`, and §6 `TakeoverG`
+ * `combined_mutex` for this lock + ladder combination; findings
+ * spec/formal/findings/persistence.md §G). Returns false when another
+ * contender is taking over the same lock instance.
  *
- * Why a guard. The rename claim in {@link stealLock} makes the steal itself
- * single-winner, but not the DECISION. Two waiters that judged the same
- * abandoned lock can both reach `rename`: the first claims it, removes it and
- * acquires a fresh lock; the second's rename then moves THAT fresh, live lock
- * aside. It sees the wrong file and puts it back — but while the path is free
- * a third process can create a lock there, and then two processes believe
- * they hold it. The concurrent-takeover test caught exactly this under load.
+ * This replaces a single `.takeover` guard file. That guard, abandoned by a
+ * crashed stealer, had to be removed by the same rename claim, unguarded: two
+ * stealers could then both be "under" it after a double crash (replayed in
+ * test/formal-fr-c2-takeover.test.ts).
  *
- * Under the guard, only one process at a time inspects-and-removes. It
- * re-inspects `lockPath` after taking the guard, so a decision made on an old
- * inspection is never acted on. Between that re-inspection and its `rename`
- * the file at `lockPath` cannot be replaced by a new-code acquirer: the path
- * only frees when the abandoned file is removed, and only the guard holder
- * removes abandoned files. (The file's owner could remove it only if it were
- * alive after all, which for a dead pid is impossible and for the age rules
- * means a holder stalled past the whole threshold.) Acquirers do NOT take the
- * guard — the uncontended path stays one `link`.
+ * Why a guard at all: the rename claim in {@link stealLock} makes the steal
+ * single-winner, but not the DECISION — two waiters that judged the same
+ * abandoned lock can both reach `rename`, and the second moves the first's
+ * fresh, live lock aside while a third creates one at the free path.
  *
- * The guard is published like a lock (token included), held for a handful of
- * syscalls, and a guard whose holder died is removed by the same rules as a
- * lock. Clearing it returns false rather than proceeding, so the caller loops
- * and competes for the guard afresh.
+ * Why a ladder keyed by the judged token, not one `.takeover` file: a guard
+ * abandoned by a crashed stealer must itself be removed, and removing it is a
+ * read-then-unlink of someone else's file — the same race one level up
+ * (replayed in r2-persist item 1). Slots are keyed by the judged lock's token,
+ * so nobody but a slot's own writer ever unlinks it while that token is still
+ * at `lockPath`; a dead slot is stepped over, never deleted.
+ *
+ * Under the slot the lock is re-inspected; only a file with the same token AND
+ * the same inode as the one judged (#1354: empty locks have equal contents) is
+ * claimed, and only if it is STILL abandoned (decision C2: a holder we cannot
+ * probe may have refreshed its mtime since we judged it).
  */
 async function takeOver(lockPath: string, staleThreshold: number): Promise<boolean> {
-  const guard = takeoverGuardPath(lockPath)
-  const token = makeToken()
-  try {
-    await publishLockFile(guard, token)
-  } catch (err: any) {
-    if (err?.code !== 'EEXIST') return false
-    const g = await inspectLock(guard)
-    if (g && isAbandoned(g.holder, g.mtimeMs, staleThreshold)) await stealLock(guard, g.holder, g.ino)
-    return false
-  }
+  const seen = await inspectLock(lockPath)
+  if (!seen || !isAbandoned(seen.holder, seen.mtimeMs, staleThreshold)) return true // re-evaluate
+  const guardToken = makeToken()
+  const slot = await acquireStealSlot(lockPath, seen.holder, guardToken)
+  if (!slot) return false // another contender is taking it over
   try {
     const cur = await inspectLock(lockPath)
-    if (cur && isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) {
-      await stealLock(lockPath, cur.holder, cur.ino)
-    }
+    if (!cur || cur.holder !== seen.holder || cur.ino !== seen.ino) return true
+    // Decision C2: still abandoned NOW, not only the same file. A holder we
+    // cannot probe proves it is alive only by refreshing its mtime, and it may
+    // have done so since we judged it.
+    if (!isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) return true
+    if (await stealLock(lockPath, cur.holder, cur.ino)) await clearStealSlots(lockPath, seen.holder, slot)
     return true
   } finally {
-    await releaseIfOurs(guard, token)
+    await releaseIfOurs(slot, guardToken)
   }
 }
 
 /** Synchronous twin of {@link takeOver}, for `withLock` in `sync.ts`. */
 export function takeOverSync(lockPath: string, staleThreshold: number): boolean {
-  const guard = takeoverGuardPath(lockPath)
-  const token = makeToken()
-  try {
-    publishLockFileSync(guard, token)
-  } catch (err: any) {
-    if (err?.code !== 'EEXIST') return false
-    const g = inspectLockSync(guard)
-    if (g && isAbandoned(g.holder, g.mtimeMs, staleThreshold)) stealLockSync(guard, g.holder, g.ino)
-    return false
-  }
+  const seen = inspectLockSync(lockPath)
+  if (!seen || !isAbandoned(seen.holder, seen.mtimeMs, staleThreshold)) return true
+  const guardToken = makeToken()
+  const slot = acquireStealSlotSync(lockPath, seen.holder, guardToken)
+  if (!slot) return false
   try {
     const cur = inspectLockSync(lockPath)
-    if (cur && isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) {
-      stealLockSync(lockPath, cur.holder, cur.ino)
+    if (!cur || cur.holder !== seen.holder || cur.ino !== seen.ino) return true
+    // Decision C2: still abandoned NOW, not only the same file. A holder we
+    // cannot probe proves it is alive only by refreshing its mtime, and it may
+    // have done so since we judged it.
+    if (!isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) return true
+    if (stealLockSync(lockPath, cur.holder, cur.ino)) {
+      for (let k = 0; k < STEAL_GUARD_SLOTS; k++) {
+        const other = stealGuardPath(lockPath, seen.holder, k)
+        if (other !== slot) { try { unlinkSync(other) } catch { /* absent */ } }
+      }
     }
     return true
   } finally {
-    try {
-      if (readFileSync(guard, 'utf8').trim() === token) unlinkSync(guard)
-    } catch { /* already gone */ }
+    try { if (readFileSync(slot, 'utf8').trim() === guardToken) unlinkSync(slot) } catch { /* gone */ }
   }
+}
+
+/**
+ * How many guard slots a steal of one lock instance may walk before giving up.
+ * Each slot past the first costs one stealer crash inside the guard (a window of
+ * one read and one rename); running out leaves the lock to the acquire deadline,
+ * whose error names the lock file.
+ */
+export const STEAL_GUARD_SLOTS = 8
+
+/** A steal guard untouched this long, whose writer cannot be probed, is abandoned. */
+const GUARD_STALE_MS = 10_000
+
+/**
+ * Path of guard slot `k` for stealing the lock instance whose token is `expected`.
+ *
+ * Keyed by the judged token, so a slot abandoned by a crashed stealer never has
+ * to be removed while that token is still at `lockPath`: nobody but a slot's own
+ * writer ever unlinks it then, which is what makes the ladder safe (a
+ * read-then-unlink of someone else's file is the race being closed). Tokens are
+ * unique per acquisition, so once the judged lock is gone its ladder is dead
+ * weight and is cleared by whoever confirmed the claim.
+ */
+export function stealGuardPath(lockPath: string, expected: string, k: number): string {
+  const key = createHash('sha256').update(expected).digest('hex').slice(0, 16)
+  return `${lockPath}.guard-${key}-${k}`
+}
+
+/**
+ * State of a guard slot: `dead` iff its writer's process is gone (or, when
+ * liveness cannot be probed, it has been untouched for {@link GUARD_STALE_MS}).
+ * A slot just created but not yet written reads as '' — unknown liveness, fresh
+ * — and so counts as live.
+ */
+export function judgeStealSlot(contents: string, mtimeMs: number, now = Date.now()): 'dead' | 'live' {
+  const alive = holderIsAlive(contents.trim())
+  return alive === false || (alive === undefined && now - mtimeMs > GUARD_STALE_MS) ? 'dead' : 'live'
+}
+
+async function stealSlotState(slot: string): Promise<'dead' | 'live' | 'gone'> {
+  try {
+    const [s, contents] = await Promise.all([stat(slot), readFile(slot, 'utf8')])
+    return judgeStealSlot(contents, s.mtimeMs)
+  } catch {
+    return 'gone'
+  }
+}
+
+/**
+ * Take the steal guard for `expected`: the lowest free slot above a run of
+ * abandoned ones, O_EXCL-created, then VERIFIED — every lower slot must still
+ * exist and still be abandoned. A live slot (or one that vanished: its writer
+ * finished) means another contender is stealing, and the caller re-evaluates.
+ * Returns the slot path, or null. Proof of mutual exclusion, crashes included:
+ * spec/formal/PlurSpec/R2Persist.lean `ladder_mutex`.
+ */
+async function acquireStealSlot(lockPath: string, expected: string, token: string): Promise<string | null> {
+  for (let k = 0; k < STEAL_GUARD_SLOTS; k++) {
+    const slot = stealGuardPath(lockPath, expected, k)
+    try {
+      await writeFile(slot, token, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL })
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') return null
+      if ((await stealSlotState(slot)) === 'dead') continue
+      return null
+    }
+    for (let i = 0; i < k; i++) {
+      if ((await stealSlotState(stealGuardPath(lockPath, expected, i))) !== 'dead') {
+        await releaseIfOurs(slot, token)
+        return null
+      }
+    }
+    return slot
+  }
+  return null
+}
+
+/**
+ * After a CONFIRMED claim the judged token is gone from `lockPath` for good
+ * (tokens are unique per acquisition, and a dead holder cannot re-acquire), so
+ * every other slot of its ladder is dead weight: a stealer still in it re-reads
+ * the lock, finds another token and backs off. Best-effort.
+ */
+async function clearStealSlots(lockPath: string, expected: string, own: string): Promise<void> {
+  for (let k = 0; k < STEAL_GUARD_SLOTS; k++) {
+    const slot = stealGuardPath(lockPath, expected, k)
+    if (slot !== own) await unlink(slot).catch(() => {})
+  }
+}
+
+function stealSlotStateSync(slot: string): 'dead' | 'live' | 'gone' {
+  try {
+    const contents = readFileSync(slot, 'utf8')
+    return judgeStealSlot(contents, statSync(slot).mtimeMs)
+  } catch {
+    return 'gone'
+  }
+}
+
+/** Synchronous twin of {@link acquireStealSlot}. */
+function acquireStealSlotSync(lockPath: string, expected: string, token: string): string | null {
+  for (let k = 0; k < STEAL_GUARD_SLOTS; k++) {
+    const slot = stealGuardPath(lockPath, expected, k)
+    try {
+      writeFileSync(slot, token, { flag: 'wx' })
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') return null
+      if (stealSlotStateSync(slot) === 'dead') continue
+      return null
+    }
+    for (let i = 0; i < k; i++) {
+      if (stealSlotStateSync(stealGuardPath(lockPath, expected, i)) !== 'dead') {
+        try { if (readFileSync(slot, 'utf8').trim() === token) unlinkSync(slot) } catch { /* gone */ }
+        return null
+      }
+    }
+    return slot
+  }
+  return null
 }
 
 interface LockInspection { holder: string; mtimeMs: number; ino: number }
@@ -560,12 +677,12 @@ function inspectLockSync(p: string): LockInspection | null {
  * ({@link publishLockFile}). Mutual exclusion is still decided by that create,
  * not by this function.
  */
-async function stealLock(lockPath: string, expected: string, expectedIno: number): Promise<void> {
+async function stealLock(lockPath: string, expected: string, expectedIno: number): Promise<boolean> {
   const claim = privateSibling(lockPath, 'steal', makeToken())
   try {
     await rename(lockPath, claim)
   } catch {
-    return // another contender claimed it, or the holder released — re-evaluate
+    return false // another contender claimed it, or the holder released — re-evaluate
   }
   try {
     // Same FILE, not just the same contents (#1354). Contents cannot tell two
@@ -575,7 +692,7 @@ async function stealLock(lockPath: string, expected: string, expectedIno: number
     const [current, s] = await Promise.all([readFile(claim, 'utf8'), stat(claim)])
     if (current.trim() === expected && s.ino === expectedIno) {
       await unlink(claim) // confirmed the one we judged abandoned
-      return
+      return true
     }
     // Not the lock we judged abandoned — a live holder's. Put it back.
     try {
@@ -596,24 +713,25 @@ async function stealLock(lockPath: string, expected: string, expectedIno: number
     // would ever clean it up.
     await unlink(claim).catch(() => {})
   }
+  return false
 }
 
 /**
  * Synchronous twin of {@link stealLock}, for `withLock` in `sync.ts`: the same
  * single-winner rename claim, the same file-identity check, the same restore.
  */
-function stealLockSync(lockPath: string, expected: string, expectedIno: number): void {
+function stealLockSync(lockPath: string, expected: string, expectedIno: number): boolean {
   const claim = privateSibling(lockPath, 'steal', makeToken())
   try {
     renameSync(lockPath, claim)
   } catch {
-    return // another contender claimed it, or the holder released — re-evaluate
+    return false // another contender claimed it, or the holder released — re-evaluate
   }
   try {
     const current = readFileSync(claim, 'utf8')
     if (current.trim() === expected && statSync(claim).ino === expectedIno) {
       unlinkSync(claim)
-      return
+      return true
     }
     try {
       linkSync(claim, lockPath)
@@ -630,6 +748,7 @@ function stealLockSync(lockPath: string, expected: string, expectedIno: number):
     // The claim file is uniquely named; nothing else would ever clean it up.
     try { unlinkSync(claim) } catch { /* already gone */ }
   }
+  return false
 }
 
 /** Release the lock iff the file still carries our token. */
