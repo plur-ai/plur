@@ -227,3 +227,20 @@ it. **Recommendation:** add the test; it is a few lines.
 | 4 | #1275 exception | Remove it, and stop the ladder promoting memories that are queued for or served by a team store (verified by test) | **yes**, it was "keep" |
 | 5 | Memory loading timing | Sync for the first prompt and after compaction; async after | **yes**, it was "sync, 3 s deadline" |
 | 6 | 8b | Add a regression test | — |
+
+---
+
+## Owner decisions — 2026-09-29
+
+| # | Decision | Tracked in |
+|---|---|---|
+| 1 | **A′**: auto-rate on, and automatic feedback adjusts ranking only, never commitment; the negative rule requires the same sentence; auto-capture is opt-in | #1310 |
+| 2 | **A**: opencode on by default (MCP + plugin), with a Windows MCP entry, after a real codeword check | #1311 |
+| 3 | **A**: register correction detection, folded into `hook-inject` | #1312 |
+| 4 | **B, with a link**: a team save always lands in the team store. A same-text personal or global engram stays, so the user has two engrams, and the team copy counts as validation that can raise the personal engram's commitment (never to `locked`). The ladder must never promote an engram that is queued for or served by a team store | PR #1275 (rework) |
+| 5 | **B**: memory is delivered synchronously on the first prompt and after compaction, and later prompts add no visible wait | #1313 |
+| 6 | Add the regression test for item 8b | separate test PR |
+
+Folder map: Q1 is "offer never here → off", Q2 is "ask in `$HOME`", Q3 is "CLI only". The owner
+asked for the design to be compacted around the overlap between `trust.yaml`, `folders.yaml`
+and `.plur.yaml`, which became r2 of the design note. r2 awaits approval.
