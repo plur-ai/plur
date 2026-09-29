@@ -1,12 +1,12 @@
 import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, readSync, statSync, readdirSync, unlinkSync } from 'fs'
 import { dirname, join, resolve } from 'path'
-import { tmpdir, homedir } from 'os'
+import { tmpdir, homedir, hostname } from 'os'
 import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import { recordInjected } from '../lib/auto-rate.js'
-
 import { safeSessionKey } from '../lib/session-key.js'
+import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
 // on the hot path of every prompt; slow networks make this a perceptible
@@ -364,9 +364,29 @@ function processDeferredWrapups(): string | null {
 // RemoteStore.load() that originally motivated it is gone (#776 — the remote
 // leg is a budgeted, awaited call inside injectHybrid), but embedder loads,
 // filesystem stalls, or any future stray async work still need a hard stop.
-// Defaults to 55 s (within the 90 s harness timeout); override via env.
+// #1313: the first-prompt and rehydrate injections are registered SYNC with
+// a 20s Claude Code timeout (lib/claude-inject-budget.ts), so the default is
+// 15s: it fits the 8s hybrid deadline plus a BM25 pass, and exits 0 before
+// Claude Code kills the hook and shows an error. Override via env.
 // The timer is unref()ed so a normal clean exit isn't delayed.
-const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || 55_000
+export const HOOK_CEILING_DEFAULT_MS = 15_000
+const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || HOOK_CEILING_DEFAULT_MS
+
+/**
+ * The first-prompt / rehydrate retrieval (#1313). The hook is sync, so it
+ * cannot wait on an embedder for as long as it takes: hybrid races a soft
+ * deadline (PLUR_HOOK_HYBRID_DEADLINE_MS, default 8s) and BM25 serves the
+ * turn when it is missed or hybrid throws — the same bound the Codex and
+ * Antigravity hooks use.
+ */
+export function injectForHook<O, R>(
+  plur: Injectable<O, R>,
+  task: string,
+  opts: O,
+  deadlineMs?: number,
+): Promise<InjectOutcome<R>> {
+  return injectWithFallback(plur, task, opts, deadlineMs)
+}
 
 // How long before an inject lock is considered stale (defaults to HOOK_CEILING_MS).
 // Separate from HOOK_CEILING_MS so tests can control lock staleness without
@@ -479,6 +499,48 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } finally {
     if (injectLockAcquired) try { unlinkSync(injectLock) } catch {}
   }
+  // #1313: the output (if any) has been flushed — emitContextConfirmed waits
+  // for it. Exit now rather than let the abandoned hybrid search keep a
+  // synchronous hook, and the user's prompt, waiting. But not while this
+  // process may be inside a store write: exiting there leaves the lock file
+  // behind, and every writer (the next hook, the MCP server) then waits on it.
+  if (abandonedHybrid) {
+    if (storeLockPath) await waitForOwnStoreLock(storeLockPath, 5_000)
+    process.exit(0)
+  }
+}
+
+// Set when the hybrid leg missed its deadline and is still running (#1313).
+let abandonedHybrid = false
+let storeLockPath: string | null = null
+
+/**
+ * Wait (bounded) while this process may hold the store's cross-process lock.
+ *
+ * The abandoned hybrid search still records its injection, under
+ * `engrams.yaml.lock`. Measured on a 10,000-engram store: force-exiting right
+ * after the BM25 answer left an EMPTY lock file — the O_EXCL open had
+ * happened, the token write had not — and core cannot tell who owns an empty
+ * lock, so it waits out its 60s stale threshold. Every following first prompt
+ * hit the 15s watchdog and injected nothing.
+ *
+ * Ours = the token names this host and pid. Empty and fresh = possibly ours,
+ * mid-acquire. An empty lock older than 2s belongs to someone else.
+ */
+export async function waitForOwnStoreLock(lockPath: string, maxMs: number): Promise<void> {
+  const until = Date.now() + maxMs
+  const ours = `${hostname()}:${process.pid}:`
+  while (Date.now() < until) {
+    let mayBeOurs = false
+    try {
+      const token = readFileSync(lockPath, 'utf8').trim()
+      mayBeOurs = token === ''
+        ? Date.now() - statSync(lockPath).mtimeMs < 2_000
+        : token.startsWith(ours)
+    } catch { /* no lock file — nothing to wait for */ }
+    if (!mayBeOurs) return
+    await new Promise(r => setTimeout(r, 25))
+  }
 }
 
 async function injectSession(
@@ -567,29 +629,22 @@ async function injectSession(
   let context: string | null = null
   let count = 0
 
-  try {
-    const result = await plur.injectHybrid(task, injectOpts)
-    recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
-    if (result.count > 0) {
-      const parts: string[] = []
-      if (result.directives) parts.push(result.directives)
-      if (result.constraints) parts.push(result.constraints)
-      if (result.consider) parts.push(result.consider)
-      context = parts.join('\n')
-      count = result.count
-    }
-  } catch {
-    // Fall back to BM25 (local-only by design — inject() never dials).
-    const result = await plur.inject(task, injectOpts)
-    recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
-    if (result.count > 0) {
-      const parts: string[] = []
-      if (result.directives) parts.push(result.directives)
-      if (result.constraints) parts.push(result.constraints)
-      if (result.consider) parts.push(result.consider)
-      context = parts.join('\n')
-      count = result.count
-    }
+  // #1313: bounded, because the hook is sync. On a missed deadline or a
+  // hybrid failure, BM25 (local-only by design — inject() never dials)
+  // serves the turn.
+  const { result, mode } = await injectForHook(plur, task, injectOpts)
+  recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
+  // A missed deadline leaves the hybrid search running; it must not hold
+  // the process (and so the prompt) open until the watchdog.
+  abandonedHybrid = mode === 'bm25' && hybridEnabled()
+  storeLockPath = join(plur.storageRoot, 'engrams.yaml.lock')
+  if (result.count > 0) {
+    const parts: string[] = []
+    if (result.directives) parts.push(result.directives)
+    if (result.constraints) parts.push(result.constraints)
+    if (result.consider) parts.push(result.consider)
+    context = parts.join('\n')
+    count = result.count
   }
 
   // A4′ (#776): per-host recall outcomes → JSONL log + rate-limited

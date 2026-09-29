@@ -42,8 +42,8 @@ export interface CodexHooksConfig {
  * 0.149.1 (they were silently skipped in 0.146.0), but an async hook's
  * `additionalContext` is delivered at the "next safe point" — i.e. NOT to
  * the turn that triggered it. For a `codex exec` one-shot that means never.
- * Claude Code's `hook-inject` is async with a 90s timeout to absorb a slow
- * hybrid pass; that trade does not transfer. These hooks are synchronous —
+ * Claude Code's `hook-inject` made the same move to sync for the same reason
+ * (#1313; it was async with a 90s timeout). These hooks are synchronous —
  * hybrid-first with a BM25 fallback on a soft deadline (`injectWithFallback`)
  * — and `codex-hooks.test.ts` asserts the no-async invariant.
  *

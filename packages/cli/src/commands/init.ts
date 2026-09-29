@@ -8,6 +8,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputInfo } from '../output.js'
 import { CLI_VERSION } from '../version.js'
 import { hookCommandPrefix, isPlurHookCommand } from '../lib/hook-command.js'
+import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
@@ -304,19 +305,17 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
 export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
   return {
     // First message: inject engrams based on the prompt.
-    // Subsequent messages: periodic reminder to call plur_learn (~1ms skip).
+    // Subsequent messages: periodic reminder to call plur_learn (~0.1s).
     //
-    // async: the cold-start CLI loads the BGE embedder for hybrid injection —
-    // ~20s+ once the store grows past a few thousand engrams. A sync hook
-    // would block every first prompt that long (or get killed at the timeout
-    // and inject nothing, which is how this was failing for real users).
-    // Async lets the prompt proceed immediately; the injected context arrives
-    // as soon as the search completes. 90s is a generous ceiling, not a
-    // target — typical completion is well under half that.
+    // Sync (#1313): async context arrives only at the next safe point, so a
+    // first reply without tool calls, and every `claude -p`, had no memory.
+    // hook-inject bounds its own work below the timeout (hybrid on a soft
+    // deadline, then BM25; a self-watchdog). Re-running init rewrites old
+    // `async: true` entries, since every plur hook is stripped and re-added.
     UserPromptSubmit: [
       {
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject`, timeout: 90, async: true },
+          { type: 'command', command: `${cmd} hook-inject`, timeout: CLAUDE_INJECT_TIMEOUT_S },
         ],
       },
     ],
@@ -329,7 +328,7 @@ export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: 'compact',
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject --rehydrate`, timeout: 90, async: true },
+          { type: 'command', command: `${cmd} hook-inject --rehydrate`, timeout: CLAUDE_INJECT_TIMEOUT_S },
         ],
       },
     ],
