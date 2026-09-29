@@ -404,6 +404,19 @@ installed". It now removes a PLUR `PostCompact` entry and adds the
 hooks, are left in place. Installs that use the local `~/.plur/bin/plur-hook`
 shim now count as installed too, so re-running no longer adds a second set.
 
+### A refused write to one scope no longer pauses writes to the whole server
+
+**A few refused writes to one scope could stop queued writes to every other
+scope on the same server** (#1308). Each failed outbox push counted toward the
+per-host circuit breaker, including refusals: 401, 403 ("Cannot write to scope
+..."), 404 and 422. Three of those opened the breaker, and the next flush then
+skipped healthy writes to other scopes on that server for five minutes. A
+refusal says the request was wrong, not that the server is down.
+
+Now a 401/403/404/422 answer to an outbox push neither counts toward the
+breaker nor resets it. Network errors, timeouts and 5xx still count, so a
+server that is really down still opens it.
+
 ### Queued writes that can never succeed now say so
 
 **A queued team write the store keeps refusing was silent** (#1299). On one

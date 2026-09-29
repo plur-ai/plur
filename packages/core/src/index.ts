@@ -54,7 +54,7 @@ import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity
 import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, RemoteAbortedError, RemoteHttpError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY } from './store/remote-store.js'
-import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
+import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
@@ -8460,7 +8460,15 @@ export class Plur {
         else delete outbox.last_status
         // #785: and a write failure counts toward the same breaker, so a host
         // that only ever fails on writes still opens one.
-        recordWriteOutcome(storeEntry.url!, false, Date.now(), this.remoteHealthStatePath())
+        //
+        // #1308: except a refusal (401/403/404/422). The host answered; it
+        // said the REQUEST was wrong — no access to this scope, an unknown
+        // scope, an invalid engram. Counting it let a few refused writes to
+        // one scope open the breaker for every scope on the host. It neither
+        // counts nor resets: it says nothing about reachability either way.
+        // Network errors, timeouts and 5xx still count.
+        const refused = err instanceof RemoteHttpError && NEEDS_ACTION_STATUSES.has(err.status)
+        if (!refused) recordWriteOutcome(storeEntry.url!, false, Date.now(), this.remoteHealthStatePath())
         failed++
         logger.warning(`[plur:outbox] retry failed for ${engram.id}: ${(err as Error).message}`)
       }

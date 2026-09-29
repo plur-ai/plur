@@ -78,6 +78,10 @@ export class StubServer {
   /** When set, POST /engrams short-circuits to this error response BEFORE reading
    *  the body — to simulate a server that rejects the write (#912 sanitise test). */
   appendErrorResponse: { status: number; body: string } | null = null
+  /** Per-scope refusal for POST /engrams, keyed by the body's `scope` — to
+   *  simulate a server that refuses one scope while accepting another on the
+   *  same host (#1308). Checked after the body is read. */
+  appendErrorByScope: Record<string, { status: number; body: string }> = {}
   /** Delay before answering POST /engrams, ms — a slow-but-alive remote, for
    *  bounded-flush tests (#1269). The write is still applied when it answers. */
   appendDelayMs = 0
@@ -188,6 +192,7 @@ export class StubServer {
     this.idCounter = 0
     this.badAppendId = null
     this.appendErrorResponse = null
+    this.appendErrorByScope = {}
     this.appendDelayMs = 0
     this.appendCalls = 0
     this.badPatchEcho = null
@@ -290,6 +295,12 @@ export class StubServer {
       this.readBody(req, (body) => {
         this.lastAppendBody = body
         const { statement, scope, domain, type, source } = body
+        const refusal = typeof scope === 'string' ? this.appendErrorByScope[scope] : undefined
+        if (refusal) {
+          res.writeHead(refusal.status, { 'Content-Type': 'text/plain' })
+          res.end(refusal.body)
+          return
+        }
         const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
         const now = new Date().toISOString()
         const engram: StoredEngram = {
