@@ -156,13 +156,26 @@ still happens is when the memory is already global. **Is that acceptable?**
   never syncs to the team store.
 - So "visible everywhere" really means "everywhere *on this machine*."
 
-**Recommendation: B, not A. This reverses what I said yesterday.** Given how global memories
-are stored, the exception reproduces the field-report bug for exactly the rules teams repeat
-most. Remove it, let the team save land in the team store, and deal with the duplicate as a
-tension or recurrence signal (#868 already proposes recurrence as a signal, not a sibling
-memory). **Not verified**: I have not confirmed that a promoted global memory is local-only
-on a machine with a team store configured. The check is a unit test: promote via the ladder,
-then assert which store holds it. I will run it before changing the PR.
+**Verified 2026-09-29.** A throwaway test ran against the in-process stub team store. It is
+not committed.
+- **The ladder rewrites a promoted memory only in the local store** (`index.ts` :2228,
+  saved at :2273-2281). A memory served by the team store is never matched and never
+  rewritten; url stores are skipped at :1819.
+- **With the exception, a later team save matching a locally promoted memory sends nothing
+  to the team store.** Only the local count rises. This is the #1268 failure again, in a
+  narrower form.
+- **A second bug came up.** If the team save was still waiting in the outbox when the ladder
+  promoted it, the queue later pushes it to the team store labelled `scope: global`.
+
+**Recommendation: B, plus one guard. This reverses what I said yesterday.**
+1. Remove the exception, so a team save always reaches the team store.
+2. The ladder must not promote to `global` any memory that is queued for, or served by, a
+   team store. The scope change otherwise happens on the laptop and leaks into the team store
+   through the outbox.
+
+The three ladder tests that break under B get new expectations. The duplicate a promotion
+would have avoided is better handled as a recurrence signal on the memory (#868) than as a
+silent merge.
 
 ---
 
@@ -211,6 +224,6 @@ it. **Recommendation:** add the test; it is a few lines.
 | 1 | Auto-rate / auto-capture | Rate on without commitment promotion; tighter negative rule; capture opt-in | refined |
 | 2 | opencode | On by default (MCP + plugin) after a codeword check; Windows MCP entry | **yes**, the plugin is already published |
 | 3 | correction-detect | Register, folded into hook-inject | **yes**, it was "delete" |
-| 4 | #1275 exception | Remove it, after the unit test confirms global memories stay local | **yes**, it was "keep" |
+| 4 | #1275 exception | Remove it, and stop the ladder promoting memories that are queued for or served by a team store (verified by test) | **yes**, it was "keep" |
 | 5 | Memory loading timing | Sync for the first prompt and after compaction; async after | **yes**, it was "sync, 3 s deadline" |
 | 6 | 8b | Add a regression test | — |
