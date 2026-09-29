@@ -142,20 +142,20 @@ describe('trust dual-write (Folders.lean §3)', () => {
     expect(oldReader(d)).toBe(false)
   })
 
-  it('NEEDS-OWNER evidence: `plur folders rm` of a trusted entry leaves the trust.yaml grant (rm_breaks_inv)', () => {
+  it('decision F2 applied: `plur folders rm` of a trusted entry also revokes the trust.yaml grant (was rm_breaks_inv)', () => {
     const d = mk('rm-me')
     setFolderEntry(root, d, { mode: 'on', trusted: true }, { configuredScopes: [], home })
     expect(oldReader(d)).toBe(true)
     expect(removeFolderEntry(root, d, home)).toBe(true)
     expect(isDirectoryTrusted(d, root)).toBe(false)   // the new reader: revoked
-    expect(oldReader(d)).toBe(true)                    // an adapter on the previous core: still trusted
-    expect(legacy()).toContain(d)
-    // …and losing folders.yaml re-imports the grant.
+    expect(oldReader(d)).toBe(false)                   // an adapter on the previous core: revoked too
+    expect(legacy()).not.toContain(d)
+    // …and losing folders.yaml re-imports nothing.
     rmSync(folderMapPath(root))
-    expect(isDirectoryTrusted(d, root)).toBe(true)
+    expect(isDirectoryTrusted(d, root)).toBe(false)
   })
 
-  it('NEEDS-OWNER evidence: a `~`-spelled grant survives untrust in trust.yaml and a re-import revives it (tilde_breaks_inv)', () => {
+  it('decision F2 applied: a `~`-spelled grant is removed from trust.yaml by untrust, so a re-import revives nothing (was tilde_breaks_inv)', () => {
     const d = mk('src', 'team-repo')
     writeMap([{ path: '~/src/team-repo', scope: 'project:t' }])     // hand-written, as the design note shows
     trustDirectory(d, root)                                          // `plur trust ~/src/team-repo` (shell-expanded)
@@ -163,9 +163,9 @@ describe('trust dual-write (Folders.lean §3)', () => {
     expect(legacy()).toEqual(['~/src/team-repo'])                   // dual-written as the entry's spelling
     expect(untrustDirectory(d, root)).toBe(true)                     // reported as revoked
     expect(isDirectoryTrusted(d, root)).toBe(false)
-    expect(legacy()).toEqual(['~/src/team-repo'])                   // …but still in trust.yaml
+    expect(legacy()).toEqual([])                                     // gone from trust.yaml too
     rmSync(folderMapPath(root))
-    expect(isDirectoryTrusted(d, root)).toBe(true)                   // resurrected by the import
+    expect(isDirectoryTrusted(d, root)).toBe(false)                  // nothing to resurrect
   })
 })
 
@@ -192,15 +192,15 @@ describe('nonces (Folders.lean §4)', () => {
     expect(loadFolderMap(root).folders).toEqual([{ path: a, plur: 'on' }])
   })
 
-  it('NEEDS-OWNER evidence: a failed trust.yaml write after a saved map leaves the nonce live for a second saved write (legacy_fail_two_writes)', () => {
+  it('decision F3 applied: a failed trust.yaml write after a saved map has used the nonce up (was legacy_fail_two_writes)', () => {
     const a = mk('a')
     mkdirSync(join(root, 'trust.yaml'))   // the dual-write's atomic rename onto it fails
     const n = issueFolderNonce(root, 'sess', a)
     expect(() => setFolderEntry(root, a, { mode: 'on', trusted: true }, { configuredScopes: [], nonce: n, home }))
       .toThrow()
     expect(loadFolderMap(root).folders).toEqual([{ path: a, plur: 'on', trusted: true }])   // write 1 saved
-    setFolderEntry(root, a, { mode: 'off' }, { configuredScopes: [], nonce: n, home })     // same nonce accepted
-    expect(loadFolderMap(root).folders).toEqual([{ path: a, plur: 'off', trusted: true }]) // write 2 saved
-    expect(isTrustedInMap(loadFolderMap(root).folders, a, home)).toBe(true)
+    expect(() => setFolderEntry(root, a, { mode: 'off' }, { configuredScopes: [], nonce: n, home }))
+      .toThrow(/already-used|Unknown/)                                                  // same nonce refused
+    expect(loadFolderMap(root).folders).toEqual([{ path: a, plur: 'on', trusted: true }])  // no second write
   })
 })

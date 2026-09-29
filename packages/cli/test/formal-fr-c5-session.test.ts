@@ -91,7 +91,7 @@ describe('formal field-report cluster 5 — session keys and state dir', () => {
     // shared dir and the fallback planted (PLUR_PATH in a shared location), the
     // session task — a copy of the user's prompt — is written through the
     // symlink into a directory the user does not control.
-    it.fails('state never lands in a refused fallback dir', () => {
+    it('state never lands in a refused fallback dir', () => {
       const evilShared = join(root, 'evil-shared')
       const evilFallback = join(root, 'evil-fallback')
       mkdirSync(evilShared)

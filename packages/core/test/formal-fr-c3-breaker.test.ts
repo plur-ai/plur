@@ -47,7 +47,7 @@ describe('formal cluster 3: refusal statuses and the host breaker', () => {
     expect(isHostInCooldown(URL_, Date.now(), statePath).inCooldown).toBe(true)
   })
 
-  it.fails('C4 (Outbox.recall_422_counts): 422 answers on recall never open the host breaker (which the outbox flush then obeys)', async () => {
+  it('C4 (Outbox.recall_422_counts): 422 answers on recall never open the host breaker (which the outbox flush then obeys)', async () => {
     await recallAnswering(422, BREAKER_FAILURE_THRESHOLD)
     expect(isHostInCooldown(URL_, Date.now(), statePath).inCooldown).toBe(false)
   })

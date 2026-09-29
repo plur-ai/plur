@@ -65,7 +65,7 @@ describe('formal field-report cluster 5 — auto-rate write-ahead', () => {
   // is applied whether or not its write-ahead record landed. Any failure to
   // append to `.rated` (disk full, quota, an unwritable file — here the path is
   // a directory) lets the same engram be rated again on every later turn.
-  it.fails('a verdict whose write-ahead record failed is not applied again next turn', async () => {
+  it('a verdict whose write-ahead record failed is not applied again next turn', async () => {
     const mod = await load()
     mod.recordInjected('claude', 'c5-rec', [ID])
     mkdirSync(join(root, 'plur-auto-rate', 'claude-c5-rec.rated'))

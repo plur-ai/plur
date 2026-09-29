@@ -154,7 +154,7 @@ describe('formal cluster 3: exactly-once delivery of outbox writes', () => {
     expect(server.engramCount).toBe(1) // the cut POST landed
   }
 
-  it.fails('C1b/C2 (Outbox.thrown_merge_new_key): an entry without a key keeps the key its cut POST carried, even when the merge-back throws (key-honouring server)', async () => {
+  it('C1b/C2 (Outbox.thrown_merge_new_key): an entry without a key keeps the key its cut POST carried, even when the merge-back throws (key-honouring server)', async () => {
     server.honourIdempotency = true
     const plur = new Plur({ path: dir })
     await queueEntry(plur, 'Legacy queued write without a key', true)
@@ -174,19 +174,25 @@ describe('formal cluster 3: exactly-once delivery of outbox writes', () => {
     expect(server.engramCount).toBe(1) // not re-posted unprobed
   })
 
-  it('C1b good case (Outbox.cut_recorded_no_dup): a cut POST whose merge-back succeeds is probed, not re-posted (key-ignoring server)', async () => {
-    server.ignoreIdempotencyKeys = true
+  it('C1b good case, decision C4: a cut POST whose merge-back succeeds is retried with the same key (key-honouring server: one row)', async () => {
+    // Owner decision C4 (2026-09-29): no in-doubt state and no lookup by key —
+    // a cut push is retried on the next flush with the key already on its row.
+    // A key-honouring server collapses the retry. (Before C4 this pinned the
+    // probe: the cut entry was marked in doubt and looked up before a re-post.)
+    server.honourIdempotency = true
     const plur = new Plur({ path: dir })
     const id = await queueEntry(plur, 'Queued write, cut, merge-back fine', false)
     server.appendDelayMs = 2_000
     await plur.flushOutbox({ timeoutMs: 200 })
     server.appendDelayMs = 0
     await new Promise(r => setTimeout(r, 2_200))
-    expect(outboxOf(plur, id)?.in_doubt).toBe(true)
+    expect(outboxOf(plur, id)?.in_doubt).toBeUndefined()
+    expect(outboxOf(plur, id)?.idempotency_key).toBeTruthy()
     const r = await plur.flushOutbox({ timeoutMs: 5_000 })
-    expect(r.flushed).toBe(0)
+    expect(r.flushed).toBe(1)
     expect(server.engramCount).toBe(1)
-    expect(await plur.outboxCount()).toBe(1) // kept, never dropped
+    expect(new Set(server.appendKeys.filter(Boolean)).size).toBe(1)
+    expect(await plur.outboxCount()).toBe(0)
   })
 
   it.fails("C1a (Outbox.firstLeg_timeout_dup): learn()'s background push that timed out after the server stored it is not posted again unprobed (key-ignoring server)", async () => {

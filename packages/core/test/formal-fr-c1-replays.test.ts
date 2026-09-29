@@ -69,13 +69,13 @@ describe('formal field-report cluster 1 — replays', () => {
     // CONFIRMED: wouldDeduplicate() still answers with a cross-scope hit for a
     // SHARED scope, although learn() writes the team copy (A1). The importer
     // asks it first (Decision R) and skips — the record never reaches project:b.
-    it.fails('wouldDeduplicate() agrees with learn() for a shared scope (null: learn() writes a new row)', async () => {
+    it('wouldDeduplicate() agrees with learn() for a shared scope (null: learn() writes a new row)', async () => {
       const plur = new Plur({ path: dir })
       await plur.learn('Run the linter before every commit', { scope: 'project:a' })
       expect(await plur.wouldDeduplicate('Run the linter before every commit', { scope: 'project:b' })).toBeNull()
     })
 
-    it.fails('importer: a shared-scope record whose text exists in another scope is imported into its own scope', async () => {
+    it('importer: a shared-scope record whose text exists in another scope is imported into its own scope', async () => {
       const plur = new Plur({ path: dir })
       await plur.learn('Run the linter before every commit', { scope: 'project:a' })
       const report = await runImport(plur, [{ statement: 'Run the linter before every commit' }], { from: 'generic', scope: 'project:b' })
@@ -90,7 +90,7 @@ describe('formal field-report cluster 1 — replays', () => {
     // never injected — schemas/engram.ts) like `decided` and steps it into
     // `locked`. feedback.ts's nextCommitment leaves `draft` untouched on
     // purpose ("unknown means not mine to advance").
-    it.fails('a draft engram hit by the ladder stays draft', async () => {
+    it('a draft engram hit by the ladder stays draft', async () => {
       const plur = new Plur({ path: dir })
       const d = await plur.learn('rotate signing keys every quarter', { scope: 'project:a' })
       patchRow(d.id, { commitment: 'draft' })
@@ -115,7 +115,7 @@ describe('formal field-report cluster 1 — replays', () => {
     // `_promoteTeamCopy`, whose new global copy is stepped with
     // `lockBlocked = false` — the hit's unresolved tension is never consulted,
     // so the copy locks.
-    it.fails('copy-on-promote honours the hit\'s tension: the global copy does not lock', async () => {
+    it('copy-on-promote honours the hit\'s tension: the global copy does not lock', async () => {
       queuedStore()
       const plur = new Plur({ path: dir })
       const queued = await plur.learnRouted('rotate signing keys every quarter', { scope: ENG })
@@ -137,7 +137,7 @@ describe('formal field-report cluster 1 — replays', () => {
     // are registered for the same scope (url first), a dedup hit on the PATH
     // store's row is reported `remote` — nothing was POSTed and the row lives
     // in a local file.
-    it.fails('a dedup hit on a local path-store row is not reported remote', async () => {
+    it('a dedup hit on a local path-store row is not reported remote', async () => {
       const teamDir = mkdtempSync(join(tmpdir(), 'plur-fr-c1-team-'))
       try {
         const seed = new Plur({ path: teamDir })

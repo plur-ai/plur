@@ -5729,9 +5729,11 @@ export class Plur {
       const held = JSON.parse(fs.readFileSync(this._outboxClaimPath(id), 'utf8')) as
         { pid?: number; host?: string; until?: number; at?: number }
       if (!this._outboxClaimHeld(held, now)) return undefined
-      // A live same-host owner holds its claim past `until` (C3, #1277):
-      // report at least a minute ahead so a push in progress never reads as stuck.
-      const until = Math.max(typeof held.until === 'number' ? held.until : 0, now + OUTBOX_CLAIM_LEASE_MS)
+      // A live same-host owner holds its claim past `until` (C3, #1277), up to
+      // the age cap: past `until`, report the cap so a push in progress never
+      // reads as stuck. Derived from the file alone, so every reader agrees.
+      let until = typeof held.until === 'number' ? held.until : 0
+      if (until <= now && typeof held.at === 'number') until = held.at + OUTBOX_CLAIM_MAX_AGE_MS
       return new Date(until).toISOString()
     } catch { return undefined }
   }

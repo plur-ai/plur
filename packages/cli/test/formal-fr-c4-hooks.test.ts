@@ -41,8 +41,10 @@ describe('H2 matcher (Adapters.lean §10)', () => {
     for (const l of HISTORIC_LAUNCHERS) for (const s of SUBS) expect(isPlurHookCommand(`${l} ${s}`), `${l} ${s}`).toBe(true)
   })
 
-  it('holds: the exec forms H3 writes are PLUR\'s', () => {
-    expect(isPlurHookSpec(claudeHookSpec({ plat: 'win32', shellCmd: 'npx -y @plur-ai/cli@0.21.0', node: 'C:/n/node.exe', cliEntry: 'C:/g/node_modules/@plur-ai/cli/dist/index.js' }, 'hook-inject'))).toBe(true)
+  it('holds: the exec forms H3 writes are PLUR\'s — node + entry only once `plur init` recorded that entry (decision F4)', () => {
+    // Decision F4 (#1270): an exec-form spec is PLUR's only for a CLI entry
+    // plur-hook.meta.json records. None is recorded in this test's HOME.
+    expect(isPlurHookSpec(claudeHookSpec({ plat: 'win32', shellCmd: 'npx -y @plur-ai/cli@0.21.0', node: 'C:/n/node.exe', cliEntry: 'C:/g/node_modules/@plur-ai/cli/dist/index.js' }, 'hook-inject'))).toBe(false)
     expect(isPlurHookSpec(claudeHookSpec({ plat: 'win32', shellCmd: 'npx -y @plur-ai/cli@0.21.0', node: 'C:/n/node.exe', cliEntry: null }, 'hook-inject'))).toBe(true)
   })
 
@@ -62,27 +64,26 @@ describe('H2 matcher (Adapters.lean §10)', () => {
     expect(_isPlurClaudeHookSpec({ args: ['x'] })).toBe(false)
   })
 
-  it('NEEDS-OWNER evidence: a user command that CONTAINS a PLUR invocation is claimed (embedded_claimed)', () => {
+  it('decision F4 applied: a user command that CONTAINS a PLUR invocation is the user\'s (was embedded_claimed)', () => {
     for (const c of [
       `${SHIM} hook-inject && /Users/a/bin/notify.sh`,        // user chained their own step
       `/usr/bin/nice -n 10 ${SHIM} hook-inject`,              // user wrapper
       `echo ${SHIM} hook-inject >> /Users/a/hooks.log`,       // mentions it as data
       'echo run npx @plur-ai/cli hook-inject later',
-    ]) expect(isPlurHookCommand(c), c).toBe(true)
-    // Not claimed: the subcommand must end at whitespace, so a quoted mention is safe.
+    ]) expect(isPlurHookCommand(c), c).toBe(false)
     expect(isPlurHookCommand(`echo "${SHIM} hook-inject" >> /Users/a/hooks.log`)).toBe(false)
-    // Exec form: any checkout whose entry ends in /packages/cli/dist/index.js.
-    expect(isPlurHookSpec({ command: 'C:/n/node.exe', args: ['C:/work/mytool/packages/cli/dist/index.js', 'hook-deploy'] })).toBe(true)
+    // Exec form: only a recorded CLI entry, not any checkout's dist/index.js.
+    expect(isPlurHookSpec({ command: 'C:/n/node.exe', args: ['C:/work/mytool/packages/cli/dist/index.js', 'hook-deploy'] })).toBe(false)
   })
 
-  it('NEEDS-OWNER evidence: re-running the Codex install deletes the user\'s chained step', () => {
+  it('decision F4 applied: re-running the Codex install keeps the user\'s chained step', () => {
     const userCmd = `${SHIM} hook-codex-session-end && /Users/a/bin/notify.sh`
     const next = mergeCodexHooks(
       { hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: userCmd }] }] } },
       buildCodexHooks(SHIM),
     )
     const cmds = Object.values(next.hooks ?? {}).flatMap(es => es.flatMap(e => e.hooks.map(h => h.command)))
-    expect(cmds).not.toContain(userCmd)
+    expect(cmds).toContain(userCmd)
   })
 })
 
