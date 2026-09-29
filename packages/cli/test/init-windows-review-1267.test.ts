@@ -15,6 +15,7 @@ import { pathToFileURL } from 'url'
 import { execFileSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
 import { readCodexPlurMcpEntry } from '../src/mcp-config.js'
+import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 const WIN32_PRELOAD = pathToFileURL(join(__dirname, 'helpers', 'win32-platform.mjs')).href
@@ -66,7 +67,7 @@ describe('#1267 review follow-ups (spawned CLI, win32 stub, home with a space)',
     try {
       return execFileSync(process.execPath, ['--import', WIN32_PRELOAD, CLI, ...args], {
         encoding: 'utf-8', timeout: 30000, cwd: home,
-        env: { ...process.env, HOME: home, USERPROFILE: home, PATH: `${bin}:${process.env.PATH}` },
+        env: { ...isolatedHomeEnv(home), PATH: `${bin}:${process.env.PATH}` },
       })
     } catch (err: any) {
       return err.stdout?.toString() ?? ''

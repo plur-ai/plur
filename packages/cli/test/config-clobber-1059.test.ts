@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 import { readConfigForWrite } from '../src/mcp-config.js'
 import { builtCliPath } from './helpers/built-cli.js'
+import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 
@@ -72,7 +73,7 @@ describe('plur init --antigravity against a damaged mcp_config.json (the #1059 r
         encoding: 'utf-8',
         timeout: 30000,
         cwd: home,
-        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: join(home, '.plur') },
+        env: { ...isolatedHomeEnv(home), PLUR_PATH: join(home, '.plur') },
       })
     } catch (err) {
       out = String((err as { stdout?: unknown }).stdout ?? '')
@@ -112,7 +113,7 @@ describe('plur init against a damaged ~/.claude/settings.json (evaluator audit, 
     try {
       out = execSync(`node ${CLI} init --global --no-prompt --no-cursor --no-desktop --no-codex --no-antigravity`, {
         encoding: 'utf-8', timeout: 30000, cwd: home,
-        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: join(home, '.plur') },
+        env: { ...isolatedHomeEnv(home), PLUR_PATH: join(home, '.plur') },
       })
     } catch (err) {
       out = String((err as { stdout?: unknown }).stdout ?? '')

@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
+import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 
@@ -23,7 +24,7 @@ describe('plur doctor', () => {
       const stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
         encoding: 'utf-8',
         timeout: 15000,
-        env: { ...process.env, HOME: home, USERPROFILE: home },
+        env: isolatedHomeEnv(home),
         cwd: home,
       })
       return { stdout, status: 0 }
@@ -63,7 +64,7 @@ describe('plur doctor', () => {
           // Skip the embedder model probe — this test only checks env-derived
           // backend/embedder detection, and 4 spawns × a cold model load blows
           // the vitest timeout.
-          env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_DISABLE_EMBEDDINGS: '1', ...over },
+          env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1', ...over },
         })
       } catch (err: any) { out = err.stdout?.toString() ?? '' } // doctor exits 1 on empty env
       const report = JSON.parse(out)
@@ -94,7 +95,7 @@ describe('plur doctor', () => {
           out = execSync(`node ${CLI} doctor --no-handshake --json`, {
             encoding: 'utf-8', timeout: 15000, cwd: home,
             env: {
-              ...process.env, HOME: home, USERPROFILE: home,
+              ...isolatedHomeEnv(home),
               PLUR_PATH: store, PLUR_DISABLE_EMBEDDINGS: '1', PLUR_BACKEND: '', ...over,
             },
           })
@@ -280,7 +281,7 @@ describe('plur doctor', () => {
       stdout = execSync(`node ${CLI} doctor --json`, {
         encoding: 'utf-8',
         timeout: 30000,
-        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_DISABLE_EMBEDDINGS: '1' },
+        env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
         cwd: home,
       })
     } catch (err: any) {
@@ -325,7 +326,7 @@ describe('plur doctor', () => {
       stdout = execSync(`node ${CLI} doctor --json`, {
         encoding: 'utf-8',
         timeout: 30000,
-        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_DISABLE_EMBEDDINGS: '1' },
+        env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
         cwd: home,
       })
     } catch (err: any) {
@@ -708,7 +709,7 @@ describe('plur doctor', () => {
       try {
         return execSync(`node ${CLI} doctor --no-handshake --json`, {
           encoding: 'utf-8', timeout: 15000,
-          env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: plurDir, PLUR_DOCTOR_TIMEOUT: '2' },
+          env: { ...isolatedHomeEnv(home), PLUR_PATH: plurDir, PLUR_DOCTOR_TIMEOUT: '2' },
           cwd: home,
         })
       } catch (err: any) { return err.stdout?.toString() ?? '' }
@@ -816,7 +817,7 @@ describe('plur doctor', () => {
         stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
           encoding: 'utf-8',
           timeout: 15000,
-          env: { ...process.env, HOME: home, USERPROFILE: home },
+          env: isolatedHomeEnv(home),
           cwd: operatorCwd, // NOT `home` — the package is invisible from every real resolution root
         })
       } catch (err: any) {

@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir, platform } from 'os'
 import { execSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
+import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 
@@ -27,7 +28,7 @@ describe('plur init', () => {
     return execSync(`node ${CLI} init --global --no-desktop ${extra}`, {
       encoding: 'utf-8',
       timeout: 15000,
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env: isolatedHomeEnv(home),
       cwd: home,
     })
   }
@@ -244,7 +245,7 @@ describe('plur init', () => {
       execSync(`node ${CLI} init --project --no-desktop`, {
         encoding: 'utf-8',
         timeout: 15000,
-        env: { ...process.env, HOME: home, USERPROFILE: home },
+        env: isolatedHomeEnv(home),
         cwd: project,
       })
 

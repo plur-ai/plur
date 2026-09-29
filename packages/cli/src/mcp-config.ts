@@ -414,16 +414,35 @@ export function mergePlurMcp(config: Record<string, unknown>, opts?: { env?: Rec
  * Returns true when the entry was rewritten (caller persists the config).
  */
 export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { env?: Record<string, string> }): boolean {
+  return healPlurMcpEntry(config, opts) !== null
+}
+
+/**
+ * `upgradePlurMcpEntry`, returning what was healed for init's status line,
+ * or null when nothing was rewritten. The three shapes have nothing in
+ * common but the rewrite, so the line names the one that applied (#1304):
+ *
+ *   - `upgraded stale npx entry` — the @latest/bare npx entry (#1069);
+ *   - `healed the old plur-mcp.cmd entry …` — Windows (#1267);
+ *   - `repaired the node.exe entry …` — Windows, the node binary or js entry
+ *     it named is gone or differs from the one resolved now (#1267).
+ *
+ * The Windows lines also name what was written: the node.exe launcher, or
+ * the pinned `cmd.exe /c npx` fallback.
+ */
+export function healPlurMcpEntry(config: Record<string, unknown>, opts?: { env?: Record<string, string> }): string | null {
   const servers = (config.mcpServers ?? {}) as Record<string, McpServerEntry | undefined>
   const existing = servers.plur
-  if (!existing) return false
+  if (!existing) return null
   const ownNodeEntry = isOwnWin32NodeEntry(existing)
-  if (!isRaceyPlurNpxEntry(existing) && !isOwnWin32CmdShimEntry(existing) && !ownNodeEntry) return false
-  if (ownNodeEntry && !nodeEntryNeedsHealing(existing)) return false
+  const racey = isRaceyPlurNpxEntry(existing)
+  const cmdShim = isOwnWin32CmdShimEntry(existing)
+  if (!racey && !cmdShim && !ownNodeEntry) return null
+  if (ownNodeEntry && !nodeEntryNeedsHealing(existing)) return null
   const effectiveOpts = opts ?? (existing.env ? { env: existing.env } : undefined)
   const recommended = buildMcpServerEntry(effectiveOpts)
   if (recommended.command === existing.command &&
-      JSON.stringify(recommended.args) === JSON.stringify(existing.args ?? [])) return false
+      JSON.stringify(recommended.args) === JSON.stringify(existing.args ?? [])) return null
   // Field-level MERGE, not object replacement (0.19.1 data-loss audit,
   // finding 2): a user entry can carry keys we never modeled — type, cwd,
   // timeout, disabled, envFile — and `servers.plur = recommended` silently
@@ -435,7 +454,12 @@ export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { en
     ...(recommended.env ? { env: recommended.env } : {}),
   }
   config.mcpServers = servers as Record<string, unknown>
-  return true
+  if (racey) return 'upgraded stale npx entry'
+  const now = recommended.command.toLowerCase() === 'cmd.exe'
+    ? 'the pinned cmd.exe /c npx fallback (@plur-ai/mcp\'s js entry could not be resolved)'
+    : 'node.exe + @plur-ai/mcp'
+  if (cmdShim) return `healed the old plur-mcp.cmd entry (current Node cannot start a .cmd); now ${now}`
+  return `repaired the node.exe entry (the node binary or @plur-ai/mcp path it named was stale); now ${now}`
 }
 
 /**
@@ -446,9 +470,37 @@ export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { en
  * the user's and is never touched.
  */
 export function isOwnWin32CmdShimEntry(entry: McpServerEntry): boolean {
+  return isOwnWin32CmdShimCommand(entry.command ?? '') && (entry.args ?? []).length === 0
+}
+
+/**
+ * Is this command PLUR's old Windows `plur-mcp.cmd` shim? The detection half
+ * of `isOwnWin32CmdShimEntry`, without the "nothing else in the entry" rule
+ * that only the automatic heal needs: whatever else the entry carries, that
+ * command cannot start (`spawn EINVAL`), so `plur doctor` flags it (#1366).
+ */
+export function isOwnWin32CmdShimCommand(command: string): boolean {
   if (platform() !== 'win32') return false
-  const cmd = (entry.command ?? '').replace(/\\/g, '/').replace(/"/g, '').toLowerCase()
-  return cmd.endsWith('/.plur/bin/plur-mcp.cmd') && (entry.args ?? []).length === 0
+  return command.replace(/\\/g, '/').replace(/"/g, '').toLowerCase().endsWith('/.plur/bin/plur-mcp.cmd')
+}
+
+/**
+ * The `command` of the `[mcp_servers.plur]` table in Codex's config.toml, or
+ * null. Lenient where `readCodexPlurMcpEntry` is strict: other keys,
+ * subtables and multi-line arrays in the table are ignored. For detection
+ * only (doctor's `codexCmdShimMcp`, init's refusal message), never to decide
+ * that an entry is safe to remove and re-add (#1366).
+ */
+export function readCodexPlurMcpCommand(toml: string): string | null {
+  const lines = toml.split(/\r?\n/)
+  const start = lines.findIndex((l) => /^\s*\[mcp_servers\.plur\]\s*(#.*)?$/.test(l))
+  if (start === -1) return null
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*\[/.test(line)) break
+    const m = /^\s*command\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/.exec(line)
+    if (m) return m[2] !== undefined ? m[2] : m[1].replace(/\\(["\\])/g, '$1')
+  }
+  return null
 }
 
 /**
@@ -459,18 +511,33 @@ export function isOwnWin32CmdShimEntry(entry: McpServerEntry): boolean {
  * (with `\\` and `\"` escapes) and literal strings. Anything it cannot read
  * returns null, which callers treat as "not PLUR's entry", so an unusual
  * hand-written table is left alone rather than misread (#1267).
+ *
+ * That includes a table carrying anything besides `command` and `args`: an
+ * inline `env = {…}`, another key such as `startup_timeout_sec`, a
+ * `[mcp_servers.plur.env]` (or any other `mcp_servers.plur.*`) subtable, or
+ * an `args` array that does not close on its own line. Healing such an entry
+ * through `codex mcp remove` + `codex mcp add` would drop those settings — a
+ * lost `PLUR_PATH` silently moves the user's memory to the default store —
+ * so it is not treated as PLUR's (#1366).
  */
 export function readCodexPlurMcpEntry(toml: string): McpServerEntry | null {
   const lines = toml.split(/\r?\n/)
   const start = lines.findIndex((l) => /^\s*\[mcp_servers\.plur\]\s*(#.*)?$/.test(l))
   if (start === -1) return null
+  if (lines.some((l) => /^\s*\[\[?\s*mcp_servers\.plur\./.test(l))) return null
   const STRING = /"((?:[^"\\]|\\.)*)"|'([^']*)'/g
   let command: string | null = null
   let args: string[] = []
   for (const line of lines.slice(start + 1)) {
     if (/^\s*\[/.test(line)) break
+    if (/^\s*(#.*)?$/.test(line)) continue
     const kv = /^\s*(command|args)\s*=\s*(.*)$/.exec(line)
-    if (!kv) continue
+    if (!kv) return null
+    // Everything outside the strings must be the expected punctuation: one
+    // string for command, a closed `[...]` for args, then an optional comment.
+    const rest = kv[2].replace(STRING, '""')
+    const shape = kv[1] === 'command' ? /^""\s*(#.*)?$/ : /^\[\s*(""\s*,\s*)*(""\s*)?\]\s*(#.*)?$/
+    if (!shape.test(rest)) return null
     const values: string[] = []
     for (const m of kv[2].matchAll(STRING)) {
       values.push(m[2] !== undefined ? m[2] : m[1].replace(/\\(["\\])/g, '$1'))
@@ -517,16 +584,32 @@ export function isOwnWin32NodeEntry(entry: McpServerEntry): boolean {
  */
 export function missingNodeEntryPaths(entry: McpServerEntry): string[] {
   if (!isOwnWin32NodeEntry(entry)) return []
-  return [entry.command, entry.args[0]].filter((p) => !existsSync(p))
+  // A bare `node` / `node.exe` is resolved through PATH at spawn time, so
+  // existsSync on it says nothing about whether it runs (#1302).
+  const paths = isPathResolvedCommand(entry.command) ? [entry.args[0]] : [entry.command, entry.args[0]]
+  return paths.filter((p) => !existsSync(p))
+}
+
+/**
+ * A command with no path separator (`node`, `node.exe`) is looked up through
+ * PATH when it is spawned. PLUR itself always writes an absolute node path
+ * (`process.execPath`), so an entry naming a bare `node` was written by the
+ * user: it keeps working across Node upgrades, and init must never pin it to
+ * a version-specific path or replace it with the npx fallback (#1302, #1339).
+ */
+export function isPathResolvedCommand(command: string): boolean {
+  return !/[\\/]/.test(command)
 }
 
 /**
  * Does PLUR's own node-form entry need rewriting? Yes when the node binary or
  * the js entry it names is gone, or when the js entry differs from the one
  * `plur init` resolved this run (plur-mcp.meta.json). A working entry is left
- * alone when nothing resolves now.
+ * alone when nothing resolves now. A PATH-resolved `node` is the user's own
+ * choice and is never rewritten (#1302).
  */
 function nodeEntryNeedsHealing(entry: McpServerEntry): boolean {
+  if (isPathResolvedCommand(entry.command)) return false
   if (missingNodeEntryPaths(entry).length > 0) return true
   const resolvedNow = findMcpJsEntry()
   return resolvedNow !== null && !sameWin32Path(resolvedNow, entry.args[0])

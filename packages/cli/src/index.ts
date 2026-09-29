@@ -10,6 +10,18 @@ import { CLI_VERSION as VERSION } from './version.js'
 // --- Main ---
 const argv = process.argv.slice(2)
 
+// Hook probe (decision H3's Windows CI job): with PLUR_HOOK_PROBE set to a
+// file path, a hook-* invocation appends its subcommand to that file and
+// exits 0 without running. The job runs every hook string `plur init`
+// generated through bash, pwsh and cmd, and this proves each one reached
+// the CLI with the right subcommand. Unset (always, outside that job), it
+// does nothing.
+if (process.env.PLUR_HOOK_PROBE && /^hook-/.test(argv[0] ?? '')) {
+  const { appendFileSync } = await import('fs')
+  appendFileSync(process.env.PLUR_HOOK_PROBE, `${argv[0]}\n`)
+  process.exit(0)
+}
+
 if (argv.includes('--version') || argv.includes('-v')) {
   console.log(VERSION)
   process.exit(0)

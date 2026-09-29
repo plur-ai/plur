@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { homedir, platform } from 'os'
 import { atomicWrite } from '@plur-ai/core'
-import { buildMcpServerEntry, isOwnWin32NodeEntry, missingNodeEntryPaths } from './mcp-config.js'
+import { buildMcpServerEntry, isOwnWin32NodeEntry, isPathResolvedCommand, missingNodeEntryPaths } from './mcp-config.js'
 
 /**
  * Support for opencode's config file: `~/.config/opencode/opencode.json`
@@ -180,6 +180,22 @@ export const PLUR_OPENCODE_PLUGIN = '@plur-ai/opencode'
 const PLUGIN = PLUR_OPENCODE_PLUGIN
 
 /**
+ * Is this `plugin: [...]` element PLUR's plugin, in any form opencode
+ * accepts: the bare name, a version- or tag-pinned spec
+ * (`@plur-ai/opencode@0.1.1`, `@plur-ai/opencode@latest`), or the tuple form
+ * `["@plur-ai/opencode", { ...options }]`. Compared by package name, the way
+ * opencode deduplicates plugins, so a user's pin or options are recognised
+ * and never shadowed by a second, bare entry appended after them (#1335).
+ * Another package (`@plur-ai/opencode-extra`) does not match.
+ */
+export function isPlurOpencodePluginEntry(entry: unknown): boolean {
+  const spec = Array.isArray(entry) ? entry[0] : entry
+  if (typeof spec !== 'string') return false
+  const at = spec.indexOf('@', 1)
+  return (at === -1 ? spec : spec.slice(0, at)) === PLUGIN
+}
+
+/**
  * A read-only snapshot of what an opencode config file currently declares for
  * PLUR — no writes, no side effects. Exists so `plur doctor`'s opencode leg
  * can report on the SAME file `writeOpencodeConfig` would write, using the
@@ -198,10 +214,18 @@ export interface OpencodeConfigSnapshot {
    * when the file doesn't exist — there is nothing unsafe about "not there".
    */
   ok: boolean
-  /** `plugin` is an array containing `PLUR_OPENCODE_PLUGIN`. False when `ok` is false. */
+  /** `plugin` is an array containing `PLUR_OPENCODE_PLUGIN` in any form (`isPlurOpencodePluginEntry`). False when `ok` is false. */
   pluginDeclared: boolean
   /** `mcp.plur` is present (any non-null value). False when `ok` is false. */
   mcpPlurDeclared: boolean
+  /**
+   * The paths PLUR's own win32 node-form `mcp.plur` entry names that no
+   * longer exist (`missingNodeEntryPaths`): typically the version-specific
+   * node binary after a Node upgrade (#1339). Empty for a healthy entry, a
+   * PATH-resolved `node`, any entry that is not PLUR's node form, and off
+   * win32.
+   */
+  mcpPlurMissingPaths: string[]
 }
 
 /**
@@ -213,28 +237,34 @@ export interface OpencodeConfigSnapshot {
  */
 export function readOpencodeConfig(configPath: string): OpencodeConfigSnapshot {
   if (!existsSync(configPath)) {
-    return { exists: false, ok: true, pluginDeclared: false, mcpPlurDeclared: false }
+    return { exists: false, ok: true, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
   }
 
   let parsed: unknown
   try {
     parsed = JSON.parse(readFileSync(configPath, 'utf8'))
   } catch {
-    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false }
+    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
   }
   if (!isPlainObject(parsed)) {
-    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false }
+    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
   }
   if (parsed.plugin !== undefined && parsed.plugin !== null && !Array.isArray(parsed.plugin)) {
-    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false }
+    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
   }
   if (parsed.mcp !== undefined && parsed.mcp !== null && !isPlainObject(parsed.mcp)) {
-    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false }
+    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
   }
 
-  const pluginDeclared = Array.isArray(parsed.plugin) && (parsed.plugin as unknown[]).includes(PLUGIN)
+  const pluginDeclared = Array.isArray(parsed.plugin) && (parsed.plugin as unknown[]).some(isPlurOpencodePluginEntry)
   const mcpPlurDeclared = isPlainObject(parsed.mcp) && parsed.mcp.plur !== undefined && parsed.mcp.plur !== null
-  return { exists: true, ok: true, pluginDeclared, mcpPlurDeclared }
+  let mcpPlurMissingPaths: string[] = []
+  const entry = mcpPlurDeclared ? (parsed.mcp as Record<string, unknown>).plur : null
+  if (isPlainObject(entry) && entry.type === 'local' && Array.isArray(entry.command) && entry.command.length === 2 &&
+      typeof entry.command[0] === 'string' && typeof entry.command[1] === 'string') {
+    mcpPlurMissingPaths = missingNodeEntryPaths({ command: entry.command[0], args: [entry.command[1]] })
+  }
+  return { exists: true, ok: true, pluginDeclared, mcpPlurDeclared, mcpPlurMissingPaths }
 }
 
 /**
@@ -291,7 +321,8 @@ function sameWin32Path(a: string, b: string): boolean {
  * Code entry, through its own predicates: the entry must be
  * `[<node(.exe)>, <@plur-ai/mcp js entry>]` (`isOwnWin32NodeEntry`); it is
  * rewritten when a path it names is gone (`missingNodeEntryPaths`), or when
- * today's command is itself the node form and names a different js entry. A working entry is never replaced by the npx fallback. Any
+ * today's command is itself the node form and names a different js entry. A working entry is never replaced by the npx fallback, and an entry
+ * whose node is PATH-resolved (a bare `node`) is never rewritten. Any
  * other shape — another script, extra args, another launcher — is the
  * user's and is never touched.
  */
@@ -301,6 +332,9 @@ function staleOwnWin32NodeCommand(entry: unknown, cliVersion: string): string[] 
   if (!Array.isArray(cmd) || cmd.length !== 2 || typeof cmd[0] !== 'string' || typeof cmd[1] !== 'string') return null
   const asEntry = { command: cmd[0], args: [cmd[1]] }
   if (!isOwnWin32NodeEntry(asEntry)) return null
+  // A bare `node` resolves through PATH and survives Node upgrades; PLUR
+  // never writes one, so it is the user's and is left alone (#1339).
+  if (isPathResolvedCommand(cmd[0])) return null
   const now = opencodeMcpCommand(cliVersion)
   if (missingNodeEntryPaths(asEntry).length > 0) return now
   // Only the js entry is compared, like the Claude Code heal
@@ -381,7 +415,9 @@ export function writeOpencodeConfig(
   const before = JSON.stringify(cfg)
 
   const plugins = Array.isArray(cfg.plugin) ? cfg.plugin as unknown[] : []
-  if (!plugins.includes(PLUGIN)) plugins.push(PLUGIN)
+  // An existing PLUR entry — pinned, tagged or a tuple with options — is the
+  // user's choice and is left exactly as it is (#1335).
+  if (!plugins.some(isPlurOpencodePluginEntry)) plugins.push(PLUGIN)
   cfg.plugin = plugins
 
   const mcp: Record<string, unknown> = isPlainObject(cfg.mcp) ? cfg.mcp : {}

@@ -61,6 +61,8 @@ describe('plur init sets up opencode by default (#1311)', { timeout: 60000 }, ()
     expect(cfg.mcp.plur.enabled).toBe(true)
     expect(out).toContain('Opencode: config created')
     expect(out).not.toContain('not yet published')
+    // #1338: say it was auto-detected, that the write is global, and how to skip it.
+    expect(out).toMatch(/Opencode: config created \([^)]*\) \(auto-detected; global, applies to every opencode project; pass --no-opencode to skip\)/)
   })
 
   it('leaves opencode alone when its config dir does not exist', () => {
@@ -77,8 +79,11 @@ describe('plur init sets up opencode by default (#1311)', { timeout: 60000 }, ()
   })
 
   it('--opencode still forces it when no config dir exists', () => {
-    runInit(['--opencode'])
+    const out = runInit(['--opencode'])
     expect(readOc().plugin).toEqual(['@plur-ai/opencode'])
+    // #1338: forced, so not "auto-detected"; still global.
+    expect(out).toContain('(global, applies to every opencode project)')
+    expect(out).not.toContain('auto-detected')
   })
 
   it('a re-run is byte-for-byte idempotent', () => {

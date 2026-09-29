@@ -7,14 +7,23 @@ import { createInterface } from 'readline'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputInfo } from '../output.js'
 import { CLI_VERSION } from '../version.js'
-import { hookCommandPrefix, isPlurHookCommand } from '../lib/hook-command.js'
+import {
+  hookCommandPrefix,
+  isPlurHookSpec,
+  claudeHookSpec,
+  windowsHookCommand,
+  resolveShortPath,
+  useClaudeExecForm,
+  claudeVersionOutput,
+  type StringHookHost,
+} from '../lib/hook-command.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
   hasPlurMcp,
   mergePlurMcp,
-  upgradePlurMcpEntry,
+  healPlurMcpEntry,
   readConfigForWrite,
   writeConfig,
   cursorProjectMcpConfigPath,
@@ -24,7 +33,9 @@ import {
   codexHooksConfigPath,
   codexConfigTomlPath,
   readCodexPlurMcpEntry,
+  readCodexPlurMcpCommand,
   isOwnWin32CmdShimEntry,
+  isOwnWin32CmdShimCommand,
   agyConfigDir,
   agyHooksConfigPath,
   agyMcpConfigPath,
@@ -105,10 +116,19 @@ interface HookEntry {
   hooks: Array<{
     type: string
     command: string
+    /** Exec form (decision H3, Windows): argv spawned with no shell. */
+    args?: string[]
     timeout?: number
     async?: boolean
   }>
 }
+
+/**
+ * Builds the launch part of one Claude Code hook: `{ command }` (a shell
+ * string, darwin/linux) or `{ command, args }` (exec form, Windows).
+ * See `claudeHookSpec`.
+ */
+type HookLaunch = (sub: string, ...extra: string[]) => { command: string; args?: string[] }
 
 // ── Hook shim installation ──────────────────────────────────────────────────
 // Instead of using `npx @plur-ai/cli hook-*` (slow, races on version bumps),
@@ -258,12 +278,12 @@ function installMcpBinary(): { shimPath: string; status: string } {
 // Installed into global ~/.claude/settings.json unconditionally (issue #95) so
 // they fire from any subdirectory project. Each hook silent-passes when
 // isPlurConfigured() is false, so projects without plur are unaffected.
-function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
+function buildEnforcementHooks(mk: HookLaunch): Record<string, HookEntry[]> {
   return {
     SessionStart: [
       {
         hooks: [
-          { type: 'command', command: `${cmd} hook-session-remind`, timeout: 3 },
+          { type: 'command', ...mk('hook-session-remind'), timeout: 3 },
         ],
       },
     ],
@@ -274,7 +294,7 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
     SessionEnd: [
       {
         hooks: [
-          { type: 'command', command: `${cmd} hook-session-end`, timeout: 5 },
+          { type: 'command', ...mk('hook-session-end'), timeout: 5 },
         ],
       },
     ],
@@ -285,7 +305,7 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: '*',
         hooks: [
-          { type: 'command', command: `${cmd} hook-session-guard`, timeout: 3 },
+          { type: 'command', ...mk('hook-session-guard'), timeout: 3 },
         ],
       },
     ],
@@ -295,7 +315,7 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: 'mcp__plur__plur_session_start',
         hooks: [
-          { type: 'command', command: `${cmd} hook-session-mark`, timeout: 3 },
+          { type: 'command', ...mk('hook-session-mark'), timeout: 3 },
         ],
       },
     ],
@@ -305,7 +325,12 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
 // Injection hooks pull relevant engrams into the conversation context. Installed
 // at the path chosen by --global/--project (default project) because per-project
 // domain/scope tuning may matter for what gets injected.
-export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
+// Exported for the plur-mcp init parity test (#1279), which passes the plain
+// launcher string; `plur init` passes #1270's HookLaunch (exec form on Windows).
+export function buildInjectionHooks(launch: HookLaunch | string): Record<string, HookEntry[]> {
+  const mk: HookLaunch = typeof launch === 'string'
+    ? (sub, ...extra) => ({ command: [launch, sub, ...extra].join(' ') })
+    : launch
   return {
     // First message: inject engrams based on the prompt.
     // Subsequent messages: periodic reminder to call plur_learn (~0.1s).
@@ -318,7 +343,7 @@ export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
     UserPromptSubmit: [
       {
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject`, timeout: CLAUDE_INJECT_TIMEOUT_S },
+          { type: 'command', ...mk('hook-inject'), timeout: CLAUDE_INJECT_TIMEOUT_S },
         ],
       },
     ],
@@ -331,7 +356,7 @@ export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: 'compact',
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject --rehydrate`, timeout: CLAUDE_INJECT_TIMEOUT_S },
+          { type: 'command', ...mk('hook-inject', '--rehydrate'), timeout: CLAUDE_INJECT_TIMEOUT_S },
         ],
       },
     ],
@@ -341,28 +366,28 @@ export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: 'EnterPlanMode',
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject --event plan_mode`, timeout: 10 },
+          { type: 'command', ...mk('hook-inject', '--event', 'plan_mode'), timeout: 10 },
         ],
       },
       // Domain-specific engrams when a skill is invoked
       {
         matcher: 'Skill',
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject --event skill`, timeout: 10 },
+          { type: 'command', ...mk('hook-inject', '--event', 'skill'), timeout: 10 },
         ],
       },
       // Agent-scoped engrams when spawning an agent
       {
         matcher: 'Agent',
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject --event agent`, timeout: 10 },
+          { type: 'command', ...mk('hook-inject', '--event', 'agent'), timeout: 10 },
         ],
       },
       // Observation capture — log tool calls for offline pattern extraction
       {
         matcher: 'Bash|Edit|Write|Agent',
         hooks: [
-          { type: 'command', command: `${cmd} hook-observe`, timeout: 3 },
+          { type: 'command', ...mk('hook-observe'), timeout: 3 },
         ],
       },
     ],
@@ -371,7 +396,7 @@ export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: 'Bash|Edit|Write|Agent',
         hooks: [
-          { type: 'command', command: `${cmd} hook-observe --post`, timeout: 3 },
+          { type: 'command', ...mk('hook-observe', '--post'), timeout: 3 },
         ],
       },
     ],
@@ -381,7 +406,7 @@ export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: '.*',
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject --event subagent`, timeout: 10 },
+          { type: 'command', ...mk('hook-inject', '--event', 'subagent'), timeout: 10 },
         ],
       },
     ],
@@ -392,7 +417,7 @@ export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: '*',
         hooks: [
-          { type: 'command', command: `${cmd} hook-learn-check`, timeout: 2 },
+          { type: 'command', ...mk('hook-learn-check'), timeout: 2 },
         ],
       },
       // Auto-rate injected engrams from the reply (#1310). Its own entry.
@@ -403,7 +428,7 @@ export function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: '*',
         hooks: [
-          { type: 'command', command: `${cmd} hook-auto-rate claude`, timeout: 10 },
+          { type: 'command', ...mk('hook-auto-rate', 'claude'), timeout: 10 },
         ],
       },
     ],
@@ -704,8 +729,9 @@ function settingsRefusal(path: string): string {
 }
 
 function isPlurHook(entry: HookEntry): boolean {
-  // The shim or npx fallback plus a known subcommand (#1267) — see isPlurHookCommand.
-  return (entry.hooks ?? []).some((h) => isPlurHookCommand(h.command ?? ''))
+  // PLUR's launcher (shim, npx fallback, or the Windows exec form) plus any
+  // hook-* (decisions H2, H3) — see isPlurHookSpec.
+  return (entry.hooks ?? []).some(isPlurHookSpec)
 }
 
 function hasPlurHooks(settings: Settings): boolean {
@@ -728,7 +754,7 @@ function stripPlurHooks(settings: Settings): Settings {
     const kept: HookEntry[] = []
     for (const e of entries) {
       if (!isPlurHook(e)) { kept.push(e); continue }
-      const own = e.hooks.filter((h) => !isPlurHookCommand(h.command ?? ''))
+      const own = e.hooks.filter((h) => !isPlurHookSpec(h))
       if (own.length > 0) kept.push({ ...e, hooks: own })
     }
     if (kept.length > 0) {
@@ -775,9 +801,10 @@ function installDesktopMcp(args: string[]): string {
     // "Exists" is not "correct": heal an @latest/stale-pin npx entry init
     // itself wrote — leaving it is what kept the #1069 race armed through
     // every re-run of plur init on an affected machine.
-    if (upgradePlurMcpEntry(config)) {
+    const healed = healPlurMcpEntry(config)
+    if (healed) {
       writeConfig(desktopPath, config)
-      return `upgraded stale npx entry in ${desktopPath}`
+      return `${healed} in ${desktopPath}`
     }
     return `already registered in ${desktopPath}`
   }
@@ -821,7 +848,7 @@ function installCursor(cmd: string): string {
     // "entry exists" as "entry is correctly configured for Cursor."
     // #1069 heal, which this branch was the LAST leg to receive — its own
     // env-patch comment above is the canonical statement of the class.
-    const healed = upgradePlurMcpEntry(mcpConfig, { env: { PLUR_TOOL_PROFILE: 'cursor' } })
+    const healed = healPlurMcpEntry(mcpConfig, { env: { PLUR_TOOL_PROFILE: 'cursor' } })
     const servers = (mcpConfig.mcpServers ?? {}) as Record<string, { env?: Record<string, string> }>
     const existing = servers.plur
     if (existing?.env?.PLUR_TOOL_PROFILE !== 'cursor') {
@@ -829,11 +856,11 @@ function installCursor(cmd: string): string {
       mcpConfig.mcpServers = servers
       writeConfig(mcpPath, mcpConfig)
       mcpStatus = healed
-        ? 'upgraded stale npx entry (and set PLUR_TOOL_PROFILE=cursor)'
+        ? `${healed} (and set PLUR_TOOL_PROFILE=cursor)`
         : 'patched (added missing PLUR_TOOL_PROFILE=cursor to an existing entry)'
     } else if (healed) {
       writeConfig(mcpPath, mcpConfig)
-      mcpStatus = 'upgraded stale npx entry'
+      mcpStatus = healed
     } else {
       mcpStatus = 'already registered'
     }
@@ -955,6 +982,21 @@ function installCodexMcp(): string {
     // shim path and no args. Anything else is the user's.
     const existing = readCodexPlurMcpEntry(toml)
     if (!existing || !isOwnWin32CmdShimEntry(existing)) {
+      // The shim command with anything else in the entry (env, other keys, a
+      // multi-line args array): still broken, but `codex mcp add` would drop
+      // those settings — a lost PLUR_PATH moves the user's memory to the
+      // default store — so say what to change by hand instead (#1366).
+      const command = readCodexPlurMcpCommand(toml)
+      if (command !== null && isOwnWin32CmdShimCommand(command)) {
+        const lit = (v: string) => (v.includes("'") ? JSON.stringify(v) : `'${v}'`)
+        return 'already registered with the old plur-mcp.cmd entry, which fails to start (spawn EINVAL). ' +
+          'The entry also carries other settings (env, other keys or a multi-line args array) that ' +
+          '`codex mcp remove` + `codex mcp add` would drop, so init left it alone. Fix by hand: in ' +
+          `${codexConfigTomlPath()}, under [mcp_servers.plur], replace the command and args lines with\n` +
+          `    command = ${lit(entry.command)}\n` +
+          `    args = [${entry.args.map(lit).join(', ')}]\n` +
+          '  and keep every other setting (env included)'
+      }
       return 'already registered (run `codex mcp remove plur` first if you need to re-point it)'
     }
     try {
@@ -1124,9 +1166,10 @@ function installAntigravity(cmd: string): string {
   if (!mcpParses) {
     mcpStatus = `skipped — ${mcpPath} exists but is not valid JSON; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur init --antigravity\``
   } else if (hasPlurMcp(mcpConfig)) {
-    if (upgradePlurMcpEntry(mcpConfig)) {
+    const healed = healPlurMcpEntry(mcpConfig)
+    if (healed) {
       writeConfig(mcpPath, mcpConfig)
-      mcpStatus = 'upgraded stale npx entry'
+      mcpStatus = healed
     } else {
       mcpStatus = 'already registered'
     }
@@ -1176,7 +1219,7 @@ function shouldSetupOpencode(args: string[]): boolean {
  * unpinned spec re-resolves on every publish and races the npx cache
  * rewrite.
  */
-function installOpencode(cliVersion: string): string {
+function installOpencode(cliVersion: string, autoDetected: boolean): string {
   const configPath = opencodeConfigPath()
   const result = writeOpencodeConfig(configPath, cliVersion)
 
@@ -1196,7 +1239,12 @@ function installOpencode(cliVersion: string): string {
   }
 
   const status = result.created ? 'created' : result.changed ? 'updated' : 'already up to date'
-  return `Opencode: config ${status} (${configPath})${opencodeMcpNote(result)}`
+  // The opencode config is global even on a project-scoped run, and the leg
+  // runs whenever opencode's config directory exists, so say both (#1338).
+  const scope = autoDetected
+    ? 'auto-detected; global, applies to every opencode project; pass --no-opencode to skip'
+    : 'global, applies to every opencode project'
+  return `Opencode: config ${status} (${configPath}) (${scope})${opencodeMcpNote(result)}`
 }
 
 function writeSettings(path: string, settings: Settings): void {
@@ -1370,18 +1418,43 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Fallback PINNED, never floating (#1069 class, data-loss audit finding 7):
   // an unpinned spec re-resolves on every publish and races the npx cache
   // rewrite that SIGKILLs whatever pages in a native binary mid-rewrite.
-  // The shim path is quoted on Windows (and wherever it contains a space):
-  // harnesses run hook commands through a shell, and an unquoted
-  // `C:\Users\Test User\...` splits at the space (#1267).
-  const cmd = shim.shimPath
-    ? hookCommandPrefix(shim.shimPath)
-    : `npx -y @plur-ai/cli@${CLI_VERSION}` // fallback if shim failed
+  // darwin/linux: the shim path, quoted only if it contains whitespace —
+  // byte-identical to earlier versions otherwise.
+  const npxCmd = `npx -y @plur-ai/cli@${CLI_VERSION}` // fallback if shim failed
+  const cmd = shim.shimPath ? hookCommandPrefix(shim.shimPath) : npxCmd
+  const win32 = platform() === 'win32'
+
+  // Decision H3: on Windows no hook relies on shell quoting. Claude Code gets
+  // the exec form (node + CLI js entry + subcommand, no shell); Codex, Cursor
+  // and Antigravity get one unquoted forward-slash string (8.3 short path
+  // when the path has whitespace; a reported per-editor fallback otherwise).
+  let shortPathMemo: string | null | undefined
+  const shortPath = (p: string): string | null => {
+    if (shortPathMemo === undefined) shortPathMemo = resolveShortPath(p)
+    return shortPathMemo
+  }
+  const stringHookCmd = (host: StringHookHost): string =>
+    win32 && shim.shimPath ? windowsHookCommand(shim.shimPath, host, shortPath).command : cmd
+  // Exec form needs Claude Code >= 2.1.139 (CLAUDE_EXEC_FORM_MIN); gate on
+  // `claude --version` when it can be read — see useClaudeExecForm for the
+  // unknown-version rule. The string form uses PowerShell's fallback when no
+  // short name exists, as for Codex.
+  const claudeString = win32 && shim.shimPath ? windowsHookCommand(shim.shimPath, 'codex', shortPath) : null
+  const claudeExecForm = claudeString ? useClaudeExecForm(claudeVersionOutput(), claudeString.fallback) : true
+  const hookLaunch: HookLaunch = (sub, ...extra) => claudeHookSpec({
+    plat: platform(),
+    shellCmd: cmd,
+    node: process.execPath,
+    cliEntry: shim.shimPath ? resolveCliEntrypoint() : null,
+    execForm: claudeExecForm,
+    stringCmd: claudeString?.command,
+  }, sub, ...extra)
 
   // Install local MCP shim — same fix pattern for MCP server launch (#234)
   const mcpShim = installMcpBinary()
 
-  const PLUR_HOOKS_ENFORCEMENT = buildEnforcementHooks(cmd)
-  const PLUR_HOOKS_INJECTION = buildInjectionHooks(cmd)
+  const PLUR_HOOKS_ENFORCEMENT = buildEnforcementHooks(hookLaunch)
+  const PLUR_HOOKS_INJECTION = buildInjectionHooks(hookLaunch)
 
   const injectionPath = findSettingsPath(flags, args)
   const enforcementPath = join(homedir(), '.claude', 'settings.json')
@@ -1414,9 +1487,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         mergePlurMcp(settings as Record<string, unknown>)
         mcpStatus = 'registered'
       } else {
-        mcpStatus = upgradePlurMcpEntry(settings as Record<string, unknown>)
-          ? 'upgraded stale npx entry'
-          : 'already registered'
+        mcpStatus = healPlurMcpEntry(settings as Record<string, unknown>) ?? 'already registered'
       }
 
       writeSettings(enforcementPath, settings)
@@ -1454,10 +1525,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (!projectMcpAlready) {
         mergePlurMcp(projectSettings as Record<string, unknown>)
         mcpStatus = 'registered'
-      } else if (upgradePlurMcpEntry(projectSettings as Record<string, unknown>)) {
-        mcpStatus = 'upgraded stale npx entry'
       } else {
-        mcpStatus = 'already registered'
+        mcpStatus = healPlurMcpEntry(projectSettings as Record<string, unknown>) ?? 'already registered'
       }
 
       writeSettings(injectionPath, projectSettings)
@@ -1485,19 +1554,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const agyStatus = shouldSetupAntigravity(args)
-    ? containLeg('Antigravity', () => installAntigravity(cmd))
+    ? containLeg('Antigravity', () => installAntigravity(stringHookCmd('agy')))
     : 'skipped (no ~/.gemini/antigravity-cli found — pass --antigravity to force, --no-antigravity to silence this)'
 
   const codexStatus = shouldSetupCodex(args)
-    ? containLeg('Codex', () => installCodex(cmd))
+    ? containLeg('Codex', () => installCodex(stringHookCmd('codex')))
     : 'skipped (no ~/.codex found — pass --codex to force, --no-codex to silence this)'
 
   const cursorStatus = shouldSetupCursor(args)
-    ? containLeg('Cursor', () => installCursor(cmd))
+    ? containLeg('Cursor', () => installCursor(stringHookCmd('cursor')))
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
 
   const opencodeStatus = shouldSetupOpencode(args)
-    ? containLeg('Opencode', () => installOpencode(CLI_VERSION))
+    ? containLeg('Opencode', () => installOpencode(CLI_VERSION, !args.includes('--opencode')))
     : args.includes('--no-opencode')
       ? 'Opencode: skipped (--no-opencode)'
       : `Opencode: skipped (no ${opencodeConfigDir()} found — pass --opencode to force, --no-opencode to silence this)`
@@ -1514,6 +1583,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo('PLUR installed for Claude Code.', flags)
   outputInfo('', flags)
   outputInfo(`Hook binary: ${shim.status}${shim.shimPath ? ` (${shim.shimPath})` : ''}`, flags)
+  if (claudeString) {
+    outputInfo(claudeExecForm
+      ? 'Claude Code hooks: exec form (node + CLI entry, no shell; needs Claude Code >= 2.1.139)'
+      : `Claude Code hooks: unquoted command string (${claudeString.command}) — exec form needs Claude Code >= 2.1.139`, flags)
+  }
   outputInfo(`MCP binary:  ${mcpShim.status}${mcpShim.shimPath ? ` (${mcpShim.shimPath})` : ''}`, flags)
   outputInfo('', flags)
   outputInfo('Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped.', flags)
@@ -1570,11 +1644,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // that only clones the repo, that path won't exist and PLUR silently
     // won't start there. `plur doctor` now catches this after the fact
     // (cursorWired checks the command exists); this warns before it bites.
-    // The shim path may be quoted (#1267); test the path itself.
-    const bareCmd = cmd.replace(/"/g, '')
-    if (bareCmd.startsWith('/') || /^[A-Za-z]:\\/.test(bareCmd)) {
+    // The path may be quoted, forward-slashed or behind PowerShell's `& `
+    // (#1267, decision H3); test the path itself.
+    const cursorCmd = stringHookCmd('cursor')
+    const bareCmd = cursorCmd.replace(/^&\s+/, '').replace(/"/g, '')
+    if (bareCmd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(bareCmd)) {
       outputInfo('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local', flags)
-      outputInfo(`  path (${cmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`, flags)
+      outputInfo(`  path (${cursorCmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`, flags)
       outputInfo('  Run `plur init --cursor` there too (it pins the right version — avoid @latest, #1069).', flags)
     }
   }
