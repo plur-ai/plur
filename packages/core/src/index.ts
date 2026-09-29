@@ -2302,10 +2302,16 @@ export class Plur {
    * while `lockBlocked` (an unresolved tension, #181).
    */
   private _stepCommitment(c: Engram['commitment'] | undefined, lockBlocked: boolean): Engram['commitment'] {
-    if (c === 'locked') return 'locked'
-    if (c === 'exploring') return 'leaning'
-    if (c === 'leaning' || c == null) return c == null ? 'leaning' : 'decided'
-    return lockBlocked || this._maxRecurrenceCommitment() === 'decided' ? 'decided' : 'locked'
+    // Only the four ladder rungs advance. `draft` (pending human approval) and
+    // any unknown/extension value are not the ladder's to move — the same rule
+    // as `feedback.ts` `nextCommitment` (formal replay, field-report cluster 1).
+    switch (c as string | undefined) {
+      case undefined:   return 'leaning'
+      case 'exploring': return 'leaning'
+      case 'leaning':   return 'decided'
+      case 'decided':   return lockBlocked || this._maxRecurrenceCommitment() === 'decided' ? 'decided' : 'locked'
+      default:          return c   // 'locked', 'draft', and anything unknown: unchanged
+    }
   }
 
   /**
@@ -2379,6 +2385,11 @@ export class Plur {
 
     // A2: the queued team row records the recurrence on itself.
     const h = hit as any
+    // Tension gate (#181) at every escalation site: an unresolved tension on
+    // the SOURCE engram blocks the copy's — or the twin's — step into locked,
+    // as it blocks the in-place promotion it replaces.
+    const sourceTension = this.hasUnresolvedTension(hit.id)
+      || (typeof h._originalId === 'string' && this.hasUnresolvedTension(h._originalId))
     let hitCount = h.recurrence_count ?? 0
     if (h.structured_data?._outbox) {
       let row = engrams.find(e => e.id === hit.id) as any
@@ -2397,7 +2408,7 @@ export class Plur {
       e.recurrence_count = (e.recurrence_count ?? 0) + 1
       e.write_count = (e.write_count ?? 1) + 1
       e.sources = [...(e.sources ?? []), source]
-      step(e, this.hasUnresolvedTension(twin.id), e.recurrence_count)
+      step(e, sourceTension || this.hasUnresolvedTension(twin.id), e.recurrence_count)
       await this._updateEngrams(engrams, [twin])
       await this._syncIndex()
       return twin
@@ -2429,7 +2440,7 @@ export class Plur {
     const c = copy as any
     c.recurrence_count = hitCount + 1
     c.write_count = (h.write_count ?? 1) + 1
-    step(c, false, c.recurrence_count)
+    step(c, sourceTension, c.recurrence_count)
     c.sources = [
       { scope: hit.scope, session_id: null, stored_at: now, promoted_from: hit.scope },
       source,

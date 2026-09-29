@@ -90,7 +90,9 @@ vanishing into the eng engram. The matching engram is still credited: the team
 save is recorded on it as a recurrence (counted, with a source marked
 `validated_by` the team scope, and commitment escalated by the usual ladder).
 You may end up with several engrams with the same text — your own and each
-team's — and that is intended.
+team's — and that is intended. `plur import` follows the same rule: a record for
+a shared scope whose text exists elsewhere is imported into its own scope, and
+`--dry-run` now predicts that instead of reporting it as a duplicate.
 
 **What is in a team store stays there.** When the ladder would broaden a
 team-bound engram to `global` — one served by, queued for, or in the scope of
@@ -125,7 +127,10 @@ recurrence:
 
 A config without the key behaves as `locked`, which is what the ladder has
 always done. An unresolved tension still blocks the step into `locked` either
-way.
+way — on the engram itself, on the promoted `global` copy, and on an existing
+`global` engram the ladder credits instead. The ladder only moves the four rungs
+`exploring → leaning → decided → locked`; a `draft` engram (pending approval)
+or any other value is never advanced.
 
 ### Editors now rate the memory they inject, from the reply
 

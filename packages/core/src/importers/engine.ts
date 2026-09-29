@@ -28,6 +28,7 @@ import type { LearnContext } from '../types.js'
 import { computeContentHash } from '../content-hash.js'
 import { detectSecrets } from '../secrets.js'
 import { scopesOverlap, domainSegmentsOverlap, subjectsOverlap } from '../tensions.js'
+import { isSharedScope } from '../scope-util.js'
 import type { ImportRecord, ImportRecordResult, MigrationReport } from './types.js'
 
 export interface RunImportOptions {
@@ -57,10 +58,26 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
   // metadata on the existing engram along the way).
   const preExisting = await plur.list({ include_expired: true })
   const knownIds = new Set(preExisting.map(e => e.id))
-  const hashToId = new Map<string, string>()
+  // hash -> scope -> id. Scope-keyed because the dry run must answer the way
+  // learn() does (decision F1, 2026-09-29, following A1): a match in the SAME
+  // scope is always a duplicate, but a match in ANOTHER scope only absorbs a
+  // record whose scope is not shared — a shared-scope record is written into
+  // its own team scope and merely credits the other engram.
+  const hashScopes = new Map<string, Map<string, string>>()
+  const remember = (hash: string, scope: string, id: string) => {
+    let m = hashScopes.get(hash)
+    if (!m) hashScopes.set(hash, m = new Map())
+    if (!m.has(scope)) m.set(scope, id)
+  }
   for (const e of preExisting) {
-    const hash = (e as any).content_hash ?? computeContentHash(e.statement)
-    if (!hashToId.has(hash)) hashToId.set(hash, e.id)
+    remember((e as any).content_hash ?? computeContentHash(e.statement), e.scope, e.id)
+  }
+  const existingFor = (hash: string, scope: string | undefined): string | undefined => {
+    const m = hashScopes.get(hash)
+    if (!m) return undefined
+    if (scope !== undefined && m.has(scope)) return m.get(scope)
+    if (scope !== undefined && isSharedScope(scope)) return undefined
+    return m.values().next().value
   }
   const allowSecrets = (await plur.status()).config?.allow_secrets === true
 
@@ -91,12 +108,13 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
         }
       }
       const hash = computeContentHash(statement)
-      if (hashToId.has(hash)) {
+      const existingId = existingFor(hash, scope)
+      if (existingId !== undefined) {
         skipped++
-        results.push({ statement, action: 'skipped', id: hashToId.get(hash) })
+        results.push({ statement, action: 'skipped', ...(existingId ? { id: existingId } : {}) })
         continue
       }
-      hashToId.set(hash, '') // in-file duplicates dedup against each other too
+      remember(hash, scope ?? '', '') // in-file duplicates dedup against each other too
       const conflictIds = findConflicts(statement, scope, record.domain, preExisting)
       imported++
       if (conflictIds.length > 0) conflicts++
