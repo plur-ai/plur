@@ -79,6 +79,84 @@ describe('detectSecrets', () => {
   })
 })
 
+// #1317 — vendor-prefixed tokens. Every vector is SYNTHETIC: the right prefix,
+// length and charset, filled with repeated placeholder characters. They are
+// assembled by concatenation so no literal token-shaped string sits in the
+// source for a repository secret scanner to flag.
+describe('detectSecrets — vendor-prefixed tokens (#1317)', () => {
+  const body = (n: number) => 'A1b2C3d4E5'.repeat(Math.ceil(n / 10)).slice(0, n)
+  const positives: [label: string, token: string, pattern: string][] = [
+    ['GitHub classic PAT', 'ghp' + '_' + body(36), 'github_token'],
+    ['GitHub OAuth token', 'gho' + '_' + body(36), 'github_token'],
+    ['GitHub user-to-server token', 'ghu' + '_' + body(36), 'github_token'],
+    ['GitHub server-to-server token', 'ghs' + '_' + body(36), 'github_token'],
+    ['GitHub refresh token', 'ghr' + '_' + body(36), 'github_token'],
+    ['GitHub fine-grained PAT', 'github' + '_pat_' + body(22) + '_' + body(59), 'github_pat'],
+    ['GitLab personal access token', 'glpat' + '-' + body(20), 'gitlab_token'],
+    ['GitLab routable PAT', 'glpat' + '-' + body(27) + '.01.' + body(9), 'gitlab_token'],
+    ['GitLab deploy token', 'gldt' + '-' + body(20), 'gitlab_token'],
+    ['GitLab runner token', 'glrt' + '-' + body(20), 'gitlab_token'],
+    ['GitLab CI job token', 'glcbt' + '-' + body(20), 'gitlab_token'],
+    ['GitLab pipeline trigger token', 'glptt' + '-' + body(40), 'gitlab_token'],
+    ['GitLab OAuth app secret', 'gloas' + '-' + body(64), 'gitlab_token'],
+    ['Slack bot token', 'xoxb' + '-' + '1234567890' + '-' + '1234567890' + '-' + body(24), 'slack_token'],
+    ['Slack user token', 'xoxp' + '-' + '1234567890' + '-' + '1234567890' + '-' + '1234567890' + '-' + body(32), 'slack_token'],
+    ['Slack app token', 'xoxa' + '-2-' + body(40), 'slack_token'],
+    ['npm access token', 'npm' + '_' + body(36), 'npm_token'],
+    ['AWS temporary access key id', 'ASIA' + 'Q'.repeat(12) + '2345', 'aws_access_key'],
+    ['Stripe live secret key', 'sk' + '_live_' + body(24), 'stripe_live_key'],
+    ['Stripe live restricted key', 'rk' + '_live_' + body(24), 'stripe_live_key'],
+  ]
+
+  for (const [label, token, pattern] of positives) {
+    it(`flags a ${label} as ${pattern}`, () => {
+      const hits = detectSecrets(`export TOKEN=${token} # for the release job`)
+      expect(hits.map(h => h.pattern)).toContain(pattern)
+    })
+
+    it(`flags a ${label} standing alone`, () => {
+      expect(detectSecrets(token).map(h => h.pattern)).toContain(pattern)
+    })
+  }
+
+  const prose = [
+    'use a ghp_ token for the CI job',
+    'GitHub classic tokens start with ghp_, gho_, ghu_, ghs_ or ghr_',
+    'fine-grained tokens begin with github_pat_ and are scoped per repository',
+    'create a glpat- token with the read_api scope',
+    'GitLab deploy tokens (gldt-) and runner tokens (glrt-) are separate',
+    'Slack bot tokens look like xoxb-… and user tokens like xoxp-…',
+    'set npm_config_registry to the mirror before installing',
+    'npm_token is read from the environment',
+    'the AKIA prefix marks a long-term key, ASIA a temporary one',
+    'FANTASIA is a film, not a key',
+    'Stripe secret keys start sk_live_ in production and sk_test_ in test mode',
+    'rotate any rk_live_ key that leaked',
+    'the variable github_pat_expiry holds a date',
+  ]
+
+  for (const text of prose) {
+    it(`stays clean: ${text}`, () => {
+      expect(detectSecrets(text)).toEqual([])
+    })
+  }
+
+  it('does not flag a GitHub prefix glued onto a longer identifier', () => {
+    // An identifier that merely ends in `ghp` is not a token.
+    expect(detectSecrets('myghp' + '_' + body(36)).map(h => h.pattern)).not.toContain('github_token')
+  })
+
+  it('still flags a GitHub token split by a zero-width joiner', () => {
+    const token = 'ghp' + '_' + body(18) + '‍' + body(18)
+    expect(detectSecrets(token).map(h => h.pattern)).toContain('github_token')
+  })
+
+  it('files the new token patterns under the secrets family', () => {
+    for (const p of ['github_token', 'github_pat', 'gitlab_token', 'slack_token', 'npm_token', 'stripe_live_key'])
+      expect(sensitivityCategory(p)).toBe('secrets')
+  })
+})
+
 // Detector hardening — Stage 1.5b (#353). These detectors GATE the publish
 // filter and trigger write-time scope-demotion, so the overriding constraint is
 // LOW FALSE POSITIVES: a false match silently demotes a legitimate engram on

@@ -33,7 +33,13 @@ one, does not get a credential past the scan.
 
 | Name | What matches |
 |---|---|
-| `aws_access_key` | `AKIA` followed by 16 uppercase letters or digits |
+| `aws_access_key` | `AKIA` (long-term) or `ASIA` (temporary) followed by 16 uppercase letters or digits |
+| `github_token` | `ghp_`, `gho_`, `ghu_`, `ghs_` or `ghr_`, then 36 or more letters or digits |
+| `github_pat` | `github_pat_`, 22 or more letters or digits, `_`, then 40 or more letters or digits |
+| `gitlab_token` | a documented GitLab prefix (`glpat-`, `gloas-`, `gldt-`, `glrt-`, `glrtr-`, `glcbt-`, `glptt-`, `glft-`, `glimt-`, `glagent-`, `glsoat-`, `glffct-`), then 20 or more letters, digits, `_` or `-` |
+| `slack_token` | `xoxb-`, `xoxp-`, `xoxa-`, `xoxr-` or `xoxs-`, a numeric segment and `-`, then 10 or more token characters |
+| `npm_token` | `npm_` followed by 36 or more letters or digits |
+| `stripe_live_key` | `sk_live_` or `rk_live_` followed by 24 or more letters or digits |
 | `aws_secret_key` | `aws_secret_access_key` or `secret_access_key`, then `=` or `:`, then 40 base64 characters |
 | `generic_api_key` | `sk` or `pk`, a `-` or `_`, then 20 or more characters — this is the `sk-ant-…` and `sk-…` shape |
 | `api_key_assignment` | `api_key`, `api-key`, `api_secret` or `secret_key`, then `=` or `:`, then 20 or more non-space characters |
@@ -42,6 +48,11 @@ one, does not get a credential past the scan.
 | `jwt` | two base64url segments each starting `eyJ`, joined by a dot |
 | `private_key` | a `-----BEGIN … PRIVATE KEY-----` header |
 | `bearer_token` | `Bearer` followed by 20 or more token characters |
+
+The vendor-prefixed patterns (`github_token` to `stripe_live_key`) do not match
+when the prefix is glued onto a longer word, and each needs the vendor's
+documented body length, so text that only names a prefix ("use a `ghp_` token")
+does not refuse an install.
 
 ## Infrastructure — these also refuse the install
 

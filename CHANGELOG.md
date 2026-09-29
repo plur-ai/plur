@@ -185,6 +185,29 @@ Now:
   `plur untrust` still removes the old entry when given the spelling it was
   trusted under. `trust.yaml` is not rewritten.
 
+### The secret guard now recognises GitHub, GitLab, Slack, npm, Stripe and AWS temporary keys
+
+**A memory holding a GitHub token was stored, and could sync to a team
+store** (#1317). `detectSecrets` had no pattern for vendor-prefixed tokens, so a
+classic `ghp_…` token and a fine-grained `github_pat_…` token both scanned
+clean.
+
+Now flagged, each by the vendor's documented prefix, charset and length:
+
+- GitHub `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` (`github_token`) and
+  `github_pat_` (`github_pat`).
+- GitLab `glpat-`, `gloas-`, `gldt-`, `glrt-`, `glrtr-`, `glcbt-`, `glptt-`,
+  `glft-`, `glimt-`, `glagent-`, `glsoat-`, `glffct-` (`gitlab_token`).
+- Slack `xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-` (`slack_token`).
+- npm `npm_` (`npm_token`).
+- Stripe `sk_live_` and `rk_live_` (`stripe_live_key`).
+- AWS temporary access key ids, `ASIA…`, under the existing `aws_access_key`.
+
+The same patterns apply to the pack scanner, so a pack carrying one of these
+refuses to install (`docs/pack-scan-surface.md`). Text that only names a prefix,
+such as "use a `ghp_` token", stays clean. No existing pattern changed except
+`aws_access_key`, which now also accepts `ASIA`.
+
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
 **The Stop hook's "did you learn something?" nudge was never shown to the

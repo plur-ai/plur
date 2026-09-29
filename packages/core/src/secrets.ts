@@ -4,7 +4,41 @@ export interface SecretMatch {
 }
 
 const SECRET_PATTERNS: { name: string; regex: RegExp }[] = [
-  { name: 'aws_access_key', regex: /AKIA[0-9A-Z]{16}/ },
+  // `AKIA` is a long-term access key id, `ASIA` a temporary (STS) one; both are
+  // the documented four-letter prefix plus 16 uppercase letters or digits.
+  { name: 'aws_access_key', regex: /(?:AKIA|ASIA)[0-9A-Z]{16}/ },
+  // Vendor-prefixed tokens (#1317). Each follows the vendor's documented
+  // prefix, charset and minimum length, and must not be glued onto a longer
+  // identifier, so prose that names a prefix ("use a ghp_ token") stays clean.
+  //
+  // GitHub: `ghp_` classic PAT, `gho_` OAuth, `ghu_` user-to-server,
+  // `ghs_` server-to-server, `ghr_` refresh — 36 base62 characters today;
+  // GitHub reserves the right to grow them, so longer bodies still match.
+  { name: 'github_token', regex: /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}/ },
+  // GitHub fine-grained PAT: `github_pat_`, 22 base62, `_`, 59 base62.
+  { name: 'github_pat', regex: /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9]{22,}_[A-Za-z0-9]{40,}/ },
+  // GitLab's documented token prefixes: personal/project/group access
+  // (`glpat-`), OAuth application secret (`gloas-`), deploy (`gldt-`), runner
+  // authentication (`glrt-`) and registration (`glrtr-`), CI job (`glcbt-`),
+  // pipeline trigger (`glptt-`), feed (`glft-`), incoming mail (`glimt-`),
+  // Kubernetes agent (`glagent-`), SCIM (`glsoat-`), feature-flag client
+  // (`glffct-`). Legacy bodies are 20 characters; routable ones are longer and
+  // may carry dots.
+  {
+    name: 'gitlab_token',
+    regex: /(?<![A-Za-z0-9])(?:glpat|gloas|gldt|glrtr|glrt|glcbt|glptt|glft|glimt|glagent|glsoat|glffct)-[A-Za-z0-9_-]{20,}/,
+  },
+  // Slack: `xoxb-` bot, `xoxp-` user, `xoxa-` app, `xoxr-` refresh, `xoxs-`
+  // session. Every documented shape has a numeric segment right after the
+  // prefix (a team id, or the `2` of `xoxa-2-`), which keeps `xoxb-style`
+  // prose out.
+  { name: 'slack_token', regex: /(?<![A-Za-z0-9])xox[abprs]-[0-9]+-[A-Za-z0-9-]{10,}/ },
+  // npm access token: `npm_` plus 36 base62 characters.
+  { name: 'npm_token', regex: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,}/ },
+  // Stripe live secret (`sk_live_`) and restricted (`rk_live_`) keys. The
+  // generic `sk` shape below already catches `sk_live_`; the named pattern
+  // covers `rk_live_` and says what the key is.
+  { name: 'stripe_live_key', regex: /(?<![A-Za-z0-9])[sr]k_live_[A-Za-z0-9]{24,}/ },
   { name: 'aws_secret_key', regex: /(?:aws_secret_access_key|secret_access_key)\s*[=:]\s*[A-Za-z0-9/+=]{40}/i },
   // Twenty or more characters after the prefix, and the segments MAY be
   // separated by hyphens or underscores. The previous form demanded twenty
