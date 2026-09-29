@@ -1,7 +1,7 @@
-# Folder map with "ask" — design note (revision 2, compacted)
+# Folder map with "ask" — design note (revision 3)
 
-Status: **Approved r2 (owner, 2026-09-29).** Implementation: #1347.
-Dates: r1 2026-09-28; r2 2026-09-29, which folds `trust.yaml` into the folder map.
+Status: **r2 approved (owner, 2026-09-29); r3 section below awaits approval.** Implementation: #1347 (core, PR #1348).
+Dates: r1 2026-09-28; r2 2026-09-29, which folds `trust.yaml` into the folder map; r3 2026-09-29, which adds `plur remote` and hides the trust commands.
 Triage: `docs/audits/2026-09-28-field-report-triage.md` item 3.
 
 ## Problem
@@ -171,9 +171,99 @@ whose remote is already being refused today** (see Q-A).
 
 ## Open after approval (2026-09-29)
 
-- **Does `off` also silence the MCP tools?** Today it would not: the MCP server is registered
-  for the editor, not per folder, so the agent can still call `plur_*` tools in an `off`
-  folder. Proposal pending.
-- **Remotes and trust.** The owner proposes renaming `init-remote` to `remote` and dropping the
-  `trust` commands. The evaluation is in the reply of 2026-09-29; r3 of this note follows the
-  owner's answer.
+- **`off` and the MCP tools:** left as is for now. In an `off` folder the hooks are
+  silent, but the `plur_*` tools stay callable. The idea to extend `off` to the MCP tools is
+  in `5-plur/1-tracks/product/feature-ideas.md` (owner, 2026-09-29).
+
+## r3: one way to connect a folder to a team store (2026-09-29)
+
+### What changes and why
+
+There are two ways to register a remote today:
+
+| | `plur init-remote` | `plur stores add --url` (PR #1272) |
+|---|---|---|
+| Where the URL and token go | the repo's `.plur.yaml`, relying on `.gitignore` to keep the token uncommitted | the user's `~/.plur/config.yaml` |
+| Checked against the server | `--verify`, afterwards | `/me`, before writing |
+| Needs trust | yes, and it grants it for the current folder | no: it is the user's own config |
+
+A bearer token in a repo folder is a leak waiting for a mistaken `git add`. It also needs
+the trust gate to stop a cloned repo that ships its own `.plur.yaml` from naming a server.
+The owner decided (2026-09-29):
+- rename `init-remote` to `remote`;
+- keep the trust *check* but drop the trust *commands* from the user-facing surface.
+
+### `plur remote`
+
+```
+plur remote --url <u> --token <t> [--scope <s>] [--scopes <a,b,…>]
+plur remote                 # show this folder's connection and check it
+```
+
+With flags:
+1. It checks the token against `/me`, and writes nothing if the token is rejected or a
+   requested scope is not authorised. This reuses #1272's `addRemoteStore`.
+2. It registers each scope as a url store in `config.yaml`, with the token kept there and
+   never printed. It is idempotent.
+3. It maps the current folder in `folders.yaml`: `scope: <s>`, or the first of `--scopes`.
+4. It writes **nothing** to `.plur.yaml`, and no token goes into the repo.
+
+Without flags, it prints the resolved folder policy (mode, scope, source) and checks the
+stores that serve this folder. This replaces `init-remote --verify`.
+
+No trust grant is needed. The URL and token are the user's own, in the user's own config.
+Trust only matters for a `.plur.yaml` that brings its own remote.
+
+### Trust after r3
+
+- **The check stays**, exactly as r2 describes it. A `.plur.yaml` remote is used only when a
+  covering folder-map entry has `trusted: true`. Matching fails closed (PR #1334's rule).
+- **How trust is granted:**
+  - by answering yes to the one-time question (Q-A);
+  - by `plur folders set <dir> --trusted`;
+  - by the automatic import of old `trust.yaml` entries.
+- **`plur trust` / `plur untrust` become hidden aliases:** they are dropped from `plur --help`
+  and the docs, but still work, so existing scripts and runbooks keep running.
+
+### Compatibility (zero manual steps)
+
+- **`plur init-remote`** stays as a hidden alias of `plur remote`. The same flags work, and
+  `--verify` maps to bare `plur remote`. From now on it registers the store in `config.yaml`
+  instead of writing `.plur.yaml`.
+- **An existing `.plur.yaml` with `remote_url` / `remote_token`** keeps working unchanged,
+  through the imported trust entry.
+  - Running `plur remote` in such a folder prints one line saying the connection now lives
+    in the user config and the token can be removed from `.plur.yaml`.
+  - It does not edit or delete the user's file.
+- **The opencode plugin and the other adapters** already read url stores from `config.yaml`
+  through core, so no adapter change is needed. (Check this in the PR: the opencode
+  README mentions `.plur.yaml` remote fields.)
+- **Docs outside this repo** that say `plur init-remote` (the website, onboarding notes) keep
+  working through the alias. Update them to `plur remote` separately.
+
+### Done when (r3)
+
+- **`plur remote --url --token --scope`**, tested with the stub server:
+  - it writes `config.yaml` and `folders.yaml`, and nothing to `.plur.yaml`;
+  - a rejected token or an unauthorised scope writes nothing;
+  - it is idempotent;
+  - the token never appears in stdout, stderr or `--json` output.
+- **Bare `plur remote`** reports the folder policy and store reachability, and exits
+  non-zero when a store serving this folder is unreachable.
+- **The `init-remote` alias:** the same flags give the same result, and `--verify` works.
+- **Trust:**
+  - `plur trust` / `untrust` work but are absent from `--help`;
+  - the trust check for `.plur.yaml` remotes is unchanged: a golden test on a legacy
+    `.plur.yaml`;
+  - a legacy `.plur.yaml` remote in a trusted folder still connects;
+  - an untrusted one asks once.
+- **CHANGELOG** entries: `init-remote` renamed to `remote`, and the trust commands hidden.
+
+### How the open PRs line up
+
+- **#1348 (folder-map core)** already reroutes `trust.ts` through the map. It becomes the
+  single home of trust matching, with the fail-closed rule and the symlink-swap tests.
+- **#1334** keeps the duplicate-store fix and the `canonicalize` fix for missing paths. Its
+  `trust.ts` edits and swap tests move into #1348, so the two stop overlapping.
+- **#1272 (`plur stores add --url`)** supplies `addRemoteStore`, which `plur remote` reuses.
+- **`plur remote` itself** is a new PR stacked on #1348 and #1272, after r3 is approved.
