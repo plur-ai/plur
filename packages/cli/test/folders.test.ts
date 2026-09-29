@@ -13,6 +13,8 @@ import { runCli } from './helpers/spawn.js'
 import { builtCliPath } from './helpers/built-cli.js'
 import { issueFolderNonce, findPlurMarker, safeSessionKey as coreSafeSessionKey } from '@plur-ai/core'
 import { isPlurConfigured } from '../src/lib/plur-configured.js'
+import { nonceRequired } from '../src/commands/folders.js'
+import { spawnSync } from 'child_process'
 import { safeSessionKey } from '../src/lib/session-key.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
@@ -45,15 +47,49 @@ describe('plur folders (#1347)', () => {
     return { status: r.status, out, stderr: r.stderr ?? '' }
   }
 
-  it('set / list / rm round-trip', () => {
+  const nonceFor = (folder: string) => issueFolderNonce(plurHome, 'session-t', folder)
+
+  it('set / list / rm round-trip (non-interactive, so each write carries a nonce)', () => {
     expect(run(['folders', 'list']).out).toEqual({ folders: [], count: 0 })
-    const s = run(['folders', 'set', target, '--off'])
+    const s = run(['folders', 'set', target, '--off', '--nonce', nonceFor(target)])
     expect(s.status).toBe(0)
     expect(s.out.entry).toEqual({ path: target, plur: 'off' })
     expect(run(['folders', 'list']).out.folders).toEqual([{ path: target, plur: 'off' }])
-    expect(run(['folders', 'rm', target]).out).toEqual({ success: true, removed: true })
+    expect(run(['folders', 'rm', target, '--nonce', nonceFor(target)]).out).toEqual({ success: true, removed: true })
     expect(run(['folders', 'list']).out.count).toBe(0)
   }, 60_000)
+
+  it('outside a terminal, set and rm without --nonce are refused; plur trust still works', () => {
+    const set = run(['folders', 'set', target, '--on', '--trusted'])
+    expect(set.status).toBe(1)
+    expect(set.out.code).toBe('nonce-required')
+    const rm = run(['folders', 'rm', target])
+    expect(rm.status).toBe(1)
+    expect(rm.out.code).toBe('nonce-required')
+    expect(existsSync(join(plurHome, 'folders.yaml'))).toBe(false)
+    // plur trust is the explicit human alias and keeps working in scripts.
+    const t = run(['trust', target])
+    expect(t.status).toBe(0)
+    expect(t.out.trusted).toBe(target)
+  }, 60_000)
+
+  // A real pseudo-terminal (Python's pty module; script(1) needs a terminal
+  // of its own on macOS): an interactive user needs no nonce.
+  const hasPythonPty = process.platform !== 'win32' &&
+    spawnSync('python3', ['-c', 'import pty'], { encoding: 'utf-8' }).status === 0
+  it.skipIf(!hasPythonPty)(
+    'in an interactive terminal, set without --nonce is accepted',
+    () => {
+      const env = { ...process.env, HOME: dir, USERPROFILE: dir, TMPDIR: join(dir, 'tmp'), PLUR_PATH: plurHome }
+      const r = spawnSync('python3', [
+        '-c', 'import os,pty,sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))',
+        'node', CLI, 'folders', 'set', target, '--ask', '--json',
+      ], { env, cwd: dir, encoding: 'utf-8', timeout: 60_000, input: '' })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(readFileSync(join(plurHome, 'folders.yaml'), 'utf8')).toContain('plur: ask')
+    },
+    60_000,
+  )
 
   it('refuses a missing or stale nonce, and a nonce for a different folder', () => {
     const missing = run(['folders', 'set', target, '--on', '--nonce', 'deadbeef'])
@@ -74,11 +110,14 @@ describe('plur folders (#1347)', () => {
     expect(run(['folders', 'list']).out.folders).toEqual([{ path: target, plur: 'on' }])
   }, 60_000)
 
-  it('refuses a shared scope with no configured store', () => {
-    const r = run(['folders', 'set', target, '--scope', 'group:example/eng'])
+  it('refuses a team scope with no configured store; accepts a project scope', () => {
+    const r = run(['folders', 'set', target, '--scope', 'group:example/eng', '--nonce', nonceFor(target)])
     expect(r.status).toBe(1)
     expect(r.out.code).toBe('scope-unconfigured')
     expect(existsSync(join(plurHome, 'folders.yaml'))).toBe(false)
+    const p = run(['folders', 'set', target, '--scope', 'project:app', '--nonce', nonceFor(target)])
+    expect(p.status).toBe(0)
+    expect(p.out.entry.scope).toBe('project:app')
   }, 60_000)
 
   it('rejects conflicting or missing options', () => {
@@ -119,6 +158,15 @@ describe('plur folders (#1347)', () => {
     expect(r.status).toBe(1)
     expect(readFileSync(join(plurHome, 'folders.yaml'), 'utf8')).toBe('folders: [[[')
   }, 60_000)
+})
+
+describe('nonceRequired (#1347)', () => {
+  it('only a TTY on both stdin and stdout skips the nonce', () => {
+    expect(nonceRequired(true, true)).toBe(false)
+    expect(nonceRequired(true, false)).toBe(true)
+    expect(nonceRequired(false, true)).toBe(true)
+    expect(nonceRequired(undefined, undefined)).toBe(true)
+  })
 })
 
 describe('core copies agree with the CLI originals (#1347)', () => {

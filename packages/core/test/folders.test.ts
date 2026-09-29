@@ -6,7 +6,8 @@
  * them explicitly — the real ~/.plur is never read or written.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, realpathSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, realpathSync, chmodSync } from 'fs'
+import yaml from 'js-yaml'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -139,16 +140,22 @@ describe('resolveFolderPolicy', () => {
     expect(policy(link)).toEqual({ mode: 'on', scope: 'project:real', remoteAllowed: false, source: 'map' })
   })
 
-  it('an entry under a symlinked parent (e.g. a symlinked home) still matches', () => {
+  it('an absolute entry under a symlinked parent fails closed; `~` and `off` still match', () => {
     const realHome = join(base, 'real-home')
     mkdirSync(join(realHome, 'proj'), { recursive: true })
     const linkHome = join(base, 'link-home')
     symlinkSync(realHome, linkHome)
-    writeMap([{ path: join(linkHome, 'proj'), scope: 'project:p' }])
-    expect(resolveFolderPolicy(join(realHome, 'proj'), { root, home: linkHome }).scope).toBe('project:p')
-    // And `~` expands against the (symlinked) home.
-    writeMap([{ path: '~/proj', plur: 'off' }])
-    expect(resolveFolderPolicy(join(realHome, 'proj'), { root, home: linkHome }).mode).toBe('off')
+    const at = (d: string) => resolveFolderPolicy(d, { root, home: linkHome })
+    // Stored entries are never resolved at compare time (#1334 rule), so the
+    // symlinked spelling does not cover the canonical folder.
+    writeMap([{ path: join(linkHome, 'proj'), scope: 'project:p', trusted: true }])
+    expect(at(join(realHome, 'proj')).mode).toBe('ask')
+    // `~` is the user's home, expanded against its canonical form too.
+    writeMap([{ path: '~/proj', scope: 'project:p' }])
+    expect(at(join(realHome, 'proj')).scope).toBe('project:p')
+    // `off` matches loosely: the safe direction.
+    writeMap([{ path: join(linkHome, 'proj'), plur: 'off' }])
+    expect(at(join(realHome, 'proj')).mode).toBe('off')
   })
 })
 
@@ -200,11 +207,30 @@ describe('trust.yaml import', () => {
     expect(readFileSync(folderMapPath(root), 'utf8')).toBe(afterFirst)
     expect(readFileSync(join(root, 'trust.yaml'), 'utf8')).toBe(trustYaml)
 
-    // After import, folders.yaml is the only file read: untrust in the map
-    // sticks even though trust.yaml still lists the folder.
+    // untrust removes the grant from BOTH files: a downgrade (an older CLI
+    // or MCP reading trust.yaml) or a re-import after deleting folders.yaml
+    // must not bring a revoked grant back. Only removal; never an addition.
     expect(untrustDirectory(a, root)).toBe(true)
     expect(isDirectoryTrusted(a, root)).toBe(false)
-    expect(readFileSync(join(root, 'trust.yaml'), 'utf8')).toBe(trustYaml)
+    expect(yaml.load(readFileSync(join(root, 'trust.yaml'), 'utf8'))).toEqual({ version: 1, trusted: [b] })
+    // Re-import from scratch: a stays revoked, b stays trusted.
+    rmSync(folderMapPath(root))
+    expect(isDirectoryTrusted(a, root)).toBe(false)
+    expect(isDirectoryTrusted(b, root)).toBe(true)
+    // trust never writes trust.yaml.
+    const c = mk('c')
+    trustDirectory(c, root)
+    expect(yaml.load(readFileSync(join(root, 'trust.yaml'), 'utf8'))).toEqual({ version: 1, trusted: [b] })
+  })
+
+  it('untrust of a grant that exists only in trust.yaml (after import) still reports removed', () => {
+    const a = mk('only-legacy')
+    writeFileSync(join(root, 'trust.yaml'), `version: 1\ntrusted:\n  - ${a}\n`)
+    // folders.yaml already exists without the entry (e.g. written by a newer
+    // version before an older one added it to trust.yaml).
+    saveFolderMap(root, { version: 1, folders: [] })
+    expect(untrustDirectory(a, root)).toBe(true)
+    expect(yaml.load(readFileSync(join(root, 'trust.yaml'), 'utf8'))).toEqual({ version: 1, trusted: [] })
   })
 
   it('trust / untrust keep their results, through the map', () => {
@@ -283,6 +309,33 @@ describe('writes: nonce and shared-scope guards', () => {
     expect(existsSync(folderMapPath(root))).toBe(false)
   })
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'a failed save does not consume the nonce',
+    () => {
+      const d = mk('unwritable')
+      const n = issueFolderNonce(root, 'sess-save', d)
+      chmodSync(root, 0o555)
+      try {
+        expect(() => setFolderEntry(root, d, { mode: 'on' }, { configuredScopes: [], nonce: n, home })).toThrow()
+      } finally {
+        chmodSync(root, 0o755)
+      }
+      expect(setFolderEntry(root, d, { mode: 'on' }, { configuredScopes: [], nonce: n, home }).plur).toBe('on')
+      expect(() => setFolderEntry(root, d, { mode: 'off' }, { configuredScopes: [], nonce: n, home }))
+        .toThrow(expect.objectContaining({ code: 'nonce-unknown' }))
+    },
+  )
+
+  it('rm from the ask flow takes a nonce too, and a failed rm does not consume it', () => {
+    const d = mk('rm-nonce')
+    setFolderEntry(root, d, { mode: 'off' }, { configuredScopes: [], home })
+    const other = mk('rm-other')
+    const n = issueFolderNonce(root, 'sess-rm', d)
+    expect(() => removeFolderEntry(root, other, home, { nonce: n })).toThrow(expect.objectContaining({ code: 'nonce-folder' }))
+    expect(removeFolderEntry(root, d, home, { nonce: n })).toBe(true)
+    expect(() => removeFolderEntry(root, d, home, { nonce: n })).toThrow(expect.objectContaining({ code: 'nonce-unknown' }))
+  })
+
   it('a hostile session id cannot escape the nonce dir', () => {
     const d = mk('x')
     issueFolderNonce(root, '../../escape', d)
@@ -297,9 +350,13 @@ describe('writes: nonce and shared-scope guards', () => {
     expect(setFolderEntry(root, d, { scope: 'group:example/eng' }, { configuredScopes: ['group:example/eng'], home }).scope)
       .toBe('group:example/eng')
     expect(setFolderEntry(root, d, { scope: 'user:me' }, { configuredScopes: [], home }).scope).toBe('user:me')
-    // project: is shared-family (isSharedScope), so it needs a store too.
-    expect(() => setFolderEntry(root, d, { scope: 'project:typo' }, { configuredScopes: [], home }))
-      .toThrow(expect.objectContaining({ code: 'scope-unconfigured' }))
+    // project: scopes live in the local store (isLocalOnlyScope): no store needed.
+    expect(setFolderEntry(root, d, { scope: 'project:app' }, { configuredScopes: [], home }).scope).toBe('project:app')
+    // Team scopes meant to reach a store still need one.
+    for (const scope of ['org:example', 'team:example', 'space:example']) {
+      expect(() => setFolderEntry(root, d, { scope }, { configuredScopes: [], home }))
+        .toThrow(expect.objectContaining({ code: 'scope-unconfigured' }))
+    }
   })
 
   it('--scope alone means on (drops a previous plur field); rm removes the exact entry', () => {

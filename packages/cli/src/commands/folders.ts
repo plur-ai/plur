@@ -5,7 +5,22 @@ import { FolderMapError, type FolderChange, type FolderEntry } from '@plur-ai/co
 const USAGE =
   'Usage: plur folders list\n' +
   '       plur folders set <folder> (--scope <s> | --on | --off | --ask) [--trusted | --no-trusted] [--nonce <n>]\n' +
-  '       plur folders rm <folder>'
+  '       plur folders rm <folder> [--nonce <n>]\n' +
+  'Without --nonce, set and rm work only from an interactive terminal.'
+
+/**
+ * Whether a `set`/`rm` must carry the ask flow's `--nonce`.
+ *
+ * Only a person at a terminal may write the map without one. When stdin or
+ * stdout is not a TTY, the caller is a script or an agent (the ask flow runs
+ * the command from a tool call), and without this an agent could skip the
+ * nonce check simply by omitting `--nonce`, and write any folder, `--trusted`
+ * included. `plur trust` is the explicit human alias and keeps working in
+ * scripts; it does not go through here.
+ */
+export function nonceRequired(stdinIsTTY: boolean | undefined, stdoutIsTTY: boolean | undefined): boolean {
+  return !(stdinIsTTY === true && stdoutIsTTY === true)
+}
 
 /**
  * `plur folders` (#1347) — the only way to write the folder map
@@ -18,8 +33,8 @@ const USAGE =
  *   plur folders rm <folder>
  *
  * `--nonce` is what the ask flow passes: it must be the nonce issued for this
- * folder in this session, and it works once. Run by hand without `--nonce`,
- * `set` is your own action and is accepted, as `plur trust` is. A shared
+ * folder in this session, and it works once. Without `--nonce`, `set` and `rm`
+ * are accepted only from an interactive terminal (see nonceRequired). A team
  * `--scope` must name a store already configured in config.yaml.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
@@ -42,10 +57,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const rest = args.slice(2)
 
   if (sub === 'rm') {
-    if (rest.length) exit(1, `Unexpected argument ${rest[0]}.\n${USAGE}`)
+    let rmNonce: string | undefined
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--nonce' && rest[i + 1] && !rest[i + 1].startsWith('--')) { rmNonce = rest[++i]; continue }
+      exit(1, `Unexpected argument ${rest[i]}.\n${USAGE}`)
+    }
+    refuseWithoutNonce(rmNonce, json)
     const plur = createPlur(flags)
     try {
-      const removed = plur.removeFolder(folder)
+      const removed = plur.removeFolder(folder, rmNonce !== undefined ? { nonce: rmNonce } : undefined)
       if (json) return outputJson({ success: true, removed })
       return outputText(removed ? `Removed the entry for ${folder}.` : `${folder} has no entry of its own.`)
     } catch (err) {
@@ -75,6 +95,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
   if (modes > 1) exit(1, `Pass only one of --scope, --on, --off, --ask.\n${USAGE}`)
   if (modes === 0 && change.trusted === undefined) exit(1, `Nothing to set.\n${USAGE}`)
+  refuseWithoutNonce(nonce, json)
 
   const plur = createPlur(flags)
   try {
@@ -84,6 +105,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } catch (err) {
     fail(err, json)
   }
+}
+
+function refuseWithoutNonce(nonce: string | undefined, json: boolean): void {
+  if (nonce !== undefined || !nonceRequired(process.stdin.isTTY, process.stdout.isTTY)) return
+  fail(new FolderMapError('nonce-required',
+    'Not an interactive terminal: plur folders set/rm needs the --nonce the ask flow issued. ' +
+    'Run it yourself in a terminal to record a decision by hand (or use plur trust <dir> for a trust grant).'), json)
 }
 
 function describe(f: FolderEntry): string {

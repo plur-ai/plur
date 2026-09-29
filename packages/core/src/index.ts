@@ -146,7 +146,9 @@ export {
   folderPatternSpecificity,
   issueFolderNonce,
   consumeFolderNonce,
+  verifyFolderNonce,
   endFolderNonceSession,
+  removeLegacyTrustEntry,
   FolderMapError,
   FOLDER_NONCE_TTL_MS,
   safeSessionKey,
@@ -10039,9 +10041,9 @@ Generate an improved version of the procedure that prevents this failure. Return
     return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, ...options })
   }
 
-  /** Remove the exact entry for `folder` (`plur folders rm`). */
-  removeFolder(folder: string): boolean {
-    return _removeFolderEntry(this.paths.root, folder)
+  /** Remove the exact entry for `folder` (`plur folders rm`); `nonce` as for setFolder. */
+  removeFolder(folder: string, options?: { nonce?: string }): boolean {
+    return _removeFolderEntry(this.paths.root, folder, undefined, options)
   }
 
   /** Issue a single-use nonce naming `folder` for the ask flow of `sessionId`. */

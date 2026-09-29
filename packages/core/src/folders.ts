@@ -9,6 +9,7 @@ import { atomicWrite } from './sync.js'
 import { canonicalize, findProjectConfigPath, readProjectConfigFromPath } from './project-config.js'
 import { resolveProjectRemoteFromConfig } from './project-remote.js'
 import { isSharedScope } from './scope-util.js'
+import { isLocalOnlyScope } from './scope-target.js'
 
 /**
  * The folder map (#1347): `<PLUR home>/folders.yaml` holds the user's own
@@ -160,37 +161,49 @@ export function expandHome(p: string, home: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The spellings of a stored entry a check accepts. The target is always
- * compared in its canonical form only.
+ * The spellings of a stored entry a check accepts. The checked folder is
+ * always compared in its canonical form only.
  *
- * Matches PR #1334's trust matching (fail closed): the entry as written, plus
- * the entry with its PARENT canonicalised and its last literal segment
- * re-appended. The last segment is deliberately not resolved: resolving it
- * would follow a symlink swapped in for a trusted folder after the grant and
- * trust wherever it points (#778). For a glob, the same is applied to the
- * literal directory before the first wildcard, and the wildcard tail is kept.
+ * Fails CLOSED (the #1334 trust rule; this module is now its single home): a
+ * stored entry is compared exactly as written — made absolute, `.`/`..`
+ * normalised, never resolved on disk. Resolving it at compare time, or even
+ * its parent, would follow a symlink planted after the decision was recorded
+ * (a trusted folder, or its parent, swapped for a link elsewhere) and apply
+ * the decision to wherever it now points (#778).
+ *
+ * `~` is the user's home, not a stored path, so it expands against both the
+ * home as given and its canonical form (a symlinked home, /var vs
+ * /private/var). Nothing after `~` is resolved.
  *
  * `lax` (used only for `off`, where matching MORE is the safe direction) also
- * accepts the fully canonicalised literal part.
+ * accepts the entry with its parent, or all of it, canonicalised.
  */
 function entryForms(entryPath: string, home: string, lax: boolean): string[] {
-  const expanded = expandHome(entryPath, home)
-  const g = firstGlobIndex(expanded)
-  let literal: string
-  let tail: string
-  if (g === -1) {
-    literal = resolve(expanded)
-    tail = ''
-  } else {
-    const cut = Math.max(expanded.lastIndexOf('/', g), expanded.lastIndexOf(sep, g))
-    if (cut <= 0) return [expanded]
-    literal = resolve(expanded.slice(0, cut))
-    tail = expanded.slice(cut)
+  const homes = entryPath === '~' || entryPath.startsWith('~/') || entryPath.startsWith('~\\')
+    ? [...new Set([home, canonicalize(home)])]
+    : [home]
+  const forms = new Set<string>()
+  for (const h of homes) {
+    const expanded = expandHome(entryPath, h)
+    const g = firstGlobIndex(expanded)
+    let literal: string
+    let tail: string
+    if (g === -1) {
+      literal = resolve(expanded)
+      tail = ''
+    } else {
+      const cut = Math.max(expanded.lastIndexOf('/', g), expanded.lastIndexOf(sep, g))
+      if (cut <= 0) { forms.add(expanded); continue }
+      literal = resolve(expanded.slice(0, cut))
+      tail = expanded.slice(cut)
+    }
+    forms.add(literal + tail)
+    if (lax) {
+      const parent = dirname(literal)
+      if (parent !== literal) forms.add(join(canonicalize(parent), basename(literal)) + tail)
+      forms.add(canonicalize(literal) + tail)
+    }
   }
-  const forms = new Set<string>([literal + tail])
-  const parent = dirname(literal)
-  if (parent !== literal) forms.add(join(canonicalize(parent), basename(literal)) + tail)
-  if (lax) forms.add(canonicalize(literal) + tail)
   return [...forms]
 }
 
@@ -255,8 +268,9 @@ export function readLegacyTrustEntries(root: string): string[] {
 function load(root: string): LoadResult {
   const existing = readMapFile(root)
   if (existing) return existing
-  // First read: import trust.yaml once. trust.yaml is left untouched so a
-  // downgrade still works; after this, folders.yaml is the only file read.
+  // First read: import trust.yaml once, entries kept exactly as written. The
+  // import never writes trust.yaml; only `untrust` shrinks it (never adds),
+  // so a downgrade still works without resurrecting a revoked grant.
   const legacy = readLegacyTrustEntries(root)
   const map: FolderMap = { version: 1, folders: legacy.map(path => ({ path, trusted: true })) }
   if (legacy.length > 0) {
@@ -397,7 +411,7 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
 // Writes (CLI only): set / remove, with the nonce and shared-scope guards.
 // ---------------------------------------------------------------------------
 
-export type FolderMapErrorCode = 'malformed' | 'nonce-unknown' | 'nonce-expired' | 'nonce-folder' | 'scope-unconfigured' | 'invalid'
+export type FolderMapErrorCode = 'malformed' | 'nonce-required' | 'nonce-unknown' | 'nonce-expired' | 'nonce-folder' | 'scope-unconfigured' | 'invalid'
 
 export class FolderMapError extends Error {
   constructor(public readonly code: FolderMapErrorCode, message: string) {
@@ -459,15 +473,19 @@ export function setFolderEntry(root: string, folder: string, change: FolderChang
   if (change.mode === undefined && change.scope === undefined && change.trusted === undefined) {
     throw new FolderMapError('invalid', 'Nothing to set: pass --scope <s>, --on, --off, --ask, --trusted or --no-trusted.')
   }
-  if (change.scope !== undefined && isSharedScope(change.scope) && !opts.configuredScopes.includes(change.scope)) {
+  // A team scope that is meant to reach a store (group:, org:, team:, ...)
+  // must name one that is configured, or a typo silently stays local.
+  // project:* lives in the local store (isLocalOnlyScope), so it needs none.
+  if (change.scope !== undefined && isSharedScope(change.scope) && !isLocalOnlyScope(change.scope) &&
+      !opts.configuredScopes.includes(change.scope)) {
     throw new FolderMapError('scope-unconfigured',
-      `"${change.scope}" is a shared scope with no store configured in config.yaml, so memories would stay local. ` +
+      `"${change.scope}" is a team scope with no store configured in config.yaml, so memories would stay local. ` +
       `Add the store first (plur stores add / plur scopes register), then retry.`)
   }
-  // Load (and refuse a malformed map) BEFORE consuming the nonce, so a
-  // refused write never burns it.
+  // Refuse a malformed map and check the nonce first, but CONSUME the nonce
+  // only after the map is saved: a refused or failed write never burns it.
   const map = loadForWrite(root)
-  if (opts.nonce !== undefined) consumeFolderNonce(root, opts.nonce, folder, opts.now)
+  const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, opts.now) : null
   const key = folderEntryKey(folder, home)
   const idx = findEntryIndex(map.folders, folder, home)
   const entry: FolderEntry = idx >= 0 ? { ...map.folders[idx] } : { path: key }
@@ -481,16 +499,25 @@ export function setFolderEntry(root: string, folder: string, change: FolderChang
   if (idx >= 0) map.folders[idx] = entry
   else map.folders.push(entry)
   saveFolderMap(root, map)
+  consume?.()
   return cleanEntry(entry)
 }
 
-/** Remove the entry for `folder` (exact entry, not a covering one). Returns whether one was removed. */
-export function removeFolderEntry(root: string, folder: string, home: string = homedir()): boolean {
+/**
+ * Remove the entry for `folder` (exact entry, not a covering one). Returns
+ * whether one was removed. A `nonce` (from the ask flow) is checked like
+ * `setFolderEntry`'s and consumed only when an entry was removed and saved.
+ */
+export function removeFolderEntry(
+  root: string, folder: string, home: string = homedir(), opts?: { nonce?: string; now?: number },
+): boolean {
   const map = loadForWrite(root)
+  const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, opts.now) : null
   const idx = findEntryIndex(map.folders, folder, home)
   if (idx < 0) return false
   map.folders.splice(idx, 1)
   saveFolderMap(root, map)
+  consume?.()
   return true
 }
 
@@ -513,6 +540,26 @@ export function clearFolderTrust(root: string, folder: string, home: string = ho
   })
   if (changed) saveFolderMap(root, map)
   return changed
+}
+
+/**
+ * Remove the grant for `folder` from the pre-#1347 `trust.yaml`, if it lists
+ * one (the stored string, its plain spelling, or its canonical form). Without
+ * this, a downgrade (an older CLI or MCP reading trust.yaml) or a re-import
+ * after folders.yaml is deleted would bring a revoked grant back. Removal is
+ * fail-safe; nothing is ever ADDED to trust.yaml. Returns whether an entry was
+ * removed. Throws on a write error so a revocation never silently half-applies.
+ */
+export function removeLegacyTrustEntry(root: string, folder: string, home: string = homedir()): boolean {
+  const file = legacyTrustPath(root)
+  if (!existsSync(file)) return false
+  const entries = readLegacyTrustEntries(root)
+  const raw = resolve(expandHome(folder, home))
+  const target = canonicalize(raw)
+  const kept = entries.filter(t => !(t === folder || t === raw || t === target))
+  if (kept.length === entries.length) return false
+  atomicWrite(file, yaml.dump({ version: 1, trusted: kept }))
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -578,12 +625,20 @@ export function endFolderNonceSession(root: string, sessionId: string): void {
 }
 
 /**
- * Verify and consume `nonce` for `folder`. Throws a FolderMapError when the
- * nonce is unknown (never issued, already used, or its session ended),
- * expired, or was issued for a different folder. A folder mismatch does not
- * consume the nonce.
+ * Verify and consume `nonce` for `folder` in one step. See verifyFolderNonce.
  */
 export function consumeFolderNonce(root: string, nonce: string, folder: string, now: number = Date.now()): void {
+  verifyFolderNonce(root, nonce, folder, now)()
+}
+
+/**
+ * Verify `nonce` for `folder` and return the function that consumes it.
+ * Writers call that only after their write succeeded, so a failed write never
+ * burns the nonce. Throws a FolderMapError when the nonce is unknown (never
+ * issued, already used, or its session ended), expired (removed on the spot),
+ * or was issued for a different folder (left in place).
+ */
+export function verifyFolderNonce(root: string, nonce: string, folder: string, now: number = Date.now()): () => void {
   const dir = nonceDir(root)
   let files: string[] = []
   try { files = readdirSync(dir).filter(f => f.endsWith('.yaml')) } catch { /* no nonces issued */ }
@@ -602,9 +657,15 @@ export function consumeFolderNonce(root: string, nonce: string, folder: string, 
     if (rec.folder !== canonicalize(folder)) {
       throw new FolderMapError('nonce-folder', `That nonce was issued for ${rec.folder}, not ${canonicalize(folder)}; nothing was changed.`)
     }
-    data.nonces.splice(idx, 1)
-    writeNonceFile(file, data)
-    return
+    return () => {
+      // Re-read: another writer may have changed this session's file since.
+      const fresh = readNonceFile(file)
+      if (!fresh) return
+      const j = fresh.nonces.findIndex(r => r.nonce === nonce)
+      if (j < 0) return
+      fresh.nonces.splice(j, 1)
+      writeNonceFile(file, fresh)
+    }
   }
   throw new FolderMapError('nonce-unknown', 'Unknown or already-used nonce; nothing was changed.')
 }
