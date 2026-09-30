@@ -1,0 +1,69 @@
+name: E2E Windows fresh install
+
+# Field-report done-when, on a real Windows runner: "A fresh install, in a
+# never-registered folder, asks once; on 'yes' it writes an engram that
+# reaches the url store, and produces a feedback outcome."
+#
+# Not a live editor session: no editor runs. The packed core/mcp/cli
+# tarballs are installed into a temp prefix, `plur init` runs into a fresh
+# HOME, and every hook command and MCP entry init wrote is executed exactly
+# as written, with each editor's JSON payloads, through bash (Git Bash),
+# pwsh and cmd /C. The team store is the in-repo stub on localhost
+# (scripts/e2e/stub-store.ts) with a test token. No repository secrets.
+#
+# Lives only on the e2e/windows-fresh-install branch; never on main.
+
+on:
+  push:
+    branches: [e2e/windows-fresh-install]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-windows-fresh-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-install:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        home: [plain, spaced]
+    env:
+      PLUR_E2E_TOKEN: e2e-localhost-test-token
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build core, ui, mcp and cli
+        run: pnpm --filter "@plur-ai/cli..." --filter "@plur-ai/mcp..." build
+      # pnpm pack, not npm pack: npm pack keeps the `workspace:*` specifiers,
+      # which npm cannot install from a tarball.
+      - name: Pack core, mcp and cli
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/tgz"
+          for p in core mcp cli; do (cd "packages/$p" && pnpm pack --pack-destination "$RUNNER_TEMP/tgz"); done
+          ls -l "$RUNNER_TEMP/tgz"
+      - name: 8.3 short names on the temp volume (informational)
+        shell: cmd
+        run: fsutil 8dot3name query %TEMP:~0,2% || exit /b 0
+      - name: Fresh install, never-registered folder, every hook through bash, pwsh and cmd
+        shell: bash
+        run: node scripts/e2e/windows-fresh-install.mjs --tarballs "$RUNNER_TEMP/tgz" --home "${{ matrix.home }}" --out "$RUNNER_TEMP/e2e-out"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-fresh-install-${{ matrix.home }}
+          path: ${{ runner.temp }}/e2e-out
