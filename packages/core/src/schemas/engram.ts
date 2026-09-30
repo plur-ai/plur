@@ -84,7 +84,7 @@ export const AttributionSchema = z.object({
   runtime: z.object({
     name: z.string(),
     version: z.string().optional(),
-  }).optional().describe('The software that wrote this engram. Always knowable, so usually present.'),
+  }).optional().describe('The calling app or agent runtime, with its version when known. Omitted when unknown.'),
   model: z.object({
     name: z.string(),
     prompt_id: z.string().optional(),
@@ -94,7 +94,7 @@ export const AttributionSchema = z.object({
   tool: z.object({
     name: z.string(),
     version: z.string().optional(),
-  }).optional().describe('An extractor or importer, with its version.'),
+  }).optional().describe('The tool that wrote this engram, such as plur-core, an extractor or an importer.'),
   on_behalf_of: z.string().optional()
     .describe('The party the runtime acted for. Becomes prov:actedOnBehalfOf.'),
 }).describe('Who is answerable for this engram (#961). All fields optional; omit rather than guess.')

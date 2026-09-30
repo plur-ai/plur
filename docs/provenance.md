@@ -184,7 +184,12 @@ came from when you cannot share what it says.
 
 ## Recording who wrote something
 
-By default PLUR records the software that wrote an engram, and nothing about you.
+By default PLUR records `attribution.tool: { name: 'plur-core' }` and marks
+`asserted_by` as `unidentified` unless an identity is configured or supplied.
+MCP writes also record the calling app's name and version from the initialize
+handshake in `attribution.runtime`. Without client information, runtime stays
+unset. These defaults apply to individual learns, batches, and session-end
+suggestions; existing engrams are not rewritten.
 
 To record yourself as well, pass it at the point of learning:
 
@@ -193,7 +198,7 @@ await plur.learn('Migrations run before deploys', {
   type: 'behavioral',
   attribution: {
     asserted_by: 'local:maintainer',
-    runtime: { name: 'plur-mcp', version: '0.18.0' },
+    runtime: { name: 'my-app', version: '1.0.0' },
   },
   claim_class: 'asserted',
 })
