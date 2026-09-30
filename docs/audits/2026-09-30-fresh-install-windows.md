@@ -180,3 +180,58 @@ FAIL  [spaced] pwsh cursor (d) prompt#3 showed the engram=false; injected ids=[]
 Evidence artifacts (full logs, hook files, MCP entries, results.json) are
 attached to the run as `e2e-fresh-install-plain` and `e2e-fresh-install-spaced`.
 The logs are redacted: the test token is replaced with `***`.
+
+## Re-run 2026-09-30 (after #1418 fdb40374)
+
+**Result: met on Windows, with one known exclusion: feedback in Cursor
+(#1200).** This is still not a live editor session. As in the first run, the
+editors' exact hook strings and MCP entries were run, not the editors.
+
+- Run: https://github.com/plur-ai/plur/actions/runs/36690132077. Both jobs
+  report "failure", and the only failing check in each is the Cursor
+  exclusion below.
+- Branch `e2e/windows-fresh-install` @ `f0e1e20e`. This is the first run's
+  branch plus a merge commit of `feat/1347-folder-map-hooks` @ `fdb40374`
+  (#1418, which now includes #1318). The harness and assertions are unchanged.
+- The merge had conflicts in the cli `hook-inject.ts` imports and the
+  `recordInjected` call site, in `docs/runbooks/hook-timeouts.md` and in the
+  CHANGELOG. In each I kept the side already on the branch, which carries both
+  PRs' content (`recordInjected` is still called once on the injection path),
+  and kept both sides of the CHANGELOG. After the merge, `pnpm build` and cli
+  `tsc --noEmit` both exit 0.
+- Both of the first run's findings are fixed in this build:
+  - F1 is gone: `hook-auto-rate` now checks the folder map (`hookFolderOn`).
+  - F2 is gone: `quoted()` now quotes any path that contains a backslash.
+
+Each cell gives the checks that passed out of the checks that count. **CC** = Claude Code, **Cx** = Codex,
+**Cu** = Cursor, **Ag** = Antigravity. Claude Code does not use cmd.
+
+| Check | bash · plain | bash · spaced | pwsh · plain | pwsh · spaced | cmd · plain | cmd · spaced |
+|---|---|---|---|---|---|---|
+| (a) asks once | PASS 4/4 | PASS 4/4 | PASS 4/4 | PASS 4/4 | PASS 3/3 | PASS 3/3 |
+| (b) "yes" sets the folder on | PASS 4/4 | PASS 4/4 | PASS 4/4 | PASS 4/4 | PASS 3/3 | PASS 3/3 |
+| (c) learn reaches the url store | PASS | PASS | PASS | PASS | PASS | PASS |
+| (d) local rated record + stub feedback with `source: auto` | PASS CC Cx Ag | PASS CC Cx Ag | PASS CC Cx Ag | PASS CC Cx Ag | PASS Cx Ag | PASS Cx Ag |
+| (d) Cursor | excluded (#1200) | excluded | excluded | excluded | excluded | excluded |
+| (e) re-init, no duplicate hooks | PASS | PASS | PASS | PASS | PASS | PASS |
+| (f) MCP entries answer tools/list | PASS 4/4 | PASS 4/4 | PASS 4/4 | PASS 4/4 | PASS 4/4 | PASS 4/4 |
+
+In each home, 59 of the 62 checks passed and 3 failed. The 3 failures are the
+Cursor (d) cells, one per shell. They are listed as a known exclusion and are
+**not** counted as passes. Cursor's sessionStart hook injects with BM25 only and never dials the
+url store, so there is nothing to rate:
+
+```
+FAIL  [plain] bash cursor (d) prompt#3 showed the engram=false; injected ids=[]; … prompt#3 output: [PLUR Memory — session started, 0 engrams injected]
+```
+
+Excerpts from the log (plain home, Git Bash; this was the failing case in the first run):
+
+```
+PASS  [plain] bash claude (b) ran: plur folders set "C:\Users\runneradmin\AppData\Local\Temp\e2euserUNkxpo\work\never-registered-bash-claude" --scope group:e2e/test --nonce 2c3d… -> exit 0; … policy={"mode":"on","scope":"group:e2e/test",…}
+PASS  [plain] bash claude (d) prompt#3 showed the engram=true; injected ids=["ENG-GE2-SRV-001"]; end-of-turn hooks=2 exits=0,0; worker idle=true; local rated=["ENG-GE2-SRV-001"]; stub feedback new=[{"signal":"positive","source":"auto"}]
+```
+
+In this run the fallback control step (which adds a `.plur.yaml` to the folder
+after a (d) failure) never fired, because every (d) failure was a Cursor cell,
+where nothing had been injected.
