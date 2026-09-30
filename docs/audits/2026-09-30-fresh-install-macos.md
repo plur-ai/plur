@@ -477,3 +477,143 @@ process 4 (fresh), "What is the e2e harness marker word? …"
 
 Findings 2 to 5 of the first run were not re-tested here. They are not affected by
 the auto-rate gate fix.
+
+## Re-run 2026-09-30 (owner decisions on findings 2 and 3)
+
+This run checks two changes made after the owner's decisions:
+- Finding 3, decision 1: `plur init` puts the prompt hooks in user settings (#1467, PR #1469).
+- Finding 2, decision 2: re-ask the folder question after a resume (option C, on #1418).
+
+**Result: both pass.**
+
+| Check | Result | Evidence below |
+|---|---|---|
+| (f) `plur init` run inside a repo writes the prompt hooks and the MCP entry to user settings, and moves the hooks an older init left in the repo | **Pass** | Init |
+| (g) The repo keeps working after the move: its first prompt injects instead of asking | **Pass** | Process 1 |
+| (h) A never-registered folder is asked once after `plur init` was run from inside another repo | **Pass** | Process 2 |
+| (i) After `claude --resume`, the question comes again with a fresh nonce, and the "yes" succeeds | **Pass** | Process 3 |
+| (j) The ended session's nonce and the used nonce are both refused | **Pass** | Nonces |
+| (k) A second `plur init` changes nothing | **Pass** | Init |
+
+Finding 2 is closed by (i). Finding 3 is closed by (f), (g) and (h). Finding 4 (a
+symlinked HOME dropping hooks) is covered by a unit test on #1469
+(`run from $HOME spelled through a symlink…`) and was not re-run here.
+
+### Build
+
+- Branch `feat/1467-init-user-settings` @ `0e7146b6`. This is `feat/1347-folder-map-hooks` @ `b7f6ddfb` plus #1467.
+  - `b7f6ddfb` includes the resume fix (`e056942f`) and the three review fixes to the question (`1eb37f03`, `04e08948`, `b7f6ddfb`). CI is green on both heads.
+- `pnpm pack` for core, mcp and cli (0.20.1; tarball sha256 prefixes `5461e5d209b8` core, `f80b9c49066c` mcp, `1533cfed2327` cli), then `npm install -g --prefix <temp>/prefix`.
+- The installed `dist` contains `commands/hook-session-resume.js` and init's "moved PLUR's hooks from" message.
+- The stub store was not used: none of these checks needs a store.
+
+### Isolation
+
+- Temp root `R=/private/var/folders/…/T/pe2e3.0xtj`, with its own HOME, PLUR_PATH, TMPDIR and npm prefix. Every plur command ran through `iso.sh`.
+- **The first attempt under `/private/tmp` was aborted.**
+  - Another run on this machine had executed `plur init` with `/private/tmp` as its working folder, at 10:38 and with the old default. That left `/private/tmp/.claude/settings.json` with a plur MCP server.
+  - That file is a project marker for every folder beneath `/private/tmp`. The never-registered folder therefore came up `on` ("session started") instead of asking.
+  - The file is not this run's, so it was left in place. The run moved to a root that has no marker in any parent folder (checked by walking up to `/`).
+  - This is finding 3's effect seen from outside: one project-scoped `plur init` in a shared parent folder turns memory on for everything under it.
+- Login under the temp HOME failed again (`Not logged in · Please run /login`; no API key set or used). The same real-HOME fallback as above was used:
+  - `--setting-sources project` and `--strict-mcp-config`.
+  - init's hooks and MCP entry, each hook forced to the temp HOME, PLUR_PATH and TMPDIR (`make-settings.py`).
+  - New this time: the `plur` on the model's PATH is a wrapper that forces the same temp environment, so the model's own `plur folders set` could not reach the real `~/.plur` either.
+- Real `~/.claude/settings.json`: sha256 `e9fedfaa10a5…` before and after, **identical**. (It differs from the earlier runs' `ec4647d5737f…` because other sessions changed it in between.)
+- Real `~/.plur`: 0 files contain `pe2e3`, which covers both temp roots.
+
+### Init
+
+In `R/work/repo`, `plur init --project` first recreated what an older init left behind. A user permission and a user Stop hook were then added to that file, followed by `plur init` and a second `plur init`:
+
+```
+$ cd $R/work/repo && plur init --project --no-desktop --no-prompt      # the old placement
+Architecture: …, injection hooks project-scoped (--project).
+Injection file:   $R/work/repo/.claude/settings.json
+
+$ plur init --no-desktop --no-prompt
+Architecture: One global engram store (~/.plur/); all hooks in user settings, gated per folder by the folder map.
+MCP server (plur): registered
+Enforcement hooks (4, always global): upgraded
+Injection hooks (9): upgraded
+This repo:        moved PLUR's hooks from $R/work/repo/.claude/settings.json to user settings (its MCP entry and other settings kept); recorded as on in $R/plur/folders.yaml
+
+$ plur init --no-desktop --no-prompt                                    # second run
+MCP server (plur): already registered
+Enforcement hooks (4, always global): already up to date
+Injection hooks (9): already up to date
+```
+
+After the first default run:
+- `$R/work/repo/.claude/settings.json` has keys `hooks`, `mcpServers` (plur kept) and `permissions`. Its only remaining hook is the user's `Stop: echo user-own-stop-hook`.
+- `$R/home/.claude/settings.json` has every PLUR hook, once each:
+  - `SessionStart`: `hook-session-remind`; matcher `resume`: `hook-session-resume`; matcher `compact`: `hook-inject --rehydrate`
+  - `SessionEnd`, `PreToolUse`, `PostToolUse`, `UserPromptSubmit` (`hook-inject`), `SubagentStart`
+  - `Stop`: `hook-learn-check`, `hook-auto-rate claude`
+- `folders.yaml`:
+
+```
+version: 1
+folders:
+  - path: $R/work/repo
+    plur: 'on'
+```
+
+The second run left all three files byte-identical: sha1 prefixes `8a9bc14b7fb8` (user settings), `83b6c1c47829` (repo settings) and `7ccb62002006` (`folders.yaml`), each the same before and after.
+
+### Process 1: the repo (g)
+
+```
+HOOK SessionStart:startup: Before other work, start this session's memory with plur: …
+HOOK UserPromptSubmit: [PLUR Memory — session started, 0 engrams injected]
+ASSISTANT: 4
+```
+
+### Process 2: `R/work/fresh`, never registered (h)
+
+```
+turn 1 "What is the capital of France? … Do not run any commands yet; I will answer the memory question later."
+HOOK SessionStart:startup: (empty)
+HOOK UserPromptSubmit: [PLUR Memory — no decision for this folder yet, so no memories were loaded] $R/work/fresh
+  - Yes: plur folders set $R/work/fresh --on --nonce 9864…d84c
+  - Not now: run nothing. This session will not ask again.
+  - Never here: plur folders set $R/work/fresh --off --nonce 9864…d84c
+ASSISTANT: Paris.
+e2e_note folder_nonces: ["14370fc8-….yaml"]
+turn 2 "And the capital of Italy? One word."
+HOOK UserPromptSubmit: (empty)        ASSISTANT: Rome.
+exit 0; folder_nonces_after_exit: []   # SessionEnd deleted the session's nonces, as designed
+```
+
+### Process 3: `claude -p --resume 14370fc8-…` in `R/work/fresh` (i)
+
+```
+turn 1 "About the PLUR memory question: yes, use PLUR memory in this folder, without a team scope."
+HOOK SessionStart:resume: (empty)      # hook-session-remind
+HOOK SessionStart:resume: (empty)      # hook-session-resume: clears 14370fc8-….folder-asked
+HOOK UserPromptSubmit: [PLUR Memory — no decision for this folder yet, so no memories were loaded] $R/work/fresh
+TOOL_USE Bash: plur folders set $R/work/fresh --on --nonce d570…2d3b
+TOOL_RESULT: {"success":true,"entry":{"path":"$R/work/fresh","plur":"on"}}
+ASSISTANT: PLUR memory is now on for this folder, with no team scope. …
+e2e_note folder_nonces: []
+turn 2 "Thanks. What is the capital of Spain? One word."
+HOOK UserPromptSubmit: [PLUR Memory — session started, 0 engrams injected]
+ASSISTANT: Madrid.
+```
+
+The first run's finding 2 failed at this point with `nonce-unknown`. Now the resumed session gets a new nonce (`d570…`, not `9864…`), and the yes is written.
+
+### Nonces (j)
+
+```
+$ plur folders set $R/work/fresh --off --nonce 9864…d84c    # issued before the resume
+{"success":false,"error":"Unknown or already-used nonce; nothing was changed.","code":"nonce-unknown"}
+$ plur folders set $R/work/fresh --off --nonce d570…2d3b    # used by the yes
+{"success":false,"error":"Unknown or already-used nonce; nothing was changed.","code":"nonce-unknown"}
+```
+
+The harness for this run is in `scripts/e2e/rerun-1467/`:
+- `iso.sh`, the `plur` wrapper, `make-settings.py` and `steps.sh`;
+- `drive.py`, which gains `--resume <session-id>`.
+
+Like the earlier drivers, these files are a record of the run, with its absolute temp paths.
