@@ -1265,6 +1265,8 @@ repo's request. Only the CLI writes the map.
     the folder you give it.
   - A `~` in the map expands to your home as written and to its canonical path.
 
+### A team save that stays on this machine now says so (#1264)
+
 ### `plur stores add` can register a remote store, and checks the token first (#1265)
 
 **An installer script can now connect a machine to a team store without MCP**
@@ -1303,6 +1305,7 @@ A fragment of the token, or its base64 buried inside a larger blob, has no
 fixed form and is not caught. `plur stores add
 <path> <scope>` is unchanged. The core method is `Plur.addRemoteStore()`, which
 throws `AddRemoteStoreError` with a stable `code`.
+Nothing about where engrams are written changes. The field is additive.
 
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
