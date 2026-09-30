@@ -1205,6 +1205,98 @@ equals or contains it (segment-aware) — so naming a project scope that a url
 store covers reaches that store instead of being refused as "local".
 (Decisions E4, E5.)
 
+### A folder map records your per-folder decisions, and `trust.yaml` folds into it
+
+**First half of #1347: core and CLI only. No hook reads the map yet.** A new
+file, `~/.plur/folders.yaml`, holds your own decisions about folders: `on`,
+`off` or `ask`, a default write `scope`, and `trusted`. `trusted` is the grant
+that used to live in `trust.yaml`. `.plur.yaml` is unchanged and stays the
+repo's request. Only the CLI writes the map.
+
+- **`resolveFolderPolicy(dir)`** (core, and `Plur.resolveFolderPolicy`) returns
+  `{ mode, scope?, remoteAllowed, source }`, resolved in this order:
+  1. Any matching `off` entry wins.
+  2. A `.plur.yaml` means on. A map `scope` beats its scope hint, and its remote
+     is allowed only under a `trusted` entry.
+  3. A project MCP config means on.
+  4. Otherwise the most specific matching entry decides.
+  5. Otherwise the answer is `ask`, and that includes `$HOME`.
+
+  Paths may be globs (`*`, `**`, `?`) and may start with `~`. A plain folder
+  also covers everything below it.
+- **`plur folders list | set <folder> | rm <folder>`.** `set` takes one of
+  `--scope <s>`, `--on`, `--off` or `--ask`, plus optional `--trusted` or
+  `--no-trusted`.
+  - **Outside an interactive terminal, `set` and `rm` need `--nonce <n>`.** That
+    is how the ask flow calls them, and it stops an agent from writing any
+    folder, `--trusted` included, by leaving `--nonce` out. A person at a
+    terminal needs no nonce. `plur trust` is the explicit alias for a person
+    and still works in scripts.
+  - A nonce names one folder and works once. It is used up only after the map
+    is saved, so a failed write does not burn it. It expires when its session
+    ends, after 24 hours at most.
+  - `set` refuses a team scope (`group:`, `org:`, `team:`, `space:`, `public`)
+    that no store in `config.yaml` serves. `project:` scopes live in the local
+    store and need none.
+  - Neither command writes to a folders.yaml it cannot read; it is never
+    overwritten.
+- **Upgrade needs no steps.** The first read of a missing `folders.yaml` imports
+  the `trust.yaml` entries as `trusted: true` entries. Nothing is ever added to
+  `trust.yaml`. `plur untrust` removes the grant from both files, so neither a
+  downgrade (an older version reading `trust.yaml`) nor a fresh import brings a
+  revoked grant back.
+- **`plur trust`, `plur untrust` and `plur init-remote`** now set and clear
+  `trusted` in the map. Their output and exit codes are unchanged, with one
+  exception: `plur trust` and `plur untrust` exit 1 on a folders.yaml they
+  cannot read, rather than overwrite it. `plur init-remote` still writes
+  `.plur.yaml` and exits 0, but warns that it could not record trust and leaves
+  remote memory off until you run `plur trust`. It fails safe.
+- A folders.yaml that cannot be read counts as empty and logs one warning. It
+  never throws.
+- **Trust matching is now in one place, the map, and it fails closed.** A
+  stored entry is compared exactly as written with the checked folder's
+  canonical path. It is never resolved on disk, and neither is its parent. So a
+  trusted folder, or its parent, later replaced by a symlink does not pass its
+  trust on to wherever the link points.
+  - An entry imported from `trust.yaml` keeps its spelling. If an older version
+    stored an entry under a symlinked parent for a folder that did not exist
+    yet, run `plur trust` again once that folder exists.
+  - `plur untrust` also removes an entry stored under the plain spelling of
+    the folder you give it.
+  - A `~` in the map expands to your home as written and to its canonical path.
+
+### The end-of-response learning nudge now reaches the model in Claude Code
+
+**The Stop hook's "did you learn something?" nudge was never shown to the
+model** (#1266). `plur hook-learn-check` printed a top-level
+`{"additionalContext": ...}`, which Claude Code records as plain hook output
+and drops. Checked in a real session: a codeword sent that way was never seen;
+the same codeword sent as `hookSpecificOutput` was.
+
+It also could not fire on schedule. The every-3rd-response counter was keyed
+on `CLAUDE_SESSION_ID`, which Claude Code does not pass to hooks, and fell
+back to the parent process id — a fresh shell on every Stop. So every Stop got
+its own counter and never reached 3.
+
+Now:
+
+- The nudge is sent as
+  `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": ...}}`,
+  the shape Claude Code delivers. Delivery works by giving the model **one extra
+  turn**. The prompt is written for that turn: call `plur_learn` if something
+  is worth keeping, otherwise reply "ok".
+- The hook never nudges on a Stop that carries `stop_hook_active: true` — the
+  turn its own nudge forced — and does not count it. Sending the nudge on every
+  Stop looped (about ten empty turns per prompt).
+- The counter and the session checkpoint are keyed on the payload
+  `session_id`, sanitised with the shared session-key helper, falling back to
+  `CLAUDE_SESSION_ID` and then the parent process id only when it is absent.
+- On every other Stop the hook prints nothing. It used to echo its input
+  payload back to stdout, which Claude Code parses as hook output — at best
+  ignored.
+
+Cost: one short extra turn every third response.
+
 ### An unscoped write can no longer land in a team store
 
 **If you wrote an engram without a scope, it could be auto-routed into a shared

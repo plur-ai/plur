@@ -118,14 +118,19 @@ describe('Decision A: a write whose statement exists only where the writer canno
     expect((await primaryRows(plur)).map(r => r.statement)).toEqual([S])
   })
 
-  it('good case: a persistable own row still absorbs (same-scope #107 and cross-scope #176)', async () => {
-    installPack('p5', [await rowLike(S, 'ENG-2026-09-26-007', 'project:a')])
+  // Decision A1 (2026-09-29): a team save (`group:`/`project:`) is never
+  // absorbed; it is always written to its own scope. So the absorbing path this
+  // good case pins is a personal one: `user:*` saves, where same-scope dedup
+  // (#107) and cross-scope recurrence (#176) are unchanged by A1. The team-save
+  // side of A1 is pinned by recurrence-decisions.test.ts (#1275).
+  it('good case: a persistable own row still absorbs a personal save (same-scope #107 and cross-scope #176)', async () => {
+    installPack('p5', [await rowLike(S, 'ENG-2026-09-26-007', 'user:a')])
     const plur = new Plur({ path: dir })
-    const first = await plur.learn(S, { scope: 'project:a' })   // pack-only hit → new primary row
-    const again = await plur.learn(S, { scope: 'project:a' })   // own primary row → dedup
+    const first = await plur.learn(S, { scope: 'user:a' })   // pack-only hit → new primary row
+    const again = await plur.learn(S, { scope: 'user:a' })   // own primary row → dedup
     expect(again.id).toBe(first.id)
     expect(again.write_count).toBe(2)
-    const cross = await plur.learn(S, { scope: 'project:b' })   // own primary row, other scope → #176
+    const cross = await plur.learn(S, { scope: 'user:b' })   // own primary row, other personal scope → #176
     expect(cross.id).toBe(first.id)
     expect((cross as any).recurrence_count).toBe(1)
     expect((await primaryRows(plur))).toHaveLength(1)

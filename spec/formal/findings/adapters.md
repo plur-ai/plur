@@ -673,136 +673,16 @@ counterexamples kept.
 
 `lake env lean PlurSpec/Adapters.lean`: clean.
 
-## Decisions applied — field-report formal board (2026-09-29)
+## Owner decisions applied at the main merge (2026-09-30)
 
-Source: `docs/audits/2026-09-29-formal-decisions.yaml` (branch `docs/field-report-triage`).
-Integrated on branch `formal/field-report-2026-09-29`; `Adapters.lean` is not yet
-updated (drift check lists it).
-
-- **Decision D1 applied: an untrusted `.plur.yaml` hint is ignored until the folder
-  is trusted, and the folder map asks once** ("ignore-ask"). E3 above stands: the
-  scope/domain of an untrusted `.plur.yaml` never becomes the session default; the
-  folder map's one-time question (Q-A) turns a yes into a trust grant. Carried by
-  **#1403** (the folder map; #1348 is merged). On the formal branch
-  `plur-yaml-fixture.test.ts` › "an untrusted remote .plur.yaml" still fails: its
-  golden has the remote-refusal line only, while E3 adds the "Ignored the scope"
-  line — the golden must be regenerated once both are on one branch.
-- **Decision H2 applied: PLUR's hooks are recognised by prefix** ("prefix"). A hook
-  is PLUR's when PLUR's own launcher (the `plur-hook` shim as a whole path segment,
-  the `@plur-ai/cli` npx command, or the Windows exec form) runs any `hook-*`
-  subcommand; there is no allow-list, and a user's `plur-hook-backup.ps1` stays
-  theirs. This supersedes the S4 two-part matcher above and #1270's allow-list.
-  Carried by **#1270** (`lib/hook-command.ts` `isPlurHookSpec`, and the
-  byte-identical copy in `packages/mcp/src/hook-command.ts`). The formal branch keeps
-  S4's null/non-string guard around it (`isPlurClaudeHookSpec` in init.ts).
-- **Decision H3 applied: Windows hook commands** ("plan"). Claude Code gets the exec
-  form (`command` + `args`, no shell quoting); the string editors get the unquoted
-  8.3 short path, falling back to `& "<path>"` (Codex, Cursor) when no short name
-  exists, and `plur doctor` names each editor on the fallback; a Windows CI job runs
-  the generated strings through bash, pwsh and cmd (`PLUR_HOOK_PROBE`). Carried by
-  **#1270**. On the formal branch `init-windows-h3.test.ts` › "a spaced home without
-  short names" fails because #1318's `hook-auto-rate codex` / `agy` hooks do not
-  start with `hook-codex-` / `hook-agy-`; the test must allow them (carry in
-  whichever of #1270 and #1318 lands second).
-
-## Field report pass, cluster 4 (2026-09-29): decisions H2 and H3 — §10, §11
-
-Model additions: `PlurSpec/Adapters.lean` §10 (the H2 matcher, at token level) and
-§11 (the H3 command form table). The §3 and §9b docstrings are updated for the
-field-report code: §3 still holds as written, and §9b's grant now lives in
-folders.yaml. Checked with `lake env lean PlurSpec/Adapters.lean` (exit 0).
-Replays: `packages/cli/test/formal-fr-c4-hooks.test.ts`, run with
-`cd packages/cli && HOME=<scratch> npx vitest run test/formal-fr-c4-hooks.test.ts`
-→ **12 passed**. No `packages/*/src` file was changed (brief override).
-
-### H2: `isPlurHookCommand` accepts PLUR's launcher + any `hook-*` — REFUTED for the written forms; CONFIRMED + NEEDS-OWNER for "never a user hook"
-
-Proved:
-- `claims_sound`: the matcher claims exactly the commands with a launcher token
-  directly followed by a `hook-*` token.
-- `written_claimed`: every launcher layout some version of init wrote is claimed,
-  with any subcommand and any arguments. The layouts come from the git history of
-  init.ts, mcp index.ts and the editor installers: `npx @plur-ai/cli`,
-  `npx -y @plur-ai/cli@<v>`, the shim in every slash, quote, case and 8.3 form, a
-  spaced unquoted path, `& "<path>"`.
-- `upgrade_strips_old`, `rerun_idempotent`: re-running init from any older layout
-  leaves one PLUR set per event (through `specOf_plur` into §3's
-  `merge_idempotent`).
-- `lookalikes_not_claimed`: `plur-hook-backup.ps1`, `@plur-ai/cli-extras`, another
-  binary's `hook-foo`, `<shim> status` and `<shim> hook-` are not claimed.
-- `exec_written_claimed`: the Claude Code exec form init writes is claimed.
-
-Replays for these (all pass): 12 historic launchers × 5 subcommands are claimed.
-Codex and Cursor re-merges are idempotent from every older layout and keep the
-user's `mytool hook-foo`. Antigravity replaces only its named set. The Claude
-guard never throws on a non-string command.
-
-Defect: the regexes are unanchored `.test`s, so a user command that CONTAINS a
-PLUR invocation is claimed too (`embedded_claimed`). Examples:
-- `<shim> hook-inject && ~/bin/notify.sh` (a chained step);
-- `nice -n 10 <shim> hook-inject` (a wrapper);
-- `echo <shim> hook-inject >> log`;
-- `echo run npx @plur-ai/cli hook-inject later`.
-
-Re-running init strips the whole spec, so the user's part is deleted. Replay
-"re-running the Codex install deletes the user's chained step" confirms it. A
-quoted mention (`echo "<shim> hook-inject"`) is NOT claimed, because the
-subcommand must end at whitespace; the replay pins that too. In exec form, any
-checkout whose entry ends in `/packages/cli/dist/index.js` is claimed
-(`exec_foreign_checkout_claimed`, replayed with `C:/work/mytool/packages/cli/…
-hook-deploy`).
-
-Option modelled: anchor the END — only arguments may follow the subcommand
-(`claimsEnd`). `end_anchor_keeps_written` shows it still claims every written
-form. `end_anchor_rejects_chain` shows it rejects the chained step. The wrapper
-case needs a start anchor on a path-shaped first token. The start cannot simply
-be anchored, because pre-#1267 Windows wrote spaced paths unquoted
-(`C:/Users/John Smith/.plur/bin/plur-hook.cmd hook-inject`).
-
-Question for the owner: should H2 also require that the command ends after the
-subcommand and its arguments (no `&&`, `;`, `|`, `>`)? Should it require a
-path-shaped start? Or is a user who edits PLUR's own hook line accepted to lose
-the edit on re-init? And should the exec-form `…/packages/cli/dist/index.js`
-suffix be limited to the recorded entry (`plur-hook.meta.json`)?
-
-Mutation check:
-- A1 (a look-alike counts as a launcher) breaks `lookalikes_not_claimed`.
-- A2 (no `hook-*` requirement) breaks `claims_sound` and `lookalikes_not_claimed`.
-- A3 (shim only, no npx) breaks `written_claimed` and `end_anchor_keeps_written`.
-- A6 (end anchor dropped) breaks `end_anchor_rejects_chain`.
-
-### H3: the command form per editor and version matches the documented table — REFUTED (holds, proved)
-
-`chosen` models init.ts `run` branch for branch, through `hookCommandPrefix`,
-`windowsHookCommand`, `useClaudeExecForm` and `claudeHookSpec`. `table` is the
-H3 decision and the docstrings, row by row. Proved:
-- `chosen_matches_table`: they agree for every editor, platform, shim, whitespace,
-  short-name and version combination (384 cases).
-- `win_quote_only_fallback`: on Windows the only quoted form is the documented
-  PowerShell fallback `& "<path>"` (spaced path, no short name, not Antigravity).
-- `exec_needs_support` and `old_never_exec`: the exec form is written only for a
-  known Claude Code ≥ 2.1.139, or for an unknown version whose string form would
-  be the fallback.
-- `every_form_claimed`: every string form H3 writes is claimed by H2, so the two
-  decisions compose and re-init strips its own H3 output.
-
-Replays: the `hookCommandPrefix` quoting, `windowsHookCommand` for
-codex/cursor/agy (plain, short and fallback), and `useClaudeExecForm` at
-2.1.138/2.1.139/unknown all pass. Mutation check: A4 (exec form for any unknown
-version) and A5 (Antigravity quoted like PowerShell) break
-`chosen_matches_table`.
-
-Not verified: that these strings run in the real shells. The model checks the
-choice, not bash, pwsh or cmd. One note: with a known-old Claude Code and no
-8.3 name, the Claude string form is `& "<path>"`, which works only if Claude
-Code uses PowerShell, not Git Bash. That is the documented fallback, and the
-Windows CI job H3 asks for would settle it.
-
-Files: `spec/formal/PlurSpec/Adapters.lean` (§3 and §9b docstrings, new §10 and
-§11); `packages/cli/test/formal-fr-c4-hooks.test.ts`; `spec/formal/verify.yaml`
-(appended an Adapters entry covering cli `lib/hook-command.ts`, mcp
-`hook-command.ts`, `codex-hooks.ts` and `antigravity-hooks.ts`).
-
-## Round-2 decisions applied (2026-09-29, refresh 3 of formal/field-report-2026-09-29)
-
-Decision F4 applied: #1270 (fix/1267-windows-init @ ed993537). The PLUR-hook matcher is anchored (launcher, a `hook-*` subcommand, plain arguments only), and an exec-form spec is PLUR's only for a CLI entry `plur init` recorded in plur-hook.meta.json (bounded history). `embedded_claimed` and the Codex chained-step deletion are fixed.
+- **Conflict J:** the 8 end-to-end hook replays in
+  packages/cli/test/formal-apply-surface-trust.test.ts ("CLI hooks ignore an
+  untrusted .plur.yaml scope", 4 hooks x untrusted/trusted) are dropped. The
+  folder map (#1418) asks the folder question instead of printing the
+  untrusted-scope notice. The 3 `trustedProjectScope` helper tests stay, and
+  §9's model is unchanged: it describes the helper's decision, which still
+  holds for as long as the helper is called.
+- **8b init-remote:** packages/cli/test/formal-adapters-init-remote.test.ts
+  (4) is deleted. `plur remote` (#1415) replaces the `init-remote` rewrite.
+  §8b's theorems still check; they describe the rewrite in the code that is
+  on main today and become historical once #1415 removes it.
