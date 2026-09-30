@@ -186,6 +186,16 @@ stale threshold. Checking for the lock file alone was not enough: the
 search's lock create can already be under way when the hook looks, and land
 after it.
 
+**A cold embedding cache now warms itself.** Core saves the embedding cache
+only when a hybrid search finishes. A first prompt that falls back to BM25
+exits before that, so a store with no cache stayed without one, and every
+session's first prompt missed the deadline again. When the abandoned search
+is still running at exit, the hook now starts one background build of the
+cache: detached, at the lowest CPU priority, one per store at a time (the
+`.embeddings-warming` marker), stopped after 60 minutes
+(`PLUR_WARM_CEILING_MS`). It takes no store write lock. The next session's
+hybrid search then meets its deadline.
+
 ### A folder map records your per-folder decisions, and `trust.yaml` folds into it
 
 **First half of #1347: core and CLI only. No hook reads the map yet.** A new
