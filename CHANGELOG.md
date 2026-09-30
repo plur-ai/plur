@@ -178,6 +178,47 @@ scope, a match on the path store's row is reported `local`, not `remote` —
 nothing was sent anywhere.
 
 Nothing about where engrams are written changes. The field is additive.
+### Claude Code: corrections in a prompt now prompt a `plur_learn`
+
+**The correction reminder never fired** (#1312). `plur hook-correction-detect`
+spots correction-shaped prompts ("no, …", "from now on", "I prefer" …) and
+reminds the agent to save the rule with `plur_learn`. No installer registered
+it, so corrections were acknowledged in prose and lost.
+
+`plur hook-inject` now runs the same detection on every `UserPromptSubmit`
+and appends the reminder to its own output: after the memory on the first
+prompt, alongside the 10-minute reminder when both are due, or on its own on
+a later prompt. A prompt that does not match, including the known false
+positives ("no problem", "actually that works", "wait a sec"), adds nothing.
+There is no extra process per prompt and no `plur init` step beyond the one
+for #1313. The standalone command still works for anyone who registered it by
+hand; if you did, remove that entry, or the reminder appears twice.
+
+Checked in a real Claude Code session: a second prompt starting "No, from
+now on" carried the reminder, and the model quoted it back.
+
+### Claude Code: memory is in place for the first reply
+
+**The first reply of a Claude Code session had no memory unless it called a
+tool, and a one-shot `claude -p` never had any** (#1313). `plur init`
+registered the `UserPromptSubmit` injection as `async: true`, and Claude Code
+delivers async context only at the next safe point. The rehydrate after
+compaction (`SessionStart`, matcher `compact`) had the same problem.
+
+Both are now registered synchronously with a 20s timeout. **Re-run
+`plur init`** to move an existing registration; it replaces the old entries.
+The hook bounds its own work below the timeout: hybrid search gets 8s
+(`PLUR_HOOK_HYBRID_DEADLINE_MS`), then BM25 serves the turn, and the hook
+exits by itself after 15s (`PLUR_HOOK_CEILING_MS`, was 55s). The inject lock
+goes stale on the same clock, so a lock left by a killed run blocks for 15s,
+not 55s.
+
+Later prompts do not re-run the injection, so they add little. Measured on a
+10,000-engram store (10.6 MB of YAML), each run a fresh process: the first
+prompt took 2.3 to 2.5s, the rehydrate 2.3 to 2.7s, and a later prompt 68 to
+101ms, against 34ms for a bare `node -e 0`. With no embedding cache, the
+hybrid deadline is missed and BM25 answers in 9.1 to 9.3s.
+
 When the hook exits past a hybrid search that missed its deadline, it first
 waits, for up to 5s, for that search to finish, and then for any store lock
 of its own still on disk. Without the wait, 10 of 12 runs on the same store
@@ -438,6 +479,10 @@ Switches, both environment variables:
   (`plur folders`), or a `.plur.yaml` scope in a trusted folder (`plur trust`). A cloned
   repository cannot choose to publish the agent's reply text to a team store. Captured text
   is never auto-routed into a shared scope, and a folder the map turns off captures nothing.
+
+The end-of-turn hook follows the folder map like every other hook: it rates only
+in a folder the map resolves to on, so a folder you said yes to is rated even
+with no `.plur.yaml` or `.mcp.json`, and an off or undecided folder is left alone.
 
 Run `plur init` again to install the new hook entries.
 

@@ -9,7 +9,7 @@
  * Everything runs against a temp HOME, PLUR_PATH and TMPDIR.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, hostname } from 'os'
 import { loadEngrams } from '@plur-ai/core'
@@ -259,6 +259,48 @@ describe('hook-auto-rate (#1310)', { timeout: 120_000 }, () => {
       stopWith('pw-2', MISS)
       // Settled: the fourth turn takes the fast path and does not rate it.
       stopWith('pw-2', QUOTING_REPLY)
+      expect(engrams(e).find(x => x.id === id)!.feedback_signals?.positive ?? 0).toBe(0)
+    })
+  })
+
+  // The fresh-install run: in a folder the user said "yes" to, auto-rate
+  // never rated, because it gated on a project marker (.plur.yaml/.mcp.json)
+  // and never read the folder map. It must follow the map like every other hook.
+  describe('folder map (#1347)', () => {
+    function mapFolder(path: string, mode: 'on' | 'off'): void {
+      mkdirSync(e.plurPath, { recursive: true })
+      writeFileSync(join(e.plurPath, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${path}\n    plur: ${mode}\n`)
+    }
+
+    it('rates in a folder the map has on, with no .plur.yaml or .mcp.json', () => {
+      const dir = join(e.root, 'bare')
+      mkdirSync(dir, { recursive: true })
+      const real = realpathSync(dir)
+      expect(existsSync(join(real, '.plur.yaml')) || existsSync(join(real, '.mcp.json'))).toBe(false)
+      const id = seed(e)
+      const commitment = engrams(e).find(x => x.id === id)!.commitment
+      mapFolder(real, 'on')
+      const inj = cli(e, ['hook-inject'], { hook_event_name: 'UserPromptSubmit', session_id: 'fm-on', cwd: real, prompt: 'deploy the invoice service after the zebra-quartz migration' })
+      expect(inj.stdout, inj.stderr).toContain('zebra-quartz')
+      const stop = cli(e, ['hook-auto-rate', 'claude'], { hook_event_name: 'Stop', session_id: 'fm-on', cwd: real, stop_hook_active: false, last_assistant_message: QUOTING_REPLY })
+      expect(stop.status).toBe(0)
+      expect(stop.stdout).toBe('')
+      expectAutoPositive(id, commitment)
+    })
+
+    it('does nothing in a folder the map has off, even with a project marker', () => {
+      // The project folder has .mcp.json, which the old gate read as "on".
+      const real = realpathSync(e.project)
+      const id = seed(e)
+      const inj = cli(e, ['hook-inject'], { hook_event_name: 'UserPromptSubmit', session_id: 'fm-off', cwd: real, prompt: 'deploy the invoice service after the zebra-quartz migration' })
+      expect(inj.stdout, inj.stderr).toContain('zebra-quartz')
+      // The user turns the folder off mid-session: the end-of-turn hook must not rate.
+      mapFolder(real, 'off')
+      const before = readFileSync(join(e.plurPath, 'engrams.yaml'), 'utf8')
+      const stop = cli(e, ['hook-auto-rate', 'claude'], { hook_event_name: 'Stop', session_id: 'fm-off', cwd: real, stop_hook_active: false, last_assistant_message: QUOTING_REPLY })
+      expect(stop.status).toBe(0)
+      expect(stop.stdout).toBe('')
+      expect(readFileSync(join(e.plurPath, 'engrams.yaml'), 'utf8')).toBe(before)
       expect(engrams(e).find(x => x.id === id)!.feedback_signals?.positive ?? 0).toBe(0)
     })
   })

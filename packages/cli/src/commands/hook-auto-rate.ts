@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId } from '../lib/codex-hook-io.js'
 import { enqueueTurn, hasLeftoverBatches, spawnWorker, runWorker, agyReplySinceLastUser, type AutoRateEditor } from '../lib/auto-rate.js'
 
@@ -113,12 +113,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const turn = readTurn(editor, input)
     if (!turn || !turn.reply.trim()) return
 
-    // Same opt-out as every other hook: a project without PLUR is untouched.
-    // agy runs hooks from its config dir, so only its workspace path is
-    // meaningful there (see hook-agy-pre-invocation).
+    // Same gate as every other hook: the folder map (#1347). Only a folder
+    // the map resolves to on is rated; off and ask are untouched. agy runs
+    // hooks from its config dir, so only its workspace path is meaningful
+    // there (see hook-agy-guard): no workspace, no folder to decide about.
     if (editor === 'agy') {
-      if (turn.cwd && !isPlurConfigured(turn.cwd)) return
-    } else if (!isPlurConfigured(turn.cwd ?? process.cwd())) {
+      if (turn.cwd && !hookFolderOn(turn.cwd, flags)) return
+    } else if (!hookFolderOn(payloadDir({ cwd: turn.cwd }), flags)) {
       return
     }
 

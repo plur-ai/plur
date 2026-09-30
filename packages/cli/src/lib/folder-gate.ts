@@ -102,9 +102,15 @@ function claimAsk(sessionId: string): boolean {
   }
 }
 
-/** A folder path as a shell argument that works in sh, cmd and PowerShell. */
-function quoted(p: string): string {
-  return /^[A-Za-z0-9_./:\\~-]+$/.test(p) ? p : `"${p}"`
+/**
+ * A folder path as a shell argument that works in sh, cmd and PowerShell.
+ * Bare only when every character is one no shell treats specially; anything
+ * else, a backslash included, goes in double quotes. A bare backslash is an
+ * escape in a POSIX shell (Git Bash on Windows): `C:\Users\x` reached plur as
+ * `C:Usersx`, and the nonce, bound to the exact folder, was refused.
+ */
+export function quoted(p: string): string {
+  return /^[A-Za-z0-9_./:~-]+$/.test(p) ? p : `"${p}"`
 }
 
 function hostOf(url: string): string {

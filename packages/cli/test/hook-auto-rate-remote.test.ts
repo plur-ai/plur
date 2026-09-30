@@ -195,10 +195,12 @@ describe('hook-auto-rate × remote store (#1318 review)', { timeout: 120_000 }, 
       await stop('cap-1', CAPTURE_REPLY, { PLUR_AUTO_CAPTURE: '1' })
       expect(server.lastAppendBody).toBeNull()
       expect(server.engramCount).toBe(1) // only the seeded engram
+      // Under the folder map (#1347) an untrusted .plur.yaml makes the folder
+      // "ask": every hook but the one question is silent, so nothing is
+      // captured at all, locally or remotely, until the user decides.
       const local = loadEngrams(join(root, '.plur', 'engrams.yaml')) as any[]
       const captured = local.find((x: any) => /contract dispute/.test(x.statement))
-      expect(captured).toBeTruthy()
-      expect(captured.scope).not.toBe(SCOPE)
+      expect(captured).toBeUndefined()
     }, 60_000)
 
     it('a trusted folder mapped to the team scope may capture there', async () => {
