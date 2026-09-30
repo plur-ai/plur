@@ -1265,6 +1265,45 @@ repo's request. Only the CLI writes the map.
     the folder you give it.
   - A `~` in the map expands to your home as written and to its canonical path.
 
+### `plur stores add` can register a remote store, and checks the token first (#1265)
+
+**An installer script can now connect a machine to a team store without MCP**
+(#1265). An enterprise deployment reported that its installer had no way to do
+this: `plur stores add` took only `<path> <scope>`, the one command that could
+add a url store was the MCP tool `plur_stores_add`, and the advice printed by
+`plur stores discover` and `plur login` pointed at a command that could not do
+it.
+
+```
+plur stores add --url https://plur.example.test --scope group:example/eng --token-env PLUR_TOKEN
+```
+
+The token can also come from `--token <t>` or from stdin with `--token -`, so it
+need not sit in shell history.
+
+**Nothing is written until the server agrees.** The command asks the server's
+`/me` first. A rejected token, an unreachable server, or a scope the token is
+not authorised for exits 1 and leaves `config.yaml` as it was; the scope refusal
+lists the scopes the token can reach. Running the same command twice exits 0
+and says "already registered" without touching the file. The same url and scope
+with a *different* token replaces the stored token, but only after the new one
+verifies — a token the server rejects never overwrites a working one.
+
+**A scope that already belongs to another store is never taken silently.** The
+command refuses, changes nothing, and says to re-run with `--overwrite-scope`.
+With that flag the scope is reassigned to the url store, and only after the
+token has passed `/me`.
+
+The token is never printed: not in text output, not in `--json`, and not in an
+error, including an error that echoes the server's reply. That covers the token
+raw, percent-encoded, JSON-escaped and base64-encoded, and a scope or username
+in the server's `/me` answer that carries the token (such scopes are left out
+of the listed authorised scopes, and the message says how many were withheld).
+A fragment of the token, or its base64 buried inside a larger blob, has no
+fixed form and is not caught. `plur stores add
+<path> <scope>` is unchanged. The core method is `Plur.addRemoteStore()`, which
+throws `AddRemoteStoreError` with a stable `code`.
+
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
 **The Stop hook's "did you learn something?" nudge was never shown to the
