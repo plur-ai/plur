@@ -344,3 +344,136 @@ Auth header never logged. `auth: valid` means the header matched the test token.
   `step-autorate-manual.sh`, `step-autorate-control.sh`: the drivers used above.
   They contain this run's absolute temp paths and are a record of the run, not a
   reusable tool.
+
+## Re-run 2026-09-30 (after #1418 fdb40374)
+
+The coordinator reported that #1418 (`feat/1347-folder-map-hooks`) now includes
+#1318 and fixes the auto-rate gate (head `fdb40374`, CI green).
+
+**Result: all five checks pass, so the done-when is met on macOS.**
+
+| Check | Result | Evidence below |
+|---|---|---|
+| (a) Asks once; the second prompt in the same process does not | **Pass** | Process 1, turns 1 and 2 |
+| (b) `folders.yaml` has the folder, on, with a scope | **Pass** | `folders.yaml` |
+| (c) The learned engram reaches the stub | **Pass** | Stub log, `POST /api/v1/engrams 201` |
+| (d) Rated record locally AND `source: auto` feedback at the stub, in a map-on folder with no `.plur.yaml` and no `.mcp.json` | **Pass** | Process 2 |
+| (e) A "never here" folder gets no injection | **Pass** | Processes 3 and 4 |
+
+### What changed in the setup
+
+- **Build:** `e2e/fresh-install-2026-09-30` + `origin/feat/1347-folder-map-hooks` @
+  `fdb403744d8a`, giving local head `9d27bcce` (not pushed).
+  - Conflicts: CHANGELOG (union), `docs/runbooks/hook-timeouts.md`, and
+    `packages/cli/src/commands/hook-inject.ts`.
+  - In `hook-inject.ts` the build side was kept: it already calls `recordInjected`
+    once after `injectForHook` and keeps `storeRoot`. Taking both sides would record
+    the injection twice.
+  - `pnpm install && pnpm build` succeeded.
+  - The installed `dist/commands/hook-auto-rate.js` gates on
+    `hookFolderOn(payloadDir({ cwd: turn.cwd }), flags)`, and no `isPlurConfigured(turn.cwd` remains.
+- **Fresh install:** new temp root `/private/tmp/pe2e2.Uhsv` with a new HOME,
+  PLUR_PATH, TMPDIR and npm prefix. `pnpm pack` was run for core, mcp and cli
+  (tarball sha256 prefixes `4f9213441ab5`, `029cab1f1ef9`, `4dd7009409b9`), followed
+  by `npm install -g --prefix`.
+  - `plur init` was run from the temp HOME. Its hooks include
+    `Stop: [hook-learn-check, hook-auto-rate claude]`.
+  - Then `plur stores add --url http://127.0.0.1:63307 --token <redacted> --scope group:e2e/test`,
+    which returned `{"success":true,"status":"added",…}`.
+- **Stub:** a new token (never printed; 0 matches in every evidence file) and a new
+  log. The harness answers recall from its stored rows from the start.
+- **Login:** retried under the temp HOME and it failed the same way
+  (`Not logged in · Please run /login`, no API key). The same real-HOME fallback as
+  above was used: `--setting-sources project`, `--strict-mcp-config`, and init's hooks
+  and MCP entry with the temp HOME, PLUR_PATH and TMPDIR forced.
+- **Processes:** each session is one Claude Code process with several turns
+  (`scripts/e2e/drive.py`, `--input-format stream-json`).
+  - (a) to (c) ran in process 1.
+  - (d) needs an engram that already exists when a session injects, and injection
+    happens on a session's first prompt. So (d) ran in a second process in the
+    same folder.
+  - (e) used a third process, which answered "never here", and a fourth, fresh one.
+
+### Process 1: proj-a (an empty folder, never registered)
+
+```
+turn 1 "What is the capital of France? Answer in one word."
+HOOK UserPromptSubmit: [PLUR Memory — no decision for this folder yet, so no memories were loaded] /private/tmp/pe2e2.Uhsv/work/proj-a
+  Before you continue, ask the user once whether to use PLUR memory in this folder, …
+  - Yes: plur folders set /private/tmp/pe2e2.Uhsv/work/proj-a --scope group:e2e/test --nonce 5a45…e465 …
+ASSISTANT: Paris  By the way, PLUR memory hasn't been set up for this folder yet. Do you want to use it here? …
+e2e_note folder_nonces: ["65250646-….yaml"]
+turn 2 "And the capital of Italy? One word, please."
+HOOK UserPromptSubmit: (empty)          ASSISTANT: Rome
+turn 3 "Yes, use PLUR memory here with the team scope group:e2e/test."
+TOOL_USE Bash: plur folders set /private/tmp/pe2e2.Uhsv/work/proj-a --scope group:e2e/test --nonce 5a45…e465
+TOOL_RESULT: {"success":true,"entry":{"path":"/private/tmp/pe2e2.Uhsv/work/proj-a","scope":"group:e2e/test"}}
+e2e_note folder_nonces: []
+turn 4 "Please remember this in PLUR memory, scoped group:e2e/test: the e2e harness marker word is amber-otter-7."
+HOOK UserPromptSubmit: [PLUR Memory — session started, 0 engrams injected] … Project scope: group:e2e/test
+TOOL_USE mcp__plur__plur_learn {"statement":"The e2e harness marker word is amber-otter-7.","scope":"group:e2e/test",…}
+TOOL_RESULT: {"id":"ENG-GE2-SRV-001","scope":"group:e2e/test","decision":"ADD","delivery":"remote",…}
+```
+
+`folders.yaml` after process 1:
+
+```
+version: 1
+folders:
+  - path: /private/tmp/pe2e2.Uhsv/work/proj-a
+    scope: group:e2e/test
+```
+
+### Process 2: proj-a, the auto-rate check (d)
+
+`ls -A proj-a` printed nothing: the folder is empty, with no `.plur.yaml` and no `.mcp.json`.
+
+```
+turn 1 "What is the e2e harness marker word? Answer in one short sentence, without using any tools."
+HOOK UserPromptSubmit: [PLUR Memory — session started, 1 engrams injected] …
+  [ENG-GE2-SRV-001] The e2e harness marker word is amber-otter-7.
+ASSISTANT: The e2e harness marker word is **amber-otter-7**.
+HOOK Stop exit=0 (hook-learn-check), HOOK Stop exit=0 (hook-auto-rate claude)
+
+$ ls $R/tmp/plur-auto-rate         (20 s later)
+claude-3a8c1f39-b751-4a4c-9423-bfd335775b7e.injected   ENG-GE2-SRV-001
+claude-3a8c1f39-b751-4a4c-9423-bfd335775b7e.rated      ENG-GE2-SRV-001
+```
+
+### Processes 3 and 4: proj-b, the never-here check (e)
+
+```
+process 3, turn 1: HOOK UserPromptSubmit: [PLUR Memory — no decision for this folder yet …] /private/tmp/pe2e2.Uhsv/work/proj-b
+process 3, turn 2 "Never here. Do not use PLUR memory in this folder."
+  TOOL_USE Bash: plur folders set /private/tmp/pe2e2.Uhsv/work/proj-b --off --nonce 32ab…457b
+  TOOL_RESULT: {"success":true,"entry":{"path":"/private/tmp/pe2e2.Uhsv/work/proj-b","plur":"off"}}
+process 4 (fresh), "What is the e2e harness marker word? …"
+  HOOK SessionStart:startup: (empty)   HOOK UserPromptSubmit: (empty)
+  ASSISTANT: I don't see an e2e harness marker word anywhere in my current context, …
+  stub: no /recall request after process 2
+```
+
+### Stub log (re-run)
+
+```
+08:32:23 started http://127.0.0.1:63307 scope group:e2e/test capabilities [feedback.source]
+08:32:37 GET  /api/v1/me 200; GET /api/v1/engrams?scope=… 200        (stores add, stores list)
+08:33:19 POST /api/v1/recall 200 served []                            (process 1, turn 4)
+08:33:27 GET  /api/v1/engrams?scope=… 200; GET /api/v1/me 200
+08:33:30 POST /api/v1/engrams 201 {"statement":"The e2e harness marker word is amber-otter-7.","scope":"group:e2e/test","type":"terminological"} idempotency_key f0c2fb43-…
+08:33:50 POST /api/v1/recall 200 served [ENG-SRV-001]                 (process 2)
+08:33:52 GET  /api/v1/me 200; GET /api/v1/engrams/ENG-SRV-001 200 ×3  (auto-rate worker)
+08:33:52 POST /api/v1/engrams/ENG-SRV-001/feedback 200 {"signal":"positive","source":"auto"}
+```
+
+### Isolation (re-run)
+
+- Real `~/.claude/settings.json`: sha256 `ec4647d5737f…` before and after, identical.
+- Real `~/.plur`: 2141 files hashed before and after. Changed: `engrams.db` (+ shm
+  and wal), `engrams.yaml`, `history/2026-09.jsonl` and
+  `observations/2026-09-30.metadata.jsonl`. None of them contains a string from
+  this run (`amber-otter`, `pe2e2`, `e2e/test`: 0 matches). As before, these changes
+  come from the other live sessions on this machine, not from the run under test.
+
+Findings 2 to 5 of the first run were not re-tested here. They are not affected by
+the auto-rate gate fix.
