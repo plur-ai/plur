@@ -176,6 +176,22 @@ scope, a match on the path store's row is reported `local`, not `remote` —
 nothing was sent anywhere.
 
 Nothing about where engrams are written changes. The field is additive.
+### A folder map records your per-folder decisions, and `trust.yaml` folds into it
+
+**First half of #1347: core and CLI only. No hook reads the map yet.** A new
+file, `~/.plur/folders.yaml`, holds your own decisions about folders: `on`,
+`off` or `ask`, a default write `scope`, and `trusted`. `trusted` is the grant
+that used to live in `trust.yaml`. `.plur.yaml` is unchanged and stays the
+repo's request. Only the CLI writes the map.
+
+- **`resolveFolderPolicy(dir)`** (core, and `Plur.resolveFolderPolicy`) returns
+  `{ mode, scope?, remoteAllowed, source }`, resolved in this order:
+  1. Any matching `off` entry wins.
+  2. A `.plur.yaml` means on. A map `scope` beats its scope hint, and its remote
+     is allowed only under a `trusted` entry.
+  3. A project MCP config means on.
+  4. Otherwise the most specific matching entry decides.
+  5. Otherwise the answer is `ask`, and that includes `$HOME`.
 
   Paths may be globs (`*`, `**`, `?`) and may start with `~`. A plain folder
   also covers everything below it.
