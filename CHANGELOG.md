@@ -58,6 +58,7 @@ Not changed yet: the opencode plugin and the MCP server's `plur_session_start`
 do not read the map.
 
 ### `plur init-remote` is now `plur remote`, and the token stays out of the repo (#1413)
+### Claude Code: corrections in a prompt now prompt a `plur_learn`
 
 **One command connects a folder to a team store** (folder-map design r3).
 `plur init-remote` wrote the URL and bearer token into the repo's
@@ -951,6 +952,12 @@ This fix alone kept both registrations `async: true`, so the context arrived
 only at the next safe point, not on the turn that triggered it. Both are now
 synchronous: see "Claude Code: memory is in place for the first reply" above
 (#1313).
+last prompt, stored per Claude Code `session_id`.
+
+`UserPromptSubmit` stays `async: true`. Async context does arrive, but at the
+next safe point (after a tool result, or before the next prompt), not on the
+turn that triggered it. A first message that needs no tools is answered
+without memory. In a one-shot `claude -p` run, that means no memory at all.
 
 An unknown `--event` no longer echoes the hook payload back to stdout.
 
