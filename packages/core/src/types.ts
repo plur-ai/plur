@@ -32,8 +32,10 @@ export interface LearnContext {
    */
   attribution?: {
     asserted_by?: string
+    /** Calling app or agent runtime; omitted when unknown. */
     runtime?: { name: string; version?: string }
     model?: { name: string; prompt_id?: string; prompt_version?: string; prompt_sha256?: string }
+    /** Writing tool; defaults to plur-core. */
     tool?: { name: string; version?: string }
     on_behalf_of?: string
   }

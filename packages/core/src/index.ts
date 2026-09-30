@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { tmpdir } from 'os'
 import { join, dirname, basename } from 'path'
 import yaml from 'js-yaml'
@@ -844,9 +845,8 @@ function buildProvenanceBlock(
 /**
  * Assemble the attribution block for a new engram (#961).
  *
- * Returns undefined when the caller supplied nothing, so the field is absent
- * rather than present-and-empty. We never invent a runtime, and we never read
- * the operating system account for an identity.
+ * Records the writing tool and the stated identity (or unidentified marker).
+ * We never invent a runtime or read the operating system account for identity.
  */
 function buildAttribution(
   context?: LearnContext,
@@ -871,18 +871,12 @@ function buildAttribution(
   // be named.
   out.asserted_by = a?.asserted_by ?? configuredIdentity ?? ATTRIBUTION_UNIDENTIFIED
 
-  // WHAT WROTE IT. Always recorded, because it is the one fact we always have:
-  // software knows its own name.
-  //
-  // No version here, deliberately. Core has no version constant, and adding one
-  // would create a seventeenth place `release.sh` has to bump — a standing cost
-  // for a value that is almost never the one a reader wants. Every real write
-  // arrives through a wrapper that DOES track its version (plur-mcp, plur-cli),
-  // and those pass name and version both; this is the honest floor beneath them.
-  out.runtime = a?.runtime ?? { name: 'plur-core' }
+  // Core is the writing tool; the runtime is the calling app, when known.
+  // Core has no version constant, so do not invent a version here.
+  out.tool = a?.tool ?? { name: 'plur-core' }
+  if (a?.runtime) out.runtime = a.runtime
 
   if (a?.model) out.model = a.model
-  if (a?.tool) out.tool = a.tool
   if (a?.on_behalf_of) out.on_behalf_of = a.on_behalf_of
   return out
 }
@@ -997,6 +991,17 @@ export class Plur {
    * `session-scopes.ts` for why that could not survive the async write path.
    */
   private _sessionScopes = new SessionScopeRegistry()
+  private _runtime = new AsyncLocalStorage<NonNullable<LearnContext['attribution']>['runtime']>()
+
+  /** Attribute writes within this call, including nested/async tool writes, to the calling app. */
+  withRuntime<T>(runtime: NonNullable<LearnContext['attribution']>['runtime'], fn: () => T): T {
+    return this._runtime.run(runtime && { name: runtime.name, version: runtime.version }, fn)
+  }
+
+  private _withRuntimeAttribution(context?: LearnContext): LearnContext | undefined {
+    const runtime = this._runtime.getStore()
+    return runtime ? { ...context, attribution: { ...context?.attribution, runtime } } : context
+  }
   /**
    * Cross-encoder reranker adapter (#220). Resolved lazily on first recall with
    * `rerank: true`. Defaults to the "off" sentinel when PLUR_RERANKER is unset,
@@ -2953,6 +2958,7 @@ export class Plur {
 
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
+    context = this._withRuntimeAttribution(context)
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     context = guarded.context
@@ -3359,6 +3365,7 @@ export class Plur {
 
   async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
+    context = this._withRuntimeAttribution(context)
     statement = this._validateLearnInput('learnRouted', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     const scope = guarded.scope
