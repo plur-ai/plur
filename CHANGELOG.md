@@ -4,6 +4,7 @@
 
 ### A failed hook no longer prints an error document to the editor
 ### A folder map records your per-folder decisions, and `trust.yaml` folds into it
+### Claude Code: corrections in a prompt now prompt a `plur_learn`
 
 **When a `plur hook-*` command threw, the CLI printed `{"error": …}` on
 stdout and exited 1**. Editors read a hook's stdout as its result and show
@@ -176,6 +177,15 @@ scope, a match on the path store's row is reported `local`, not `remote` —
 nothing was sent anywhere.
 
 Nothing about where engrams are written changes. The field is additive.
+When the hook exits past a hybrid search that missed its deadline, it first
+waits, for up to 5s, for that search to finish, and then for any store lock
+of its own still on disk. Without the wait, 10 of 12 runs on the same store
+left an empty `engrams.yaml.lock` behind. Core cannot tell who owns an empty
+lock, so every writer, including the next prompt's hook, waited out the 60s
+stale threshold. Checking for the lock file alone was not enough: the
+search's lock create can already be under way when the hook looks, and land
+after it.
+
 ### A folder map records your per-folder decisions, and `trust.yaml` folds into it
 
 **First half of #1347: core and CLI only. No hook reads the map yet.** A new
@@ -936,7 +946,8 @@ An unknown `--event` no longer echoes the hook payload back to stdout.
 
 **`plur-mcp init` now registers the same rehydrate hook** (#1279). It still
 put rehydrate on `PostCompact`. It now uses `SessionStart` with matcher
-`compact`, `async: true`, `timeout: 90`, the same as `plur init`; a test fails
+`compact`, synchronous with `timeout: 20`, the same as `plur init` (#1313);
+its `UserPromptSubmit` injection moves to the same 20s budget. A test fails
 if the two diverge. Re-running `plur-mcp init` used to stop at "already
 installed". It now removes PLUR's `PostCompact` hooks and, in the same file,
 puts the `SessionStart(compact)` one in place of the old rehydrate. A file
