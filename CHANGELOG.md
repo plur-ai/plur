@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### A failed hook no longer prints an error document to the editor
+### A folder map records your per-folder decisions, and `trust.yaml` folds into it
 
 **When a `plur hook-*` command threw, the CLI printed `{"error": …}` on
 stdout and exited 1**. Editors read a hook's stdout as its result and show
@@ -175,6 +176,49 @@ scope, a match on the path store's row is reported `local`, not `remote` —
 nothing was sent anywhere.
 
 Nothing about where engrams are written changes. The field is additive.
+
+  Paths may be globs (`*`, `**`, `?`) and may start with `~`. A plain folder
+  also covers everything below it.
+- **`plur folders list | set <folder> | rm <folder>`.** `set` takes one of
+  `--scope <s>`, `--on`, `--off` or `--ask`, plus optional `--trusted` or
+  `--no-trusted`.
+  - **Outside an interactive terminal, `set` and `rm` need `--nonce <n>`.** That
+    is how the ask flow calls them, and it stops an agent from writing any
+    folder, `--trusted` included, by leaving `--nonce` out. A person at a
+    terminal needs no nonce. `plur trust` is the explicit alias for a person
+    and still works in scripts.
+  - A nonce names one folder and works once. It is used up only after the map
+    is saved, so a failed write does not burn it. It expires when its session
+    ends, after 24 hours at most.
+  - `set` refuses a team scope (`group:`, `org:`, `team:`, `space:`, `public`)
+    that no store in `config.yaml` serves. `project:` scopes live in the local
+    store and need none.
+  - Neither command writes to a folders.yaml it cannot read; it is never
+    overwritten.
+- **Upgrade needs no steps.** The first read of a missing `folders.yaml` imports
+  the `trust.yaml` entries as `trusted: true` entries. Nothing is ever added to
+  `trust.yaml`. `plur untrust` removes the grant from both files, so neither a
+  downgrade (an older version reading `trust.yaml`) nor a fresh import brings a
+  revoked grant back.
+- **`plur trust`, `plur untrust` and `plur init-remote`** now set and clear
+  `trusted` in the map. Their output and exit codes are unchanged, with one
+  exception: `plur trust` and `plur untrust` exit 1 on a folders.yaml they
+  cannot read, rather than overwrite it. `plur init-remote` still writes
+  `.plur.yaml` and exits 0, but warns that it could not record trust and leaves
+  remote memory off until you run `plur trust`. It fails safe.
+- A folders.yaml that cannot be read counts as empty and logs one warning. It
+  never throws.
+- **Trust matching is now in one place, the map, and it fails closed.** A
+  stored entry is compared exactly as written with the checked folder's
+  canonical path. It is never resolved on disk, and neither is its parent. So a
+  trusted folder, or its parent, later replaced by a symlink does not pass its
+  trust on to wherever the link points.
+  - An entry imported from `trust.yaml` keeps its spelling. If an older version
+    stored an entry under a symlinked parent for a folder that did not exist
+    yet, run `plur trust` again once that folder exists.
+  - `plur untrust` also removes an entry stored under the plain spelling of
+    the folder you give it.
+  - A `~` in the map expands to your home as written and to its canonical path.
 
 ### A team save is no longer swallowed by a personal note with the same text (#1268)
 
