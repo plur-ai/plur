@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
 import { VERSION } from './version.js'
+import { isPlurHookCommand } from './hook-command.js'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -105,38 +106,53 @@ const _shimName = platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook'
 const _shimCandidate = join(homedir(), '.plur', 'bin', _shimName)
 const CLI = existsSync(_shimCandidate) ? _shimCandidate : 'npx @plur-ai/cli'
 
-const PLUR_HOOKS: Record<string, HookEntry[]> = {
-  // --- Session lifecycle ---
-  UserPromptSubmit: [{
-    hooks: [{ type: 'command', command: `${CLI} hook-inject`, timeout: 15 }],
-  }],
-  PostCompact: [{
-    matcher: 'auto|manual',
-    hooks: [{ type: 'command', command: `${CLI} hook-inject --rehydrate`, timeout: 15 }],
-  }],
-  // Auto-close the memory lifecycle at session end (Claude Code SessionEnd,
-  // shipped v1.0.85) — captures a closing episode and cleans up the session
-  // checkpoint even if the agent forgot to call plur_session_end (#217).
-  SessionEnd: [{
-    hooks: [{ type: 'command', command: `${CLI} hook-session-end`, timeout: 5 }],
-  }],
-  // --- Contextual injection ---
-  PreToolUse: [
-    { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${CLI} hook-inject --event plan_mode`, timeout: 10 }] },
-    { matcher: 'Skill', hooks: [{ type: 'command', command: `${CLI} hook-inject --event skill`, timeout: 10 }] },
-    { matcher: 'Agent', hooks: [{ type: 'command', command: `${CLI} hook-inject --event agent`, timeout: 10 }] },
-    { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${CLI} hook-observe`, timeout: 3 }] },
-  ],
-  PostToolUse: [
-    { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${CLI} hook-observe --post`, timeout: 3 }] },
-  ],
-  SubagentStart: [
-    { matcher: '.*', hooks: [{ type: 'command', command: `${CLI} hook-inject --event subagent`, timeout: 10 }] },
-  ],
-  Stop: [
-    { matcher: '*', hooks: [{ type: 'command', command: `${CLI} hook-learn-check`, timeout: 2 }] },
-  ],
+/**
+ * Hook set for `plur-mcp init`. Mirrors `buildInjectionHooks` in
+ * @plur-ai/cli's init.ts, which this package cannot import. The rehydrate
+ * entry must stay identical to the cli's; test/init-hooks.test.ts fails if
+ * the two diverge (#1279).
+ */
+export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
+  return {
+    // --- Session lifecycle ---
+    UserPromptSubmit: [{
+      hooks: [{ type: 'command', command: `${cli} hook-inject`, timeout: 15 }],
+    }],
+    // Re-inject after compaction. SessionStart with matcher "compact" fires
+    // right after compaction and can carry context; PostCompact cannot
+    // (#1274, #1279). Re-running init moves an old PostCompact entry here.
+    // Sync, 20s: the cli's CLAUDE_INJECT_TIMEOUT_S since #1313 (the hook
+    // exits itself at 15s), which this package cannot import.
+    SessionStart: [{
+      matcher: 'compact',
+      hooks: [{ type: 'command', command: `${cli} hook-inject --rehydrate`, timeout: 20 }],
+    }],
+    // Auto-close the memory lifecycle at session end (Claude Code SessionEnd,
+    // shipped v1.0.85) — captures a closing episode and cleans up the session
+    // checkpoint even if the agent forgot to call plur_session_end (#217).
+    SessionEnd: [{
+      hooks: [{ type: 'command', command: `${cli} hook-session-end`, timeout: 5 }],
+    }],
+    // --- Contextual injection ---
+    PreToolUse: [
+      { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${cli} hook-inject --event plan_mode`, timeout: 10 }] },
+      { matcher: 'Skill', hooks: [{ type: 'command', command: `${cli} hook-inject --event skill`, timeout: 10 }] },
+      { matcher: 'Agent', hooks: [{ type: 'command', command: `${cli} hook-inject --event agent`, timeout: 10 }] },
+      { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe`, timeout: 3 }] },
+    ],
+    PostToolUse: [
+      { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe --post`, timeout: 3 }] },
+    ],
+    SubagentStart: [
+      { matcher: '.*', hooks: [{ type: 'command', command: `${cli} hook-inject --event subagent`, timeout: 10 }] },
+    ],
+    Stop: [
+      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-learn-check`, timeout: 2 }] },
+    ],
+  }
 }
+
+const PLUR_HOOKS = buildPlurHooks(CLI)
 
 // --- Types ---
 
@@ -145,14 +161,14 @@ interface McpConfig {
   [key: string]: unknown
 }
 
-interface Settings {
+export interface Settings {
   hooks?: Record<string, HookEntry[]>
   [key: string]: unknown
 }
 
-interface HookEntry {
+export interface HookEntry {
   matcher?: string
-  hooks: Array<{ type: string; command: string; timeout?: number }>
+  hooks: Array<{ type: string; command: string; timeout?: number; async?: boolean }>
 }
 
 const CLAUDE_MD_SECTION = `## PLUR Memory
@@ -269,6 +285,102 @@ function writeMcpConfig(configPath: string): string {
   return `added to ${configPath}`
 }
 
+/** Does this entry hold at least one hook PLUR wrote? See isPlurHookCommand. */
+/**
+ * Claude Code also has `type: "prompt"` and `type: "agent"` hooks, which
+ * carry no `command`. They are never PLUR's and must not make init throw.
+ */
+function isPlurCommandHook(h: { command?: unknown }): boolean {
+  return typeof h.command === 'string' && isPlurHookCommand(h.command)
+}
+
+function isPlurHook(entry: HookEntry): boolean {
+  return (entry.hooks ?? []).some(isPlurCommandHook)
+}
+
+/** Same normalisation as isPlurHookCommand: backslashes to `/`, any case. */
+const REHYDRATE = /(?:^|\s)hook-inject\s+--rehydrate(?:\s|$)/
+
+function isPlurRehydrateHook(h: { command?: unknown }): boolean {
+  return isPlurCommandHook(h) &&
+    REHYDRATE.test((h.command as string).replace(/\\/g, '/').toLowerCase())
+}
+
+function isPlurRehydrate(entry: HookEntry): boolean {
+  return (entry.hooks ?? []).some(isPlurRehydrateHook)
+}
+
+/**
+ * Remove PLUR's hooks from a list of entries, one hook at a time. An entry
+ * is dropped only when nothing is left in it; an entry without a PLUR hook
+ * comes back as the same object. A user's hook is never removed.
+ */
+function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
+  const kept: HookEntry[] = []
+  for (const entry of entries) {
+    if (!isPlurHook(entry)) {
+      kept.push(entry)
+      continue
+    }
+    const rest = entry.hooks.filter(h => !isPlurCommandHook(h))
+    if (rest.length > 0) kept.push({ ...entry, hooks: rest })
+  }
+  return kept
+}
+
+/**
+ * Merge PLUR hooks into Claude Code settings (#1279). Pure, no I/O.
+ * A hook is PLUR's only when isPlurHookCommand says so: PLUR's binary, in
+ * the shim or npx form and with any slash direction or quoting, followed by
+ * a subcommand init writes.
+ * - No PLUR hook present: append the full set ('installed').
+ * - PLUR hooks present: remove PLUR's hooks from PostCompact, which cannot
+ *   carry context (#1274), one hook at a time, dropping an entry only when
+ *   it has no hooks left. If a PLUR rehydrate was among them, add the
+ *   SessionStart(compact) entry unless one is there ('healed'). A file with
+ *   PLUR hooks but no rehydrate (the global file `plur init` writes) gets
+ *   none added. Nothing else changes, so a fuller
+ *   `plur init` install is not replaced by this smaller set.
+ * - Otherwise 'already', and the settings come back unchanged.
+ * User hooks are never removed or reordered, including a user hook that
+ * shares an entry with a PLUR hook.
+ */
+export function applyPlurHooks(
+  settings: Settings,
+  hooksMap: Record<string, HookEntry[]>,
+): { settings: Settings; status: 'installed' | 'healed' | 'already' } {
+  const hooks: Record<string, HookEntry[]> = { ...(settings.hooks ?? {}) }
+  const installed = Object.values(hooks).some(entries => (entries ?? []).some(isPlurHook))
+
+  if (!installed) {
+    for (const [event, entries] of Object.entries(hooksMap)) {
+      hooks[event] = [...(hooks[event] ?? []), ...entries]
+    }
+    return { settings: { ...settings, hooks }, status: 'installed' }
+  }
+
+  let changed = false
+  let movedRehydrate = false
+  if (hooks.PostCompact?.some(isPlurHook)) {
+    movedRehydrate = hooks.PostCompact.some(isPlurRehydrate)
+    const kept = stripPlurHooks(hooks.PostCompact)
+    if (kept.length > 0) hooks.PostCompact = kept
+    else delete hooks.PostCompact
+    changed = true
+  }
+  // Add SessionStart(compact) only in place of a PostCompact rehydrate just
+  // removed from THIS file. `plur init` keeps the global file to enforcement
+  // hooks and puts rehydrate in the project file; adding one to the global
+  // file would run rehydrate twice per compaction there.
+  if (movedRehydrate && !(hooks.SessionStart ?? []).some(isPlurRehydrate)) {
+    hooks.SessionStart = [...(hooks.SessionStart ?? []), ...(hooksMap.SessionStart ?? [])]
+    changed = true
+  }
+  return changed
+    ? { settings: { ...settings, hooks }, status: 'healed' }
+    : { settings, status: 'already' }
+}
+
 function installHooks(): string {
   const projectSettings = join(process.cwd(), '.claude', 'settings.json')
   const globalSettings = join(homedir(), '.claude', 'settings.json')
@@ -282,30 +394,15 @@ function installHooks(): string {
   }
   const settings = settingsRead.data as Settings
 
-  // Check if already installed
-  const hooks = settings.hooks ?? {}
-  for (const entries of Object.values(hooks)) {
-    for (const entry of (entries as HookEntry[])) {
-      for (const h of entry.hooks ?? []) {
-        if (h.command.includes('@plur-ai/cli')) {
-          return `already installed in ${settingsPath}`
-        }
-      }
-    }
-  }
-
-  // Merge hooks
-  const existing = settings.hooks ?? {}
-  const merged: Record<string, HookEntry[]> = { ...existing }
-  for (const [event, newEntries] of Object.entries(PLUR_HOOKS)) {
-    merged[event] = [...(merged[event] ?? []), ...newEntries]
-  }
-  settings.hooks = merged
+  const { settings: next, status } = applyPlurHooks(settings, PLUR_HOOKS)
+  if (status === 'already') return `already installed in ${settingsPath}`
 
   const dir = join(settingsPath, '..')
   mkdirSync(dir, { recursive: true })
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')
-  return `installed in ${settingsPath}`
+  writeFileSync(settingsPath, JSON.stringify(next, null, 2) + '\n')
+  return status === 'healed'
+    ? `moved rehydrate hook to SessionStart(compact) in ${settingsPath}`
+    : `installed in ${settingsPath}`
 }
 
 async function runInit() {

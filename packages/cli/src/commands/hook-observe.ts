@@ -2,7 +2,7 @@ import { mkdirSync, appendFileSync, readSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir, parsePayload } from '../lib/folder-gate.js'
 
 /**
  * plur hook-observe — capture tool calls for offline pattern extraction.
@@ -55,15 +55,14 @@ function trimValue(v: unknown, maxLen = 200): unknown {
   return v
 }
 
-export async function run(args: string[], _flags: GlobalFlags): Promise<void> {
+export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
 
   // Always passthrough stdin to stdout (hook contract)
   process.stdout.write(raw)
 
-  // Silent no-op for projects without plur configured (#247).
-  // Lets hooks be installed globally without affecting non-plur projects.
-  if (!isPlurConfigured()) return
+  // No capture unless the folder map says on (#1347; was #247's project gate).
+  if (!hookFolderOn(payloadDir(parsePayload(raw)), flags)) return
 
   let data: Record<string, unknown>
   try {

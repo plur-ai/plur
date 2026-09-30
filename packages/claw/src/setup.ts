@@ -64,6 +64,30 @@ type MergeResult = {
   enableAlready: boolean
   slotChanged: boolean
   slotAlready: boolean
+  /** Another plugin holds plugins.slots.memory — left as is (formal R2). */
+  slotForeign?: string
+}
+
+const isPlainObject = (v: unknown): boolean => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * A config shape setup/repair would have to DISCARD to proceed (formal R2,
+ * mcp#11): a present `plugins`, `plugins.entries`, `plugins.slots`, `mcp` or
+ * `mcp.servers` that is not a plain object used to be replaced by `{}` and the
+ * user's value was lost on the next write. Both paths now refuse to write and
+ * say which key to fix. Absent keys are fine — they are created.
+ */
+export function configShapeProblem(cfg: OpenclawConfig): string | null {
+  const c = cfg as any
+  const bad = (v: unknown) => v !== undefined && v !== null && !isPlainObject(v)
+  if (bad(c.plugins)) return 'plugins is not an object'
+  if (isPlainObject(c.plugins)) {
+    if (bad(c.plugins.entries)) return 'plugins.entries is not an object'
+    if (bad(c.plugins.slots)) return 'plugins.slots is not an object'
+  }
+  if (bad(c.mcp)) return 'mcp is not an object'
+  if (isPlainObject(c.mcp) && bad(c.mcp.servers)) return 'mcp.servers is not an object'
+  return null
 }
 
 function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
@@ -106,11 +130,15 @@ function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
   entries[PLUGIN_ID] = nextEntry
   plugins.entries = entries
 
-  // Set memory slot
+  // Set memory slot — only when NOBODY holds it (formal R2, mcp#11). This ran
+  // unattended from postinstall and took a slot another plugin held, while
+  // repair (and doctor) treat that as a human's call. Same rule here: a
+  // foreign holder is left in place and reported.
   const slots = (plugins as any).slots && typeof (plugins as any).slots === 'object'
     ? (plugins as any).slots : {}
   const slotAlready = slots.memory === PLUGIN_ID
-  const slotChanged = !slotAlready
+  const slotForeign = !slotAlready && slots.memory ? String(slots.memory) : undefined
+  const slotChanged = !slotAlready && !slotForeign
   if (slotChanged) {
     slots.memory = PLUGIN_ID
   }
@@ -154,6 +182,16 @@ function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
     enableAlready,
     slotChanged,
     slotAlready,
+    ...(slotForeign ? { slotForeign } : {}),
+  }
+}
+
+function foreignSlotStep(holder: string): { step: SetupStep; status: SetupStatus; detail: string } {
+  return {
+    step: 'slot_selected',
+    status: 'fail',
+    detail: `plugins.slots.memory is ${holder}, expected ${PLUGIN_ID} — left as is (another plugin owns memory); ` +
+      `set it to ${PLUGIN_ID} yourself if PLUR should own it`,
   }
 }
 
@@ -314,6 +352,15 @@ export function runSetup(opts: { configPath?: string; openclawHome?: string } = 
     return report
   }
 
+  const shape = configShapeProblem(readRes.data)
+  if (shape) {
+    report.steps.push({ step: 'plugin_enabled', status: 'fail', detail: `${shape} — left untouched; fix it by hand, or add the block below` })
+    report.steps.push({ step: 'slot_selected', status: 'fail', detail: 'config left untouched' })
+    report.fallbackBlock = canonicalBlock()
+    tailPending()
+    return report
+  }
+
   const merged = mergeEnable(readRes.data, opts.openclawHome)
   if (!merged.anyChanged) {
     report.steps.push({
@@ -321,7 +368,7 @@ export function runSetup(opts: { configPath?: string; openclawHome?: string } = 
       status: merged.enableAlready ? 'skip' : 'ok',
       detail: merged.enableAlready ? 'already enabled' : undefined,
     })
-    report.steps.push({
+    report.steps.push(merged.slotForeign ? foreignSlotStep(merged.slotForeign) : {
       step: 'slot_selected',
       status: merged.slotAlready ? 'skip' : 'ok',
       detail: merged.slotAlready ? `already set to ${PLUGIN_ID}` : undefined,
@@ -344,7 +391,7 @@ export function runSetup(opts: { configPath?: string; openclawHome?: string } = 
     status: merged.enableChanged ? 'ok' : 'skip',
     detail: merged.enableChanged ? undefined : 'already enabled',
   })
-  report.steps.push({
+  report.steps.push(merged.slotForeign ? foreignSlotStep(merged.slotForeign) : {
     step: 'slot_selected',
     status: merged.slotChanged ? 'ok' : 'skip',
     detail: merged.slotChanged ? undefined : `already set to ${PLUGIN_ID}`,
@@ -536,6 +583,8 @@ export function runRepair(opts: { configPath?: string; openclawHome?: string } =
     if (!readRes.ok) return pre
     cfg = readRes.data
   }
+  // Never discard a value it cannot read as an object (formal R2, mcp#11).
+  if (configShapeProblem(cfg)) return pre
 
   const plugins = (cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins)
     ? cfg.plugins

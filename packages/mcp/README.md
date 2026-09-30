@@ -46,7 +46,7 @@ Knowledge is stored as **engrams** — small assertions that strengthen with use
 
 ## Tools
 
-By default (lean profile), your agent gets 12 tools. Everything else is reachable through `plur_admin`:
+By default (lean profile), your agent gets 14 tools. Everything else is reachable through `plur_admin`:
 
 | Tool | What it does |
 |------|-------------|
@@ -61,6 +61,8 @@ By default (lean profile), your agent gets 12 tools. Everything else is reachabl
 | `plur_receipt` | Show why a memory was injected — the evidence behind a recall |
 | `plur_packs_uninstall` | Remove an installed pack |
 | `plur_tensions_purge` | Clear stale/resolved tensions |
+| `plur_tensions` | List, scan, confirm, dismiss or resolve contradictions — resolve retires the losing memory, so it is a direct tool, never dispatched through `plur_admin` |
+| `plur_validate_meta` | Test a meta-engram in a new domain — a third failure can retire it, so it is a direct tool too |
 | `plur_admin` | Dispatch to any other tool: `{ action: "plur_packs_install", args: {...} }` |
 
 Less commonly needed tools (`plur_recall_hybrid`, `plur_inject_hybrid`, `plur_learn_batch`, `plur_ingest`, `plur_sync`, `plur_packs_install`, `plur_packs_list`, `plur_capture`, `plur_timeline`, `plur_provenance`, and more) are all reachable via `plur_admin`. Set `PLUR_TOOL_PROFILE=full` to expose all 44 tools directly.

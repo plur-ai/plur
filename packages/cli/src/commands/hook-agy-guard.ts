@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn } from '../lib/folder-gate.js'
 import {
   readStdinJson,
   runAgyHook,
@@ -52,12 +52,13 @@ import {
 
 const MAX_BLOCKS_BEFORE_FALLBACK = 1
 
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runAgyHook('agy guard', async () => {
     const input = readStdinJson()
 
     const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths as string[] : []
-    if (workspaces.length > 0 && typeof workspaces[0] === 'string' && !isPlurConfigured(workspaces[0])) return
+    // With a workspace, silent unless the folder map says on (#1347).
+    if (workspaces.length > 0 && typeof workspaces[0] === 'string' && !hookFolderOn(workspaces[0], flags)) return
 
     const toolCall = (input.toolCall && typeof input.toolCall === 'object')
       ? input.toolCall as Record<string, unknown>

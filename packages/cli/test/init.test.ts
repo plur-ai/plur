@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir, platform } from 'os'
 import { execSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
+import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 
@@ -27,7 +28,7 @@ describe('plur init', () => {
     return execSync(`node ${CLI} init --global --no-desktop ${extra}`, {
       encoding: 'utf-8',
       timeout: 15000,
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env: isolatedHomeEnv(home),
       cwd: home,
     })
   }
@@ -54,22 +55,27 @@ describe('plur init', () => {
     expect(settings.mcpServers?.plur).toBeDefined()
   })
 
-  it('installs injection hooks async with a 90s ceiling; event hooks stay sync', () => {
+  it('installs the first-prompt and rehydrate injections sync with a 20s timeout (#1313)', () => {
     runInit()
     const settings = readSettings()
 
-    // The cold-start embedder load (~20s on stores past a few thousand
-    // engrams) killed sync injection hooks at their old 15s timeout —
-    // users got a timeout error and no injection. Async + 90s is the fix.
+    // #1313: async context is delivered only at the next safe point, so a
+    // first reply with no tool calls (and every one-shot `claude -p`) had no
+    // memory. Sync, bounded: hook-inject caps its own work below 20s (hybrid
+    // on an 8s deadline, then BM25; a 15s watchdog).
     const injectHook = settings.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]
     expect(injectHook?.command).toContain('hook-inject')
-    expect(injectHook?.async).toBe(true)
-    expect(injectHook?.timeout).toBe(90)
+    expect(injectHook?.async).toBeUndefined()
+    expect(injectHook?.timeout).toBe(20)
 
-    const rehydrateHook = settings.hooks?.PostCompact?.[0]?.hooks?.[0]
+    // #1274: rehydration rides SessionStart(compact). PostCompact cannot
+    // deliver context to the model in Claude Code, so it is not registered.
+    expect(settings.hooks?.PostCompact).toBeUndefined()
+    const rehydrateEntry = settings.hooks?.SessionStart?.find((e) => e.matcher === 'compact')
+    const rehydrateHook = rehydrateEntry?.hooks?.[0]
     expect(rehydrateHook?.command).toContain('--rehydrate')
-    expect(rehydrateHook?.async).toBe(true)
-    expect(rehydrateHook?.timeout).toBe(90)
+    expect(rehydrateHook?.async).toBeUndefined()
+    expect(rehydrateHook?.timeout).toBe(20)
 
     // Event hooks must deliver context BEFORE the tool runs — async would
     // defeat them. They fit their sync 10s window because hook-inject uses
@@ -125,6 +131,50 @@ describe('plur init', () => {
     expect(secondHookCount).toBe(firstHookCount)
     // Still exactly one plur entry
     expect(Object.keys(second.mcpServers ?? {}).filter((k) => k === 'plur')).toHaveLength(1)
+  })
+
+  it('re-running init heals an async hook-inject registration to sync (#1313)', () => {
+    const settingsPath = join(home, '.claude', 'settings.json')
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject', timeout: 90, async: true }] },
+        ],
+        SessionStart: [
+          { matcher: 'compact', hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject --rehydrate', timeout: 90, async: true }] },
+        ],
+      },
+    }, null, 2))
+
+    runInit()
+    const settings = readSettings()
+    const all = Object.values(settings.hooks ?? {}).flat().flatMap((e) => e.hooks)
+    const injects = all.filter((h) => /hook-inject( --rehydrate)?$/.test(h.command))
+    expect(injects).toHaveLength(2)
+    for (const h of injects) {
+      expect(h.async).toBeUndefined()
+      expect(h.timeout).toBe(20)
+    }
+  })
+
+  it('re-running init moves a PostCompact rehydrate hook to SessionStart(compact) (#1274)', () => {
+    const settingsPath = join(home, '.claude', 'settings.json')
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        PostCompact: [
+          { matcher: 'auto|manual', hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject --rehydrate', timeout: 90, async: true }] },
+        ],
+      },
+    }, null, 2))
+
+    runInit()
+    const settings = readSettings()
+    expect(settings.hooks?.PostCompact).toBeUndefined()
+    const compact = settings.hooks?.SessionStart?.filter((e) => e.matcher === 'compact') ?? []
+    expect(compact).toHaveLength(1)
+    expect(compact[0].hooks[0].command).toContain('hook-inject --rehydrate')
   })
 
   it('upgrade path: hooks-only install gets MCP added without re-adding hooks', () => {
@@ -195,7 +245,7 @@ describe('plur init', () => {
       execSync(`node ${CLI} init --project --no-desktop`, {
         encoding: 'utf-8',
         timeout: 15000,
-        env: { ...process.env, HOME: home, USERPROFILE: home },
+        env: isolatedHomeEnv(home),
         cwd: project,
       })
 
@@ -229,8 +279,11 @@ describe('plur init', () => {
       expect(projectSettings.hooks?.UserPromptSubmit).toBeDefined()
       expect(globalSettings.hooks?.UserPromptSubmit).toBeUndefined()
 
-      // Enforcement hooks NOT duplicated at project
-      expect(projectSettings.hooks?.SessionStart).toBeUndefined()
+      // Enforcement hooks NOT duplicated at project. The only project
+      // SessionStart entry is the injection rehydrate (matcher "compact", #1274).
+      const projectSessionStart = projectSettings.hooks?.SessionStart ?? []
+      expect(projectSessionStart.some((h) => h.hooks.some((c) => c.command.includes('hook-session-remind')))).toBe(false)
+      expect(projectSessionStart.map((h) => h.matcher)).toEqual(['compact'])
 
       // MCP server registered at project (the path that does work in this project)
       expect(projectSettings.mcpServers?.plur).toBeDefined()

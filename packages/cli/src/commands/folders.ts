@@ -45,7 +45,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const plur = createPlur(flags, { readonly: true })
     const folders = plur.listFolders()
     if (json) return outputJson({ folders, count: folders.length })
-    if (folders.length === 0) return outputText('No folder decisions recorded. Unmapped folders ask once per session.')
+    if (folders.length === 0) return outputText('No folder decisions recorded.')
     for (const f of folders) outputText(describe(f))
     return
   }

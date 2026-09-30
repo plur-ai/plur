@@ -17,6 +17,7 @@ import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
+import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 const DIST_SKILLS = join(dirname(CLI), 'skills')
@@ -53,7 +54,7 @@ describe('plur init installs skills', () => {
     return execSync(`node ${CLI} init --global --no-desktop --no-prompt --no-cursor --no-codex --no-antigravity`, {
       encoding: 'utf-8',
       timeout: 30000,
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env: isolatedHomeEnv(home),
       cwd: home,
     })
   }

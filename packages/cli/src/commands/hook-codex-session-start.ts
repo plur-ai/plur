@@ -1,7 +1,8 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderPolicy, payloadDir, sessionSettings } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { recordInjected } from '../lib/auto-rate.js'
 
 /**
  * plur hook-codex-session-start — Codex `SessionStart` hook.
@@ -27,9 +28,12 @@ import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex session-start', async () => {
-    if (!isPlurConfigured()) return
-
     const input = readStdinJson()
+    // #1347: only an `on` folder gets a session batch. An `ask` folder is
+    // asked by hook-codex-inject on the first prompt; `off` is silent.
+    const dir = payloadDir(input)
+    const policy = hookFolderPolicy(dir, flags)
+    if (policy.mode !== 'on') return
     const sessionId = codexSessionId(input)
     if (!sessionId) return
 
@@ -45,8 +49,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // #1198: carry the project's remote settings so Enterprise team memory
       // reaches Codex at session start too. The helper carries #1196's trust
       // gate, so this cannot reintroduce the exfiltration path.
-      const projectRemote = resolveProjectRemote(plur)
-      const projectConfig = projectRemote.config
+      const projectRemote = resolveProjectRemote(plur, dir)
+      const projectConfig = sessionSettings(policy, projectRemote.config)
       const injectOpts = {
         budget: 3000,
         ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
@@ -54,6 +58,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       }
 
       const { result, mode } = await injectWithFallback(plur, 'general session start', injectOpts)
+      recordInjected('codex', sessionId, result.injected_ids) // #1310 auto-rate
       const body = result.count > 0
         ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
         : ''
@@ -64,7 +69,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // Never silent (#1198): if the project declared remote settings we
       // refused, say so here — this is the only model-visible surface.
       const refusal = projectRemote.refusedFrom
-        ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom)}\n\n`
+        ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)}\n\n`
         : ''
       context = refusal + (body ? `${header}\n\n${body}` : header)
     } catch (err: unknown) {

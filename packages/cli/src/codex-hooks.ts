@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
+import { isPlurHookCommand } from './lib/hook-command.js'
 
 /**
  * Support for Codex's `~/.codex/hooks.json`.
@@ -42,8 +43,8 @@ export interface CodexHooksConfig {
  * 0.149.1 (they were silently skipped in 0.146.0), but an async hook's
  * `additionalContext` is delivered at the "next safe point" — i.e. NOT to
  * the turn that triggered it. For a `codex exec` one-shot that means never.
- * Claude Code's `hook-inject` is async with a 90s timeout to absorb a slow
- * hybrid pass; that trade does not transfer. These hooks are synchronous —
+ * Claude Code's `hook-inject` made the same move to sync for the same reason
+ * (#1313; it was async with a 90s timeout). These hooks are synchronous —
  * hybrid-first with a BM25 fallback on a soft deadline (`injectWithFallback`)
  * — and `codex-hooks.test.ts` asserts the no-async invariant.
  *
@@ -97,6 +98,15 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
       },
     ],
 
+    // Auto-rate injected engrams from the reply (#1310). Stop carries
+    // `last_assistant_message`; the hook prints nothing, which is Codex's
+    // valid "no opinion" Stop result.
+    Stop: [
+      {
+        hooks: [{ type: 'command', command: `${cmd} hook-auto-rate codex`, timeout: 10 }],
+      },
+    ],
+
     // Session cleanup. Codex clamps SessionEnd timeouts to 3s and forces
     // them synchronous, so this must stay cheap: it removes the sentinel and
     // counters, NOTHING more — it deliberately does not capture a closing
@@ -111,27 +121,15 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
   }
 }
 
-/** The exact set of subcommands `buildCodexHooks()` installs. */
-const PLUR_CODEX_SUBCOMMANDS = [
-  'hook-codex-session-start',
-  'hook-codex-inject',
-  'hook-codex-guard',
-  'hook-codex-post-tool',
-  'hook-codex-session-end',
-]
-
 /**
- * A hook is PLUR's only if it BOTH names the PLUR binary AND invokes one of
- * PLUR's exact subcommands — the same two-part test `cursor-hooks.ts` uses,
- * and for the same reason: matching on a bare `hook-codex-` substring would
- * claim a user's own `./scripts/hook-codex-lint.sh` and silently delete it
- * on the next `plur init --codex`.
+ * A hook is PLUR's when PLUR's own launcher runs a `hook-*` subcommand —
+ * the shared matcher (decision H2 "prefix"), so a new Codex hook needs no
+ * list update. A user's own `./scripts/hook-codex-lint.sh`, or any hook-*
+ * run by another binary, is not PLUR's and is never deleted by
+ * `plur init --codex`.
  */
 function isPlurCodexHookSpec(spec: CodexHookSpec): boolean {
-  const cmd = spec?.command ?? ''
-  const isPlurBinary = cmd.includes('@plur-ai/cli') || cmd.includes('plur-hook')
-  if (!isPlurBinary) return false
-  return PLUR_CODEX_SUBCOMMANDS.some((sub) => cmd.includes(sub))
+  return typeof spec?.command === 'string' && isPlurHookCommand(spec.command)
 }
 
 function entryIsPlurOwned(entry: CodexHookEntry): boolean {

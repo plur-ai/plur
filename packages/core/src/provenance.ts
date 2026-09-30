@@ -25,6 +25,7 @@
  */
 import type { Engram } from './schemas/engram.js'
 import type { HistoryEvent } from './history.js'
+import { isSharedScope } from './scope-util.js'
 
 const PROV = 'http://www.w3.org/ns/prov#'
 const ENGRAM_NS = 'https://plur.ai/ns/engram#'
@@ -298,6 +299,14 @@ export interface ProvenanceOptions {
    * schema default, because somebody actually chose this.
    */
   configuredLicense?: string
+  /**
+   * True when the engram's scope is backed by a remote store on this install
+   * (a `stores` entry with a `url` for exactly that scope), so the memory
+   * already leaves this machine. Only `Plur` knows its stores; it supplies
+   * this. Absent means NOT known to be remote-backed, which can only make the
+   * record MORE restrictive (Decision E6, fail closed).
+   */
+  remoteBacked?: boolean
 }
 
 /**
@@ -351,9 +360,34 @@ function bornAt(engram: Engram): string | undefined {
 }
 
 /**
+ * Decision E6 (owner, 2026-09-26): has this memory NOT been cleared to leave
+ * this machine?
+ *
+ * Withheld when its visibility is `private`, OR when its scope does not leave
+ * the machine — not a shared scope (`isSharedScope`) and not backed by a
+ * remote store (`remoteBacked`) — and its visibility is not explicitly
+ * `public`. An explicit `public` is the share act: it clears a personal-family
+ * engram (`global`, `local`, `user:*`, `agent:*`), which is what a pack is made
+ * of. It used to test `scope === 'local'` only, so a `global` or `user:*`
+ * memory nobody had marked public reported `maySharePlainly: true`.
+ *
+ * A missing scope counts as one that does not leave (fail closed).
+ * Model: spec/formal/PlurSpec/R2CoreA.lean §1 (`withheld_iff`).
+ */
+export function isWithheld(
+  engram: { scope?: unknown; visibility?: unknown },
+  remoteBacked = false,
+): boolean {
+  if (engram.visibility === 'private') return true
+  const scope = typeof engram.scope === 'string' ? engram.scope : undefined
+  const leaves = scope !== undefined && (isSharedScope(scope) || remoteBacked)
+  return !leaves && engram.visibility !== 'public'
+}
+
+/**
  * The licence as a machine-readable policy.
  *
- * `withheld` means the engram is private or local: it has not been cleared to
+ * `withheld` (see `isWithheld`) means the engram has not been cleared to
  * leave this machine. The licence still describes what a recipient could do
  * with the CONTENT, but nobody may pass the memory on, so the policy has to say
  * so outright.
@@ -418,7 +452,7 @@ function licencePolicy(name: string | undefined, withheld = false): Node | undef
       'odrl:action': 'odrl:distribute',
       'engram:reason': 'notShared',
       'engram:note':
-        'This memory is private or local. It has not been cleared to leave this '
+        'This memory is private, or kept on this machine and not marked public. It has not been cleared to leave this '
         + 'machine. The permissions above describe the licence on the content, '
         + 'not permission to pass the memory on.',
     })
@@ -661,9 +695,9 @@ export function buildProvenanceRecord(
     : options.configuredLicense ? 'configuredDefault'
     : 'schemaDefault'
   const licence = chosenLicence ?? options.packLicense ?? options.configuredLicense ?? 'cc-by-sa-4.0'
-  // Private or local means it has not been cleared to leave this machine, and
-  // the policy must forbid passing it on regardless of what the licence allows.
-  const withheld = (engram as any).visibility === 'private' || (engram as any).scope === 'local'
+  // Not cleared to leave this machine (Decision E6, `isWithheld`): the policy
+  // must forbid passing it on regardless of what the licence allows.
+  const withheld = isWithheld(engram as any, options.remoteBacked === true)
   const policy = licencePolicy(licence, withheld)
   thing['engram:license'] = licence
   thing['engram:licenseSource'] = licenceSource
@@ -1137,7 +1171,9 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   const lines: string[] = []
   const missing: string[] = []
   const fields: ProvenanceSummary['fields'] = {
-    may_leave_this_machine: true,
+    // Default to NO, all of them. An unanswered permission question must never
+    // read as yes — including "may it leave this machine" (core-policy#9).
+    may_leave_this_machine: false,
     // Default to NO. An unanswered permission question must never read as yes.
     may_reuse_commercially: false,
     may_redistribute: false,
@@ -1156,7 +1192,16 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   // Sharing first, because it is the question with a wrong answer.
   const scope = subject?.['engram:scope'] as string | undefined
   const visibility = subject?.['engram:visibility'] as string | undefined
-  const isPrivate = visibility === 'private' || scope === 'local'
+  // May it leave? The record's own answer (`engram:maySharePlainly`, built by
+  // `isWithheld` with this install's store knowledge) is authoritative. An older
+  // record without it is judged by the same rule from scope and visibility, with
+  // remote backing unknown — which can only withhold more. No engram node at all
+  // answers no (core-policy#9: this defaulted to `true`, "may leave", for a
+  // record that said nothing).
+  const shareAnswer = subject?.['engram:maySharePlainly']
+  const isPrivate = !subject
+    ? true
+    : typeof shareAnswer === 'boolean' ? !shareAnswer : isWithheld({ scope, visibility })
   fields.scope = scope
   fields.visibility = visibility
   fields.may_leave_this_machine = !isPrivate
@@ -1277,11 +1322,18 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
 
   // May I use it
   const licence = subject?.['engram:license'] as string | undefined
-  const licenceSource = (subject?.['engram:licenseSource'] as LicenseSource | undefined) ?? 'chosen'
+  // A record that does not say where its licence came from has not said it was
+  // chosen (core-policy#9: a missing value used to read as 'chosen', skipping
+  // the fail-closed branch below). Every record this code builds carries it, so
+  // absence means an older or hand-made record: answer "not known to be chosen"
+  // — the booleans fail closed, the licence name is still shown.
+  const recordedSource = subject?.['engram:licenseSource'] as LicenseSource | undefined
+  const sourceKnown = recordedSource !== undefined && LICENSE_SOURCES.has(recordedSource)
+  const licenceSource: LicenseSource = sourceKnown ? recordedSource! : 'schemaDefault'
   const defaulted = !wasDecided(licenceSource)
   if (licence) {
     const meaning = LICENCE_MEANING[licence.trim().toLowerCase()]
-    fields.licence = { name: licence, chosen: !defaulted, meaning, source: licenceSource }
+    fields.licence = { name: licence, chosen: !defaulted, meaning, ...(sourceKnown ? { source: licenceSource } : {}) }
 
     // Answer the two questions a machine actually asks, from the policy rather
     // than from the prose. A consumer was left matching on a free-text meaning
@@ -1349,10 +1401,14 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
       // Say WHICH kind of unchosen. "Inherited from the pack" and "the schema
       // default nobody has ever looked at" were reported with one sentence, and
       // they are different facts about who, if anybody, granted anything.
-      lines.push(licenceSource === 'inheritedFromPack'
+      lines.push(!sourceKnown
+        ? '              The record does not say whether anybody chose this licence.'
+        : licenceSource === 'inheritedFromPack'
         ? '              Inherited from the pack; nobody licensed this memory itself.'
         : '              Nobody chose this licence; it is the default.')
-      missing.push(licenceSource === 'inheritedFromPack'
+      missing.push(!sourceKnown
+        ? 'whether this licence was chosen; the record does not say'
+        : licenceSource === 'inheritedFromPack'
         ? 'a licence for this memory itself; the pack\'s licence above is what applies'
         : 'a licence was never chosen; the default above applies')
     }
@@ -1360,7 +1416,9 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     // memory". A tester read "reuse allowed" as permission to pass on a private
     // local secret. Say which question was answered, next to the answer.
     if (isPrivate) {
-      lines.push('              Not permission to share: this memory is marked private.')
+      lines.push(visibility === 'private'
+        ? '              Not permission to share: this memory is marked private.'
+        : '              Not permission to share: this memory has not been cleared to leave this machine (not marked public).')
     }
   } else {
     missing.push('whether you may reuse it')

@@ -73,6 +73,26 @@ export function detectCorrection(prompt: string): DetectionResult {
   return { matched: matched.length > 0, patterns: matched }
 }
 
+/**
+ * The reminder text for a correction-shaped prompt, or null. Shared by this
+ * standalone hook and by `hook-inject`, which appends it to its
+ * UserPromptSubmit output (#1312) so no second per-prompt process is needed.
+ */
+export function correctionReminder(prompt: string): string | null {
+  const result = detectCorrection(prompt)
+  if (!result.matched) return null
+  return (
+    'CORRECTION SIGNAL DETECTED in user message. Phrase(s) matched: ' +
+    result.patterns.map(p => `"${p}"`).join(', ') + '\n\n' +
+    'BEFORE you continue this task, consider whether the user just stated a ' +
+    'durable rule, preference, or correction. If yes, call plur_learn NOW ' +
+    'with the rule + rationale, then proceed. Acknowledging in prose is not ' +
+    'enough — that lesson disappears with context-window compression.\n\n' +
+    'Skip if the matched phrase is not actually corrective in this context ' +
+    '(e.g. "actually" used as filler, "from now on" used in a non-rule sense).'
+  )
+}
+
 function readStdinRaw(): string {
   try {
     const chunks: Buffer[] = []
@@ -103,21 +123,8 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
     return
   }
 
-  const prompt = String(data.prompt ?? data.user_message ?? '')
-  if (!prompt) return
-
-  const result = detectCorrection(prompt)
-  if (!result.matched) return
-
-  const reminder =
-    'CORRECTION SIGNAL DETECTED in user message. Phrase(s) matched: ' +
-    result.patterns.map(p => `"${p}"`).join(', ') + '\n\n' +
-    'BEFORE you continue this task, consider whether the user just stated a ' +
-    'durable rule, preference, or correction. If yes, call plur_learn NOW ' +
-    'with the rule + rationale, then proceed. Acknowledging in prose is not ' +
-    'enough — that lesson disappears with context-window compression.\n\n' +
-    'Skip if the matched phrase is not actually corrective in this context ' +
-    '(e.g. "actually" used as filler, "from now on" used in a non-rule sense).'
+  const reminder = correctionReminder(String(data.prompt ?? data.user_message ?? ''))
+  if (!reminder) return
 
   const output = {
     hookSpecificOutput: {

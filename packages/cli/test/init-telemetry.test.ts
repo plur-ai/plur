@@ -26,6 +26,7 @@ import { PassThrough } from 'stream'
 // Unit import — tests the function directly without spawning a child process.
 import { promptTelemetryOptIn } from '../src/commands/init.js'
 import { builtCliPath } from './helpers/built-cli.js'
+import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 
@@ -37,7 +38,7 @@ function runInitNonInteractive(home: string): string {
     {
       encoding: 'utf-8',
       timeout: 15000,
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env: isolatedHomeEnv(home),
       cwd: home,
     },
   )

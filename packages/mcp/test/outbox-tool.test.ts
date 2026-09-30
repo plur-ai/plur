@@ -11,6 +11,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
 import { getToolDefinitions } from '../src/tools.js'
+import { backgroundPushesSettled } from '../../core/test/helpers/background-pushes.js'
 
 const REMOTE = 'https://plur.example.com/sse'
 const SCOPE = 'group:acme/team'
@@ -51,7 +52,7 @@ describe('plur_outbox (#667)', () => {
     for (let i = 0; i < n; i++) {
       await plur.learn(`queued team fact number ${i}`, { scope: SCOPE, type: 'behavioral' })
     }
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
   }
 
   it('is registered in the full profile and declares a flush flag', () => {

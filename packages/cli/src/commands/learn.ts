@@ -138,6 +138,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
       claimClass = v as typeof claimClass; i++
     }
+    // `--` ends flag parsing: the next token is the statement, verbatim, even
+    // when it starts with `-` (decision S4). Before, `--` itself was stored.
+    else if (arg === '--') {
+      if (!statement && i + 1 < args.length) statement = args[i + 1]
+      break
+    }
     else if (!statement) { statement = arg; i++ }
     else { i++ }
   }
@@ -153,7 +159,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>] ' +
       '[--source <s>] [--rationale <r>] [--tags a,b,c] [--visibility private|public|template] ' +
       '[--abstract <id>] [--derived-from <id>] [--knowledge-anchors <json>] [--dual-coding <json>] ' +
-      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>]\n\n' +
+      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>]\n' +
+      '       plur learn [flags] -- <statement>   (a statement that starts with "-")\n\n' +
       '  --license      which licence governs reuse of this memory, e.g. cc-by-4.0.\n' +
       '                 Leave it out and a default applies that nobody chose, and\n' +
       '                 a provenance record will say so.\n' +
@@ -235,6 +242,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
   if (timeoutHandle) clearTimeout(timeoutHandle)
 
+  // #1264: where the engram went — remote, outbox or local. A shared scope that
+  // stayed local also carries a warning, because nothing else would tell the
+  // user their team save never left this machine.
+  const delivered = plur.deliveryOf(engram, scopeProvided ? scope : undefined)
+
   // LOW-10 (#353): surface a scope demotion instead of swallowing it silently.
   // When learnRouted demotes a sensitive shared-scope write to local/private it
   // stamps structured_data._demoted; mirror the MCP display contract (tools.ts)
@@ -277,6 +289,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       scope: engram.scope,
       type: engram.type,
       domain: engram.domain ?? null,
+      delivery: delivered.delivery,
+      ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
       // Include the demotion only when it happened; include requested_scope ONLY
       // when --scope was passed, to avoid a confusing requested_scope on an
       // unscoped write that demoted from the resolved default.
@@ -297,6 +311,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         `  Warning: Sensitive content (${demoted.patterns}) detected — stored at ` +
         `${demoted.to}/private instead of ${demoted.from}; re-scope deliberately if false positive.`,
       )
+    }
+    if (delivered.warning) {
+      // Same class as the demotion: the write is not where a reader of the
+      // command would assume, so it is never suppressed by --quiet.
+      outputText(`  Warning: ${delivered.warning}`)
     }
     if (routed) {
       // Where it landed, when the caller did not choose — same class as the

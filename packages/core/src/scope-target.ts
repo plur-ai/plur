@@ -19,7 +19,9 @@
  * closing. The drift IS the bug, so the rule is a module, not a convention.
  */
 
-/** Scopes that name the LOCAL side of the store graph. */
+import { isScopeWithin } from './scope-util.js'
+
+/** Scopes that name the LOCAL side of the store graph (lower case; compared folded). */
 const LOCAL_FAMILY = new Set(['primary', 'local', 'global'])
 
 /**
@@ -32,12 +34,33 @@ const LOCAL_FAMILY = new Set(['primary', 'local', 'global'])
  * WHERE, not just about which namespace. Both readings agree that a remote
  * DELETE is not what the caller asked for.
  *
+ * Decision E5 (2026-09-26): case-folded, like `isSharedScope` — `GLOBAL` and
+ * `Project:x` are the same family as `global` and `project:x`. Only the
+ * comparison folds; no scope value is rewritten.
+ *
+ * Decision E4 (2026-09-26): `project:*` is local-only only when no configured
+ * URL store's scope equals or segment-contains it (`isScopeWithin`, #383 — so
+ * `project:plurx` is NOT inside a `project:plur` store). A project scope a URL
+ * store covers lives on that remote, and naming it must be allowed to reach
+ * it. Pass the configured `stores`; omitting them keeps the config-free
+ * family (every `project:*` local), which is what `assertScopeNamesATarget`
+ * wants — a project scope always names a target, local or covered.
+ * `primary` / `local` / `global` never depend on stores.
+ *
  * Note the asymmetry with lookup: a local-only scope still permits the
  * secondary-store walk, because `stores:` entries without a `url` are files on
  * this disk. It is the network leg that is refused.
  */
-export function isLocalOnlyScope(scope: string): boolean {
-  return LOCAL_FAMILY.has(scope) || scope.startsWith('project:')
+export function isLocalOnlyScope(
+  scope: string,
+  stores?: ReadonlyArray<{ scope?: string; url?: string }>,
+): boolean {
+  const s = scope.toLowerCase()
+  if (LOCAL_FAMILY.has(s)) return true
+  if (!s.startsWith('project:')) return false
+  if (!stores) return true
+  return !stores.some(st => !!st.url && typeof st.scope === 'string'
+    && isScopeWithin(s, st.scope.toLowerCase()))
 }
 
 /**

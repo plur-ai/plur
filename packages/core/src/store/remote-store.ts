@@ -3,6 +3,10 @@ import type { Engram } from '../schemas/engram.js'
 import { logger } from '../logger.js'
 import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
+import type { ScopeSource } from '../scope-routing.js'
+
+/** The values `scope_source` may carry on the wire (#1221); anything else is omitted. */
+const SCOPE_SOURCES: ReadonlySet<string> = new Set<ScopeSource>(['explicit', 'session', 'default', 'routed'])
 
 /**
  * Lenient validation for semi-trusted remote rows (security audit 2026-06-10,
@@ -82,7 +86,7 @@ function sanitiseResponseBody(raw: string): string {
 // the hot path — a degraded network that never delivers headers must still
 // eventually unblock the caller (#504). 30 s is generous for a healthy
 // server while still keeping the process mortal on a blackholed route.
-const LOAD_FETCH_TIMEOUT_MS = 30_000
+export const LOAD_FETCH_TIMEOUT_MS = 30_000
 
 /**
  * Canonical endpoint identity for a configured remote URL (scope-audit
@@ -207,6 +211,36 @@ export class RemoteTimeoutError extends Error {
 }
 
 /**
+ * The CALLER's budget ran out, not the remote's (#1269).
+ *
+ * Distinct from {@link RemoteTimeoutError} on purpose: a request cut because a
+ * hook had 1.5s left says nothing about whether the host is reachable, so it
+ * must not mark the host down or feed the circuit breaker.
+ */
+export class RemoteAbortedError extends Error {
+  constructor(url: string) {
+    super(`request to ${url} was cut at the caller's time budget`)
+    this.name = 'RemoteAbortedError'
+  }
+}
+
+/**
+ * The remote answered a write with a non-2xx status (#1299).
+ *
+ * Same message as the plain Error it replaces, so nothing that reads the text
+ * changes; the status is carried as a field so the outbox can record it and
+ * tell a refusal (403) from a transient failure (503) without parsing prose.
+ */
+export class RemoteHttpError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'RemoteHttpError'
+    this.status = status
+  }
+}
+
+/**
  * A response whose body has already been read, inside the request deadline.
  *
  * `json` is present only for a 2xx (and is `undefined` when the payload would
@@ -221,10 +255,28 @@ interface BoundedResponse {
   readonly text?: string
 }
 
+/**
+ * Top-level `_`-prefixed keys are LOADER bookkeeping, never server data:
+ * `_pack`, `_storeScope` and `_originalId` are stamped by the code that loads
+ * a row and are read as the row's origin (tensions.ts `engramOrigin`, the
+ * `withoutPacks` filter, injected-pack counting). `.passthrough()` used to
+ * carry a server-supplied `_pack` straight through, so a remote writer could
+ * give its row an installed pack's origin and defeat the measured-under gate
+ * (#981; formal R2-CoreB, core-policy#6). Stripped here, at the one trust
+ * boundary both remote legs share, so the loaders' own stamps are the only
+ * markers a remote row can carry.
+ */
+function withoutLoaderMarkers(candidate: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(candidate)) if (!k.startsWith('_')) out[k] = v
+  return out
+}
+
 export function salvageRemoteRow(
-  candidate: Record<string, unknown>,
+  rawCandidate: Record<string, unknown>,
   logContext?: { url: string; rowId?: unknown },
 ): { data: Record<string, unknown>; salvagedFields: string[] } | null {
+  const candidate = withoutLoaderMarkers(rawCandidate)
   const first = RemoteRowSchema.safeParse(candidate)
   if (first.success) return { data: first.data as Record<string, unknown>, salvagedFields: [] }
   const failing = [...new Set(first.error.issues.map(i => String(i.path[0] ?? '')).filter(Boolean))]
@@ -248,6 +300,26 @@ export function salvageRemoteRow(
     }
   }
   return { data: second.data as Record<string, unknown>, salvagedFields }
+}
+
+/**
+ * Capability a server advertises in `GET /api/v1/me` → `capabilities[]` when it
+ * honours `source` on `POST /engrams/:id/feedback` (#1310). Contract:
+ * docs/specs/2026-09-29-feedback-source-contract.md.
+ */
+export const FEEDBACK_SOURCE_CAPABILITY = 'feedback.source'
+
+/**
+ * Advertised capabilities per (url, token), for the life of the process
+ * (#1310). Filled by every successful `me()` — session start already calls it
+ * — and consulted by `hasCapability()`, which calls `/me` at most once per
+ * (url, token) when nothing has filled it yet. Never one call per rating.
+ */
+const CAPABILITY_CACHE = new Map<string, Promise<string[]>>()
+
+/** Test seam — forget every cached capability set. */
+export function _resetRemoteCapabilityCache(): void {
+  CAPABILITY_CACHE.clear()
 }
 
 export class RemoteStore {
@@ -329,6 +401,9 @@ export class RemoteStore {
     url: string,
     init: RequestInit,
     consume: (res: Response) => Promise<T>,
+    /** The caller's own budget (#1269). Aborting it cuts the request with a
+     *  {@link RemoteAbortedError}, which does not mark the host down. */
+    callerSignal?: AbortSignal,
   ): Promise<T> {
     // #1069: a network-level failure here MARKS the host down (so the passive
     // read path fast-fails), but this method never fast-fails itself. It
@@ -339,12 +414,19 @@ export class RemoteStore {
     // clean; on failure the mark is refreshed.
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
-    const timedOut = () => new RemoteTimeoutError(url, LOAD_FETCH_TIMEOUT_MS)
+    const timedOut = () => callerSignal?.aborted
+      ? new RemoteAbortedError(url)
+      : new RemoteTimeoutError(url, LOAD_FETCH_TIMEOUT_MS)
+    const onCallerAbort = () => ctrl.abort()
+    if (callerSignal?.aborted) ctrl.abort()
+    else callerSignal?.addEventListener('abort', onCallerAbort, { once: true })
     try {
       let res: Response
       try {
         res = await fetch(url, { ...init, signal: ctrl.signal })
       } catch (err) {
+        // A cut at the CALLER's budget says nothing about the host (#1269).
+        if (callerSignal?.aborted) throw new RemoteAbortedError(url)
         // fetch only throws on network-level failures (and our abort) — an HTTP
         // error status resolves normally — so any throw here marks the host.
         markRemoteHostDown(url)
@@ -372,6 +454,7 @@ export class RemoteStore {
       }
     } finally {
       clearTimeout(timer)
+      callerSignal?.removeEventListener('abort', onCallerAbort)
     }
   }
 
@@ -449,10 +532,16 @@ export class RemoteStore {
    *
    * Throws on a non-2xx response (caller decides whether to swallow per URL).
    */
-  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[] }> {
+  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[]; capabilities: string[] }> {
     const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded)
     if (!r.ok) throw new Error(`Remote /me failed: ${r.status} ${r.text}`)
-    const body = (r.json ?? {}) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[] }>
+    const body = (r.json ?? {}) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[]; capabilities: unknown[] }>
+    // #1310: optional, additive. Older servers omit it → []. Same safe-grammar
+    // filter as scope names: nothing malformed enters from a hostile remote.
+    const capabilities = Array.isArray(body.capabilities)
+      ? body.capabilities.filter((c): c is string => typeof c === 'string' && /^[\w.:-]{1,64}$/.test(c))
+      : []
+    CAPABILITY_CACHE.set(this.capabilityKey(), Promise.resolve(capabilities))
     const scopes = Array.isArray(body.scopes)
       // Validate every /me scope to a safe grammar at the trust boundary:
       //  - #427: a non-string element would later throw in isSharedScope's
@@ -468,6 +557,7 @@ export class RemoteStore {
       org_id:   body.org_id ?? '',
       role:     body.role ?? '',
       scopes,
+      capabilities,
       // #345 D2: self-describing scope metadata served by the enterprise
       // `scopes` table. Validate each entry through the SAME ScopeMetadataSchema
       // the local config path uses — a hostile/old remote can send anything, so
@@ -544,7 +634,19 @@ export class RemoteStore {
           const ctrl = new AbortController()
           const t = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
           try {
-            const r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
+            let r: Response
+            try {
+              r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
+            } catch (err) {
+              // Network-level failure (fetch only throws on those + our abort):
+              // mark the host so sibling stores skip their own timeouts (#1069).
+              markRemoteHostDown(this.url)
+              const msg = (err as Error).name === 'AbortError'
+                ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
+                : (err as Error).message
+              console.error(`[plur:remote-store] ${this.url} load page failed: ${msg}`)
+              break
+            }
             clearRemoteHostDown(this.url) // answered — alive, whatever the status
             if (!r.ok) {
               // 403 (no read access) and 404 (scope doesn't exist) are stable
@@ -559,27 +661,42 @@ export class RemoteStore {
               }
               break
             }
-            const body = await r.json() as { rows: any[]; total_count: number }
+            // The host ANSWERED. From here on nothing marks it down — "HTTP
+            // responses never trip it" (formal R2-CoreB, core-policy#10). An
+            // unreadable or malformed body used to throw into the network
+            // catch, open the breaker for every store on the host and log a
+            // network failure; it now ends pagination as incomplete (prior
+            // cache kept), the same as fetchBounded treats a bad body. A body
+            // stalled past the deadline is reported as the timeout it is,
+            // still without a mark (fetchBounded's rule too).
+            let body: unknown
+            try {
+              body = await r.json()
+            } catch {
+              const why = ctrl.signal.aborted
+                ? `a page body that stalled past ${LOAD_FETCH_TIMEOUT_MS}ms`
+                : 'an unreadable (non-JSON) page body'
+              console.error(`[plur:remote-store] ${this.url} returned ${why} loading scope ${this.scope}`)
+              break
+            }
+            const page = body as { rows?: unknown; total_count?: unknown } | null
+            if (!page || typeof page !== 'object' || !Array.isArray(page.rows)) {
+              console.error(`[plur:remote-store] ${this.url} returned a malformed page (no rows array) loading scope ${this.scope}`)
+              break
+            }
+            const rows = page.rows as any[]
             // Server returns DB rows shaped {id, scope, status, data, created_at, updated_at}
             // — the engram contents live in row.data. Reshape + validate; drop malformed.
-            for (const row of body.rows) {
-              const e = this.reshape(row)
+            for (const row of rows) {
+              const e = row && typeof row === 'object' ? this.reshape(row) : null
               if (e) all.push(e)
             }
-            if (all.length >= body.total_count || body.rows.length < limit) {
+            const total = typeof page.total_count === 'number' ? page.total_count : Infinity
+            if (all.length >= total || rows.length < limit) {
               paginationComplete = true
               break
             }
             offset += limit
-          } catch (err) {
-            // Network-level failure (fetch only throws on those + our abort):
-            // mark the host so sibling stores skip their own timeouts (#1069).
-            markRemoteHostDown(this.url)
-            const msg = (err as Error).name === 'AbortError'
-              ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
-              : (err as Error).message
-            console.error(`[plur:remote-store] ${this.url} load page failed: ${msg}`)
-            break
           } finally {
             clearTimeout(t)
           }
@@ -626,7 +743,10 @@ export class RemoteStore {
    * placeholder will fail — the engram only exists on the server with
    * the server's ID.
    */
-  async appendAndGetServerId(engram: Engram): Promise<{ id: string }> {
+  async appendAndGetServerId(
+    engram: Engram,
+    opts?: { signal?: AbortSignal; idempotencyKey?: string },
+  ): Promise<{ id: string }> {
     // #768: transmit the full engram, not just the core four — pinned,
     // rationale, tags, commitment, validity windows and supersedes were
     // silently dropped, so team-scope pins never round-tripped. Optional
@@ -650,8 +770,19 @@ export class RemoteStore {
     // typed from one the router picked out of `covers`. Omitted when absent, so
     // an engram written by an older path, or replayed from an outbox predating
     // this, sends nothing rather than claiming `explicit` it cannot vouch for.
-    const scope_source = e.structured_data?._scopeSource as string | undefined
+    //
+    // `structured_data` is caller-settable on update, so the value is checked
+    // against the four `ScopeSource` values rather than trusted: anything else
+    // is omitted, the same answer as an engram written before #1221.
+    const rawScopeSource: unknown = e.structured_data?._scopeSource
+    const scope_source = typeof rawScopeSource === 'string' && SCOPE_SOURCES.has(rawScopeSource)
+      ? rawScopeSource
+      : undefined
+    const idempotencyKey = opts?.idempotencyKey
     const body = JSON.stringify({
+      // docs/remote-store-contract.md: the key is also recorded with the row,
+      // so a retry can find what an earlier, cut attempt stored.
+      ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
       statement: e.statement,
       scope:     engram.scope,
       domain:    e.domain,
@@ -705,10 +836,18 @@ export class RemoteStore {
     })
     const r = await this.fetchBounded(`${this.apiBase}/engrams`, {
       method: 'POST',
-      headers: this.headers({ 'Content-Type': 'application/json' }),
+      // Unique per LOGICAL write and stable across that write's retries — a
+      // random UUID the caller mints once and persists (docs/remote-store-
+      // contract.md). NEVER derived from the engram id: that is `__pending__`
+      // on every direct write and a per-day sequence that collides across
+      // machines (2026-09-29 audits). No key, no header.
+      headers: this.headers({
+        'Content-Type': 'application/json',
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+      }),
       body,
-    }, RemoteStore.readBounded)
-    if (!r.ok) throw new Error(`Remote store append failed: ${r.status} ${r.text}`)
+    }, RemoteStore.readBounded, opts?.signal)
+    if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
     const data = (r.json ?? {}) as { id?: unknown }
     // #404: validate the server-assigned id's SHAPE, not just truthiness. It
     // becomes this engram's id (cached, rendered, used as a key), so a non-string,
@@ -854,6 +993,23 @@ export class RemoteStore {
   }
 
   /** Remove → DELETE /api/v1/engrams/:id (server soft-retires). */
+  /**
+   * Retire `id` on the server, idempotently (decision D1, the queued
+   * "retire on remote" entry). `'removed'` on 2xx; `'absent'` on 404/410 —
+   * the row is already gone, which is the goal, so the entry is done. Any
+   * other status throws (the caller keeps the entry queued and retries);
+   * a network failure throws from `fetchBounded` as usual.
+   */
+  async removeIdempotent(id: string): Promise<'removed' | 'absent'> {
+    const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: this.headers(),
+    }, RemoteStore.readBounded)
+    if (r.ok) { this.cache = null; return 'removed' }
+    if (r.status === 404 || r.status === 410) return 'absent'
+    throw new Error(`Remote delete failed: ${r.status} ${r.text}`)
+  }
+
   async remove(id: string): Promise<boolean> {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
@@ -872,14 +1028,41 @@ export class RemoteStore {
    * RemoteStore-specific — no file-backed counterpart.
    * Requires server support: see https://github.com/plur-ai/plur/issues/85
    */
-  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
+  async feedback(
+    id: string,
+    signal: 'positive' | 'negative' | 'neutral',
+    options?: { source?: 'auto' },
+  ): Promise<void> {
+    // #1310: `source` is sent only when set, so an explicit rating's request
+    // body is byte-identical to before. Callers send `source: 'auto'` only to
+    // a server that advertises FEEDBACK_SOURCE_CAPABILITY.
+    const payload = options?.source === 'auto' ? { signal, source: 'auto' } : { signal }
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}/feedback`, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ signal }),
+      body: JSON.stringify(payload),
     }, RemoteStore.readBounded)
     if (!r.ok) throw new Error(`Remote feedback failed: ${r.status} ${r.text}`)
     this.cache = null
+  }
+
+  private capabilityKey(): string {
+    return `${this.apiBase}::${this.token}`
+  }
+
+  /**
+   * Does the server advertise `name` in `/me` → `capabilities`? Cached per
+   * (url, token) for the process; a failed `/me` reads as "no" and is cached
+   * too, so an unreachable host costs one bounded attempt, not one per call.
+   */
+  async hasCapability(name: string): Promise<boolean> {
+    const key = this.capabilityKey()
+    let pending = CAPABILITY_CACHE.get(key)
+    if (!pending) {
+      pending = this.me().then(m => m.capabilities, () => [] as string[])
+      CAPABILITY_CACHE.set(key, pending)
+    }
+    return (await pending).includes(name)
   }
 
   async count(filter?: { status?: string }): Promise<number> {

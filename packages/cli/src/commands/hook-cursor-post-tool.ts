@@ -1,12 +1,13 @@
-import { existsSync, writeFileSync, statSync } from 'fs'
+import { statSync } from 'fs'
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
 import {
   readStdinJson,
   cursorConversationId,
   isPlurSessionStartTool,
-  sentinelPath,
   lastReminderPath,
+  isSessionStarted,
+  touchReminder,
   markSessionStarted,
   writeContextRule,
 } from '../lib/cursor-hook-io.js'
@@ -69,10 +70,10 @@ function isReminderDue(conversationId: string): boolean {
   }
 }
 
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
-  if (!isPlurConfigured()) return
-
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
+  // Silent unless the folder map says on (#1347).
+  if (!hookFolderOn(payloadDir(input), flags)) return
   const conversationId = cursorConversationId(input)
   if (!conversationId) return
 
@@ -83,10 +84,10 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
     return
   }
 
-  if (!existsSync(sentinelPath(conversationId))) return // session not started — nothing to remind about yet
+  if (!isSessionStarted(conversationId)) return // session not started — nothing to remind about yet
   if (!isReminderDue(conversationId)) return
 
-  writeFileSync(lastReminderPath(conversationId), String(Date.now()))
+  touchReminder(conversationId)
   writeContextRule(REMINDER_TEXT, cursorReminderRulePath())
   process.stdout.write(JSON.stringify({ additional_context: REMINDER_TEXT }))
 }

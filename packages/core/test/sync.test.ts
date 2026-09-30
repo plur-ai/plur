@@ -20,7 +20,7 @@ describe('sync', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-sync-'))
     // Create a minimal PLUR directory with an engrams file
-    writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-001\n  statement: test\n')
+    writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\n  - id: ENG-001\n    statement: test\n')
   })
 
   afterEach(() => {
@@ -45,7 +45,7 @@ describe('sync', () => {
 
     it('detects dirty state', () => {
       sync(dir)
-      writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-002\n  statement: new\n')
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\n  - id: ENG-002\n    statement: new\n')
       const status = getSyncStatus(dir)
       expect(status.dirty).toBe(true)
     })
@@ -107,7 +107,7 @@ describe('sync', () => {
       git('commit -m "legacy commit with secret"', dir)
       expect(git('ls-files', dir).split('\n')).toContain('config.yaml')
       // The fixed sync untracks it (stops the bleeding; history purge is operational).
-      writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-002\n  statement: new\n')
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\n  - id: ENG-002\n    statement: new\n')
       sync(dir)
       expect(git('ls-files', dir).split('\n')).not.toContain('config.yaml')
     })
@@ -120,7 +120,7 @@ describe('sync', () => {
       git('add -A -f', dir)
       git('commit -m "legacy commit with keystore"', dir)
       expect(git('ls-files', dir).split('\n')).toContain('agent-keystore.json')
-      writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-003\n  statement: new\n')
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\n  - id: ENG-003\n    statement: new\n')
       sync(dir)
       expect(git('ls-files', dir).split('\n')).not.toContain('agent-keystore.json')
     })
@@ -182,7 +182,7 @@ describe('sync', () => {
   describe('local commits', () => {
     it('commits new changes on subsequent sync', async () => {
       sync(dir)
-      writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-001\n  statement: updated\n')
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\n  - id: ENG-001\n    statement: updated\n')
       const result = await sync(dir)
       expect(result.action).toBe('committed')
       expect(result.files_changed).toBe(1)
@@ -226,7 +226,7 @@ describe('sync', () => {
 
     it('pushes new commits to remote', async () => {
       sync(dir, bareRemote)
-      writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-002\n  statement: new\n')
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\n  - id: ENG-002\n    statement: new\n')
       const result = await sync(dir)
       expect(result.action).toBe('synced')
       // Verify remote has 2 commits
@@ -258,7 +258,7 @@ describe('sync', () => {
       execSync(`git clone ${bareRemote} .`, { cwd: dir2 })
 
       // Modify different files on each side
-      writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-LOCAL\n  statement: local change\n')
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\n  - id: ENG-LOCAL\n    statement: local change\n')
       writeFileSync(join(dir2, 'episodes.yaml'), '- id: EP-REMOTE\n  summary: remote change\n')
       git('add -A', dir2)
       git('commit -m "remote side"', dir2)

@@ -1,0 +1,157 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`plur init on darwin/linux output is unchanged (#1267) > hook commands match the pre-#1267 snapshot 1`] = `
+"{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-session-remind",
+          "timeout": 3
+        }
+      ]
+    },
+    {
+      "matcher": "compact",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-inject --rehydrate",
+          "timeout": 20
+        }
+      ]
+    }
+  ],
+  "SessionEnd": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-session-end",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-session-guard",
+          "timeout": 3
+        }
+      ]
+    },
+    {
+      "matcher": "EnterPlanMode",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-inject --event plan_mode",
+          "timeout": 10
+        }
+      ]
+    },
+    {
+      "matcher": "Skill",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-inject --event skill",
+          "timeout": 10
+        }
+      ]
+    },
+    {
+      "matcher": "Agent",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-inject --event agent",
+          "timeout": 10
+        }
+      ]
+    },
+    {
+      "matcher": "Bash|Edit|Write|Agent",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-observe",
+          "timeout": 3
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "mcp__.*__plur_session_start",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-session-mark",
+          "timeout": 3
+        }
+      ]
+    },
+    {
+      "matcher": "Bash|Edit|Write|Agent",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-observe --post",
+          "timeout": 3
+        }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-inject",
+          "timeout": 20
+        }
+      ]
+    }
+  ],
+  "SubagentStart": [
+    {
+      "matcher": ".*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-inject --event subagent",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-learn-check",
+          "timeout": 2
+        }
+      ]
+    },
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "<HOME>/.plur/bin/plur-hook hook-auto-rate claude",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}"
+`;

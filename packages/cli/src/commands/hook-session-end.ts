@@ -3,7 +3,11 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { createPlur } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { safeSessionKey, hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js'
+import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
+import { removeSessionTask } from '../lib/session-task.js'
+import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
+import { endFolderNonceSession } from '@plur-ai/core'
 
 /**
  * plur hook-session-end — Claude Code SessionEnd hook (shipped v1.0.85).
@@ -30,22 +34,40 @@ import { isPlurConfigured } from '../lib/plur-configured.js'
  * If the checkpoint is absent, plur_session_end already ran (clean close) or
  * the session was too short to checkpoint — either way there is nothing to do.
  *
+ * It also retries queued team writes (the outbox, #1269), within a bounded
+ * budget, on every exit path — including the clean-close one, where there is
+ * no checkpoint to act on.
+ *
  * Input: JSON on stdin (Claude Code SessionEnd hook format: session_id, cwd,
  *        reason). Never blocks; SessionEnd output is advisory.
  */
 
 function sessionKeys(payloadSessionId?: string): string[] {
   // Mirror plur_session_end's key resolution (tools.ts): payload session_id
-  // first, then CLAUDE_SESSION_ID, then ppid — sanitized the same way as
-  // hook-learn-check writes them.
-  return [payloadSessionId, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
+  // first, then CLAUDE_SESSION_ID, then ppid. hook-learn-check writes the
+  // checkpoint under safeSessionKey(id), which REPLACES unsafe characters with
+  // '_' — try that form first, then the stripped form older writers used
+  // (#1278 follow-up; #1301 fixed the same mismatch in plur_session_end).
+  //
+  // Owner decision H1 ("payload"): the writer's key is hookSessionKey; the
+  // shared legacyHookSessionKeys adds the forms older writers used (main's and
+  // #1228's env-first stripped key, including its 'default'). The
+  // per-candidate forms below stay as a superset so no key this reader
+  // accepted before is dropped.
+  const perCandidate = [payloadSessionId, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
     .filter(Boolean)
-    .map(k => k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+    .flatMap(k => [
+      safeSessionKey(k!).slice(0, 64),
+      k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64),
+    ])
+  return [...new Set([hookSessionKey(payloadSessionId), ...legacyHookSessionKeys(payloadSessionId), ...perCandidate])]
     .filter(Boolean)
 }
 
 function plurPath(flags: GlobalFlags): string {
-  return flags.path ?? process.env.PLUR_PATH ?? join(homedir(), '.plur')
+  // `||`, as createPlur and the checkpoint writer resolve it (cli#6): an
+  // empty PLUR_PATH means "unset" everywhere, not "the current directory".
+  return flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
 }
 
 function readStdinRaw(): string {
@@ -68,18 +90,35 @@ function readStdinRaw(): string {
 }
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
-  // Silent pass-through for projects without plur configured (#247) — lets the
-  // hook be installed globally without touching unrelated projects.
-  if (!isPlurConfigured()) return
+  // Silent unless the folder map says on (#1347; was #247's project gate).
+  // #1269: the outbox flush runs after the close, never instead of it — the
+  // checkpoint work is the cheaper, more important half.
+  if (!(await closeSession(flags))) return
+  await flushOutboxForHook(flags, { hook: 'hook-session-end', budgetMs: HOOK_OUTBOX_BUDGET_MS.claudeSessionEnd })
+}
 
+/** Close the session's checkpoint. False when the folder map says the hook stays silent. */
+async function closeSession(flags: GlobalFlags): Promise<boolean> {
   const raw = readStdinRaw()
   let payload: { session_id?: string; cwd?: string; reason?: string } = {}
   try {
     payload = JSON.parse(raw)
   } catch { /* fall back to env-derived keys */ }
 
+  // The hook-inject rehydrate query is a copy of the user's latest prompt;
+  // it has no use once the session is over.
+  removeSessionTask(payload.session_id)
+
+  // #1347: the ask flow's nonces for this session expire with it, whatever
+  // the folder's mode. Only removes this session's own nonce file.
+  if (payload.session_id) try { endFolderNonceSession(plurPath(flags), payload.session_id) } catch { /* best-effort */ }
+
+  // Nothing is captured unless the folder map says on (#1347; was #247's
+  // project gate).
+  if (!hookFolderOn(payloadDir(payload as Record<string, unknown>), flags)) return false
+
   const sessionsDir = join(plurPath(flags), 'sessions')
-  if (!existsSync(sessionsDir)) return
+  if (!existsSync(sessionsDir)) return true
 
   // Locate this session's checkpoint. Presence means plur_session_end did NOT
   // run (it unlinks the checkpoint), so we auto-close.
@@ -102,14 +141,14 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         // session's checkpoint was indistinguishable from corruption. Leave it
         // in place and stop — the next session_start's deferred wrap-up (#216)
         // can still find it, and nothing is captured from unparseable content.
-        return
+        return true
       }
     }
   }
 
   // No checkpoint → clean close already happened, or session too short. Nothing
   // to close.
-  if (!checkpointPath || !checkpoint) return
+  if (!checkpointPath || !checkpoint) return true
 
   // Build a conservative, metadata-only summary — the same information the
   // deferred wrap-up (#216) reports, but captured as a durable episode.
@@ -167,4 +206,5 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // Ensure the sessions dir still exists for subsequent sessions (defensive —
   // capture may create the plur root lazily).
   try { mkdirSync(sessionsDir, { recursive: true }) } catch {}
+  return true
 }

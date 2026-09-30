@@ -5,6 +5,8 @@ import { createHash } from 'crypto'
 
 export interface HistoryEvent {
   event: 'engram_created' | 'engram_updated' | 'engram_merged' | 'feedback_received' | 'engram_retired' | 'engram_decremented' | 'engram_promoted' | 'engram_rescoped' | 'failure_reported' | 'procedure_evolved' | 'recurrence_detected' | 'contradiction_detected' | 'scope_promoted' | 'buffer_pruned' | 'weekly_review' | 'engram_route_failed' | 'co_injection' | 'injection_outcome' | 'session_scope_changed' | 'dedup_near_duplicate' | 'engram_duplicate_absorbed'
+    /** A later copy of a clashing id was given a fresh id (owner decision P1/P1b, 2026-09-27). `engram_id` is the NEW id; `data.from` the old one. */
+    | 'engram_rekeyed'
   /**
    * Engram this event belongs to. Session-level events
    * (`session_scope_changed`) carry no engram — they use `''`, which by
@@ -111,6 +113,42 @@ export function appendHistory(root: string, event: HistoryEvent): boolean {
   }
 }
 
+/**
+ * Append several events with one write and one fsync per month file — the same
+ * contract as {@link appendHistory} (best-effort, never throws), for callers
+ * that record many events at once. Recording 300 duplicate-id renames one
+ * fsync at a time took ~2.5 s (audit of #1228, finding 2).
+ */
+export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]): boolean {
+  const byMonth = new Map<string, string[]>()
+  for (const ev of events) {
+    const m = ev.timestamp.slice(0, 7)
+    byMonth.set(m, [...(byMonth.get(m) ?? []), JSON.stringify(ev) + '\n'])
+  }
+  let ok = true
+  for (const [month, lines] of byMonth) {
+    const historyDir = join(root, 'history')
+    const filePath = join(historyDir, `${month}.jsonl`)
+    try {
+      if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true })
+      const fd = fs.openSync(filePath, 'a')
+      try {
+        fs.writeSync(fd, lines.join(''))
+        try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
+      } finally {
+        fs.closeSync(fd)
+      }
+    } catch (err) {
+      ok = false
+      if (!warnedHistoryPaths.has(filePath)) {
+        warnedHistoryPaths.add(filePath)
+        logger.warning(`[plur] history could not be written to ${filePath}: ${(err as Error).message}. The operation itself succeeded.`)
+      }
+    }
+  }
+  return ok
+}
+
 /** Warn once per path — this is on the hot write path; a broken log must not
  *  also become a log flood. */
 const warnedHistoryPaths = new Set<string>()
@@ -206,6 +244,32 @@ export function readHistoryForEngram(root: string, engramId: string): HistoryEve
     }
   }
   return events
+}
+
+/**
+ * Every `engram_rekeyed` rename already in the log, as `from\0to` keys — ONE
+ * pass over all months, for any number of renames (audit of #1228, finding 2:
+ * a `readHistoryForEngram` per rename re-read the whole log each time, so 300
+ * renames against a 29 MB log took minutes). Lines that cannot be a rekey are
+ * skipped before JSON.parse, so the pass costs little more than the read.
+ */
+export function readRekeyedPairs(root: string): Set<string> {
+  const out = new Set<string>()
+  const historyDir = join(root, 'history')
+  for (const month of listHistoryMonths(root)) {
+    let content: string
+    try { content = fs.readFileSync(join(historyDir, `${month}.jsonl`), 'utf8') } catch { continue }
+    if (!content.includes('engram_rekeyed')) continue
+    for (const line of content.split('\n')) {
+      if (!line.includes('engram_rekeyed')) continue
+      try {
+        const ev = JSON.parse(line) as HistoryEvent
+        const from = (ev.data as { from?: unknown } | undefined)?.from
+        if (ev.event === 'engram_rekeyed' && typeof from === 'string') out.add(`${from}\0${ev.engram_id}`)
+      } catch { /* malformed line: skip, as readHistory does */ }
+    }
+  }
+  return out
 }
 
 // Per-process 2-char salt (PID mod 1296, base36) prevents cross-process

@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
-import { join } from 'path'
+import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, renderProvenanceSummary, type LearnContext } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, formatLayer3, renderProvenanceSummary, describeNeedsAction, summarizeOutbox, type LearnContext, type OutboxSummary } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -121,8 +121,10 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       remote_timeout_ms: 2000, // MCP recall remote budget (#776)
       // #243: session default scope (incl. mid-session plur_session_scope
       // changes) establishes the remote dialing org context when no explicit
-      // scope filter is passed.
-      session: _resolveInjectionSession(args),
+      // scope filter is passed. Same rule as writes (E7, formal R2): not
+      // exactly one open session and no id → NO_SESSION, never the process
+      // slot the last-started session owns.
+      session: _resolveWriteSession(args),
     })
     const response: Record<string, unknown> = {
       results: results.map(e => {
@@ -176,8 +178,8 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     remote_timeout_ms: 2000, // MCP recall remote budget (#776)
     // #243: session default scope (incl. mid-session plur_session_scope
     // changes) establishes the remote dialing org context when no explicit
-    // scope filter is passed.
-    session: _resolveInjectionSession(args),
+    // scope filter is passed. Same rule as writes (E7, formal R2).
+    session: _resolveWriteSession(args),
   })
   // Opt-in, content-free engagement counter (default-off; no query text).
   recordTelemetry('recall')
@@ -293,19 +295,22 @@ function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
           return val
         }
       }
-      // The comma-separated fallback must also cover union item schemas that
-      // ACCEPT a bare string, not just `items: {type: 'string'}`. Before this,
-      // `engram_suggestions` — whose items are
-      // `anyOf: [{type:'string'}, {type:'object'}]` (#231) — failed the check
-      // and fell through to `return val`, so the very workaround the #297
-      // error message advertises did not work for it.
+      // A bare string for an array param. Two item shapes, two rules:
+      //  - `items: {type: 'string'}` (tag-like lists: `tags`, …): split on
+      //    commas — the #297 workaround, `tags: "a, b"`.
+      //  - union items that ACCEPT a string (`anyOf`/`oneOf`, today only
+      //    `engram_suggestions`, #231): each item is a free-text statement, so
+      //    the string is ONE item, `[string]`. Comma-splitting turned
+      //    "Use pnpm, not npm" into two engrams, one of them the inverted
+      //    "not npm" (decision S2, 2026-09-26). Several items still arrive as a
+      //    JSON-stringified array (handled above).
       const items = prop.items as any
       const itemVariants = (items?.anyOf as any[] | undefined) ?? (items?.oneOf as any[] | undefined)
-      const itemsAcceptString = items?.type === 'string'
-        || (Array.isArray(itemVariants) && itemVariants.some((v: any) => v?.type === 'string'))
-
-      if (itemsAcceptString) {
+      if (items?.type === 'string') {
         return trimmed.length === 0 ? [] : trimmed.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0)
+      }
+      if (Array.isArray(itemVariants) && itemVariants.some((v: any) => v?.type === 'string')) {
+        return trimmed.length === 0 ? [] : [trimmed]
       }
       return val
     }, z.array(itemSchema))
@@ -420,7 +425,8 @@ export function validateToolArgs(
         (hasArrayParam
           ? ' If retries keep failing specifically on array parameters, pass them as a JSON string ' +
             '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server ' +
-            'coerces both back into arrays.'
+            'coerces both back into arrays. (A list of free-text statements such as engram_suggestions ' +
+            'is not comma-split: send it as a JSON string; a bare string is one item.)'
           : '')
     } else if (arrayShapedDrop) {
       dropHint = ' Known client-side bug (plur-ai/plur#297): some MCP clients drop ' +
@@ -429,7 +435,8 @@ export function validateToolArgs(
         `succeeds with a shorter payload, so shrink the other fields (e.g. a briefer summary) as well. ` +
         'Retry passing array parameters as a JSON string ' +
         '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server coerces ' +
-        'both back into arrays.'
+        'both back into arrays. (A list of free-text statements such as engram_suggestions is not ' +
+        'comma-split: send it as a JSON string; a bare string is one item.)'
     }
 
     const receivedNote = receivedFields.length > 0
@@ -612,17 +619,31 @@ const _sessionTelemetry = new Map<string, SessionTelemetry>()
 /** TTL for unclosed sessions: 8 hours. Prevents unbounded memory if session_end is never called. */
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000
 
+/**
+ * Expired sessions whose telemetry an id-only sweep already dropped, but whose
+ * keyed scope registration it could not clear (no Plur in hand). The next
+ * plur-bearing sweep clears them. Without this the old comment's promise —
+ * "cleared on the next plur-bearing sweep" — was false: that sweep iterates
+ * `_sessionTelemetry`, where the id no longer is, so the registration leaked
+ * for the life of the process (formal Adapters #2).
+ */
+const _pendingScopeEvictions = new Set<string>()
+
 function _cleanExpiredSessions(plur?: Plur): void {
   const cutoff = Date.now() - SESSION_TTL_MS
   for (const [id, state] of _sessionTelemetry) {
     if (new Date(state.started_at).getTime() < cutoff) {
       _sessionTelemetry.delete(id)
-      // #243: evict the expired session's keyed scope registration alongside
-      // its telemetry (only when a caller with a Plur instance triggered the
-      // sweep — the id-only helpers pass nothing and the entry is cleared on
-      // the next plur-bearing sweep or session_end).
-      try { plur?.clearSessionScope({ session: id }) } catch { /* best-effort */ }
+      _pendingScopeEvictions.add(id)
     }
+  }
+  // #243: evict expired sessions' keyed scope registrations alongside their
+  // telemetry — including ones an earlier id-only sweep expired.
+  if (plur) {
+    for (const id of _pendingScopeEvictions) {
+      try { plur.clearSessionScope({ session: id }) } catch { /* best-effort */ }
+    }
+    _pendingScopeEvictions.clear()
   }
 }
 
@@ -661,6 +682,122 @@ function _implicitSessionId(): string | undefined {
  */
 export function _resetSessionTelemetry(): void {
   _sessionTelemetry.clear()
+  _pendingScopeEvictions.clear()
+}
+
+/**
+ * The dedup decision a single-write entry point reports. `learn()` /
+ * `learnRouted()` return the EXISTING engram, with `write_count` incremented,
+ * when the write was absorbed as a duplicate; a fresh engram has write_count 1
+ * (or none). Mirrors plur_learn_batch's `NOOP` + `existing_id`.
+ */
+function learnDecision(engram: { id: string; write_count?: number }): { decision: 'ADD' } | { decision: 'NOOP'; existing_id: string } {
+  return (engram.write_count ?? 1) > 1 ? { decision: 'NOOP', existing_id: engram.id } : { decision: 'ADD' }
+}
+
+/**
+ * The `.plur.yaml` scope/domain this server may adopt (decision E3, 2026-09-26).
+ *
+ * A project config is honoured only from a directory the user trusted with
+ * `plur trust <dir>` — @plur-ai/opencode's `resolveTrustedScope` rule, now the
+ * rule of every adapter. A cloned repo's `scope: group:acme/eng` used to
+ * become the session default, so an unscoped personal note landed in a team
+ * scope (formal Adapters §9, replayed). Trust is checked against the directory
+ * the FILE is in, from the same single read whose fields are adopted, and
+ * fails closed. An ignored file yields `warning` (naming the file and the
+ * trust command), which session_start surfaces; it is also written to stderr
+ * once per file per process.
+ */
+const _warnedUntrustedConfigs = new Set<string>()
+
+/**
+ * What a not-yet-stored pinned engram will cost in the pinned set, in tokens —
+ * for plur_learn_batch's per-item quota walk (audit 1228-c #2). The engram
+ * does not exist yet, so this renders the fields it will carry the way core's
+ * `estimateTokens` does (layer 3, with its field-sum floor) under a
+ * placeholder id of a real id's width. An estimate: enough to stop a batch
+ * from claiming the same free room five times, not an exact pre-check.
+ */
+function _estimatePinnedCost(
+  statement: string,
+  ctx: { domain?: string; rationale?: string; commitment?: unknown },
+): number {
+  const id = 'ENG-0000-0000-000'
+  const text = String(statement ?? '')
+  const commitment = typeof ctx.commitment === 'string' ? ctx.commitment : undefined
+  let rendered = 0
+  try {
+    rendered = formatLayer3({ id, statement: text, domain: ctx.domain, rationale: ctx.rationale, commitment, confidence_score: 0 } as never).length + 1
+  } catch { /* fall back to the field sum */ }
+  const fieldSum = id.length + 4 + text.length +
+    (ctx.rationale ? 15 + ctx.rationale.length : 0) +
+    (ctx.domain ? ctx.domain.length + 10 : 0) + (commitment ? commitment.length + 14 : 0) + 23
+  return Math.ceil(Math.max(rendered, fieldSum) / 4)
+}
+
+/** Quote a shell word only when it needs it. */
+function _shellWord(s: string): string {
+  return /^[A-Za-z0-9_@%+=:,./~-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The trust command the warning names (audit 1228-c #1). The server checks
+ * `<its store root>/trust.yaml`; a bare `plur trust <dir>` writes the store the
+ * user's SHELL resolves (`PLUR_PATH` or `~/.plur`), which is not this one when
+ * the MCP config gives the server its own `PLUR_PATH` — the grant landed
+ * where the server never looked and the warning repeated. A non-default store
+ * is therefore named with `--path`.
+ */
+export function trustCommand(dir: string | null, storageRoot?: string): string {
+  const target = dir === null ? '<dir>' : _shellWord(dir)
+  if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur trust ${target}`
+  return `plur --path ${_shellWord(storageRoot)} trust ${target}`
+}
+
+export function readTrustedProjectConfig(
+  trust: { isDirectoryTrusted(dir: string): boolean; readonly storageRoot?: string },
+): { scope?: string; domain?: string; warning?: string } {
+  const configPath = findProjectConfigPath()
+  const raw = readProjectConfigFromPath(configPath)
+  if (!raw.scope && !raw.domain) return {}
+  const configDir = configPath ? dirname(configPath) : null
+  let trusted = false
+  try {
+    trusted = configDir !== null && trust.isDirectoryTrusted(configDir)
+  } catch {
+    trusted = false
+  }
+  if (trusted) return { scope: raw.scope, domain: raw.domain }
+  const declared = [
+    raw.scope ? `scope "${raw.scope}"` : null,
+    raw.domain ? `domain "${raw.domain}"` : null,
+  ].filter(Boolean).join(' / ')
+  const warning =
+    `${configPath ?? '.plur.yaml'} declares ${declared}, but ${configDir ?? 'its directory'} is not a trusted ` +
+    `directory — ignoring it and using the local default scope instead. If this project is yours, run: ` +
+    trustCommand(configDir, trust.storageRoot)
+  if (configPath && !_warnedUntrustedConfigs.has(configPath)) {
+    _warnedUntrustedConfigs.add(configPath)
+    try { process.stderr.write(`[plur] ${warning}\n`) } catch { /* never fail a tool over a log line */ }
+  }
+  return { warning }
+}
+
+/**
+ * Why an auto-route candidate was refused, in words (formal R2 follow-up).
+ * Core refuses two kinds alike (`refusedShared`): a SHARED scope (#1115), and a
+ * PERSONAL scope backed by a remote store that is not verifiably the user's own
+ * `/me` namespace (decision E1 "me-only"). Calling the second "shared" misled
+ * the caller about what the scope is and what passing it explicitly would do.
+ */
+function describeRefusedRoute(scope: string): { kind: 'shared' | 'remote-personal'; what: string; rule: string } {
+  return isSharedScope(scope)
+    ? { kind: 'shared', what: `the shared scope "${scope}"`, rule: 'unscoped writes are never auto-routed into a shared store' }
+    : {
+        kind: 'remote-personal',
+        what: `"${scope}", a personal scope on a remote store that is not verified as your own namespace (its /me identity is unknown or belongs to another user)`,
+        rule: 'unscoped writes are never auto-routed into a remote personal namespace that is not verifiably yours',
+      }
 }
 
 /** Resolve the session for an injection: explicit argument first, then implicit. */
@@ -668,6 +805,28 @@ function _resolveInjectionSession(args: Record<string, unknown>): string | undef
   const explicit = args.session_id
   if (typeof explicit === 'string' && explicit.length > 0) return explicit
   return _implicitSessionId()
+}
+
+/** plur_session_scope's note when no session is open (decision E7). */
+const NO_SESSION_SLOT_WARNING =
+  'No session is open, so this is the process-default slot. An id-less plur_learn / plur_inject / plur_recall uses ' +
+  'NO session default unless exactly one session is open, so this slot governs neither writes nor the recall ' +
+  'dialing context. Call plur_session_start (then plur_session_scope with its session_id) to scope a session.'
+
+/**
+ * The session a WRITE or INJECT passes to core (decision E7, 2026-09-26).
+ *
+ * Explicit `session_id` first, else the lone open session — the same as
+ * `_resolveInjectionSession`. When neither resolves (no id, and zero or several
+ * sessions open) this returns core's `NO_SESSION` instead of `undefined`:
+ * `undefined` made core fall back to the process-default slot, which holds the
+ * default of whichever session STARTED LAST — possibly a team scope — so an
+ * id-less write from one session landed in another's scope (formal Adapters
+ * §2c, replayed). With `NO_SESSION` no session default applies and the write
+ * takes the unscoped path (auto-route / `unscoped_default`).
+ */
+function _resolveWriteSession(args: Record<string, unknown>): string {
+  return _resolveInjectionSession(args) ?? NO_SESSION
 }
 
 /**
@@ -743,6 +902,15 @@ export type ToolProfile = 'full' | 'lean' | 'cursor'
 // `destructiveHint: true` and points at the direct tool. Two more core
 // tools (11 total) is still far under the ~40-tool cap, so there's no
 // budget reason to wrap them either.
+//
+// Owner decision I_tensions_resolve (formal R2, 2026-09-27): "every removal
+// needs an explicit, gated act". Every tool that can RETIRE or DELETE memory
+// is `destructiveHint: true` and therefore listed here: plur_forget,
+// plur_packs_uninstall, plur_tensions_purge, plur_tensions (action:"resolve"
+// retires the losing engram — exactly forget's effect) and plur_validate_meta
+// (a third failed validation retires a non-top meta-engram). 13 core tools +
+// plur_admin = 14 exposed. plur_rescope is deliberately NOT here: a rescope
+// always leaves a copy, so it is a move, not a removal (see its annotation).
 // Exported (audit fix — evaluator review, iteration 2, 2026-07-09) so
 // server.ts's plur://guide resource can build its cursor-profile redirect
 // note FROM this set instead of hardcoding a second, independent copy of
@@ -761,6 +929,8 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_doctor',
   'plur_packs_uninstall',
   'plur_tensions_purge',
+  'plur_tensions',
+  'plur_validate_meta',
 ])
 
 /**
@@ -892,7 +1062,8 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
         // which dispatched tool rejected the args, but keep the #297 hint,
         // received_fields, and _isError marker intact (audit fix — see
         // validateToolArgs's docstring).
-        return { ...validated.errorPayload, error: `${action}: ${validated.errorPayload.error}` }
+        const inner = String(validated.errorPayload.error)
+        return { ...validated.errorPayload, error: inner.startsWith(`${action}:`) ? inner : `${action}: ${inner}` }
       }
       try {
         return await target.handler(validated.data, plur)
@@ -904,8 +1075,10 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
         // so without this the log can never say which of the ~31 wrapped
         // operations actually broke. Prefixing the action name here means
         // it survives into that log message even though the tool name doesn't.
+        // Once: a handler whose own messages already name it (plur_session_scope
+        // does) read "plur_session_scope: plur_session_scope: …" (audit 1228-c #7).
         const message = (err as Error)?.message ?? String(err)
-        throw new Error(`${action}: ${message}`)
+        throw new Error(message.startsWith(`${action}:`) ? message : `${action}: ${message}`)
       }
     },
   }
@@ -923,7 +1096,7 @@ export function resolveToolProfile(env: NodeJS.ProcessEnv = process.env): ToolPr
  * `createServer` takes an explicit `profile` option, so the environment is not
  * the authority — `createServer(plur, { profile: 'full' })` with no env var set
  * exposes 41 tools while `resolveToolProfile()` still says `lean`. Reporting
- * the env-derived value would make plur_doctor describe a 12-tool surface to a
+ * the env-derived value would make plur_doctor describe a 14-tool surface to a
  * client looking at 41: confidently wrong, in the one field the client has no
  * way to check. Left unset it falls back to the environment, which is right for
  * anything that has not gone through `createServer`.
@@ -986,7 +1159,7 @@ export function describeToolSurface(profile: ToolProfile = activeToolProfile()):
 export function getToolDefinitions(profile: ToolProfile = 'lean'): ToolDefinition[] {
   const all = getAllToolDefinitions()
   if (profile === 'full') return all
-  // 'lean' and 'cursor' are identical: 11 core tools + plur_admin dispatch (12 exposed)
+  // 'lean' and 'cursor' are identical: 13 core tools + plur_admin dispatch (14 exposed)
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
 }
@@ -1050,7 +1223,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date (#347)' },
           valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires — inject/recall skip the engram after this date. Set this for any time-bound fact (offers, deadlines, temporary endpoints). When omitted, an explicit expiry phrase in the statement ("valid until 31 May 2026") is auto-parsed and echoed back (#347)' },
           supersedes: { type: 'array', items: { type: 'string' }, description: 'Engram IDs this statement intentionally replaces (#240). Writes relations.supersedes on the new engram and the reverse superseded_by edge on each local target. Supersedes-linked pairs are skipped by tension scans — an intentional update is not a contradiction. Use when updating a standing fact (new version, changed rule) rather than contradicting it.' },
-          session_id: { type: 'string', description: 'Session this write belongs to (from plur_session_start). Resolves the session default scope (incl. mid-session plur_session_scope changes) when no explicit scope is passed. Optional when one session is open; pass it when several are (#243).' },
+          session_id: { type: 'string', description: 'Session this write belongs to (from plur_session_start). Resolves the session default scope (incl. mid-session plur_session_scope changes) when no explicit scope is passed. Optional when one session is open. With none or several open and no session_id, NO session default applies: the write takes the unscoped path (#243, E7).' },
           measured_under: {
             type: 'object',
             description: 'Measurement context for numeric or benchmark-derived claims (#869). Records the conditions under which the asserted value was measured — model, source_type, hardware, dataset, date. When present, the tension scanner does not treat two measurements from the same store taken under different configurations as a contradiction (the skipped pair is reported in the scan result). Omit for non-numeric engrams.',
@@ -1117,7 +1290,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: 'string',
             enum: ['private', 'public', 'template'],
             description:
-              'Whether this memory may leave this machine. Defaults to "private", which means it is EXCLUDED from every exported pack. Set "public" only when the user has said this is shareable with others — it is their decision, not yours. Without this an agent cannot mark anything shareable at all, so every memory it writes is private forever and any pack built from them is empty.',
+              'Who this memory is shared with beyond its scope. Defaults to "private": EXCLUDED from every exported pack and from shared git sync. The default does NOT keep a team-scope write on this machine — with visibility omitted, a write whose scope is a team store (e.g. group:acme/eng) still goes to that team store. Only an EXPLICIT "private" keeps such a write local (stored here with a warning, never sent to the team store). Set "public" only when the user has said this is shareable with others — it is their decision, not yours. Without "public" nothing an agent writes can appear in a pack.',
           },
         },
         required: ['statement'],
@@ -1140,7 +1313,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // hierarchy segment as a FULL term hit, double the weight of a
           // statement word, so a missing domain forfeits the strongest
           // retrieval signal an author has. Explicit argument always wins.
-          domain: (args.domain as string | undefined) ?? readProjectConfig().domain ?? undefined,
+          domain: (args.domain as string | undefined) ?? readTrustedProjectConfig(plur).domain ?? undefined,
           source: args.source as string | undefined,
           tags: args.tags as string[] | undefined,
           rationale: args.rationale as string | undefined,
@@ -1165,7 +1338,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // explicit session_id first, else the lone open session. Never
           // persisted on the engram (LearnContext.session selects a scope, it
           // is not part of one).
-          session: _resolveInjectionSession(args),
+          session: _resolveWriteSession(args),
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -1271,6 +1444,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         try {
           const engram = await plur.learnRouted(statement, context)
+          // #1264: where the engram went. Read off the returned object before
+          // anything copies it — a copy loses the remote-confirmed evidence.
+          const delivered = plur.deliveryOf(engram, context?.scope)
           const isOutbox = !!(engram as any).structured_data?._outbox
           const demoted = (engram as any).structured_data?._demoted as { from: string; to: string; patterns: string } | undefined
           const routed = (engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
@@ -1328,7 +1504,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
             pinned: (engram as any).pinned === true,
             // See the note on recall results: same fact, not same record.
             content_hash: (engram as { content_hash?: string }).content_hash,
-            decision: 'ADD',
+            // An absorbed duplicate (content-hash or cross-scope recurrence)
+            // hands back the EXISTING engram with write_count bumped; reporting
+            // it as 'ADD' told the caller a new memory exists when none was
+            // written. Same vocabulary as plur_learn_batch (formal Adapters #1).
+            ...learnDecision(engram),
+            // #1264: always present. The warning sits BEFORE the others so a
+            // more specific `warning` below (outbox, demotion, refusal) still
+            // wins that key; `delivery_warning` keeps this one either way.
+            delivery: delivered.delivery,
+            ...(delivered.warning ? { delivery_warning: delivered.warning, warning: delivered.warning } : {}),
             ...(dedup?.near_duplicates?.length ? { dedup } : {}),
             ...(redraft ? { redraft } : {}),
             ...(() => { const c = composeHints(statement, context?.rationale, context?.source); return c ? { composition: c } : {} })(),
@@ -1343,12 +1528,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // outcome proved easy to miss in a long session — and this one
             // changes what the caller should do next, rather than merely
             // reporting where the write went.
-            ...(routeRefused ? { route_refused: { scope: routeRefused.scope, confidence: routeRefused.confidence, reason: routeRefused.reason }, warning: `No scope was provided. This content matched the shared scope "${routeRefused.scope}" (confidence ${routeRefused.confidence}), but unscoped writes are never auto-routed into a shared store — it was stored at "${engram.scope}" instead. If it belongs to the team, pass scope: "${routeRefused.scope}" explicitly, or move it with plur_rescope.` } : {}),
+            ...(routeRefused ? (() => {
+              const why = describeRefusedRoute(routeRefused.scope)
+              return { route_refused: { scope: routeRefused.scope, confidence: routeRefused.confidence, reason: routeRefused.reason, kind: why.kind }, warning: `No scope was provided. This content matched ${why.what} (confidence ${routeRefused.confidence}), but ${why.rule} — it was stored at "${engram.scope}" instead. If it belongs there, pass scope: "${routeRefused.scope}" explicitly, or move it with plur_rescope.` }
+            })() : {}),
           }
         } catch (err) {
 // learnRouted now saves to outbox on remote failure, so this
           // path should rarely be reached. Keep as defense-in-depth.
           const engram = await plur.learn(statement, context)
+          const delivered = plur.deliveryOf(engram, context?.scope)
           const isOutbox = !!(engram as any).structured_data?._outbox
           const routedFallback = (engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
           mcpCanary.signal('learn_activity')
@@ -1360,12 +1549,20 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // without hitting the collision the id form mismatch causes.
             // Outbox engrams stay local-form (same rule as line 1149).
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
-            scope: engram.scope, type: engram.type, decision: 'ADD',
+            scope: engram.scope, type: engram.type, ...learnDecision(engram),
+            delivery: delivered.delivery,
+            ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routedFallback),
             ...domainHint(!!routedFallback),
             ...(isOutbox ? { outbox: true } : {}),
-            warning: `Remote write failed (${(err as Error).message}); engram queued for retry.`,
+            // The routed write can fail for reasons that have nothing to do
+            // with a remote (a local lock, a store error), and learn() only
+            // queues when the scope is remote-backed. Say what actually
+            // happened (formal Adapters #1).
+            warning: isOutbox
+              ? `Remote write failed (${(err as Error).message}); engram queued for retry.`
+              : `Routed write failed (${(err as Error).message}); stored through the local learn() fallback at "${engram.scope}".`,
           }
         }
       },
@@ -1385,9 +1582,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
         'input_index), aggregate stats, and any per-item failures (each with its input index) — a single bad item ' +
         'does not abort the batch. Use this when an orchestration fans out and wants to persist consolidated findings without N ' +
         'separate calls. LLM dedup calls are capped (default 50, override with max_llm_calls) to bound bulk-import cost. ' +
-        'Note: unlike plur_learn, batch items take the LOCAL learn path — remote-scope auto-routing (learnRouted) is ' +
-        'not applied per item, so for shared/remote-store writes prefer plur_learn or pass an explicit local scope. ' +
-        'See plur-ai/plur#281.',
+        'Each item is written through the same routed path as plur_learn (learnRouted, #930), resolves the same ' +
+        'session default scope (pass `session_id` when several sessions are open) and the same .plur.yaml domain ' +
+        'default, and a `pinned` item is refused with pinned_quota_exceeded when the pinned set has no room — ' +
+        'reported in `failures`, the rest of the batch still written. Items take no `visibility`: each gets the ' +
+        'default ("private" — excluded from packs and shared git sync), and an item whose scope is a team store ' +
+        'still goes to that team store; to keep a team-scope memory local, use plur_learn with an explicit ' +
+        'visibility: "private". See plur-ai/plur#281.',
       annotations: { title: 'Learn (batch)', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
@@ -1425,6 +1626,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             },
           },
           max_llm_calls: { type: 'number', description: 'Max LLM dedup calls across the whole batch (default 50). Once spent, remaining items fall back to the local cosine path (no API cost); the dedup.mode on each result says which ran. Pass a large number to opt out.' },
+          session_id: { type: 'string', description: 'Session these writes belong to (from plur_session_start). Resolves the session default scope for items without an explicit scope, exactly as plur_learn does. Optional when one session is open. With none or several open and no session_id, NO session default applies: the write takes the unscoped path (#243, E7).' },
         },
         required: ['engrams'],
       },
@@ -1434,12 +1636,18 @@ function getAllToolDefinitions(): ToolDefinition[] {
         if (raw.length === 0) {
           return { ids: [], results: [], stats: { added: 0, updated: 0, merged: 0, noops: 0, failed: 0 }, failures: [], warning: 'No engrams provided — pass a non-empty `engrams` array.' }
         }
+        // Same context derivation as plur_learn (formal Adapters #1): the
+        // session is resolved once for the whole call, the .plur.yaml domain
+        // is the default when an item names none, and an explicit value wins.
+        const batchSession = _resolveWriteSession(args)
+        const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
         const items = raw.map((e) => ({
           statement: sanitizeStatement(e.statement as string),
           context: {
             type: e.type,
             scope: e.scope as string | undefined,
-            domain: e.domain as string | undefined,
+            domain: (e.domain as string | undefined) ?? projectDomain,
+            session: batchSession,
             source: e.source as string | undefined,
             tags: e.tags as string[] | undefined,
             rationale: e.rationale as string | undefined,
@@ -1451,11 +1659,56 @@ function getAllToolDefinitions(): ToolDefinition[] {
           },
         }))
         const maxLlmCalls = typeof args.max_llm_calls === 'number' ? args.max_llm_calls : undefined
-        const { results, stats, failures } = await plur.learnBatch(
-          items,
-          llm,
-          maxLlmCalls !== undefined ? { maxLlmCalls } : undefined,
-        )
+        // The pinned-quota gate plur_learn applies (#1138 review), per item.
+        // Forwarding `pinned` without it made the batch the one entry point
+        // that could still pin past a full quota. Same coarse predicate as
+        // plur_learn — "no room at all" — but against the room LEFT after the
+        // pinned items admitted before this one (audit 1228-c #2): checked once
+        // per call, five pinned items were all admitted into a quota with room
+        // for one, and the set was over quota afterwards. Each admitted pinned
+        // item's estimated cost is subtracted as the batch is walked; a refused
+        // item is a per-item failure, the rest of the batch is still written.
+        const gateFailures: Array<{ index: number; statement: string; error: string }> = []
+        let admitted: number[] = items.map((_, i) => i)
+        if (items.some(it => it.context.pinned === true)) {
+          const q = await plur.pinnedQuota()
+          let free = q.free
+          admitted = []
+          items.forEach((it, i) => {
+            if (it.context.pinned !== true) { admitted.push(i); return }
+            if (free <= 0) {
+              const claimed = q.free - free
+              gateFailures.push({
+                index: i,
+                statement: String(it.statement ?? '').slice(0, 80),
+                error: `pinned_quota_exceeded: the pinned set has no room (quota ${q.quota}, used ${q.used}` +
+                  `${claimed > 0 ? `, plus ~${claimed} claimed by earlier pinned items in this batch` : ''}); ` +
+                  'this item was NOT stored — learn it unpinned or unpin something first (plur_pin {list:true}).',
+              })
+              return
+            }
+            admitted.push(i)
+            free -= _estimatePinnedCost(it.statement, it.context)
+          })
+        }
+        const batchOut = admitted.length === 0
+          ? { results: [], stats: { added: 0, updated: 0, merged: 0, noops: 0, failed: 0 }, failures: [] }
+          : await plur.learnBatch(
+              admitted.map(i => items[i]),
+              llm,
+              maxLlmCalls !== undefined ? { maxLlmCalls } : undefined,
+            )
+        // Map positions in the admitted sub-array back to input positions, so
+        // `ids`, `input_index` and `failures[].index` stay aligned 1:1 with the
+        // caller's array (#281).
+        const results = batchOut.results.map(r => ({
+          ...r, input_index: r.input_index !== undefined ? admitted[r.input_index] : undefined,
+        }))
+        const failures = [
+          ...batchOut.failures.map(f => ({ ...f, index: admitted[f.index] ?? f.index })),
+          ...gateFailures,
+        ].sort((a, b) => a.index - b.index)
+        const stats = { ...batchOut.stats, failed: (batchOut.stats.failed ?? 0) + gateFailures.length }
         mcpCanary.signal('learn_activity')
         // Opt-in, content-free engagement counter (default-off; no statement text).
         recordTelemetry('learn')
@@ -1530,10 +1783,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         if (refusedCount > 0) {
           warnings.push(
-            `${refusedCount} of ${raw.length} engram(s) had no scope and matched the shared scope(s) ` +
-            `${refusedScopes.join(', ')}, which unscoped writes are never auto-routed into — they were stored ` +
-            `in a personal scope instead. Pass an explicit scope on those items if they belong to the team, ` +
-            `or move them with plur_rescope.`)
+            `${refusedCount} of ${raw.length} engram(s) had no scope and matched ` +
+            `${refusedScopes.map(sc => describeRefusedRoute(sc).what).join('; ')} — unscoped writes are never ` +
+            `auto-routed into a shared store or into a remote personal namespace that is not verifiably yours, so ` +
+            `they were stored at the local default instead. Pass an explicit scope on those items if they belong ` +
+            `there, or move them with plur_rescope.`)
         }
 
         return {
@@ -1592,7 +1846,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement. Hybrid mode only — ignored when mode:"keyword".' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring). Hybrid mode only — ignored when mode:"keyword".' },
-          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope (incl. mid-session plur_session_scope changes) sets the remote dialing context when no explicit scope filter is passed. Optional when one session is open (#243).' },
+          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope (incl. mid-session plur_session_scope changes) sets the remote dialing context when no explicit scope filter is passed. Optional when one session is open (#243); with none or several open and no session_id, no session default applies.' },
         },
         required: ['query'],
       },
@@ -1613,7 +1867,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
-          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope sets the remote dialing context when no explicit scope filter is passed (#243).' },
+          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope sets the remote dialing context when no explicit scope filter is passed (#243). Optional when one session is open; with none or several open and no session_id, no session default applies.' },
         },
         required: ['query'],
       },
@@ -1636,12 +1890,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
           task: { type: 'string', description: 'The task description to inject context for' },
           budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
           scope: { type: 'string', description: 'Scope filter for engram selection' },
-          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open; required for correct attribution when several are.' },
+          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open. With none or several open and no session_id, no session default applies (E7) and the injection is not attributed to any session.' },
         },
         required: ['task'],
       },
       handler: async (args, plur) => {
-        const session_id = _resolveInjectionSession(args)
+        // E7: an ambiguous/absent session passes NO_SESSION (no session default).
+        const session_id = _resolveWriteSession(args)
         const result = await plur.inject(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
@@ -1675,12 +1930,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
           task: { type: 'string', description: 'The task description to inject context for' },
           budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
           scope: { type: 'string', description: 'Scope filter for engram selection' },
-          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open; required for correct attribution when several are.' },
+          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open. With none or several open and no session_id, no session default applies (E7) and the injection is not attributed to any session.' },
         },
         required: ['task'],
       },
       handler: async (args, plur) => {
-        const session_id = _resolveInjectionSession(args)
+        // E7: an ambiguous/absent session passes NO_SESSION (no session default).
+        const session_id = _resolveWriteSession(args)
         const result = await plur.injectHybrid(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
@@ -2217,7 +2473,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_outbox',
-      description: 'Inspect the remote-write outbox — team-scoped writes queued locally because their remote store was unreachable. Read-only by default; pass flush:true to retry them now. Entries never include the target URL or token.',
+      description: 'Inspect the remote-write outbox — team-scoped writes queued locally because their remote store was unreachable, plus any other queued remote operation core lists (e.g. a retirement still to be applied on the remote). Read-only by default; pass flush:true to retry them now. Entries never include the target URL or token.',
       annotations: { title: 'Outbox', readOnlyHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
@@ -2233,11 +2489,25 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // caller nothing about what just moved.
         const before = await plur.listOutbox()
         if (args.flush !== true) {
-          return { pending: before.length, entries: before }
+          // #1299: counts by state, so a caller can tell "will deliver when
+          // the network is back" from "will never deliver as it stands".
+          const summary = summarizeOutbox(before)
+          return {
+            pending: before.length,
+            retrying: summary.retrying,
+            needs_action: summary.needs_action,
+            ...(summary.needs_action > 0 ? { needs_action_scopes: summary.scopes } : {}),
+            entries: before,
+          }
         }
-        const result = await plur.flushOutbox()
+        // An explicit flush retries needs_action entries too (#1299): the
+        // caller may just have fixed the cause.
+        const result = await plur.flushOutbox({ force: true })
         return {
-          pending: await plur.outboxCount(),
+          // Counted from the same list the entries come from (formal R2): a
+          // separate counter can miss an entry kind the list shows (e.g. a
+          // queued remote retirement), and report 0 while one is stuck.
+          pending: (await plur.listOutbox()).length,
           flushed: result.flushed,
           failed: result.failed,
           ...(result.expired_warnings.length > 0 ? { expired_warnings: result.expired_warnings } : {}),
@@ -2378,8 +2648,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_validate_meta',
-      description: 'Test a meta-engram template against engrams from a new domain — updates confidence and domain_coverage',
-      annotations: { title: 'Validate meta-engram', destructiveHint: false, idempotentHint: false },
+      description: 'Test a meta-engram template against engrams from a new domain — updates confidence and domain_coverage. A meta-engram that fails validation in a third domain is demoted (top → mop) or, below top level, RETIRED.',
+      // Destructive (owner decision I_tensions_resolve, formal R2): the third
+      // failed validation retires a non-top meta-engram (core
+      // meta/validation.ts) and the handler persists it. A removal needs an
+      // explicit, gated act, so plur_admin refuses this tool and it is a direct
+      // tool in every profile (CURSOR_CORE_TOOL_NAMES).
+      annotations: { title: 'Validate meta-engram', destructiveHint: true, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
@@ -2407,12 +2682,21 @@ function getAllToolDefinitions(): ToolDefinition[] {
           args.llm_model as string | undefined,
         )
 
+        const wasRetired = meta.status === 'retired'
         const result = await validateMetaEngram(meta, testEngrams, testDomain, llm)
+        // validateMetaEngram can retire the meta-engram (a third failed domain
+        // below top level). Never silent: the response says so.
+        const retiredNow = !wasRetired && meta.status === 'retired'
 
         // validateMetaEngram mutates domain_coverage + confidence in-place — persist changes
         await plur.updateEngram(meta)
 
         return {
+          ...(retiredNow ? {
+            retired: true,
+            note: `Meta-engram ${result.meta_engram_id} was retired: its prediction failed in a third domain. ` +
+              'It no longer injects; its history records the retirement.',
+          } : {}),
           meta_engram_id: result.meta_engram_id,
           test_domain: result.test_domain,
           prediction_held: result.prediction_held,
@@ -2465,6 +2749,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           tension_count: status.tension_count,
           versioned_engram_count: status.versioned_engram_count ?? 0,
           outbox_count: status.outbox_count ?? 0,
+          // #1299: queued writes a retry cannot deliver, per scope.
+          outbox_needs_action: status.outbox_needs_action ?? 0,
+          ...(status.outbox_attention ? { outbox_attention: status.outbox_attention } : {}),
           // Injection-provenance event/label counts (#452) — #202's volume gate.
           history_events: status.history_events ?? {
             co_injection: 0,
@@ -2959,7 +3246,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_session_start',
       description: 'Start a session — inject relevant engrams for your task. Call at the beginning of every session.',
-      annotations: { title: 'Session Start', readOnlyHint: true, idempotentHint: false },
+      // Not read-only (formal R2, mcp-integrations#6): start registers the
+      // session's scope, flushes the remote-write outbox (pushes to remote
+      // stores) and writes telemetry. It only replays writes already asked for,
+      // so it is not destructive.
+      annotations: { title: 'Session Start', readOnlyHint: false, destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
@@ -3008,6 +3299,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // `flushOutbox` is not a report to the caller.
           outbox_error = (err as Error).message
         }
+        // #1299: queued writes that no retry will deliver (401/403/404/422, a
+        // write refusal, no writable store). Read AFTER the flush, so it
+        // reports what is still stuck. Best-effort: never fails session start.
+        let outbox_needs: OutboxSummary | undefined
+        try {
+          const summary = await plur.outboxSummary()
+          if (summary.needs_action > 0) outbox_needs = summary
+        } catch { /* reported via outbox_error when the store itself is the problem */ }
 
         // Surface writable remote scopes so AI caller knows what's available (#229)
         // NOTE: we do NOT auto-set session scope FROM REMOTE STORES — the AI
@@ -3034,7 +3333,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // .plur.yaml in HOME (privacy guard from hook-inject). When the
         // project declares a scope, auto-apply it as the session default
         // UNLESS the caller explicitly passed a different default_scope.
-        const projectConfig = readProjectConfig()
+        // Decision E3: only from a trusted directory (readTrustedProjectConfig).
+        const projectConfig = readTrustedProjectConfig(plur)
         const explicit_default_scope = (args.default_scope as string | undefined) ?? null
         const default_scope = explicit_default_scope ?? projectConfig.scope ?? null
         const scope_source = explicit_default_scope
@@ -3195,6 +3495,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
           }
         }
 
+        // Decision E3: an untrusted .plur.yaml was ignored — say so up front,
+        // with the file and the one command that changes it.
+        if (projectConfig.warning) {
+          guide = `⚠️ ${projectConfig.warning}\n\n${guide}`
+        }
+
         // Project scope guidance (#177) — surface auto-detected project
         // scope so the agent knows engrams will be tagged with it.
         if (scope_source === 'project-config') {
@@ -3314,6 +3620,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // is the first tool an agent calls — one line here tells it the
         // gateway exists BEFORE it ever misses a name and concludes the MCP
         // is down. Silent under 'full', where nothing is hidden.
+        if (outbox_needs) {
+          guide += `\n\n⚠️ OUTBOX: ${outbox_needs.needs_action} queued team write(s) cannot be delivered by retrying. `
+            + describeNeedsAction(outbox_needs).join(' ')
+            + ' Tell the user; nothing is dropped automatically. `plur outbox` lists them.'
+        }
+
         const session_tool_profile = activeToolProfile()
         if (session_tool_profile !== 'full') {
           guide += `\n\nTool profile "${session_tool_profile}": most plur_* tools are not exposed by name — ` +
@@ -3331,6 +3643,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
           ...(default_scope ? { default_scope, scope_source } : {}),
           ...(default_domain ? { default_domain, domain_source: 'project-config' as const } : {}),
+          ...(projectConfig.warning ? { project_config_warning: projectConfig.warning } : {}),
           // Ask LLM to check back — MCP can't push, but we can request a follow-up
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'
@@ -3353,6 +3666,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
               `The outbox flush failed — ${outbox_error}. Engrams routed to a remote store are `
               + `still queued locally and were NOT pushed. They retry on the next session_start or plur_sync.`,
           } : {}),
+          // #1299: writes a retry cannot deliver — count, scope, reason, next step.
+          ...(outbox_needs ? {
+            outbox_needs_action: { count: outbox_needs.needs_action, scopes: outbox_needs.scopes },
+          } : {}),
           // Version staleness warning (issue #151)
           ...(version_warning ? { version_warning, version: VERSION } : {}),
         }
@@ -3368,7 +3685,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
       description:
         'Adjust or inspect the session default write scope MID-session — narrow, expand, or switch context without ' +
         'restarting the session (#243). op:"set" replaces the default scope used by unscoped plur_learn calls for the ' +
-        'rest of the session AND the org context that decides which enterprise hosts plur_recall dials; op:"show" ' +
+        'rest of the session AND the org context that decides which enterprise hosts plur_recall dials (it needs an open ' +
+        'session: with none open it refuses, since no id-less call reads a session-less slot); op:"show" ' +
         'reports the effective scope and how it was derived (project config, session_start default, or a mid-session ' +
         'set); op:"clear" reverts to the scope the session started with. Use when the conversation genuinely pivots — ' +
         'a focused bug fix surfacing a team-wide architecture insight, or switching to another org\'s project. Do NOT ' +
@@ -3407,6 +3725,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const reason = args.reason as string | undefined
         const { session, ambiguous, open } = _resolveScopeSession(args)
         const record = session ? _sessionTelemetry.get(session) : undefined
+        // Decision E7: with NO session open, the process-default slot this op
+        // targets is not read by id-less writes/injects any more (they pass
+        // NO_SESSION); recall still reads it. Say so rather than imply it
+        // governs the next plur_learn.
+        const noSessionSlot = session === undefined && open === 0
         const remote_scopes = plur.getWritableRemoteScopes()
         const withCommon = (body: Record<string, unknown>): Record<string, unknown> => ({
           op,
@@ -3429,7 +3752,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             source,
             ...(ambiguous ? {
               warning: `${open} sessions are open — this is the process-default slot, not a specific session's scope. Pass session_id (from plur_session_start) to inspect one.`,
-            } : {}),
+            } : noSessionSlot && scope != null ? { warning: NO_SESSION_SLOT_WARNING } : {}),
             guide: scope == null
               ? 'No session default scope is set: unscoped plur_learn writes auto-route on a confident covers match or land at the unscoped default. Explicit per-call scope always wins.'
               : `Unscoped plur_learn calls this session default to "${scope}"; recall dialing follows the same org context. Explicit per-call scope always wins.`,
@@ -3446,6 +3769,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
 
         if (op === 'set') {
+          // Formal R2 follow-up: with NO session open, the process-default slot
+          // is read by no id-less call (learn, inject, recall all pass
+          // NO_SESSION), so a set would change nothing the caller can observe.
+          // Refuse plainly instead of accepting it with a warning.
+          if (noSessionSlot) {
+            throw new Error(
+              'plur_session_scope: no session is open, so there is no session scope to set — an id-less ' +
+              'plur_learn / plur_inject / plur_recall uses no session default unless exactly one session is open. ' +
+              'Call plur_session_start first (then pass its session_id here), or pass scope explicitly on each plur_learn.',
+            )
+          }
           const scope = args.scope
           if (typeof scope !== 'string' || scope.trim().length === 0) {
             throw new Error('plur_session_scope: op:"set" requires a non-empty string "scope" (use op:"clear" to revert to the session-start default)')
@@ -3460,11 +3794,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // moment it becomes true, not per-write. The per-write secrets/
           // sensitivity guard is unchanged and still scans every learn.
           const remoteEntry = remote_scopes.find(s => s.scope === scope)
-          const warning = isSharedScope(scope)
+          const sharedWarning = isSharedScope(scope)
             ? (remoteEntry
                 ? `"${scope}" routes to the shared remote store at ${remoteEntry.url}: every unscoped plur_learn for the rest of this session defaults there, visible to everyone with read access to that scope. The per-write secrets/sensitivity guard still scans each write (offending content is demoted to local), but relevance is your call — clear or narrow the scope when the conversation leaves team context.`
                 : `"${scope}" is a shared-family scope but matches no configured remote store scope, so writes stay on this machine under that namespace. The write-time sensitivity guard treats it as shared (scans + demotes offending content). If you expected a team store, check the remote_scopes list.`)
             : undefined
+          const warning = sharedWarning
           return withCommon({
             previous_scope: previous,
             new_scope: next,
@@ -3479,7 +3814,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // the project config, the same source session_start derives from.
         const restored = record !== undefined
           ? (record.default_scope ?? null)
-          : (readProjectConfig().scope ?? null)
+          : (readTrustedProjectConfig(plur).scope ?? null)
         const restored_source = record !== undefined
           ? (record.default_scope_source === 'caller' ? 'session-start' : record.default_scope_source ?? 'none')
           : (restored != null ? 'project-config' : 'none')
@@ -3528,7 +3863,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
                 },
               ],
             },
-            description: 'Learnings from this session. Preferred shape is {statement: "...", type?: "..."}; bare strings are also accepted and treated as the statement. Review the conversation for corrections, preferences, patterns, and technical facts before calling.',
+            description: 'Learnings from this session. Preferred shape is {statement: "...", type?: "..."}; bare strings are also accepted and treated as the statement. If the whole parameter arrives as one plain string it is ONE suggestion (never split on commas); send several as a JSON array. Review the conversation for corrections, preferences, patterns, and technical facts before calling.',
           },
         },
         required: ['summary', 'engram_suggestions'],
@@ -3579,6 +3914,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // must not abort the rest and leave the call half done. Each write is
         // complete on its own; the ones that failed are named in the result,
         // the way learnBatch reports its failures.
+        // The session being ended: explicit id first, else the lone open
+        // session — the same resolution plur_learn uses. Its suggestions are
+        // written under ITS default scope (not whichever session started last
+        // and so owns the process slot), through the same routed path and
+        // with the same .plur.yaml domain default as plur_learn (formal
+        // Adapters #1/#2). Resolved before cleanup below drops the session.
+        const endSession = _resolveInjectionSession(args)
+        const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
+
         let engrams_created = 0
         const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
         for (let i = 0; i < items.length; i++) {
@@ -3590,8 +3934,11 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             // at the tool-call markers (`</statement>`, `<parameter name=`),
             // and session_end is the write path where an agent transcribing its
             // own session is most likely to carry them in.
-            await plur.learn(sanitizeStatement(statement), {
+            await plur.learnRouted(sanitizeStatement(statement), {
               type: type as any,
+              // E7: no resolvable session → no session default (NO_SESSION).
+              session: endSession ?? NO_SESSION,
+              domain: projectDomain,
               // Link the engram back to the session that produced it (#960).
               session_episode_id: episode.id,
               // An end-of-session summary is the model's reading of what
@@ -3605,7 +3952,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         }
 
         // Collect injection telemetry before cleanup
-        const telemetry = session_id ? _sessionTelemetry.get(session_id) : undefined
+        const telemetry = endSession ? _sessionTelemetry.get(endSession) : undefined
         const injection_summary = telemetry && telemetry.injection_calls > 0
           ? {
               pack_counts: { ...telemetry.pack_counts },
@@ -3615,22 +3962,34 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           : undefined
 
         // Clean up session telemetry
-        if (session_id) {
-          _sessionTelemetry.delete(session_id)
+        // An id-less session_end with exactly one session open ends THAT
+        // session; it used to be a state no-op, so the session stayed "open"
+        // until the 8h TTL and made every later implicit resolution ambiguous.
+        if (endSession) {
+          _sessionTelemetry.delete(endSession)
           // #243: drop this session's keyed scope registration too — a
           // long-lived server would otherwise retain one registry entry per
           // session it has ever served (see SessionScopeRegistry.clear).
-          plur.clearSessionScope({ session: session_id })
+          plur.clearSessionScope({ session: endSession })
         }
 
         // Clean up session checkpoint (#215) — session ended cleanly
         try {
-          const plurDir = process.env.PLUR_PATH ?? join(homedir(), '.plur')
+          // `||`, not `??`: an EMPTY PLUR_PATH means unset, as in the CLI hooks
+          // (formal R2, on R2-CLI's behalf) — `??` looked in ./sessions.
+          const plurDir = process.env.PLUR_PATH || join(homedir(), '.plur')
           const sessionsDir = join(plurDir, 'sessions')
-          // Try session_id first, then CLAUDE_SESSION_ID, then ppid
+          // Try session_id first, then CLAUDE_SESSION_ID, then ppid. #1278:
+          // the Stop hook writes the checkpoint under safeSessionKey(id),
+          // which REPLACES unsafe characters with '_'; try that form first,
+          // then the stripped form older writers used.
           const keys = [session_id, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
             .filter(Boolean)
-            .map(k => k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+            .flatMap(k => [
+              (k!.replace(/[^A-Za-z0-9_-]/g, '_') || 'unknown').slice(0, 64),
+              k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64),
+            ])
+            .filter(Boolean)
           for (const key of keys) {
             const cp = join(sessionsDir, `${key}.checkpoint.json`)
             if (existsSync(cp)) { unlinkSync(cp); break }
@@ -3780,11 +4139,16 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           decision.action === 'route' && decision.scope
             ? { scope: decision.scope, note: 'An unscoped write of these signals would be auto-routed here.' }
             : decision.action === 'refuse-shared' && decision.refusedShared
-              ? {
-                  scope: null,
-                  refused_shared: decision.refusedShared.scope,
-                  note: `"${decision.refusedShared.scope}" is the best match but is a SHARED scope, and unscoped writes are never auto-routed into one. An unscoped write would land at the local default instead. Pass that scope explicitly if the engram belongs to the team.`,
-                }
+              ? (() => {
+                  const why = describeRefusedRoute(decision.refusedShared!.scope)
+                  return {
+                    scope: null,
+                    // Field name kept for compatibility; `refused_kind` says which kind it is.
+                    refused_shared: decision.refusedShared!.scope,
+                    refused_kind: why.kind,
+                    note: `The best match is ${why.what}, and ${why.rule}. An unscoped write would land at the local default instead. Pass that scope explicitly if the engram belongs there.`,
+                  }
+                })()
               : { scope: null, note: 'An unscoped write of these signals would land at the local default — nothing matched confidently enough to route.' }
         return { candidates, count: candidates.length, min_confidence: minConfidence, would_route }
       },
@@ -3884,6 +4248,14 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     {
       name: 'plur_rescope',
       description: 'Move existing engram(s) to a different scope (#676) — e.g. promote a personal/local engram into a team scope so it reaches the shared store. Bypasses the content-hash dedup that makes a plur_learn re-emit a silent no-op: rescope matches by id and moves the engram. Remote targets (a configured writable store scope): a copy is pushed via the routed write path (the server assigns the id, provenance is kept in the copy\'s source field) and the local original is soft-retired with a superseded_by link — set keep_local:true to keep it active. Local targets (local, global, project:*): the scope is rewritten in place, preserving id and activation. The target must be local/global/project:* or a scope with a configured writable store — anything else fails early (typo protection). Content is re-scanned for secrets/sensitive material before any shared/remote target and a hit blocks the move. Batch via ids; dry_run:true previews every decision without mutating anything. NOT candidate activation — that is plur_promote.',
+      // NOT destructive (owner decision I_tensions_resolve, formal R2): a
+      // rescope never removes content. A local target rewrites the scope in
+      // place (same id, same activation); a remote target retires the local
+      // original only after the copy was pushed, and links it to that copy
+      // with `superseded_by`. A copy always remains, so this is a move, not a
+      // removal — it stays dispatchable through plur_admin
+      // (rescope-tool.test.ts). Contrast plur_tensions resolve, which retires
+      // the loser with no copy and is therefore destructive.
       annotations: { title: 'Rescope', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -3914,7 +4286,14 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     {
       name: 'plur_tensions',
       description: 'Tension lifecycle (#181). Default: list persisted tension records (unresolved first). scan:true runs an LLM contradiction scan, persists NEW detections as records, and skips already-recorded pairs. Lifecycle actions: action:"confirm" (real conflict), action:"dismiss" (false positive — pair suppressed from future scans), action:"resolve" + winner:<engram_id> (loser engram retired). Scan requires OPENAI_API_KEY or OPENROUTER_API_KEY env var, or explicit llm_base_url + llm_api_key args.',
-      annotations: { title: 'Tensions', readOnlyHint: false, idempotentHint: true },
+      // Not idempotent (formal R2, mcp-integrations#6): scan persists each NEW
+      // detection, and an LLM judge can find new pairs on a repeat call.
+      // Destructive (owner decision I_tensions_resolve, formal R2): action
+      // "resolve" retires the losing engram with no copy left — exactly
+      // plur_forget's effect. A removal needs an explicit, gated act, so
+      // plur_admin refuses this tool and it is a direct tool in every profile
+      // (CURSOR_CORE_TOOL_NAMES), where the client sees this annotation.
+      annotations: { title: 'Tensions', readOnlyHint: false, destructiveHint: true, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {

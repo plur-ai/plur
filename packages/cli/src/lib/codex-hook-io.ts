@@ -1,7 +1,9 @@
-import { readSync, readFileSync, mkdirSync, writeFileSync, existsSync, statSync, lstatSync, chmodSync, readdirSync, unlinkSync } from 'fs'
+import { readSync, readFileSync, mkdirSync, writeFileSync, existsSync, statSync, lstatSync, chmodSync, readdirSync, unlinkSync, openSync, writeSync, closeSync, constants as fsConstants } from 'fs'
+import { randomBytes } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { safeSessionKey } from './session-key.js'
+import { exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from './store-lock-exit.js'
 
 /**
  * Shared stdin-reading and sentinel helpers for the four hook-codex-*
@@ -148,6 +150,101 @@ export function sessionDirSafeToSweep(dir: string): boolean {
   }
 }
 
+/**
+ * May the CONTENTS of this directory be believed? The read-side half of the
+ * vetting (formal r2, cli#8). ensureSessionDir guards writers only, and every
+ * reader used to take whatever sat in the directory at face value — a
+ * sentinel planted there switched the session guard off, and a planted
+ * Antigravity turn cache was emitted to the model as recalled memory.
+ *
+ * Never creates and never chmods: it is a verdict, not a repair. Trusted
+ * means: a real directory (not a symlink), owned by this user, and not
+ * writable by group or others — so nobody but this user can have put a file
+ * in it. The pre-hardening 0755 dir passes (nobody else could write it);
+ * a 0777 or 0775 one does not until a writer's ensureSessionDir tightens it.
+ */
+export function sessionDirTrusted(dir: string): boolean {
+  try {
+    const st = lstatSync(dir)
+    if (st.isSymbolicLink() || !st.isDirectory()) return false
+    if (process.platform !== 'win32') {
+      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return false
+      if ((st.mode & 0o022) !== 0) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Create-or-overwrite a small state file WITHOUT following a symlink at the
+ * final path component (O_NOFOLLOW), mode 0600. For state files that live
+ * directly in a shared tmpdir (the Claude Code sentinel), where a planted
+ * `plur-session-<id>` symlink would otherwise make writeFileSync truncate
+ * whatever it points at. Returns false instead of throwing; callers fail open.
+ */
+export function writeFileNoFollow(path: string, data: string): boolean {
+  let fd: number | undefined
+  try {
+    const noFollow = (fsConstants as Record<string, number>).O_NOFOLLOW ?? 0
+    fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | noFollow, 0o600)
+    if (data) writeSync(fd, data)
+    return true
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) try { closeSync(fd) } catch { /* nothing to do */ }
+  }
+}
+
+/**
+ * Does this state file exist AND belong to this user (and is not a symlink)?
+ * For the sentinel that lives directly in a shared tmpdir, where any user can
+ * create a file of that name.
+ */
+export function ownFileExists(path: string): boolean {
+  try {
+    const st = lstatSync(path)
+    if (st.isSymbolicLink() || !st.isFile()) return false
+    if (process.platform !== 'win32' && typeof process.getuid === 'function' && st.uid !== process.getuid()) return false
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A counter that hands every caller a DISTINCT value (formal r2, cli#11).
+ *
+ * The append-then-stat counter it replaces was not atomic as a whole: the
+ * append is, but `A-append, B-append, A-stat, B-stat` gives both callers 2 —
+ * one Nth-stop nudge fires twice and the next multiple is skipped. Here each
+ * caller appends a line carrying a unique token (one O_APPEND write, atomic
+ * for a line this short) and its value is the position of ITS OWN line in
+ * the file. The file is a total order of appends, so positions are distinct
+ * and, after n appends, exactly 1..n. See PlurSpec/R2CLI.lean §4
+ * (`ticket_distinct`, `tickets_are_prefix`).
+ *
+ * Throws on I/O failure — callers keep their existing fail-open handling.
+ */
+export function ticketCounter(path: string): number {
+  const token = `${process.pid}-${randomBytes(6).toString('hex')}`
+  const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT, 0o600)
+  try {
+    writeSync(fd, `${token}\n`)
+  } finally {
+    closeSync(fd)
+  }
+  const lines = readFileSync(path, 'utf8').split('\n')
+  // endsWith, not ===: a file left by the old append-a-dot counter has no
+  // trailing newline, so our first line reads '....<token>'. Tokens are
+  // random, so a suffix match cannot hit someone else's line.
+  const idx = lines.findIndex(l => l.endsWith(token))
+  if (idx < 0) throw new Error('counter file lost our append')
+  return idx + 1
+}
+
 function ensureDir(): boolean {
   return ensureSessionDir(SESSION_DIR)
 }
@@ -174,7 +271,9 @@ export function markSessionStarted(sessionId: string): void {
 }
 
 export function isSessionStarted(sessionId: string): boolean {
-  return existsSync(sentinelPath(sessionId))
+  // Read-side vetting (cli#8): a sentinel in a directory someone else could
+  // have written is not evidence that THIS user's session started.
+  return sessionDirTrusted(SESSION_DIR) && existsSync(sentinelPath(sessionId))
 }
 
 /**
@@ -289,11 +388,13 @@ export async function runCodexHook(
   // Tests, which call run() in-process, would take the whole runner down
   // with it — hence one explicit, purpose-named opt-out rather than
   // sniffing for a test runner.
-  if (process.env.PLUR_HOOK_NO_EXIT === '1') {
-    process.exitCode = 0
-    return
-  }
-  process.exit(0)
+  //
+  // Not while this process may be inside a store write (#1343): a missed
+  // hybrid deadline leaves that search running, and it records its injection
+  // under `engrams.yaml.lock`. Exiting mid-acquire leaves an empty lock that
+  // stalls every later writer for 60s. Bounded, and free when the store is idle.
+  const noExit = process.env.PLUR_HOOK_NO_EXIT === '1'
+  await exitWhenStoreIdle(EXIT_LOCK_WAIT_MS, noExit ? () => { process.exitCode = 0 } : () => process.exit(0))
 }
 
 const DEADLINE_MISSED = Symbol('plur.hybrid.deadline')
@@ -369,7 +470,8 @@ export interface Injectable<O, R> {
  * injects NOTHING, which is strictly worse than BM25 results. The race bounds
  * the worst case at deadline + BM25 (~10s here) while keeping the typical case
  * at hybrid speed. The abandoned hybrid promise is harmless: `runCodexHook`
- * force-exits the process immediately afterwards.
+ * force-exits the process afterwards — once any store write it is inside has
+ * finished (bounded; #1343).
  */
 export async function injectWithFallback<O, R>(
   plur: Injectable<O, R>,

@@ -79,6 +79,386 @@ describe('detectSecrets', () => {
   })
 })
 
+// #1317 — vendor-prefixed tokens. Every vector is SYNTHETIC: the right prefix,
+// length and charset, filled with repeated placeholder characters. They are
+// assembled by concatenation so no literal token-shaped string sits in the
+// source for a repository secret scanner to flag.
+describe('detectSecrets — vendor-prefixed tokens (#1317)', () => {
+  const body = (n: number) => 'A1b2C3d4E5'.repeat(Math.ceil(n / 10)).slice(0, n)
+  const positives: [label: string, token: string, pattern: string][] = [
+    ['GitHub classic PAT', 'ghp' + '_' + body(36), 'github_token'],
+    ['GitHub OAuth token', 'gho' + '_' + body(36), 'github_token'],
+    ['GitHub user-to-server token', 'ghu' + '_' + body(36), 'github_token'],
+    ['GitHub server-to-server token', 'ghs' + '_' + body(36), 'github_token'],
+    ['GitHub refresh token', 'ghr' + '_' + body(36), 'github_token'],
+    ['GitHub fine-grained PAT', 'github' + '_pat_' + body(22) + '_' + body(59), 'github_pat'],
+    ['GitLab personal access token', 'glpat' + '-' + body(20), 'gitlab_token'],
+    ['GitLab routable PAT', 'glpat' + '-' + body(27) + '.01.' + body(9), 'gitlab_token'],
+    ['GitLab deploy token', 'gldt' + '-' + body(20), 'gitlab_token'],
+    ['GitLab runner token', 'glrt' + '-' + body(20), 'gitlab_token'],
+    ['GitLab CI job token', 'glcbt' + '-' + body(20), 'gitlab_token'],
+    ['GitLab pipeline trigger token', 'glptt' + '-' + body(40), 'gitlab_token'],
+    ['GitLab OAuth app secret', 'gloas' + '-' + body(64), 'gitlab_token'],
+    ['GitLab workspace token', 'glwt' + '-' + body(20), 'gitlab_token'],
+    ['GitLab routable runner token', 'glrt' + '-t1_' + body(27) + '.01.' + body(9), 'gitlab_token'],
+    ['GitLab token with legacy separators', 'glpat' + '-' + 'aB3d' + '-' + 'eF6h' + '_' + 'iJ9kLmN0pQ', 'gitlab_token'],
+    ['Slack bot token', 'xoxb' + '-' + '1234567890' + '-' + '1234567890' + '-' + body(24), 'slack_token'],
+    ['Slack user token', 'xoxp' + '-' + '1234567890' + '-' + '1234567890' + '-' + '1234567890' + '-' + body(32), 'slack_token'],
+    ['Slack app token', 'xoxa' + '-2-' + body(40), 'slack_token'],
+    ['npm access token', 'npm' + '_' + body(36), 'npm_token'],
+    ['AWS temporary access key id', 'ASIA' + 'Q'.repeat(12) + '2345', 'aws_access_key'],
+    ['Stripe live secret key', 'sk' + '_live_' + body(24), 'stripe_live_key'],
+    ['Stripe live restricted key', 'rk' + '_live_' + body(24), 'stripe_live_key'],
+    // Audit of #1340: Slack app-level and token-rotation formats.
+    ['Slack app-level token', 'xapp' + '-1-' + 'A012ABCD3EF' + '-' + '1234567890123' + '-' + '0a1b2c3d'.repeat(8), 'slack_token'],
+    ['Slack rotation refresh token', 'xoxe' + '-1-' + body(146), 'slack_token'],
+    ['Slack rotating user token', 'xoxe' + '.xoxp-1-' + body(164), 'slack_token'],
+    ['Slack rotating bot token', 'xoxe' + '.xoxb-1-' + body(164), 'slack_token'],
+  ]
+
+  for (const [label, token, pattern] of positives) {
+    it(`flags a ${label} as ${pattern}`, () => {
+      const hits = detectSecrets(`export TOKEN=${token} # for the release job`)
+      expect(hits.map(h => h.pattern)).toContain(pattern)
+    })
+
+    it(`flags a ${label} standing alone`, () => {
+      expect(detectSecrets(token).map(h => h.pattern)).toContain(pattern)
+    })
+  }
+
+  const prose = [
+    'use a ghp_ token for the CI job',
+    'GitHub classic tokens start with ghp_, gho_, ghu_, ghs_ or ghr_',
+    'fine-grained tokens begin with github_pat_ and are scoped per repository',
+    'create a glpat- token with the read_api scope',
+    'GitLab deploy tokens (gldt-) and runner tokens (glrt-) are separate',
+    'Slack bot tokens look like xoxb-… and user tokens like xoxp-…',
+    'set npm_config_registry to the mirror before installing',
+    'npm_token is read from the environment',
+    'the AKIA prefix marks a long-term key, ASIA a temporary one',
+    'FANTASIA is a film, not a key',
+    'Stripe secret keys start sk_live_ in production and sk_test_ in test mode',
+    'rotate any rk_live_ key that leaked',
+    'the variable github_pat_expiry holds a date',
+    // Review of #1340: hyphenated words after a GitLab prefix are prose, not a
+    // token body. One URL/path per documented prefix family. Split at the
+    // prefix so repository scanners with the same weakness do not flag them.
+    'see gitlab.com/help/glrt' + '-runner-authentication-tokens',
+    'the glft' + '-feed-token-for-calendar setting',
+    'docs/security/glpat' + '-personal-access-token-prefix.md',
+    'https://docs.example.com/gloas' + '-oauth-application-secret-rotation',
+    'runbooks/gldt' + '-deploy-token-for-registry-pulls',
+    'help/glrtr' + '-runner-registration-token-deprecation',
+    'guide/glcbt' + '-ci-job-token-allowlist-settings',
+    'api/glptt' + '-pipeline-trigger-token-endpoints',
+    'admin/glimt' + '-incoming-mail-token-configuration',
+    'clusters/glagent' + '-kubernetes-agent-token-rotation',
+    'settings/glsoat' + '-scim-token-for-group-sync',
+    'flags/glffct' + '-feature-flags-client-token-reset',
+    'workspaces/glwt' + '-workspace-token-lifecycle-notes',
+    'Title case too: glft' + '-Feed-Token-For-Calendar-Sync',
+    // The same weakness for Slack: a short number then hyphenated words.
+    'read the xoxb' + '-2-step-guide-for-bot-installs page',
+    'wiki/xoxp' + '-1-user-token-scopes-and-permissions',
+    'see xoxa' + '-2-app-level-tokens-explained',
+    'app-level tokens start xapp' + '-1- and rotating ones xoxe' + '-1-',
+    'the xapp' + '-1-connections-write-scope-guide page',
+    // Audit of #1340: uppercase region-like prose is not an AWS key id.
+    'Deploy the Tokyo cluster to region ' + 'ASIA' + 'PACIFICNORTHEAST1' + ' first',
+    'the ' + 'ASIA' + 'PACIFICSOUTHEAST' + ' fleet is next',
+    'REGIONS: ' + 'ASIA' + 'PACIFICNORTHEAST2' + ', EUROPEWEST1',
+    'the ' + 'ASIA' + 'NMARKETSOVERVIEW' + ' report',
+  ]
+
+  for (const text of prose) {
+    it(`stays clean: ${text}`, () => {
+      expect(detectSecrets(text)).toEqual([])
+    })
+  }
+
+  it('does not flag a GitHub prefix glued onto a longer identifier', () => {
+    // An identifier that merely ends in `ghp` is not a token.
+    expect(detectSecrets('myghp' + '_' + body(36)).map(h => h.pattern)).not.toContain('github_token')
+  })
+
+  describe('does not flag a vendor prefix glued onto a longer identifier (#1374)', () => {
+    // One per vendor pattern with a leading-letter lookbehind; each fails if
+    // that pattern's lookbehind is removed.
+    const glued: [string, string][] = [
+      ['my' + 'glpat' + '-' + body(20), 'gitlab_token'],
+      ['my' + 'xoxb' + '-' + '1234567890' + '-' + '1234567890' + '-' + body(24), 'slack_token'],
+      ['my' + 'npm' + '_' + body(36), 'npm_token'],
+      ['my' + 'rk' + '_live_' + body(24), 'stripe_live_key'],
+      ['my' + 'github' + '_pat_' + body(22) + '_' + body(59), 'github_pat'],
+    ]
+    for (const [text, pattern] of glued) {
+      it(pattern, () => {
+        expect(detectSecrets(text).map(h => h.pattern)).not.toContain(pattern)
+      })
+    }
+  })
+
+  it('still flags a GitHub token split by a zero-width joiner', () => {
+    const token = 'ghp' + '_' + body(18) + '‍' + body(18)
+    expect(detectSecrets(token).map(h => h.pattern)).toContain('github_token')
+  })
+
+  it('flags every random GitLab-shaped body (seeded, 2000 samples per prefix)', () => {
+    // GitLab bodies are base64url; legacy ones are 20 characters and may
+    // include '-' and '_'. The prose filter must not cost real tokens.
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+    let seed = 1317
+    const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 }
+    const misses: string[] = []
+    for (const prefix of ['glpat', 'gldt', 'glrt', 'glft', 'glsoat', 'glffct']) {
+      for (let i = 0; i < 2000; i++) {
+        let b = ''
+        for (let j = 0; j < 20; j++) b += alphabet[Math.floor(rnd() * 64)]
+        const tok = prefix + '-' + b
+        if (!detectSecrets(tok).some(h => h.pattern === 'gitlab_token')) misses.push(tok)
+      }
+    }
+    expect(misses.length).toBeLessThanOrEqual(1)
+  })
+
+  it('scans 1 MiB of repeated GitLab prefixes in linear time (#1340 review)', () => {
+    // An unbounded lookahead made every `glpat-` in the run scan to its end:
+    // 400 KB took 28 s. The trailing `%41` adds the percent-decoded view, so
+    // the run is scanned twice, as a crafted pack would make it.
+    for (const prefix of ['glpat-', 'glagent-']) {
+      const text = prefix.repeat(Math.ceil((1 << 20) / prefix.length)) + '%41'
+      const started = performance.now()
+      detectSecrets(text)
+      expect(performance.now() - started, prefix).toBeLessThan(1_000)
+    }
+  })
+
+  describe('AWS access key id boundaries (audit of #1340)', () => {
+    const asia = (tail: string) => 'ASIA' + tail
+    it('flags an exact 20-character ASIA key id between delimiters', () => {
+      expect(detectSecrets('key=' + asia('QQQQQQQQQQQQ2345') + ';').map(h => h.pattern)).toContain('aws_access_key')
+    })
+    it('does not flag an ASIA run longer than a key id', () => {
+      expect(detectSecrets(asia('QQQQQQQQQQQQ23457')).map(h => h.pattern)).not.toContain('aws_access_key')
+    })
+    it('does not flag ASIA glued onto a longer word', () => {
+      expect(detectSecrets('X' + asia('QQQQQQQQQQQQ2345')).map(h => h.pattern)).not.toContain('aws_access_key')
+    })
+    it('keeps the AKIA pattern exactly as strict as main (no boundary required)', () => {
+      // Only strengthen: the long-term key pattern predates #1317 and still
+      // matches inside a longer run.
+      expect(detectSecrets('X' + 'AKIA' + 'QQQQQQQQQQQQ2345' + 'ZZ').map(h => h.pattern)).toContain('aws_access_key')
+    })
+  })
+
+  describe('tokens after a digit or inside a percent-encoded string (audit of #1340)', () => {
+    const gh = 'ghp' + '_' + body(36)
+    it('flags a GitHub token glued after a digit', () => {
+      expect(detectSecrets('1' + gh).map(h => h.pattern)).toContain('github_token')
+    })
+    it('flags a GitHub token after a percent-encoded =', () => {
+      expect(detectSecrets('https://x.example/cb?q=1&access_token%3D' + gh).map(h => h.pattern)).toContain('github_token')
+    })
+    it('flags a GitHub token whose underscore is percent-encoded', () => {
+      expect(detectSecrets('token=ghp%5F' + body(36)).map(h => h.pattern)).toContain('github_token')
+    })
+    it('flags a double-encoded token', () => {
+      expect(detectSecrets('next=%2Fcb%253Ftoken%253D' + gh).map(h => h.pattern)).toContain('github_token')
+    })
+    it('flags an ASIA key id after a percent-encoded =', () => {
+      expect(detectSecrets('X-Amz-Credential%3D' + 'ASIA' + 'QQQQQQQQQQQQ2345' + '%2F20260929').map(h => h.pattern)).toContain('aws_access_key')
+    })
+    it('stays clean on an ordinary percent-encoded URL', () => {
+      expect(detectSecrets('https://example.com/search?q=use%20a%20ghp_%20token&lang=en')).toEqual([])
+    })
+    it('the write/pack guard (detectSensitive) sees the decoded credential too', () => {
+      expect(detectSensitive('cb?access_token%3D' + gh).map(h => h.pattern)).toContain('github_token')
+    })
+    it('tolerates malformed percent sequences', () => {
+      expect(() => detectSecrets('100% sure, %zz and %E0%A4%A are fine')).not.toThrow()
+      expect(detectSecrets('100% sure, %zz and %E0%A4%A are fine')).toEqual([])
+    })
+  })
+
+  describe('tokens after a literal backslash escape (#1372)', () => {
+    // JSON-escaped text and pasted logs carry `\n`, `\t` and `\r` as two
+    // characters, so the character before the token is a letter. Each string
+    // below holds a real backslash followed by the letter.
+    const gh = 'ghp' + '_' + body(36)
+    const asia = 'ASIA' + 'QQQQQQQQQQQQ2345'
+    for (const esc of ['\\n', '\\t', '\\r']) {
+      it(`flags a GitHub token after a literal ${esc}`, () => {
+        expect(detectSecrets('{"log":"line one' + esc + gh + '"}').map(h => h.pattern)).toContain('github_token')
+      })
+    }
+    it('flags a GitHub token after a JSON \\u000a escape', () => {
+      expect(detectSecrets('{"log":"one\\u000a' + gh + '"}').map(h => h.pattern)).toContain('github_token')
+    })
+    it('flags an ASIA key id after a literal \\n', () => {
+      expect(detectSecrets('"creds":"id\\n' + asia + '\\n"').map(h => h.pattern)).toContain('aws_access_key')
+    })
+    it('flags GitLab, Slack, npm and Stripe tokens after a literal \\n', () => {
+      const cases: [string, string][] = [
+        ['glpat' + '-' + body(20), 'gitlab_token'],
+        ['xoxb' + '-' + '1234567890' + '-' + '1234567890' + '-' + body(24), 'slack_token'],
+        ['npm' + '_' + body(36), 'npm_token'],
+        ['rk' + '_live_' + body(24), 'stripe_live_key'],
+      ]
+      for (const [token, pattern] of cases)
+        expect(detectSecrets('text\\n' + token).map(h => h.pattern), pattern).toContain(pattern)
+    })
+    it('flags a token after a double-escaped \\\\n', () => {
+      // JSON inside JSON: the newline became `\n`, then `\\n`.
+      expect(detectSecrets('"payload":"{\\"log\\":\\"a\\\\n' + gh + '\\"}"').map(h => h.pattern)).toContain('github_token')
+    })
+    it('stays clean on escaped prose that only names a prefix', () => {
+      expect(detectSecrets('first line\\nuse a ghp_ token\\tthen npm_config_registry')).toEqual([])
+    })
+    it('the write/pack guard (detectSensitive) sees the unescaped credential too', () => {
+      expect(detectSensitive('a\\n' + gh).map(h => h.pattern)).toContain('github_token')
+    })
+    it('scans 1 MiB of escapes and repeated prefixes in linear time', () => {
+      // Every view is built: raw, percent-decoded (`%41`), escape-unfolded
+      // (three passes over nested backslashes), each also folded (`é`).
+      for (const unit of ['\\nglpat-', '\\\\\\\\nglagent-', '\\ngh' + 'p_', '\\\\\\\\\\\\\\\\']) {
+        const text = unit.repeat(Math.ceil((1 << 20) / unit.length)) + '%41é'
+        const started = performance.now()
+        detectSecrets(text)
+        expect(performance.now() - started, unit).toBeLessThan(1_000)
+      }
+    })
+  })
+
+  describe('jwt pattern runs in linear time (#1397)', () => {
+    // The original pattern, kept here as the reference for what must match.
+    const REFERENCE = /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}/
+    const b64url = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
+
+    it('flags a long, real-shaped synthetic JWT (8 KB payload with a large groups claim)', () => {
+      const header = b64url({ alg: 'RS256', typ: 'JWT', kid: 'k'.repeat(40), x5t: 'x'.repeat(40) })
+      const payload = b64url({
+        iss: 'https://login.example.com/tenant/v2.0', sub: 'user-0001', aud: 'api://example',
+        groups: Array.from({ length: 160 }, (_, i) => `00000000-0000-0000-0000-${String(i).padStart(12, '0')}`),
+      })
+      expect(payload.length).toBeGreaterThan(8000)
+      const jwt = header + '.' + payload + '.' + 'S'.repeat(342)
+      const hit = detectSecrets('Authorization: ' + jwt).find(h => h.pattern === 'jwt')
+      expect(hit?.match).toBe('eyJ...' + payload.slice(-4))
+    })
+
+    // What detectSecrets shows for a jwt match: the prefix, then the last four
+    // characters (every match is at least 26 characters long).
+    const masked = (span: string) => 'eyJ...' + span.slice(-4)
+
+    it('needs ten characters after eyJ in the header and in the payload', () => {
+      const run = (n: number) => '0123456789ab'.slice(0, n)
+      const jwt = (h: number, p: number) => 'eyJ' + run(h) + '.' + 'eyJ' + run(p)
+      const found = (s: string) => detectSecrets('x ' + s + ' y').find(h => h.pattern === 'jwt')?.match
+      expect(found(jwt(10, 10))).toBe(masked(jwt(10, 10)))
+      expect(found(jwt(9, 10))).toBeUndefined()
+      expect(found(jwt(10, 9))).toBeUndefined()
+      expect(found(jwt(9, 9))).toBeUndefined()
+      // A 9-character header run before a 10-character one: only the second
+      // `eyJ` in the run can start the match.
+      expect(found('eyJ' + run(9) + jwt(10, 10))).toBe(masked(jwt(10, 10)))
+      for (const s of [jwt(10, 10), jwt(9, 10), jwt(10, 9), jwt(9, 9)])
+        expect(found(s) !== undefined, s).toBe(REFERENCE.test(s))
+    })
+
+    it('matches exactly what the original regex matches, span included (seeded random inputs)', () => {
+      // Short runs ('AAA', 'AAAA') make header and payload lengths land on
+      // the 9/10 boundary often.
+      const alphabet = ['e', 'y', 'J', 'A', '9', '.', '-', '_', ' ', '+', 'eyJ', 'eyJ', '.eyJ', 'AAA', 'AAAA', 'AAAAAAAAAA']
+      let seed = 1397
+      const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 }
+      for (let i = 0; i < 20000; i++) {
+        let s = ''
+        const n = 1 + Math.floor(rnd() * 30)
+        for (let j = 0; j < n; j++) s += alphabet[Math.floor(rnd() * alphabet.length)]
+        const ref = REFERENCE.exec(s)
+        const expected = ref ? masked(ref[0]) : undefined
+        const actual = detectSecrets(s).find(h => h.pattern === 'jwt')?.match
+        if (actual !== expected) expect({ s, actual }).toEqual({ s, actual: expected })
+      }
+    })
+
+    it('scans 1 MiB of repeated eyJ in linear time with every view built', () => {
+      // `\\n` builds the escape-unfolded view, `é` the folded views, `%41`
+      // the percent-decoded view. `eyJA` is quadratic only once the escape
+      // before each repeat is unfolded.
+      for (const unit of ['eyJ', 'eyJA', '\\neyJA', 'eyJAAAAAAAAAAA.', '.eyJ', 'eyJ\\n']) {
+        const text = '\\né' + unit.repeat(Math.ceil((1 << 20) / unit.length)) + '%41'
+        const started = performance.now()
+        detectSecrets(text)
+        expect(performance.now() - started, unit).toBeLessThan(1_000)
+      }
+    })
+  })
+
+  describe('findings do not echo the token body (#1373)', () => {
+    // Each finding shows the non-secret prefix plus the last four characters,
+    // so a reader can tell which credential it is without the finding (which
+    // lands in pack-scan issue details) carrying a usable part of it.
+    for (const [label, token, pattern] of positives) {
+      it(`masks a ${label}`, () => {
+        const hit = detectSecrets('value: ' + token + ' end').find(h => h.pattern === pattern)!
+        // The last four of the MATCH: a routable GitLab token matches up to
+        // its `.xx.` routing suffix.
+        const tail = hit.match.slice(hit.match.indexOf('...') + 3)
+        expect(tail, hit.match).toHaveLength(4)
+        expect(token, hit.match).toContain(tail)
+        const prefix = hit.match.slice(0, hit.match.indexOf('...'))
+        expect(token.startsWith(prefix), hit.match).toBe(true)
+        // The prefix is the vendor's marker, never a stretch of the body.
+        expect(prefix.length, hit.match).toBeLessThanOrEqual(11)
+        expect(hit.match.length).toBeLessThanOrEqual(prefix.length + 7)
+      })
+    }
+    it('shows the GitHub prefix and last four characters', () => {
+      const token = 'ghp' + '_' + body(32) + 'WXYZ'
+      expect(detectSecrets(token)).toEqual([{ pattern: 'github_token', match: 'ghp_...WXYZ' }])
+    })
+    it('keeps a keyword assignment to its keyword, and a short value hidden entirely', () => {
+      const hits = detectSecrets('password = ' + 'hunter2' + 'hunter2')
+      expect(hits).toEqual([{ pattern: 'password_assignment', match: 'password = ...' }])
+    })
+    it('masks the other credential patterns too', () => {
+      const cases: [string, string, string][] = [
+        ['api_key=' + body(40), 'api_key_assignment', 'api_key=...' + body(40).slice(-4)],
+        ['Bearer ' + body(40), 'bearer_token', 'Bearer ...' + body(40).slice(-4)],
+        ['aws_secret_access_key=' + body(40), 'aws_secret_key', 'aws_secret_access_key=...' + body(40).slice(-4)],
+        ['sk' + '-ant-api03-' + body(40), 'generic_api_key', 'sk-...' + body(40).slice(-4)],
+        ['postgres' + '://app:' + body(20) + '@db/app', 'connection_string', 'postgres://...' + '/app'],
+        ['-----BEGIN RSA ' + 'PRIVATE KEY-----', 'private_key', '-----BEGIN RSA PRIVATE KEY-----'],
+      ]
+      for (const [text, pattern, expected] of cases)
+        expect(detectSecrets(text).find(h => h.pattern === pattern)?.match, pattern).toBe(expected)
+    })
+    it('does not show the separator before an sk/pk key', () => {
+      // generic_api_key matches the character before `sk`/`pk`; a finding
+      // that starts with a space or, from the escape-unfolded view, a raw
+      // newline breaks a pack-scan detail line.
+      const key = 'sk' + '-' + body(40)
+      for (const text of ['key ' + key, 'line\\n' + key, '"' + key]) {
+        const hit = detectSecrets(text).find(h => h.pattern === 'generic_api_key')!
+        expect(hit.match, JSON.stringify(text)).toBe('sk-...' + key.slice(-4))
+      }
+    })
+    it('pack-scan issue details carry only the masked finding', () => {
+      const token = 'npm' + '_' + body(36)
+      const hit = detectSensitive('x ' + token).find(h => h.pattern === 'npm_token')!
+      expect(hit.match).toBe('npm_...' + token.slice(-4))
+      expect(hit.match).not.toContain(body(36).slice(0, 8))
+    })
+  })
+
+  it('files the new token patterns under the secrets family', () => {
+    for (const p of ['github_token', 'github_pat', 'gitlab_token', 'slack_token', 'npm_token', 'stripe_live_key'])
+      expect(sensitivityCategory(p)).toBe('secrets')
+  })
+})
+
 // Detector hardening — Stage 1.5b (#353). These detectors GATE the publish
 // filter and trigger write-time scope-demotion, so the overriding constraint is
 // LOW FALSE POSITIVES: a false match silently demotes a legitimate engram on

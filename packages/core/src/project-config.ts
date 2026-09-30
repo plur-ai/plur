@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 
 /**
@@ -15,7 +15,42 @@ import { homedir } from 'os'
  * pass on macOS while failing on Linux CI, where /tmp has no symlink.)
  */
 export function canonicalize(p: string): string {
-  try { return realpathSync(p) } catch { return resolve(p) }
+  // `realpathSync.native` returns the ON-DISK letter case, so on a
+  // case-insensitive filesystem (macOS APFS/HFS+, Windows NTFS) two spellings
+  // that differ only in case, or in the Windows drive-letter case, fold to one
+  // (#1357). The JavaScript `realpathSync` keeps the caller's case.
+  return canonicalizeWith(p, realpathSync.native)
+}
+
+/**
+ * Every canonical spelling of `p` a check that must fail CLOSED should accept:
+ * the case-folded form above, plus the case-preserving form the JavaScript
+ * `realpathSync` gives (what `canonicalize` returned before #1357). A match
+ * against either one is a match, so folding case can only make such a check
+ * match MORE paths, never fewer. Used for the folder map's `off` entries.
+ */
+export function canonicalSpellings(p: string): string[] {
+  return [...new Set([canonicalize(p), canonicalizeWith(p, realpathSync)])]
+}
+
+function canonicalizeWith(p: string, real: (p: string) => string): string {
+  // `resolve` makes the path absolute and normalises `.` / `..` lexically.
+  const abs = resolve(p)
+  try { return real(abs) } catch {}
+  // A path that does not exist yet (a fresh install's engrams.yaml, a
+  // not-yet-created project dir) cannot be realpath'd, but its ancestors can:
+  // resolve the deepest EXISTING ancestor and re-append the missing tail, so
+  // `/var/…/missing` and `/private/var/…/missing` compare equal (#1319). The
+  // missing tail keeps the caller's case: there is no on-disk name to fold to.
+  const tail: string[] = []
+  let cur = abs
+  for (;;) {
+    const parent = dirname(cur)
+    if (parent === cur) return abs
+    tail.unshift(basename(cur))
+    cur = parent
+    try { return join(real(cur), ...tail) } catch {}
+  }
 }
 
 /**

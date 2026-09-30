@@ -1,12 +1,30 @@
 import { existsSync, readFileSync, realpathSync } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 
-// Resolves symlinks so that `process.cwd()` (which the OS resolves canonically
-// via getcwd()) and `homedir()` (which reads the `$HOME` env verbatim) agree
-// even when `/tmp` or another component is a bind-mount or symlink (#521).
-function canonicalize(p: string): string {
-  try { return realpathSync(p) } catch { return resolve(p) }
+/**
+ * Resolves symlinks so that `process.cwd()` (which the OS resolves canonically
+ * via getcwd()) and `homedir()` (which reads the `$HOME` env verbatim) agree
+ * even when `/tmp` or another component is a bind-mount or symlink (#521).
+ *
+ * A copy of `canonicalize` in packages/core/src/project-config.ts, kept here
+ * without a core import so the lightweight hooks stay cheap; a parity test
+ * holds the two together (#1357). `realpathSync.native` folds letter case to
+ * the on-disk name on case-insensitive filesystems; a missing path resolves
+ * its deepest existing ancestor and re-appends the rest (#1319).
+ */
+export function canonicalize(p: string): string {
+  const abs = resolve(p)
+  try { return realpathSync.native(abs) } catch {}
+  const tail: string[] = []
+  let cur = abs
+  for (;;) {
+    const parent = dirname(cur)
+    if (parent === cur) return abs
+    tail.unshift(basename(cur))
+    cur = parent
+    try { return join(realpathSync.native(cur), ...tail) } catch {}
+  }
 }
 
 /**
@@ -30,12 +48,10 @@ function canonicalize(p: string): string {
  * home) — i.e., the user's project root IS $HOME. For nested projects the walk
  * stops without reading home's config files.
  *
- * Used by the session enforcement hooks (`hook-session-guard`,
- * `hook-session-remind`, `hook-session-mark`) and the injection hooks
- * (`hook-inject`, `hook-observe`, `hook-learn-check`), plus the Cursor
- * hooks (`hook-cursor-session-start`, `hook-cursor-guard`,
- * `hook-cursor-post-tool`) — all gate on this to stay silent for non-plur
- * projects.
+ * The hooks no longer gate on this directly (#1347): they ask the folder map
+ * through lib/folder-gate.ts, whose resolver walks the same markers
+ * (core `findPlurMarker`, held to this walk by a parity test). This stays as
+ * that gate's fallback when the resolver itself fails.
  *
  * Cheap — a few `existsSync` + JSON parses, terminates at `home`, the root, or the
  * first match.

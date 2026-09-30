@@ -21,8 +21,17 @@
  * |                      |                    | not read as revocation (detail: http_403)   |
  * | 403 ×2 consecutive   | `forbidden`        | treated as auth-level revocation            |
  * | 404                  | `unsupported`      | host parked for 10 min (NOT process life)   |
- * | 429                  | `rate_limited`     | honor Retry-After (else 30 s) cooldown      |
+ * | 422                  | `unreachable`      | refusal: breaker neither counts nor resets  |
+ * |                      |                    | (decision C5, as the write leg, #1308)      |
+ * | 429                 | `rate_limited`     | honor Retry-After (else 30 s) cooldown      |
  * | breaker open         | `skipped_cooldown` | 3 straight failures → 5 min cooldown        |
+ *
+ * Keying (formal R2-CoreB, core-policy#3): reachability — the failure
+ * breaker, its cooldown, the 404 TTL — is per HOST (normalized url), shared
+ * by every token. The 403 streak and the 429 cooldown are per CREDENTIAL
+ * (url, token): a revocation or a per-principal rate limit is a fact about
+ * one token, and another token on the same host neither resets nor inherits
+ * it. Tokens are persisted only as a truncated hash.
  *
  * Breaker / cooldown / unsupported state is PERSISTED across processes in
  * `<plur root>/cache/remote-health.json` (atomic unique-tmp write; mutations
@@ -49,6 +58,7 @@
  */
 
 import * as fs from 'fs'
+import { createHash } from 'crypto'
 import { homedir } from 'os'
 import { join, dirname } from 'path'
 import { z } from 'zod'
@@ -278,9 +288,13 @@ export interface RemoteRecallHost {
   token: string
   /** Scopes to request from this host — the dialed relevant subset. */
   scopes: string[]
-  /** Store entries (config order) backing those scopes. Rows map to the
-   *  FIRST entry whose scope contains the row's scope; `global` rows map to
-   *  the first-configured entry, mirroring `_loadSecondaryAndPacks`. */
+  /** Store entries (config order) backing those scopes — the caller passes
+   *  the DIALED entries only. Rows map to the FIRST dialed entry whose scope
+   *  contains the row's scope; `global` rows map to the first DIALED entry.
+   *  This is not what `_loadSecondaryAndPacks` does: that leg narrows a
+   *  `global` row into EVERY store entry whose load returned it, so a global
+   *  row has one load-leg id per such entry and the recall-leg id matches the
+   *  one for this host's first dialed entry (formal R2-CoreB, core-policy#7b). */
   entries: Array<{ scope: string }>
 }
 
@@ -312,16 +326,37 @@ export interface RemoteRecallOptions {
 // Persistent per-host health state
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-CREDENTIAL state (formal R2-CoreB, core-policy#3). Recall dials per
+ * (url, token), and two tokens on one url are two credentials with
+ * independent validity and — the server limits per principal — independent
+ * rate budgets. Keyed by {@link tokenHealthKey}, never by the token itself.
+ */
+interface TokenHealth {
+  /** Consecutive 403s for THIS token — 2 required before `forbidden`. */
+  forbidden_count?: number
+  /** 429 Retry-After cooldown for THIS token (epoch ms). */
+  rate_limited_until?: number
+}
+
 interface HostHealth {
-  /** Consecutive network-class failures (timeout/unreachable/5xx/bad body). */
+  /** Consecutive network-class failures (timeout/unreachable/5xx/bad body).
+   *  Reachability is a fact about the HOST, shared by every token. */
   failures?: number
-  /** Breaker open until (epoch ms) — `skipped_cooldown` while in force. Also
-   *  set by 429 (Retry-After). */
+  /** Breaker open until (epoch ms) — `skipped_cooldown` while in force, for
+   *  every token. Set by the network breaker only; a 429 cools down the token
+   *  that earned it (`tokens[k].rate_limited_until`). A file written before
+   *  that split may still carry a 429 cooldown here; it is honored until it
+   *  expires. */
   cooldown_until?: number
   /** 404 TTL — `unsupported` while in force. */
   unsupported_until?: number
-  /** Consecutive 403s — 2 required before `forbidden` (revocation). */
+  /** Legacy host-wide 403 streak, from before the per-token split. Ignored
+   *  and dropped on the next dial: a streak built from several tokens'
+   *  403s is not evidence that any one of them was revoked. */
   forbidden_count?: number
+  /** Per-credential state, keyed by {@link tokenHealthKey}. */
+  tokens?: Record<string, TokenHealth>
   last_state?: RemoteHostState
   updated_at?: number
   /** Hook-header suppression bookkeeping (plan A4′). */
@@ -332,6 +367,16 @@ interface HostHealth {
 interface RemoteHealthFile {
   version: 1
   hosts: Record<string, HostHealth>
+}
+
+/**
+ * The key a token's state is persisted under in remote-health.json: a
+ * truncated SHA-256, so the file never holds a credential. 64 bits is ample to
+ * keep a handful of tokens per host apart; a collision would only merge two
+ * tokens' advisory state, which is what every token shared before the split.
+ */
+export function tokenHealthKey(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex').slice(0, 16)
 }
 
 /** Default health-file path. Honors PLUR_PATH like the rest of the CLI. */
@@ -436,19 +481,29 @@ export function isHostInCooldown(
   url: string,
   now: number = Date.now(),
   statePath: string = remoteHealthPath(),
+  /** The credential the caller will dial with. Without it only the host-wide
+   *  breaker is consulted; with it, that token's own 429 cooldown too (a 429
+   *  is per principal — core-policy#3). */
+  token?: string,
 ): { inCooldown: boolean; until?: number; reason?: 'breaker' | 'rate_limit' } {
   try {
     const health = readRemoteHealth(statePath)
     const h = health.hosts[normalizeEndpointUrl(url)]
-    if (!h?.cooldown_until || h.cooldown_until <= now) return { inCooldown: false }
-    // `cooldown_until` is set by both the failure breaker and a 429
-    // Retry-After. `last_state` distinguishes them for the operator-facing
-    // message; the skip decision is the same either way.
-    return {
-      inCooldown: true,
-      until: h.cooldown_until,
-      reason: h.last_state === 'rate_limited' ? 'rate_limit' : 'breaker',
+    if (h?.cooldown_until && h.cooldown_until > now) {
+      // Host-wide `cooldown_until` is the network breaker; only a file written
+      // before the per-token split carries a 429 here, which `last_state`
+      // still labels. The skip decision is the same either way.
+      return {
+        inCooldown: true,
+        until: h.cooldown_until,
+        reason: h.last_state === 'rate_limited' ? 'rate_limit' : 'breaker',
+      }
     }
+    const th = token !== undefined ? h?.tokens?.[tokenHealthKey(token)] : undefined
+    if (th?.rate_limited_until && th.rate_limited_until > now) {
+      return { inCooldown: true, until: th.rate_limited_until, reason: 'rate_limit' }
+    }
+    return { inCooldown: false }
   } catch {
     // Health state is an optimisation. If it cannot be read, do NOT block the
     // write — a corrupt cache file must not become an outage.
@@ -537,6 +592,32 @@ function clamp01(n: number): number {
 }
 
 /**
+ * Stamp a store row the way a store LOADER does: narrow `global` to the
+ * store's scope, namespace the id (idempotently — `namespaceEngramId`), and
+ * set the loader markers `_originalId` / `_storeScope`. Any `_`-prefixed key
+ * the row itself carried is dropped first: loader markers are the loader's,
+ * never the row's (core-policy#6). The input is not mutated.
+ *
+ * Exported so both remote ingestion legs can share ONE rule (formal R2-CoreB,
+ * core-policy#7b): the recall leg uses it below; `_loadSecondaryAndPacks`
+ * (index.ts) still has its own copy, whose bare regex replace is not
+ * idempotent — a row whose id already carries the store prefix gets it twice
+ * there and once here, so the two legs mint different ids for the same row.
+ */
+export function stampStoreRow(e: Engram, storeScope: string): Engram {
+  const cloned: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(e as unknown as Record<string, unknown>)) {
+    if (!k.startsWith('_')) cloned[k] = v
+  }
+  if (cloned.scope === 'global') cloned.scope = storeScope
+  const originalId = String(cloned.id)
+  cloned.id = namespaceEngramId(originalId, storeScope)
+  cloned._originalId = originalId
+  cloned._storeScope = storeScope
+  return cloned as unknown as Engram
+}
+
+/**
  * Validate + scope-guard + namespace one host's rows, and derive per-row
  * scores (server score when present, rank-mapped fallback otherwise).
  *
@@ -591,22 +672,22 @@ function processHostRows(
       logger.debug(`[plur:remote-recall] ${host.url} row ${e.id} outside dialed scopes (${e.scope}) — dropped`)
       continue
     }
-    const cloned = { ...e } as any
-    if (cloned.scope === 'global') cloned.scope = entry.scope
-    const originalId = cloned.id
-    cloned.id = namespaceEngramId(cloned.id, entry.scope)
-    cloned._originalId = originalId
-    cloned._storeScope = entry.scope
+    const cloned = stampStoreRow(e, entry.scope) as any
+    // Served by a url store (see the same marker in `_loadSecondaryAndPacks`).
+    cloned._fromRemoteStore = true
     // The injection scorer iterates `tags` unguarded — a row without them
     // must not throw at scoring time.
     if (!Array.isArray(cloned.tags)) cloned.tags = []
     // Activation normalization — synthesized-fresh (plan: decay-parity task
-    // dissolved into this).
+    // dissolved into this). The raw `...act` spread goes FIRST: spread after
+    // the type-guarded defaults, it overwrote them with the very server values
+    // they guard (a string `storage_strength` reached ranking arithmetic —
+    // formal R2-CoreB, core-policy#7a). Unmodelled keys still pass through.
     const act = (cloned.activation && typeof cloned.activation === 'object') ? cloned.activation : {}
     cloned.activation = {
+      ...act,
       storage_strength: typeof act.storage_strength === 'number' ? act.storage_strength : 1.0,
       frequency: typeof act.frequency === 'number' ? act.frequency : 0,
-      ...act,
       retrieval_strength: typeof act.retrieval_strength === 'number' ? act.retrieval_strength : 0.7,
       last_accessed: today,
     }
@@ -710,6 +791,14 @@ export async function remoteRecall(
     const key = normalizeEndpointUrl(host.url)
     const h: HostHealth = health.hosts[key] ?? {}
     health.hosts[key] = h
+    // Credential state lives under the token's key (core-policy#3): hosts
+    // sharing a url are dialed in parallel here, and one shared counter let a
+    // healthy token reset a revoked token's streak, two tokens' single 403s
+    // add up to a revocation, and one token's 429 park the other.
+    delete h.forbidden_count
+    const tokens = h.tokens ?? (h.tokens = {})
+    const tk = tokenHealthKey(host.token)
+    const th: TokenHealth = tokens[tk] ?? (tokens[tk] = {})
     const t0 = now()
     const finish = (state: RemoteHostState, extra: Partial<HostRecallOutcome> = {},
       rows: { engrams: Engram[]; scores: Map<string, number> } = { engrams: [], scores: new Map() },
@@ -726,7 +815,7 @@ export async function remoteRecall(
       h.failures = (h.failures ?? 0) + 1
       // Any observed non-403 response/failure breaks a 403 streak — the
       // forbidden threshold means 2 CONSECUTIVE 403s, not 2 total.
-      h.forbidden_count = 0
+      th.forbidden_count = 0
       if (h.failures >= BREAKER_FAILURE_THRESHOLD) {
         h.cooldown_until = now() + BREAKER_COOLDOWN_MS
         h.failures = 0
@@ -734,7 +823,7 @@ export async function remoteRecall(
       return finish(state, detail ? { detail } : {})
     }
 
-    if ((h.cooldown_until ?? 0) > t0) return finish('skipped_cooldown')
+    if ((h.cooldown_until ?? 0) > t0 || (th.rate_limited_until ?? 0) > t0) return finish('skipped_cooldown')
     if ((h.unsupported_until ?? 0) > t0) return finish('unsupported', { detail: 'unsupported_ttl' })
 
     const ctrl = new AbortController()
@@ -773,29 +862,39 @@ export async function remoteRecall(
 
       if (res.status === 401) {
         h.failures = 0
-        h.forbidden_count = 0
+        th.forbidden_count = 0
         return finish('auth_expired')
       }
       if (res.status === 403) {
         h.failures = 0
-        h.forbidden_count = (h.forbidden_count ?? 0) + 1
+        th.forbidden_count = (th.forbidden_count ?? 0) + 1
         // Require 2 CONSECUTIVE 403s before treating as revocation — a
         // transient proxy 403 must not read as auth loss (server-side scope
         // narrowing is silent-with-dropped_scopes, never 403 — B-T7 Q1).
-        if (h.forbidden_count >= 2) return finish('forbidden')
+        if (th.forbidden_count >= 2) return finish('forbidden')
         return finish('unreachable', { detail: 'http_403_unconfirmed' })
       }
       if (res.status === 404) {
         h.failures = 0
-        h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
+        th.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
         h.unsupported_until = now() + UNSUPPORTED_TTL_MS
         return finish('unsupported', { detail: 'http_404' })
       }
+      if (res.status === 422) {
+        // Decision C5: the host answered that the REQUEST was invalid — a
+        // refusal, like 401/403/404, not a sign the host is down. The same
+        // rule as the write leg (#1308): it neither counts toward the
+        // per-host breaker nor resets it. Counting it let three refused
+        // recalls park queued writes to every scope on the host.
+        h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
+        return finish('unreachable', { detail: 'http_422_refused' })
+      }
       if (res.status === 429) {
         h.failures = 0
-        h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
+        th.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
         const retryMs = parseRetryAfterMs(res.headers.get('retry-after'), now())
-        h.cooldown_until = now() + Math.min(retryMs ?? RATE_LIMIT_DEFAULT_COOLDOWN_MS, RATE_LIMIT_MAX_COOLDOWN_MS)
+        // Per principal: this token cools down, other tokens keep dialing.
+        th.rate_limited_until = now() + Math.min(retryMs ?? RATE_LIMIT_DEFAULT_COOLDOWN_MS, RATE_LIMIT_MAX_COOLDOWN_MS)
         return finish('rate_limited')
       }
       if (!res.ok) {
@@ -815,7 +914,7 @@ export async function remoteRecall(
       if (!envelope.success) return networkFailure('unreachable', 'bad_envelope')
 
       h.failures = 0
-      h.forbidden_count = 0
+      th.forbidden_count = 0
       h.cooldown_until = 0
       const rows = processHostRows(envelope.data.results, host, today)
       const dropped = envelope.data.dropped_scopes

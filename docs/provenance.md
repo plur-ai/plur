@@ -270,6 +270,13 @@ separate question, answered by its scope and visibility — and engrams are
 private unless you say otherwise. A record about a private memory says this on
 the licence line, because that is the line that reads like permission.
 
+The rule: a memory is **withheld** (`engram:maySharePlainly: false`, an
+`odrl:distribute` prohibition with reason `notShared`) when its visibility is
+`private`, or when its scope stays on this machine — not a shared scope such as
+`group:` or `project:`, and not backed by a remote store — and it is not marked
+`public`. Marking a memory `public` is the act that clears a `global`, `user:`,
+`agent:` or `local` memory to leave.
+
 **The licence text is authoritative.** The policy is a summary of it, and every
 policy carries the canonical licence address so a reader wanting certainty can
 follow it.

@@ -243,6 +243,11 @@ async function executeDedupDecision(
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
             if (idx === -1) return null
+            // Re-check under the lock (formal-verification finding, persistence.md
+            // candidate 7): `existing` is a pre-lock snapshot, and an engram locked
+            // since then must not be rewritten — same outcome as locked-before: ADD.
+            if ((engrams[idx] as any).commitment === 'locked') return null
+            const previousStatement = engrams[idx].statement
             const updated = { ...engrams[idx] } as any
             updated.statement = statement
             updated.content_hash = computeContentHash(statement)
@@ -259,7 +264,7 @@ async function executeDedupDecision(
               event: 'engram_updated',
               engram_id: targetId,
               timestamp: new Date().toISOString(),
-              data: { old_statement: existing.statement, new_statement: statement, reason: 'LLM dedup UPDATE' },
+              data: { old_statement: previousStatement, new_statement: statement, reason: 'LLM dedup UPDATE' },
               // Which model decided this (#962). A model rewrote the statement,
               // and that rewrite became the memory. Without naming the model the
               // decision cannot be reviewed later.
@@ -282,6 +287,8 @@ async function executeDedupDecision(
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
             if (idx === -1) return null
+            // Locked since the pre-lock check: do not merge into it (see UPDATE).
+            if ((engrams[idx] as any).commitment === 'locked') return null
             const merged = { ...engrams[idx] } as any
             merged.statement = `${merged.statement} ${statement}`
             merged.content_hash = computeContentHash(merged.statement)

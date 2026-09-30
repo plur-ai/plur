@@ -4,16 +4,11 @@
 
 Part of [PLUR](https://plur.ai) — the engram exchange layer connecting agents across tools. Compatible with the MCP server ([`@plur-ai/mcp`](https://npmjs.com/package/@plur-ai/mcp)) for Claude Code, Cursor, and Windsurf, and with [`@plur-ai/claw`](https://npmjs.com/package/@plur-ai/claw) for OpenClaw. One store, shared across every PLUR-compatible tool.
 
-> **This package must be published on npm before it works.** opencode resolves
-> a bare plugin name — `plugin: ["@plur-ai/opencode"]` — by having Bun fetch it
-> from the npm registry at plugin-load time. Until `@plur-ai/opencode` is on
-> npm, that entry silently resolves to nothing: **no error appears anywhere in
-> opencode's log.** The config looks correct, opencode starts normally, and no
-> memory ever reaches the model. This was found the hard way, by the live
-> acceptance gate below, before the package was published — see [Live
-> acceptance gate](#live-acceptance-gate). If you are reading this before the
-> npm listing exists, `plur init --opencode` will write a config entry that
-> does nothing yet.
+> opencode resolves a bare plugin name — `plugin: ["@plur-ai/opencode"]` — by
+> having Bun fetch it from the npm registry at plugin-load time, and logs **no
+> error anywhere** when that fetch finds nothing. The package is published, so
+> the entry resolves; if memory never reaches the model, run `plur doctor`,
+> which checks that the plugin name resolves.
 
 ## What it does
 
@@ -29,15 +24,15 @@ Everything is stored as plain YAML in `~/.plur/` — the same store `@plur-ai/mc
 ## Install
 
 ```sh
-npx @plur-ai/cli init --opencode
+npx @plur-ai/cli init
 ```
 
-This writes two things into opencode's global config (`~/.config/opencode/opencode.json`, or `.jsonc` if that's what you already have):
+When `~/.config/opencode` exists, this writes two things into opencode's global config (`~/.config/opencode/opencode.json`, or `.jsonc` if that's what you already have):
 
 - `plugin: ["@plur-ai/opencode"]` — the automatic layer described above.
-- `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`, for when you want the agent to query or teach memory on demand.
+- `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`, for when you want the agent to query or teach memory on demand. On Windows it launches `node.exe` with `@plur-ai/mcp`'s js entry, not a bare `npx`.
 
-Unlike `--cursor`/`--codex`/`--antigravity`, `plur init` does **not** auto-detect opencode from `~/.config/opencode` existing — you must pass `--opencode` explicitly. That's deliberate: until this package is published on npm, auto-enabling it would write a `plugin` entry that silently resolves to nothing (see the warning above) into every opencode user's config. `--no-opencode` is accepted too, as an explicit no-op.
+Like `--cursor`/`--codex`/`--antigravity`, opencode is auto-detected. `--opencode` sets it up even when `~/.config/opencode` does not exist yet; `--no-opencode` skips it. Re-running `plur init` is safe: it changes nothing that is already in place.
 
 ### Manual `opencode.json`
 
@@ -57,7 +52,7 @@ If you'd rather edit the config by hand, or `plur init` reports your config is i
 }
 ```
 
-`plur init --opencode` merges into an existing config — it only ever adds to `plugin` and sets `mcp.plur`, never touching your other keys (`model`, `theme`, `permission`, …). If your existing `opencode.json`/`.jsonc` doesn't parse as JSON, or `plugin`/`mcp` already hold something other than an array/object, it refuses and leaves the file untouched rather than guessing — add the two keys above by hand in that case.
+`plur init` merges into an existing config — it only ever adds to `plugin` and sets `mcp.plur`, never touching your other keys (`model`, `theme`, `permission`, …). If your existing `opencode.json`/`.jsonc` doesn't parse as JSON, or `plugin`/`mcp` already hold something other than an array/object, it refuses and leaves the file untouched rather than guessing — add the two keys above by hand in that case.
 
 ## Verified version
 
@@ -96,13 +91,13 @@ plur trust --list   # see what's trusted
 plur untrust .      # revoke
 ```
 
-This is the same shape as `direnv allow`, `git config safe.directory`, and VS Code's workspace trust: a project file that changes behaviour requires a one-time, explicit, per-directory grant — stored under your PLUR home (`~/.plur/trust.yaml`, never inside the project, so a repo cannot grant itself trust). Trusting a directory also trusts everything below it, so trusting a repo's root covers a `.plur.yaml` anywhere in that repo.
+This is the same shape as `direnv allow`, `git config safe.directory`, and VS Code's workspace trust: a project file that changes behaviour requires a one-time, explicit, per-directory grant — stored under your PLUR home (`~/.plur/trust.yaml`, never inside the project, so a repo cannot grant itself trust). If opencode runs with its own `PLUR_PATH`, the grant must go to that store — `plur --path <store> trust .` — and the warning prints the command in that form. Trusting a directory also trusts everything below it, so trusting a repo's root covers a `.plur.yaml` anywhere in that repo.
 
 **Enterprise flow:** clone the company repo (whose `.plur.yaml` says `scope: group:acme/eng`), run `plur trust .` once, and recall/writes reach your team's store from then on — exactly as if you had configured the scope yourself.
 
 **Untrusted directory:** the plugin ignores the `.plur.yaml`'s `scope`/`domain` entirely and falls back to the local default, logging a `warning`-level line (visible by default, no `PLUR_DEBUG` needed) naming the file, the scope it declared, and the exact `plur trust` command to run if you meant to honor it. This closes an attack proved end to end during the 2026-09 audit: a repo you merely clone and open — no prompt typed — could otherwise redirect your recall queries and taught statements to a scope of the attacker's choosing, including one of *your own* team's remote stores if the attacker guessed or knew its name.
 
-**PLUR Enterprise.** A `.plur.yaml` written by `plur init-remote` also carries `remote_url`/`remote_token`/`remote_scopes`, and the plugin honors those too, behind the same trust gate every other PLUR adapter uses — so recall reaches your team's store here exactly as it does in Claude Code, Codex and Antigravity. They are a stronger grant than `scope`: they send your prompt text to the host the file names, using the credential the file carries, so an untrusted directory gets them dropped and a `warning` line naming the directory and the `plur trust` command. Until 0.1.1 the plugin read none of them and enterprise recall silently stayed local (#1207).
+**PLUR Enterprise.** Connect a folder with `plur remote --url <url> --token <token> --scope <scope>`: the URL and token go into your own `~/.plur/config.yaml` as a url store, the scope is recorded for the folder in `~/.plur/folders.yaml`, and nothing is written to the repo (#1413). Core dials a url store only when the session's scope names that store's org, and this plugin does not read the folder map yet, so here the scope still has to come from a trusted `.plur.yaml` `scope:` (above). A `.plur.yaml` written by an older `plur init-remote` also carries `remote_url`/`remote_token`/`remote_scopes`, and the plugin honors those too, behind the same trust gate every other PLUR adapter uses — so recall reaches your team's store here exactly as it does in Claude Code, Codex and Antigravity. They are a stronger grant than `scope`: they send your prompt text to the host the file names, using the credential the file carries, so an untrusted directory gets them dropped and a `warning` line naming the directory and the `plur trust` command. Until 0.1.1 the plugin read none of them and enterprise recall silently stayed local (#1207).
 
 The `cwd` passed to the underlying `Plur` constructor is `autoDiscover: false` (2026-09 audit) — it never performs cwd-derived store discovery at all, so it cannot create a per-project store as a side effect of merely loading.
 
@@ -140,7 +135,7 @@ Environment knobs:
 
 ### Enterprise gate
 
-`test/e2e-enterprise.manual.mjs` is the sibling gate for the other half: does a project's `.plur.yaml` remote config actually deliver **team** memory into a real session (#1207)? Same harness shape, two differences that carry the point — the local store is left with zero engrams and zero configured stores, so a pass cannot be explained by local memory, and the work repo's `.plur.yaml` is written by the real `plur init-remote`, trust grant included, rather than by hand.
+`test/e2e-enterprise.manual.mjs` is the sibling gate for the other half: does a project's `.plur.yaml` remote config actually deliver **team** memory into a real session (#1207)? Same harness shape, two differences that carry the point — the local store is left with zero engrams and zero configured stores, so a pass cannot be explained by local memory, and the work repo carries a legacy `.plur.yaml` with remote fields, trusted with the real `plur trust` and checked with `plur remote` before the session starts. `plur remote` no longer writes `.plur.yaml`, so this gate exists to keep repos that still carry those fields working.
 
 It asserts on the **injected block** (via the observer) rather than the model's prose, and then on the breaker's own `cache/remote-health.json` — a real `POST /api/v1/recall` outcome per host, which a pass from any other source cannot fake.
 

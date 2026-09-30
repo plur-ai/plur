@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
 import type { Counters } from './counters.js'
 import type { PlurClient } from './client.js'
-import { guard, type WriteQueue } from './guard.js'
+import { contain, type WriteQueue } from './guard.js'
 import { lastAssistantText, type LogEvent } from './session-log.js'
 
 /** The structural slice of a live dsh Agent this module reads. */
@@ -51,7 +51,7 @@ export interface CaptureDeps {
 export function registerCapture(ctx: Context, deps: CaptureDeps): void {
   const { config, counters, plur, resolveScope, queue } = deps
   if (!config.autoCapture) return
-  const opts = { timeoutMs: config.timeoutMs, onError: () => counters.bump('errors_swallowed') }
+  const onError = () => counters.bump('errors_swallowed')
 
   // The payload is `{ agent, turn, signal }`, NOT the agent. Reading
   // `.session` off the payload always produced undefined, so `events` was
@@ -62,7 +62,8 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     const summary = lastAssistantText(events)
     if (!summary) return
     const session = payload?.agent?.session
-    void queue(() => guard(async () => {
+    // Holds the queue slot until settled or the queue's hard cap (decision S3).
+    void queue(() => contain(async () => {
       const scope = await resolveScope(session)
       // `scope` is not a CaptureContext field — core keeps one timeline per
       // store and silently dropped it. A tag is where the scope survives, so a
@@ -71,7 +72,7 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
         tags: [`scope:${scope}`],
         ...(session?.id === undefined ? {} : { session_id: session.id }),
       })
-    }, opts))
+    }, onError))
   })
 
   // NO learn-before-compaction in 0.1.0.

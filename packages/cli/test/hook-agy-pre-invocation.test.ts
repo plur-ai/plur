@@ -10,6 +10,26 @@ import {
   writeAgyTurnCache,
   agyTextHash,
 } from '../src/lib/agy-hook-io.js'
+import { trustDirectory } from '@plur-ai/core'
+
+// The hooks read the folder map from the PLUR home and $HOME (#1347). These
+// tests run the hooks in-process, so both point into a temp dir: the real
+// ~/.plur is never read or written.
+let isoHome: string
+const savedEnv = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, PLUR_PATH: process.env.PLUR_PATH }
+function isolateHome(): void {
+  isoHome = mkdtempSync(join(tmpdir(), 'plur-iso-home-'))
+  process.env.HOME = isoHome
+  process.env.USERPROFILE = isoHome
+  process.env.PLUR_PATH = join(isoHome, '.plur')
+}
+function restoreHome(): void {
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  rmSync(isoHome, { recursive: true, force: true })
+}
 
 /**
  * Command-level tests for the agy injection hook — the most stateful code in
@@ -46,7 +66,10 @@ vi.mock('../src/lib/codex-hook-io.js', async (importOriginal) => {
 
 vi.mock('../src/plur.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/plur.js')>()
-  return { ...actual, createPlur: () => ({}) as never }
+  // The workspace directory is trusted: since decision E3 (2026-09-26) a
+  // `.plur.yaml` scope is adopted only from a `plur trust`ed directory, and
+  // this suite is about WHICH directory is read, not about trust.
+  return { ...actual, createPlur: () => ({ isDirectoryTrusted: () => true }) as never }
 })
 
 vi.mock('@plur-ai/core', async (importOriginal) => {
@@ -110,6 +133,7 @@ function clean() {
 
 beforeEach(() => {
   clean()
+  isolateHome()
   dir = mkdtempSync(join(tmpdir(), 'plur-agy-preinv-'))
   written = []
   injectCalls = []
@@ -124,6 +148,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  restoreHome()
   stdout.mockRestore()
   stderr.mockRestore()
   rmSync(dir, { recursive: true, force: true })
@@ -232,6 +257,7 @@ describe('hook-agy-pre-invocation', () => {
   it('resolves project config from the workspace path, not process.cwd()', async () => {
     stubbedScope = 'project:from-workspace'
     writeFileSync(join(dir, '.plur.yaml'), 'scope: project:from-workspace\n')
+    trustDirectory(dir, process.env.PLUR_PATH!) // D1: only a trusted .plur.yaml applies its scope
     setStdin({
       conversationId: SID, invocationNum: 0,
       transcriptPath: transcript({ step: 0, text: 'scoped question' }),

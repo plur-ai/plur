@@ -26,6 +26,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const arg = args[i]
     if (arg === '--budget' && i + 1 < args.length) { budget = parseInt(args[++i], 10); i++ }
     else if (arg === '--no-with-default-protocol') { withProtocol = false; i++ }
+    // `--` ends flag parsing: the next token is the task, verbatim, even when
+    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
+    // itself became the task.
+    else if (arg === '--') { if (!task && i + 1 < args.length) task = args[i + 1]; break }
     else if (!task) { task = arg; i++ }
     else { i++ }
   }

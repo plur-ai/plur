@@ -1,9 +1,9 @@
-import { readSync, mkdirSync, writeFileSync, appendFileSync, statSync, readdirSync, unlinkSync } from 'fs'
+import { readSync, mkdirSync, writeFileSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { safeSessionKey } from './session-key.js'
-import { ensureSessionDir, sessionDirSafeToSweep } from './codex-hook-io.js'
+import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted, ticketCounter } from './codex-hook-io.js'
 
 /**
  * Shared stdin-reading and sentinel-path helpers for the four hook-cursor-*
@@ -141,8 +141,29 @@ function pruneStaleSessions(dir: string): void {
   }
 }
 
+function cursorDir(): string {
+  return join(tmpdir(), 'plur-cursor-sessions')
+}
+
+/**
+ * Is a sentinel for this conversation present in a directory we can trust?
+ * Readers used `existsSync(sentinelPath(id))` directly, so a sentinel planted
+ * behind a symlinked or foreign `plur-cursor-sessions` switched the guard
+ * off and armed the reminder writer (formal r2, cli#8).
+ */
+export function isSessionStarted(conversationId: string): boolean {
+  const dir = sessionsDir()
+  return sessionDirTrusted(dir) && existsSync(join(dir, `${safeSessionKey(conversationId)}.marker`))
+}
+
+/** Reset the reminder timer — only in a vetted directory, never throws. */
+export function touchReminder(conversationId: string): void {
+  if (!ensureSessionDir(cursorDir())) return
+  try { writeFileSync(lastReminderPath(conversationId), String(Date.now()), { mode: 0o600 }) } catch { /* fail open */ }
+}
+
 export function sessionsDir(): string {
-  const dir = join(tmpdir(), 'plur-cursor-sessions')
+  const dir = cursorDir()
   // ensureSessionDir (shared with the Codex/agy families, #1060) creates
   // 0700 and vets symlink/ownership/mode; on refusal we still return the
   // path — writers fail open individually — but never prune, because
@@ -177,9 +198,15 @@ export function stopCountPath(conversationId: string): string {
  * read-then-write can.
  */
 export function incrementCounter(path: string): number {
+  // The counter's directory must pass the same vetting as every other
+  // writer (cli#8): the previous code computed the verdict in sessionsDir()
+  // and then appended through the refused symlink anyway. Check, never
+  // create: every caller's path builder already ran ensureSessionDir.
+  if (!sessionDirTrusted(dirname(path))) return Number.MAX_SAFE_INTEGER
   try {
-    appendFileSync(path, '.', { mode: 0o600 })
-    return statSync(path).size
+    // A distinct value per caller (cli#11): append-then-stat let two racing
+    // hooks both read the same size. See ticketCounter.
+    return ticketCounter(path)
   } catch {
     // Same fail-open contract as the Codex/agy counters (#1060, and the
     // 2026-08-27 adversarial-audit finding this family never received): a
@@ -201,6 +228,8 @@ export function incrementCounter(path: string): number {
  * same two writes, so it's one function instead of copy-pasted pairs.
  */
 export function markSessionStarted(conversationId: string): void {
+  // Never write into a refused directory (cli#8) — fail open instead.
+  if (!ensureSessionDir(cursorDir())) return
   const now = String(Date.now())
   try {
     writeFileSync(sentinelPath(conversationId), now, { mode: 0o600 })

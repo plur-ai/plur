@@ -1,11 +1,11 @@
-import { existsSync } from 'fs'
 import { type GlobalFlags } from '../plur.js'
-import { isPlurConfigured } from '../lib/plur-configured.js'
+import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
 import {
   readStdinJson,
   cursorConversationId,
   isPlurSessionStartTool,
   sentinelPath,
+  isSessionStarted,
   markSessionStarted,
   incrementCounter,
 } from '../lib/cursor-hook-io.js'
@@ -70,17 +70,17 @@ function blockCountPath(conversationId: string): string {
   return `${sentinelPath(conversationId)}.guard-count`
 }
 
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
-  if (!isPlurConfigured()) return
-
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
+  // Silent unless the folder map says on (#1347).
+  if (!hookFolderOn(payloadDir(input), flags)) return
   const toolName = String(input.tool_name ?? '')
   if (isPlurSessionStartTool(toolName)) return
 
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't check — allow through rather than block blind
 
-  if (existsSync(sentinelPath(conversationId))) return // session already started
+  if (isSessionStarted(conversationId)) return // session already started (vetted dir — cli#8)
 
   const blockCount = incrementCounter(blockCountPath(conversationId))
   if (blockCount > MAX_BLOCKS_BEFORE_FALLBACK) {

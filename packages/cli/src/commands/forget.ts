@@ -38,6 +38,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       scope = args[++i]; i++
     }
     else if (arg === '--search') { isSearch = true; i++ }
+    // `--` ends flag parsing: the next token is the target, verbatim, even when
+    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
+    // itself became the target.
+    else if (arg === '--') { if (!target && i + 1 < args.length) target = args[i + 1]; break }
     else if (!target) { target = arg; i++ }
     else { i++ }
   }
@@ -109,8 +113,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
   const matches = await plur.recall(target, { limit: 100, remote: false })
   if (matches.length === 0) {
+    // Same exit code in both modes (formal Adapters #5): nothing was retired.
     if (shouldOutputJson(flags)) {
       outputJson({ success: false, error: `No active engrams matching "${target}"` })
+      process.exitCode = 1
     } else {
       exit(1, `No active engrams matching "${target}"`)
     }
@@ -142,4 +148,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`  ${e.id}  ${e.statement}`)
     }
   }
+  // Ambiguous: nothing was retired, so the requested mutation did not happen
+  // (formal Adapters #5). The JSON already said `success: false`.
+  process.exitCode = 1
 }

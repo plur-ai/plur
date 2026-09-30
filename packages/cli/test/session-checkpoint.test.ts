@@ -167,8 +167,8 @@ describe('deferred wrap-up detection (#216)', () => {
     // is unconditional), so we can assert directly without a guard.
     expect(stdout.trim()).not.toBe('')
     const output = JSON.parse(stdout)
-    expect(output.additionalContext).toContain('Previous session')
-    expect(output.additionalContext).toContain('ended without wrap-up')
+    expect(output.hookSpecificOutput.additionalContext).toContain('Previous session')
+    expect(output.hookSpecificOutput.additionalContext).toContain('ended without wrap-up')
 
     // Checkpoint was cleaned up after detection
     const checkpointPath = join(home, '.plur', 'sessions', 'old-session-789.checkpoint.json')

@@ -65,10 +65,10 @@ export type AgyHooksConfig = Record<string, AgyHookSet>
  *   payload carries no tool name (`stepIdx` + `error` only, per the bundled
  *   docs), so detection has to happen on the way IN.
  *
- * Deliberately absent: `PostToolUse` (can only output `{}` — nothing to do),
- * and `Stop` (its only power is `decision: "continue"`, which BLOCKS
- * termination and forces another loop — never acceptable for a memory
- * nudge).
+ * Deliberately absent: `PostToolUse` (can only output `{}` — nothing to do).
+ * `Stop` carries no nudge (its only power is `decision: "continue"`, which
+ * BLOCKS termination and forces another loop); it is used only for the
+ * silent auto-rate hook (#1310), which never prints a decision.
  *
  * Timeouts are SECONDS (agy default 30). PreInvocation gets 20 to cover
  * injectWithFallback's bounded worst case (8s hybrid deadline, then a BM25
@@ -88,6 +88,12 @@ export function buildAgyHookSet(cmd: string): AgyHookSet {
         matcher: '*',
         hooks: [{ type: 'command', command: `${cmd} hook-agy-guard`, timeout: 5 }],
       },
+    ],
+    // Auto-rate injected engrams (#1310). Prints nothing — never
+    // `decision: "continue"` — so it cannot block the stop; the reply is read
+    // from the transcript because the Stop payload carries none.
+    Stop: [
+      { type: 'command', command: `${cmd} hook-auto-rate agy`, timeout: 10 },
     ],
   }
 }

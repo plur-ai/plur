@@ -41,8 +41,13 @@ describe('plur scopes (#647)', () => {
     expect(rawConfig()).not.toContain('group:acme/team') // dismissal cleared
   })
 
-  it('register a scope no configured remote authorizes → reports failure', () => {
-    const out = JSON.parse(run('scopes register group:acme/nope'))
+  it('register a scope no configured remote authorizes → reports failure and exits 1', () => {
+    // Decision S1 (2026-09-26): a refused registration exits 1 in --json mode
+    // too, like text mode; the JSON body still reports the failure on stdout.
+    let thrown: { status?: number; stdout?: string } | undefined
+    try { run('scopes register group:acme/nope') } catch (e) { thrown = e as { status?: number; stdout?: string } }
+    expect(thrown?.status).toBe(1)
+    const out = JSON.parse(String(thrown?.stdout ?? '').trim())
     expect(out.success).toBe(false)
     expect(out.action).toBe('register')
     expect(out.error).toMatch(/not authorized/)

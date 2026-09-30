@@ -43,6 +43,34 @@ function extractMessageText(message: AgentMessage): string {
 // plugin task 6b) so `@plur-ai/opencode` can harvest the same 🧠 I learned:
 // self-report block instead of vendoring a second copy. Imported above.
 
+/**
+ * How many sessions' state the engine keeps (formal R2, mcp#11). OpenClaw's
+ * ContextEngine has no session-end hook, so a top-level session's scope,
+ * message buffer and learned-set were never dropped in a long-lived gateway.
+ * The three maps are now LRU-bounded: every use touches the session, so only
+ * sessions idle while this many others were active are evicted. An evicted
+ * session loses its per-session dedup (core still dedups) and its scope
+ * (it re-bootstraps, or writes take core's unscoped routing).
+ */
+export const MAX_TRACKED_SESSIONS = 1000
+
+/** Map.get that marks the key most-recently used. */
+function touch<V>(m: Map<string, V>, k: string): V | undefined {
+  const v = m.get(k)
+  if (v !== undefined) { m.delete(k); m.set(k, v) }
+  return v
+}
+
+/** Map.set that marks most-recently used and evicts the least-recent over the cap. */
+function put<V>(m: Map<string, V>, k: string, v: V): void {
+  m.delete(k)
+  m.set(k, v)
+  while (m.size > MAX_TRACKED_SESSIONS) {
+    const oldest = m.keys().next().value as string
+    m.delete(oldest)
+  }
+}
+
 export interface PlurContextEngineOptions {
   path?: string
   auto_learn?: boolean
@@ -98,7 +126,7 @@ export class PlurContextEngine implements ContextEngine {
     try {
       // Store scope from sessionKey if available (e.g., "user:john:agent:helper")
       if (params.sessionKey) {
-        this.sessionScopes.set(params.sessionKey, `session:${params.sessionKey}`)
+        put(this.sessionScopes, params.sessionKey, `session:${params.sessionKey}`)
       }
       return { bootstrapped: true, reason: 'PLUR memory loaded' }
     } catch (err) {
@@ -119,10 +147,9 @@ export class PlurContextEngine implements ContextEngine {
     try {
       // Track messages for afterTurn
       const key = params.sessionKey || params.sessionId
-      if (!this.sessionMessages.has(key)) {
-        this.sessionMessages.set(key, [])
-      }
-      this.sessionMessages.get(key)!.push(params.message)
+      const buf = touch(this.sessionMessages, key) ?? []
+      buf.push(params.message)
+      put(this.sessionMessages, key, buf)
 
       // Real-time correction detection
       if (this.options.auto_learn && isCorrection(params.message)) {
@@ -135,7 +162,7 @@ export class PlurContextEngine implements ContextEngine {
             // routing path (_guardSensitiveScope sees scope == null) (#353).
             const pending = this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
-              scope: this.sessionScopes.get(params.sessionKey || '') || undefined,
+              scope: this._scopeOf(params.sessionKey) || undefined,
               source: 'openclaw:ingest',
               rationale: 'user correction detected in real-time',
               tags: [candidate.type],
@@ -167,7 +194,7 @@ export class PlurContextEngine implements ContextEngine {
       // Inject relevant engrams (hybrid: BM25 + embeddings when available)
       let injection = null
       if (task) {
-        const scope = this.sessionScopes.get(params.sessionKey || '') || undefined
+        const scope = this._scopeOf(params.sessionKey) || undefined
         const injectOpts = {
           budget: this.options.injection_budget,
           scope,
@@ -216,7 +243,7 @@ export class PlurContextEngine implements ContextEngine {
           if (candidate.confidence >= 0.7) {
             this._track(this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
-              scope: this.sessionScopes.get(params.sessionKey || '') || undefined,
+              scope: this._scopeOf(params.sessionKey) || undefined,
               source: 'openclaw:compact',
               rationale: 'extracted during context compaction',
               tags: [candidate.type],
@@ -254,7 +281,7 @@ export class PlurContextEngine implements ContextEngine {
       const key = params.sessionKey || params.sessionId
       // `|| undefined` (not `|| 'global'`) so an unscoped session reaches core's
       // unscoped routing path (_guardSensitiveScope sees scope == null) (#353).
-      const scope = this.sessionScopes.get(params.sessionKey || '') || undefined
+      const scope = this._scopeOf(params.sessionKey) || undefined
 
       if (this.options.auto_learn && newMessages.length > 0) {
         // Primary: LLM self-reported learnings from 🧠 section in assistant response
@@ -315,9 +342,9 @@ export class PlurContextEngine implements ContextEngine {
     ttlMs?: number
   }): Promise<SubagentSpawnPreparation | undefined> {
     // Inherit parent scope for the child session
-    const parentScope = this.sessionScopes.get(params.parentSessionKey)
+    const parentScope = touch(this.sessionScopes, params.parentSessionKey)
     if (parentScope) {
-      this.sessionScopes.set(params.childSessionKey, parentScope)
+      put(this.sessionScopes, params.childSessionKey, parentScope)
     }
     return {
       rollback: () => {
@@ -359,6 +386,16 @@ export class PlurContextEngine implements ContextEngine {
     return this.sessionScopes.get(sessionKey)
   }
 
+  /** Sizes of the per-session maps (for tests and diagnostics). */
+  sessionStateSizes(): { scopes: number; messages: number; learned: number } {
+    return { scopes: this.sessionScopes.size, messages: this.sessionMessages.size, learned: this.sessionLearned.size }
+  }
+
+  /** A session's scope, touching it (most recently used). */
+  private _scopeOf(sessionKey: string | undefined): string | undefined {
+    return touch(this.sessionScopes, sessionKey || '')
+  }
+
   /**
    * Learn a statement only if it hasn't been learned in this session already
    * (prevents triple-learning). Uses learnRouted (not learn) so a shared-scope
@@ -367,14 +404,21 @@ export class PlurContextEngine implements ContextEngine {
    * a slow remote does not stall the agent turn.
    */
   private async _learnIfNew(sessionKey: string, statement: string, context: LearnContext): Promise<void> {
-    if (!this.sessionLearned.has(sessionKey)) {
-      this.sessionLearned.set(sessionKey, new Set())
-    }
-    const seen = this.sessionLearned.get(sessionKey)!
+    const seen = touch(this.sessionLearned, sessionKey) ?? new Set<string>()
+    put(this.sessionLearned, sessionKey, seen)
     const key = statement.toLowerCase()
     if (seen.has(key)) return
+    // Claimed BEFORE the await so two concurrent occurrences do not both write;
+    // released if the write fails (formal R2, mcp#11) — otherwise a failed
+    // write (lock contention, a remote hiccup) was marked learned and never
+    // retried for the rest of the session.
     seen.add(key)
-    await this.plur.learnRouted(statement, context)
+    try {
+      await this.plur.learnRouted(statement, context)
+    } catch (err) {
+      seen.delete(key)
+      throw err
+    }
     maybeFlushAfter(recordEvent('learn'))
   }
 

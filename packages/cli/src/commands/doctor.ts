@@ -17,11 +17,12 @@ import {
   readConfig,
 } from '../mcp-config.js'
 import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
+import { isPlurHookCommand, isPlurHookSpec } from '../lib/hook-command.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
-import { codexHome } from '../mcp-config.js'
+import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates } from '@plur-ai/core'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -63,6 +64,14 @@ interface DoctorReport {
   datacoreCollision: boolean
   staleNpxHooks: boolean
   staleNpxMcp: boolean
+  /**
+   * Config files whose `plur` entry is PLUR's own Windows node form
+   * (`{ command: <node.exe>, args: [<@plur-ai/mcp js entry>] }`, #1267) and
+   * names a path that no longer exists — typically the version-specific
+   * node binary after a Node upgrade. Checked statically, so it is reported
+   * under `--no-handshake` too, and it fails `overall`.
+   */
+  brokenNodeMcp: Array<{ label: string; path: string; missing: string[] }>
   hookShim: HookShimReport
   mcpShim: HookShimReport
   handshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }
@@ -111,6 +120,20 @@ interface DoctorReport {
   codexDetected: boolean
   codexWired: boolean
   /**
+   * Codex's config.toml registers the `plur-mcp.cmd` shim an older
+   * `plur init` wrote on Windows, which current Node cannot spawn
+   * (`spawn EINVAL`, #1267). `plur init --codex` replaces it.
+   */
+  codexCmdShimMcp: boolean
+  /**
+   * Windows only (decision H3): the editors whose PLUR hook path still
+   * contains whitespace because no 8.3 short path was available — `plur
+   * init` wrote PowerShell's `& "<path>"` (Codex, Cursor) or the plain path
+   * (Antigravity, where no quoted form runs). Those hooks may not run.
+   * Empty elsewhere and when every hook path is a single unquoted word.
+   */
+  windowsHookFallback: string[]
+  /**
    * Antigravity CLI (agy). Same machine-level detection rationale as Codex —
    * reported as its own line, deliberately NOT folded into `overall`. Unlike
    * Codex there is no trust caveat: agy runs configured hooks immediately.
@@ -152,6 +175,15 @@ interface DoctorReport {
    */
   pgliteOrphan: { path: string } | null
   /**
+   * Local store entries in config.yaml that are ignored at load (#1319,
+   * #1356): the entry names the primary engrams file (`primary: true`,
+   * removable with `plur stores prune`), or repeats an earlier entry's file
+   * and scope. The same list `Plur.ignoredDuplicateStores()` returns, computed
+   * from config.yaml without opening the stores. Advisory only: does not fail
+   * the overall check.
+   */
+  ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
+  /**
    * opencode leg. Owner-approved pre-publish requirement (2026-09-16): until
    * `@plur-ai/opencode` is published, opencode's `plugin: ["@plur-ai/opencode"]`
    * resolves a bare name from the npm registry at startup and fails with NO
@@ -168,6 +200,21 @@ interface DoctorReport {
    * has opencode installed somewhere, not that this project depends on it.
    */
   opencode: OpencodeReport | null
+  /**
+   * Queued team writes (#1299). `ok` is false when any entry is
+   * `needs_action` — refused in a way retrying cannot fix (401/403/404/422, a
+   * write refusal, no writable store) — and that FAILS `overall`: those
+   * writes will never leave this machine as things stand, which is the
+   * silent failure doctor exists to catch. Entries that only failed on the
+   * network are `retrying` and do not. `null` when the store could not be read.
+   */
+  outbox?: {
+    ok: boolean
+    pending: number
+    retrying: number
+    needs_action: number
+    scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
+  } | null
   overall: 'ok' | 'fail'
 }
 
@@ -187,6 +234,12 @@ interface OpencodeReport {
   pluginDeclared: boolean
   /** `mcp.plur` is present — the explicit `plur_*` tool surface. */
   mcpPlurDeclared: boolean
+  /**
+   * Paths PLUR's own win32 node-form `mcp.plur` entry names that no longer
+   * exist — the version-specific node binary after a Node upgrade (#1339).
+   * `plur init` rewrites such an entry. Empty when healthy.
+   */
+  mcpPlurMissingPaths: string[]
   /**
    * Whether the declared plugin will actually resolve when opencode starts.
    * This is the load-bearing check — a `pluginDeclared: true` entry that
@@ -210,15 +263,61 @@ interface OpencodeReport {
 }
 
 function hasAnyPlurHook(config: Record<string, unknown>): boolean {
-  const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
+  const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string; args?: unknown }> }>>
   for (const entries of Object.values(hooks)) {
     for (const entry of entries) {
       for (const h of entry.hooks ?? []) {
-        if (h.command && (h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'))) return true
+        // The same matcher init uses: PLUR's launcher (shim, npx, or the
+        // Windows exec form) plus any hook-* (decisions H2, H3).
+        if (isPlurHookSpec(h)) return true
       }
     }
   }
   return false
+}
+
+/** Test seam (formal apply S4.2). */
+export const _hasAnyPlurHook = hasAnyPlurHook
+
+/** Every string under a `command` key, anywhere in a parsed hooks file. */
+function collectHookCommands(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) for (const v of value) collectHookCommands(v, out)
+  else if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      if (k === 'command' && typeof v === 'string') out.push(v)
+      else collectHookCommands(v, out)
+    }
+  }
+  return out
+}
+
+/**
+ * The string-hook editors (Cursor, Codex, Antigravity) whose PLUR hook
+ * launcher path still contains whitespace — the fallback `plur init` writes
+ * on Windows when no 8.3 short path exists (decision H3). Such a hook relies
+ * on PowerShell's `& "<path>"` (Codex, Cursor) or cannot run at all
+ * (Antigravity, whose `cmd /C` escapes quotes).
+ */
+function windowsHookFallbackEditors(configs: ConfigFileReport[]): string[] {
+  const editors: Array<[string, string]> = [
+    ['Cursor', 'Cursor (.cursor/hooks.json)'],
+    ['Codex', 'Codex (~/.codex/hooks.json)'],
+    ['Antigravity', 'Antigravity (~/.gemini/config/hooks.json)'],
+  ]
+  const out: string[] = []
+  for (const [name, label] of editors) {
+    const c = configs.find((x) => x.label === label)
+    if (!c?.exists) continue
+    let parsed: unknown
+    try { parsed = JSON.parse(readFileSync(c.path, 'utf8')) } catch { continue }
+    const fallback = collectHookCommands(parsed).some((cmd) => {
+      if (!isPlurHookCommand(cmd)) return false
+      const launcher = cmd.slice(0, cmd.search(/\shook-[a-z0-9]/i)).replace(/^&\s+/, '').replace(/"/g, '')
+      return /\s/.test(launcher)
+    })
+    if (fallback) out.push(name)
+  }
+  return out
 }
 
 function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
@@ -328,6 +427,32 @@ function countStaleContentHashes(flags: GlobalFlags): number {
     return count
   } catch {
     return 0
+  }
+}
+
+/** #1299: classify the outbox. Local read only; never throws. */
+async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> {
+  try {
+    const summary = await createPlur(flags, { readonly: true }).outboxSummary()
+    return { ok: summary.needs_action === 0, ...summary }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * #1356: the config.yaml store entries a Plur instance would ignore at load.
+ * Reads config.yaml only — no store is opened and no directory is created.
+ */
+function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDuplicateStores'] {
+  try {
+    const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+    const stores = loadConfig(join(root, 'config.yaml')).stores ?? []
+    return classifyStoreDuplicates(stores, join(root, 'engrams.yaml')).ignored.map(d => ({
+      path: d.entry.path ?? '', scope: d.entry.scope, duplicateOf: d.duplicateOf, primary: d.primary,
+    }))
+  } catch {
+    return []
   }
 }
 
@@ -832,9 +957,29 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
     ok: snapshot.ok,
     pluginDeclared: snapshot.pluginDeclared,
     mcpPlurDeclared: snapshot.mcpPlurDeclared,
+    mcpPlurMissingPaths: snapshot.mcpPlurMissingPaths,
     pluginResolvable,
     resolvedVia,
   }
+}
+
+/**
+ * Which harnesses actually carry PLUR hooks, named by the config file's label
+ * ("Claude Code (global)" → "Claude Code"). Formal r2, cli#10: the healthy
+ * verdict said "ready to use in Claude Code" whenever ANY harness had hooks —
+ * `hooksInstalled` is a `.some()` over the Cursor, Codex and Antigravity
+ * files too — so a Codex-only machine was told Claude Code was ready.
+ */
+export function hookHarnesses(configs: Array<{ label: string; hasPlurHooks: boolean }>): string[] {
+  const names = configs.filter(c => c.hasPlurHooks).map(c => c.label.replace(/\s*\(.*$/, ''))
+  return [...new Set(names)]
+}
+
+/** The healthy verdict, naming only harnesses whose hooks are installed. */
+export function readyLine(harnesses: string[]): string {
+  if (harnesses.includes('Claude Code')) return '✓ Healthy. plur is ready to use in Claude Code.'
+  const where = harnesses.length ? harnesses.join(', ') : 'no harness'
+  return `✓ Healthy. plur is ready to use in ${where}. Claude Code has no plur hooks — run \`plur init\` to add them.`
 }
 
 function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<DoctorReport> {
@@ -856,6 +1001,22 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const config = readConfig(c.path)
     return hasStaleNpxMcp(config)
   })
+
+  // PLUR's Windows node-form entry pins a version-specific node binary
+  // (#1267): a Node upgrade leaves it pointing at nothing.
+  const brokenNodeMcp: DoctorReport['brokenNodeMcp'] = []
+  const seenConfigs = new Set<string>()
+  for (const c of configs) {
+    if (!c.exists || !c.hasPlurMcp) continue
+    // Run from HOME, the project and global Claude Code settings are one file.
+    let real = c.path
+    try { real = realpathSync(c.path) } catch { /* keep the path as given */ }
+    if (seenConfigs.has(real)) continue
+    seenConfigs.add(real)
+    const entry = readPlurMcpEntry(readConfig(c.path))
+    const missing = entry ? missingNodeEntryPaths(entry) : []
+    if (missing.length > 0) brokenNodeMcp.push({ label: c.label, path: c.path, missing })
+  }
 
   const hookShim = validateHookShim()
   const mcpShim = validateMcpShim()
@@ -911,10 +1072,26 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const codexDetected = existsSync(codexHome())
   const codexHooksReport = configs.find((c) => c.label === 'Codex (~/.codex/hooks.json)')
   const codexTomlReport = configs.find((c) => c.label === 'Codex (~/.codex/config.toml)')
+  // The `plur-mcp.cmd` entry an older init wrote on Windows is registered but
+  // cannot start (spawn EINVAL, #1267). Only PLUR's own shim command is
+  // matched, whatever else the entry carries (env, other keys, args): it
+  // fails either way, even when init will not heal it automatically (#1366).
+  let codexCmdShimMcp = false
+  if (codexTomlReport?.exists && codexTomlReport.hasPlurMcp) {
+    try {
+      const command = readCodexPlurMcpCommand(readFileSync(codexTomlReport.path, 'utf8'))
+      codexCmdShimMcp = command !== null && isOwnWin32CmdShimCommand(command)
+    } catch { /* unreadable — nothing to flag */ }
+  }
   const codexWired = Boolean(
     codexHooksReport?.exists && codexHooksReport.hasPlurHooks &&
-    codexTomlReport?.exists && codexTomlReport.hasPlurMcp,
+    codexTomlReport?.exists && codexTomlReport.hasPlurMcp && !codexCmdShimMcp,
   )
+
+  // Decision H3: on Windows a string-editor hook must be a single unquoted
+  // path. When init had to fall back (the path has whitespace and no 8.3
+  // short name exists), name the editor: its hooks may not run.
+  const windowsHookFallback = platform() === 'win32' ? windowsHookFallbackEditors(configs) : []
 
   // Antigravity health, from agy's OWN two files only.
   const agyDetected = existsSync(join(homedir(), '.gemini', 'antigravity-cli'))
@@ -948,9 +1125,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // reported separately as a warning — a degraded embedder doesn't fail
     // the overall doctor check (BM25 still works); it just signals semantic
     // recall is disabled until the model loads.
+    const outbox = await checkOutbox(flags)
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
-      (!cursorProjectDetected || cursorWired)
+      brokenNodeMcp.length === 0 &&
+      (!cursorProjectDetected || cursorWired) &&
+      // #1299: a queued write no retry will deliver is a real failure.
+      (outbox?.ok ?? true)
         ? 'ok' : 'fail'
     // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
     // The two detections are not the same kind of signal. A `.cursor/`
@@ -1002,11 +1183,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       ? { path: orphanPglitePath }
       : null
 
+    const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
+
     return {
-      configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
+      configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
-      cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, opencode, overall,
+      cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, opencode, outbox, overall,
     }
   })
 }
@@ -1041,6 +1224,15 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   outputText('')
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
+  // #1299
+  if (report.outbox && report.outbox.pending > 0) {
+    const o = report.outbox
+    outputText(`${tick(o.ok)} Outbox: ${o.pending} queued write(s)` + (o.needs_action > 0 ? `, ${o.needs_action} will not deliver by retrying` : ', retrying'))
+    if (!o.ok) {
+      for (const line of describeNeedsAction({ ...o })) outputText(`  ${line}`)
+      outputText('  Nothing is dropped automatically. `plur outbox` lists them.')
+    }
+  }
   outputText(`${tick(report.mcpRegistered)} plur MCP server registered`)
 
   if (report.cursorProjectDetected) {
@@ -1076,7 +1268,13 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   if (report.codexDetected) {
     outputText(`${tick(report.codexWired)} Codex: ~/.codex/hooks.json + config.toml wired to plur`)
-    if (!report.codexWired) {
+    if (report.codexCmdShimMcp) {
+      outputText('  config.toml registers the old ~/.plur/bin/plur-mcp.cmd shim, which current Node')
+      outputText('  cannot start (spawn EINVAL). Fix: run `plur init --codex`. It replaces a plain entry')
+      outputText('  through `codex mcp remove` + `codex mcp add`; an entry that also carries other settings')
+      outputText('  (env, other keys, a multi-line args array) is left alone, and init prints the command')
+      outputText('  and args lines to change by hand so those settings are kept.')
+    } else if (!report.codexWired) {
       outputText('  Codex is installed on this machine but PLUR is not wired into it — it')
       outputText('  would get MCP tools with no injection, enforcement, or learn nudges.')
       outputText('  If you use Codex, run `plur init --codex`. (Advisory: this does not')
@@ -1099,6 +1297,12 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     const oc = report.opencode
     outputText(`${tick(oc.pluginDeclared)} opencode: plugin declared (${oc.configPath})`)
     outputText(`${tick(oc.mcpPlurDeclared)} opencode: mcp.plur declared`)
+    if (oc.mcpPlurMissingPaths.length > 0) {
+      outputText('  ✗ opencode\'s mcp.plur points at a path that no longer exists:')
+      for (const m of oc.mcpPlurMissingPaths) outputText(`     ${m}`)
+      outputText('    The node binary path is version-specific, so a Node upgrade or a version-manager')
+      outputText('    switch breaks it. Fix: re-run `plur init`, which rewrites the entry.')
+    }
     if (!oc.ok) {
       outputText('  Config exists but PLUR could not safely read it — invalid JSON (JSONC comments')
       outputText('  and trailing commas are not supported here) or a `plugin`/`mcp` field in an')
@@ -1155,6 +1359,24 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText(`✗ MCP shim:  ${report.mcpShim.error}`)
   }
 
+  for (const editor of report.windowsHookFallback ?? []) {
+    outputText('')
+    outputText(`✗ ${editor} hooks: the PLUR hook path contains a space and no 8.3 short name is available,`)
+    outputText(editor === 'Antigravity'
+      ? '   and Antigravity runs hooks through cmd /C, where no quoted path works — its hooks will not run.'
+      : '   so init wrote PowerShell\'s `& "<path>"` form, which runs only if the editor uses PowerShell.')
+    outputText('   Fix: enable 8.3 names on the volume (`fsutil 8dot3name set`), or install to a path without spaces,')
+    outputText('   then re-run `plur init`.')
+  }
+
+  for (const b of report.brokenNodeMcp) {
+    outputText('')
+    outputText(`✗ plur MCP entry in ${b.label} (${b.path}) points at a path that no longer exists:`)
+    for (const m of b.missing) outputText(`   ${m}`)
+    outputText('   The node binary path is version-specific, so a Node upgrade or a version-manager')
+    outputText('   switch breaks it. Fix: re-run `plur init`, which rewrites the entry.')
+  }
+
   if (report.staleNpxMcp) {
     outputText('')
     outputText('⚠  plur MCP still launched via npx — vulnerable to ENOTEMPTY cache corruption on version bumps (#234).')
@@ -1182,6 +1404,24 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   old value are absorbed into the wrong engram. Pure-ASCII stores are unaffected.')
     outputText('   Fix: run `plur migrate` (migration 006 recomputes them, with backup and rollback)')
     outputText('   or `plur reindex-hashes --apply` for the repair alone.')
+  }
+
+  if (report.ignoredDuplicateStores.length > 0) {
+    const n = report.ignoredDuplicateStores.length
+    outputText('')
+    outputText(`⚠  config.yaml lists ${n} store entr${n === 1 ? 'y' : 'ies'} that ${n === 1 ? 'is' : 'are'} ignored at load (#1319):`)
+    for (const d of report.ignoredDuplicateStores) {
+      outputText(`   - "${d.scope}" (${d.path}): the same file as ${d.duplicateOf}`)
+    }
+    outputText(n === 1
+      ? '   Loading it would inject the same engrams twice, so plur skips it and warns on every run.'
+      : '   Loading them would inject the same engrams twice, so plur skips them and warns on every run.')
+    if (report.ignoredDuplicateStores.some(d => d.primary)) {
+      outputText('   Fix: run `plur stores prune` to remove the entries that name the primary store file.')
+    }
+    if (report.ignoredDuplicateStores.some(d => !d.primary)) {
+      outputText('   Remove an entry that repeats another store\'s file and scope from config.yaml by hand.')
+    }
   }
 
   outputText('')
@@ -1243,7 +1483,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   outputText('')
   if (report.overall === 'ok') {
-    outputText('✓ Healthy. plur is ready to use in Claude Code.')
+    outputText(readyLine(hookHarnesses(report.configs)))
   } else {
     outputText('✗ Issues detected.')
     if (!report.hooksInstalled || !report.mcpRegistered) {
@@ -1253,6 +1493,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  Fix: ensure `npx` is reachable from Claude Desktop')
       outputText('       — try launching Claude from your terminal once,')
       outputText('       — or replace the plur entry command with an absolute path to your shell.')
+    }
+    if (report.outbox && !report.outbox.ok) {
+      outputText('  Fix: see the Outbox line above — queued team writes need a person to act.')
     }
     if (report.cursorProjectDetected && !report.cursorWired) {
       outputText('  Fix: run `plur init --cursor` from this project — this project\'s own')
