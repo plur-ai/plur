@@ -294,17 +294,12 @@ export function buildAttribution(
   // named in shared records.
   out.asserted_by = a?.asserted_by ?? configuredIdentity ?? ATTRIBUTION_UNIDENTIFIED
 
-  // WHAT WROTE IT. Always recorded, because it is the one fact we always have:
-  // software knows its own name.
-  //
-  // No version here, deliberately: core has no version constant, and adding one
-  // would be one more place `release.sh` has to bump. Every real write arrives
-  // through a wrapper that DOES track its version (plur-mcp, plur-cli) and
-  // passes name and version both; this is the floor beneath them.
-  out.runtime = a?.runtime ?? { name: 'plur-core' }
+  // Core is the writing tool; the runtime is the calling app, when known.
+  // Core has no version constant, so do not invent a version here.
+  out.tool = a?.tool ?? { name: 'plur-core' }
+  if (a?.runtime) out.runtime = a.runtime
 
   if (a?.model) out.model = a.model
-  if (a?.tool) out.tool = a.tool
   if (a?.on_behalf_of) out.on_behalf_of = a.on_behalf_of
   return out
 }

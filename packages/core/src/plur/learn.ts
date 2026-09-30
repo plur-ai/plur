@@ -118,6 +118,7 @@ export interface LearnMethods {
 export const learnMethods: LearnMethods & ThisType<Plur> = {
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
+    context = this._withRuntimeAttribution(context)
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     this._refuseScopeConflict(guarded.scope)
@@ -583,6 +584,7 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       throw new TypeError('plur.learnRouted: remoteTimeoutMs must be a positive number of milliseconds')
     }
     this._assertWritable()
+    context = this._withRuntimeAttribution(context)
     statement = this._validateLearnInput('learnRouted', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     const scope = guarded.scope

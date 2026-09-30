@@ -540,7 +540,11 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
           : {}),
       }
       args = { ...args, [FOLDER_SCOPE]: folderContext }
-      const result = await tool.handler(args, instance)
+      // The SDK retains initialize.clientInfo on this connection. Scope it to
+      // this request so nested writes (batch, admin, session_end) inherit it,
+      // even when multiple servers share one Plur instance.
+      const clientInfo = server.getClientVersion()
+      const result = await instance.withRuntime(clientInfo, () => tool.handler(args, instance))
 
       // Generic _isError propagation: a tool handler — currently only
       // plur_admin's, when the ACTION it dispatched to fails its own

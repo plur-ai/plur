@@ -121,6 +121,7 @@ describe('attribution through a real store (#961, #963)', () => {
     const attribution = {
       asserted_by: 'local:maintainer',
       runtime: { name: 'plur-mcp', version: '0.18.0' },
+      tool: { name: 'plur-core' },
       on_behalf_of: 'local:maintainer',
     }
     const engram = await plur.learn('Migrations run before deploys', {
@@ -148,15 +149,15 @@ describe('attribution through a real store (#961, #963)', () => {
     // as such, because an absent field cannot be told apart from a record
     // written before identity was captured at all.
     //
-    // What must still never appear is a GUESS. No model, no tool, no delegation
+    // What must still never appear is a GUESS. No model, no runtime, no delegation
     // and no claim class — those are unknown, and unknown stays unknown.
     const engram = await plur.learn('No attribution supplied here', { type: 'behavioral' })
     expect(engram.attribution).toEqual({
       asserted_by: 'unidentified',
-      runtime: { name: 'plur-core' },
+      tool: { name: 'plur-core' },
     })
     expect(engram.attribution?.model).toBeUndefined()
-    expect(engram.attribution?.tool).toBeUndefined()
+    expect(engram.attribution?.runtime).toBeUndefined()
     expect(engram.attribution?.on_behalf_of).toBeUndefined()
     expect(engram.claim_class).toBeUndefined()
 
@@ -167,7 +168,7 @@ describe('attribution through a real store (#961, #963)', () => {
 
   it('keeps a partial attribution partial, rather than padding it out', async () => {
     // A caller-supplied runtime is kept exactly as given, and the unknown
-    // author becomes the marker rather than a guess. Nothing else is added.
+    // author becomes the marker rather than a guess. Core names the writing tool.
     const engram = await plur.learn('Only the runtime is known here', {
       type: 'behavioral',
       attribution: { runtime: { name: 'plur-cli' } },
@@ -175,6 +176,7 @@ describe('attribution through a real store (#961, #963)', () => {
     expect(engram.attribution).toEqual({
       asserted_by: 'unidentified',
       runtime: { name: 'plur-cli' },
+      tool: { name: 'plur-core' },
     })
   })
 
@@ -188,6 +190,19 @@ describe('attribution through a real store (#961, #963)', () => {
 
     // The software is still named. An unidentified record still says what wrote it.
     expect(engram.attribution?.runtime?.name).toBe('plur-mcp')
+  })
+
+  it('leaves batch runtimes unset without client information and preserves explicit tools', async () => {
+    const batch = await plur.learnBatch([
+      { statement: 'Archive expired authentication tokens' },
+      { statement: 'Set image alt text during import', context: {
+        attribution: { tool: { name: 'image-importer', version: '2.0' } },
+      } },
+    ], undefined, { maxLlmCalls: 0 })
+    expect(batch.stats.added).toBe(2)
+    expect(batch.results[0].engram.attribution?.tool).toEqual({ name: 'plur-core' })
+    expect(batch.results[1].engram.attribution?.tool).toEqual({ name: 'image-importer', version: '2.0' })
+    for (const result of batch.results) expect(result.engram.attribution?.runtime).toBeUndefined()
   })
 
   it('still loads an engram written before these fields existed', async () => {
@@ -276,7 +291,8 @@ describe('an identity comes from config, never from the machine (#961)', () => {
     // core is the honest floor beneath it.
     const plur = new Plur({ path: dir })
     await plur.learn('Pools cap at 100', { type: 'architectural' })
-    expect((await firstEngram(plur)).attribution.runtime.name).toBe('plur-core')
+    expect((await firstEngram(plur)).attribution.tool.name).toBe('plur-core')
+    expect((await firstEngram(plur)).attribution.runtime).toBeUndefined()
 
     await plur.learn('Deploys wait for migrations', {
       type: 'behavioral', attribution: { runtime: { name: 'plur-mcp', version: '0.18.0' } },

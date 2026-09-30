@@ -475,6 +475,17 @@ export class Plur {
   /** @internal */ _llmDisabledUntil: number | null = null
   /** Per-session default write scopes; see `session-scopes.ts`. */
   /** @internal */ _sessionScopes = new SessionScopeRegistry()
+  private _runtime = new AsyncLocalStorage<NonNullable<LearnContext['attribution']>['runtime']>()
+
+  /** Attribute writes within this call, including nested/async tool writes, to the calling app. */
+  withRuntime<T>(runtime: NonNullable<LearnContext['attribution']>['runtime'], fn: () => T): T {
+    return this._runtime.run(runtime && { name: runtime.name, version: runtime.version }, fn)
+  }
+
+  /** @internal */ _withRuntimeAttribution(context?: LearnContext): LearnContext | undefined {
+    const runtime = this._runtime.getStore()
+    return runtime ? { ...context, attribution: { ...context?.attribution, runtime } } : context
+  }
   /** @internal */ _gitOrigins = new Map<string, { at: number; origin: OriginRead }>()
   /**
    * Set when bound to a `remote-only` folder: writes go only to its team scope

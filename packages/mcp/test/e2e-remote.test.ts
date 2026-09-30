@@ -132,6 +132,10 @@ describe('MCP plur_learn routing', () => {
     const serverEngram = stub.getEngram(serverId)
     expect(serverEngram).toBeDefined()
     expect(serverEngram!.id).toBe(serverId)
+    expect(stub.lastAppendBody?.attribution).toMatchObject({
+      runtime: { name: 'test-client', version: '1.0.0' },
+      tool: { name: 'plur-core' },
+    })
   })
 
   it('local engrams.yaml does NOT contain the remote-scoped engram', async () => {
