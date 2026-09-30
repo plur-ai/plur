@@ -1309,6 +1309,8 @@ repo's request. Only the CLI writes the map.
     the folder you give it.
   - A `~` in the map expands to your home as written and to its canonical path.
 
+### A killed writer no longer stalls the store for a minute
+
 ### A team save that stays on this machine now says so (#1264)
 
 ### `plur stores add` can register a remote store, and checks the token first (#1265)
@@ -1350,6 +1352,9 @@ fixed form and is not caught. `plur stores add
 <path> <scope>` is unchanged. The core method is `Plur.addRemoteStore()`, which
 throws `AddRemoteStoreError` with a stable `code`.
 Nothing about where engrams are written changes. The field is additive.
+This applies to the YAML store, and to PGLite, which keeps YAML as its source
+of truth and takes the same lock. A Postgres primary store serializes writers
+with a Postgres advisory lock and does not use this lock file.
 
 ### The end-of-response learning nudge now reaches the model in Claude Code
 
