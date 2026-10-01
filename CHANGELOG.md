@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### The MCP server respects a folder you turned PLUR off for (#NNNN)
+### The MCP server respects a folder you turned PLUR off for (#1519)
 
 `plur folders set <folder> --off` silenced the editor hooks, but an agent that
 called `plur_learn` or `plur_recall` itself still read and wrote memory in that
