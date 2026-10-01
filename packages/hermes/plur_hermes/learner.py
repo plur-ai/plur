@@ -19,8 +19,12 @@ import re
 
 # --- Strategy 1: Brain-emoji block ---
 
+# The per-reply memory line (`Memory — recalled …`) ends a learning block: agents
+# put it last and may write it straight after the final bullet (#1520 audit S3).
+_MEMORY_LINE = r'\n[ \t]*Memory \u2014'
+
 _BRAIN_PATTERN = re.compile(
-    r'---\s*\n\U0001f9e0 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)'
+    r'---\s*\n\U0001f9e0 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|' + _MEMORY_LINE + r'|$)'
 )
 
 # --- Strategy 2: Alternative markers ---
@@ -34,7 +38,7 @@ _ALT_MARKERS = (
 )
 _ALT_MARKER_PATTERN = re.compile(
     r'(?:^|\n)\s*(?:' + '|'.join(_ALT_MARKERS) + r')[ \t]*\n'
-    r'([\s\S]*?)(?:\n[ \t]*\n|\n---|$)'
+    r'([\s\S]*?)(?:\n[ \t]*\n|\n---|' + _MEMORY_LINE + r'|$)'
 )
 
 _BULLET_PREFIX = re.compile(r'^[-*•]\s+|^\d+[.)]\s+')

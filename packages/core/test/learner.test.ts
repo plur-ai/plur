@@ -366,3 +366,21 @@ describe('isCorrection', () => {
     expect(isCorrection({ role: 'assistant', content: 'No, that is wrong' })).toBe(false)
   })
 })
+
+describe('extractSelfReportedLearnings — the memory line is not a learning (#1520 audit S3)', () => {
+  const reply = (sep: string, line: string) => ({
+    role: 'assistant' as const,
+    content: `Answer.\n\n---\n🧠 I learned:\n- The deploy script needs NODE_ENV set${sep}${line}`,
+  })
+  for (const line of [
+    'Memory — recalled 3 · used: ENG-2026-10-01-001 · written: ENG-2026-10-01-002',
+    'Memory — none',
+  ]) {
+    it(`straight after the last bullet: ${line.slice(0, 20)}`, () => {
+      expect(extractSelfReportedLearnings(reply('\n', line))).toEqual(['The deploy script needs NODE_ENV set'])
+    })
+    it(`after a blank line: ${line.slice(0, 20)}`, () => {
+      expect(extractSelfReportedLearnings(reply('\n\n', line))).toEqual(['The deploy script needs NODE_ENV set'])
+    })
+  }
+})

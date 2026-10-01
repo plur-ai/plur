@@ -100,7 +100,10 @@ const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 export function extractSelfReportedLearnings(message: LearnableMessage): string[] {
   const content = extractMessageText(message)
   // Match the learning section: ---\n🧠 I learned:\n- item\n- item
-  const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)/)
+  // The block also ends at the per-reply memory line (`Memory — recalled …`),
+  // which agents are told to put last and may write straight after the final
+  // bullet with no blank line (#1520 audit S3) — it is a report, not a learning.
+  const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|\n[ \t]*Memory —|$)/)
   if (!match) return []
 
   return match[1]

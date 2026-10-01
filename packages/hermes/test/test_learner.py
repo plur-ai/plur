@@ -270,3 +270,16 @@ class TestCorpusValidation:
         assert recall >= 0.80, f"Recall too low: {recall:.1%} ({true_positives}/{total_learning_instruction})"
         # Assert ≤15% false positive rate on hypothetical + reasoning
         assert fp_rate <= 0.15, f"False positive rate too high: {fp_rate:.1%} ({false_positives}/{total_hypothetical_reasoning})"
+
+
+# --- #1520 audit S3: the memory line is never captured as a learning ---
+
+@pytest.mark.parametrize("line", [
+    "Memory — recalled 3 · used: ENG-2026-10-01-001 · written: ENG-2026-10-01-002",
+    "Memory — none",
+])
+@pytest.mark.parametrize("sep", ["\n", "\n\n"])
+@pytest.mark.parametrize("marker", ["---\n\U0001f9e0 I learned:", "I learned:"])
+def test_memory_line_is_not_a_learning(line, sep, marker):
+    text = f"Answer.\n\n{marker}\n- The deploy script needs NODE_ENV set{sep}{line}"
+    assert extract_learning_patterns(text) == ["The deploy script needs NODE_ENV set"]
