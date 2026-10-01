@@ -214,3 +214,30 @@ describe('owner decisions on #1521', () => {
     expect(existsSync(cp)).toBe(false)
   }, 60_000)
 })
+
+describe('audit of #1521: CLI commands and hooks fail closed', () => {
+  it('S1: plur learn / recall run in a remote-only folder are bound to it', async () => {
+    seedPersonal()
+    mapRemoteOnly()
+    const personal = cli(['learn', 'typed in the client folder CLIOTTER', '--scope', 'global', '--json'])
+    expect(personal.status).not.toBe(0)
+    expect(personal.stdout + personal.stderr).toContain('remote-only')
+    expect(readFileSync(join(plurHome, 'engrams.yaml'), 'utf8')).not.toContain('CLIOTTER')
+    const recall = cli(['recall', 'fixture deploys blue lane', '--json'])
+    expect(recall.stdout).not.toContain('PERSONALZEBRA')
+  }, 90_000)
+
+  it('S3: a malformed folders.yaml makes the hook say so, naming the file, with no memories', async () => {
+    seedPersonal()
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } }))
+    writeFileSync(join(plurHome, 'folders.yaml'), 'version: 1\nfolders: [[[\n')
+    const ctx = context(await hook(['hook-inject'], { session_id: 'mal-1', cwd: repo, hook_event_name: 'UserPromptSubmit', prompt: PROMPT }))
+    expect(ctx).toContain(join(plurHome, 'folders.yaml'))
+    expect(ctx).not.toContain('PERSONALZEBRA')
+  }, 90_000)
+
+  it('S7: binding a hook instance that cannot be bound fails loudly', async () => {
+    const { bindHookFolder } = await import('../src/lib/folder-gate.js')
+    expect(() => bindHookFolder({} as never, repo, { mode: 'remote-only', scope: TEAM, remoteAllowed: false, source: 'map' })).toThrow()
+  })
+})

@@ -136,3 +136,30 @@ describe('owner decision 4 on #1521: no session timeline in a remote-only folder
     expect(existsSync(join(root, 'episodes.yaml')) ? readFileSync(join(root, 'episodes.yaml'), 'utf8') : '').not.toContain('ENDOTTER')
   })
 })
+
+describe('audit of #1521: MCP binds from the client roots and fails closed', () => {
+  it('S2: started outside the workspace, a client root in a remote-only folder binds it', async () => {
+    const { pathToFileURL } = await import('url')
+    const server = await createServer(new Plur({ path: root }), { profile: 'full', folder: home })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const c = new Client({ name: 'roots-test', version: '1.0.0' }, { capabilities: { roots: { listChanged: true } } })
+    c.setRequestHandler('roots/list', async () => ({ roots: [{ uri: pathToFileURL(work).href, name: 'ws' }] }))
+    await c.connect(ct)
+    clients.push(c)
+    const res = result(await c.callTool({ name: 'plur_learn', arguments: { statement: 'rooted client fact ROOTOTTER' } }))
+    expect(res.scope).toBe(TEAM)
+    expect(stub.appendStatements).toContain('rooted client fact ROOTOTTER')
+  })
+
+  it('S3: a malformed folders.yaml refuses writes and reads nothing personal', async () => {
+    await new Plur({ path: root }).learn('malformed codeword PERSONALZEBRA')
+    writeFileSync(join(root, 'folders.yaml'), 'version: 1\nfolders: [[[\n')
+    const c = await client()
+    const raw = await c.callTool({ name: 'plur_learn', arguments: { statement: 'should not be kept' } })
+    expect(raw.isError).toBe(true)
+    expect((raw.content as any)[0].text).toContain('folders.yaml')
+    const rec = await c.callTool({ name: 'plur_recall', arguments: { query: 'malformed codeword' } })
+    expect(JSON.stringify(rec)).not.toContain('PERSONALZEBRA')
+  })
+})
