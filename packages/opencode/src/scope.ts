@@ -16,6 +16,18 @@ export function resolveScopeRoot(ctx: { directory?: string; worktree?: string })
   return process.cwd()
 }
 
+/**
+ * The folder the folder-map decision is about (#1347; audit F1 of #1517): the
+ * folder opencode is OPEN IN — `directory` — the way the CLI hooks decide on
+ * the editor's working folder. Not the git worktree root: an `off` rule for
+ * `/repo/private` must hold when opencode runs there, even though `/repo` is
+ * the worktree and is `on`, and an undecided subfolder is asked about itself.
+ */
+export function resolveFolderDir(ctx: { directory?: string; worktree?: string }): string {
+  if (ctx.directory) return ctx.directory
+  return resolveScopeRoot(ctx)
+}
+
 /** The subset of `Plur` this module needs — narrow so tests can stub it cheaply. */
 export interface TrustCheck {
   isDirectoryTrusted(dir: string): boolean

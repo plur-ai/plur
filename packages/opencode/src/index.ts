@@ -19,7 +19,7 @@ import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
-import { resolveScopeRoot, resolveTrustedScope, projectRemoteRefusalNotice, folderPolicy } from './scope.js'
+import { resolveScopeRoot, resolveFolderDir, resolveTrustedScope, projectRemoteRefusalNotice, folderPolicy } from './scope.js'
 import { INJECT_TIMEOUT_MS } from './timeout.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
@@ -43,6 +43,9 @@ async function safe(label: string, fn: () => Promise<void>): Promise<void> {
 
 export const PlurPlugin: Plugin = async (ctx) => {
   const scopeRoot = resolveScopeRoot(ctx ?? {})
+  // The folder-map decision, the folder asked about and the .plur.yaml read
+  // are all for the folder opencode is open in (audit F1 of #1517).
+  const folderDir = resolveFolderDir(ctx ?? {})
   // `_plur` is a test-only injection seam, not part of the host contract —
   // narrowly typed here rather than widening `ctx` itself.
   //
@@ -105,9 +108,9 @@ export const PlurPlugin: Plugin = async (ctx) => {
    * the file whose fields are adopted.
    */
   function folderState(): { policy: FolderPolicy; settings: { scope?: string; domain?: string }; remote: ProjectRemote | null } {
-    const policy = folderPolicy(plur, scopeRoot, warnOnce)
+    const policy = folderPolicy(plur, folderDir, warnOnce)
     if (policy.mode !== 'on') return { policy, settings: {}, remote: null }
-    const configPath = findProjectConfigPath(scopeRoot)
+    const configPath = findProjectConfigPath(folderDir)
     const raw = readProjectConfigFromPath(configPath)
     // The `.plur.yaml` hints, trust-checked against this read (D2); warns
     // once when they are ignored because the map decided for an untrusted
@@ -185,7 +188,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
           // nonces as the CLI hooks (core's folderAskOnce); later turns carry
           // nothing until the user decides.
           const question = folderAskOnce({
-            dir: scopeRoot, policy: state.policy, sessionId: input.sessionID,
+            dir: folderDir, policy: state.policy, sessionId: input.sessionID,
             root: plur.storageRoot, plur, prompt: query, claim: claimAsk,
           })
           if (question) blocks.set(input.sessionID, question)

@@ -13,7 +13,7 @@
  * no network). Nothing here reads the user's own ~/.plur.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, realpathSync, existsSync, readdirSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync, existsSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, saveFolderMap, type FolderEntry } from '@plur-ai/core'
@@ -228,5 +228,34 @@ describe('opencode follows the folder map (#1347)', () => {
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
+  })
+
+  // F1 (audit of #1517): the decision is about the folder opencode is OPEN IN
+  // (ctx.directory), as the hooks decide on the editor's cwd — not the git
+  // worktree root that contains it.
+  it('F1: an off subfolder of an on worktree gets no recall, no block and no learning', async () => {
+    const priv = join(repo, 'private')
+    mkdirSync(priv)
+    map([{ path: repo, plur: 'on' }, { path: priv, plur: 'off' }])
+    const hooks = await PlurPlugin({ directory: priv, worktree: repo, _plur: plur } as any)
+
+    const seen = await turn(hooks, 'ses-f1-off', 'what is the secret')
+    await idleWithSelfReport(hooks, 'ses-f1-off')
+
+    expect(plur.resolveFolderPolicy(priv).mode).toBe('off')
+    expect(inject).not.toHaveBeenCalled()
+    expect(seen).toBe('')
+    expect(learn).not.toHaveBeenCalled()
+  })
+
+  it('F1: an undecided subfolder is offered commands for that subfolder, not the worktree', async () => {
+    const sub = join(repo, 'pkg')
+    mkdirSync(sub)
+    const hooks = await PlurPlugin({ directory: sub, worktree: repo, _plur: plur } as any)
+
+    const seen = await turn(hooks, 'ses-f1-sub', 'hello')
+
+    expect(seen).toContain(`folders set ${sub} --on --nonce`)
+    expect(seen).not.toContain(`folders set ${repo} `)
   })
 })

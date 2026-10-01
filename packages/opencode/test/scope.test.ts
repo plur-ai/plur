@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, realpathSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { resolveScopeRoot, resolveTrustedScope } from '../src/scope.js'
@@ -129,11 +129,16 @@ domain: cwd-test-domain
 `
     writeFileSync(join(tempDir, '.plur.yaml'), fixtureConfig)
 
-    // Call plugin with explicit worktree that should be preferred over directory
+    // Since the audit of #1517 (F1) the folder decision and the .plur.yaml
+    // read are for the folder opencode is open in (`directory`), as in the
+    // CLI hooks. Opened in a subfolder of the worktree, the walk still reaches
+    // the repo's .plur.yaml; opened in an unrelated folder, it must not.
+    const sub = join(tempDir, 'sub')
+    mkdirSync(sub)
     const plur = mockPlur
     const plugin = await PlurPlugin({
-      directory: '/tmp/some-other-dir',
-      worktree: tempDir, // This should be preferred by resolveScopeRoot
+      directory: sub,
+      worktree: tempDir,
       _plur: plur,
     } as any)
 
