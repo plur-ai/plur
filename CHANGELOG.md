@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### A recall in your personal scope now reads your personal remote store (#PRNUM)
+
+**Personal remote memory is no longer write-only.** With a remote store
+configured for a personal scope (for example `scope: user:acme:me`),
+`plur_learn` to that scope saved the engram on the server, but `plur_recall`
+or `plur_recall_hybrid` with the same scope never contacted the server and
+returned only local results. The remote leg dialed a host only for a shared
+(`group:`/`project:`) scope of the same org, an explicit `.plur.yaml` remote
+project, or a store marked `dial: always`; a personal scope qualified for none
+of them. Now a recall or a hybrid injection whose scope (explicit, or the
+session's default scope) is a personal `user:` scope dials the store whose own
+scope equals it exactly, asking that host for that one scope. Another user's
+store is never dialed, the host's other stores are not added, and `dial: never`
+still wins. Shared-scope dialing is unchanged.
+
 ## 0.21.0
 
 More control over what your agents remember, and where.

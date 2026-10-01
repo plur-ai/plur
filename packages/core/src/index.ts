@@ -5912,6 +5912,9 @@ export class Plur {
    *       host is relevant;
    *   (b) the host's personal-family (`user:*`, …) scopes ONLY when an org
    *       context exists implicating that host.
+   *   (c) a personal `user:` dialing scope dials the one entry whose scope
+   *       equals it exactly (never another user's, never the host's other
+   *       entries).
    * No project/work context implicating a remote store → ZERO remote calls.
    * A host whose relevant subset is empty is NOT dialed — a datafund-org host
    * is never dialed from plur-org work (cross-org exfiltration solved by
@@ -5949,6 +5952,14 @@ export class Plur {
     // (the pre-#243 state) leaves dialing exactly as before.
     const dialScope = options?.scope ?? this._sessionScopes.get(options?.session) ?? undefined
     const sessionOrg = scopeOrg(dialScope)
+    // A personal `user:` dialing scope names its own store: a recall scoped to
+    // `user:acme:me` dials the store entry whose scope is EXACTLY
+    // `user:acme:me`, with that entry alone. Exact match only — another
+    // user's store, a prefix, or the host's other entries are never dialed.
+    // Without this a personal scope gave no dialing context, so `learn` to a
+    // personal remote store landed on the server but `recall` with the same
+    // scope never read it back.
+    const personalDialScope = dialScope && dialScope.toLowerCase().startsWith('user:') ? dialScope : null
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
     for (const s of stores) {
@@ -5972,9 +5983,11 @@ export class Plur {
       const personal = dialable.filter(e => !isSharedScope(e.scope))
       const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
       const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
+      const personalExact = personalDialScope ? dialable.filter(e => e.scope === personalDialScope) : []
       const orgContext = orgAffine.length > 0 || projectImplicated
-      if (!orgContext && always.length === 0) continue
+      if (!orgContext && always.length === 0 && personalExact.length === 0) continue
       const selected = new Set<StoreEntry>(orgAffine)
+      for (const e of personalExact) selected.add(e)
       if (projectImplicated) for (const e of shared) selected.add(e)
       for (const e of always) selected.add(e)
       if (orgContext) for (const e of personal) selected.add(e)
