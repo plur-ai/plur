@@ -3,7 +3,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
+import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, type FolderPolicy } from '@plur-ai/core'
+import { fileURLToPath } from 'url'
 import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { registerFlushOnExit } from './telemetry.js'
@@ -208,6 +209,54 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     versionRecheckTimer.unref?.()
   }
 
+  // --- The editor's workspace, for the folder map (audit of #1521, S2) ---
+  //
+  // The folders this server serves: every `file://` root the client lists
+  // over MCP `roots/list` (when it declares the roots capability), plus the
+  // folder it was started in. Same rule as #1519's `off` gate; when that
+  // lands, both should share one helper. The roots are cached until the
+  // client says they changed; the folder map itself is read on every call.
+  let rootDirs: string[] | null = null
+  const workspaceDirs = async (): Promise<string[]> => {
+    if (rootDirs === null) {
+      rootDirs = []
+      if (server.getClientCapabilities()?.roots) {
+        try {
+          const { roots } = await server.listRoots(undefined, { timeout: 2000 })
+          rootDirs = roots
+            .filter(r => typeof r.uri === 'string' && r.uri.startsWith('file://'))
+            .map(r => { try { return fileURLToPath(r.uri) } catch { return null } })
+            .filter((d): d is string => d !== null)
+        } catch (err: any) {
+          process.stderr.write(`[plur] roots/list failed (${err?.message ?? err}); using the server's folder for the folder map.\n`)
+          rootDirs = null
+        }
+      }
+    }
+    return [...new Set([...(rootDirs ?? []), folder])]
+  }
+  // Bind before every tool call, failing CLOSED: a folder whose decision
+  // cannot be resolved, or a folders.yaml that cannot be read, binds the
+  // instance to read and write nothing; any remote-only workspace folder
+  // binds remote-only. Only when every folder resolves to something else is
+  // the binding cleared.
+  const bindWorkspace = async (): Promise<void> => {
+    const dirs = await workspaceDirs()
+    const resolved: Array<{ dir: string; policy: FolderPolicy }> = []
+    for (const dir of dirs) {
+      try {
+        resolved.push({ dir, policy: instance.resolveFolderPolicy(dir) })
+      } catch (err) {
+        instance.bindFolderUnresolved(dir, (err as Error)?.message ?? String(err))
+        return
+      }
+    }
+    const pick = resolved.find(r => r.policy.reason === 'malformed-map')
+      ?? resolved.find(r => r.policy.mode === 'remote-only')
+      ?? resolved[resolved.length - 1]
+    instance.bindFolderPolicy(pick.dir, pick.policy)
+  }
+
   const server = new Server(
     { name: 'plur-mcp', version: VERSION },
     {
@@ -220,6 +269,8 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       instructions: INSTRUCTIONS,
     },
   )
+
+  server.setNotificationHandler('notifications/roots/list_changed', () => { rootDirs = null })
 
   // --- Tools ---
 
@@ -305,11 +356,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         }
       }
       args = validated.data
-      // A resolver failure must not take a tool call down; it leaves the
-      // previous binding in place (fail-closed for a remote-only folder).
-      if (typeof instance.bindFolder === 'function') try { instance.bindFolder(folder) } catch (err) {
-        try { process.stderr.write(`[plur] folder map: could not resolve ${folder} (${(err as Error)?.message ?? err})\n`) } catch { /* never fail a call over a log line */ }
-      }
+      await bindWorkspace()
       const result = await tool.handler(args, instance)
 
       // Generic _isError propagation (audit fix): a tool handler — currently
