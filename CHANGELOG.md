@@ -6,17 +6,24 @@
 
 `plur folders set <folder> --off` silenced the editor hooks, but an agent that
 called `plur_learn` or `plur_recall` itself still read and wrote memory in that
-folder: the MCP server never read the folder map. Now, in an `off` folder, every
-MCP tool that reads or writes engrams or episodes — `plur_learn`,
-`plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`, `plur_inject`,
-`plur_inject_hybrid`, `plur_session_start`, `plur_session_end`, `plur_capture`,
-`plur_feedback` and the rest, called directly or through `plur_admin` — touches
-no store, local or remote (no outbox row either), and answers without an error
-that PLUR is off for this folder and which `plur folders set … --on` command
-turns it back on. Status, doctor and the other admin tools keep working. The
-folder is the editor's workspace: the roots the client lists over MCP, plus the
-folder the server was started in, checked on every call. `on` and `ask`
-folders are unchanged.
+folder: the MCP server never read the folder map. Now, in an `off` folder, the
+33 MCP tools that read or write engrams or episodes or return their text —
+`plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`,
+`plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`,
+`plur_capture`, `plur_feedback`, `plur_receipt` and the rest (the full list is
+in the MCP README), called directly or through `plur_admin` — read and write no
+store, local or remote (no outbox row either), and answer without an error
+that PLUR is off for this folder, with the `plur folders set … --on` command
+for each map entry that turns it off.
+
+The admin and diagnostic tools (status, doctor, stores list and add, sync
+status, packs list and preview, scope discovery) keep working; status, doctor
+and stores list still read stores to count or probe them, but return no engram
+text. The folder is the editor's workspace — the roots the client lists over
+MCP, plus the folder the server was started in — checked on every call. A
+`folders.yaml` that exists but cannot be read or parsed now fails safe: the
+memory tools do nothing and name the file and the problem. Server startup is
+not gated yet (#1523). `on` and `ask` folders are unchanged.
 
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 

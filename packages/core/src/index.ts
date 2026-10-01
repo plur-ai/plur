@@ -140,7 +140,8 @@ export { isDirectoryTrusted, trustDirectory, untrustDirectory, listTrustedDirect
 // decisions per folder, in <PLUR home>/folders.yaml. See folders.ts.
 export {
   resolveFolderPolicy,
-  folderOffEntry,
+  folderOffEntries,
+  folderMapProblem,
   loadFolderMap,
   saveFolderMap,
   folderMapPath,

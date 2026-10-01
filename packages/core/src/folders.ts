@@ -262,19 +262,58 @@ function warnOnce(key: string, msg: string): void {
 
 interface LoadResult { map: FolderMap; malformed: boolean }
 
+/** Parse folders.yaml. `problem` says, in words, why it cannot be used. */
+function parseMapFile(file: string): { map: FolderMap } | { problem: string } {
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (err) {
+    return { problem: `cannot be read (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})` }
+  }
+  let raw: unknown
+  try {
+    raw = yaml.load(text.replace(/^\uFEFF/, ''))
+  } catch (err) {
+    const mark = (err as { mark?: { line?: number; column?: number } }).mark
+    const reason = (err as { reason?: string }).reason ?? (err as Error).message.split('\n')[0]
+    return { problem: mark && typeof mark.line === 'number'
+      ? `is not valid YAML at line ${mark.line + 1}, column ${(mark.column ?? 0) + 1}: ${reason}`
+      : `is not valid YAML: ${reason}` }
+  }
+  if (raw === null || raw === undefined) return { map: { version: 1, folders: [] } }
+  const parsed = FolderMapSchema.safeParse(raw)
+  if (!parsed.success) {
+    return { problem: 'has an invalid entry: ' + parsed.error.issues.map(i => {
+      const [top, idx, ...rest] = i.path
+      const where = top === 'folders' && typeof idx === 'number'
+        ? `entry ${idx + 1} (folders.${idx}${rest.length ? '.' + rest.join('.') : ''})`
+        : i.path.join('.') || 'the file'
+      return `${where}: ${i.message}`
+    }).join('; ') }
+  }
+  return { map: { version: 1, folders: (parsed.data.folders ?? []) as FolderEntry[] } }
+}
+
 function readMapFile(root: string): LoadResult | null {
   const file = folderMapPath(root)
   if (!existsSync(file)) return null
-  try {
-    const raw = yaml.load(readFileSync(file, 'utf8').replace(/^﻿/, ''))
-    if (raw === null || raw === undefined) return { map: { version: 1, folders: [] }, malformed: false }
-    const parsed = FolderMapSchema.safeParse(raw)
-    if (!parsed.success) throw new Error(parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; '))
-    return { map: { version: 1, folders: (parsed.data.folders ?? []) as FolderEntry[] }, malformed: false }
-  } catch (err) {
-    warnOnce(`malformed:${file}`, `[plur:folders] cannot read ${file}: ${(err as Error).message} — treating it as empty (folders fall back to ask)`)
-    return { map: { version: 1, folders: [] }, malformed: true }
-  }
+  const r = parseMapFile(file)
+  if ('map' in r) return { map: r.map, malformed: false }
+  warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.problem} — treating it as empty (folders fall back to ask)`)
+  return { map: { version: 1, folders: [] }, malformed: true }
+}
+
+/**
+ * Why the folder map cannot be used, or null when it can (or does not exist).
+ * Read-only: unlike {@link loadFolderMap} it never imports trust.yaml, so it
+ * never writes folders.yaml. For callers that must fail safe on a broken map
+ * (the MCP memory tools) instead of reading it as empty.
+ */
+export function folderMapProblem(root: string): { file: string; problem: string } | null {
+  const file = folderMapPath(root)
+  if (!existsSync(file)) return null
+  const r = parseMapFile(file)
+  return 'problem' in r ? { file, problem: r.problem } : null
 }
 
 /** Read the pre-#1347 `trust.yaml` list. Never writes it. */
@@ -415,19 +454,19 @@ export function isTrustedInMap(entries: FolderEntry[], dir: string, home: string
   return entries.some(e => e.trusted === true && entryCovers(e, target, home, false))
 }
 
-function findOffEntry(entries: FolderEntry[], dir: string, home: string): FolderEntry | undefined {
+function findOffEntries(entries: FolderEntry[], dir: string, home: string): FolderEntry[] {
   const lax = [...new Set([canonicalize(dir), ...canonicalSpellings(dir), resolve(dir)])]
-  return entries.find(e => e.plur === 'off' && entryCovers(e, lax, home, true))
+  return entries.filter(e => e.plur === 'off' && entryCovers(e, lax, home, true))
 }
 
 /**
- * The map entry that turns PLUR off in `dir` (resolution step 1), or
- * undefined. A more specific `on` entry never overrides an `off`, so turning
- * the folder back on means changing THIS entry, which may be a parent folder
- * or a glob: callers name it in their "how to turn it back on" text.
+ * Every map entry that turns PLUR off in `dir` (resolution step 1). A more
+ * specific `on` entry never overrides an `off`, so turning the folder back on
+ * means changing ALL of these, which may be parent folders or globs: callers
+ * name them in their "how to turn it back on" text.
  */
-export function folderOffEntry(dir: string, opts: FolderPolicyOptions): FolderEntry | undefined {
-  return findOffEntry(loadFolderMap(opts.root).folders, dir, opts.home ?? homedir())
+export function folderOffEntries(dir: string, opts: FolderPolicyOptions): FolderEntry[] {
+  return findOffEntries(loadFolderMap(opts.root).folders, dir, opts.home ?? homedir())
 }
 
 /**
@@ -451,7 +490,7 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   const entries = loadFolderMap(opts.root).folders
   const strict = [canonicalize(dir)]
 
-  if (findOffEntry(entries, dir, home)) {
+  if (findOffEntries(entries, dir, home).length > 0) {
     return { mode: 'off', remoteAllowed: false, source: 'map' }
   }
 

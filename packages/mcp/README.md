@@ -71,13 +71,21 @@ A `plur_*` name missing from `tools/list` means it moved behind the gateway, not
 
 ## Folders where PLUR is off
 
-Your folder map (`~/.plur/folders.yaml`, written only by `plur folders set` from a terminal) can turn PLUR off for a folder. The editor hooks already go silent there; the MCP server does too. In an `off` folder, every tool that reads or writes memory — `plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`, `plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`, `plur_capture`, `plur_feedback` and the other engram and episode tools, called directly or through `plur_admin` — touches no store, local or remote, and returns a normal (non-error) answer:
+Your folder map (`~/.plur/folders.yaml`, changed by `plur folders set` from a terminal) can turn PLUR off for a folder. The editor hooks already go silent there; the MCP server's memory tools do too.
+
+**What is gated.** 33 tools — every tool that reads or writes engrams or episodes or returns their text: `plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`, `plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`, `plur_capture`, `plur_timeline`, `plur_feedback`, `plur_pin`, `plur_forget`, `plur_ingest`, `plur_promote`, `plur_rescope`, `plur_episode_to_engram`, `plur_report_failure`, `plur_extract_meta`, `plur_meta_engrams`, `plur_validate_meta`, `plur_tensions`, `plur_tensions_purge`, `plur_similarity_search`, `plur_history`, `plur_provenance`, `plur_profile`, `plur_receipt`, `plur_packs_install`, `plur_packs_uninstall`, `plur_packs_export`, `plur_sync`, `plur_outbox` — called directly or through `plur_admin`. In an `off` folder they read and write no store, local or remote (no outbox row either), and return a normal, non-error answer:
 
 ```json
 { "success": true, "plur": "off", "folder": "/work/secret", "message": "PLUR is off for this folder … plur folders set /work/secret --on" }
 ```
 
-Admin and diagnostic tools (`plur_status`, `plur_doctor`, `plur_stores_list`, `plur_sync_status`, `plur_receipt`, …) keep working. The folder is the editor's workspace: each root the client lists over MCP `roots/list`, plus the folder the server was started in. It is checked on every call, so a change takes effect on the next one. `on` and `ask` folders behave as before.
+The message names every folder-map entry that turns the folder off (a parent folder or a glob can), with the command for each.
+
+**What is not gated.** The admin and diagnostic tools keep working: `plur_status`, `plur_doctor`, `plur_stores_list`, `plur_stores_add`, `plur_sync_status`, `plur_packs_list`, `plur_packs_discover`, `plur_packs_preview`, `plur_scopes_discover`, `plur_suggest_scope`, `plur_session_scope`. Some of them still read stores — status, doctor and stores_list load them to count or probe them, and doctor runs a recall probe — but none returns engram text from your store. Server startup is not gated yet: starting the server in an `off` folder can still register a `.plur/` store found there ([#1523](https://github.com/plur-ai/plur/issues/1523)).
+
+**Which folder.** The editor's workspace: each root the client lists over MCP `roots/list`, plus the folder the server was started in. If any of them is `off`, the memory tools are off. The folder map is read on every call, so a change takes effect on the next one. Calls made while the roots are being fetched wait for them; if fetching them fails, that one call uses the start folder only and the next call asks again. A client that sends no roots, and was started outside the workspace, cannot be checked against it.
+
+**A broken folder map fails safe.** If `folders.yaml` exists but cannot be read or parsed, the gated tools do nothing and answer with `"reason": "folder-map-unreadable"`, naming the file and the problem (for YAML errors, the line). No `folders.yaml` at all means no decisions yet: the tools work as before. `on` and `ask` folders behave as before. On first read, an old `trust.yaml` is imported into a new `folders.yaml` (a one-time core migration); otherwise the server never writes the map.
 
 ## Sync across machines
 

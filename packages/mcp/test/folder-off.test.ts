@@ -26,7 +26,10 @@ import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { Plur } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 import { getToolDefinitions } from '../src/tools.js'
-import { FOLDER_GATED_TOOLS } from '../src/folder-gate.js'
+import * as folderGate from '../src/folder-gate.js'
+
+const FOLDER_GATED_TOOLS: ReadonlySet<string> = folderGate.FOLDER_GATED_TOOLS
+const ADMIN_UNGATED_TOOLS: ReadonlySet<string> = (folderGate as any).ADMIN_UNGATED_TOOLS ?? new Set()
 import { StubServer } from '../../core/test/helpers/stub-server.js'
 
 const TOKEN = 'folder-off-token'
@@ -252,16 +255,82 @@ describe('MCP memory tools in an `off` folder (cwd is the workspace)', () => {
     expect(r.json?.engram_count).toBeGreaterThanOrEqual(1)
   })
 
-  it('every gated tool exists, and the admin/diagnostic tools are not gated', () => {
-    const names = new Set(getToolDefinitions('full').map(t => t.name))
-    for (const n of FOLDER_GATED_TOOLS) expect(names.has(n), n).toBe(true)
-    for (const n of ['plur_status', 'plur_doctor', 'plur_stores_list', 'plur_stores_add', 'plur_sync_status', 'plur_receipt']) {
-      expect(FOLDER_GATED_TOOLS.has(n), n).toBe(false)
+  it('every registered tool is either gated or explicitly admin, never both, never neither', () => {
+    const names = getToolDefinitions('full').map(t => t.name)
+    for (const n of names) {
+      const inGated = FOLDER_GATED_TOOLS.has(n)
+      const inAdmin = ADMIN_UNGATED_TOOLS.has(n)
+      expect(inGated !== inAdmin, `${n}: gated=${inGated} admin=${inAdmin}`).toBe(true)
     }
+    for (const n of [...FOLDER_GATED_TOOLS, ...ADMIN_UNGATED_TOOLS]) expect(names.includes(n), `${n} is not a tool`).toBe(true)
+    for (const n of ['plur_status', 'plur_doctor', 'plur_stores_list']) expect(ADMIN_UNGATED_TOOLS.has(n), n).toBe(true)
     for (const n of ['plur_learn', 'plur_learn_batch', 'plur_recall', 'plur_recall_hybrid', 'plur_inject', 'plur_inject_hybrid',
-      'plur_capture', 'plur_feedback', 'plur_session_start', 'plur_session_end', 'plur_forget']) {
+      'plur_capture', 'plur_feedback', 'plur_session_start', 'plur_session_end', 'plur_forget', 'plur_receipt']) {
       expect(FOLDER_GATED_TOOLS.has(n), n).toBe(true)
     }
+  })
+
+  it('every gated tool answers off, called directly (full profile)', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur)
+    const before = snapshot(s.home)
+    hits = []
+    for (const n of FOLDER_GATED_TOOLS) expectOffAnswer(await call(client, n, {}), s.workspace)
+    expect(FOLDER_GATED_TOOLS.size).toBeGreaterThan(30)
+    expect(snapshot(s.home)).toEqual(before)
+    expect(hits).toEqual([])
+  })
+
+  it('every gated tool answers off through plur_admin, and core ones directly (lean profile)', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur, { profile: 'lean' })
+    const direct = new Set((await client.listTools()).tools.map(t => t.name))
+    hits = []
+    for (const n of FOLDER_GATED_TOOLS) {
+      const r = direct.has(n) ? await call(client, n, {}) : await call(client, 'plur_admin', { action: n, args: {} })
+      expectOffAnswer(r, s.workspace)
+    }
+    expect(hits).toEqual([])
+  })
+
+  it('a gated call calls nothing on the Plur instance but the folder lookup (no local reads either)', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur)
+    const called: string[] = []
+    const allowed = new Set(['resolveFolderPolicy', 'constructor'])
+    let proto = Object.getPrototypeOf(s.plur)
+    const seen = new Set<string>()
+    while (proto && proto !== Object.prototype) {
+      for (const key of Object.getOwnPropertyNames(proto)) {
+        if (seen.has(key) || allowed.has(key)) continue
+        const d = Object.getOwnPropertyDescriptor(proto, key)
+        if (!d || typeof d.value !== 'function') continue
+        seen.add(key)
+        const orig = d.value
+        ;(s.plur as any)[key] = function (...a: unknown[]) { called.push(key); return orig.apply(this, a) }
+      }
+      proto = Object.getPrototypeOf(proto)
+    }
+    for (const n of ['plur_recall', 'plur_learn', 'plur_inject_hybrid', 'plur_session_start', 'plur_receipt']) {
+      expectOffAnswer(await call(client, n, { query: 'zebra', statement: 'zebra-x', task: 'zebra' }), s.workspace)
+    }
+    expect(called).toEqual([])
+  })
+
+  it('the answer names every off entry covering the folder', async () => {
+    const s = await setup()
+    const nested = join(s.workspace, 'inner')
+    mkdirSync(nested)
+    writeFolders(s.home, [{ path: s.workspace, plur: 'off' }, { path: nested, plur: 'off' }])
+    vi.spyOn(process, 'cwd').mockReturnValue(nested)
+    const client = await connect(s.plur)
+    const r = await call(client, 'plur_recall', { query: 'zebra' })
+    expect(r.json?.plur).toBe('off')
+    expect(r.json?.message).toContain(`folders set ${s.workspace} --on`)
+    expect(r.json?.message).toContain(`folders set ${nested} --on`)
   })
 })
 
@@ -311,5 +380,125 @@ describe('MCP memory tools resolve the folder per call and from client roots', (
     expect(r.json?.plur).toBe('off')
     expect(r.json?.folder).toBe(nested)
     expect(r.json?.message).toContain(`folders set ${s.workspace} --on`)
+  })
+})
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** A client whose roots/list answer is scripted per request (request index n). */
+async function connectScripted(plur: Plur, rootsFn: (n: number) => Promise<string[]>): Promise<{ client: Client; requests: () => number }> {
+  const server = await createServer(plur, { profile: 'full' })
+  const [ct, st] = InMemoryTransport.createLinkedPair()
+  await server.connect(st)
+  const client = new Client({ name: 'folder-off-scripted', version: '1.0.0' }, { capabilities: { roots: { listChanged: true } } })
+  let n = 0
+  client.setRequestHandler('roots/list', async () => {
+    const roots = await rootsFn(n++)
+    return { roots: roots.map(r => ({ uri: pathToFileURL(r).href, name: 'ws' })) }
+  })
+  await client.connect(ct)
+  clients.push(client)
+  return { client, requests: () => n }
+}
+
+describe('the roots cache never lets a memory call through an off root', () => {
+  it('calls made while roots/list is in flight all wait for it and are gated', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other) // cwd is an `on` folder
+    const { client, requests } = await connectScripted(s.plur, async () => { await sleep(300); return [s.workspace] })
+    const before = snapshot(s.home)
+    const [a, b, c] = await Promise.all([
+      call(client, 'plur_recall', { query: 'zebra-local-fact deploy target' }),
+      (async () => { await sleep(50); return call(client, 'plur_learn', { statement: 'zebra-race leaked learning', scope: 'global' }) })(),
+      (async () => { await sleep(100); return call(client, 'plur_recall', { query: 'zebra-local-fact' }) })(),
+    ])
+    expectOffAnswer(a, s.workspace)
+    expectOffAnswer(b, s.workspace)
+    expectOffAnswer(c, s.workspace)
+    expect(snapshot(s.home)).toEqual(before)
+    expect(requests()).toBe(1)
+  })
+
+  it('a failed roots/list is not cached: the next call asks again and is gated', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const sc = await connectScripted(s.plur, async (i) => { if (i === 0) throw new Error('client busy'); return [s.workspace] })
+    await call(sc.client, 'plur_status')
+    await call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    const second = await call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    expectOffAnswer(second, s.workspace)
+    expect(sc.requests()).toBe(2)
+  })
+
+  it('list_changed during an in-flight roots/list discards the stale answer', async () => {
+    const s = await setup()
+    const thirdOn = tmp('plur-mcp-folderoff-third-')
+    writeFolders(s.home, [{ path: s.workspace, plur: 'off' }, { path: s.other, plur: 'on' }, { path: thirdOn, plur: 'on' }])
+    vi.spyOn(process, 'cwd').mockReturnValue(thirdOn)
+    // request 0: the old workspace (on), answered slowly; later requests: the new one (off)
+    const sc = await connectScripted(s.plur, async (i) => { if (i === 0) { await sleep(300); return [s.other] } return [s.workspace] })
+    const first = call(sc.client, 'plur_recall', { query: 'zebra-local-fact' })
+    await sleep(50)
+    await sc.client.sendRootsListChanged()
+    await first
+    const next = await call(sc.client, 'plur_learn', { statement: 'zebra-stale root learning', scope: 'global' })
+    expectOffAnswer(next, s.workspace)
+    expect(JSON.stringify(await s.plur.recall('zebra-stale root learning'))).not.toContain('zebra-stale')
+  })
+
+  it('list_changed is honoured: a later call uses the new roots', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const sc = await connectScripted(s.plur, async (i) => (i === 0 ? [s.other] : [s.workspace]))
+    const first = await call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    expect(first.text).toContain('zebra-local-fact')
+    await sc.client.sendRootsListChanged()
+    await sleep(20)
+    expectOffAnswer(await call(sc.client, 'plur_recall', { query: 'zebra-local-fact' }), s.workspace)
+  })
+})
+
+describe('a folder map that cannot be read fails safe', () => {
+  function expectMapProblem(r: { raw: any; json: any; text: string }, home: string, needle: RegExp): void {
+    expect(r.raw.isError, r.text).not.toBe(true)
+    expect(r.json?.plur, r.text).toBe('off')
+    expect(r.json?.reason).toBe('folder-map-unreadable')
+    expect(r.json?.file).toBe(join(home, 'folders.yaml'))
+    expect(r.json?.message).toContain(join(home, 'folders.yaml'))
+    expect(r.json?.message).toMatch(needle)
+    expect(r.text).not.toContain('zebra-')
+  }
+
+  it('invalid YAML: memory tools read and write nothing and name the file and line', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolders:\n  - path: "${s.workspace}"\n    plur: off\n  - path: [unclosed\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const before = snapshot(s.home)
+    hits = []
+    expectMapProblem(await call(client, 'plur_recall', { query: 'zebra-local-fact' }), s.home, /line \d+/)
+    expectMapProblem(await call(client, 'plur_learn', { statement: 'zebra-malformed learning', scope: SCOPE }), s.home, /line \d+/)
+    expect(snapshot(s.home)).toEqual(before)
+    expect(hits).toEqual([])
+    // admin tools still answer
+    expect((await call(client, 'plur_status')).json?.engram_count).toBeGreaterThanOrEqual(1)
+  })
+
+  it('an invalid entry: names the entry and the problem', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolders:\n  - path: "${s.workspace}"\n    plur: of\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    expectMapProblem(await call(client, 'plur_recall', { query: 'zebra-local-fact' }), s.home, /entry 1|folders\.0/)
+  })
+
+  it('no folders.yaml at all behaves as before', async () => {
+    const s = await setup()
+    rmSync(join(s.home, 'folders.yaml'))
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur)
+    const r = await call(client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    expect(r.json?.plur).toBeUndefined()
+    expect(r.text).toContain('zebra-local-fact')
   })
 })
