@@ -17,6 +17,7 @@ import { TurnBuffer } from './turn.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
 import { resolveScopeRoot, resolveTrustedScope, projectRemoteRefusalNotice } from './scope.js'
+import { INJECT_TIMEOUT_MS } from './timeout.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
 // Unconditional — unlike `log` above. A `.plur.yaml` scope the plugin refuses
@@ -24,14 +25,6 @@ const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:
 // needs to see without having to already know to set PLUR_DEBUG=1 first.
 const warn = (msg: string) => { console.error(`[plur:opencode] warning: ${msg}`) }
 
-/**
- * Upper bound on the recall in `chat.message` (formal R2, mcp#10). The recall
- * was awaited unbounded, so a hung store (lock, dead remote, stuck embedder)
- * stalled the user's turn. Past the bound the turn proceeds with no memory
- * block; the recall keeps running in the background and its result is dropped.
- * 10 s leaves room for the embedder's cold load.
- */
-export const INJECT_TIMEOUT_MS = 10_000
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
   let timer: ReturnType<typeof setTimeout> | undefined

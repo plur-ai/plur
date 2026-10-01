@@ -30,6 +30,13 @@ asked. `--scope` now works as it does in the `plur_inject` MCP tool, and on
 the default (hybrid) path it dials the store configured for that scope. The
 MCP tool takes no domain, so `plur inject` refuses `--domain`, and any other
 flag it does not know, with an error instead of ignoring it.
+### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
+
+`@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its
+entry module. opencode loads every export of that module as a plugin and refuses
+one that is not a function ("Plugin export is not a function"), so the whole
+plugin failed to load. The constant now lives in its own module, and a test
+keeps the entry module to functions only.
 
 ## 0.21.0
 

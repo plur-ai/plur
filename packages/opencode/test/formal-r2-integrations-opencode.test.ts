@@ -11,7 +11,8 @@
  * Model: spec/formal/PlurSpec/R2Integrations.lean §6.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { PlurPlugin, INJECT_TIMEOUT_MS } from '../src/index.js'
+import { PlurPlugin } from '../src/index.js'
+import { INJECT_TIMEOUT_MS } from '../src/timeout.js'
 
 const BLOCK_TEXT = '[ENG-1] Use pnpm.'
 const fakePlur = () => ({
