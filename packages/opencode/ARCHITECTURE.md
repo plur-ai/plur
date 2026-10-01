@@ -150,37 +150,54 @@ Both call `plur.learnRouted()` with `scope`/`domain` from the project's
 ## Folder map (#1347)
 
 Before it recalls or learns, the plugin asks the folder map what the user
-decided about the session's folder: `folderState()` in `index.ts` calls
-`Plur.resolveFolderPolicy(scopeRoot)` — core's resolver, the one the CLI hooks
-use — once per `chat.message`, `session.idle` and compaction, so a decision
-made mid-session applies from the next prompt.
+decided about the folder opencode is open in: `folderState()` in `index.ts`
+calls `Plur.resolveFolderPolicy(folderDir)` — core's resolver, the one the CLI
+hooks use — once per `chat.message`, `session.idle` and compaction, so a
+decision made mid-session applies from the next prompt. `folderDir` is
+opencode's `directory` (`resolveFolderDir`, `scope.ts`), the way the hooks
+decide on the editor's working folder; the git worktree root is used only as
+`Plur`'s `cwd`. Deciding on the worktree root let an `off` subfolder of an
+`on` repo get recall, and offered an undecided subfolder commands for the
+whole repo (audit F1 of #1517).
 
 - `off`: no recall, no block, no question, no learning (the turn buffer is
   still drained so it never grows).
-- `ask`: no recall and no learning. The first turn of each session renders the
-  one question, built by core's `folderAskOnce` (`packages/core/src/folder-ask.ts`)
-  — the same function, text and content rules as the Claude Code, Codex, Cursor
-  and Antigravity hooks, moved from the CLI into core so this in-process plugin
-  could share it rather than copy it. It goes through the same render path as a
-  memory block (`system.transform`, or the `chat.message` fallback).
+- `ask`: no recall and no learning. The session's offer is built by core's
+  `folderAskOnce` (`packages/core/src/folder-ask.ts`) — the same function, text
+  and content rules as the Claude Code, Codex, Cursor and Antigravity hooks,
+  moved from the CLI into core so this in-process plugin shares it. opencode
+  rebuilds `system[]` for every request and keeps none of it in history, so
+  the offer is kept per session (`offers`): the full question until it has
+  been rendered once (through `system.transform` or the `chat.message`
+  fallback), then on every turn a reminder built from the question's own
+  command lines (`ask.ts`), with the same nonces, until the folder is decided
+  or the session ends (audit F2 of #1517). Without `plur` on `PATH` no offer
+  is built: the session is told once how to install the CLI (audit F8).
 - `on`: the session scope is the policy's (a map `scope` beats a trusted
   `.plur.yaml` hint), via core's `sessionSettings`.
 
-Nonces: `folderAskOnce` issues one single-use nonce per offered answer through
-core's `issueFolderNonce`, in the PLUR home this plugin opened, exactly as the
-hooks do. The hooks end a session's nonces at the editor's SessionEnd; opencode
-has no such event, so the plugin ends them on `session.deleted` and on
-`dispose` (the opencode process going away), with core's 24-hour TTL as the
-backstop. "Asked once" is kept in memory per plugin instance (the hooks keep a
-temp-dir marker because each hook is a new process), so a session continued in
-a new process is asked again with fresh nonces — the hooks' resume rule.
+Fail safe: a `folders.yaml` that does not parse makes core's resolver answer
+`ask` with reason `malformed-map` (file and line), and a resolver that throws
+gives `ask` with reason `resolver-error` — here and in the CLI hooks. Neither
+offers a command; a project marker no longer turns memory on (audit F4).
 
-A resolver failure falls back to the CLI hooks' rule: a project marker means
-`on`, otherwise `ask`. It never turns memory on where the map might say `off`.
+Nonces: one single-use nonce per offered answer through core's
+`issueFolderNonce`, in the PLUR home this plugin opened, bound to the folder,
+the answer and — for this plugin — the session (`bindSession`). The plugin's
+`shell.env` hook sets `PLUR_FOLDER_SESSION` for every shell the agent runs
+(opencode's bash tool calls it with the session id; checked against 1.18.33),
+and `plur folders set` consults only that session's nonces (audit F5). The
+editor hooks' hosts cannot pass a session to the agent's shell, so their
+nonces stay unbound. The hooks end a session's nonces at the editor's
+SessionEnd; opencode has no such event, so the plugin ends them on
+`session.deleted`, on `dispose` and when the folder is decided, with core's
+24-hour TTL as the backstop. "Asked once" is kept in memory per plugin
+instance, so a session continued in a new process is asked again with fresh
+nonces — the hooks' resume rule.
 
 The entry module exports only the plugin function: opencode loads every export
 of it as a plugin and refuses the whole module when one is not a function
-(measured on opencode 1.18.33). `INJECT_TIMEOUT_MS` lives in `timeout.ts`.
+(#1518). `INJECT_TIMEOUT_MS` lives in `timeout.ts`.
 
 ## Scope
 

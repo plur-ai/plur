@@ -81,17 +81,21 @@ Beyond those: search falls back to local BM25 when embeddings are off, storage i
 
 ## Folder map: on, off or ask
 
-The plugin follows the folder map (`~/.plur/folders.yaml`, or `folders.yaml` in your `PLUR_PATH` store), the same decisions the Claude Code, Codex, Cursor and Antigravity hooks follow. Before every turn it asks what you have decided about the session's folder (opencode's `worktree`, else its `directory`):
+The plugin follows the folder map (`~/.plur/folders.yaml`, or `folders.yaml` in your `PLUR_PATH` store), the same decisions the Claude Code, Codex, Cursor and Antigravity hooks follow. Before every turn it asks what you have decided about the folder opencode is open in (opencode's `directory`; for a subfolder of a repo, that subfolder, not the repo root):
 
 | Mode | What the plugin does in that folder |
 |---|---|
 | **on** | Recalls, injects and learns as described above. The session scope is the map entry's `scope`, else a trusted `.plur.yaml`'s `scope` (a map scope beats the `.plur.yaml` hint). That scope is also what makes core dial the team store it belongs to. |
 | **off** | Nothing: no recall, no memory block, no question, no learning. |
-| **ask** | No memories. The first message of each session carries one question for the agent to put to you, with a command per answer: yes (`--on`, or `--scope <s>` when a team scope is configured), never here (`--off`), and — when the repo's `.plur.yaml` is not trusted — yes and trust it (`--trusted`). "Not now" runs nothing, and that session is not asked again. |
+| **ask** | No memories. The first message of each session carries one question for the agent to put to you, with a command per answer: yes (`--on`, or `--scope <s>` when a team scope is configured), never here (`--off`), and — when the repo's `.plur.yaml` is not trusted — yes and trust it (`--trusted`). Every later message of the session carries the same commands again, telling the agent not to ask again, so it can still run your answer when you give it. "Not now" runs nothing. |
 
 A folder with no decision asks; your home folder is not a special case and asks too. A folder is `on` without a decision when it (or a folder above it, up to your home) has a project marker: a project MCP config naming `plur` (`.mcp.json`, `.claude/settings.json`, `.cursor/mcp.json`) or a `.plur.yaml` that requests nothing. A `.plur.yaml` that requests a scope, domain or remote from an untrusted folder asks instead; what it requests is shown only as quoted data (a scope or domain that fits the grammar, the remote's host — never its token, never free text).
 
-Each offered command carries its own single-use nonce, issued by core for exactly that folder and that answer, so `plur folders set` refuses it for any other folder or answer. A session's nonces end when opencode deletes the session or the opencode process exits, and after 24 hours at most. A session continued in a new opencode process is asked again, with fresh nonces. The answer applies from the next prompt. The commands need the `plur` CLI on the `PATH` of the shell the agent runs them in; you can always decide yourself instead, from any terminal:
+**A folder map that cannot be read fails safe.** If `folders.yaml` does not parse, or the decision cannot be resolved, the folder gets no memory — even with a project marker — and the agent is told which file to fix and on which line. No command is offered for it.
+
+**The commands need the `plur` CLI** on the `PATH` of the shell the agent runs them in. Without it, the plugin says so and gives the install command (`npm install -g @plur-ai/cli`) instead of offering commands that would fail; once `plur` is on `PATH`, the next message offers them.
+
+Each offered command carries its own single-use nonce, issued by core for exactly that folder and that answer, and bound to the session that showed it: the plugin tells every shell the agent runs which session it belongs to (`PLUR_FOLDER_SESSION`, through opencode's `shell.env` hook), and `plur folders set` refuses a nonce from another session. A session's nonces end when opencode deletes the session or the opencode process exits, and after 24 hours at most. A session continued in a new opencode process is asked again, with fresh nonces. The answer applies from the next prompt. You can always decide yourself instead, from any terminal:
 
 ```sh
 plur folders set . --on                  # or --scope group:acme/eng

@@ -7,28 +7,40 @@
 **The opencode plugin now does what you decided for each folder**, like the
 Claude Code, Codex, Cursor and Antigravity hooks have since #1347. Before, it
 recalled and learned in every folder it was opened in, and the folder map
-(`~/.plur/folders.yaml`) was not read at all.
+(`~/.plur/folders.yaml`) was not read at all. The decision is for the folder
+opencode is open in, so an `off` subfolder of a repo that is `on` stays off.
 
 - **off**: nothing happens in that folder — no recall, no memory block, no
   question, no learning.
 - **ask** (any folder you have not decided about, including your home folder,
   and a repo whose `.plur.yaml` asks for settings you have not trusted): no
-  memories. The first message of each session carries the same one-time
-  question the hooks ask, with a single-use command per answer (yes, never
-  here, and trust this repo's `.plur.yaml` when it has one). What the repo
-  requests is shown only as quoted data, never its token. "Not now" runs
-  nothing and the session is not asked again.
+  memories. The session's first message carries the same question the hooks
+  ask, with a single-use command per answer (yes, never here, and trust this
+  repo's `.plur.yaml` when it has one). Every later message of that session
+  carries the same commands again, without asking again, so the agent can
+  still run your answer when you give it. What the repo requests is shown only
+  as quoted data, never its token. Without the `plur` CLI on `PATH`, the
+  plugin says so and how to install it instead of offering commands.
 - **on**: the session scope is the folder's scope from the map, else the scope
   of a trusted `.plur.yaml`, and recall reaches the team store for that scope.
 
 The question's commands carry nonces issued the same way the hooks issue
 them: one per answer, bound to that folder and that answer, ended when
-opencode deletes the session or exits, and after 24 hours at most. A session
-continued in a new opencode process is asked again with fresh nonces.
+opencode deletes the session or exits, and after 24 hours at most. The
+plugin's nonces are also bound to their session: opencode tells the agent's
+shell which session it is in (`PLUR_FOLDER_SESSION`), and `plur folders set`
+refuses a nonce from another session. The editor hooks' nonces stay unbound,
+because their hosts cannot tell the agent's shell its session.
+
+**A folder map that cannot be read now fails safe, in every editor.** A
+`folders.yaml` that does not parse was read as empty, after which a project
+marker (`.plur.yaml`, a project MCP config) switched memory on, even in a
+folder the map had switched off. Now the folder is treated like `ask` with no
+memory, and the agent is told which file to fix and on which line. A folder
+decision that cannot be resolved for any other reason does the same.
 
 The question itself moved from the CLI into core (`folderAskOnce`,
-`sessionSettings`), so the hooks and the plugin share one implementation; the
-CLI hooks' behaviour is unchanged.
+`sessionSettings`), so the hooks and the plugin share one implementation.
 
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
