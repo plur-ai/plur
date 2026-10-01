@@ -92,8 +92,8 @@ one with `plur remote` or `plur stores add` first).
 - **A save that cannot reach the server** waits in the outbox (a row in
   `engrams.yaml` marked for delivery, see `plur outbox`) and is removed once it
   is delivered. Such a queued save can only be delivered or forgotten, from any
-  folder: forgetting deletes it outright, and it cannot be rescoped or updated
-  to a local scope. If the team scope's sensitivity policy is tightened before
+  folder: forgetting deletes it outright, and it cannot be rescoped, updated to
+  a local scope, or retired (resolving a tension against it is refused). If the team scope's sensitivity policy is tightened before
   it is sent, it stays queued (with the reason) rather than being kept as a
   local memory.
 - **If the server cannot be reached at session start**, the session starts
@@ -119,9 +119,12 @@ To leave remote-only you say so explicitly: `plur folders set <folder> --on`
 (or `--off`, `--ask`), or `plur folders rm <folder>`.
 
 The guarantee is enforced twice. The commands and tools refuse with a
-message, and underneath them every local store PLUR opens in such a folder is
-wrapped so that it shows and accepts only the folder's own queued saves — a
-path nobody listed still cannot reach a personal memory. Store maintenance
+message, and underneath them every local store a PLUR instance opens in such a
+folder is wrapped so that it shows and accepts only the folder's own queued
+saves (active, in a team scope). That covers every path through PLUR itself,
+including the `primaryStore` handle of the API. It does not cover programs that
+read the files directly (a copy of `engrams.yaml`, your editor, the local
+search index — see below). Store maintenance
 (`plur compact`, reindexing, `plur sync`) is refused in the folder; run it
 elsewhere.
 
@@ -134,6 +137,12 @@ It is not a guarantee that nothing about the session touches the disk:
 - the embedding cache (`.embeddings-cache.json`): vectors for team memories
   that were ranked locally, keyed by id;
 - the remote store's in-process cache of team rows (memory only, not disk);
+- the daily backup of `engrams.yaml` (`backups/`), which can keep a copy of
+  a queued save taken before it was delivered (whether backups should skip
+  queued saves is an open owner decision);
+- the local search index, when one is turned on (`index:` in config.yaml): it
+  is rebuilt from `engrams.yaml`, so it can hold queued saves until they are
+  delivered;
 - the history log (`history.jsonl`): events about saves and injections, with
   ids and counts — in a remote-only folder the statement previews are left out;
 - `plur status` statistics and the outbox's own bookkeeping (attempts, errors,

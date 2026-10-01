@@ -47,8 +47,10 @@ needs the usual `--nonce`. In a remote-only folder:
   takes `--on`, `--off`, `--ask` or `plur folders rm`.
 - An entry with no scope refuses every save and says so.
 
-- Still written locally: queued saves, the embedding cache, history events
-  (without statement previews in such a folder), statistics. See the docs.
+- Still written locally: queued saves, the daily backup and (when enabled) the
+  search index, which can hold a queued save until it is delivered, the
+  embedding cache, history events (without statement previews in such a
+  folder), statistics. See the docs.
 
 **A `folders.yaml` that cannot be read now fails safe.** Every folder behaves
 like `ask`, PLUR reads and writes nothing, and the session says so, naming the
@@ -70,9 +72,14 @@ not read the folder map.
 
 Underneath the command-level refusals, every local store a bound instance
 opens is wrapped so that it shows and accepts only the folder's own queued
-saves (a test calls every public method in a bound instance against a store
-seeded with personal content). Store maintenance (`compact`, reindex, `sync`)
-is refused in the folder. The
+saves, active and in a team scope, while keeping the store's lock (a test
+calls every public method in a bound instance against a store seeded with
+personal content; another runs 25 concurrent saves and a second process).
+This covers paths through PLUR, including the API's `primaryStore` handle; it
+does not cover programs reading the files directly. A queued save cannot be
+retired (tension resolve, a status update) — only delivered or forgotten.
+Store maintenance (`compact`, reindex, `sync`) is refused in the folder.
+`plur ingest` there saves to the folder's team scope. The
 opencode plugin does not follow the folder map yet; it picks the mode up once
 its folder-map support (#1517) is in. Core: `Plur.bindFolder(dir)` /
 `bindFolderPolicy(dir, policy)`, `RemoteOnlyWriteError`, and
