@@ -214,6 +214,48 @@ describe('dialing — audit follow-ups (F2, F4)', () => {
   })
 })
 
+describe('dialing — re-audit follow-ups (N3, N4)', () => {
+  // N3: the read picks the store the way the write does — exact case first,
+  // across every configured store — and a selected `dial: never` store means
+  // no dial; it never falls through to a case twin.
+  it('dial: never on the selected store means no dial, not a fall-through to a case twin', () => {
+    const plur = plurWith(
+      `  - url: "https://a.example.com"\n    token: "ta"\n    scope: "${ME}"\n    dial: never\n` +
+      `  - url: "https://b.example.com"\n    token: "tb"\n    scope: "USER:ACME:ME"\n`,
+    )
+    expect(hostsOf(plur, { scope: ME })).toEqual([])
+    // No exact match: first fold match in config order is A (dial: never).
+    expect(hostsOf(plur, { scope: 'User:Acme:Me' })).toEqual([])
+    // The write with the same strings targets A as well.
+    expect((plur as any)._canonicalPersonalScope('User:Acme:Me')).toBe(ME)
+    expect((plur as any)._canonicalPersonalScope(ME)).toBe(ME)
+  })
+
+  it('a path-backed store with the exact scope wins the read too: its url case twin is not dialed', () => {
+    const dir = tmp('plur-userscope-path-')
+    const plur = plurWith(
+      `  - path: "${join(dir, 'me.yaml')}"\n    scope: "${ME}"\n` +
+      `  - url: "https://b.example.com"\n    token: "tb"\n    scope: "USER:ACME:ME"\n`,
+    )
+    expect(hostsOf(plur, { scope: ME })).toEqual([])
+    expect(hostsOf(plur, { scope: 'USER:ACME:ME' }).map(h => h.url)).toEqual(['https://b.example.com'])
+  })
+
+  // N4: the allow-list admits a store that can hold an allowed scope's rows
+  // (store scope equal to, or a parent of, an allowed scope — `isScopeWithin`,
+  // the nesting every read filter uses). A store that is a CHILD of an allowed
+  // scope is not dialed: its rows would fail the exact allow-list filter.
+  it('allow-list: a parent store is dialed for an allowed child scope; a child store is not dialed for an allowed parent', () => {
+    const parent = plurWith(`  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "group:acme/eng"\n`)
+    expect(hostsOf(parent, { scope: 'project:acme/app', scopes: ['group:acme/eng/x'] }).map(h => h.scopes))
+      .toEqual([['group:acme/eng']])
+    const child = plurWith(`  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "group:acme/eng/x"\n`)
+    expect(hostsOf(child, { scope: 'project:acme/app', scopes: ['group:acme/eng'] })).toEqual([])
+    // A sibling-prefix scope is not "within" (segment-aware).
+    expect(hostsOf(parent, { scope: 'project:acme/app', scopes: ['group:acme/engx'] })).toEqual([])
+  })
+})
+
 describe('personal user: scope against a live (stub) remote store', () => {
   function plurFor(storeScope: string): Plur {
     const dir = tmp('plur-userscope-e2e-')
@@ -306,6 +348,69 @@ describe('personal user: scope against a live (stub) remote store', () => {
     const e = await plur.learnRouted('personal fact routed by folded scope', { scope: 'USER:Acme:ME' })
     expect(e.scope).toBe(ME)
     expect(server.appendCalls).toBe(1)
+  })
+
+  // N1: a write naming a LOCAL path-backed personal store stays local even
+  // when a url store has the same scope in another case (audit probe R1).
+  it('learn naming a path-backed personal store stays local despite a url case twin (N1)', async () => {
+    const dir = tmp('plur-userscope-n1-')
+    writeFileSync(join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n` +
+      `  - path: "${join(dir, 'other.yaml')}"\n    scope: "user:acme:other"\n` +
+      `  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "USER:ACME:OTHER"\n`)
+    const plur = new Plur({ path: dir })
+    const guarded = await (plur as any)._guardSensitiveScope('a harmless fact', { scope: 'user:acme:other' })
+    expect(guarded.scope).toBe('user:acme:other')
+    const e = await plur.learnRouted('a harmless fact about local notes', { scope: 'user:acme:other' })
+    expect(e.scope).toBe('user:acme:other')
+    expect(server.appendCalls).toBe(0)
+  })
+
+  it('an auto-routed write to a path-backed personal store is not redirected to its url case twin (N1)', async () => {
+    const dir = tmp('plur-userscope-n1r-')
+    writeFileSync(join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n` +
+      `  - path: "${join(dir, 'other.yaml')}"\n    scope: "user:acme:other"\n    covers: ["acme.engineering"]\n` +
+      `  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "USER:ACME:OTHER"\n`)
+    const plur = new Plur({ path: dir })
+    const e = await plur.learnRouted('the build uses a pinned toolchain', { domain: 'acme.engineering.build' })
+    expect(e.scope).toBe('user:acme:other')
+    expect(server.appendCalls).toBe(0)
+  })
+
+  // Restores coverage of the post-retrieval allow-list filter (_filterRemoteRows):
+  // the allowed store is dialed; a server row in a CHILD scope of it is
+  // admitted by the host's containment guard but dropped by the exact
+  // allow-list filter (scopeAllowFilter is exact membership).
+  it('allow-list: dialed store returns rows in its scope and a child scope; only the exact allowed one is kept', async () => {
+    server.recallRows = [
+      { id: 'ENG-2026-1001-910', scope: 'group:plur/eng', status: 'active', statement: 'team codeword ibisfern one', score: 1 },
+      { id: 'ENG-2026-1001-911', scope: 'group:plur/eng/x', status: 'active', statement: 'team codeword ibisfern two', score: 1 },
+    ]
+    const plur = plurFor('group:plur/eng')
+    const results = await plur.recall('ibisfern', { scope: 'project:plur/app', scopes: ['group:plur/eng'] })
+    expect(server.recallCalls).toBe(1)
+    expect(results.some(e => (e as any)._originalId === 'ENG-2026-1001-910')).toBe(true)
+    expect(results.some(e => (e as any)._originalId === 'ENG-2026-1001-911')).toBe(false)
+  })
+
+  // N5: learnAsync / learnBatch fold the scope before their hash dedup, so a
+  // legacy local engram under another case does not swallow the write.
+  it('learnAsync and learnBatch canonicalise a personal scope before dedup (N5)', async () => {
+    const dir = tmp('plur-userscope-n5-')
+    writeFileSync(join(dir, 'config.yaml'), `embeddings:\n  enabled: false\n`)
+    const legacy = new Plur({ path: dir })
+    await legacy.learn('the kettle descaler is citric acid', { scope: 'USER:ACME:ME' })
+    await legacy.learn('the bike chain wax is paraffin', { scope: 'USER:ACME:ME' })
+    writeFileSync(join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${ME}"\n`)
+    const plur = new Plur({ path: dir })
+    const r = await plur.learnAsync('the kettle descaler is citric acid', { scope: 'USER:ACME:ME' })
+    expect(r.decision).not.toBe('NOOP')
+    expect(r.engram.scope).toBe(ME)
+    const b = await plur.learnBatch([{ statement: 'the bike chain wax is paraffin', context: { scope: 'USER:ACME:ME' } }])
+    expect(b.results[0].decision).not.toBe('NOOP')
+    expect(b.results[0].engram.scope).toBe(ME)
   })
 
   it('shared-scope recall against a group store is unchanged (still dials, still merges)', async () => {

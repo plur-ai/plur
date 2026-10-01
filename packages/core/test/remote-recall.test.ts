@@ -691,7 +691,7 @@ describe('Plur.recall with a live remote host', () => {
     expect(server.recallCalls).toBe(0)
   })
 
-  it('options.scopes authorization drops server rows outside the allow-list', async () => {
+  it('options.scopes authorization: a store outside the allow-list is not dialed, so none of its rows arrive', async () => {
     server.recallRows = [serverRow('ENG-2026-0731-032')]
     const { plur } = plurFor(TEAM_SCOPE)
     const results = await plur.recall('remote statement', {

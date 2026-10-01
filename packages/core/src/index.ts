@@ -2091,6 +2091,20 @@ export class Plur {
   }
 
   /**
+   * The configured scope a personal `user:` scope resolves to (#1515):
+   * `personalStoreEntry` over EVERY configured store, path-backed and url —
+   * exact case first, else the first case-folded match in config order.
+   * Returns `scope` unchanged when it is not personal, names no store, or
+   * already names one exactly. One rule for writes (learn, learnAsync,
+   * learnBatch) and for the read dial, so the same string reaches the same
+   * store (re-audit N1/N3/N5).
+   */
+  private _canonicalPersonalScope(scope: string): string {
+    const entry = personalStoreEntry(scope, (this.config.stores ?? []).filter(s => typeof s.scope === 'string'))
+    return entry ? entry.scope : scope
+  }
+
+  /**
    * Decision E1 "me-only": an auto-route candidate the router must refuse like
    * a shared scope — backed by a URL store (so the write would leave the
    * machine) and not the user's own `/me` namespace. Path-backed and unbacked
@@ -3438,15 +3452,24 @@ export class Plur {
       // a server reviewing writes may reasonably care about.
       scopeSource = context?.scope != null ? 'explicit' : 'session'
     }
-    // A personal `user:` scope that names a configured url store under a
+    // A personal `user:` scope that names a configured store under a
     // different case writes to that store under ITS configured scope — the
-    // same case-folded, single-entry match the recall dial uses
-    // (`personalStoreEntry`, #1515 audit F5), so a write and a read with the
-    // same string reach the same store.
-    const personalStore = personalStoreEntry(scope, (this.config.stores ?? []).filter(s => !!s.url))
-    if (personalStore && personalStore.scope !== scope) {
-      scope = personalStore.scope
-      if (context?.scope != null) context = { ...context, scope }
+    // same case-folded, exact-first, single-entry match the recall dial uses
+    // (`_canonicalPersonalScope`, #1515 audit F5). Every configured store
+    // counts, path-backed ones included, so a scope that exactly names a
+    // LOCAL store is never redirected to a remote case twin (re-audit N1).
+    const canonical = this._canonicalPersonalScope(scope)
+    if (canonical !== scope) {
+      // On the auto-routing path the router already judged `scope` with the
+      // "me-only" ownership check (Decision E1). The rewrite must not carry
+      // the write past that check to a different destination: judge the
+      // rewritten scope again and keep the original when it is refused.
+      if (scopeSource === 'routed' && this._refuseRemotePersonalAutoRoute(canonical)) {
+        logger.warning(`[plur:learn] auto-routed scope=${scope} not rewritten to ${canonical}: not your own remote namespace`)
+      } else {
+        scope = canonical
+        if (context?.scope != null) context = { ...context, scope }
+      }
     }
     // Guard fires when the write can leave the machine: shared scope (others can
     // read it) OR remote-backed scope (routes to a remote store, e.g. a personal
@@ -4781,7 +4804,18 @@ export class Plur {
   async learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
     this._assertWritable()
     const { learnAsync: learnAsyncImpl } = await import('./learn-async.js')
-    return learnAsyncImpl(await this._learnAsyncDeps(), statement, context)
+    return learnAsyncImpl(await this._learnAsyncDeps(), statement, this._canonicalLearnContext(context))
+  }
+
+  /**
+   * Fold a personal `user:` scope to its configured store's scope BEFORE the
+   * async/batch hash dedup runs, so dedup looks in the namespace the write
+   * will land in (re-audit N5). Same rule as `_guardSensitiveScope`.
+   */
+  private _canonicalLearnContext<C extends { scope?: string } | undefined>(context: C): C {
+    if (!context?.scope) return context
+    const scope = this._canonicalPersonalScope(context.scope)
+    return scope === context.scope ? context : { ...context, scope } as C
   }
 
   /** Batch learn with LLM dedup. LLM calls are capped (default 50) to bound bulk-import cost. */
@@ -4792,7 +4826,12 @@ export class Plur {
   ): Promise<LearnBatchResult> {
     this._assertWritable()
     const { learnBatch: learnBatchImpl } = await import('./learn-async.js')
-    return learnBatchImpl(await this._learnAsyncDeps(), statements, llm, opts)
+    return learnBatchImpl(
+      await this._learnAsyncDeps(),
+      statements.map(s => ({ ...s, context: this._canonicalLearnContext(s.context) })),
+      llm,
+      opts,
+    )
   }
 
   /**
@@ -5976,11 +6015,22 @@ export class Plur {
     // personal remote store landed on the server but `recall` with the same
     // scope never read it back.
     const personalScope = options?.scope ?? this._sessionScopes.own(options?.session) ?? undefined
-    const personalEntry = personalStoreEntry(personalScope, stores.filter(e => e.dial !== 'never'))
+    // Selected over EVERY configured store, exactly as a write selects
+    // (`_canonicalPersonalScope`); a selected path-backed or `dial: never`
+    // store means no personal dial — never a fall-through to a case twin
+    // (re-audit N3).
+    const selectedPersonal = personalStoreEntry(personalScope, (this.config.stores ?? []).filter(e => typeof e.scope === 'string'))
+    const personalEntry = selectedPersonal?.url && selectedPersonal.dial !== 'never' ? selectedPersonal : null
     // The caller's authorization allow-list bounds what is DIALED, not only
     // what is kept afterwards: a query sent to a scope the caller may not
-    // read has already left the machine (audit F2). `[]` dials nothing.
-    const allowed = scopeAllowFilter(options?.scopes)
+    // read has already left the machine (audit F2). `[]` dials nothing. A
+    // store is dialable when it can hold rows the allow-list admits: its
+    // scope equals, or is a parent of, an allowed scope (`isScopeWithin`,
+    // the nesting every read filter uses — re-audit N4). The rows themselves
+    // are still filtered by exact membership afterwards (`_filterRemoteRows`).
+    const allowList = options?.scopes
+    const allowed = (storeScope: string): boolean =>
+      allowList === undefined || allowList.some(a => isScopeWithin(a, storeScope))
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
     for (const s of stores) {
