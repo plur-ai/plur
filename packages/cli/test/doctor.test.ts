@@ -836,11 +836,14 @@ describe('plur doctor', () => {
     }
   })
 
-  it('reports ok:false and does not crash on an unparseable (JSONC) opencode config', () => {
+  it('reports ok:false and does not crash on an unparseable opencode config', () => {
     writeOpencodeConfigFile({}, 'opencode.jsonc')
-    // Overwrite with real JSONC (comments) — a plain JSON.parse target.
+    // Overwrite with content that is invalid even as JSONC (a missing value).
+    // Comments and trailing commas alone are valid JSONC and are read fine
+    // since the read path became JSONC-tolerant — see
+    // doctor-opencode-jsonc.test.ts.
     const dir = join(home, '.config', 'opencode')
-    writeFileSync(join(dir, 'opencode.jsonc'), '{\n  // a comment\n  "model": "x"\n}\n')
+    writeFileSync(join(dir, 'opencode.jsonc'), '{\n  // a comment\n  "model": \n}\n')
 
     const { stdout } = runDoctor()
     const report = JSON.parse(stdout)
