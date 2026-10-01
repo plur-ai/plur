@@ -63,6 +63,7 @@ import {
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome, stampStoreRow} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
+import { RemoteOnlyStoreGuard, isQueuedForFolder } from './store/remote-only-store-guard.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock } from './store/async-lock.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
@@ -1128,7 +1129,18 @@ export class Plur {
   /** Constructor-initiated async work — see `ready()`. */
   private _readyPromise: Promise<void> = Promise.resolve()
 
-  private _primaryStore: AsyncPrimaryStore
+  /** The primary store as opened (see `_primaryStore` for what callers get). */
+  private _basePrimaryStore: AsyncPrimaryStore
+  /**
+   * The primary store every engine path uses. While the instance is bound to
+   * a remote-only folder it is wrapped in RemoteOnlyStoreGuard (re-audit of
+   * #1521): reads see only the folder's queued saves, writes may only touch
+   * them. The method guards are the first layer; this is the backstop.
+   */
+  private get _primaryStore(): AsyncPrimaryStore {
+    const ro = this._remoteOnly
+    return ro ? new RemoteOnlyStoreGuard(this._basePrimaryStore, ro, true) : this._basePrimaryStore
+  }
   /**
    * File-backed secondary stores (config `stores:` entries and installed packs),
    * memoised by path. These are YAML artifacts by definition and stay YAML even
@@ -1258,7 +1270,7 @@ export class Plur {
     this.paths = detectPlurStorage(options?.path)
     this._readonly = options?.readonly === true
     const baseStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
-    this._primaryStore = this._readonly ? new ReadonlyStoreGuard(baseStore) : baseStore
+    this._basePrimaryStore = this._readonly ? new ReadonlyStoreGuard(baseStore) : baseStore
     // Owner decision P1 (2026-09-27, "keep both, rename one — nothing lost or
     // hidden"): a store that renames a clashing id on write (Postgres `save`)
     // reports the rename here, and it is recorded in THIS instance's history
@@ -1556,6 +1568,9 @@ export class Plur {
    * Primary engrams are returned unchanged.
    */
   private async _loadAllEngrams(): Promise<Engram[]> {
+    // remote-only: the folder's queued saves (the guarded primary store shows
+    // only those) plus its read corpus — never a personal url store's cache.
+    if (this._remoteOnly) return [...(await this._loadCached(this.paths.engrams)), ...(await this._readCorpus())]
     const primary = await this._loadCached(this.paths.engrams)
     return [...primary, ...(await this._loadSecondaryAndPacks())]
   }
@@ -1789,7 +1804,10 @@ export class Plur {
     // the outbox handoff and pack uninstall all declare `allowShrink`. An
     // undeclared empty save means the caller read nothing and is about to make
     // that permanent, which is the whole shape of this audit.
-    if (!opts?.allowShrink && engrams.length === 0) {
+    // (A remote-only binding writes through RemoteOnlyStoreGuard, which puts
+    // every hidden row back: an empty visible set there removes queued saves
+    // only.)
+    if (!opts?.allowShrink && engrams.length === 0 && !this._remoteOnly) {
       throw new Error(
         `[plur] refusing to write an empty corpus to ${path}.\n` +
         `A store write replaces the whole corpus, so this would delete every engram in it. ` +
@@ -2032,7 +2050,19 @@ export class Plur {
       if (this._readonly) store = new ReadonlyStoreGuard(store)
       this._secondaryStores.set(path, store)
     }
-    return store
+    // remote-only: a secondary file store is personal — invisible and unwritable.
+    return this._remoteOnly ? new RemoteOnlyStoreGuard(store, this._remoteOnly, false) : store
+  }
+
+  /**
+   * Ids a new local row must not take: those minted this process, plus — while
+   * bound, when the store shows only queued saves — every id the primary store
+   * holds (ids only, never content).
+   */
+  private async _idsInUse(): Promise<string[]> {
+    const minted = this._mintedTodayIds()
+    if (!this._remoteOnly) return minted
+    return [...minted, ...(await this._basePrimaryStore.loadCached()).map(e => e.id)]
   }
 
   /**
@@ -3969,7 +3999,7 @@ export class Plur {
         ? await ps.nextEngramId!(engramIdDatePrefix())
         // remote-only: `allEngrams` leaves out most of the primary store, whose
         // ids a queued (outbox) row must still not collide with.
-        : generateEngramId(this._remoteOnly ? [...engrams, ...allEngrams] : allEngrams, this._mintedTodayIds())
+        : generateEngramId(this._remoteOnly ? [...engrams, ...allEngrams] : allEngrams, await this._idsInUse())
       // Claim it in-process immediately (#816). The history record is written
       // later and best-effort; without this, two writes in the same tick — or
       // one whose history append fails — could both take the same suffix.
@@ -4509,7 +4539,7 @@ export class Plur {
       const saveFallback = async () => {
         const engrams = await this._primaryStore.load()
         // Replace placeholder ID with a real local ID
-        localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], this._mintedTodayIds())
+        localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], await this._idsInUse())
         this._rememberMintedId(localPlaceholder.id)
         if (storeEntry) {
           ;(localPlaceholder as any).structured_data = {
@@ -5654,6 +5684,8 @@ export class Plur {
     const taken = new Set<string>()
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
+      // remote-only: only the folder's own team store (re-audit of #1521, C-3).
+      if (this._remoteOnly && entry.scope !== this._remoteOnly.scope) continue
       const prefixRe = new RegExp(`^(ENG|ABS|META)-${storePrefix(entry.scope)}-`)
       const mine = ids.filter(id => !taken.has(id) && prefixRe.test(id)).slice(0, GET_BY_IDS_REMOTE_CAP)
       if (mine.length === 0) continue
@@ -7252,7 +7284,7 @@ export class Plur {
     options?: { source?: FeedbackSource },
   ): Promise<void> {
     this._assertWritable()
-    await this._remoteOnlyRefuseLocalRow(id, 'Rating')
+    await this._remoteOnlyRefuseLocalRow(id, 'Rating', scope)
     const auto = options?.source === 'auto'
     const applyOpts = auto ? { source: 'auto' as const } : {}
     const sourceData = auto ? { source: 'auto' as const } : {}
@@ -7833,6 +7865,13 @@ export class Plur {
     if (storedSd && '_retireRemote' in storedSd) { sd._retireRemote = storedSd._retireRemote; changed = true }
     else if ('_retireRemote' in sd) { delete sd._retireRemote; changed = true }
     const pending = storedSd?._outbox as { target_url?: string; target_scope?: string } | undefined
+    // A queued remote-only save keeps its queue entry through a same-scope
+    // update (re-audit of #1521, B-3): it is read from the STORED row, so a
+    // caller's object without `_outbox` cannot turn it into a local row.
+    if (pending && Plur._isRemoteOnlyQueued(stored) && toWrite.scope === stored.scope) {
+      sd._outbox = storedSd!._outbox
+      changed = true
+    }
     if (pending && stored.status !== 'retired' && toWrite.scope !== stored.scope) {
       changed = true
       const stores = this.config.stores ?? []
@@ -8277,13 +8316,18 @@ export class Plur {
     // folder is DELETED, not retired — a retired row would keep its content
     // on this machine. Any other row this store holds is refused while bound.
     {
-      const queued = (await this._loadCached(this.paths.engrams)).find(e => e.id === id)
-      if (queued && Plur._isRemoteOnlyQueued(queued) && !options?.scope) {
+      const queued = (await this._basePrimaryStore.loadCached()).find(e => e.id === id)
+      // Deleted whatever local scope the caller names (re-audit of #1521,
+      // B-3: a scoped forget used to RETIRE it, keeping its content here).
+      const localForget = !options?.scope || !this._isRemoteBackedScope(options.scope) || options.scope === queued?.scope
+      if (queued && Plur._isRemoteOnlyQueued(queued) && localForget) {
         await this._withStoreLock(this.paths.engrams, async () => {
-          const fresh = await this._primaryStore.load()
+          // The unguarded store: the row may belong to another remote-only
+          // folder than the one this instance is bound to (if any).
+          const fresh = await this._basePrimaryStore.load()
           const kept = fresh.filter(e => e.id !== id)
           if (kept.length === fresh.length) return
-          await this._writeEngrams(this.paths.engrams, kept, { allowShrink: true })
+          await this._basePrimaryStore.save(kept, { allowShrink: true })
           await this._syncIndex()
         })
         this._appendHistory({
@@ -8292,7 +8336,7 @@ export class Plur {
         })
         return
       }
-      if (queued) await this._remoteOnlyRefuseLocalRow(id, 'Forgetting')
+      await this._remoteOnlyRefuseLocalRow(id, 'Forgetting', options?.scope)
     }
 
     // Scope-targeted routing (#831). Ids are minted PER STORE, so one bare id
@@ -9105,6 +9149,7 @@ export class Plur {
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
   async compact(): Promise<{ removed: number; remaining: number }> {
     this._assertWritable()
+    this._remoteOnlyRefuseLocalStore('Compacting the store (run it outside the remote-only folder)')
     return await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
       // Decision D1: a retired row still carrying a queued "retire on remote"
@@ -9143,6 +9188,7 @@ export class Plur {
    * available for code paths that need to block.
    */
   async reindex(): Promise<void> {
+    this._remoteOnlyRefuseLocalStore('Reindexing the store (run it outside the remote-only folder)')
     if (this.pgliteAdapter) {
       // Only a DERIVED index has anything to rebuild. A `role: 'primary'`
       // adapter IS the store of record — there is no external source to
@@ -9170,6 +9216,7 @@ export class Plur {
    * Equivalent to `plur sync --full`: drop the index and rebuild from YAML.
    */
   async reindexAsync(): Promise<void> {
+    this._remoteOnlyRefuseLocalStore('Reindexing the store (run it outside the remote-only folder)')
     if (this.pgliteAdapter) {
       const adapter = asDerivedIndex(this.pgliteAdapter)
       if (!adapter) return
@@ -9604,6 +9651,7 @@ export class Plur {
    * touched in either mode.
    */
   async sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): Promise<SyncResult> {
+    this._remoteOnlyRefuseLocalStore('Syncing the store (run it outside the remote-only folder)')
     // #640: explicit option > config.sync.remote_type > 'personal' (historical
     // mirror-everything default — `shared` is an explicit opt-in that filters
     // the push set to shared-scope, non-private engrams).
@@ -12149,11 +12197,26 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** remote-only: refuse `op` on a row this machine's primary store holds (audit of #1521, B2). */
-  private async _remoteOnlyRefuseLocalRow(id: string, op: string): Promise<void> {
+  private async _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise<void> {
     if (!this._remoteOnly) return
     if (this._remoteOnly.blocked) throw this._remoteOnlyError('local-row')
-    const primary = await this._loadCached(this.paths.engrams)
-    if (primary.some(e => e.id === id)) throw this._remoteOnlyError('local-row', undefined, op)
+    // An explicit url-store scope routes to that store, not to a local row
+    // that happens to share the id (re-audit of #1521, S-2 regression).
+    if (scope && this._isRemoteBackedScope(scope)) return
+    const folder = this._remoteOnly.folder
+    const primary = await this._basePrimaryStore.loadCached()
+    const hit = primary.find(e => e.id === id)
+    if (hit && !isQueuedForFolder(hit, folder)) throw this._remoteOnlyError('local-row', undefined, op)
+    // Local secondary file stores are personal too (S-2): their rows answer to
+    // the bare id and to the store-namespaced id.
+    for (const st of this.config.stores ?? []) {
+      if (st.url || !st.path) continue
+      let rows: Engram[] = []
+      try { rows = await new YamlPrimaryStore(st.path).loadCached() } catch { continue }
+      if (rows.some(e => e.id === id || namespaceEngramId(e.id, st.scope) === id)) {
+        throw this._remoteOnlyError('local-row', undefined, op)
+      }
+    }
   }
 
   /** remote-only: refuse an operation on the personal store as a whole. */
@@ -12164,7 +12227,8 @@ Generate an improved version of the procedure that prevents this failure. Return
   /** remote-only: the rows an id lookup may answer from — team rows, packs and queued saves; never personal rows. */
   private async _remoteOnlyVisible(): Promise<Engram[]> {
     if (this._remoteOnly?.blocked) return []
-    const queued = (await this._loadCached(this.paths.engrams)).filter(e => !!(e as any).structured_data?._outbox?.remote_only)
+    // The guarded primary store shows only THIS folder's queued saves (N-2).
+    const queued = await this._loadCached(this.paths.engrams)
     return [...queued, ...(await this._readCorpus())]
   }
 
@@ -12194,6 +12258,9 @@ Generate an improved version of the procedure that prevents this failure. Return
     this.reloadConfigIfChanged()
     const requested = context?.scope ?? undefined
     const refuse = (why: RemoteOnlyRefusal): never => { throw this._remoteOnlyError(why, requested) }
+    // An unreadable map / unresolvable folder writes NOTHING, an explicit team
+    // scope included (re-audit of #1521, S-1).
+    if (ro.blocked) refuse('blocked')
     if (context?.visibility === 'private') refuse('private')
     const target = requested ?? ro.scope
     if (!target) refuse('no-scope')
