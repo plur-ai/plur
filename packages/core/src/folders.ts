@@ -311,9 +311,40 @@ function readMapFile(root: string): LoadResult | null {
  */
 export function folderMapProblem(root: string): { file: string; problem: string } | null {
   const file = folderMapPath(root)
-  if (!existsSync(file)) return null
+  // Absent means ENOENT on the path itself, nothing else. existsSync() also
+  // answers false for a dangling symlink, a symlink loop or a parent that
+  // cannot be searched — each of those is a map that cannot be read.
+  try {
+    lstatSync(file)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return null
+    return { file, problem: `cannot be read (${code ?? (err as Error).message})` }
+  }
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    const link = (() => { try { return lstatSync(file).isSymbolicLink() } catch { return false } })()
+    return { file, problem: `cannot be read (${code ?? (err as Error).message}${link ? ', it is a symlink whose target cannot be read' : ''})` }
+  }
   const r = parseMapFile(file)
-  return 'problem' in r ? { file, problem: r.problem } : null
+  if ('problem' in r) return { file, problem: r.problem }
+  // Strict where the loader is lenient: a map that says nothing is not "no
+  // decisions" when the file exists, and an unknown top-level key (a typo
+  // such as `folder:`) would otherwise drop every decision silently.
+  let raw: unknown
+  try { raw = yaml.load(text.replace(/^\uFEFF/, '')) } catch { raw = undefined }
+  if (raw === null || raw === undefined) {
+    return { file, problem: 'is empty (no `version:` or `folders:` key); run plur folders list to see the map, or delete the file if you meant to have none' }
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { file, problem: 'is not a mapping with `version:` and `folders:` keys' }
+  const unknown = Object.keys(raw as Record<string, unknown>).filter(k => k !== 'version' && k !== 'folders')
+  if (unknown.length > 0) {
+    return { file, problem: `has an unknown top-level key ${unknown.map(k => JSON.stringify(k)).join(', ')} (only "version" and "folders" are allowed)` }
+  }
+  return null
 }
 
 /** Read the pre-#1347 `trust.yaml` list. Never writes it. */

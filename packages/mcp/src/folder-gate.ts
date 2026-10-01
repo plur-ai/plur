@@ -22,7 +22,8 @@ import { folderOnCommand } from './tools.js'
  *
  * A folder map that exists but cannot be read or parsed fails SAFE: the gated
  * tools do nothing and name the file and the problem. `on` and `ask` folders
- * are unchanged. The gate never writes folders.yaml.
+ * are unchanged. The gate never writes folders.yaml itself (core's one-time
+ * trust.yaml import can create it on the first read).
  */
 export const FOLDER_GATED_TOOLS: ReadonlySet<string> = new Set([
   // write engrams
@@ -177,7 +178,7 @@ export interface RootsServer {
  * readTrustedProjectConfig looks for `.plur.yaml`.
  *
  * `dirs()` resolves to null when the roots could not be fetched (an error or
- * the 2 s timeout). The caller then FAILS CLOSED for that call
+ * the 2 s timeout) or a declared root does not resolve to a local folder. The caller then FAILS CLOSED for that call
  * ({@link workspaceUnknownAnswer}) — it never falls back to cwd alone, which
  * would run memory in a workspace the user may have turned off.
  *
@@ -185,6 +186,7 @@ export interface RootsServer {
  *  - every caller awaits the SAME in-flight request, so a call made while it
  *    is pending never runs on a partial picture;
  *  - a failed or timed-out request is never cached: the next call asks again;
+ *  - an answer is cached only when the client declared `roots.listChanged`;
  *  - `roots/list_changed` bumps a generation; an answer that arrives for an
  *    older generation is discarded and the caller asks again.
  *
@@ -207,18 +209,36 @@ export function createWorkspaceDirs(
   const request = (g: number): Promise<string[] | null> =>
     server.listRoots(undefined, { timeout }).then(
       ({ roots }) => {
-        const dirs = roots
-          .filter(r => typeof r.uri === 'string' && /^file:\/\//i.test(r.uri))
-          .map(r => { try { return fileURLToPath(r.uri.replace(/^file:/i, 'file:')) } catch { return null } })
-          .filter((d): d is string => d !== null)
-        if (g === gen) cached = { gen: g, dirs }
+        // Every declared root must resolve to a local folder. One that cannot
+        // (another host's file://host/..., an encoded slash, a non-file URI)
+        // is a workspace the folder map cannot be checked against: the call
+        // fails closed, and nothing is cached.
+        const dirs: string[] = []
+        for (const r of roots) {
+          let dir: string | null = null
+          try {
+            if (typeof r.uri === 'string' && /^file:\/\//i.test(r.uri)) dir = fileURLToPath(r.uri.replace(/^file:/i, 'file:'))
+          } catch { dir = null }
+          if (dir === null) {
+            log(`a workspace root the server cannot resolve to a local folder (${JSON.stringify(String(r.uri).slice(0, 200))}); memory tools do nothing for this call.`)
+            return null
+          }
+          dirs.push(dir)
+        }
+        // Cache only when the client promises to say when its roots change;
+        // without listChanged, ask on every call.
+        if (g === gen && listChanged()) cached = { gen: g, dirs }
         return dirs
       },
       (err: unknown) => {
-        log(`roots/list failed (${(err as Error)?.message ?? err}); memory tools do nothing for this call, the next call asks again.`)
+        log(`roots/list failed (${(err as Error)?.message ?? err}); memory tools do nothing for this call, the next call asks the client again.`)
         return null
       },
     ).finally(() => { if (pending?.gen === g) pending = null })
+  const listChanged = (): boolean => {
+    const roots = server.getClientCapabilities()?.roots as { listChanged?: boolean } | undefined
+    return roots?.listChanged === true
+  }
   const clientRoots = async (): Promise<string[] | null> => {
     if (!server.getClientCapabilities()?.roots) return []
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -247,8 +267,9 @@ export function workspaceUnknownAnswer(): FolderOffAnswer {
     plur: 'off',
     reason: 'workspace-unknown',
     message:
-      `PLUR couldn't get the editor's workspace folders (the MCP roots request failed or timed out), so it cannot ` +
-      `tell whether memory is allowed here and is not using memory for this call: nothing was read from or ` +
-      `written to memory. This is not an error. It will retry on the next call.`,
+      `PLUR couldn't get the editor's workspace folders (the MCP roots request failed, timed out, or named a ` +
+      `folder that is not on this machine), so it cannot tell whether memory is allowed here: memory is off for ` +
+      `this call, and nothing was read from or written to memory. This is not an error. The next call will ask ` +
+      `again; if the editor's roots keep failing, memory stays off until they work.`,
   }
 }

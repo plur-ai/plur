@@ -18,13 +18,16 @@ for each map entry that turns it off.
 
 The admin and diagnostic tools (status, doctor, stores list and add, sync
 status, packs list and preview, scope discovery) keep working; status, doctor
-and stores list still read stores to count or probe them, but return no engram
-text. The folder is the editor's workspace — the roots the client lists over
+and stores list still read stores to count or probe them and return counts and
+health, not engram text (a store that cannot be parsed is reported by the
+error's first line only); `plur_packs_preview` still returns the statements of
+any pack directory it is pointed at, an installed one included. The folder is the editor's workspace — the roots the client lists over
 MCP, plus the folder the server was started in — checked on every call; if the
-client's roots cannot be fetched, that call does nothing and the next one asks
-again. A
-`folders.yaml` that exists but cannot be read or parsed now fails safe: the
-memory tools do nothing and name the file and the problem. Server startup is
+client's roots cannot be fetched or a root is not a folder on this machine, that
+call does nothing and the next one asks again. A `folders.yaml` that exists but
+cannot be read or parsed — a dangling symlink, an empty file, an unknown
+top-level key included — now fails safe: the memory tools do nothing and name
+the file and the problem. Server startup is
 not gated yet (#1523). `on` and `ask` folders are unchanged.
 
 ### plur doctor reads an opencode config written with comments or trailing commas (#1516)

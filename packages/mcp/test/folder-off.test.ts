@@ -16,7 +16,7 @@
  * decision changed mid-session applies to the next call.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, realpathSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, realpathSync, symlinkSync, lstatSync, readlinkSync } from 'fs'
 import { join, relative } from 'path'
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
@@ -56,6 +56,7 @@ function snapshot(root: string): Record<string, string> {
   const walk = (d: string) => {
     for (const name of readdirSync(d)) {
       const p = join(d, name)
+      if (lstatSync(p).isSymbolicLink()) { out[relative(root, p)] = `link:${readlinkSync(p)}`; continue }
       if (statSync(p).isDirectory()) walk(p)
       else out[relative(root, p)] = createHash('sha256').update(readFileSync(p)).digest('hex')
     }
@@ -386,15 +387,23 @@ describe('MCP memory tools resolve the folder per call and from client roots', (
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 /** A client whose roots/list answer is scripted per request (request index n). */
-async function connectScripted(plur: Plur, rootsFn: (n: number) => Promise<string[]>): Promise<{ client: Client; requests: () => number }> {
+async function connectScripted(
+  plur: Plur,
+  rootsFn: (n: number) => Promise<string[]>,
+  opts: { listChanged?: boolean } = {},
+): Promise<{ client: Client; requests: () => number }> {
   const server = await createServer(plur, { profile: 'full' })
   const [ct, st] = InMemoryTransport.createLinkedPair()
   await server.connect(st)
-  const client = new Client({ name: 'folder-off-scripted', version: '1.0.0' }, { capabilities: { roots: { listChanged: true } } })
+  const client = new Client(
+    { name: 'folder-off-scripted', version: '1.0.0' },
+    { capabilities: { roots: opts.listChanged === false ? {} : { listChanged: true } } },
+  )
   let n = 0
   client.setRequestHandler('roots/list', async () => {
     const roots = await rootsFn(n++)
-    return { roots: roots.map(r => ({ uri: pathToFileURL(r).href, name: 'ws' })) }
+    // A string that is already a URI is sent as is (for unconvertible roots).
+    return { roots: roots.map(r => ({ uri: r.startsWith('file:') ? r : pathToFileURL(r).href, name: 'ws' })) }
   })
   await client.connect(ct)
   clients.push(client)
@@ -441,7 +450,9 @@ describe('the roots cache never lets a memory call through an off root', () => {
     expect(refused.json?.plur).toBe('off')
     expect(refused.json?.reason).toBe('workspace-unknown')
     expect(refused.json?.message).toMatch(/workspace folders/)
-    expect(refused.json?.message).toMatch(/retr/)
+    expect(refused.json?.message).toMatch(/memory is off for this call/)
+    expect(refused.json?.message).toMatch(/next call will ask (for them )?again/)
+    expect(refused.json?.message).not.toMatch(/will retry/)
     expect(refused.text).not.toContain('zebra-')
     expect(snapshot(s.home)).toEqual(before)
     expect(hits).toEqual([])
@@ -460,20 +471,22 @@ describe('the roots cache never lets a memory call through an off root', () => {
     expect(refused.text).not.toContain('zebra-')
   })
 
-  it('list_changed during an in-flight roots/list discards the stale answer', async () => {
+  it('list_changed during an in-flight roots/list discards the stale answer, for the waiting call too', async () => {
     const s = await setup()
     const thirdOn = tmp('plur-mcp-folderoff-third-')
     writeFolders(s.home, [{ path: s.workspace, plur: 'off' }, { path: s.other, plur: 'on' }, { path: thirdOn, plur: 'on' }])
     vi.spyOn(process, 'cwd').mockReturnValue(thirdOn)
     // request 0: the old workspace (on), answered slowly; later requests: the new one (off)
     const sc = await connectScripted(s.plur, async (i) => { if (i === 0) { await sleep(300); return [s.other] } return [s.workspace] })
-    const first = call(sc.client, 'plur_recall', { query: 'zebra-local-fact' })
+    const before = snapshot(s.home)
+    const first = call(sc.client, 'plur_learn', { statement: 'zebra-waiting call learning', scope: 'global' })
     await sleep(50)
     await sc.client.sendRootsListChanged()
-    await first
+    // The call that was already waiting must not run on the stale (on) answer.
+    expectOffAnswer(await first, s.workspace)
     const next = await call(sc.client, 'plur_learn', { statement: 'zebra-stale root learning', scope: 'global' })
     expectOffAnswer(next, s.workspace)
-    expect(JSON.stringify(await s.plur.recall('zebra-stale root learning'))).not.toContain('zebra-stale')
+    expect(snapshot(s.home)).toEqual(before)
   })
 
   it('list_changed is honoured: a later call uses the new roots', async () => {
@@ -530,5 +543,103 @@ describe('a folder map that cannot be read fails safe', () => {
     const r = await call(client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
     expect(r.json?.plur).toBeUndefined()
     expect(r.text).toContain('zebra-local-fact')
+  })
+})
+
+describe('re-audit edge cases', () => {
+  async function expectUnreadable(s: Setup, needle: RegExp): Promise<void> {
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const before = snapshot(s.home)
+    hits = []
+    for (const [tool, args] of [['plur_recall', { query: 'zebra-local-fact deploy target' }], ['plur_learn', { statement: 'zebra-edge learning', scope: 'global' }]] as const) {
+      const r = await call(client, tool, args)
+      expect(r.raw.isError, r.text).not.toBe(true)
+      expect(r.json?.plur, r.text).toBe('off')
+      expect(r.json?.reason, r.text).toBe('folder-map-unreadable')
+      expect(r.json?.file).toBe(join(s.home, 'folders.yaml'))
+      expect(r.json?.message).toMatch(needle)
+      expect(r.text).not.toContain('zebra-')
+    }
+    expect(snapshot(s.home)).toEqual(before)
+    expect(hits).toEqual([])
+  }
+
+  it('folders.yaml as a dangling symlink is unreadable, not absent', async () => {
+    const s = await setup()
+    rmSync(join(s.home, 'folders.yaml'))
+    symlinkSync(join(s.home, 'no-such-target.yaml'), join(s.home, 'folders.yaml'))
+    await expectUnreadable(s, /cannot be read|ENOENT|symlink/)
+  })
+
+  it('folders.yaml as a symlink loop is unreadable', async () => {
+    const s = await setup()
+    rmSync(join(s.home, 'folders.yaml'))
+    symlinkSync(join(s.home, 'folders.yaml'), join(s.home, 'folders.yaml'))
+    await expectUnreadable(s, /cannot be read|ELOOP/)
+  })
+
+  it('an empty folders.yaml is unreadable', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), '')
+    await expectUnreadable(s, /empty/)
+  })
+
+  it('a comments-only folders.yaml is unreadable', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), '# nothing here yet\n')
+    await expectUnreadable(s, /empty/)
+  })
+
+  it('a misspelled top-level key (`folder:`) is unreadable', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolder:\n  - path: "${s.workspace}"\n    plur: off\n`)
+    await expectUnreadable(s, /folder\b.*unknown|unknown.*folder\b/)
+  })
+
+  it('a root the server cannot convert fails the call closed, and is not cached', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other) // cwd is `on`
+    const sc = await connectScripted(s.plur, async () => ['file://otherhost/work/secret'])
+    const before = snapshot(s.home)
+    hits = []
+    const a = await call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    expect(a.json?.reason, a.text).toBe('workspace-unknown')
+    expect(a.text).not.toContain('zebra-')
+    const b = await call(sc.client, 'plur_learn', { statement: 'zebra-unconvertible learning', scope: 'global' })
+    expect(b.json?.reason, b.text).toBe('workspace-unknown')
+    expect(sc.requests()).toBe(2)
+    expect(snapshot(s.home)).toEqual(before)
+    expect(hits).toEqual([])
+  })
+
+  it('an encoded-slash file root also fails closed', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const sc = await connectScripted(s.plur, async () => [pathToFileURL(s.other).href, `${pathToFileURL(s.workspace).href}%2Fchild`])
+    const a = await call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    expect(a.json?.reason, a.text).toBe('workspace-unknown')
+    expect(a.text).not.toContain('zebra-')
+  })
+
+  it('a client with roots but no listChanged is asked again on every call', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const sc = await connectScripted(s.plur, async (i) => (i === 0 ? [s.other] : [s.workspace]), { listChanged: false })
+    const first = await call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    expect(first.text).toContain('zebra-local-fact')
+    expectOffAnswer(await call(sc.client, 'plur_recall', { query: 'zebra-local-fact' }), s.workspace)
+    expect(sc.requests()).toBe(2)
+  })
+
+  it('plur_status on an unparsable engrams.yaml quotes no lines of it', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'engrams.yaml'), 'engrams:\n  - id: ENG-X\n    statement: zebra-secret statement text\n   bad: [indent\n')
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(new Plur({ path: s.home }))
+    const r = await call(client, 'plur_status')
+    expect(r.raw.isError, r.text).not.toBe(true)
+    expect(r.text).not.toContain('zebra-secret')
+    expect(r.json?.store_errors?.engrams ?? JSON.stringify(r.json?.store_errors ?? {})).toBeTruthy()
   })
 })
