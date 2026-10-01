@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### Agents now end each reply with the memories they recalled, used and wrote (#NNNN)
+### Agents now end each reply with the memories they recalled, used and wrote (#1520)
 
 The instructions PLUR installs (the `plur init` section in CLAUDE.md and
 AGENTS.md, the Cursor rule, the MCP server instructions, the `plur-mcp init`
