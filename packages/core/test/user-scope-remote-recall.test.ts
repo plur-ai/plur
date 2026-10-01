@@ -144,6 +144,76 @@ describe('dialing — personal user: scope (unit, _remoteRecallHosts)', () => {
   })
 })
 
+describe('dialing — audit follow-ups (F2, F4)', () => {
+  // F2a: the personal-scope dial triggers only for a scope the caller passed
+  // or the session's OWN registration — never the process-wide default an
+  // unregistered session (or no session) inherits.
+  it('an unregistered session does not dial a personal store through the process default', () => {
+    const plur = plurWith(
+      `  - url: "https://plur.example.com"\n    token: "ta"\n    scope: "${ME}"\n` +
+      `  - url: "https://plur.example.com"\n    token: "tb"\n    scope: "${SOMEONE_ELSE}"\n`,
+    )
+    plur.setSessionScope(ME)
+    plur.setSessionScope(ME, { session: 'A' })
+    expect(hostsOf(plur, { session: 'B' })).toEqual([])
+    expect(hostsOf(plur)).toEqual([])
+    // The session's own registration still dials.
+    expect(hostsOf(plur, { session: 'A' }).map(h => [h.token, h.scopes])).toEqual([['ta', [ME]]])
+  })
+
+  // F2b: `options.scopes` (the authorization allow-list) bounds dialing.
+  it('options.scopes bounds the dialed set: [] or another scope dials nothing', () => {
+    const plur = plurWith(`  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "${ME}"\n`)
+    expect(hostsOf(plur, { scope: ME, scopes: [] })).toEqual([])
+    expect(hostsOf(plur, { scope: ME, scopes: [SOMEONE_ELSE] })).toEqual([])
+    expect(hostsOf(plur, { scope: ME, scopes: [ME] }).map(h => h.scopes)).toEqual([[ME]])
+  })
+
+  it('options.scopes also bounds shared-scope dialing', () => {
+    const plur = plurWith(
+      `  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "group:acme/eng"\n` +
+      `  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "group:acme/comms"\n` +
+      `  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "${ME}"\n`,
+    )
+    expect(hostsOf(plur, { scope: 'project:acme/app', scopes: ['group:acme/eng'] }).map(h => h.scopes))
+      .toEqual([['group:acme/eng']])
+    expect(hostsOf(plur, { scope: 'project:acme/app', scopes: [] })).toEqual([])
+    // dial: always is bounded too.
+    const always = plurWith(`  - url: "https://a.example.com"\n    token: "t1"\n    scope: "group:acme/eng"\n    dial: always\n`)
+    expect(hostsOf(always, { scopes: [] })).toEqual([])
+  })
+
+  // F4: entries whose scopes differ only by case (or Unicode fold) dial at
+  // most one, preferring the exact-case match.
+  it('case-folded duplicates on one host: only one entry is dialed, the exact-case one', () => {
+    const plur = plurWith(
+      `  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "${ME}"\n` +
+      `  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "USER:ACME:ME"\n`,
+    )
+    expect(hostsOf(plur, { scope: ME }).map(h => h.scopes)).toEqual([[ME]])
+    expect(hostsOf(plur, { scope: 'USER:ACME:ME' }).map(h => h.scopes)).toEqual([['USER:ACME:ME']])
+    // No exact match: still exactly one entry (first in config order).
+    expect(hostsOf(plur, { scope: 'User:Acme:Me' }).map(h => h.scopes)).toEqual([[ME]])
+  })
+
+  it('case-folded duplicates on two hosts: only one host is dialed', () => {
+    const plur = plurWith(
+      `  - url: "https://a.example.com"\n    token: "ta"\n    scope: "User:Acme:Me"\n` +
+      `  - url: "https://b.example.com"\n    token: "tb"\n    scope: "${ME}"\n`,
+    )
+    expect(hostsOf(plur, { scope: ME }).map(h => h.url)).toEqual(['https://b.example.com'])
+    expect(hostsOf(plur, { scope: 'USER:ACME:ME' })).toHaveLength(1)
+  })
+
+  it('a Unicode-fold collision (Kelvin sign) dials at most one store, the exact one', () => {
+    const plur = plurWith(
+      `  - url: "https://a.example.com"\n    token: "ta"\n    scope: "user:acme:\u212A"\n` +
+      `  - url: "https://b.example.com"\n    token: "tb"\n    scope: "user:acme:k"\n`,
+    )
+    expect(hostsOf(plur, { scope: 'user:acme:k' }).map(h => h.url)).toEqual(['https://b.example.com'])
+  })
+})
+
 describe('personal user: scope against a live (stub) remote store', () => {
   function plurFor(storeScope: string): Plur {
     const dir = tmp('plur-userscope-e2e-')
@@ -221,6 +291,21 @@ describe('personal user: scope against a live (stub) remote store', () => {
     expect(server.recallCalls).toBe(1)
     expect(server.lastRecallBody?.scopes).toEqual([ME])
     expect(results.some(e => (e as any)._originalId === 'ENG-2026-1001-907')).toBe(true)
+  })
+
+  it('recall and injectHybrid with scopes: [] send nothing to the user store (F2b)', async () => {
+    server.recallRows = [{ id: 'ENG-2026-1001-908', scope: ME, status: 'active', statement: 'codeword otterquill', score: 1 }]
+    const plur = plurFor(ME)
+    await plur.recall('otterquill', { scope: ME, scopes: [] })
+    await plur.injectHybrid('otterquill', { scope: ME, scopes: [] })
+    expect(server.recallCalls).toBe(0)
+  })
+
+  it('learn with a differently-cased user scope routes to the matching user store (F5)', async () => {
+    const plur = plurFor(ME)
+    const e = await plur.learnRouted('personal fact routed by folded scope', { scope: 'USER:Acme:ME' })
+    expect(e.scope).toBe(ME)
+    expect(server.appendCalls).toBe(1)
   })
 
   it('shared-scope recall against a group store is unchanged (still dials, still merges)', async () => {

@@ -46,7 +46,7 @@ import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } 
 import { rankScopes, decideAutoRoute, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate, type AutoRouteDecision, type ScopeSource } from './scope-routing.js'
 import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
-import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
+import { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
 import { loadTensions, loadTensionsWithQuarantine, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
@@ -212,7 +212,7 @@ export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
 import type { Receipt } from './receipt.js'
 import { gatherReceipt } from './receipt-io.js'
 export { computeContentHash, normalizeStatement, isHashable } from './content-hash.js'
-export { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
+export { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
 export { orderBySupersedes } from './outbox-order.js'
 export {
   classifyOutboxFailure, summarizeOutbox, describeNeedsAction, statusFromErrorText,
@@ -3438,6 +3438,16 @@ export class Plur {
       // a server reviewing writes may reasonably care about.
       scopeSource = context?.scope != null ? 'explicit' : 'session'
     }
+    // A personal `user:` scope that names a configured url store under a
+    // different case writes to that store under ITS configured scope — the
+    // same case-folded, single-entry match the recall dial uses
+    // (`personalStoreEntry`, #1515 audit F5), so a write and a read with the
+    // same string reach the same store.
+    const personalStore = personalStoreEntry(scope, (this.config.stores ?? []).filter(s => !!s.url))
+    if (personalStore && personalStore.scope !== scope) {
+      scope = personalStore.scope
+      if (context?.scope != null) context = { ...context, scope }
+    }
     // Guard fires when the write can leave the machine: shared scope (others can
     // read it) OR remote-backed scope (routes to a remote store, e.g. a personal
     // `user:` scope on plur.datafund.io). Purely-local scopes (`global`/`local`/
@@ -5912,9 +5922,13 @@ export class Plur {
    *       host is relevant;
    *   (b) the host's personal-family (`user:*`, …) scopes ONLY when an org
    *       context exists implicating that host.
-   *   (c) a personal `user:` dialing scope dials the one entry whose scope
-   *       equals it exactly, case-folded (never another user's, never the
-   *       host's other entries).
+   *   (c) a personal `user:` scope the caller passed (or the session's own
+   *       registration — not the inherited process default) adds the ONE
+   *       entry whose scope matches it, case-folded, exact-case preferred.
+   *       It adds no other entry; `dial: always` and a `.plur.yaml` remote
+   *       project can still add theirs.
+   * When `options.scopes` is given, nothing outside it is dialed (`[]` →
+   * nothing), whichever rule selected the entry.
    * No project/work context implicating a remote store → ZERO remote calls.
    * A host whose relevant subset is empty is NOT dialed — a datafund-org host
    * is never dialed from plur-org work (cross-org exfiltration solved by
@@ -5933,7 +5947,7 @@ export class Plur {
    * tokens per host mean one POST per token. `remoteEndpointTokenConflicts`
    * feeds the doctor warning for that misconfiguration.
    */
-  private _remoteRecallHosts(options?: { scope?: string; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
+  private _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
     // Pick up out-of-process config edits (#307) before reading tokens: a
     // rotated credential must reach the very next dial, not the next restart.
     // The constructor's only re-read compares `stores.length`, so a rotation
@@ -5952,16 +5966,21 @@ export class Plur {
     // (the pre-#243 state) leaves dialing exactly as before.
     const dialScope = options?.scope ?? this._sessionScopes.get(options?.session) ?? undefined
     const sessionOrg = scopeOrg(dialScope)
-    // A personal `user:` dialing scope names its own store: a recall scoped to
-    // `user:acme:me` dials the store entry whose scope is EXACTLY
-    // `user:acme:me`, with that entry alone. Exact match only — another
-    // user's store, a prefix, or the host's other entries are never dialed.
+    // A personal `user:` scope names its own store (#1515): a recall scoped to
+    // `user:acme:me` dials the ONE store entry whose scope matches it (case
+    // folded, exact-case preferred — `personalStoreEntry`), with that entry
+    // alone. Only a scope the caller passed, or the session's OWN
+    // registration, counts — never the process default an unregistered
+    // session inherits (audit F2): that default is another caller's choice.
     // Without this a personal scope gave no dialing context, so `learn` to a
     // personal remote store landed on the server but `recall` with the same
-    // scope never read it back. The comparison folds case, like local-only
-    // scope targets (Decision E5, `isLocalOnlyScope`): only the comparison
-    // folds; the store's configured scope string is what is dialed.
-    const personalDialScope = dialScope && dialScope.toLowerCase().startsWith('user:') ? dialScope.toLowerCase() : null
+    // scope never read it back.
+    const personalScope = options?.scope ?? this._sessionScopes.own(options?.session) ?? undefined
+    const personalEntry = personalStoreEntry(personalScope, stores.filter(e => e.dial !== 'never'))
+    // The caller's authorization allow-list bounds what is DIALED, not only
+    // what is kept afterwards: a query sent to a scope the caller may not
+    // read has already left the machine (audit F2). `[]` dials nothing.
+    const allowed = scopeAllowFilter(options?.scopes)
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
     for (const s of stores) {
@@ -5985,7 +6004,7 @@ export class Plur {
       const personal = dialable.filter(e => !isSharedScope(e.scope))
       const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
       const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
-      const personalExact = personalDialScope ? dialable.filter(e => e.scope.toLowerCase() === personalDialScope) : []
+      const personalExact = personalEntry && dialable.includes(personalEntry) ? [personalEntry] : []
       const orgContext = orgAffine.length > 0 || projectImplicated
       if (!orgContext && always.length === 0 && personalExact.length === 0) continue
       const selected = new Set<StoreEntry>(orgAffine)
@@ -5994,7 +6013,7 @@ export class Plur {
       for (const e of always) selected.add(e)
       if (orgContext) for (const e of personal) selected.add(e)
       // Config order preserved — row→entry mapping must be deterministic.
-      const dialEntries = dialable.filter(e => selected.has(e))
+      const dialEntries = dialable.filter(e => selected.has(e) && allowed(e.scope))
       if (dialEntries.length === 0) continue
       hosts.push({
         url: g.url,
@@ -6008,7 +6027,7 @@ export class Plur {
     // with the project's own remote_scopes (the scope guard needs a scope set
     // to admit rows against; without one there is nothing safe to accept).
     if (rp?.token && rpKey && !stores.some(s => normalizeEndpointUrl(s.url!) === rpKey)) {
-      const scopes = [...new Set(rp.scopes ?? [])]
+      const scopes = [...new Set(rp.scopes ?? [])].filter(allowed)
       if (scopes.length > 0) {
         hosts.push({ url: rp.url, token: rp.token, scopes, entries: scopes.map(scope => ({ scope })) })
       }
@@ -6026,7 +6045,7 @@ export class Plur {
    */
   private _startRemoteRecall(
     query: string,
-    options?: { scope?: string; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
+    options?: { scope?: string; scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
   ): Promise<RemoteRecallResult> | null {
     if (options?.remote === false) return null
     if (isRemoteRecallDisabled()) return null
@@ -6532,6 +6551,8 @@ export class Plur {
     // call per host.
     const remotePromise = this._startRemoteRecall(task, {
       scope: options?.scope,
+      // The authorization allow-list bounds dialing too (#1515 audit F2).
+      scopes: options?.scopes,
       // #243: the inject's session (same id plur_session_start minted for
       // co_injection provenance) doubles as the dialing-context key — the
       // session default scope drives org-affinity when no explicit scope is

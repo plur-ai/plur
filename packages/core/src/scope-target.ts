@@ -92,3 +92,25 @@ export function assertScopeNamesATarget(
     + `. Check for typos — an unmatched scope would silently ${consequence} instead (#831).`,
   )
 }
+
+/**
+ * The configured store a personal `user:` scope names, or null.
+ *
+ * Matching folds case the same way {@link isLocalOnlyScope} does (Decision
+ * E5): only the comparison folds. At most ONE entry is returned even when
+ * several configured scopes fold to the same string (`user:acme:me` and
+ * `USER:ACME:ME`, or a Unicode fold such as the Kelvin sign): the exact-case
+ * entry wins, otherwise the first in config order. Used by both the remote
+ * recall dial and learn routing so reads and writes pick the same store
+ * (#1515). Non-`user:` scopes never match.
+ */
+export function personalStoreEntry<T extends { scope: string }>(
+  scope: string | null | undefined,
+  entries: readonly T[],
+): T | null {
+  if (!scope || !scope.toLowerCase().startsWith('user:')) return null
+  const exact = entries.find(e => e.scope === scope)
+  if (exact) return exact
+  const folded = scope.toLowerCase()
+  return entries.find(e => typeof e.scope === 'string' && e.scope.toLowerCase() === folded) ?? null
+}

@@ -698,7 +698,10 @@ describe('Plur.recall with a live remote host', () => {
       scope: 'project:plur/anything',
       scopes: ['project:plur/anything'], // team scope NOT in the allow-list
     })
-    expect(server.recallCalls).toBe(1)
+    // #1515 audit F2 (owner decision 2026-10-01): the allow-list now bounds
+    // DIALING too, so the out-of-list team scope is never asked — the query
+    // does not leave the machine (was: dialed, then the rows dropped).
+    expect(server.recallCalls).toBe(0)
     expect(results.some(e => (e as any)._originalId === 'ENG-2026-0731-032')).toBe(false)
   })
 
