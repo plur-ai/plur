@@ -487,3 +487,69 @@ describe('CLI writes keep comments and order', () => {
     expect(text()).toBe('folders: [[[')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Owner decisions on #1521 (2026-10-01).
+// ---------------------------------------------------------------------------
+
+describe('decision 2: --scope alone on a remote-only entry keeps it remote-only', () => {
+  it('changes only the scope; it never switches the folder back to local memory', () => {
+    mapRemoteOnly(work)
+    const plur = new Plur({ path: root })
+    expect(plur.setFolder(work, { scope: OTHER })).toEqual({ path: work, plur: 'remote-only', scope: OTHER })
+    expect(resolveFolderPolicy(work, { root, home }).mode).toBe('remote-only')
+  })
+
+  it('the new scope must still be served by a url store; nothing changes when it is not', () => {
+    mapRemoteOnly(work)
+    const before = readFileSync(join(root, 'folders.yaml'), 'utf8')
+    const plur = new Plur({ path: root })
+    let err: unknown
+    try { plur.setFolder(work, { scope: 'project:local-thing' }) } catch (e) { err = e }
+    expect((err as FolderMapError)?.code).toBe('scope-unconfigured')
+    expect(readFileSync(join(root, 'folders.yaml'), 'utf8')).toBe(before)
+  })
+
+  it('leaving remote-only takes an explicit mode (or rm)', () => {
+    mapRemoteOnly(work)
+    const plur = new Plur({ path: root })
+    expect(plur.setFolder(work, { mode: 'on' }).plur).toBe('on')
+    expect(resolveFolderPolicy(work, { root, home }).mode).toBe('on')
+  })
+})
+
+describe('decision 3: a remote-only entry with no scope keeps refusing', () => {
+  it('every write is refused with a message naming the folder; injection says there is no team server', async () => {
+    writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: work, plur: 'remote-only' }] }))
+    const plur = new Plur({ path: root })
+    expect(plur.bindFolder(work).mode).toBe('remote-only')
+    for (const ctx of [undefined, { scope: OTHER }]) {
+      let err: unknown
+      try { await plur.learnRouted('no scope here', ctx) } catch (e) { err = e }
+      if (ctx === undefined) {
+        expect(err).toBeInstanceOf(RemoteOnlyWriteError)
+        expect((err as Error).message).toContain(work)
+        expect((err as Error).message).toMatch(/names no team scope/)
+      }
+    }
+    const r = await plur.inject('anything')
+    expect(r.remote_only).toMatchObject({ served: false, reason: 'no-scope', scope: null })
+    expect(primaryRows().filter(e => e.statement === 'no scope here' && !e.structured_data?._outbox)).toEqual([])
+  })
+})
+
+describe('decision 4: no session timeline in a remote-only folder', () => {
+  it('capture is refused and writes no episode; elsewhere it works as before', () => {
+    mapRemoteOnly(work)
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    let err: unknown
+    try { plur.capture('client session summary with private details') } catch (e) { err = e }
+    expect(err).toBeInstanceOf(RemoteOnlyWriteError)
+    expect((err as Error).message).toContain(work)
+    const episodes = join(root, 'episodes.yaml')
+    expect(existsSync(episodes) ? readFileSync(episodes, 'utf8') : '').not.toContain('client session summary')
+    plur.bindFolder(personal)
+    expect(plur.capture('a personal session summary').summary).toBe('a personal session summary')
+  })
+})

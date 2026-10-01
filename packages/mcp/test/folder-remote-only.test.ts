@@ -13,7 +13,7 @@
  * Real-HTTP stub; temp PLUR home and HOME only.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/client'
@@ -114,5 +114,25 @@ describe('MCP in a remote-only folder', () => {
     expect(res.remote_only.scope).toBe(TEAM)
     expect(res.remote_only.served).toBe(false)
     expect(res.remote_only.notice).toMatch(/could not be reached|without memory/i)
+  })
+})
+
+describe('owner decision 4 on #1521: no session timeline in a remote-only folder', () => {
+  it('plur_capture is refused and writes no episode', async () => {
+    const c = await client()
+    const raw = await c.callTool({ name: 'plur_capture', arguments: { summary: 'client session CAPTUREOTTER' } })
+    expect(raw.isError).toBe(true)
+    expect((raw.content as any)[0].text).toContain(work)
+    expect(existsSync(join(root, 'episodes.yaml')) ? readFileSync(join(root, 'episodes.yaml'), 'utf8') : '').not.toContain('CAPTUREOTTER')
+  })
+
+  it('plur_session_end captures no episode, and its suggestions still reach the team server', async () => {
+    const c = await client()
+    const res = result(await c.callTool({ name: 'plur_session_end', arguments: {
+      summary: 'client session ENDOTTER summary', engram_suggestions: ['client deploys run on Tuesdays'],
+    } }))
+    expect(res.engrams_created).toBe(1)
+    expect(stub.appendStatements).toContain('client deploys run on Tuesdays')
+    expect(existsSync(join(root, 'episodes.yaml')) ? readFileSync(join(root, 'episodes.yaml'), 'utf8') : '').not.toContain('ENDOTTER')
   })
 })

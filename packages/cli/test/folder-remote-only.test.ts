@@ -179,3 +179,38 @@ describe('Codex and Cursor hooks in a remote-only folder', () => {
     expect(ctx).toContain('TEAMHERON')
   }, 90_000)
 })
+
+describe('owner decisions on #1521', () => {
+  it('decision 2: folders set --scope on a remote-only folder keeps it remote-only', () => {
+    mapRemoteOnly()
+    const r = cli(['folders', 'set', repo, '--scope', TEAM, '--json',
+      '--nonce', issueFolderNonce(plurHome, 's-scope', repo, { scope: TEAM })])
+    expect(r.status, r.stderr).toBe(0)
+    expect(json(r).entry).toEqual({ path: repo, plur: 'remote-only', scope: TEAM })
+  }, 60_000)
+
+  it('decision 4: plur capture in a remote-only folder is refused and writes no episode', () => {
+    mapRemoteOnly()
+    const r = cli(['capture', 'client session summary CAPTUREOTTER', '--json'])
+    expect(r.status).not.toBe(0)
+    expect(r.stdout + r.stderr).toContain('remote-only')
+    const ep = join(plurHome, 'episodes.yaml')
+    expect(existsSync(ep) ? readFileSync(ep, 'utf8') : '').not.toContain('CAPTUREOTTER')
+  }, 60_000)
+
+  it('decision 4: the session-end hook captures no episode in a remote-only folder, and drops the checkpoint', () => {
+    mapRemoteOnly()
+    const sessions = join(plurHome, 'sessions')
+    mkdirSync(sessions, { recursive: true })
+    const cp = join(sessions, 'ro-end.checkpoint.json')
+    writeFileSync(cp, JSON.stringify({
+      session_id: 'ro-end', started_at: new Date(Date.now() - 3600_000).toISOString(),
+      last_checkpoint: new Date().toISOString(), stop_count: 7, cwd: repo,
+    }))
+    const r = cli(['hook-session-end'], { session_id: 'ro-end', cwd: repo, reason: 'other' })
+    expect(r.status, r.stderr).toBe(0)
+    const ep = join(plurHome, 'episodes.yaml')
+    expect(existsSync(ep) ? readFileSync(ep, 'utf8') : '').not.toContain('auto-closed')
+    expect(existsSync(cp)).toBe(false)
+  }, 60_000)
+})
