@@ -337,7 +337,10 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         ...(resultIsError ? { isError: true } : {}),
       }
     } catch (err: any) {
-      const message = err?.message ?? String(err)
+      // First line only: a store that does not parse throws a YAML error whose
+      // later lines are a code frame of the file (engram statements), and an
+      // admin tool still answers in a folder where PLUR is off (#1519).
+      const message = String(err?.message ?? err).split('\n', 1)[0]
       server.sendLoggingMessage({ level: 'error', data: `Tool ${request.params.name} failed: ${message}` })
       return {
         content: [{ type: 'text', text: JSON.stringify({ error: message, success: false }) }],

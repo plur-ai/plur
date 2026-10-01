@@ -183,8 +183,10 @@ export interface RootsServer {
  * would run memory in a workspace the user may have turned off.
  *
  * The roots answer is cached, with three rules:
- *  - every caller awaits the SAME in-flight request, so a call made while it
- *    is pending never runs on a partial picture;
+ *  - with a client that declares `roots.listChanged`, every caller awaits the
+ *    SAME in-flight request, so a call made while it is pending never runs on
+ *    a partial picture; without it, each call sends its own request, so a call
+ *    made after a workspace switch never joins a request sent before it;
  *  - a failed or timed-out request is never cached: the next call asks again;
  *  - an answer is cached only when the client declared `roots.listChanged`;
  *  - `roots/list_changed` bumps a generation; an answer that arrives for an
@@ -244,8 +246,17 @@ export function createWorkspaceDirs(
     for (let attempt = 0; attempt < 3; attempt++) {
       if (cached && cached.gen === gen) return cached.dirs
       const g = gen
-      if (!pending || pending.gen !== g) pending = { gen: g, promise: request(g) }
-      const dirs = await pending.promise
+      // Share one in-flight request only with a client that will tell us when
+      // its roots change. Without listChanged, a call made after a workspace
+      // switch must not join a request sent before it: each call asks.
+      let promise: Promise<string[] | null>
+      if (listChanged()) {
+        if (!pending || pending.gen !== g) pending = { gen: g, promise: request(g) }
+        promise = pending.promise
+      } else {
+        promise = request(g)
+      }
+      const dirs = await promise
       if (dirs === null) return null
       if (g === gen) return dirs
       // The roots changed while we waited: that answer is stale, ask again.

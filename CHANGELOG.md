@@ -20,7 +20,7 @@ The admin and diagnostic tools (status, doctor, stores list and add, sync
 status, packs list and preview, scope discovery) keep working; status, doctor
 and stores list still read stores to count or probe them and return counts and
 health, not engram text (a store that cannot be parsed is reported by the
-error's first line only); `plur_packs_preview` still returns the statements of
+error's first line only, by every MCP tool, never by the file's lines); `plur_packs_preview` still returns the statements of
 any pack directory it is pointed at, an installed one included. The folder is the editor's workspace — the roots the client lists over
 MCP, plus the folder the server was started in — checked on every call; if the
 client's roots cannot be fetched or a root is not a folder on this machine, that

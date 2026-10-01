@@ -640,6 +640,30 @@ describe('re-audit edge cases', () => {
     const r = await call(client, 'plur_status')
     expect(r.raw.isError, r.text).not.toBe(true)
     expect(r.text).not.toContain('zebra-secret')
-    expect(r.json?.store_errors?.engrams ?? JSON.stringify(r.json?.store_errors ?? {})).toBeTruthy()
+    expect(r.json?.store_errors?.engrams).toMatch(/YAMLException|bad indentation|line \d+/)
+  })
+
+  it('plur_stores_list on an unparsable engrams.yaml, from an off folder, quotes no lines of it', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'engrams.yaml'), 'engrams:\n  - id: ENG-X\n    statement: zebra-secret statement text\n   bad: [indent\n')
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace) // an `off` folder; stores_list is an ungated admin tool
+    const client = await connect(new Plur({ path: s.home }))
+    const r = await call(client, 'plur_stores_list')
+    expect(r.text).not.toContain('zebra-secret')
+    expect(r.text).not.toMatch(/\n\s*\d+ \|/)
+  })
+
+  it('a client without listChanged gets its own roots request per call, so a workspace switch is never shared', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    // request 0 answers slowly with the old workspace (on); the client then switches to the off one
+    const sc = await connectScripted(s.plur, async (i) => { if (i === 0) { await sleep(300); return [s.other] } return [s.workspace] }, { listChanged: false })
+    const a = call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    await sleep(50)
+    const b = await call(sc.client, 'plur_learn', { statement: 'zebra-switch learning', scope: 'global' })
+    expectOffAnswer(b, s.workspace)
+    await a // the first call is legitimately in the old (on) workspace
+    expect(sc.requests()).toBe(2)
+    expect(readFileSync(join(s.home, 'engrams.yaml'), 'utf8')).not.toContain('zebra-switch')
   })
 })
