@@ -378,3 +378,24 @@ describe('re-audit of #1521', () => {
     expect(again.id).not.toBe(qo.id)
   })
 })
+
+describe('re-audit of #1521, N-3: import in a remote-only folder', () => {
+  it('reports each record on its own: the refused one is an error, the rest are queued, nothing aborts', async () => {
+    const { runImport } = await import('../src/importers/engine.js')
+    map([{ path: work, plur: 'remote-only', scope: TEAM }])
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    server.appendErrorResponse = { status: 503, body: 'down' }
+    const report = await runImport(plur, [
+      { statement: 'imported client fact one', confidence: 0.8 },
+      { statement: 'imported personal note', scope: 'global' },
+      { statement: 'imported client fact two' },
+    ] as never, { from: 'generic' })
+    await backgroundPushesSettled(root)
+    server.appendErrorResponse = null
+    expect(report.total).toBe(3)
+    expect(report.errors).toBe(1)
+    expect(report.imported).toBe(2)
+    expect(rows().filter(r => !r.structured_data?._outbox)).toEqual([])
+  })
+})
