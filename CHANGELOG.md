@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### CLI tests never touch the real home or PLUR store (tests only)
+
+Every CLI test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH, and the run fails if the real `~/.plur` changed while it ran.
+
 ### plur doctor reads an opencode config written with comments or trailing commas (#1516)
 
 opencode accepts JSONC in `~/.config/opencode/opencode.jsonc`. `plur doctor`
