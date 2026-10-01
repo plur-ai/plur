@@ -122,8 +122,8 @@ describe('opencode follows the folder map (#1347)', () => {
 
     // The "yes" nonce works once, for this folder and --on only; after it,
     // memory loads from the next prompt.
-    expect(() => plur.setFolder(repo, { mode: 'off' }, { nonce: yes![1] })).toThrow()
-    plur.setFolder(repo, { mode: 'on' }, { nonce: yes![1] })
+    expect(() => plur.setFolder(repo, { mode: 'off' }, { nonce: yes![1], session: 'ses-ask' })).toThrow()
+    plur.setFolder(repo, { mode: 'on' }, { nonce: yes![1], session: 'ses-ask' })
     const third = await turn(hooks, 'ses-ask', 'and now?', 3)
     expect(inject).toHaveBeenCalledTimes(1)
     expect(third).toContain('[ENG-1]')
@@ -289,5 +289,24 @@ describe('opencode follows the folder map (#1347)', () => {
     expect(learn).not.toHaveBeenCalled()
     expect(seen).toContain('memory is off')
     expect(seen).not.toContain('--nonce')
+  })
+
+  // F5 (audit of #1517): the plugin's nonces are bound to the session, and
+  // the agent's shell is told its session through opencode's shell.env hook.
+  it('F5: shell.env names the session for the agent shell', async () => {
+    const hooks: any = await plugin()
+    const out = { env: {} as Record<string, string> }
+    await hooks['shell.env']({ cwd: repo, sessionID: 'ses-f5' }, out)
+    expect(out.env.PLUR_FOLDER_SESSION).toBe('ses-f5')
+  })
+
+  it('F5: the question nonces work only from the session that showed them', async () => {
+    const hooks = await plugin()
+    const first = await turn(hooks, 'ses-f5-a', 'hello')
+    const yes = /folders set \S+ --on --nonce ([0-9a-f]{32})/.exec(first)![1]
+    expect(() => plur.setFolder(repo, { mode: 'on' }, { nonce: yes, session: 'ses-f5-b' })).toThrow(/another session/)
+    expect(() => plur.setFolder(repo, { mode: 'on' }, { nonce: yes })).toThrow(/another session/)
+    plur.setFolder(repo, { mode: 'on' }, { nonce: yes, session: 'ses-f5-a' })
+    expect(plur.resolveFolderPolicy(repo).mode).toBe('on')
   })
 })

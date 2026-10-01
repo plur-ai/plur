@@ -260,6 +260,13 @@ export interface FolderAskOptions {
    * lives as long as its sessions (the opencode plugin) passes its own.
    */
   claim?: (sessionId: string) => boolean
+  /**
+   * Bind each nonce to `sessionId` (audit F5 of #1517): it then works only
+   * from a command that names that session (PLUR_FOLDER_SESSION). Only for a
+   * host that passes the session to the agent's shell — the opencode plugin
+   * does, through shell.env; the editor hooks' hosts cannot.
+   */
+  bindSession?: boolean
 }
 
 /**
@@ -336,7 +343,7 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
   const command = new Map<Offer, string>()
   try {
     for (const o of offered) {
-      command.set(o, `plur ${storeArg}folders set ${f} ${o.flags} --nonce ${issueFolderNonce(root, opts.sessionId, folder, o.answer)}`)
+      command.set(o, `plur ${storeArg}folders set ${f} ${o.flags} --nonce ${issueFolderNonce(root, opts.sessionId, folder, o.answer, undefined, opts.bindSession ? { bindSession: true } : {})}`)
     }
   } catch (err) {
     process.stderr.write(`[plur] folder map: could not issue a nonce (${(err as Error)?.message ?? err}).\n`)
@@ -380,7 +387,7 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
   )
   if (others.length > 0) lines.push(`Other team scopes configured here: ${others.join(', ')} (use one with --scope instead).`)
   lines.push(
-    'Each command has its own nonce: it works once, only for this folder and that answer. ' +
+    `Each command has its own nonce: it works once, only for this folder and that answer${opts.bindSession ? ', from this session' : ''}. ` +
     'Run nothing without an answer from the user. ' +
     'After a yes, memory loads from the next prompt.',
   )

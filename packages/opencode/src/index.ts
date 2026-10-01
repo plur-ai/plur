@@ -190,6 +190,9 @@ export const PlurPlugin: Plugin = async (ctx) => {
           const question = folderAskOnce({
             dir: folderDir, policy: state.policy, sessionId: input.sessionID,
             root: plur.storageRoot, plur, prompt: query, claim: claimAsk,
+            // Bound to this session (audit F5 of #1517): shell.env below tells
+            // the agent's shell which session it is in.
+            bindSession: true,
           })
           if (question) blocks.set(input.sessionID, question)
           else blocks.clear(input.sessionID)
@@ -320,6 +323,16 @@ export const PlurPlugin: Plugin = async (ctx) => {
         if (block) output.context.push(block)
         if (texts) void learnFromTurn(plur, texts, state.settings).catch((e) =>
           log(`learn (compacting) failed: ${(e as Error).message}`))
+      })
+    },
+
+    // Tells every shell the agent runs which session it belongs to, so
+    // `plur folders set --nonce` accepts this session's nonces and refuses
+    // another session's (audit F5 of #1517). opencode's bash tool calls this
+    // hook with the session id (checked against 1.18.33).
+    'shell.env': async (input, output) => {
+      await safe('shell.env', async () => {
+        if (input?.sessionID) output.env.PLUR_FOLDER_SESSION = input.sessionID
       })
     },
 

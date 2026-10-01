@@ -506,7 +506,7 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
 // Writes (CLI only): set / remove, with the nonce and shared-scope guards.
 // ---------------------------------------------------------------------------
 
-export type FolderMapErrorCode = 'malformed' | 'nonce-required' | 'nonce-unknown' | 'nonce-expired' | 'nonce-folder' | 'nonce-answer' | 'scope-unconfigured' | 'invalid' | 'covers-home'
+export type FolderMapErrorCode = 'malformed' | 'nonce-required' | 'nonce-unknown' | 'nonce-expired' | 'nonce-folder' | 'nonce-answer' | 'nonce-session' | 'scope-unconfigured' | 'invalid' | 'covers-home'
 
 export class FolderMapError extends Error {
   constructor(public readonly code: FolderMapErrorCode, message: string) {
@@ -558,6 +558,12 @@ export interface SetFolderOptions {
   configuredScopes: string[]
   /** Present when the write comes from the ask flow. */
   nonce?: string
+  /**
+   * The session the redeeming command runs in, when its host says so
+   * (PLUR_FOLDER_SESSION; audit F5 of #1517). Only that session's nonces are
+   * consulted, and a session-bound nonce needs it.
+   */
+  session?: string
   home?: string
   now?: number
   /**
@@ -726,7 +732,7 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   // only after the map is saved: a refused or failed write never burns it.
   const map = loadForWrite(root)
   const literal = opts.literal === true
-  const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, change, opts.now, home, literal) : null
+  const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, change, opts.now, home, literal, opts.session) : null
   const key = folderEntryKey(folder, home, literal)
   const { applied, nameOnly } = findEntryIndex(map.folders, folder, home, literal)
   // Every entry for this folder merges into ONE, which keeps exactly what is
@@ -807,16 +813,16 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
  * `setFolderEntry`'s and consumed only when an entry was removed and saved.
  */
 export function removeFolderEntry(
-  root: string, folder: string, home: string = homedir(), opts?: { nonce?: string; now?: number },
+  root: string, folder: string, home: string = homedir(), opts?: { nonce?: string; now?: number; session?: string },
 ): boolean {
   return locked(root, () => removeFolderEntryUnlocked(root, folder, home, opts))
 }
 
 function removeFolderEntryUnlocked(
-  root: string, folder: string, home: string, opts?: { nonce?: string; now?: number },
+  root: string, folder: string, home: string, opts?: { nonce?: string; now?: number; session?: string },
 ): boolean {
   const map = loadForWrite(root)
-  const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, { remove: true }, opts.now, home) : null
+  const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, { remove: true }, opts.now, home, false, opts.session) : null
   const { applied, nameOnly } = findEntryIndex(map.folders, folder, home)
   const matched = [...applied, ...nameOnly]
   if (matched.length === 0) return false
@@ -951,7 +957,14 @@ export function safeSessionKey(sessionId: string): string {
   return safe || 'unknown'
 }
 
-interface NonceRecord { nonce: string; folder: string; answer?: FolderAnswer; issued_at: number }
+/**
+ * `session_bound`: the nonce works only from the session it was issued in,
+ * named by the redeeming command (audit F5 of #1517). Set by an issuer whose
+ * host passes the session to the commands the agent runs (the opencode
+ * plugin, through shell.env). The editor hooks' hosts cannot, so theirs are
+ * unbound and work from any shell, as before.
+ */
+interface NonceRecord { nonce: string; folder: string; answer?: FolderAnswer; issued_at: number; session_bound?: boolean }
 interface NonceFile { session: string; nonces: NonceRecord[] }
 
 function nonceDir(root: string): string {
@@ -992,21 +1005,21 @@ function writeNonceFile(file: string, data: NonceFile): void {
  */
 export function issueFolderNonce(
   root: string, sessionId: string, folder: string, answer: FolderAnswer, now: number = Date.now(),
-  options: { home?: string; literal?: boolean } = {},
+  options: { home?: string; literal?: boolean; bindSession?: boolean } = {},
 ): string {
   if (answerKey(answer) === null) throw new FolderMapError('invalid', 'A folder nonce needs the answer it authorises.')
   const key = folderEntryKey(folder, options.home ?? homedir(), options.literal === true)
-  return locked(root, () => issueFolderNonceUnlocked(root, sessionId, key, answer, now))
+  return locked(root, () => issueFolderNonceUnlocked(root, sessionId, key, answer, now, options.bindSession === true))
 }
 
-function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number): string {
+function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number, bound: boolean): string {
   mkdirSync(nonceDir(root), { recursive: true, mode: 0o700 })
   const file = nonceFile(root, sessionId)
   const data = readNonceFile(file) ?? { session: safeSessionKey(sessionId), nonces: [] }
   const nonce = randomBytes(16).toString('hex')
   // The same key a write of this folder records (#1477 review): `~` expands
   // to the home, a literal folder is canonicalised, a glob is kept as typed.
-  data.nonces.push({ nonce, folder: key, answer: cleanAnswer(answer), issued_at: now })
+  data.nonces.push({ nonce, folder: key, answer: cleanAnswer(answer), issued_at: now, ...(bound ? { session_bound: true } : {}) })
   writeNonceFile(file, data)
   return nonce
 }
@@ -1031,9 +1044,9 @@ export function endFolderNonceSession(root: string, sessionId: string): void {
  */
 export function consumeFolderNonce(
   root: string, nonce: string, folder: string, answer: FolderAnswer, now: number = Date.now(),
-  options: { home?: string; literal?: boolean } = {},
+  options: { home?: string; literal?: boolean; session?: string } = {},
 ): void {
-  locked(root, () => verifyFolderNonce(root, nonce, folder, answer, now, options.home ?? homedir(), options.literal === true)())
+  locked(root, () => verifyFolderNonce(root, nonce, folder, answer, now, options.home ?? homedir(), options.literal === true, options.session)())
 }
 
 /**
@@ -1047,7 +1060,7 @@ export function consumeFolderNonce(
  */
 export function verifyFolderNonce(
   root: string, nonce: string, folder: string, answer: FolderAnswer, now: number = Date.now(), home: string = homedir(),
-  literal = false,
+  literal = false, session?: string,
 ): () => void {
   // Checked against exactly the key the write records (#1477 review). With
   // canonicalize(folder) alone, a quoted `~/x` was checked as `<cwd>/~/x`
@@ -1065,6 +1078,14 @@ export function verifyFolderNonce(
     const idx = data.nonces.findIndex(r => r.nonce === nonce)
     if (idx < 0) continue
     const rec = data.nonces[idx]
+    // Session binding (audit F5 of #1517), checked before anything is
+    // consumed or removed, so a refused nonce still works where it belongs.
+    const sameSession = session !== undefined && data.session === safeSessionKey(session)
+    if ((session !== undefined && !sameSession) || (rec.session_bound === true && !sameSession)) {
+      throw new FolderMapError('nonce-session',
+        'That nonce belongs to another session (or this command names none); nothing was changed. ' +
+        'Run the command from the session that showed it, or decide by hand in a terminal: plur folders set <folder> --on | --off.')
+    }
     if (now - rec.issued_at > FOLDER_NONCE_TTL_MS) {
       data.nonces.splice(idx, 1)
       writeNonceFile(file, data)

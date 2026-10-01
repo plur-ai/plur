@@ -11815,7 +11815,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Grant trust to `dir` (`plur trust`). Returns the canonicalized path
    * recorded. A `nonce` must be one issued for `dir` and `{ trusted: true }` (#1378).
    */
-  trustDirectory(dir: string, options?: { nonce?: string }): string {
+  trustDirectory(dir: string, options?: { nonce?: string; session?: string }): string {
     return _trustDirectory(dir, this.paths.root, options)
   }
 
@@ -11863,7 +11863,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   setFolder(
     folder: string, change: FolderChange,
-    options?: { nonce?: string; home?: string; literal?: boolean; refuseCoveringHome?: boolean },
+    options?: { nonce?: string; session?: string; home?: string; literal?: boolean; refuseCoveringHome?: boolean },
   ): FolderEntry {
     this.reloadConfigIfChanged()
     const configuredScopes = (this.config.stores ?? []).map(s => s.scope)
@@ -11871,7 +11871,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** Remove the exact entry for `folder` (`plur folders rm`); `nonce` as for setFolder. */
-  removeFolder(folder: string, options?: { nonce?: string }): boolean {
+  removeFolder(folder: string, options?: { nonce?: string; session?: string }): boolean {
     return _removeFolderEntry(this.paths.root, folder, undefined, options)
   }
 
@@ -11880,7 +11880,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * exactly `answer` on exactly `folder` (#1378). The ask flow issues one per
    * answer it offers; see folders.ts issueFolderNonce.
    */
-  issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, options?: { home?: string; literal?: boolean }): string {
+  issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, options?: { home?: string; literal?: boolean; bindSession?: boolean }): string {
     return _issueFolderNonce(this.paths.root, sessionId, folder, answer, undefined, options)
   }
 
