@@ -172,6 +172,11 @@ export { generateGuardrails } from './guardrails.js'
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
 // memory block byte-identically instead of each vendoring a copy.
 export { renderMemoryBlock, PLUR_MEMORY_INSTRUCTIONS } from './memory-block.js'
+export {
+  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile,
+  type InstructionSectionOptions, type InstructionSectionResult,
+} from './instruction-section.js'
+export { SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES, SHIPPED_CLAW_SECTIONS } from './instruction-history.js'
 // Shared learning-extraction heuristics (opencode plugin's task 6a): one
 // implementation so @plur-ai/claw and @plur-ai/opencode derive learning
 // candidates identically instead of each vendoring a copy.

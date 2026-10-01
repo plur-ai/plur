@@ -9,7 +9,11 @@ import { outputInfo } from '../output.js'
 import { CLI_VERSION } from '../version.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import { plurRoot } from '../lib/folder-gate.js'
-import { resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize } from '@plur-ai/core'
+import {
+  resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize,
+  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile,
+  SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES,
+} from '@plur-ai/core'
 import {
   hookCommandPrefix,
   isPlurHookSpec,
@@ -486,11 +490,11 @@ function mergeHookMaps(
 
 /**
  * Closes every PLUR instruction section `plur init` writes (CLAUDE.md,
- * AGENTS.md, the Cursor rule). Bump the number whenever any of those texts
- * change: a file carrying an older marker — or none, as every install before
- * v4 does — is upgraded in place on the next `plur init` (`upsertPlurSection`).
- * Numbered in step with the Claw system prompt (packages/claw/src/system-prompt.ts),
- * which carries the same rules and the same marker.
+ * AGENTS.md, the Cursor rule). When any of those texts change: first run
+ * `node scripts/extract-plur-section-history.mjs` so the outgoing text joins
+ * the shipped list (only shipped texts are ever replaced), then bump the
+ * number. Numbered in step with the Claw system prompt
+ * (packages/claw/src/system-prompt.ts), which carries the same rule.
  */
 export const PLUR_INSTRUCTIONS_MARKER = '<!-- plur-instructions-v4 -->'
 
@@ -658,67 +662,39 @@ function installProjectConfig(args: string[]): string | null {
   return configPath
 }
 
-/** The heading line every `plur init` instruction section opens with — the whole line, so `## PLUR Memory Guardrails` is not it. */
-const PLUR_SECTION_HEADING = /^## PLUR Memory[ \t]*$/m
-/** Any version of the marker that closes the section. */
-const ANY_PLUR_MARKER = /^<!-- plur-instructions-v\d+ -->[ \t]*$/m
-
 /**
- * Put the PLUR section into an instruction file's text, upgrading an older one
- * in place. Pure, so the MCP package's mirror can be pinned to it.
+ * Write the PLUR section into an instruction file (CLAUDE.md, AGENTS.md) and
+ * return the status line init prints. The section logic is core's
+ * `upsertInstructionSection`, shared with `plur-mcp init` and the Claw loader:
+ * an old section is replaced only when it is, whitespace aside, a text PLUR
+ * shipped; a section the user wrote or edited is never touched, the new one is
+ * added beside it, and the line says so. Any change to an existing file is
+ * preceded by a timestamped backup beside it.
  *
- * - no file (`null`) → `created`: a new file holding the title and the section
- * - no PLUR section → `added`: appended after the existing text
- * - a section carrying the current marker → `already`: untouched, byte for byte
- * - an older section → `upgraded`: that section, and only it, is replaced
- *
- * Where an older section ends: at its version marker when it has one; an
- * install from before markers (every one before v4) has none, so it ends at the
- * next level-1 or level-2 heading, or at end of file. PLUR's sections use only
- * `###` inside, so that boundary is the user's next section. Before this,
- * re-running `plur init` saw the heading, reported "already in", and an
- * existing install never received a changed instruction.
+ * Before this, re-running `plur init` saw the heading, reported "already in",
+ * and an existing install never received a changed instruction.
  */
-export function upsertPlurSection(
-  content: string | null,
-  section: string,
-  title: string,
-): { content: string; status: 'created' | 'added' | 'already' | 'upgraded' } {
-  if (content === null) return { content: `${title}\n\n${section}`, status: 'created' }
-
-  const heading = PLUR_SECTION_HEADING.exec(content)
-  if (!heading) return { content: content.trimEnd() + '\n\n' + section, status: 'added' }
-
-  const bodyStart = heading.index + heading[0].length
-  const body = content.slice(bodyStart)
-  const marker = ANY_PLUR_MARKER.exec(body)
-  const nextHeading = /^#{1,2} /m.exec(body)
-  const end = bodyStart + (
-    marker && (!nextHeading || marker.index < nextHeading.index)
-      ? marker.index + marker[0].length
-      : nextHeading ? nextHeading.index : body.length
-  )
-
-  if (content.slice(heading.index, end).includes(PLUR_INSTRUCTIONS_MARKER)) {
-    return { content, status: 'already' }
-  }
-
-  const before = content.slice(0, heading.index)
-  const after = content.slice(end).replace(/^\s*\n/, '')
-  return { content: before + section + (after ? '\n' + after : ''), status: 'upgraded' }
-}
-
-/** Write `section` into `path` via `upsertPlurSection`; returns the status line init prints. */
-function writePlurSection(path: string, section: string, title: string): string {
+export function writePlurSection(path: string, section: string, title: string): string {
   const existing = existsSync(path) ? readFileSync(path, 'utf8') : null
-  const { content, status } = upsertPlurSection(existing, section, title)
-  if (status !== 'already') writeFileSync(path, content)
-  switch (status) {
-    case 'created': return `created ${path}`
-    case 'added': return `added to ${path}`
-    case 'upgraded': return `upgraded in ${path}`
-    case 'already': return `already in ${path}`
+  const r = upsertInstructionSection(existing, {
+    section, title, heading: '## PLUR Memory', marker: PLUR_INSTRUCTIONS_MARKER, shipped: SHIPPED_PLUR_SECTIONS,
+  })
+  const backup = r.status === 'already' ? null : writeWithBackup(path, r.content)
+  const head = {
+    created: `created ${path}`,
+    added: `added to ${path}`,
+    upgraded: `upgraded in ${path}`,
+    already: `already in ${path}`,
+  }[r.status]
+  const notes: string[] = []
+  if (backup) notes.push(`backup: ${backup}`)
+  if (r.keptSections > 0) {
+    notes.push(
+      `left ${r.keptSections} older "## PLUR Memory" section${r.keptSections === 1 ? '' : 's'} untouched because ` +
+      `${r.keptSections === 1 ? 'it has' : 'they have'} text PLUR did not write — remove it yourself once you have kept what you need`,
+    )
   }
+  return notes.length ? `${head} (${notes.join('; ')})` : head
 }
 
 function installClaudeMd(): string {
@@ -1088,14 +1064,23 @@ function installCursor(cmd: string): string {
   }
 
   mkdirSync(dirname(rulesPath), { recursive: true })
-  // The rule file is PLUR's alone, so an older one (no current marker) is
-  // replaced whole; before v4 an existing file was never touched again and
-  // kept whatever instructions its first install wrote.
+  // An existing rule file is replaced only when it is, whitespace aside, a
+  // text PLUR shipped (#1520 audit S2). One the user edited is kept as it is
+  // and backed up, and the status line says the memory line is missing.
   const existingRule = existsSync(rulesPath) ? readFileSync(rulesPath, 'utf8') : null
-  const ruleStatus = existingRule === null ? 'created'
-    : existingRule.includes(PLUR_INSTRUCTIONS_MARKER) ? 'already present'
-    : 'upgraded'
-  if (ruleStatus !== 'already present') writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
+  let ruleStatus: string
+  if (existingRule === null) {
+    writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
+    ruleStatus = 'created'
+  } else if (hasStandaloneMarker(existingRule, PLUR_INSTRUCTIONS_MARKER)) {
+    ruleStatus = 'already present'
+  } else if (isShippedText(existingRule, SHIPPED_CURSOR_RULES)) {
+    const content = existingRule.includes('\r\n') ? CURSOR_RULE_CONTENT.replace(/\n/g, '\r\n') : CURSOR_RULE_CONTENT
+    ruleStatus = `upgraded (backup: ${writeWithBackup(rulesPath, content)})`
+  } else {
+    ruleStatus = `kept as you edited it (backup: ${backupFile(rulesPath)}); it lacks the newer instructions — ` +
+      `delete it and re-run \`plur init --cursor\` to get them`
+  }
 
   // The dynamic context and reminder rules (plur-context.mdc, plur-reminder.mdc)
   // are rewritten every session by hook-cursor-session-start.ts/

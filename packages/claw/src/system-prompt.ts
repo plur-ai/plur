@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { join, dirname } from 'path'
+import { existsSync, readFileSync, mkdirSync } from 'fs'
+import { join } from 'path'
+import { upsertInstructionSection, writeWithBackup, SHIPPED_CLAW_SECTIONS } from '@plur-ai/core'
 
 /**
  * The PLUR memory section appended to SYSTEM.md during plugin installation.
@@ -107,52 +108,55 @@ End every reply with one short line: \`Memory — recalled N · used: ENG-…, E
 <!-- plur-instructions-v4 -->
 `
 
-/** Marker used to detect if PLUR section is already present */
-const PLUR_MARKER = '## PLUR Memory System'
+/** The heading line that opens the section (matched as a whole line). */
+const PLUR_HEADING = '## PLUR Memory System'
 
-/** Version marker embedded in the PLUR section for update detection */
-const PLUR_VERSION_MARKER = 'plur-instructions-v4'
+/** The current version marker, on a line of its own at the end of the section. */
+const PLUR_VERSION_MARKER = '<!-- plur-instructions-v4 -->'
+
+export interface EnsureSystemPromptResult {
+  appended: boolean
+  updated: boolean
+  path: string
+  /** Backup of SYSTEM.md written before it was changed, if it existed. */
+  backup?: string
+  /** Sections under the PLUR heading that PLUR did not write, left untouched. */
+  keptSections: number
+}
 
 /**
- * Append or update PLUR memory instructions in SYSTEM.md.
- * - Creates the file if it doesn't exist.
- * - Appends if no PLUR section present.
- * - Replaces if PLUR section exists but is outdated (version mismatch).
- * - Skips if current version already present.
+ * Append or update PLUR memory instructions in SYSTEM.md, through core's
+ * `upsertInstructionSection` (the same logic as `plur init`):
+ * - creates the file if it does not exist
+ * - appends if no PLUR section is present
+ * - replaces an older section only when it is, whitespace aside, a text PLUR
+ *   shipped; a section the user wrote or edited is kept as it is and the new
+ *   one is added beside it (#1520 audit B2, N5)
+ * - leaves a file with a current section unchanged
+ * The heading is matched as a whole line outside code fences, so a user's
+ * `## PLUR Memory System Guardrails` or `### PLUR Memory System` is not it.
+ * SYSTEM.md is copied to a timestamped backup before any change.
  */
-export function ensureSystemPrompt(workspacePath: string): { appended: boolean; updated: boolean; path: string } {
+export function ensureSystemPrompt(workspacePath: string): EnsureSystemPromptResult {
   const systemMdPath = join(workspacePath, 'SYSTEM.md')
+  if (!existsSync(workspacePath)) mkdirSync(workspacePath, { recursive: true })
 
-  // Ensure workspace directory exists
-  if (!existsSync(workspacePath)) {
-    mkdirSync(workspacePath, { recursive: true })
+  const existing = existsSync(systemMdPath) ? readFileSync(systemMdPath, 'utf8') : null
+  const r = upsertInstructionSection(existing, {
+    section: PLUR_SYSTEM_SECTION,
+    heading: PLUR_HEADING,
+    marker: PLUR_VERSION_MARKER,
+    shipped: SHIPPED_CLAW_SECTIONS,
+  })
+  if (r.status === 'already') {
+    return { appended: false, updated: false, path: systemMdPath, keptSections: r.keptSections }
   }
-
-  // Check if already present
-  if (existsSync(systemMdPath)) {
-    const existing = readFileSync(systemMdPath, 'utf8')
-    if (existing.includes(PLUR_VERSION_MARKER)) {
-      // Current version already present
-      return { appended: false, updated: false, path: systemMdPath }
-    }
-    if (existing.includes(PLUR_MARKER)) {
-      // Old version present — replace the PLUR section. It ends at its
-      // version marker when it has one; content after that marker is the
-      // user's and is kept. A section with no marker runs to end of file, as
-      // before.
-      const start = existing.indexOf(PLUR_MARKER)
-      const before = existing.slice(0, start).trimEnd()
-      const marker = /<!-- plur-instructions-v\d+ -->[ \t]*\n?/.exec(existing.slice(start))
-      const after = marker ? existing.slice(start + marker.index + marker[0].length).replace(/^\s*\n/, '') : ''
-      writeFileSync(systemMdPath, before + '\n' + PLUR_SYSTEM_SECTION + (after ? '\n' + after : ''))
-      return { appended: false, updated: true, path: systemMdPath }
-    }
-    // No PLUR section — append
-    writeFileSync(systemMdPath, existing.trimEnd() + '\n' + PLUR_SYSTEM_SECTION)
-    return { appended: true, updated: false, path: systemMdPath }
+  const backup = writeWithBackup(systemMdPath, r.content) ?? undefined
+  return {
+    appended: r.status === 'created' || r.status === 'added',
+    updated: r.status === 'upgraded',
+    path: systemMdPath,
+    backup,
+    keptSections: r.keptSections,
   }
-
-  // Create new
-  writeFileSync(systemMdPath, PLUR_SYSTEM_SECTION.trim() + '\n')
-  return { appended: true, updated: false, path: systemMdPath }
 }

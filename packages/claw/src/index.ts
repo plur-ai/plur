@@ -60,9 +60,13 @@ const plugin = {
     const workspacePath = api.config?.agents?.defaults?.workspace || `${process.env.HOME || '/root'}/.openclaw/workspace`
     try {
       const result = ensureSystemPrompt(workspacePath)
-      if (result.appended) api.logger.info(`PLUR: appended memory instructions to ${result.path}`)
-      else if (result.updated) api.logger.info(`PLUR: updated memory instructions in ${result.path}`)
+      const backup = result.backup ? ` (backup: ${result.backup})` : ''
+      if (result.appended) api.logger.info(`PLUR: appended memory instructions to ${result.path}${backup}`)
+      else if (result.updated) api.logger.info(`PLUR: updated memory instructions in ${result.path}${backup}`)
       else api.logger.info(`PLUR: memory instructions up to date`)
+      if (result.keptSections > 0) {
+        api.logger.warn(`PLUR: left ${result.keptSections} older "## PLUR Memory System" section(s) in ${result.path} untouched because they have text PLUR did not write — remove them yourself once you have kept what you need`)
+      }
     } catch (err: any) {
       api.logger.warn(`PLUR: could not update SYSTEM.md: ${err.message}`)
     }

@@ -181,9 +181,9 @@ export interface HookEntry {
 }
 
 /**
- * Closes the CLAUDE.md section. Mirrors PLUR_INSTRUCTIONS_MARKER in
- * packages/cli/src/commands/init.ts — bump both together whenever the section
- * text changes, so a re-run of `plur-mcp init` upgrades an existing install.
+ * Closes the CLAUDE.md section. Same as PLUR_INSTRUCTIONS_MARKER in
+ * packages/cli/src/commands/init.ts — when the section text changes, run
+ * scripts/extract-plur-section-history.mjs first, then bump both together.
  */
 const PLUR_INSTRUCTIONS_MARKER = '<!-- plur-instructions-v4 -->'
 
@@ -231,45 +231,6 @@ ${PLUR_INSTRUCTIONS_MARKER}
 
 // --- Functions ---
 
-const PLUR_SECTION_HEADING = /^## PLUR Memory[ \t]*$/m
-const ANY_PLUR_MARKER = /^<!-- plur-instructions-v\d+ -->[ \t]*$/m
-
-/**
- * Mirror of `upsertPlurSection` in packages/cli/src/commands/init.ts (this
- * package cannot depend on the cli); test/memory-footer-instructions.test.ts
- * pins the two to identical output. Upgrades an older PLUR section in place —
- * ending at its version marker, or for a pre-marker install at the next
- * level-1/2 heading — and leaves a current one untouched.
- */
-export function upsertPlurSection(
-  content: string | null,
-  section: string,
-  title: string,
-): { content: string; status: 'created' | 'added' | 'already' | 'upgraded' } {
-  if (content === null) return { content: `${title}\n\n${section}`, status: 'created' }
-
-  const heading = PLUR_SECTION_HEADING.exec(content)
-  if (!heading) return { content: content.trimEnd() + '\n\n' + section, status: 'added' }
-
-  const bodyStart = heading.index + heading[0].length
-  const body = content.slice(bodyStart)
-  const marker = ANY_PLUR_MARKER.exec(body)
-  const nextHeading = /^#{1,2} /m.exec(body)
-  const end = bodyStart + (
-    marker && (!nextHeading || marker.index < nextHeading.index)
-      ? marker.index + marker[0].length
-      : nextHeading ? nextHeading.index : body.length
-  )
-
-  if (content.slice(heading.index, end).includes(PLUR_INSTRUCTIONS_MARKER)) {
-    return { content, status: 'already' }
-  }
-
-  const before = content.slice(0, heading.index)
-  const after = content.slice(end).replace(/^\s*\n/, '')
-  return { content: before + section + (after ? '\n' + after : ''), status: 'upgraded' }
-}
-
 function defaultClaudeMdPath(): string {
   // Check project CLAUDE.md first, then global
   const projectClaudeMd = join(process.cwd(), 'CLAUDE.md')
@@ -277,16 +238,37 @@ function defaultClaudeMdPath(): string {
   return existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
 }
 
-export function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath()): string {
+/**
+ * Write the PLUR section into CLAUDE.md with core's `upsertInstructionSection`
+ * — the same logic as `plur init`: only a section PLUR shipped is replaced,
+ * one the user wrote or edited is kept and the new one added beside it, and a
+ * timestamped backup precedes any change to an existing file.
+ */
+export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath()): Promise<string> {
+  // Loaded lazily, like every other core use in this entry point, so
+  // `plur-mcp --help` / `--version` do not pay for loading core.
+  const { upsertInstructionSection, writeWithBackup, SHIPPED_PLUR_SECTIONS } = await import('@plur-ai/core')
   const existing = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf8') : null
-  const { content, status } = upsertPlurSection(existing, CLAUDE_MD_SECTION, '# CLAUDE.md')
-  if (status !== 'already') writeFileSync(claudeMdPath, content)
-  switch (status) {
-    case 'created': return `created ${claudeMdPath}`
-    case 'added': return `added to ${claudeMdPath}`
-    case 'upgraded': return `upgraded in ${claudeMdPath}`
-    case 'already': return `already in ${claudeMdPath}`
+  const r = upsertInstructionSection(existing, {
+    section: CLAUDE_MD_SECTION, title: '# CLAUDE.md', heading: '## PLUR Memory',
+    marker: PLUR_INSTRUCTIONS_MARKER, shipped: SHIPPED_PLUR_SECTIONS,
+  })
+  const backup = r.status === 'already' ? null : writeWithBackup(claudeMdPath, r.content)
+  const head = {
+    created: `created ${claudeMdPath}`,
+    added: `added to ${claudeMdPath}`,
+    upgraded: `upgraded in ${claudeMdPath}`,
+    already: `already in ${claudeMdPath}`,
+  }[r.status]
+  const notes: string[] = []
+  if (backup) notes.push(`backup: ${backup}`)
+  if (r.keptSections > 0) {
+    notes.push(
+      `left ${r.keptSections} older "## PLUR Memory" section${r.keptSections === 1 ? '' : 's'} untouched because ` +
+      `${r.keptSections === 1 ? 'it has' : 'they have'} text PLUR did not write — remove it yourself once you have kept what you need`,
+    )
   }
+  return notes.length ? `${head} (${notes.join('; ')})` : head
 }
 
 function findMcpConfig(): string {
@@ -533,7 +515,7 @@ async function runInit() {
   results.push(`Hooks:    ${hooksStatus}`)
 
   // Step 4: Add PLUR section to CLAUDE.md
-  const claudeMdStatus = installClaudeMd()
+  const claudeMdStatus = await installClaudeMd()
   results.push(`CLAUDE.md: ${claudeMdStatus}`)
 
   // Step 5: Install bundled knowledge packs.

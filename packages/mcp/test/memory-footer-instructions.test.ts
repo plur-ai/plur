@@ -1,12 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { INSTRUCTIONS } from '../src/server.js'
-import { installClaudeMd, upsertPlurSection as mcpUpsert } from '../src/index.js'
-// @plur-ai/mcp cannot depend on @plur-ai/cli, so the section upsert is
-// mirrored. This import is test-only: it pins the mirror to the source.
-import { upsertPlurSection as cliUpsert } from '../../cli/src/commands/init.js'
+import { installClaudeMd } from '../src/index.js'
 
 /**
  * The MCP server instructions and the CLAUDE.md section `plur-mcp init`
@@ -51,16 +48,16 @@ describe('plur-mcp init CLAUDE.md section — memory footer rule', () => {
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-  it('a fresh file gets the rule and the version marker', () => {
-    expect(installClaudeMd(path)).toMatch(/^created/)
+  it('a fresh file gets the rule and the version marker', async () => {
+    expect(await installClaudeMd(path)).toMatch(/^created/)
     const md = readFileSync(path, 'utf-8')
     expect(md).toContain(MEMORY_FOOTER_RULE)
     expect(md).toContain(VERSION_MARKER)
   })
 
-  it('the previous section is upgraded in place, once, keeping the user content around it', () => {
+  it('the previous section is upgraded in place, once, keeping the user content around it', async () => {
     writeFileSync(path, '# Mine\n\nFirst.\n\n' + legacy() + '\n## After\n\nAlso mine.\n')
-    expect(installClaudeMd(path)).toMatch(/^upgraded/)
+    expect(await installClaudeMd(path)).toMatch(/^upgraded/)
     const md = readFileSync(path, 'utf-8')
     expect(count(md, MEMORY_FOOTER_RULE)).toBe(1)
     expect(headingCount(md)).toBe(1)
@@ -68,26 +65,35 @@ describe('plur-mcp init CLAUDE.md section — memory footer rule', () => {
     expect(md).toContain('## After\n\nAlso mine.')
   })
 
-  it('a current file is left alone', () => {
-    installClaudeMd(path)
+  it('a current file is left alone', async () => {
+    await installClaudeMd(path)
     const first = readFileSync(path, 'utf-8')
-    expect(installClaudeMd(path)).toMatch(/^already/)
+    expect(await installClaudeMd(path)).toMatch(/^already/)
     expect(readFileSync(path, 'utf-8')).toBe(first)
   })
 
-  it('the mirrored upsert behaves exactly like the cli source', () => {
-    const section = '## PLUR Memory\n\nnew body\n\n' + VERSION_MARKER + '\n'
-    const inputs: Array<string | null> = [
-      null,
-      '',
-      '# T\n\nmine\n',
-      '# T\n\n' + legacy() + '\n## After\n\nmine\n',
-      '# T\n\n## PLUR Memory\n\nold\n\n<!-- plur-instructions-v3 -->\n\ntrailing prose\n',
-      '# T\n\n## PLUR Memory Guardrails\n\nnot ours\n',
-      '# T\n\n' + section,
-    ]
-    for (const input of inputs) {
-      expect(mcpUpsert(input, section, '# CLAUDE.md')).toEqual(cliUpsert(input, section, '# CLAUDE.md'))
-    }
+  it('user text after the old section at end of file survives, with a backup (#1520 audit B1)', async () => {
+    const input = '# Mine\n\n' + legacy() + '\nNever deploy without approval.\n\n### Team rules\n\nX\n'
+    writeFileSync(path, input)
+    expect(await installClaudeMd(path)).toMatch(/^upgraded in .*backup: .*CLAUDE\.md\.plur-backup-/)
+    const md = readFileSync(path, 'utf-8')
+    expect(md).toContain('Never deploy without approval.')
+    expect(md).toContain('### Team rules\n\nX\n')
+    const b = readdirSync(dir).filter(f => f.startsWith('CLAUDE.md.plur-backup-'))
+    expect(b).toHaveLength(1)
+    expect(readFileSync(join(dir, b[0]), 'utf-8')).toBe(input)
+  })
+
+  it('a hand-edited section is left untouched and the status says so', async () => {
+    const edited = legacy().replace('### When corrected', 'Our own rule.\n\n### When corrected')
+    writeFileSync(path, edited)
+    expect(await installClaudeMd(path)).toMatch(/left 1 older "## PLUR Memory" section untouched/)
+    expect(readFileSync(path, 'utf-8').startsWith(edited.trimEnd())).toBe(true)
+  })
+
+  it('has no local copy of the section logic: it uses the one in @plur-ai/core', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf-8')
+    expect(src).not.toMatch(/function upsertPlurSection/)
+    expect(src).toMatch(/upsertInstructionSection/)
   })
 })
