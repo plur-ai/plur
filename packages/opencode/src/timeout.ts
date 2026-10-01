@@ -1,3 +1,6 @@
+// Not exported from index.ts: opencode loads every export of the entry module
+// as a plugin and refuses a non-function one.
+
 /**
  * Upper bound on the recall in `chat.message` (formal R2, mcp#10). The recall
  * was awaited unbounded, so a hung store (lock, dead remote, stuck embedder)

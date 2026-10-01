@@ -19,8 +19,8 @@ import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
-import { INJECT_TIMEOUT_MS } from './timeout.js'
 import { resolveScopeRoot, resolveTrustedScope, projectRemoteRefusalNotice, folderPolicy } from './scope.js'
+import { INJECT_TIMEOUT_MS } from './timeout.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
 // Unconditional — unlike `log` above. A `.plur.yaml` scope the plugin refuses
@@ -28,8 +28,6 @@ const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:
 // needs to see without having to already know to set PLUR_DEBUG=1 first.
 const warn = (msg: string) => { console.error(`[plur:opencode] warning: ${msg}`) }
 
-// INJECT_TIMEOUT_MS lives in timeout.ts: this entry module may export only
-// functions, because opencode loads every export as a plugin (entry-exports.test.ts).
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
   let timer: ReturnType<typeof setTimeout> | undefined
