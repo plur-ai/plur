@@ -17,6 +17,12 @@ export interface RemoteOnlyBinding {
   folder: string
   /** The folder's team scope; null when the map entry names none. */
   scope: string | null
+  /**
+   * Set when the folder map could not be read (`reason: 'malformed-map'`):
+   * why, naming the file. The instance then reads and writes nothing at all
+   * (audit of #1521, S3: fail safe, never fall back to `on`).
+   */
+  blocked?: string
 }
 
 /**
@@ -39,7 +45,16 @@ export interface RemoteOnlyStatus {
   reason?: string
 }
 
-export type RemoteOnlyRefusal = 'personal-scope' | 'local-only-scope' | 'private' | 'sensitive' | 'no-store' | 'no-scope' | 'timeline'
+export type RemoteOnlyRefusal =
+  | 'personal-scope' | 'local-only-scope' | 'private' | 'sensitive' | 'no-store' | 'no-scope' | 'timeline'
+  /** An operation on a row kept in this machine's store (personal, or a save waiting to be sent). */
+  | 'local-row'
+  /** A queued save from a remote-only folder may only be delivered or deleted. */
+  | 'queued-stays-remote'
+  /** An operation that reads or writes the personal store as a whole (meta-engrams, export, tensions). */
+  | 'local-store'
+  /** The folder map could not be read; nothing is read or written. */
+  | 'blocked'
 
 export class RemoteOnlyWriteError extends Error {
   readonly code = 'remote-only'
@@ -62,6 +77,15 @@ function quote(p: string): string {
 export function remoteOnlyRefusalMessage(
   folder: string, scope: string | null, requested: string | undefined, refusal: RemoteOnlyRefusal, detail?: string,
 ): string {
+  if (refusal === 'blocked') {
+    return `PLUR reads and writes nothing in ${folder}: ${detail ?? 'the folder map could not be read'}. ` +
+      'Fix or remove that file (every folder behaves like ask until then).'
+  }
+  if (refusal === 'queued-stays-remote') {
+    return `${detail ?? 'This memory'} is a save from the remote-only folder ${folder}, waiting to be sent to the team ` +
+      `server${scope ? ` (scope "${scope}")` : ''}. It can only be delivered (to a team scope) or forgotten, never ` +
+      'kept on this machine, so nothing was changed.'
+  }
   const where = scope
     ? `This folder (${folder}) is remote-only: its memory lives only on the team server, in scope "${scope}".`
     : `This folder (${folder}) is remote-only, but its folder-map entry names no team scope.`
@@ -72,6 +96,10 @@ export function remoteOnlyRefusalMessage(
     sensitive: `The content looks sensitive (${detail ?? 'a sensitive pattern'}); outside a remote-only folder it would be kept locally, which this folder does not allow, so nothing was saved.`,
     'no-store': `No writable team store for "${requested ?? scope}" is configured in config.yaml, so nothing was saved.`,
     'no-scope': 'Nothing was saved.',
+    'local-row': `${detail ?? 'That operation'} works only on team memories here; that memory is kept on this machine (a personal memory, or a save still waiting to be sent), so nothing was changed.`,
+    blocked: '', // handled above
+    'queued-stays-remote': '', // handled above
+    'local-store': `${detail ?? 'That operation'} reads or writes this machine's personal store, which a remote-only folder does not use, so nothing was done.`,
     timeline: 'The session timeline (episodes) is kept on this machine and can hold session content, so nothing is captured here.',
   }
   const fix = refusal === 'personal-scope' || refusal === 'local-only-scope' || refusal === 'private'
@@ -96,6 +124,7 @@ export function remoteOnlyUnservedNotice(status: RemoteOnlyStatus): string {
 
 /** The line a remote-only session shows at its start, telling the agent where memory goes. */
 export function remoteOnlySessionLine(binding: RemoteOnlyBinding): string {
+  if (binding.blocked) return `[PLUR Memory — off here: ${binding.blocked}. Nothing is read or saved until it is fixed.]`
   return binding.scope
     ? `This folder is remote-only: memory here lives only on the team server, in scope "${binding.scope}". ` +
       'Call plur_learn without a scope (it goes there) or with another team scope; personal and local scopes are refused here.'
