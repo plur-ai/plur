@@ -11,7 +11,7 @@
  * longer declared and the argv check refuses them instead of ignoring them.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync, spawn } from 'child_process'
@@ -22,10 +22,22 @@ const CLI = builtCliPath(join(__dirname, '..'))
 
 describe('plur recall --scope / --domain filter', { timeout: 60000 }, () => {
   let dir: string
+  // HOME and the default store point at empty temp dirs: every command names
+  // its store with --path, so neither may gain a file (asserted last).
+  const guardHome = mkdtempSync(join(tmpdir(), 'plur-recall-guard-home-'))
+  const guardStore = mkdtempSync(join(tmpdir(), 'plur-recall-guard-store-'))
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-recall-scope-')) })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+  afterAll(() => {
+    rmSync(guardHome, { recursive: true, force: true })
+    rmSync(guardStore, { recursive: true, force: true })
+  })
 
-  const env = () => ({ ...process.env, PLUR_DISABLE_EMBEDDINGS: '1', PLUR_REMOTE_RECALL: 'off' })
+  const env = () => ({
+    ...process.env, HOME: guardHome, USERPROFILE: guardHome, PLUR_PATH: guardStore,
+    XDG_CONFIG_HOME: join(guardHome, '.config'),
+    PLUR_DISABLE_EMBEDDINGS: '1', PLUR_REMOTE_RECALL: 'off',
+  })
 
   function learn(statement: string, extra: string): void {
     execSync(`node ${CLI} learn "${statement}" --path ${dir} --json ${extra}`, {
@@ -91,6 +103,12 @@ describe('plur recall --scope / --domain filter', { timeout: 60000 }, () => {
       expect(status).toBe(1)
       expect(stderr).toContain(flag.split(' ')[0])
     }
+  })
+
+  // Runs last in this describe (vitest runs tests in order).
+  it('never touches HOME or the default store', () => {
+    expect(readdirSync(guardHome)).toEqual([])
+    expect(readdirSync(guardStore)).toEqual([])
   })
 })
 

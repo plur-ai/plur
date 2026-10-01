@@ -8,8 +8,9 @@
  * (and any other undeclared flag) is refused instead of ignored.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
+import { computeQueryHash } from '@plur-ai/core'
 import { tmpdir } from 'os'
 import { execSync, spawn } from 'child_process'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
@@ -17,12 +18,39 @@ import { builtCliPath } from './helpers/built-cli.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 
+/** Every file under `root`, recursively (empty when absent). */
+function filesUnder(root: string): string[] {
+  let out: string[] = []
+  let names: string[]
+  try { names = readdirSync(root) } catch { return out }
+  for (const n of names) {
+    const p = join(root, n)
+    out = statSync(p).isDirectory() ? out.concat(filesUnder(p)) : out.concat(p)
+  }
+  return out
+}
+
 describe('plur inject --scope filter', { timeout: 60000 }, () => {
   let dir: string
+  // HOME and the default store (PLUR_PATH) point at empty temp dirs for the
+  // whole suite. Every command names its store with --path, so neither may
+  // ever gain a file — the last test asserts it. Without this, a command that
+  // lost its --path (e.g. --path placed after `--`, where it is data) ran
+  // against the developer's real ~/.plur and wrote to it.
+  const guardHome = mkdtempSync(join(tmpdir(), 'plur-inject-guard-home-'))
+  const guardStore = mkdtempSync(join(tmpdir(), 'plur-inject-guard-store-'))
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-inject-scope-')) })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+  afterAll(() => {
+    rmSync(guardHome, { recursive: true, force: true })
+    rmSync(guardStore, { recursive: true, force: true })
+  })
 
-  const env = () => ({ ...process.env, PLUR_DISABLE_EMBEDDINGS: '1', PLUR_REMOTE_RECALL: 'off' })
+  const env = () => ({
+    ...process.env, HOME: guardHome, USERPROFILE: guardHome, PLUR_PATH: guardStore,
+    XDG_CONFIG_HOME: join(guardHome, '.config'),
+    PLUR_DISABLE_EMBEDDINGS: '1', PLUR_REMOTE_RECALL: 'off',
+  })
 
   function learn(statement: string, extra: string): void {
     execSync(`node ${CLI} learn "${statement}" --path ${dir} --json ${extra}`, {
@@ -30,8 +58,10 @@ describe('plur inject --scope filter', { timeout: 60000 }, () => {
     })
   }
 
+  // Global flags go BEFORE the command's own args: `args` may contain `--`,
+  // after which everything — --path included — is data.
   function inject(args: string, mode: '--fast' | '' = '--fast'): string {
-    const out = execSync(`node ${CLI} inject ${args} --path ${dir} --json ${mode}`, {
+    const out = execSync(`node ${CLI} inject --path ${dir} --json ${mode} ${args}`, {
       encoding: 'utf-8', timeout: 30000, env: env(),
     })
     const r = JSON.parse(out)
@@ -67,7 +97,13 @@ describe('plur inject --scope filter', { timeout: 60000 }, () => {
   it('--budget, --no-with-default-protocol and a dash-led task after -- still work', () => {
     seed()
     expect(inject('"deploy service rollout" --budget 500 --no-with-default-protocol')).toContain('rollout')
-    expect(() => inject('-- "-deploy service rollout"')).not.toThrow()
+    // The dash-led task must reach core verbatim, in the --path store: the
+    // co_injection history event carries its query hash.
+    inject('-- "-deploy service rollout"')
+    const hash = computeQueryHash('-deploy service rollout')
+    expect(hash).not.toBe(computeQueryHash('deploy service rollout'))
+    const recorded = filesUnder(dir).some(f => readFileSync(f, 'utf8').includes(hash))
+    expect(recorded).toBe(true)
   })
 
   it('--domain (which inject cannot honour) is refused, not silently ignored', () => {
@@ -83,6 +119,12 @@ describe('plur inject --scope filter', { timeout: 60000 }, () => {
     }
     expect(status).toBe(1)
     expect(out).toContain('--domain')
+  })
+
+  // Runs last in this describe (vitest runs tests in order).
+  it('never touches HOME or the default store — every command used its --path', () => {
+    expect(filesUnder(guardHome)).toEqual([])
+    expect(filesUnder(guardStore)).toEqual([])
   })
 })
 
