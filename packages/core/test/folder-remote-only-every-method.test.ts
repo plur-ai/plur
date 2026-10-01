@@ -16,7 +16,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSy
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur } from '../src/index.js'
+import { Plur, RemoteOnlyWriteError } from '../src/index.js'
 import { StubServer } from './helpers/stub-server.js'
 import { backgroundPushesSettled } from './helpers/background-pushes.js'
 
@@ -83,7 +83,7 @@ describe('every public Plur method in a remote-only folder', () => {
     const pack = join(base, 'pack-src')
     mkdirSync(pack, { recursive: true })
     writeFileSync(join(pack, 'SKILL.md'), '---\nname: conflictpack\nversion: "1.0"\n---\n')
-    writeFileSync(join(pack, 'engrams.yaml'), yaml.dump({ engrams: [{ ...personalRow, id: 'ENG-2026-0101-001', scope: 'global', domain: 'personal.health', statement: 'never see the dentist on Tuesday mornings' }] }))
+    writeFileSync(join(pack, 'engrams.yaml'), yaml.dump({ engrams: [{ ...personalRow, id: 'ENG-2026-0101-001', scope: 'global', visibility: 'public', domain: 'personal.health', statement: 'never see the dentist on Tuesday mornings' }] }))
     // A history event and a stale content hash on the personal row.
     const stale = primaryRows()
     stale.find(r => r.id === personal.id).content_hash = 'deadbeef'
@@ -94,6 +94,7 @@ describe('every public Plur method in a remote-only folder', () => {
     const beforeSecondary = read(secondary)
     const beforeEpisodes = read(join(root, 'episodes.yaml'))
     const beforeTensions = read(join(root, 'tensions.yaml'))
+    const beforeHistory = read(join(root, 'history.jsonl'))
 
     const plur = new Plur({ path: root })
     plur.bindFolder(work)
@@ -125,8 +126,8 @@ describe('every public Plur method in a remote-only folder', () => {
       updateEngram: [row], updateEngramAsync: [row], setPinned: [pid, true], setPinnedAsync: [pid, true],
       listPinned: [], hardTierCap: [], pinnedQuota: [], repairContentHashes: [{ apply: true }],
       forget: [pid], rescope: [pid, 'local'], compact: [], reindex: [], reindexAsync: [], lastIndexError: [], waitForIndex: [],
-      capture: ['client session'], timeline: [], ingest: ['notes about the dentist PERSONALZEBRA'],
-      previewPack: [pack], installPack: [pack], uninstallPack: ['conflictpack'],
+      capture: ['client session'], timeline: [], ingest: ['Always run the team integration checks before merging.'],
+      previewPack: [pack], installPack: [pack], uninstallPack: ['pack-src'],
       exportPack: [[], join(base, 'export-out'), { name: 'x', version: '1.0', license: 'MIT' }], listPacks: [],
       migratePackIntegrity: [{ dryRun: true }], getStorageRoot: [], sync: [], syncStatus: [], outboxCount: [], listOutbox: [],
       outboxSummary: [], flushOutbox: [{ force: true }], episodeToEngram: [episode.id], getEngramHistory: [pid],
@@ -152,6 +153,18 @@ describe('every public Plur method in a remote-only folder', () => {
     const methods = names.filter(n => !getters.includes(n))
     expect(methods.filter(n => !(n in CALLS)), 'methods with no entry in CALLS').toEqual([])
 
+    // A method may only fail with the remote-only refusal, or with one of these
+    // errors, each for the reason given. Anything else (including a timeout)
+    // fails the test: an error is not evidence that nothing leaked.
+    const EXPECTED_ERRORS: Record<string, RegExp> = {
+      rerankerSelfEval: /reranker|PLUR_RERANKER|off/i, // the reranker is off in this fixture
+      checkRerankerFit: /reranker|PLUR_RERANKER|off|embed/i,
+      addRemoteStore: /fetch|connect|ECONNREFUSED|reach|token|failed/i, // points at a closed port on purpose
+      verifyRemoteStore: /./, // the stub server does not implement every verification route
+      registerScope: /not|unknown|authori|scope/i, // the stub /me does not grant that scope
+      reportFailure: /not found/i, // the personal row it names is invisible here — the point of the test
+    }
+    const unexpected: string[] = []
     const leaks: string[] = []
     const check = (name: string, value: unknown) => {
       let text = ''
@@ -169,7 +182,9 @@ describe('every public Plur method in a remote-only folder', () => {
         ])
       } catch (err) {
         out = (err as Error)?.message ?? String(err)
+        if (!(err instanceof RemoteOnlyWriteError) && !(EXPECTED_ERRORS[name]?.test(String(out)))) unexpected.push(`${name}: ${String(out).slice(0, 160)}`)
       }
+      if (out === '(timed out)') unexpected.push(`${name}: timed out`)
       check(name, out)
     }
     for (const g of getters) {
@@ -181,6 +196,17 @@ describe('every public Plur method in a remote-only folder', () => {
     }
     await backgroundPushesSettled(root).catch(() => {})
     expect(leaks).toEqual([])
+    expect(unexpected, 'methods that failed for a reason other than the remote-only refusal').toEqual([])
+    // Queued rows are real queued saves: active, in the team scope, marked for this folder.
+    for (const r of primaryRows().filter(x => x.structured_data?._outbox)) {
+      expect(r.status, r.id).toBe('active')
+      expect(r.scope, r.id).toBe(TEAM)
+      expect(r.structured_data._outbox.remote_only, r.id).toBe(true)
+      expect(r.structured_data._outbox.remote_only_folder, r.id).toBe(work)
+    }
+    // The history log gained no personal text.
+    const addedHistory = read(join(root, 'history.jsonl')).slice(beforeHistory.length)
+    for (const m of MARKERS) expect(addedHistory.includes(m), `history.jsonl gained ${m}`).toBe(false)
     expect(JSON.stringify(permanent())).toBe(beforePermanent)
     expect(read(secondary)).toBe(beforeSecondary)
     expect(read(join(root, 'episodes.yaml'))).toBe(beforeEpisodes)
