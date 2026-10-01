@@ -87,6 +87,14 @@ function extractMessageText(message: LearnableMessage): string {
 const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 
 /**
+ * The per-reply memory line PLUR's instructions ask for
+ * (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`),
+ * in the forms an agent may write it. It reports on the turn; it is never a
+ * learning (#1520 audit S3, re-audit R2).
+ */
+export const MEMORY_LINE_RE = /^[\s>*_`~•-]*Memory[\s*_`]*(?:[—–-]+|:)\s*[*_`]*\s*(?:recalled|none|used|written)(?![a-z])/i
+
+/**
  * Extract self-reported learnings from a message.
  * Looks for the 🧠 I learned: section and parses bullet points.
  *
@@ -106,8 +114,12 @@ export function extractSelfReportedLearnings(message: LearnableMessage): string[
   const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|\n[ \t]*Memory —|$)/)
   if (!match) return []
 
-  return match[1]
-    .split('\n')
+  const lines = match[1].split('\n')
+  // Nothing from the memory line on is a learning, in any form the agent
+  // writes it: plain, in backticks or bold, as a bullet or quote, with an em
+  // dash, en dash, hyphen or colon (#1520 re-audit R2).
+  const footer = lines.findIndex(line => MEMORY_LINE_RE.test(line))
+  return (footer >= 0 ? lines.slice(0, footer) : lines)
     .map(line => line.replace(/^[-•*]\s*/, '').trim())
     .filter(line => line.length >= 10 && !PLACEHOLDER_BULLET_RE.test(line)) // skip empty, trivial, or placeholder lines
 }

@@ -100,10 +100,25 @@ _NEUTRAL_PREFIX = re.compile(
 )
 
 
+# The per-reply memory line in any form an agent writes it: plain, in
+# backticks or bold, as a bullet or quote, with an em dash, en dash, hyphen or
+# colon. It reports on the turn and is never a learning (#1520 re-audit R2).
+# Mirrors MEMORY_LINE_RE in packages/core/src/learner.ts.
+_MEMORY_LINE_RE = re.compile(
+    r'^[\s>*_`~\u2022-]*Memory[\s*_`]*(?:[\u2014\u2013-]+|:)\s*[*_`]*\s*(?:recalled|none|used|written)(?![a-z])',
+    re.IGNORECASE,
+)
+
+
 def _extract_lines(block: str) -> list[str]:
+    lines = block.split('\n')
+    for i, raw_line in enumerate(lines):
+        if _MEMORY_LINE_RE.match(raw_line):
+            lines = lines[:i]
+            break
     return [
         line.strip()
-        for raw_line in block.split('\n')
+        for raw_line in lines
         if (line := _BULLET_PREFIX.sub('', raw_line).strip())
         and len(line) >= 10
     ]
