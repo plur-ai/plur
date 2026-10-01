@@ -3971,7 +3971,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // `sources[].session_id` is filled from `session_episode_id`. Capturing
         // the episode after the learns left every one of them with no session to
         // point at — and this path writes a large share of all engrams.
-        const episode = plur.capture(summary, {
+        // A remote-only folder captures no timeline (owner decision on #1521);
+        // the suggestions below still go to its team scope.
+        const episode = plur.remoteOnlyFolder() ? null : plur.capture(summary, {
           session_id,
           channel: 'mcp',
         })
@@ -4006,7 +4008,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               session: endSession ?? NO_SESSION,
               domain: projectDomain,
               // Link the engram back to the session that produced it (#960).
-              session_episode_id: episode.id,
+              ...(episode ? { session_episode_id: episode.id } : {}),
               // An end-of-session summary is the model's reading of what
               // happened, not something the user stated outright (#963).
               claim_class: 'inferred',
@@ -4067,7 +4069,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         return {
           engrams_created,
           ...(engrams_failed.length ? { engrams_failed } : {}),
-          episode_id: episode.id,
+          episode_id: episode?.id ?? null,
           total_engrams: status.engram_count,
           ...(injection_summary ? { injection_summary } : {}),
           hint: engrams_failed.length

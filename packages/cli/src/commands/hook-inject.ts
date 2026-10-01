@@ -527,13 +527,16 @@ export function pidAlive(pid: number): boolean {
  * Conservative: only reports metadata (stop count, duration, cwd).
  */
 export function processDeferredWrapups(
-  plur: Pick<Plur, 'capture'>,
+  plur: Pick<Plur, 'capture'> & Partial<Pick<Plur, 'remoteOnlyFolder' | 'resolveFolderPolicy'>>,
   root: string,
   now: number = Date.now(),
   isAlive: (pid: number) => boolean = pidAlive,
 ): string | null {
   const sessionsDir = join(root, 'sessions')
   if (!existsSync(sessionsDir)) return null
+  // A remote-only session captures no timeline (owner decision on #1521):
+  // other sessions' orphans wait for a session that can capture them.
+  if (plur.remoteOnlyFolder?.()) return null
 
   const notices: string[] = []
   try {
@@ -576,6 +579,17 @@ export function processDeferredWrapups(
       const where = typeof checkpoint.cwd === 'string' && checkpoint.cwd
         ? ', ' + checkpoint.cwd.split('/').slice(-2).join('/') : ''
       const facts = `${durationStr}, ${checkpoint.stop_count ?? 0} responses${where}`
+
+      // An orphan from a remote-only folder is dropped, not captured: its
+      // timeline must not be kept on this machine (owner decision on #1521).
+      if (typeof checkpoint.cwd === 'string' && checkpoint.cwd && plur.resolveFolderPolicy) {
+        let mode: string | null = null
+        try { mode = plur.resolveFolderPolicy(checkpoint.cwd).mode } catch { /* unresolvable: capture as before */ }
+        if (mode === 'remote-only') {
+          try { unlinkSync(path) } catch { /* gone */ }
+          continue
+        }
+      }
 
       // Durable FIRST. Only a successful capture licenses the unlink.
       try {

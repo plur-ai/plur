@@ -39,7 +39,7 @@ export interface RemoteOnlyStatus {
   reason?: string
 }
 
-export type RemoteOnlyRefusal = 'personal-scope' | 'local-only-scope' | 'private' | 'sensitive' | 'no-store' | 'no-scope'
+export type RemoteOnlyRefusal = 'personal-scope' | 'local-only-scope' | 'private' | 'sensitive' | 'no-store' | 'no-scope' | 'timeline'
 
 export class RemoteOnlyWriteError extends Error {
   readonly code = 'remote-only'
@@ -72,6 +72,7 @@ export function remoteOnlyRefusalMessage(
     sensitive: `The content looks sensitive (${detail ?? 'a sensitive pattern'}); outside a remote-only folder it would be kept locally, which this folder does not allow, so nothing was saved.`,
     'no-store': `No writable team store for "${requested ?? scope}" is configured in config.yaml, so nothing was saved.`,
     'no-scope': 'Nothing was saved.',
+    timeline: 'The session timeline (episodes) is kept on this machine and can hold session content, so nothing is captured here.',
   }
   const fix = refusal === 'personal-scope' || refusal === 'local-only-scope' || refusal === 'private'
     ? scope ? ` Save it without a scope (it goes to "${scope}") or to another team scope.` : ''

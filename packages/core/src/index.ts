@@ -9387,6 +9387,9 @@ export class Plur {
 
   /** Capture an episodic memory. */
   capture(summary: string, context?: CaptureContext): Episode {
+    // Owner decision on #1521: the timeline lives on this machine and can hold
+    // session content, so a remote-only folder captures none.
+    if (this._remoteOnly) throw new RemoteOnlyWriteError(this._remoteOnly.folder, this._remoteOnly.scope, undefined, 'timeline')
     return captureEpisode(this.paths.episodes, summary, context)
   }
 
