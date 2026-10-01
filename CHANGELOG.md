@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### A recall in your personal scope now reads your personal remote store (#PRNUM)
+### A recall in your personal scope now reads your personal remote store (#1515)
 
 **Personal remote memory is no longer write-only.** With a remote store
 configured for a personal scope (for example `scope: user:acme:me`),
