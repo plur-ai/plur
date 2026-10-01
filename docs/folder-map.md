@@ -54,10 +54,21 @@ plur folders set ~/client-work --remote-only --scope group:acme/client
 ```
 
 The scope must be served by a team store (a `url` store in `config.yaml`; add
-one with `plur remote` or `plur stores add` first). Every PLUR integration in
-that folder is bound to it: the editor hooks, the MCP server (the folders the
-editor lists as workspace roots, and the folder it was started in), and every
-`plur` command run there.
+one with `plur remote` or `plur stores add` first).
+
+### Which integrations follow it
+
+- **Followed:** the Claude Code, Codex, Cursor and Antigravity hooks; every
+  `plur` command run in the folder; the MCP server (for the folders the editor
+  lists as workspace roots, and the folder it was started in). If the MCP
+  server cannot read the editor's workspace folders, that call reads and writes
+  nothing and says so; the next call asks again.
+- **Not yet:** the opencode plugin follows the folder map once its folder-map
+  support (#1517) is in. The OpenClaw plugin and the Hermes plugin do not read
+  the folder map: in a remote-only folder they use your personal store as
+  usual. (Hermes calls the `plur` CLI, which binds to the folder that process
+  runs in — not necessarily your workspace.) Do not use those integrations for
+  work that must stay off your personal store.
 
 ### What happens there
 
@@ -76,6 +87,8 @@ editor lists as workspace roots, and the folder it was started in), and every
   exporting a pack, recording, confirming or resolving tensions, and turning a
   timeline episode into a memory. The timeline, tension list and history
   queries answer empty.
+- **A save that repeats one already waiting to be sent from this folder** is
+  counted on that queued save instead of being queued twice.
 - **A save that cannot reach the server** waits in the outbox (a row in
   `engrams.yaml` marked for delivery, see `plur outbox`) and is removed once it
   is delivered. Such a queued save can only be delivered or forgotten, from any
@@ -105,6 +118,13 @@ editor lists as workspace roots, and the folder it was started in), and every
 To leave remote-only you say so explicitly: `plur folders set <folder> --on`
 (or `--off`, `--ask`), or `plur folders rm <folder>`.
 
+The guarantee is enforced twice. The commands and tools refuse with a
+message, and underneath them every local store PLUR opens in such a folder is
+wrapped so that it shows and accepts only the folder's own queued saves — a
+path nobody listed still cannot reach a personal memory. Store maintenance
+(`plur compact`, reindexing, `plur sync`) is refused in the folder; run it
+elsewhere.
+
 ### What is still written on this machine
 
 Remote-only keeps your memories, and the client's, out of your personal store.
@@ -126,11 +146,14 @@ It is not a guarantee that nothing about the session touches the disk:
 Session checkpoints that the editor hooks write while a session runs are
 dropped at session end in a remote-only folder, not captured.
 
-### If folders.yaml cannot be read
+### If folders.yaml cannot be read, or a folder cannot be looked up
 
 A `folders.yaml` with a syntax error, or a value PLUR does not know, is never
-read as empty: every folder behaves like `ask`, PLUR reads and writes nothing,
-and the first prompt of a session says so, naming the file and the line. Fix
+read as empty: every folder behaves like `ask`, PLUR reads and writes nothing
+(not even a save to an explicit team scope), and the first prompt of a session
+says so, naming the file and the line. A folder whose decision cannot be looked
+up for another reason is treated the same way. A session that ends in such a
+folder captures nothing. Fix
 or remove the file to continue. (`plur folders set` refuses to overwrite it.)
 
 ### Update every PLUR integration together

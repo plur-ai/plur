@@ -63,7 +63,16 @@ setup gets full local memory.
 It applies to the Claude Code, Codex, Cursor and Antigravity hooks, to every
 `plur` command (bound to the folder it runs in), and to the MCP server, which
 re-reads the decision before each tool call for its client's workspace roots
-and the folder it was started in, and fails closed when it cannot. The
+and the folder it was started in. When it cannot read the workspace roots, or
+cannot resolve a folder, that call reads and writes nothing and says so. The
+opencode plugin follows once #1517 is in; the OpenClaw and Hermes plugins do
+not read the folder map.
+
+Underneath the command-level refusals, every local store a bound instance
+opens is wrapped so that it shows and accepts only the folder's own queued
+saves (a test calls every public method in a bound instance against a store
+seeded with personal content). Store maintenance (`compact`, reindex, `sync`)
+is refused in the folder. The
 opencode plugin does not follow the folder map yet; it picks the mode up once
 its folder-map support (#1517) is in. Core: `Plur.bindFolder(dir)` /
 `bindFolderPolicy(dir, policy)`, `RemoteOnlyWriteError`, and
