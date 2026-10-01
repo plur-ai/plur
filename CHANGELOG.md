@@ -26,18 +26,27 @@ the caller, or registered by that session itself, dials the one store whose
 own scope matches it, asking that host for that one scope.
 
 - The match ignores case, the same way local-only scope targets do
-  (`USER:Acme:Me` finds a store configured as `user:acme:me`). If several
-  configured stores match after folding, only one is dialed: the exact-case
-  one, otherwise the first in config order. `learn` uses the same match, so a
-  write and a read with the same string reach the same store.
+  (`USER:Acme:Me` finds a store configured as `user:acme:me`). Every configured
+  store counts, local path-backed ones included, and at most one is chosen: the
+  exact-case one, otherwise the first case-insensitive match in config order.
+  `learn`, `learnAsync` and `learnBatch` (before their duplicate check) use the
+  same choice, so a write and a read with the same string pick the same store.
+  When that store is local, or is set to `dial: never`, nothing is dialed; a
+  remote store whose scope differs only in case is never used instead. A write
+  naming a local store's exact scope stays local.
 - The personal-scope rule adds only that store. Other stores are still added by
   the existing overrides: a store set to `dial: always`, or a trusted
   `.plur.yaml` remote project. `dial: never` still wins.
 - A session that never registered its own scope does not dial through the
   process-wide default; that default is some other caller's choice.
-- When a recall or injection passes a `scopes` allow-list, nothing outside it
-  is dialed, for any store, and `scopes: []` dials nothing. Before, the query
-  went out and the rows were dropped afterwards.
+- When a core `recall`, `recallHybrid` or `injectHybrid` call passes a
+  `scopes` allow-list, only stores that can hold an allowed scope are dialed:
+  the store's scope equals an allowed scope or is a parent of one (a
+  `group:acme/eng` store is dialed for `scopes: ['group:acme/eng/x']`; a
+  `group:acme/eng/x` store is not dialed for `scopes: ['group:acme/eng']`).
+  `scopes: []` dials nothing. Before, every store was dialed and the rows were
+  filtered afterwards; that exact-membership filter on returned rows still
+  runs. The MCP tools do not take a `scopes` argument.
 - A session whose default scope is a personal store scope now makes one
   timeout-bounded remote call per hybrid injection, where it made none.
 
