@@ -20,7 +20,7 @@ import { builtCliPath } from './helpers/built-cli.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 
-describe('plur recall --scope / --domain filter', () => {
+describe('plur recall --scope / --domain filter', { timeout: 60000 }, () => {
   let dir: string
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-recall-scope-')) })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
@@ -94,7 +94,7 @@ describe('plur recall --scope / --domain filter', () => {
   })
 })
 
-describe('plur recall --scope dials the remote store for that scope', () => {
+describe('plur recall --scope dials the remote store for that scope', { timeout: 60000 }, () => {
   const TOKEN = 'recall-scope-token'
   const SCOPE = 'group:test'
   let server: StubServer

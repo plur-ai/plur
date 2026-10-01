@@ -22,6 +22,15 @@ MCP tool, and `--scope` dials the store configured for that scope.
 filter behind them, so `plur recall` now refuses them with an error. `plur list` likewise refuses `--tags`, and now accepts
 `--meta`, which it previously refused before reading it.
 
+### plur inject --scope limits the injection to that scope (#1516)
+
+`plur inject "<task>" --scope <scope>` ignored the flag the same way: the
+injection drew on every scope, and a team store for that scope was never
+asked. `--scope` now works as it does in the `plur_inject` MCP tool, and on
+the default (hybrid) path it dials the store configured for that scope. The
+MCP tool takes no domain, so `plur inject` refuses `--domain`, and any other
+flag it does not know, with an error instead of ignoring it.
+
 ## 0.21.0
 
 More control over what your agents remember, and where.

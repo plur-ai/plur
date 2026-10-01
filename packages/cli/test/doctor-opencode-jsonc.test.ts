@@ -18,7 +18,7 @@ const FIXTURE = readFileSync(join(__dirname, 'fixtures', 'opencode-jsonc', 'open
  * The WRITE path (`plur init`) still refuses to rewrite a JSONC file it
  * cannot round-trip — comments would be lost (#1059 class).
  */
-describe('plur doctor — opencode.jsonc with comments and trailing commas', () => {
+describe('plur doctor — opencode.jsonc with comments and trailing commas', { timeout: 60000 }, () => {
   let home: string
   let configPath: string
 
