@@ -26,17 +26,29 @@ the caller, or registered by that session itself, dials the one store whose
 own scope matches it, asking that host for that one scope.
 
 - The match ignores case, the same way local-only scope targets do
-  (`USER:Acme:Me` finds a store configured as `user:acme:me`). Every configured
-  store counts, local path-backed ones included, and at most one is chosen: the
-  exact-case one, otherwise the first case-insensitive match in config order.
-  `learn`, `learnAsync` and `learnBatch` (before their duplicate check) use the
-  same choice, so a write and a read with the same string pick the same store.
-  When that store is local, or is set to `dial: never`, nothing is dialed; a
-  remote store whose scope differs only in case is never used instead. A write
-  naming a local store's exact scope stays local.
-- The personal-scope rule adds only that store. Other stores are still added by
-  the existing overrides: a store set to `dial: always`, or a trusted
-  `.plur.yaml` remote project. `dial: never` still wins.
+  (`USER:Acme:Me` finds a store configured as `user:acme:me`). Exactly one
+  configured store is chosen, local path-backed ones included. Stores whose
+  scope matches exactly are preferred; only when none does are case-insensitive
+  matches considered. Among those candidates the choice is fail-safe: a local
+  store first, then a writable remote store, then a readonly one, with config
+  order breaking ties. So a write never leaves the machine on an exact or
+  ambiguous match when a local store also matches.
+- That one choice decides the read, the write target and the "is this my own
+  remote namespace" check alike. `learn`, `learnAsync` and `learnBatch` (before
+  their duplicate check) all make it, and they read the current config first,
+  so a store another process just added already counts. A write and a read
+  with the same string therefore pick the same store, and a write naming a
+  local store's scope stays local. This holds even when a remote store has the
+  identical scope. One exception, as before: a readonly remote store is read
+  but never written, so when it is the chosen store the write stays local.
+- When the chosen store is local, or is set to `dial: never`, the
+  personal-scope rule dials nothing. It never uses a remote store whose scope
+  differs only in case instead.
+- The personal-scope rule adds only that store. Other stores, a case twin
+  included, can still be dialed by the existing rules: a store set to
+  `dial: always`, a trusted `.plur.yaml` remote project, or an org context
+  (a shared `group:`/`project:` scope of the same org), which also adds that
+  host's personal stores. `dial: never` still wins.
 - A session that never registered its own scope does not dial through the
   process-wide default; that default is some other caller's choice.
 - When a core `recall`, `recallHybrid` or `injectHybrid` call passes a
