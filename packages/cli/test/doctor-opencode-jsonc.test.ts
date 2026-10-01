@@ -67,6 +67,19 @@ describe('plur doctor — opencode.jsonc with comments and trailing commas', { t
     expect(statSync(configPath).mtimeMs).toBe(before)
   })
 
+  it('readOpencodeConfig accepts a BOM-prefixed JSONC config', () => {
+    writeFileSync(configPath, '﻿' + FIXTURE)
+    const snap = readOpencodeConfig(configPath)
+    expect(snap.ok).toBe(true)
+    expect(snap.pluginDeclared).toBe(true)
+    expect(snap.mcpPlurDeclared).toBe(true)
+  })
+
+  it('readOpencodeConfig reports ok:false for {,} (a comma with no value), as opencode rejects it', () => {
+    writeFileSync(configPath, '{ "plugin": ["@plur-ai/opencode"], "mcp": {,} }')
+    expect(readOpencodeConfig(configPath).ok).toBe(false)
+  })
+
   it('init still refuses to rewrite the same JSONC file (write path unchanged)', () => {
     const r = writeOpencodeConfig(configPath, '0.21.0')
     expect(r.ok).toBe(false)

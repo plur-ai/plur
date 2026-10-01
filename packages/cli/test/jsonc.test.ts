@@ -48,6 +48,42 @@ describe('parseJsonc', () => {
     expect(() => parseJsonc('{ "a": "unterminated }')).toThrow()
   })
 
+  // A trailing comma must follow a value. opencode's parser rejects `{,}` and
+  // `[,]` (ValueExpected); doctor must not report such a file as readable.
+  it('rejects a comma with no value before it: {,} [,] [1,,] {"a":1,,}', () => {
+    expect(() => parseJsonc('{,}')).toThrow()
+    expect(() => parseJsonc('[,]')).toThrow()
+    expect(() => parseJsonc('{ , }')).toThrow()
+    expect(() => parseJsonc('[ /* c */ , ]')).toThrow()
+    expect(() => parseJsonc('[1,,]')).toThrow()
+    expect(() => parseJsonc('{"a":1,,}')).toThrow()
+    expect(() => parseJsonc('{"a":[,]}')).toThrow()
+  })
+
+  it('accepts CRLF line endings, with line comments ended by \\r\\n', () => {
+    expect(parseJsonc('{\r\n  // c\r\n  "a": 1, // d\r\n  "b": [2,],\r\n}\r\n')).toEqual({ a: 1, b: [2] })
+  })
+
+  it('accepts a leading UTF-8 byte-order mark', () => {
+    expect(parseJsonc('﻿{ // c\n "a": 1, }')).toEqual({ a: 1 })
+  })
+
+  it('block comments do not nest: the first */ closes the comment', () => {
+    expect(parseJsonc('{ /* /* */ "a": 1 }')).toEqual({ a: 1 })
+    expect(() => parseJsonc('{ /* /* */ */ "a": 1 }')).toThrow()
+  })
+
+  it('a lone / outside a string is not a comment and is rejected', () => {
+    expect(() => parseJsonc('{ "a": 1 / }')).toThrow()
+    expect(() => parseJsonc('/')).toThrow()
+    expect(parseJsonc('{ "a": "x / y" }')).toEqual({ a: 'x / y' })
+  })
+
+  it('\\u escapes inside strings are content, including ones that spell // or a quote', () => {
+    expect(parseJsonc('{ "a": "\\u002F\\u002F not a comment", "b": "\\u0022 // still string" } // real'))
+      .toEqual({ a: '// not a comment', b: '" // still string' })
+  })
+
   it('preserves line structure so a JSON.parse error position still points at the right line', () => {
     const src = '{\n// one\n/* two\nthree */\n"a": 1\n}'
     expect(stripJsonc(src).split('\n').length).toBe(src.split('\n').length)

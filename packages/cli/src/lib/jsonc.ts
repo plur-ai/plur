@@ -7,8 +7,10 @@
  * rather than round-tripping it through this (#1059 class).
  *
  * String-aware: `//`, `/*` and `,}` inside a string literal are content — a
- * `$schema` URL or a glob must survive. Comments are replaced by whitespace
- * (newlines kept) so a JSON.parse error still points at the right line.
+ * `$schema` URL or a glob must survive. Line comments are deleted up to (not
+ * including) their line break; block comments are blanked to spaces with
+ * their line breaks kept. Either way a JSON.parse error still points at the
+ * right line. Block comments do not nest: the first `*\/` closes one.
  */
 export function stripJsonc(text: string): string {
   let out = ''
@@ -39,32 +41,44 @@ export function stripJsonc(text: string): string {
   return removeTrailingCommas(out)
 }
 
-/** Drop a `,` whose next non-whitespace character closes an object or array. */
+/**
+ * Drop a `,` whose next non-whitespace character closes an object or array —
+ * but only when a value precedes it. `{,}`, `[,]` and `[1,,]` keep their comma
+ * so JSON.parse rejects them, as opencode's own parser does.
+ */
 function removeTrailingCommas(text: string): string {
   let out = ''
   let i = 0
   const n = text.length
+  // Last significant (non-whitespace) character emitted; '' at the start.
+  let prev = ''
   while (i < n) {
     const ch = text[i]
     if (ch === '"') {
       let j = i + 1
       while (j < n && text[j] !== '"') j += text[j] === '\\' ? 2 : 1
       out += text.slice(i, j + 1)
+      prev = '"'
       i = j + 1
       continue
     }
     if (ch === ',') {
       let j = i + 1
       while (j < n && /\s/.test(text[j])) j++
-      if (text[j] === '}' || text[j] === ']') { i++; continue }
+      const followsValue = prev !== '' && prev !== '{' && prev !== '[' && prev !== ','
+      if ((text[j] === '}' || text[j] === ']') && followsValue) { i++; continue }
     }
     out += ch
+    if (!/\s/.test(ch)) prev = ch
     i++
   }
   return out
 }
 
-/** Parse JSONC. Throws (like JSON.parse) when the result is not valid JSON. */
+/**
+ * Parse JSONC. Throws (like JSON.parse) when the result is not valid JSON.
+ * A leading UTF-8 byte-order mark is accepted, as editors on Windows write one.
+ */
 export function parseJsonc(text: string): unknown {
-  return JSON.parse(stripJsonc(text))
+  return JSON.parse(stripJsonc(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text))
 }
