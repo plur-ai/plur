@@ -243,7 +243,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     if (rootsInFlight?.gen === gen) rootsInFlight = null
     if (gen !== rootsGen) return retry ? clientRoots(false) : { ok: false, why: 'the workspace folders changed while they were being read' }
     if (answer instanceof Error) return { ok: false, why: answer.message }
-    rootsCache = { gen, dirs: answer }
+    // Cache only when the client can say the roots changed (#1519's rule;
+    // re-audit 2 of #1521, R2-S3). Otherwise every call asks again.
+    if (server.getClientCapabilities()?.roots?.listChanged === true) rootsCache = { gen, dirs: answer }
     return { ok: true, dirs: answer }
   }
   // Bind before every tool call, failing CLOSED: unreadable roots, a folder
