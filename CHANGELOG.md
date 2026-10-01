@@ -29,6 +29,17 @@ needs the usual `--nonce`. In a remote-only folder:
   so once. It never falls back to the personal store.
 - A repository's `.plur.yaml` or project MCP config cannot turn the folder back
   on; only `off` or a more specific entry of your own overrides it.
+- No session timeline is kept there: `plur capture` / `plur_capture` are refused,
+  and the session-end hooks and `plur_session_end` capture no episode (their
+  engram suggestions still go to the team scope).
+- `plur folders set <dir> --scope <s>` on a remote-only folder changes only the
+  scope; it never switches the folder back to local memory. Leaving remote-only
+  takes `--on`, `--off`, `--ask` or `plur folders rm`.
+- An entry with no scope refuses every save and says so.
+
+**Update every PLUR integration together.** Older versions read a
+`folders.yaml` holding a `remote-only` entry as unreadable, so in them every
+folder asks again and `off` entries are not applied.
 
 It applies to the Claude Code, Codex, Cursor and Antigravity hooks and to the
 MCP server, which now re-reads its folder's decision before each tool call. The

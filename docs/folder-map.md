@@ -73,9 +73,24 @@ one with `plur remote` or `plur stores add` first). In a remote-only folder:
 - A repository's `.plur.yaml` or project MCP config cannot turn a remote-only
   folder back on. Only `off`, or a more specific entry of your own, overrides it.
 
-To go back to normal memory there: `plur folders set <folder> --on`, or
-`plur folders rm <folder>`.
+- **No session timeline is kept.** `plur capture`, `plur_capture` and the
+  timeline entry the session-end hooks and `plur_session_end` would write are
+  refused or skipped there, because a timeline entry can hold session content.
+  A session's end-of-session suggestions still go to the team scope. `plur
+  status` statistics and the local embedding cache are unchanged.
+- **Changing the scope keeps the folder remote-only.** `plur folders set
+  <folder> --scope <other>` only changes the scope (it must also be served by a
+  team store). It never switches the folder back to local memory.
+- **An entry with no scope** (written by hand) refuses every save, and sessions
+  there say no team server serves the folder. Add a scope with `plur folders set
+  <folder> --remote-only --scope <s>`.
 
-What remote-only does not cover: the local session timeline (episodes written by
-`plur capture` and the session-end hooks) and the personal store's statistics in
-`plur status` are unchanged.
+To leave remote-only you say so explicitly: `plur folders set <folder> --on`
+(or `--off`, `--ask`), or `plur folders rm <folder>`.
+
+**Update every PLUR integration together.** A PLUR version older than 0.21.1
+cannot read a `folders.yaml` that holds a `remote-only` entry: it treats the
+whole file as unreadable, so in that integration every folder asks again and
+your `off` entries are not applied. Upgrade the CLI, the MCP server and the
+editor plugins (opencode, OpenClaw, Hermes) to the same version, and re-run
+`plur init` so pinned configs follow, before you add a remote-only entry.
