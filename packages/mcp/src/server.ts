@@ -6,6 +6,8 @@ import { homedir } from 'os'
 import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
 import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
+import { FOLDER_GATED_TOOLS, folderOffAnswer } from './folder-gate.js'
+import { fileURLToPath } from 'url'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -77,6 +79,8 @@ OPTIONAL but improves quality:
 - Call plur_recall before answering factual questions — the answer may be in memory
 
 Do not ask permission to use these tools — they are your memory system.
+
+FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, …) read and write nothing and answer { plur: "off", message } instead — not an error. Carry on without memory and do not retry or work around it; only the user can turn it back on, from a terminal (plur folders set <folder> --on). plur_status and plur_doctor keep working.
 
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
@@ -215,6 +219,34 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     },
   )
 
+  // --- The editor's workspace, for the folder map ---
+  //
+  // The folders the memory tools are about: every `file://` root the client
+  // lists over MCP `roots/list` (when it declares the roots capability), plus
+  // this process's cwd — the folder the editor started the server in, which is
+  // also where readTrustedProjectConfig looks for `.plur.yaml`. The roots are
+  // cached until the client says they changed; the folder map itself is read
+  // on every call (folder-gate.ts).
+  let rootDirs: string[] | null = null
+  server.setNotificationHandler('notifications/roots/list_changed', () => { rootDirs = null })
+  const workspaceDirs = async (): Promise<string[]> => {
+    if (rootDirs === null) {
+      rootDirs = []
+      if (server.getClientCapabilities()?.roots) {
+        try {
+          const { roots } = await server.listRoots(undefined, { timeout: 2000 })
+          rootDirs = roots
+            .filter(r => typeof r.uri === 'string' && r.uri.startsWith('file://'))
+            .map(r => { try { return fileURLToPath(r.uri) } catch { return null } })
+            .filter((d): d is string => d !== null)
+        } catch (err: any) {
+          process.stderr.write(`[plur] roots/list failed (${err?.message ?? err}); using the server's cwd for the folder map.\n`)
+        }
+      }
+    }
+    return [...new Set([...rootDirs, process.cwd()])]
+  }
+
   // --- Tools ---
 
   server.setRequestHandler('tools/list', async () => ({
@@ -254,6 +286,15 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     // plur_session_start resets the canary, giving a per-session window:
     // `threshold` turns without an expected signal flags the capability.
     mcpCanary.tick()
+    // The folder map's `off` (folder-gate.ts): a memory tool, called directly
+    // or through plur_admin, touches no store in an `off` folder and says so.
+    const gated = tool.name === 'plur_admin'
+      ? (request.params.arguments as Record<string, unknown> | undefined)?.action
+      : tool.name
+    if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
+      const off = folderOffAnswer(instance, await workspaceDirs())
+      if (off) return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
+    }
     try {
       // #772: capture whether the frame carried `arguments` at all BEFORE the
       // `?? {}` default erases the distinction. "Key absent" vs "arrived as {}"

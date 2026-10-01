@@ -69,6 +69,16 @@ Less commonly needed tools (`plur_recall_hybrid`, `plur_inject_hybrid`, `plur_le
 
 A `plur_*` name missing from `tools/list` means it moved behind the gateway, not that the server is down. `plur_admin { action: "help" }` returns every action with a one-line description and its argument schema; `plur_doctor` reports the same inventory as `tool_surface`.
 
+## Folders where PLUR is off
+
+Your folder map (`~/.plur/folders.yaml`, written only by `plur folders set` from a terminal) can turn PLUR off for a folder. The editor hooks already go silent there; the MCP server does too. In an `off` folder, every tool that reads or writes memory — `plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`, `plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`, `plur_capture`, `plur_feedback` and the other engram and episode tools, called directly or through `plur_admin` — touches no store, local or remote, and returns a normal (non-error) answer:
+
+```json
+{ "success": true, "plur": "off", "folder": "/work/secret", "message": "PLUR is off for this folder … plur folders set /work/secret --on" }
+```
+
+Admin and diagnostic tools (`plur_status`, `plur_doctor`, `plur_stores_list`, `plur_sync_status`, `plur_receipt`, …) keep working. The folder is the editor's workspace: each root the client lists over MCP `roots/list`, plus the folder the server was started in. It is checked on every call, so a change takes effect on the next one. `on` and `ask` folders behave as before.
+
 ## Sync across machines
 
 Your agent can sync memory to any git remote:

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### The MCP server respects a folder you turned PLUR off for (#NNNN)
+
+`plur folders set <folder> --off` silenced the editor hooks, but an agent that
+called `plur_learn` or `plur_recall` itself still read and wrote memory in that
+folder: the MCP server never read the folder map. Now, in an `off` folder, every
+MCP tool that reads or writes engrams or episodes — `plur_learn`,
+`plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`, `plur_inject`,
+`plur_inject_hybrid`, `plur_session_start`, `plur_session_end`, `plur_capture`,
+`plur_feedback` and the rest, called directly or through `plur_admin` — touches
+no store, local or remote (no outbox row either), and answers without an error
+that PLUR is off for this folder and which `plur folders set … --on` command
+turns it back on. Status, doctor and the other admin tools keep working. The
+folder is the editor's workspace: the roots the client lists over MCP, plus the
+folder the server was started in, checked on every call. `on` and `ask`
+folders are unchanged.
+
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its

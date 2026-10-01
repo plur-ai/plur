@@ -415,6 +415,21 @@ export function isTrustedInMap(entries: FolderEntry[], dir: string, home: string
   return entries.some(e => e.trusted === true && entryCovers(e, target, home, false))
 }
 
+function findOffEntry(entries: FolderEntry[], dir: string, home: string): FolderEntry | undefined {
+  const lax = [...new Set([canonicalize(dir), ...canonicalSpellings(dir), resolve(dir)])]
+  return entries.find(e => e.plur === 'off' && entryCovers(e, lax, home, true))
+}
+
+/**
+ * The map entry that turns PLUR off in `dir` (resolution step 1), or
+ * undefined. A more specific `on` entry never overrides an `off`, so turning
+ * the folder back on means changing THIS entry, which may be a parent folder
+ * or a glob: callers name it in their "how to turn it back on" text.
+ */
+export function folderOffEntry(dir: string, opts: FolderPolicyOptions): FolderEntry | undefined {
+  return findOffEntry(loadFolderMap(opts.root).folders, dir, opts.home ?? homedir())
+}
+
 /**
  * Decide what PLUR does in `dir` (design r2 §Resolution, with owner decision
  * D1 "ignore-ask", 2026-09-29, matching #1228's E3):
@@ -435,9 +450,8 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   const home = opts.home ?? homedir()
   const entries = loadFolderMap(opts.root).folders
   const strict = [canonicalize(dir)]
-  const lax = [...new Set([strict[0], ...canonicalSpellings(dir), resolve(dir)])]
 
-  if (entries.some(e => e.plur === 'off' && entryCovers(e, lax, home, true))) {
+  if (findOffEntry(entries, dir, home)) {
     return { mode: 'off', remoteAllowed: false, source: 'map' }
   }
 

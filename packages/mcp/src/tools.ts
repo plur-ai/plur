@@ -769,6 +769,22 @@ export function trustCommand(dir: string | null, storageRoot?: string, platform:
   return store === null ? null : `plur --path ${store} trust ${target}`
 }
 
+/**
+ * The command that turns PLUR back on for a folder-map entry, for the answer
+ * the memory tools give in an `off` folder (folder-gate.ts). Same store rule
+ * as {@link trustCommand}: a non-default store is named with `--path`, or the
+ * change lands in a map this server never reads. Null when the entry cannot
+ * be quoted safely.
+ */
+export function folderOnCommand(entry: string, storageRoot?: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (_UNSAFE_PATH_CHARS.test(entry)) return null
+  const target = _shellWord(entry, platform)
+  if (target === null) return null
+  if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur folders set ${target} --on`
+  const store = _shellWord(resolve(storageRoot), platform)
+  return store === null ? null : `plur --path ${store} folders set ${target} --on`
+}
+
 /** Same grammar as the folder question's (cli folder-gate.ts): bounded, no spaces or controls. */
 const UNTRUSTED_SCOPE_GRAMMAR = /^(?:global|[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._@/:-]{0,199})$/
 const UNTRUSTED_DOMAIN_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/
