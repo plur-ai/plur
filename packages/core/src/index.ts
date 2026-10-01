@@ -5913,8 +5913,8 @@ export class Plur {
    *   (b) the host's personal-family (`user:*`, …) scopes ONLY when an org
    *       context exists implicating that host.
    *   (c) a personal `user:` dialing scope dials the one entry whose scope
-   *       equals it exactly (never another user's, never the host's other
-   *       entries).
+   *       equals it exactly, case-folded (never another user's, never the
+   *       host's other entries).
    * No project/work context implicating a remote store → ZERO remote calls.
    * A host whose relevant subset is empty is NOT dialed — a datafund-org host
    * is never dialed from plur-org work (cross-org exfiltration solved by
@@ -5958,8 +5958,10 @@ export class Plur {
     // user's store, a prefix, or the host's other entries are never dialed.
     // Without this a personal scope gave no dialing context, so `learn` to a
     // personal remote store landed on the server but `recall` with the same
-    // scope never read it back.
-    const personalDialScope = dialScope && dialScope.toLowerCase().startsWith('user:') ? dialScope : null
+    // scope never read it back. The comparison folds case, like local-only
+    // scope targets (Decision E5, `isLocalOnlyScope`): only the comparison
+    // folds; the store's configured scope string is what is dialed.
+    const personalDialScope = dialScope && dialScope.toLowerCase().startsWith('user:') ? dialScope.toLowerCase() : null
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
     for (const s of stores) {
@@ -5983,7 +5985,7 @@ export class Plur {
       const personal = dialable.filter(e => !isSharedScope(e.scope))
       const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
       const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
-      const personalExact = personalDialScope ? dialable.filter(e => e.scope === personalDialScope) : []
+      const personalExact = personalDialScope ? dialable.filter(e => e.scope.toLowerCase() === personalDialScope) : []
       const orgContext = orgAffine.length > 0 || projectImplicated
       if (!orgContext && always.length === 0 && personalExact.length === 0) continue
       const selected = new Set<StoreEntry>(orgAffine)

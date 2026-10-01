@@ -97,6 +97,24 @@ describe('dialing — personal user: scope (unit, _remoteRecallHosts)', () => {
     expect(hostsOf(plur, { scope: 'user:me' })).toHaveLength(0)
   })
 
+  // Owner decision (2026-10-01): matching folds case, the same way local-only
+  // scope targets do (Decision E5, `isLocalOnlyScope`): only the comparison
+  // folds; the store's configured scope string is what is sent.
+  it('a differently-cased user scope dials the store (case-folded match)', () => {
+    const plur = plurWith(`  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "user:Acme:Me"\n`)
+    const hosts = hostsOf(plur, { scope: 'USER:acme:me' })
+    expect(hosts).toHaveLength(1)
+    expect(hosts[0].scopes).toEqual(['user:Acme:Me'])
+    const lower = plurWith(`  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "${ME}"\n`)
+    expect(hostsOf(lower, { scope: 'User:ACME:ME' }).map(h => h.scopes)).toEqual([[ME]])
+  })
+
+  it('a different user never matches, even after case folding', () => {
+    const plur = plurWith(`  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "user:Acme:Someone-Else"\n`)
+    expect(hostsOf(plur, { scope: 'USER:ACME:ME' })).toHaveLength(0)
+    expect(hostsOf(plur, { scope: 'user:acme:me' })).toHaveLength(0)
+  })
+
   it('dial: never on the user store still wins', () => {
     const plur = plurWith(`  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "${ME}"\n    dial: never\n`)
     expect(hostsOf(plur, { scope: ME })).toHaveLength(0)
@@ -191,6 +209,18 @@ describe('personal user: scope against a live (stub) remote store', () => {
     const result = await plur.injectHybrid('water the fern', { scope: ME })
     expect(server.recallCalls).toBe(1)
     expect(result.injected_ids.some(id => id.endsWith('-2026-1001-905'))).toBe(true)
+  })
+
+  it('recall with a differently-cased user scope dials the user store and returns its engram', async () => {
+    server.recallRows = [{
+      id: 'ENG-2026-1001-907', scope: ME, status: 'active',
+      statement: 'personal remote codeword lynxharbor', score: 1,
+    }]
+    const plur = plurFor(ME)
+    const results = await plur.recall('lynxharbor', { scope: 'USER:Acme:ME' })
+    expect(server.recallCalls).toBe(1)
+    expect(server.lastRecallBody?.scopes).toEqual([ME])
+    expect(results.some(e => (e as any)._originalId === 'ENG-2026-1001-907')).toBe(true)
   })
 
   it('shared-scope recall against a group store is unchanged (still dials, still merges)', async () => {
