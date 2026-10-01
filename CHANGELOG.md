@@ -11,19 +11,24 @@ end every reply with one short line such as
 `Memory — recalled 4 · used: ENG-…, ENG-… · written: ENG-…`, or
 `Memory — none`: a count of what was recalled and the ids used and written, no
 statements, and only ids it actually saw that turn. Ask a follow-up for the
-details. That line is never saved as a learning, even when it follows an
-"I learned" list with no blank line.
+details. That line is never saved as a learning, in any form an agent writes
+it: plain, in backticks or bold, as a bullet or quote, with an em dash, en
+dash, hyphen or colon, straight after an "I learned" list or in place of one.
 
 Re-running `plur init` or `plur-mcp init`, or reloading the Claw plugin, now
 brings an existing install up to date. Before, `plur init` left an existing
 section untouched, so changed instructions never reached an existing install.
 It never removes text PLUR did not write. An old PLUR section is replaced only
-when it is, whitespace aside, a text PLUR shipped. A section you wrote or
-edited stays exactly as it is, the new section is added beside it, and init
-tells you so, so you can tidy up. The same goes for an edited
-`.cursor/rules/plur-memory.mdc`, which is kept rather than overwritten. Every
-file that is changed is first copied to a timestamped `*.plur-backup-*` file
-beside it.
+when it is, line for line, a text PLUR shipped; only trailing spaces and line
+endings may differ. A section you wrote or edited, including one you only
+re-indented, stays exactly as it is, the new section is added beside it, and
+init tells you so, so you can tidy up. A section inside a code block or an
+HTML comment is left alone, and a file that ends inside one has it closed
+before the new section is added, so a second run changes nothing. An edited
+`.cursor/rules/plur-memory.mdc` is kept rather than overwritten. Every file
+that is changed is first copied to a timestamped `*.plur-backup-*` file beside
+it (an edited Cursor rule only once per version of its content), and a failed
+write leaves no backup behind.
 
 ### plur doctor reads an opencode config written with comments or trailing commas (#1516)
 
