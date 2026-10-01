@@ -180,7 +180,7 @@ describe('B2: every mutator and id read is guarded while bound', () => {
     expect(r.flushed).toBe(0)
     expect(server.appendStatements).not.toContain('client prod box is at 139.59.155.82')
     expect(row(q.id)?.scope).toBe(TEAM)
-    expect(row(q.id)?.visibility).not.toBe('private')
+    expect(row(q.id)?.structured_data?._demoted).toBeUndefined()
     expect(row(q.id)?.structured_data?._outbox).toBeDefined()
   })
 })
