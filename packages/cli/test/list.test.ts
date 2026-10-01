@@ -64,4 +64,23 @@ describe('plur list', () => {
     const output = JSON.parse(run('list --limit 2'))
     expect(output.engrams.length).toBeLessThanOrEqual(2)
   })
+
+  // --tags was declared as accepted (#986) but never parsed, so `list --tags x`
+  // listed everything. There is no tag filter to apply, so it is refused.
+  it('refuses --tags rather than silently listing everything', () => {
+    learn('engram one')
+    let status = 0
+    let out = ''
+    try { run('list --tags x') } catch (err: any) { status = err.status; out = `${err.stdout ?? ''}${err.stderr ?? ''}` }
+    expect(status).toBe(1)
+    expect(out).toContain('--tags')
+  })
+
+  // The inverse: --meta was parsed by `run` but missing from FLAGS, so the
+  // argv check refused it before the parser ever saw it.
+  it('accepts --meta', () => {
+    learn('engram one')
+    const output = JSON.parse(run('list --meta'))
+    expect(output.count).toBe(0)
+  })
 })
