@@ -2,32 +2,39 @@
 /**
  * Regenerate the lists of instruction texts PLUR has shipped, from git history.
  *
- *   node scripts/extract-plur-section-history.mjs [ref]     (default ref: origin/main)
+ *   node scripts/extract-plur-section-history.mjs [ref]     (default ref: HEAD)
  *
  * An installer may only replace an old PLUR section in a user's file when that
- * section is, word for word (whitespace aside), a text PLUR wrote. Before v4
- * the sections carried no version marker, so text match is the only proof of
- * ownership. This walks every commit on `ref` that touched a file defining one
- * of the instruction constants, pulls each constant's template literal out of
- * that version of the file, and writes the distinct texts to
- * packages/core/src/instruction-history.ts, which the cli, mcp and claw
- * installers all read.
+ * section is, line for line (trailing whitespace aside), a text PLUR wrote.
+ * Before v4 the sections carried no version marker, so text match is the only
+ * proof of ownership. This walks every commit on `ref` that touched a file
+ * defining one of the instruction constants, plus the files as they are in the
+ * working tree, renders each constant as the code renders it (template
+ * literals with `${NAME}` resolved from string constants in the same file),
+ * and writes the distinct texts to packages/core/src/instruction-history.ts,
+ * which the cli, mcp and claw installers all read.
  *
- * Every commit on main is included, not only release commits: a text that
- * lived between two releases was still written by PLUR, and recognising it as
- * PLUR's can only replace PLUR's own words. Literals that interpolate
- * (`${...}`) cannot be reproduced statically and are skipped with a warning.
+ * Every commit is included, not only release commits: a text that lived
+ * between two releases was still written by PLUR, and recognising it as
+ * PLUR's can only replace PLUR's own words. A constant that cannot be
+ * rendered statically is reported and the script exits 1, so the list is
+ * never silently missing a text.
  *
- * Run it again whenever a section's text changes, BEFORE bumping the marker:
- * the outgoing text must be in the list for the next upgrade to replace it.
+ * Changing the instructions PLUR installs:
+ *   1. edit the section text (cli init.ts / mcp index.ts / claw system-prompt.ts)
+ *   2. bump the marker (`plur-instructions-vN`) in all of them together
+ *   3. run this script and commit instruction-history.ts with the change
+ * The cli, mcp and claw tests fail while the section they install is not in
+ * the list, so step 3 cannot be forgotten: the current text must be listed,
+ * or the next bump would treat every unedited install as user text.
  */
 import { execFileSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const ref = process.argv[2] ?? 'origin/main'
+const ref = process.argv[2] ?? 'HEAD'
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
 
 const SOURCES = [
@@ -37,41 +44,83 @@ const SOURCES = [
   { path: 'packages/claw/src/index.ts', consts: { PLUR_SYSTEM_SECTION: 'claw' } },
 ]
 
-/** The cooked value of the template literal assigned to `name`, or null. */
-function literal(source, name) {
-  const m = new RegExp(`(?:export\\s+)?const\\s+${name}\\s*=\\s*\``).exec(source)
-  if (!m) return null
+const cook = (raw, quote) => new Function(`return ${quote}${raw}${quote}`)()
+
+/**
+ * The value the code gives the constant `name` in `source`: a template
+ * literal whose `${X}` parts name other constants in the same file, or a
+ * `+` concatenation of string literals. Returns { text }, { missing: true }
+ * when the file has no such constant, or { error } when it cannot be rendered.
+ */
+function evaluate(source, name, depth = 0) {
+  if (depth > 8) return { error: 'interpolation too deep' }
+  const m = new RegExp(`(?:export\\s+)?const\\s+${name}(?:\\s*:\\s*[\\w.<>\\[\\] |]+)?\\s*=\\s*`).exec(source)
+  if (!m) return { missing: true }
   let i = m.index + m[0].length
   let out = ''
   for (;;) {
-    const c = source[i]
-    if (c === undefined) return null
-    if (c === '\\') {
-      const n = source[i + 1]
-      out += n === 'n' ? '\n' : n === 't' ? '\t' : n
-      i += 2
-      continue
+    while (/\s/.test(source[i] ?? '')) i++
+    const q = source[i]
+    if (q === "'" || q === '"') {
+      let j = i + 1
+      while (source[j] !== q) { if (source[j] === '\\') j++; j++; if (j >= source.length) return { error: 'unterminated string' } }
+      out += cook(source.slice(i + 1, j), q)
+      i = j + 1
+    } else if (q === '`') {
+      let j = i + 1
+      let chunk = ''
+      for (;;) {
+        const c = source[j]
+        if (c === undefined) return { error: 'unterminated template' }
+        if (c === '\\') { chunk += c + source[j + 1]; j += 2; continue }
+        if (c === '`') break
+        if (c === '$' && source[j + 1] === '{') {
+          const end = source.indexOf('}', j)
+          const ref = source.slice(j + 2, end).trim()
+          if (!/^[A-Za-z_$][\w$]*$/.test(ref)) return { error: `interpolates an expression: ${ref}` }
+          const inner = evaluate(source, ref, depth + 1)
+          if (inner.text === undefined) return { error: `cannot resolve \${${ref}}` }
+          out += cook(chunk, '`') + inner.text
+          chunk = ''
+          j = end + 1
+          continue
+        }
+        chunk += c
+        j++
+      }
+      out += cook(chunk, '`')
+      i = j + 1
+    } else {
+      return out === '' ? { error: 'not a string expression' } : { error: 'unexpected token after string' }
     }
-    if (c === '$' && source[i + 1] === '{') return { interpolated: true }
-    if (c === '`') return { text: out }
-    out += c
-    i++
+    while (/\s/.test(source[i] ?? '')) i++
+    if (source[i] === '+') { i++; continue }
+    return { text: out }
   }
 }
 
 const found = { section: new Map(), cursor: new Map(), claw: new Map() }
+const errors = []
+function collect(src, label, consts) {
+  for (const [name, kind] of Object.entries(consts)) {
+    const r = evaluate(src, name)
+    if (r.missing) continue
+    if (r.error) { errors.push(`${label} ${name}: ${r.error}`); continue }
+    if (!found[kind].has(r.text)) found[kind].set(r.text, `${label} ${name}`)
+  }
+}
 for (const { path, consts } of SOURCES) {
   const commits = git('log', '--format=%h', ref, '--', path).split('\n').filter(Boolean)
-  for (const commit of commits) {
+  for (const commit of commits.reverse()) {
     let src
     try { src = git('show', `${commit}:${path}`) } catch { continue }
-    for (const [name, kind] of Object.entries(consts)) {
-      const lit = literal(src, name)
-      if (!lit) continue
-      if (lit.interpolated) { console.warn(`skip ${commit}:${path} ${name} (interpolates)`); continue }
-      if (!found[kind].has(lit.text)) found[kind].set(lit.text, `${commit} ${path} ${name}`)
-    }
+    collect(src, `${commit} ${path}`, consts)
   }
+  if (existsSync(join(root, path))) collect(readFileSync(join(root, path), 'utf8'), `worktree ${path}`, consts)
+}
+if (errors.length) {
+  console.error('Could not render every instruction text:\n  ' + errors.join('\n  '))
+  process.exit(1)
 }
 
 const render = (header, lists) => `${header}
