@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### opencode follows the folder map (#NNNN)
+### opencode follows the folder map (#1517)
 
 **The opencode plugin now does what you decided for each folder**, like the
 Claude Code, Codex, Cursor and Antigravity hooks have since #1347. Before, it
