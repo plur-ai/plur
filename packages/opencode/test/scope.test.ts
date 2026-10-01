@@ -122,7 +122,7 @@ domain: fixture-domain-abc
     // Would FAIL if: domain/scope wiring in learn.ts was deleted, or if readProjectConfig wasn't called from right dir
   })
 
-  it('C. verifies readProjectConfig is called with resolved scope root (fails if cwd wiring removed)', async () => {
+  it('C. reads the .plur.yaml from the folder opencode is open in, walking up into its worktree (fails if cwd wiring removed)', async () => {
     // Create fixture config in temp directory
     const fixtureConfig = `scope: project:cwd-test-scope
 domain: cwd-test-domain
@@ -132,7 +132,7 @@ domain: cwd-test-domain
     // Since the audit of #1517 (F1) the folder decision and the .plur.yaml
     // read are for the folder opencode is open in (`directory`), as in the
     // CLI hooks. Opened in a subfolder of the worktree, the walk still reaches
-    // the repo's .plur.yaml; opened in an unrelated folder, it must not.
+    // the repo's .plur.yaml (C2 and C3 below pin which folder is read).
     const sub = join(tempDir, 'sub')
     mkdirSync(sub)
     const plur = mockPlur
@@ -158,6 +158,43 @@ domain: cwd-test-domain
     const callArgs = plur.injectHybrid.mock.calls[0]
     expect(callArgs[1].scope).toBe('project:cwd-test-scope')
     // Would FAIL if: readProjectConfig(scopeRoot) was changed to readProjectConfig() or readProjectConfig(process.cwd())
+  })
+
+  // R5 (re-audit of #1517): case C cannot tell `directory` from `worktree`,
+  // since both walk up to the same file. These two can. The scope comes from
+  // core's resolver either way, so they pin what the plugin itself reads from
+  // the .plur.yaml: its remote settings.
+  it('C2. a subfolder with its own .plur.yaml uses that one, not the worktree\'s', async () => {
+    writeFileSync(join(tempDir, '.plur.yaml'), 'scope: project:worktree-scope\nremote_url: https://worktree.example\nremote_token: t-worktree\n')
+    const sub = join(tempDir, 'sub')
+    mkdirSync(sub)
+    writeFileSync(join(sub, '.plur.yaml'), 'scope: project:subfolder-scope\nremote_url: https://subfolder.example\nremote_token: t-sub\n')
+    const plugin = await PlurPlugin({ directory: sub, worktree: tempDir, _plur: mockPlur } as any)
+
+    await plugin['chat.message']!({ sessionID: 'ses-c2' } as any, { message: { id: 'msg-1' }, parts: [{ type: 'text', text: 'q' }] } as any)
+
+    expect(mockPlur.injectHybrid).toHaveBeenCalled()
+    const opts = mockPlur.injectHybrid.mock.calls[0][1]
+    expect(opts.scope).toBe('project:subfolder-scope')
+    expect(opts.remote_project?.url).toBe('https://subfolder.example')
+  })
+
+  it('C3. opened in a folder outside the worktree, the worktree\'s .plur.yaml is not read', async () => {
+    writeFileSync(join(tempDir, '.plur.yaml'), 'scope: project:worktree-scope\nremote_url: https://worktree.example\nremote_token: t-worktree\n')
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-scope-elsewhere-')))
+    try {
+      const plur = withFolderMap(mockPlur, [{ path: tempDir, trusted: true }, { path: elsewhere, plur: 'on' }])
+      const plugin = await PlurPlugin({ directory: elsewhere, worktree: tempDir, _plur: plur } as any)
+
+      await plugin['chat.message']!({ sessionID: 'ses-c3' } as any, { message: { id: 'msg-1' }, parts: [{ type: 'text', text: 'q' }] } as any)
+
+      expect(plur.injectHybrid).toHaveBeenCalled()
+      const opts = plur.injectHybrid.mock.calls[0][1]
+      expect(opts.scope).toBeUndefined()
+      expect(opts.remote_project).toBeUndefined()
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true })
+    }
   })
 
   it('handles missing .plur.yaml — scope undefined passed to injectHybrid', async () => {

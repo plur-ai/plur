@@ -169,10 +169,17 @@ whole repo (audit F1 of #1517).
   rebuilds `system[]` for every request and keeps none of it in history, so
   the offer is kept per session (`offers`): the full question until it has
   been rendered once (through `system.transform` or the `chat.message`
-  fallback), then on every turn a reminder built from the question's own
-  command lines (`ask.ts`), with the same nonces, until the folder is decided
-  or the session ends (audit F2 of #1517). Without `plur` on `PATH` no offer
-  is built: the session is told once how to install the CLI (audit F8).
+  fallback), then on the next turn one reminder built from the question's own
+  command lines (`ask.ts`), with the same nonces (audit F2 of #1517). After
+  that the session carries nothing and its nonces are ended, so a later
+  unrelated "yes" cannot be run as consent; when the question went out through
+  the fallback it is already in history, so no reminder is pushed at all
+  (re-audit R4, `REMINDER_TURNS`). If the map turns unreadable after the
+  question, or readable again after the "cannot be read" notice, the offer is
+  dropped with its nonces and rebuilt for the current state (re-audit R2).
+  Without `plur` on `PATH` no offer is built: the session is told once how to
+  install the CLI, counted as told only once that notice has been rendered
+  (audit F8, re-audit R1).
 - `on`: the session scope is the policy's (a map `scope` beats a trusted
   `.plur.yaml` hint), via core's `sessionSettings`.
 
@@ -190,7 +197,7 @@ and `plur folders set` consults only that session's nonces (audit F5). The
 editor hooks' hosts cannot pass a session to the agent's shell, so their
 nonces stay unbound. The hooks end a session's nonces at the editor's
 SessionEnd; opencode has no such event, so the plugin ends them on
-`session.deleted`, on `dispose` and when the folder is decided, with core's
+`session.deleted`, on `dispose`, when the folder is decided and once the reminder turn has passed, with core's
 24-hour TTL as the backstop. "Asked once" is kept in memory per plugin
 instance, so a session continued in a new process is asked again with fresh
 nonces — the hooks' resume rule.

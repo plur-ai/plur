@@ -5,10 +5,11 @@ import { delimiter, join } from 'node:path'
  * The folder question stays actionable until the folder is decided (audit F2
  * of #1517). opencode rebuilds the system prompt for every request and keeps
  * none of it in history, so a question shown once is gone on the turn the
- * user answers it. Every later turn of an undecided session therefore carries
+ * user answers it. The next turn of an undecided session therefore carries
  * a reminder with the SAME commands and nonces (none is issued again), told
- * not to ask again. It is built only from the question's own lines, so it
- * holds nothing the question did not.
+ * not to ask again and to run one only for an answer to that question; after
+ * it the session carries nothing (re-audit R4). It is built only from the
+ * question's own lines, so it holds nothing the question did not.
  */
 export function folderAskReminder(question: string): string {
   const lines = question.split('\n')
@@ -22,7 +23,7 @@ export function folderAskReminder(question: string): string {
   return [
     header,
     'The user was already asked in this session whether to use PLUR memory in this folder. Do not ask again. ' +
-    'If the user answers now, run the command for their answer:',
+    'Run a command below only if the latest message from the user answers that question; a yes to anything else is not an answer:',
     ...commands,
     ...(footer ? [footer] : []),
   ].join('\n')

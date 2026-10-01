@@ -37,6 +37,9 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT
 }
 const TIMED_OUT = Symbol('timed-out')
 
+/** Turns after the question that still carry its commands (re-audit R4 of #1517). */
+const REMINDER_TURNS = 1
+
 /** Never let a memory failure break the agent's turn. */
 async function safe(label: string, fn: () => Promise<void>): Promise<void> {
   try { await fn() } catch (err) { log(`${label} failed: ${(err as Error).message}`) }
@@ -96,7 +99,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
    *
    *  - `off` → nothing: no recall, no question, no learning;
    *  - `ask` → no memories; the first turn of each session carries the one
-   *    question (see `chat.message` below);
+   *    question, the next one a reminder, then nothing (`chat.message`);
    *  - `on`  → the session scope is the map's scope, else a TRUSTED
    *    `.plur.yaml`'s (the resolver decides both; a map scope beats the
    *    hint). That scope is also what makes core dial the team store.
@@ -143,15 +146,25 @@ export const PlurPlugin: Plugin = async (ctx) => {
     return true
   }
   // The offer each undecided session was given (audit F2 of #1517): the full
-  // question until it has reached the model once, then a reminder with the
-  // same commands, until the folder is decided or the session ends.
-  const offers = new Map<string, { question: string; reminder: string; delivered: boolean }>()
-  // Sessions already told the plur CLI is missing (audit F8 of #1517).
+  // question until it has reached the model once, then one reminder with the
+  // same commands on the next turn — the turn the user answers in — and then
+  // nothing (re-audit R4): the nonces are ended, so a later unrelated "yes"
+  // cannot be run as consent. Delivered into history (the chat.message
+  // fallback), the question stays there, so no reminder is pushed at all.
+  // `unreadable`: the offer is the "map cannot be read" notice; when that
+  // changes, the offer is rebuilt (re-audit R2).
+  type Offer = { question: string; reminder: string; unreadable: boolean; delivered: boolean; persisted: boolean; turnsSince: number }
+  const offers = new Map<string, Offer>()
+  // Sessions the "plur CLI is missing" notice has REACHED (audit F8, re-audit R1).
   const cliMissingTold = new Set<string>()
-  /** The full question has reached the model: later turns get the reminder. */
-  const markDelivered = (sessionID: string, block: string) => {
+  /** A block reached the model: through system[] (`persisted` false) or as a history part. */
+  const markDelivered = (sessionID: string, block: string, persisted: boolean) => {
+    if (block === PLUR_CLI_MISSING) cliMissingTold.add(sessionID)
     const offer = offers.get(sessionID)
-    if (offer && block === offer.question) offer.delivered = true
+    if (offer && !offer.delivered && block === offer.question) {
+      offer.delivered = true
+      offer.persisted = persisted
+    }
   }
   /** End a session's folder nonces (#1378): they die with the session, or after core's TTL. */
   const endNonces = (sessionID: string | undefined) => {
@@ -199,18 +212,24 @@ export const PlurPlugin: Plugin = async (ctx) => {
         if (state.policy.mode === 'ask') {
           // No memories, no learning. The first turn of the session carries
           // the one question — the same text, content rules and per-answer
-          // nonces as the CLI hooks (core's folderAskOnce); later turns carry
-          // nothing until the user decides.
+          // nonces as the CLI hooks (core's folderAskOnce); the next turn a
+          // reminder of its commands; later turns nothing.
+          const unreadable = state.policy.reason === 'malformed-map' || state.policy.reason === 'resolver-error'
           let offer = offers.get(input.sessionID)
+          // The map became unreadable after the question, or readable again
+          // after the notice (re-audit R2): drop the old offer and its nonces.
+          if (offer && offer.unreadable !== unreadable) {
+            endNonces(input.sessionID)
+            offers.delete(input.sessionID)
+            asked.delete(input.sessionID)
+            offer = undefined
+          }
           // The offered commands need the plur CLI (audit F8 of #1517): without
           // it, say so once per session and issue nothing; ask once it appears.
-          const needsCli = state.policy.reason !== 'malformed-map' && state.policy.reason !== 'resolver-error'
-          const cliMissing = !offer && needsCli && !plurOnPath()
+          const cliMissing = !offer && !unreadable && !plurOnPath()
           if (cliMissing) {
-            if (!cliMissingTold.has(input.sessionID)) {
-              cliMissingTold.add(input.sessionID)
-              blocks.set(input.sessionID, PLUR_CLI_MISSING)
-            } else blocks.clear(input.sessionID)
+            if (!cliMissingTold.has(input.sessionID)) blocks.set(input.sessionID, PLUR_CLI_MISSING)
+            else blocks.clear(input.sessionID)
           } else if (!offer) {
             const question = folderAskOnce({
               dir: folderDir, policy: state.policy, sessionId: input.sessionID,
@@ -220,12 +239,23 @@ export const PlurPlugin: Plugin = async (ctx) => {
               bindSession: true,
             })
             if (question) {
-              offer = { question, reminder: folderAskReminder(question), delivered: false }
+              offer = { question, reminder: folderAskReminder(question), unreadable, delivered: false, persisted: false, turnsSince: 0 }
               offers.set(input.sessionID, offer)
             }
           }
-          if (offer) blocks.set(input.sessionID, offer.delivered ? offer.reminder : offer.question)
-          else if (!cliMissing) blocks.clear(input.sessionID)
+          if (!offer) {
+            if (!cliMissing) blocks.clear(input.sessionID)
+          } else if (!offer.delivered) {
+            blocks.set(input.sessionID, offer.question)
+          } else if (++offer.turnsSince <= REMINDER_TURNS) {
+            // Fallback delivery left the question in history: nothing to add.
+            if (offer.persisted) blocks.clear(input.sessionID)
+            else blocks.set(input.sessionID, offer.reminder)
+          } else {
+            // Unanswered: the offer is over for this session.
+            blocks.clear(input.sessionID)
+            if (offer.turnsSince === REMINDER_TURNS + 1) endNonces(input.sessionID)
+          }
         } else {
           const { settings, remote } = state
           const pending = plur.injectHybrid(query, {
@@ -273,7 +303,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
               synthetic: true,
             })
             fallbackInjected.add(input.sessionID)
-            markDelivered(input.sessionID, block)
+            markDelivered(input.sessionID, block, true)
             log('system.transform unavailable — using chat.message fallback (accretes)')
           } else if (block) {
             // Per the spec's Known Gotcha #1: a part with messageID undefined
@@ -297,7 +327,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
         // Already in this request via the fallback part: do not render twice.
         if (block && !fallbackInjected.has(input.sessionID!)) {
           output.system.push(block)
-          markDelivered(input.sessionID!, block)
+          markDelivered(input.sessionID!, block, false)
         }
         if (input.sessionID) path.markRendered(input.sessionID)
       })

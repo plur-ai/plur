@@ -373,4 +373,91 @@ describe('opencode follows the folder map (#1347)', () => {
     const later = await turn(hooks, 'ses-f8', 'installed it', 2)
     expect(later).toMatch(/--on --nonce [0-9a-f]{32}/)
   })
+
+  /** Turns on an opencode without system.transform: returns, per turn, the parts the plugin pushed. */
+  async function fallbackTurns(hooks: any, sessionID: string, n: number): Promise<string[]> {
+    const pushed: string[] = []
+    for (let i = 1; i <= n; i++) {
+      const output = { message: { id: `msg-${sessionID}-${i}` }, parts: [{ type: 'text', text: 'hi' }] as any[] }
+      await hooks['chat.message']!({ sessionID, messageID: `msg-${sessionID}-${i}` } as any, output as any)
+      pushed.push(output.parts.slice(1).map((p: any) => p.text).join('\n'))
+      await hooks.event!({ event: { type: 'session.idle', properties: { sessionID } } } as any)
+    }
+    return pushed
+  }
+
+  // R1 (re-audit of #1517): the CLI-missing notice is "told" only once it has
+  // reached the model — on an opencode without system.transform too.
+  it('R1: without system.transform, the CLI-missing notice still reaches the model, once', async () => {
+    process.env.PATH = realpathSync(mkdtempSync(join(tmpdir(), 'oc-folders-emptybin-')))
+    const hooks = await plugin()
+
+    const pushed = await fallbackTurns(hooks, 'ses-r1', 4)
+
+    expect(pushed.filter(t => t.includes('npm install -g @plur-ai/cli'))).toHaveLength(1)
+    expect(pushed.join('\n')).not.toContain('--nonce')
+  })
+
+  // R2 (re-audit of #1517): a map that becomes unreadable after the question
+  // was shown gets the "cannot be read" notice, not the stale commands; and
+  // once it is fixed, the question comes back.
+  it('R2: a map that breaks after the question shows the "cannot be read" notice, not the commands', async () => {
+    const hooks = await plugin()
+    const first = await turn(hooks, 'ses-r2', 'hello', 1)
+    expect(first).toMatch(/--on --nonce [0-9a-f]{32}/)
+
+    writeFileSync(join(root, 'folders.yaml'), 'version: 1\nfolders:\n  - path: [unclosed\n')
+    const second = await turn(hooks, 'ses-r2', 'and now?', 2)
+
+    expect(second).toContain('cannot be read')
+    expect(second).not.toContain('--nonce')
+    expect(inject).not.toHaveBeenCalled()
+
+    // Fixed again: the folder is still undecided, so the question returns.
+    map([])
+    const third = await turn(hooks, 'ses-r2', 'fixed it', 3)
+    expect(third).toMatch(/--on --nonce [0-9a-f]{32}/)
+    expect(third).not.toContain('cannot be read')
+  })
+
+  // R4 (re-audit of #1517): the reminder is bounded. The question, then one
+  // reminder on the next turn (the turn the user answers in); after that the
+  // session carries nothing, and the unanswered nonces are ended so a later
+  // unrelated "yes" cannot be read as consent.
+  it('R4: after the question and one reminder the session carries nothing and the nonces are ended', async () => {
+    const hooks = await plugin()
+    const first = await turn(hooks, 'ses-r4', 'hello', 1)
+    const yes = /--on --nonce ([0-9a-f]{32})/.exec(first)![1]
+    const second = await turn(hooks, 'ses-r4', 'not now', 2)
+    expect(second).toContain(`--on --nonce ${yes}`)
+
+    const third = await turn(hooks, 'ses-r4', 'what does this function do?', 3)
+    const fourth = await turn(hooks, 'ses-r4', 'yes', 4)
+
+    expect(third).toBe('')
+    expect(fourth).toBe('')
+    expect(inject).not.toHaveBeenCalled()
+    expect(() => plur.setFolder(repo, { mode: 'on' }, { nonce: yes, session: 'ses-r4' })).toThrow()
+    expect(plur.resolveFolderPolicy(repo).mode).toBe('ask')
+  })
+
+  it('R4: the reminder does not invite a bare yes', async () => {
+    const hooks = await plugin()
+    await turn(hooks, 'ses-r4-yes', 'hello', 1)
+    const second = await turn(hooks, 'ses-r4-yes', 'sure', 2)
+
+    expect(second).toContain('Do not ask again')
+    expect(second).not.toContain('If the user answers now')
+    expect(second).toContain('a yes to anything else is not an answer')
+  })
+
+  it('R4: without system.transform the question is pushed into history once, never a reminder per turn', async () => {
+    const hooks = await plugin()
+
+    const pushed = await fallbackTurns(hooks, 'ses-r4-fb', 6)
+
+    const withPlur = pushed.filter(t => t.includes('[PLUR Memory'))
+    expect(withPlur).toHaveLength(1)
+    expect(withPlur[0]).toContain('ask the user once')
+  })
 })

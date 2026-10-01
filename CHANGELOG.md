@@ -16,9 +16,11 @@ opencode is open in, so an `off` subfolder of a repo that is `on` stays off.
   and a repo whose `.plur.yaml` asks for settings you have not trusted): no
   memories. The session's first message carries the same question the hooks
   ask, with a single-use command per answer (yes, never here, and trust this
-  repo's `.plur.yaml` when it has one). Every later message of that session
-  carries the same commands again, without asking again, so the agent can
-  still run your answer when you give it. What the repo requests is shown only
+  repo's `.plur.yaml` when it has one). The next message of that session
+  carries the same commands once more, without asking again, so the agent can
+  still run your answer when you give it; after that the session carries
+  nothing and the unanswered commands stop working, so a later "yes" to
+  something else is never taken as consent. What the repo requests is shown only
   as quoted data, never its token. Without the `plur` CLI on `PATH`, the
   plugin says so and how to install it instead of offering commands.
 - **on**: the session scope is the folder's scope from the map, else the scope
