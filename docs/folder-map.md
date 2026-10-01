@@ -118,6 +118,10 @@ It is not a guarantee that nothing about the session touches the disk:
   ids and counts — in a remote-only folder the statement previews are left out;
 - `plur status` statistics and the outbox's own bookkeeping (attempts, errors,
   idempotency keys).
+- provenance records, when provenance recording is turned on
+  (`docs/provenance.md`): one per team memory written;
+- `plur sync` (run from any folder) pushes `engrams.yaml` to your git remote,
+  including queued saves that have not been delivered yet.
 
 Session checkpoints that the editor hooks write while a session runs are
 dropped at session end in a remote-only folder, not captured.
