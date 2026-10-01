@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### The Claude Code memory check speaks up only after a correction, preference or decision
+
+The Stop-hook memory check used to fire after every third response, forcing an
+extra turn that usually ended in a bare "ok". It now reads the user's last
+message from the transcript and nudges only when that message reads as a
+correction ("no, …", "actually …", "don't …"), a preference ("I prefer …",
+"from now on …") or a decision-board answer, once per message. A rare fallback
+still checks every 20th response; set `PLUR_LEARN_FALLBACK_INTERVAL` to change
+it, or `0` to turn it off.
+
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its

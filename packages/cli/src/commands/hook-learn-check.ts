@@ -6,13 +6,19 @@ import { ensureSessionDir, ticketCounter } from '../lib/codex-hook-io.js'
 import { hookFolderOn, payloadDir, parsePayload } from '../lib/folder-gate.js'
 import { hookSessionKey } from '../lib/session-key.js'
 import { hookSessionDir } from '../lib/session-task.js'
+import { hasLearnSignal, lastUserMessage, learnFallbackInterval } from '../lib/learn-signal.js'
 
 /**
  * plur hook-learn-check — Stop hook that prompts learning reflection
  * AND writes periodic session checkpoints for crash recovery (#215).
  *
  * Runs at the end of every response:
- * - Every 3rd Stop: injects a learning reflection nudge
+ * - Nudges when the user's last message (read from the payload's
+ *   `transcript_path`) carries a correction / preference / decision signal
+ *   (lib/learn-signal.ts) — once per message — and otherwise only on every
+ *   PLUR_LEARN_FALLBACK_INTERVAL-th Stop (default 20; 0 = off). It used to
+ *   nudge every 3rd Stop, and the forced turn mostly ended in a bare "ok".
+ *   A missing or unreadable transcript leaves only the fallback.
  * - Every 10th Stop: writes a session checkpoint to ~/.plur/sessions/
  *
  * Checkpoints enable deferred wrap-up (#216): if a session exits without
@@ -38,13 +44,12 @@ import { hookSessionDir } from '../lib/session-task.js'
  * (observed: ~10 empty turns per prompt), so this hook stays silent on it.
  *
  * Input: JSON on stdin (Claude Code Stop hook format)
- * Output: the hookSpecificOutput nudge on every LEARN_INTERVAL-th Stop,
+ * Output: the hookSpecificOutput nudge on a signal or a fallback Stop,
  *         otherwise nothing. The input payload is never echoed back: a Stop
  *         hook's stdout is parsed as hook OUTPUT, so an echo was at best
  *         ignored and at worst misread.
  */
 
-const LEARN_INTERVAL = 3 // Learning nudge every N stops
 const CHECKPOINT_INTERVAL = parseInt(process.env.PLUR_CHECKPOINT_INTERVAL || '10', 10)
 
 /**
@@ -71,10 +76,21 @@ function counterPath(key: string): string | null {
   return dir ? join(dir, `${key}.stop-count`) : null
 }
 
+// The id of the last user message a signal nudge fired for, next to the
+// counter: a later Stop with no new human message (a background task ending)
+// still sees the same message and must not nudge for it again.
+function lastNudgedPath(counter: string): string {
+  return counter.replace(/\.stop-count$/, '.learn-nudged')
+}
+
+function alreadyNudged(path: string, id: string): boolean {
+  try { return readFileSync(path, 'utf8') === id } catch { return false }
+}
+
 /**
  * Per-session Stop counter. It used to be "atomic" append-a-byte-then-stat:
  * the append is atomic, the pair is not — `A-append, B-append, A-stat,
- * B-stat` handed both hooks 2, so one LEARN_INTERVAL/CHECKPOINT_INTERVAL
+ * B-stat` handed both hooks 2, so one fallback/CHECKPOINT_INTERVAL
  * multiple fired twice and the next was skipped (formal r2, cli#11). Each
  * caller now gets the position of its own appended line: distinct values,
  * exactly 1..n after n calls (PlurSpec/R2CLI.lean §4).
@@ -168,6 +184,10 @@ function readStdinRaw(): string {
 // explicit, near-silent answer so that turn costs as little as possible.
 export const LEARN_PROMPT = `[PLUR] Memory check: if your last response involved a correction, a stated preference, or a reusable discovery, call plur_learn for it now. Otherwise reply with just "ok". Do not repeat or continue your previous answer.`
 
+// Sent when the user's last message looked like a correction, preference or
+// decision: say why, so the turn is spent on that message, not a recap.
+export const SIGNAL_PROMPT = `[PLUR] Memory check: the user's last message looks like a correction, a preference or a decision. If it states something worth keeping beyond this task, call plur_learn for it now. Otherwise reply with just "ok". Do not repeat or continue your previous answer.`
+
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
 
@@ -176,7 +196,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
   // Parse stdin for cwd, session_id and stop_hook_active (Claude Code payload)
   let cwd = process.cwd()
-  let data: { cwd?: unknown; session_id?: unknown; stop_hook_active?: unknown } = {}
+  let data: { cwd?: unknown; session_id?: unknown; stop_hook_active?: unknown; transcript_path?: unknown } = {}
   try {
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object') data = parsed
@@ -208,9 +228,24 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     try { writeCheckpoint(key, count, cwd, flags) } catch { /* never block on checkpoint failure */ }
   }
 
-  // Learning nudge every Nth stop
-  if (count % LEARN_INTERVAL !== 0) return
+  // Signal nudge: the user's last message reads as a correction, preference
+  // or decision, and has not been nudged for yet. Any failure here is "no
+  // signal" — lastUserMessage never throws, the marker write is best-effort.
+  let prompt: string | null = null
+  const msg = lastUserMessage(data.transcript_path)
+  if (msg && hasLearnSignal(msg.text)) {
+    const marker = lastNudgedPath(counter)
+    if (!alreadyNudged(marker, msg.id)) {
+      try { writeFileSync(marker, msg.id) } catch { /* worst case: one repeat nudge */ }
+      prompt = SIGNAL_PROMPT
+    }
+  }
 
-  const output = { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: LEARN_PROMPT } }
+  // Rare fallback, so a session with no explicit signal still gets a check.
+  const fallback = learnFallbackInterval()
+  if (!prompt && fallback > 0 && count % fallback === 0) prompt = LEARN_PROMPT
+  if (!prompt) return
+
+  const output = { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: prompt } }
   process.stdout.write(JSON.stringify(output))
 }

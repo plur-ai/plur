@@ -27,12 +27,14 @@ describe('hook-learn-check', () => {
     rmSync(home, { recursive: true, force: true })
   })
 
-  function runHook(sessionId: string, cwd: string = home): { stdout: string; status: number } {
+  // The interval-shape tests below pin the no-signal fallback to every 3rd
+  // Stop so they stay short; the default (20) has its own test.
+  function runHook(sessionId: string, cwd: string = home, extraEnv: Record<string, string> = { PLUR_LEARN_FALLBACK_INTERVAL: '3' }): { stdout: string; status: number } {
     const result = runCli('node', [CLI, 'hook-learn-check'], {
       input: JSON.stringify({ cwd }),
       encoding: 'utf-8',
       timeout: 10000,
-      env: { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: tmp, CLAUDE_SESSION_ID: sessionId },
+      env: { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: tmp, CLAUDE_SESSION_ID: sessionId, ...extraEnv },
       cwd: home,
     })
     return { stdout: result.stdout ?? '', status: result.status ?? 1 }
@@ -43,8 +45,8 @@ describe('hook-learn-check', () => {
    * the stdin payload, CLAUDE_SESSION_ID is NOT set, and the hook is launched
    * through a shell — so process.ppid is a fresh `sh` pid on every Stop.
    */
-  function runStop(payload: Record<string, unknown>): { stdout: string; status: number } {
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: tmp }
+  function runStop(payload: Record<string, unknown>, extraEnv: Record<string, string> = { PLUR_LEARN_FALLBACK_INTERVAL: '3' }): { stdout: string; status: number } {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: tmp, ...extraEnv }
     delete env.CLAUDE_SESSION_ID
     const result = runCli('/bin/sh', ['-c', `"${process.execPath}" "${CLI}" hook-learn-check`], {
       input: JSON.stringify({ cwd: home, hook_event_name: 'Stop', ...payload }),
@@ -88,7 +90,7 @@ describe('hook-learn-check', () => {
     }
   })
 
-  it('stays silent on the 1st and 2nd stop, nudges on the 3rd (LEARN_INTERVAL)', () => {
+  it('with no signal, stays silent on the 1st and 2nd stop, nudges on the fallback interval (3 here)', () => {
     const id = 'learn-interval-test'
     expect(runHook(id).stdout).toBe('')
     expect(runHook(id).stdout).toBe('')
@@ -214,5 +216,85 @@ describe('hook-learn-check', () => {
       chmodSync(roTmp, 0o700)
       rmSync(roTmp, { recursive: true, force: true })
     }
+  })
+
+  // ── Signal-based nudge (gentler memory check, 2026-10-01) ──────────────────
+  // The nudge forces one extra model turn, which used to end in a bare "ok"
+  // every 3rd response. It now fires when the user's last message carries a
+  // correction / preference / decision signal, plus a rare fallback.
+
+  function writeTranscript(name: string, userText: string, uuid = `u-${name}`): string {
+    const path = join(home, `${name}.jsonl`)
+    const lines = [
+      { type: 'user', uuid: 'earlier', message: { role: 'user', content: 'hello' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+      { type: 'user', uuid, message: { role: 'user', content: userText } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ]
+    writeFileSync(path, lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+    return path
+  }
+
+  it('nudges on the first Stop when the last user message is a correction', () => {
+    const transcript_path = writeTranscript('corr', "no, don't use npm here — use pnpm")
+    const text = nudgeText(runStop({ session_id: 'sig-1', transcript_path }, {}).stdout)
+    expect(text).toContain('plur_learn')
+  })
+
+  it('nudges for a decision-board answer (a saved .decisions.json path)', () => {
+    const transcript_path = writeTranscript('board', 'Saved: /tmp/review.decisions.json')
+    expect(nudgeText(runStop({ session_id: 'sig-2', transcript_path }, {}).stdout)).toContain('plur_learn')
+  })
+
+  it('stays silent for a plain question (default fallback, well below 20 stops)', () => {
+    const transcript_path = writeTranscript('plain', 'what does this function return?')
+    for (let i = 0; i < 5; i++) {
+      expect(runStop({ session_id: 'plain-1', transcript_path }, {}).stdout).toBe('')
+    }
+  })
+
+  it('nudges once per signalling message, not on every later Stop that still sees it', () => {
+    // A background-task notification can end another turn without a new
+    // human message; the same correction must not nudge twice.
+    const transcript_path = writeTranscript('once', 'from now on keep PRs small', 'same-msg')
+    expect(nudgeText(runStop({ session_id: 'once-1', transcript_path }, {}).stdout)).toContain('plur_learn')
+    expect(runStop({ session_id: 'once-1', transcript_path }, {}).stdout).toBe('')
+    // A new signalling message nudges again.
+    const next = writeTranscript('once', 'actually, I prefer squash merges', 'next-msg')
+    expect(nudgeText(runStop({ session_id: 'once-1', transcript_path: next }, {}).stdout)).toContain('plur_learn')
+  })
+
+  it('never nudges on a continuation Stop, even when the message signals', () => {
+    const transcript_path = writeTranscript('cont', 'never print the token')
+    expect(runStop({ session_id: 'cont-1', transcript_path, stop_hook_active: true }, {}).stdout).toBe('')
+  })
+
+  it('the fallback fires on the 20th signal-free Stop by default', () => {
+    const transcript_path = writeTranscript('fb', 'please summarise the changelog')
+    const nudged: number[] = []
+    for (let i = 1; i <= 20; i++) {
+      if (nudgeText(runStop({ session_id: 'fb-1', transcript_path }, {}).stdout) !== undefined) nudged.push(i)
+    }
+    expect(nudged).toEqual([20])
+  })
+
+  it('PLUR_LEARN_FALLBACK_INTERVAL=0 turns the fallback off (signals still nudge)', () => {
+    for (let i = 0; i < 4; i++) {
+      expect(runStop({ session_id: 'off-1' }, { PLUR_LEARN_FALLBACK_INTERVAL: '0' }).stdout).toBe('')
+    }
+    const transcript_path = writeTranscript('off', 'always run the typecheck')
+    expect(nudgeText(runStop({ session_id: 'off-1', transcript_path }, { PLUR_LEARN_FALLBACK_INTERVAL: '0' }).stdout)).toContain('plur_learn')
+  })
+
+  it('a missing or unreadable transcript falls back to the interval and never fails the Stop', () => {
+    const dirAsFile = join(home, 'a-directory')
+    mkdirSync(dirAsFile)
+    const results = [
+      runStop({ session_id: 'miss-1', transcript_path: join(home, 'nope.jsonl') }),
+      runStop({ session_id: 'miss-1', transcript_path: dirAsFile }),
+      runStop({ session_id: 'miss-1', transcript_path: 12345 }),
+    ]
+    for (const r of results) expect(r.status).toBe(0)
+    expect(results.map((r) => nudgeText(r.stdout) !== undefined)).toEqual([false, false, true])
   })
 })

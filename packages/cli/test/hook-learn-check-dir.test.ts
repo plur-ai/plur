@@ -57,8 +57,10 @@ describe.skipIf(process.platform === 'win32')('hook-learn-check state directorie
 
   it('counts in the private fallback when the shared dir is planted, and still nudges', () => {
     symlinkSync(evilShared, join(tmp, 'plur-sessions'))
-    stop(); stop()
-    const third = stop()
+    // No transcript, so no signal: pin the fallback nudge to the 3rd Stop.
+    const every3 = { PLUR_LEARN_FALLBACK_INTERVAL: '3' }
+    stop(every3); stop(every3)
+    const third = stop(every3)
     expect(third.stdout).toContain('hookSpecificOutput')
     expect(readdirSync(evilShared)).toEqual([])
     expect(existsSync(join(store, 'hook-sessions', `${SID}.stop-count`))).toBe(true)
