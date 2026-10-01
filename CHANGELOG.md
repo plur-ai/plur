@@ -7,12 +7,14 @@
 The instructions PLUR installs (the `plur init` section in CLAUDE.md and
 AGENTS.md, the Cursor rule, the MCP server instructions, the `plur-mcp init`
 section, the Claw system prompt and the plur-memory skill) now ask the agent to
-end every reply with one line such as
-`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…`, or
-`Memory — none`, naming only ids it actually saw that turn. Re-running
-`plur init` (or reloading the Claw plugin) upgrades an existing PLUR section in
-place, keeping your own content around it. Before, `plur init` left an existing
-section untouched, so changed instructions never reached an existing install.
+end every reply with one short line such as
+`Memory — recalled 4 · used: ENG-…, ENG-… · written: ENG-…`, or
+`Memory — none`: a count of what was recalled and the ids used and written, no
+statements, and only ids it actually saw that turn. Ask a follow-up for the
+details. Re-running `plur init` (or reloading the Claw plugin) upgrades an
+existing PLUR section in place, keeping your own content around it. Before,
+`plur init` left an existing section untouched, so changed instructions never
+reached an existing install.
 
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 

@@ -15,13 +15,11 @@ import { upsertPlurSection as cliUpsert } from '../../cli/src/commands/init.js'
  */
 
 const MEMORY_FOOTER_RULE =
-  'End every reply with one line listing the PLUR engrams from this turn by id: ' +
-  '`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…`, or `Memory — none` when there were none. ' +
-  "Recalled = ids returned to you this turn (plur_session_start's injected_ids, " +
-  'plur_recall/plur_recall_hybrid/plur_inject results, hook-injected memory blocks). ' +
-  'Used = the recalled ids that actually shaped the answer. ' +
-  'Written = ids returned by plur_learn this turn. ' +
-  'Only list ids you actually saw this turn; never invent an id.'
+  'End every reply with one short line: ' +
+  '`Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…` ' +
+  '(recalled as a count; used and written as ids only, no statements), or `Memory — none`. ' +
+  'Only count/list ids you actually saw this turn; never invent an id. ' +
+  'Give details only if the user asks.'
 
 const VERSION_MARKER = '<!-- plur-instructions-v4 -->'
 const count = (h: string, n: string) => h.split(n).length - 1
@@ -31,6 +29,7 @@ const legacy = () => readFileSync(join(__dirname, 'fixtures', 'mcp-claude-md-sec
 describe('server INSTRUCTIONS — memory footer rule', () => {
   it('carries the rule verbatim', () => {
     expect(INSTRUCTIONS).toContain(MEMORY_FOOTER_RULE)
+    expect(INSTRUCTIONS).not.toContain('Recalled = ids returned to you this turn')
   })
 
   it('places the rule inside the first 2048 characters', () => {

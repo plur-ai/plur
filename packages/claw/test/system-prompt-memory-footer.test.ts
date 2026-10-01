@@ -10,15 +10,13 @@ import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from '../src/system-prompt.js
  * (plur-instructions-v3) is upgraded in place when the plugin loads.
  */
 
-// Claw's adaptation of the rule: same line format and the same three
-// definitions, with Claw's tool names and its injected memory block.
+// The rule has no tool names in it, so Claw carries it verbatim.
 const CLAW_RULE_PARTS = [
-  'End every reply with one line listing the PLUR engrams from this turn by id: ' +
-    '`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…`, or `Memory — none` when there were none.',
-  'Recalled = ids returned to you this turn (`plur.recall` results and the injected "Your Memories" block).',
-  'Used = the recalled ids that actually shaped the answer.',
-  'Written = ids returned by `plur.learn` this turn.',
-  'Only list ids you actually saw this turn; never invent an id.',
+  'End every reply with one short line: ' +
+    '`Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…` ' +
+    '(recalled as a count; used and written as ids only, no statements), or `Memory — none`. ' +
+    'Only count/list ids you actually saw this turn; never invent an id. ' +
+    'Give details only if the user asks.',
 ]
 
 const count = (h: string, n: string) => h.split(n).length - 1
@@ -29,8 +27,8 @@ describe('Claw system prompt — memory footer rule', () => {
     for (const part of CLAW_RULE_PARTS) expect(PLUR_SYSTEM_SECTION).toContain(part)
   })
 
-  it('puts the footer after the "I learned" section, so it is the last line', () => {
-    expect(PLUR_SYSTEM_SECTION).toMatch(/after any "I learned" section/)
+  it('drops the earlier, longer wording', () => {
+    expect(PLUR_SYSTEM_SECTION).not.toContain('Recalled = ids returned to you this turn')
   })
 
   it('bumps the version marker so existing installs upgrade', () => {

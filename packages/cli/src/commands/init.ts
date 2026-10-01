@@ -496,18 +496,17 @@ export const PLUR_INSTRUCTIONS_MARKER = '<!-- plur-instructions-v4 -->'
 
 /**
  * The memory line: the agent ends every reply naming the engrams it recalled,
- * used and wrote that turn, so the owner can see what memory did. Shared
- * verbatim by every target below and by the MCP server instructions
- * (packages/mcp/src/server.ts); the tests pin the exact text.
+ * used and wrote that turn, so the owner can see what memory did. Brief on
+ * purpose (owner, #1520): a count and ids, no statements; the user asks a
+ * follow-up for details. Shared verbatim by every target below and by the MCP
+ * server instructions (packages/mcp/src/server.ts); the tests pin the exact text.
  */
 const MEMORY_FOOTER_RULE =
-  'End every reply with one line listing the PLUR engrams from this turn by id: ' +
-  '`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…`, or `Memory — none` when there were none. ' +
-  "Recalled = ids returned to you this turn (plur_session_start's injected_ids, " +
-  'plur_recall/plur_recall_hybrid/plur_inject results, hook-injected memory blocks). ' +
-  'Used = the recalled ids that actually shaped the answer. ' +
-  'Written = ids returned by plur_learn this turn. ' +
-  'Only list ids you actually saw this turn; never invent an id.'
+  'End every reply with one short line: ' +
+  '`Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…` ' +
+  '(recalled as a count; used and written as ids only, no statements), or `Memory — none`. ' +
+  'Only count/list ids you actually saw this turn; never invent an id. ' +
+  'Give details only if the user asks.'
 
 const CLAUDE_MD_SECTION = `## PLUR Memory
 

@@ -96,7 +96,7 @@ Guidelines:
 
 ### Memory Line on Every Reply
 
-End every reply with one line listing the PLUR engrams from this turn by id: \`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…\`, or \`Memory — none\` when there were none. This line comes last, after any "I learned" section. Recalled = ids returned to you this turn (\`plur.recall\` results and the injected "Your Memories" block). Used = the recalled ids that actually shaped the answer. Written = ids returned by \`plur.learn\` this turn. Only list ids you actually saw this turn; never invent an id.
+End every reply with one short line: \`Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…\` (recalled as a count; used and written as ids only, no statements), or \`Memory — none\`. Only count/list ids you actually saw this turn; never invent an id. Give details only if the user asks.
 
 ### Principles
 
