@@ -1,3 +1,6 @@
+import { accessSync, constants } from 'node:fs'
+import { delimiter, join } from 'node:path'
+
 /**
  * The folder question stays actionable until the folder is decided (audit F2
  * of #1517). opencode rebuilds the system prompt for every request and keeps
@@ -24,3 +27,32 @@ export function folderAskReminder(question: string): string {
     ...(footer ? [footer] : []),
   ].join('\n')
 }
+
+/**
+ * True when a `plur` executable is on PATH (audit F8 of #1517). The offered
+ * commands run in the agent's shell, which gets this process's PATH; without
+ * the CLI they would all fail, so the question is not offered.
+ */
+export function plurOnPath(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  const dirs = (env.PATH ?? env.Path ?? '').split(delimiter).filter(Boolean)
+  const names = platform === 'win32'
+    ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map(ext => `plur${ext.toLowerCase()}`).concat('plur')
+    : ['plur']
+  for (const d of dirs) {
+    for (const n of names) {
+      try {
+        accessSync(join(d, n), platform === 'win32' ? constants.F_OK : constants.X_OK)
+        return true
+      } catch { /* not here */ }
+    }
+  }
+  return false
+}
+
+/** What an undecided folder shows when the CLI the commands need is missing. No command, no nonce. */
+export const PLUR_CLI_MISSING =
+  '[PLUR Memory — no decision for this folder yet, so no memories were loaded] ' +
+  'The plur command-line tool is not installed here, so this folder cannot be switched on from this session. ' +
+  'Tell the user once: to use PLUR memory in this folder, install it with `npm install -g @plur-ai/cli`, ' +
+  'then decide in a terminal with `plur folders set . --on` (or `--off`), or start a new message here after installing. ' +
+  'Run no plur command for it. Memory stays off here until then.'

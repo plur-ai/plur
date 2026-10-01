@@ -21,7 +21,7 @@ import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
 import { resolveScopeRoot, resolveFolderDir, resolveTrustedScope, projectRemoteRefusalNotice, folderPolicy } from './scope.js'
 import { INJECT_TIMEOUT_MS } from './timeout.js'
-import { folderAskReminder } from './ask.js'
+import { folderAskReminder, plurOnPath, PLUR_CLI_MISSING } from './ask.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
 // Unconditional — unlike `log` above. A `.plur.yaml` scope the plugin refuses
@@ -146,6 +146,8 @@ export const PlurPlugin: Plugin = async (ctx) => {
   // question until it has reached the model once, then a reminder with the
   // same commands, until the folder is decided or the session ends.
   const offers = new Map<string, { question: string; reminder: string; delivered: boolean }>()
+  // Sessions already told the plur CLI is missing (audit F8 of #1517).
+  const cliMissingTold = new Set<string>()
   /** The full question has reached the model: later turns get the reminder. */
   const markDelivered = (sessionID: string, block: string) => {
     const offer = offers.get(sessionID)
@@ -200,7 +202,16 @@ export const PlurPlugin: Plugin = async (ctx) => {
           // nonces as the CLI hooks (core's folderAskOnce); later turns carry
           // nothing until the user decides.
           let offer = offers.get(input.sessionID)
-          if (!offer) {
+          // The offered commands need the plur CLI (audit F8 of #1517): without
+          // it, say so once per session and issue nothing; ask once it appears.
+          const needsCli = state.policy.reason !== 'malformed-map' && state.policy.reason !== 'resolver-error'
+          const cliMissing = !offer && needsCli && !plurOnPath()
+          if (cliMissing) {
+            if (!cliMissingTold.has(input.sessionID)) {
+              cliMissingTold.add(input.sessionID)
+              blocks.set(input.sessionID, PLUR_CLI_MISSING)
+            } else blocks.clear(input.sessionID)
+          } else if (!offer) {
             const question = folderAskOnce({
               dir: folderDir, policy: state.policy, sessionId: input.sessionID,
               root: plur.storageRoot, plur, prompt: query, claim: claimAsk,
@@ -214,7 +225,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
             }
           }
           if (offer) blocks.set(input.sessionID, offer.delivered ? offer.reminder : offer.question)
-          else blocks.clear(input.sessionID)
+          else if (!cliMissing) blocks.clear(input.sessionID)
         } else {
           const { settings, remote } = state
           const pending = plur.injectHybrid(query, {
@@ -328,6 +339,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
           endNonces(sessionID)
           asked.delete(sessionID)
           offers.delete(sessionID)
+          cliMissingTold.delete(sessionID)
         }
       })
     },
@@ -367,6 +379,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
         for (const sessionID of [...asked]) endNonces(sessionID)
         asked.clear()
         offers.clear()
+        cliMissingTold.clear()
       })
     },
   } satisfies Hooks

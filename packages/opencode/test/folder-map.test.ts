@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync, readdirSync } from 'fs'
-import { join } from 'path'
+import { join, delimiter } from 'path'
 import { tmpdir } from 'os'
 import { Plur, saveFolderMap, type FolderEntry } from '@plur-ai/core'
 import { PlurPlugin } from '../src/index.js'
@@ -31,6 +31,8 @@ describe('opencode follows the folder map (#1347)', () => {
   let printed: string[]
   let errSpy: ReturnType<typeof vi.spyOn>
   const savedHome = process.env.HOME
+  const savedPath = process.env.PATH
+  let fakeBin: string
 
   function map(folders: FolderEntry[]): void {
     saveFolderMap(root, { version: 1, folders })
@@ -69,12 +71,18 @@ describe('opencode follows the folder map (#1347)', () => {
     learn = vi.fn().mockResolvedValue({})
     ;(plur as any).injectHybrid = inject
     ;(plur as any).learnRouted = learn
+    // A stub `plur` on PATH: the offered commands need the CLI (audit F8).
+    fakeBin = realpathSync(mkdtempSync(join(tmpdir(), 'oc-folders-bin-')))
+    writeFileSync(join(fakeBin, 'plur'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    process.env.PATH = `${fakeBin}${delimiter}${savedPath ?? ''}`
     printed = []
     errSpy = vi.spyOn(console, 'error').mockImplementation((m?: unknown) => { printed.push(String(m)) })
   })
 
   afterEach(() => {
     errSpy.mockRestore()
+    process.env.PATH = savedPath
+    rmSync(fakeBin, { recursive: true, force: true })
     if (savedHome === undefined) delete process.env.HOME
     else process.env.HOME = savedHome
     rmSync(root, { recursive: true, force: true })
@@ -345,5 +353,24 @@ describe('opencode follows the folder map (#1347)', () => {
     expect(delivered).toBeDefined()
     // The first delivery is the full question, not a "you already asked" reminder.
     expect(delivered).toContain('ask the user once')
+  })
+
+  // F8 (audit of #1517): the offered commands need the plur CLI. Without it on
+  // PATH the plugin says so and how to install it, and offers no command.
+  it('F8: without plur on PATH the question says how to install it and offers no command', async () => {
+    process.env.PATH = realpathSync(mkdtempSync(join(tmpdir(), 'oc-folders-emptybin-')))
+    const hooks = await plugin()
+
+    const seen = await turn(hooks, 'ses-f8', 'hello')
+
+    expect(inject).not.toHaveBeenCalled()
+    expect(seen).toContain('npm install -g @plur-ai/cli')
+    expect(seen).not.toContain('--nonce')
+    expect(existsSync(join(root, 'folder-nonces', 'ses-f8.yaml'))).toBe(false)
+
+    // Installed during the session: the next turn offers the commands.
+    process.env.PATH = `${fakeBin}${delimiter}${savedPath ?? ''}`
+    const later = await turn(hooks, 'ses-f8', 'installed it', 2)
+    expect(later).toMatch(/--on --nonce [0-9a-f]{32}/)
   })
 })
