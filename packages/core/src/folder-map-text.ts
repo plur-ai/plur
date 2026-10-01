@@ -46,7 +46,7 @@ export const FOLDER_MAP_TEMPLATE = [
   '  #   trusted:  true          # trusted: this folder\'s .plur.yaml may set its scope and team server',
   '  # - path: ~/client-work/**',
   '  #   plur:     remote-only   # remote-only: memory lives only on the team server, in `scope`;',
-  '  #   scope:    group:acme/client   #   nothing is saved to or read from your personal store',
+  '  #   scope:    group:acme/client   #   your personal memories are neither read nor written there',
   '',
 ].join('\n')
 

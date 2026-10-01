@@ -379,7 +379,7 @@ integration follows it:
 | `plur: ask` | Ask once per session |
 | `scope: <s>` | Default scope for memories saved here |
 | `trusted: true` | This folder's `.plur.yaml` may set its scope and team server |
-| `plur: remote-only` + `scope: <s>` | Memory lives only on the team server, in `<s>`; nothing is saved to or read from your personal store |
+| `plur: remote-only` + `scope: <s>` | Memories go only to the team server, in `<s>`; your personal memories are neither read nor written there (see the docs for what stays on disk) |
 
 ```
 plur folders set ~/client-work --remote-only --scope group:acme/client

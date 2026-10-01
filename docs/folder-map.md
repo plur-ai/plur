@@ -15,7 +15,7 @@ repository's request.
 | `plur: ask` | Ask once per session what to do here. |
 | `scope: <s>` | The default scope for memories saved here. Implies `on`. |
 | `trusted: true` | This folder's `.plur.yaml` may set its scope and team server. |
-| `plur: remote-only` + `scope: <s>` | Memory lives only on the team server, in scope `<s>`. Nothing is saved to or read from your personal store. |
+| `plur: remote-only` + `scope: <s>` | Memories go only to the team server, in scope `<s>`. Your personal memories are neither read nor written there. |
 
 An entry names a folder or a glob (`~/work/**`). A plain folder also covers
 everything below it. The most specific entry for a folder wins, and `off` on a
