@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### remote-only folders keep memory on the team server (#NNNN)
+### remote-only folders keep memory on the team server (#1521)
 
 A new folder-map mode for work whose memory must not be kept on your machine:
 
@@ -39,7 +39,7 @@ its folder-map support (#1517) is in. Core: `Plur.bindFolder(dir)` /
 Folders without remote-only behave exactly as before. See
 [docs/folder-map.md](docs/folder-map.md).
 
-### folders.yaml starts with commented examples of every setting (#NNNN)
+### folders.yaml starts with commented examples of every setting (#1521)
 
 When PLUR creates `~/.plur/folders.yaml` (the first `plur folders set`, `plur
 trust`, the folder question's answer, or `plur init` moving hooks), it now
