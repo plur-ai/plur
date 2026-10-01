@@ -11,14 +11,31 @@ or `plur_recall_hybrid` with the same scope never contacted the server and
 returned only local results. The remote leg dialed a host only for a shared
 (`group:`/`project:`) scope of the same org, an explicit `.plur.yaml` remote
 project, or a store marked `dial: always`; a personal scope qualified for none
-of them. Now a recall or a hybrid injection whose scope (explicit, or the
-session's default scope) is a personal `user:` scope dials the store whose own
-scope equals it exactly, asking that host for that one scope. The match ignores
-case, the same way local-only scope targets do (`USER:Acme:Me` finds a store
-configured as `user:acme:me`). Another user's store is never dialed, the host's
-other stores are not added, and `dial: never` still wins. Shared-scope dialing
-is unchanged. The `plur_recall` tool description (and its `plur_recall_hybrid`
-alias) now says a personal scope reads its own matching remote store.
+of them.
+
+Now a recall or a hybrid injection whose personal `user:` scope was passed by
+the caller, or registered by that session itself, dials the one store whose
+own scope matches it, asking that host for that one scope.
+
+- The match ignores case, the same way local-only scope targets do
+  (`USER:Acme:Me` finds a store configured as `user:acme:me`). If several
+  configured stores match after folding, only one is dialed: the exact-case
+  one, otherwise the first in config order. `learn` uses the same match, so a
+  write and a read with the same string reach the same store.
+- The personal-scope rule adds only that store. Other stores are still added by
+  the existing overrides: a store set to `dial: always`, or a trusted
+  `.plur.yaml` remote project. `dial: never` still wins.
+- A session that never registered its own scope does not dial through the
+  process-wide default; that default is some other caller's choice.
+- When a recall or injection passes a `scopes` allow-list, nothing outside it
+  is dialed, for any store, and `scopes: []` dials nothing. Before, the query
+  went out and the rows were dropped afterwards.
+- A session whose default scope is a personal store scope now makes one
+  timeout-bounded remote call per hybrid injection, where it made none.
+
+Shared-scope dialing is otherwise unchanged. The `plur_recall` tool description
+(and its `plur_recall_hybrid` alias) now says a personal scope reads its own
+matching remote store.
 
 ## 0.21.0
 
