@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Agents now end each reply with the memories they recalled, used and wrote (#NNNN)
+
+The instructions PLUR installs (the `plur init` section in CLAUDE.md and
+AGENTS.md, the Cursor rule, the MCP server instructions, the `plur-mcp init`
+section, the Claw system prompt and the plur-memory skill) now ask the agent to
+end every reply with one line such as
+`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…`, or
+`Memory — none`, naming only ids it actually saw that turn. Re-running
+`plur init` (or reloading the Claw plugin) upgrades an existing PLUR section in
+place, keeping your own content around it. Before, `plur init` left an existing
+section untouched, so changed instructions never reached an existing install.
+
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its

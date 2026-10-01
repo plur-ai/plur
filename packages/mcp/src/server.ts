@@ -59,6 +59,8 @@ DURING the session:
 - When user states a preference ("always X", "never Y") → call plur_learn immediately
 - When you discover a codebase convention or pattern → call plur_learn
 
+EVERY REPLY: End every reply with one line listing the PLUR engrams from this turn by id: \`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…\`, or \`Memory — none\` when there were none. Recalled = ids returned to you this turn (plur_session_start's injected_ids, plur_recall/plur_recall_hybrid/plur_inject results, hook-injected memory blocks). Used = the recalled ids that actually shaped the answer. Written = ids returned by plur_learn this turn. Only list ids you actually saw this turn; never invent an id.
+
 SCOPE SELECTION (set scope PER engram, by content — not once per session):
 A single session produces engrams that belong in different stores. Choose the
 "scope" on EACH plur_learn call from what the engram is about:

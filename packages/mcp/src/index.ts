@@ -180,6 +180,23 @@ export interface HookEntry {
   hooks: Array<{ type: string; command: string; args?: string[]; timeout?: number; async?: boolean }>
 }
 
+/**
+ * Closes the CLAUDE.md section. Mirrors PLUR_INSTRUCTIONS_MARKER in
+ * packages/cli/src/commands/init.ts — bump both together whenever the section
+ * text changes, so a re-run of `plur-mcp init` upgrades an existing install.
+ */
+const PLUR_INSTRUCTIONS_MARKER = '<!-- plur-instructions-v4 -->'
+
+/** The memory line — verbatim the same rule as `plur init` and the server instructions. */
+const MEMORY_FOOTER_RULE =
+  'End every reply with one line listing the PLUR engrams from this turn by id: ' +
+  '`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…`, or `Memory — none` when there were none. ' +
+  "Recalled = ids returned to you this turn (plur_session_start's injected_ids, " +
+  'plur_recall/plur_recall_hybrid/plur_inject results, hook-injected memory blocks). ' +
+  'Used = the recalled ids that actually shaped the answer. ' +
+  'Written = ids returned by plur_learn this turn. ' +
+  'Only list ids you actually saw this turn; never invent an id.'
+
 const CLAUDE_MD_SECTION = `## PLUR Memory
 
 You have persistent memory via PLUR. Corrections, preferences, and conventions persist across sessions as engrams.
@@ -200,36 +217,78 @@ Hooks inject engrams automatically on every first message — you do not need to
 
 Do not ask permission to use these tools — they are your memory system.
 
+### Memory line on every reply
+
+${MEMORY_FOOTER_RULE}
+
 ### When corrected
 
 When the user corrects you ("no, use X not Y", "that's wrong"):
 1. Call \`plur_learn\` immediately — before continuing the task
 2. Call \`plur_feedback\` with negative signal on the wrong engram if one was injected
 3. Then continue with the corrected approach
+
+${PLUR_INSTRUCTIONS_MARKER}
 `
 
 // --- Functions ---
 
-function installClaudeMd(): string {
-  const marker = '## PLUR Memory'
+const PLUR_SECTION_HEADING = /^## PLUR Memory[ \t]*$/m
+const ANY_PLUR_MARKER = /^<!-- plur-instructions-v\d+ -->[ \t]*$/m
+
+/**
+ * Mirror of `upsertPlurSection` in packages/cli/src/commands/init.ts (this
+ * package cannot depend on the cli); test/memory-footer-instructions.test.ts
+ * pins the two to identical output. Upgrades an older PLUR section in place —
+ * ending at its version marker, or for a pre-marker install at the next
+ * level-1/2 heading — and leaves a current one untouched.
+ */
+export function upsertPlurSection(
+  content: string | null,
+  section: string,
+  title: string,
+): { content: string; status: 'created' | 'added' | 'already' | 'upgraded' } {
+  if (content === null) return { content: `${title}\n\n${section}`, status: 'created' }
+
+  const heading = PLUR_SECTION_HEADING.exec(content)
+  if (!heading) return { content: content.trimEnd() + '\n\n' + section, status: 'added' }
+
+  const bodyStart = heading.index + heading[0].length
+  const body = content.slice(bodyStart)
+  const marker = ANY_PLUR_MARKER.exec(body)
+  const nextHeading = /^#{1,2} /m.exec(body)
+  const end = bodyStart + (
+    marker && (!nextHeading || marker.index < nextHeading.index)
+      ? marker.index + marker[0].length
+      : nextHeading ? nextHeading.index : body.length
+  )
+
+  if (content.slice(heading.index, end).includes(PLUR_INSTRUCTIONS_MARKER)) {
+    return { content, status: 'already' }
+  }
+
+  const before = content.slice(0, heading.index)
+  const after = content.slice(end).replace(/^\s*\n/, '')
+  return { content: before + section + (after ? '\n' + after : ''), status: 'upgraded' }
+}
+
+function defaultClaudeMdPath(): string {
   // Check project CLAUDE.md first, then global
   const projectClaudeMd = join(process.cwd(), 'CLAUDE.md')
   const globalClaudeMd = join(homedir(), 'CLAUDE.md')
-  const claudeMdPath = existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
+  return existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
+}
 
-  if (existsSync(claudeMdPath)) {
-    const content = readFileSync(claudeMdPath, 'utf8')
-    if (content.includes(marker)) {
-      return `already in ${claudeMdPath}`
-    }
-    // Append to existing file
-    writeFileSync(claudeMdPath, content.trimEnd() + '\n\n' + CLAUDE_MD_SECTION)
-    return `added to ${claudeMdPath}`
+export function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath()): string {
+  const existing = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf8') : null
+  const { content, status } = upsertPlurSection(existing, CLAUDE_MD_SECTION, '# CLAUDE.md')
+  if (status !== 'already') writeFileSync(claudeMdPath, content)
+  switch (status) {
+    case 'created': return `created ${claudeMdPath}`
+    case 'added': return `added to ${claudeMdPath}`
+    case 'upgraded': return `upgraded in ${claudeMdPath}`
+    case 'already': return `already in ${claudeMdPath}`
   }
-
-  // Create new CLAUDE.md with just the PLUR section
-  writeFileSync(claudeMdPath, `# CLAUDE.md\n\n${CLAUDE_MD_SECTION}`)
-  return `created ${claudeMdPath}`
 }
 
 function findMcpConfig(): string {

@@ -484,6 +484,31 @@ function mergeHookMaps(
   return out
 }
 
+/**
+ * Closes every PLUR instruction section `plur init` writes (CLAUDE.md,
+ * AGENTS.md, the Cursor rule). Bump the number whenever any of those texts
+ * change: a file carrying an older marker — or none, as every install before
+ * v4 does — is upgraded in place on the next `plur init` (`upsertPlurSection`).
+ * Numbered in step with the Claw system prompt (packages/claw/src/system-prompt.ts),
+ * which carries the same rules and the same marker.
+ */
+export const PLUR_INSTRUCTIONS_MARKER = '<!-- plur-instructions-v4 -->'
+
+/**
+ * The memory line: the agent ends every reply naming the engrams it recalled,
+ * used and wrote that turn, so the owner can see what memory did. Shared
+ * verbatim by every target below and by the MCP server instructions
+ * (packages/mcp/src/server.ts); the tests pin the exact text.
+ */
+const MEMORY_FOOTER_RULE =
+  'End every reply with one line listing the PLUR engrams from this turn by id: ' +
+  '`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…`, or `Memory — none` when there were none. ' +
+  "Recalled = ids returned to you this turn (plur_session_start's injected_ids, " +
+  'plur_recall/plur_recall_hybrid/plur_inject results, hook-injected memory blocks). ' +
+  'Used = the recalled ids that actually shaped the answer. ' +
+  'Written = ids returned by plur_learn this turn. ' +
+  'Only list ids you actually saw this turn; never invent an id.'
+
 const CLAUDE_MD_SECTION = `## PLUR Memory
 
 You have persistent memory via PLUR. Corrections, preferences, and conventions persist across sessions as engrams.
@@ -503,6 +528,10 @@ A PreToolUse guard enforces that \`plur_session_start\` is called at the beginni
 5. **End**: Call \`plur_session_end\` with summary + engram_suggestions — a SessionEnd hook auto-closes the lifecycle if you forget, but calling it yourself captures higher-quality learnings
 
 Do not ask permission to use these tools — they are your memory system.
+
+### Memory line on every reply
+
+${MEMORY_FOOTER_RULE}
 
 ### Scope selection (set scope PER engram, by content)
 
@@ -527,6 +556,8 @@ When the user corrects you ("no, use X not Y", "that's wrong"):
 1. Call \`plur_learn\` immediately — before continuing the task
 2. Call \`plur_feedback\` with negative signal on the wrong engram if one was injected
 3. Then continue with the corrected approach
+
+${PLUR_INSTRUCTIONS_MARKER}
 `
 
 /**
@@ -560,6 +591,10 @@ Relevant engrams are injected automatically by hooks; recalled context appears i
 
 Do not ask permission to use these tools — they are your memory system.
 
+### Memory line on every reply
+
+${MEMORY_FOOTER_RULE}
+
 ### Scope selection (set scope PER engram, by content)
 
 - **Team / shared knowledge** → the matching team scope (e.g. \`group:<org>/<team>\`) — \`plur_session_start\` lists the writable ones.
@@ -573,6 +608,8 @@ When the user corrects you ("no, use X not Y"):
 1. Call \`plur_learn\` immediately — before continuing the task
 2. Call \`plur_feedback\` with negative signal on the wrong engram if one was injected
 3. Then continue with the corrected approach
+
+${PLUR_INSTRUCTIONS_MARKER}
 `
 
 const CURSOR_RULE_CONTENT = `---
@@ -593,8 +630,11 @@ You have persistent memory via PLUR (tools prefixed \`plur_\`; less-common ones 
 - Before answering factual questions about this project: call **plur_recall** first.
 - Rate injected engrams with **plur_feedback** when you notice one helped or missed.
 - Call **plur_session_end** before wrapping up, with a summary and engram suggestions.
+- ${MEMORY_FOOTER_RULE}
 
 Full reference: read the \`plur://guide\` MCP resource.
+
+${PLUR_INSTRUCTIONS_MARKER}
 `
 
 /**
@@ -619,23 +659,74 @@ function installProjectConfig(args: string[]): string | null {
   return configPath
 }
 
+/** The heading line every `plur init` instruction section opens with — the whole line, so `## PLUR Memory Guardrails` is not it. */
+const PLUR_SECTION_HEADING = /^## PLUR Memory[ \t]*$/m
+/** Any version of the marker that closes the section. */
+const ANY_PLUR_MARKER = /^<!-- plur-instructions-v\d+ -->[ \t]*$/m
+
+/**
+ * Put the PLUR section into an instruction file's text, upgrading an older one
+ * in place. Pure, so the MCP package's mirror can be pinned to it.
+ *
+ * - no file (`null`) → `created`: a new file holding the title and the section
+ * - no PLUR section → `added`: appended after the existing text
+ * - a section carrying the current marker → `already`: untouched, byte for byte
+ * - an older section → `upgraded`: that section, and only it, is replaced
+ *
+ * Where an older section ends: at its version marker when it has one; an
+ * install from before markers (every one before v4) has none, so it ends at the
+ * next level-1 or level-2 heading, or at end of file. PLUR's sections use only
+ * `###` inside, so that boundary is the user's next section. Before this,
+ * re-running `plur init` saw the heading, reported "already in", and an
+ * existing install never received a changed instruction.
+ */
+export function upsertPlurSection(
+  content: string | null,
+  section: string,
+  title: string,
+): { content: string; status: 'created' | 'added' | 'already' | 'upgraded' } {
+  if (content === null) return { content: `${title}\n\n${section}`, status: 'created' }
+
+  const heading = PLUR_SECTION_HEADING.exec(content)
+  if (!heading) return { content: content.trimEnd() + '\n\n' + section, status: 'added' }
+
+  const bodyStart = heading.index + heading[0].length
+  const body = content.slice(bodyStart)
+  const marker = ANY_PLUR_MARKER.exec(body)
+  const nextHeading = /^#{1,2} /m.exec(body)
+  const end = bodyStart + (
+    marker && (!nextHeading || marker.index < nextHeading.index)
+      ? marker.index + marker[0].length
+      : nextHeading ? nextHeading.index : body.length
+  )
+
+  if (content.slice(heading.index, end).includes(PLUR_INSTRUCTIONS_MARKER)) {
+    return { content, status: 'already' }
+  }
+
+  const before = content.slice(0, heading.index)
+  const after = content.slice(end).replace(/^\s*\n/, '')
+  return { content: before + section + (after ? '\n' + after : ''), status: 'upgraded' }
+}
+
+/** Write `section` into `path` via `upsertPlurSection`; returns the status line init prints. */
+function writePlurSection(path: string, section: string, title: string): string {
+  const existing = existsSync(path) ? readFileSync(path, 'utf8') : null
+  const { content, status } = upsertPlurSection(existing, section, title)
+  if (status !== 'already') writeFileSync(path, content)
+  switch (status) {
+    case 'created': return `created ${path}`
+    case 'added': return `added to ${path}`
+    case 'upgraded': return `upgraded in ${path}`
+    case 'already': return `already in ${path}`
+  }
+}
+
 function installClaudeMd(): string {
-  const marker = '## PLUR Memory'
   const projectClaudeMd = join(process.cwd(), 'CLAUDE.md')
   const globalClaudeMd = join(homedir(), 'CLAUDE.md')
   const claudeMdPath = existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
-
-  if (existsSync(claudeMdPath)) {
-    const content = readFileSync(claudeMdPath, 'utf8')
-    if (content.includes(marker)) {
-      return `already in ${claudeMdPath}`
-    }
-    writeFileSync(claudeMdPath, content.trimEnd() + '\n\n' + CLAUDE_MD_SECTION)
-    return `added to ${claudeMdPath}`
-  }
-
-  writeFileSync(claudeMdPath, `# CLAUDE.md\n\n${CLAUDE_MD_SECTION}`)
-  return `created ${claudeMdPath}`
+  return writePlurSection(claudeMdPath, CLAUDE_MD_SECTION, '# CLAUDE.md')
 }
 
 /**
@@ -998,8 +1089,14 @@ function installCursor(cmd: string): string {
   }
 
   mkdirSync(dirname(rulesPath), { recursive: true })
-  const ruleAlready = existsSync(rulesPath)
-  if (!ruleAlready) writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
+  // The rule file is PLUR's alone, so an older one (no current marker) is
+  // replaced whole; before v4 an existing file was never touched again and
+  // kept whatever instructions its first install wrote.
+  const existingRule = existsSync(rulesPath) ? readFileSync(rulesPath, 'utf8') : null
+  const ruleStatus = existingRule === null ? 'created'
+    : existingRule.includes(PLUR_INSTRUCTIONS_MARKER) ? 'already present'
+    : 'upgraded'
+  if (ruleStatus !== 'already present') writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
 
   // The dynamic context and reminder rules (plur-context.mdc, plur-reminder.mdc)
   // are rewritten every session by hook-cursor-session-start.ts/
@@ -1022,7 +1119,7 @@ function installCursor(cmd: string): string {
 
   return `Cursor: MCP ${mcpStatus} (${mcpPath}); ` +
     `hooks ${hooksStatus} (${hooksPath}); ` +
-    `rule ${ruleAlready ? 'already present' : 'created'} (${rulesPath}); ` +
+    `rule ${ruleStatus} (${rulesPath}); ` +
     `gitignored .cursor/rules/plur-context.mdc, .cursor/rules/plur-reminder.mdc`
 }
 
@@ -1187,7 +1284,6 @@ const CODEX_TRUST_NOTICE =
   '    skipped SILENTLY — no warning, no error, memory simply never loads.'
 
 function installAgentsMd(cwd: string = process.cwd(), globalFallback: string | null = null): string {
-  const marker = '## PLUR Memory'
   const projectAgents = join(cwd, 'AGENTS.md')
   // The global fallback is HARNESS-SPECIFIC (evaluator audit M7): Codex
   // reads ~/.codex/AGENTS.md, but agy walks up from the workspace and never
@@ -1199,14 +1295,7 @@ function installAgentsMd(cwd: string = process.cwd(), globalFallback: string | n
     : (globalFallback && existsSync(globalFallback)) ? globalFallback
     : projectAgents
 
-  if (existsSync(target)) {
-    const content = readFileSync(target, 'utf8')
-    if (content.includes(marker)) return `already in ${target}`
-    writeFileSync(target, content.trimEnd() + '\n\n' + AGENTS_MD_SECTION)
-    return `added to ${target}`
-  }
-  writeFileSync(target, `# AGENTS.md\n\n${AGENTS_MD_SECTION}`)
-  return `created ${target}`
+  return writePlurSection(target, AGENTS_MD_SECTION, '# AGENTS.md')
 }
 
 // ── Antigravity CLI (agy) ───────────────────────────────────────────────────

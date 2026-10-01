@@ -41,6 +41,12 @@ End your responses with a learning section when you discover reusable insights:
 
 The plugin auto-captures these — no manual `plur_learn` call needed. This is a convenience fallback; calling `plur_learn` directly is preferred for important learnings.
 
+## The Memory Line
+
+End every reply with one line listing the PLUR engrams from this turn by id: `Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…`, or `Memory — none` when there were none. Recalled = ids returned to you this turn (plur_session_start's injected_ids, plur_recall/plur_recall_hybrid/plur_inject results, hook-injected memory blocks). Used = the recalled ids that actually shaped the answer. Written = ids returned by plur_learn this turn. Only list ids you actually saw this turn; never invent an id.
+
+This line comes last, after any learning section.
+
 ## Getting Started
 
 On first install, PLUR has zero engrams — injection returns empty. This is expected.

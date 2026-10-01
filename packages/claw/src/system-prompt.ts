@@ -94,20 +94,24 @@ Guidelines:
 - Phrase as facts: "The API requires auth header" not "the user said the API needs auth"
 - Include corrections to your own mistakes
 
+### Memory Line on Every Reply
+
+End every reply with one line listing the PLUR engrams from this turn by id: \`Memory — recalled: ENG-…, ENG-… · used: ENG-… · written: ENG-…\`, or \`Memory — none\` when there were none. This line comes last, after any "I learned" section. Recalled = ids returned to you this turn (\`plur.recall\` results and the injected "Your Memories" block). Used = the recalled ids that actually shaped the answer. Written = ids returned by \`plur.learn\` this turn. Only list ids you actually saw this turn; never invent an id.
+
 ### Principles
 
 - **Memory over repetition** — learn once, recall always. Never ask the user to repeat themselves.
 - **Do not start from scratch** — check your memories before answering.
 - **Augment, do not replace** — you assist, the human decides.
 
-<!-- plur-instructions-v3 -->
+<!-- plur-instructions-v4 -->
 `
 
 /** Marker used to detect if PLUR section is already present */
 const PLUR_MARKER = '## PLUR Memory System'
 
 /** Version marker embedded in the PLUR section for update detection */
-const PLUR_VERSION_MARKER = 'plur-instructions-v3'
+const PLUR_VERSION_MARKER = 'plur-instructions-v4'
 
 /**
  * Append or update PLUR memory instructions in SYSTEM.md.
@@ -132,9 +136,15 @@ export function ensureSystemPrompt(workspacePath: string): { appended: boolean; 
       return { appended: false, updated: false, path: systemMdPath }
     }
     if (existing.includes(PLUR_MARKER)) {
-      // Old version present — replace the PLUR section
-      const before = existing.split(PLUR_MARKER)[0].trimEnd()
-      writeFileSync(systemMdPath, before + '\n' + PLUR_SYSTEM_SECTION)
+      // Old version present — replace the PLUR section. It ends at its
+      // version marker when it has one; content after that marker is the
+      // user's and is kept. A section with no marker runs to end of file, as
+      // before.
+      const start = existing.indexOf(PLUR_MARKER)
+      const before = existing.slice(0, start).trimEnd()
+      const marker = /<!-- plur-instructions-v\d+ -->[ \t]*\n?/.exec(existing.slice(start))
+      const after = marker ? existing.slice(start + marker.index + marker[0].length).replace(/^\s*\n/, '') : ''
+      writeFileSync(systemMdPath, before + '\n' + PLUR_SYSTEM_SECTION + (after ? '\n' + after : ''))
       return { appended: false, updated: true, path: systemMdPath }
     }
     // No PLUR section — append
