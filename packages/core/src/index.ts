@@ -167,6 +167,18 @@ export {
   type FolderAnswer,
   type FolderMapErrorCode,
 } from './folders.js'
+// The one-time folder question and an `on` folder's session settings (#1347),
+// shared by the CLI's editor hooks and the opencode plugin. See folder-ask.ts.
+export {
+  folderAskOnce,
+  sessionSettings,
+  clearFolderAsk,
+  quoted as folderQuoted,
+  escapedPath as folderEscapedPath,
+  isFolderAskText,
+  type FolderAskOptions,
+  type FolderAskScopeRanker,
+} from './folder-ask.js'
 export { generateGuardrails } from './guardrails.js'
 // Shared memory system-prompt renderer (opencode plugin's task 1): one
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR

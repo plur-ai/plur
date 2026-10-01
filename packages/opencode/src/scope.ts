@@ -1,6 +1,6 @@
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { projectRemoteRefusalNotice as coreRefusalNotice, type ProjectConfig } from '@plur-ai/core'
+import { projectRemoteRefusalNotice as coreRefusalNotice, findPlurMarker, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
 
 /**
  * Which path this session's memory is scoped by.
@@ -130,4 +130,29 @@ export function resolveTrustedScope(
     `scope honored, run: ${trustCommand(configDir, plur.storageRoot)}`,
   )
   return {}
+}
+
+/** The subset of `Plur` the folder decision needs. */
+export interface FolderPolicySource {
+  resolveFolderPolicy(dir: string): FolderPolicy
+}
+
+/**
+ * What the folder map decides for `dir` (#1347): `Plur.resolveFolderPolicy`,
+ * keyed on the store this plugin opened. A resolver failure must never break
+ * the turn and must not switch memory on where the map could have said off:
+ * it falls back to the rule the CLI hooks use (a project marker means on,
+ * otherwise a silent-until-asked `ask`), the same fallback as the CLI's
+ * `hookFolderPolicy`.
+ */
+export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
+  try {
+    return plur.resolveFolderPolicy(dir)
+  } catch (err) {
+    warn(`folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); using the project marker.`)
+    const marker = findPlurMarker(dir)
+    return marker
+      ? { mode: 'on', remoteAllowed: false, source: marker }
+      : { mode: 'ask', remoteAllowed: false, source: 'default' }
+  }
 }

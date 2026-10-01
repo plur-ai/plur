@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { resolveScopeRoot, resolveTrustedScope } from '../src/scope.js'
 import { PlurPlugin } from '../src/index.js'
+import { withFolderMap, folderOn } from './folder-fixture.js'
 
 describe('resolveScopeRoot', () => {
   it('prefers a real worktree when there is one', () => {
@@ -38,6 +39,8 @@ describe('PlurPlugin project config integration', () => {
       // behaviour itself is covered by its own describe block below.
       isDirectoryTrusted: vi.fn().mockReturnValue(true),
     }
+    // #1347: the same trust, as the folder map holds it.
+    mockPlur = withFolderMap(mockPlur, [{ path: tempDir, trusted: true }])
   })
 
   afterEach(() => {
@@ -155,7 +158,9 @@ domain: cwd-test-domain
   it('handles missing .plur.yaml — scope undefined passed to injectHybrid', async () => {
     // Deliberately create a directory with NO .plur.yaml
     const emptyDir = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-no-config-')))
-    const plur = mockPlur
+    // #1347: a folder with no decision asks instead of recalling; this case is
+    // about a folder that is on but has no .plur.yaml.
+    const plur = folderOn(mockPlur, emptyDir)
 
     try {
       const plugin = await PlurPlugin({ directory: emptyDir, _plur: plur } as any)
@@ -198,6 +203,9 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
       learnRouted: vi.fn().mockResolvedValue(undefined),
       isDirectoryTrusted: vi.fn().mockReturnValue(false),
     }
+    // #1347: an untrusted .plur.yaml with no decision asks (folder-map.test.ts);
+    // here the folder map says on, so the decision applies and the repo's hints do not.
+    withFolderMap(plur, [{ path: tempDir, plur: 'on' }])
     const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
     await plugin['chat.message']!({ sessionID: 's1' } as any, {
       message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
@@ -216,6 +224,7 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
       learnRouted: vi.fn().mockResolvedValue(undefined),
       isDirectoryTrusted: vi.fn().mockReturnValue(true),
     }
+    withFolderMap(plur, [{ path: tempDir, trusted: true }])
     const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
     await plugin['chat.message']!({ sessionID: 's1' } as any, {
       message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
@@ -243,6 +252,7 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
         learnRouted: vi.fn().mockResolvedValue(undefined),
         isDirectoryTrusted: vi.fn().mockReturnValue(trusted),
       }
+      withFolderMap(plur, [trusted ? { path: tempDir, trusted: true } : { path: tempDir, plur: 'on' }])
       const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
       await plugin['chat.message']!({ sessionID: `s-${trusted}` } as any, {
         message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],

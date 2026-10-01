@@ -11,13 +11,16 @@
  * Model: spec/formal/PlurSpec/R2Integrations.lean §6.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { PlurPlugin, INJECT_TIMEOUT_MS } from '../src/index.js'
+import { PlurPlugin } from '../src/index.js'
+import { INJECT_TIMEOUT_MS } from '../src/timeout.js'
+import { folderOn } from './folder-fixture.js'
 
 const BLOCK_TEXT = '[ENG-1] Use pnpm.'
-const fakePlur = () => ({
+// A folder switched on in the folder map (#1347): see folder-fixture.ts.
+const fakePlur = () => folderOn({
   injectHybrid: vi.fn().mockResolvedValue({ count: 1, directives: BLOCK_TEXT, constraints: '', text: '' }),
   learnRouted: vi.fn().mockResolvedValue({}),
-})
+}, '/tmp/p')
 const chat = (hooks: any, sessionID: string, messageID: string, text = 'what package manager?') => {
   const output = { message: { id: messageID }, parts: [{ type: 'text', text }] as any[] }
   return hooks['chat.message']({ sessionID, messageID }, output).then(() => output)

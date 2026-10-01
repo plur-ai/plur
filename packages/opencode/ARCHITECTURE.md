@@ -147,6 +147,41 @@ Two independent paths, mirroring `@plur-ai/claw`'s `afterTurn`:
 Both call `plur.learnRouted()` with `scope`/`domain` from the project's
 `.plur.yaml` when one is found (see [Scope](#scope) below), fire-and-forget.
 
+## Folder map (#1347)
+
+Before it recalls or learns, the plugin asks the folder map what the user
+decided about the session's folder: `folderState()` in `index.ts` calls
+`Plur.resolveFolderPolicy(scopeRoot)` — core's resolver, the one the CLI hooks
+use — once per `chat.message`, `session.idle` and compaction, so a decision
+made mid-session applies from the next prompt.
+
+- `off`: no recall, no block, no question, no learning (the turn buffer is
+  still drained so it never grows).
+- `ask`: no recall and no learning. The first turn of each session renders the
+  one question, built by core's `folderAskOnce` (`packages/core/src/folder-ask.ts`)
+  — the same function, text and content rules as the Claude Code, Codex, Cursor
+  and Antigravity hooks, moved from the CLI into core so this in-process plugin
+  could share it rather than copy it. It goes through the same render path as a
+  memory block (`system.transform`, or the `chat.message` fallback).
+- `on`: the session scope is the policy's (a map `scope` beats a trusted
+  `.plur.yaml` hint), via core's `sessionSettings`.
+
+Nonces: `folderAskOnce` issues one single-use nonce per offered answer through
+core's `issueFolderNonce`, in the PLUR home this plugin opened, exactly as the
+hooks do. The hooks end a session's nonces at the editor's SessionEnd; opencode
+has no such event, so the plugin ends them on `session.deleted` and on
+`dispose` (the opencode process going away), with core's 24-hour TTL as the
+backstop. "Asked once" is kept in memory per plugin instance (the hooks keep a
+temp-dir marker because each hook is a new process), so a session continued in
+a new process is asked again with fresh nonces — the hooks' resume rule.
+
+A resolver failure falls back to the CLI hooks' rule: a project marker means
+`on`, otherwise `ask`. It never turns memory on where the map might say `off`.
+
+The entry module exports only the plugin function: opencode loads every export
+of it as a plugin and refuses the whole module when one is not a function
+(measured on opencode 1.18.33). `INJECT_TIMEOUT_MS` lives in `timeout.ts`.
+
 ## Scope
 
 `resolveScopeRoot()` (`scope.ts`) picks the root the plugin scopes a session
@@ -169,8 +204,8 @@ root — exactly where a cloned repo shipping both `.plur/engrams.yaml` and
 with no prompt typed, registered it as the user's global memory store (proved
 end to end, audit finding D1). This plugin turns that off.
 
-That same root is also passed to `readProjectConfig()` — the same
-`.plur.yaml` walk `@plur-ai/mcp` uses — but its `scope`/`domain` are **not**
+In an `on` folder that same root is also used to find and read the
+`.plur.yaml` — the same walk `@plur-ai/mcp` uses — but its `scope`/`domain` are **not**
 adopted automatically (D2, 2026-09 audit). A `.plur.yaml` can redirect
 `injectHybrid`'s recall leg and `learnRouted`'s write leg to a REMOTE store
 the user configured for a different context — proved against a stub host:

@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### opencode follows the folder map (#NNNN)
+
+**The opencode plugin now does what you decided for each folder**, like the
+Claude Code, Codex, Cursor and Antigravity hooks have since #1347. Before, it
+recalled and learned in every folder it was opened in, and the folder map
+(`~/.plur/folders.yaml`) was not read at all.
+
+- **off**: nothing happens in that folder — no recall, no memory block, no
+  question, no learning.
+- **ask** (any folder you have not decided about, including your home folder,
+  and a repo whose `.plur.yaml` asks for settings you have not trusted): no
+  memories. The first message of each session carries the same one-time
+  question the hooks ask, with a single-use command per answer (yes, never
+  here, and trust this repo's `.plur.yaml` when it has one). What the repo
+  requests is shown only as quoted data, never its token. "Not now" runs
+  nothing and the session is not asked again.
+- **on**: the session scope is the folder's scope from the map, else the scope
+  of a trusted `.plur.yaml`, and recall reaches the team store for that scope.
+
+The question's commands carry nonces issued the same way the hooks issue
+them: one per answer, bound to that folder and that answer, ended when
+opencode deletes the session or exits, and after 24 hours at most. A session
+continued in a new opencode process is asked again with fresh nonces.
+
+The question itself moved from the CLI into core (`folderAskOnce`,
+`sessionSettings`), so the hooks and the plugin share one implementation; the
+CLI hooks' behaviour is unchanged.
+
+**The plugin loads again in current opencode.** opencode treats every export of
+a plugin's entry module as a plugin, and refuses the whole module when one is
+not a function. `@plur-ai/opencode` 0.1.2 also exported a number
+(`INJECT_TIMEOUT_MS`), and opencode 1.18.33 refused to load it ("Plugin export
+is not a function"), so it never ran. The entry module now exports only the
+plugin.
+
 ## 0.21.0
 
 More control over what your agents remember, and where.
