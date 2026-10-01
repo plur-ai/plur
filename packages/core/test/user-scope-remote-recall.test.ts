@@ -16,7 +16,7 @@
  *   - existing org-affinity (group/project) dialing is unchanged.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
@@ -256,6 +256,58 @@ describe('dialing — re-audit follow-ups (N3, N4)', () => {
   })
 })
 
+describe('store selection — second re-audit (L1, ambiguity, ownership)', () => {
+  // One entry is selected per scope and used for the dial, the write target
+  // and the ownership check. Preference within the exact-case matches, then
+  // within the case-folded ones: a LOCAL path-backed store, then a writable
+  // url store, then a readonly url store; config order breaks ties. Fail
+  // safe: an exact or ambiguous match never leaves the machine when a local
+  // store matches it.
+  it('identical scope on a path store and a url store: the write and the read both stay local (L1)', () => {
+    const dir = tmp('plur-userscope-l1u-')
+    for (const order of ['path-first', 'url-first']) {
+      const pathEntry = `  - path: "${join(dir, order + '.yaml')}"\n    scope: "${ME}"\n`
+      const urlEntry = `  - url: "https://b.example.com"\n    token: "tb"\n    scope: "${ME}"\n`
+      const plur = plurWith(order === 'path-first' ? pathEntry + urlEntry : urlEntry + pathEntry)
+      expect(hostsOf(plur, { scope: ME })).toEqual([])
+      expect((plur as any)._resolveRemoteStoreForScope(ME)).toBeNull()
+      expect((plur as any)._isRemoteWriteScope(ME)).toBe(false)
+    }
+  })
+
+  it('ambiguous spelling (no exact match): the local store wins over a remote case twin, for read and write', () => {
+    const dir = tmp('plur-userscope-amb-')
+    const plur = plurWith(
+      `  - url: "https://b.example.com"\n    token: "tb"\n    scope: "USER:ACME:OTHER"\n` +
+      `  - path: "${join(dir, 'other.yaml')}"\n    scope: "user:acme:other"\n`,
+    )
+    expect((plur as any)._canonicalPersonalScope('User:Acme:Other')).toBe('user:acme:other')
+    expect(hostsOf(plur, { scope: 'User:Acme:Other' })).toEqual([])
+    // The exact remote spelling still reaches the remote store.
+    expect(hostsOf(plur, { scope: 'USER:ACME:OTHER' }).map(h => h.url)).toEqual(['https://b.example.com'])
+  })
+
+  it('three stores sharing one scope: the ownership check examines the entry the write lands on', () => {
+    const ro = `  - url: "https://a.example.com"\n    token: "ta"\n    scope: "${ME}"\n    readonly: true\n`
+    const rw = `  - url: "https://b.example.com"\n    token: "tb"\n    scope: "${ME}"\n`
+    const plur = plurWith(ro + rw)
+    // The write lands on the writable store B.
+    expect(((plur as any)._resolveRemoteStoreForScope(ME) as any)?.url).toBe('https://b.example.com')
+    // Only A's identity is known to be "me": B, where the write lands, is
+    // unknown, so the auto-route is refused (fail closed).
+    ;(plur as any)._noteMeIdentity('https://a.example.com', 'ta', { username: 'me', org_id: 'acme' })
+    expect((plur as any)._refuseRemotePersonalAutoRoute(ME)).toBe(true)
+    // B's identity is "me": not refused.
+    ;(plur as any)._noteMeIdentity('https://b.example.com', 'tb', { username: 'me', org_id: 'acme' })
+    expect((plur as any)._refuseRemotePersonalAutoRoute(ME)).toBe(false)
+    // With a local path store sharing the scope too, the write stays local.
+    const dir = tmp('plur-userscope-3s-')
+    const withLocal = plurWith(ro + rw + `  - path: "${join(dir, 'me.yaml')}"\n    scope: "${ME}"\n`)
+    expect((withLocal as any)._resolveRemoteStoreForScope(ME)).toBeNull()
+    expect((withLocal as any)._refuseRemotePersonalAutoRoute(ME)).toBe(false)
+  })
+})
+
 describe('personal user: scope against a live (stub) remote store', () => {
   function plurFor(storeScope: string): Plur {
     const dir = tmp('plur-userscope-e2e-')
@@ -411,6 +463,43 @@ describe('personal user: scope against a live (stub) remote store', () => {
     const b = await plur.learnBatch([{ statement: 'the bike chain wax is paraffin', context: { scope: 'USER:ACME:ME' } }])
     expect(b.results[0].decision).not.toBe('NOOP')
     expect(b.results[0].engram.scope).toBe(ME)
+  })
+
+  // M1: a config edit by another process (a local store added) is seen by
+  // learnRouted, learnAsync and learnBatch before the scope is folded.
+  it('stale config: a local store added by another process keeps learnRouted, learnAsync and learnBatch local (M1)', async () => {
+    const dir = tmp('plur-userscope-m1-')
+    const cfg = join(dir, 'config.yaml')
+    writeFileSync(cfg, `embeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "USER:ACME:ME"\n`)
+    const plur = new Plur({ path: dir })
+    // Another process adds a local path store with the exact scope.
+    writeFileSync(cfg,
+      `embeddings:\n  enabled: false\nstores:\n` +
+      `  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "USER:ACME:ME"\n` +
+      `  - path: "${join(dir, 'me.yaml')}"\n    scope: "${ME}"\n`)
+    const future = new Date(Date.now() + 5000)
+    utimesSync(cfg, future, future)
+    const a = await plur.learnAsync('the lathe chuck key hangs on the left hook', { scope: ME })
+    expect(a.engram.scope).toBe(ME)
+    const b = await plur.learnBatch([{ statement: 'the drill bits live in the blue case', context: { scope: ME } }])
+    expect(b.results[0].engram.scope).toBe(ME)
+    const r = await plur.learnRouted('the saw blades are in the top drawer', { scope: ME })
+    expect(r.scope).toBe(ME)
+    expect(server.appendCalls).toBe(0)
+  })
+
+  it('identical scope on a path store and the url store: learnRouted stays local, 0 appends (L1)', async () => {
+    const dir = tmp('plur-userscope-l1-')
+    writeFileSync(join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n` +
+      `  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${ME}"\n` +
+      `  - path: "${join(dir, 'me.yaml')}"\n    scope: "${ME}"\n`)
+    const plur = new Plur({ path: dir })
+    const e = await plur.learnRouted('the router password card is in the safe', { scope: ME })
+    expect(e.scope).toBe(ME)
+    expect(server.appendCalls).toBe(0)
+    await plur.recall('router', { scope: ME })
+    expect(server.recallCalls).toBe(0)
   })
 
   it('shared-scope recall against a group store is unchanged (still dials, still merges)', async () => {

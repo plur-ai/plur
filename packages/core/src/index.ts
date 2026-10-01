@@ -2014,6 +2014,14 @@ export class Plur {
    * scope. Keeps routing predictable and prevents accidental cross-team writes.
    */
   private _resolveRemoteStoreForScope(scope: string): RemoteStore | null {
+    // A personal scope routes through the ONE selected entry (#1515 L1): when
+    // a local path store shares the exact scope, the write stays local.
+    const personal = this._exactPersonalStore(scope)
+    if (personal !== undefined) {
+      return personal?.url && personal.readonly !== true
+        ? this._getRemoteDriver({ url: personal.url, token: personal.token, scope: personal.scope })
+        : null
+    }
     const stores = this.config.stores ?? []
     for (const entry of stores) {
       if (!entry.url) continue
@@ -2041,13 +2049,32 @@ export class Plur {
    * {@link _isRemoteWriteScope}.
    */
   private _isRemoteBackedScope(scope: string): boolean {
+    const personal = this._exactPersonalStore(scope)
+    if (personal !== undefined) return !!personal?.url
     return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
   }
 
   /** Exactly the router's rule (`_resolveRemoteStoreForScope`): a writable URL
    *  store for exactly this scope, so a write to it leaves the machine. */
   private _isRemoteWriteScope(scope: string): boolean {
+    const personal = this._exactPersonalStore(scope)
+    if (personal !== undefined) return !!personal?.url && personal.readonly !== true
     return (this.config.stores ?? []).some(s => !!s.url && s.readonly !== true && s.scope === scope)
+  }
+
+  /**
+   * For a personal `user:` scope that exactly names a configured store: the
+   * ONE selected entry (`personalStoreEntry` — local first, then writable url,
+   * then readonly url). `undefined` when the scope is not personal or names
+   * no store exactly, so callers keep their previous exact-match rule. Pure
+   * config lookup (no reload): it runs per engram on some paths, after the
+   * caller's own reload.
+   */
+  private _exactPersonalStore(scope: string): StoreEntry | null | undefined {
+    if (!scope.toLowerCase().startsWith('user:')) return undefined
+    const stores = this.config.stores ?? []
+    if (!stores.some(s => s.scope === scope)) return undefined
+    return personalStoreEntry(scope, stores.filter(s => typeof s.scope === 'string'))
   }
 
   /**
@@ -2080,7 +2107,11 @@ export class Plur {
    * the user's own. Unknown identity → false (fail closed).
    */
   private _isOwnRemoteNamespace(scope: string): boolean {
-    const entry = (this.config.stores ?? []).find(s => !!s.url && s.scope === scope)
+    // The entry the write lands on (#1515: one selection for a personal scope).
+    const personal = this._exactPersonalStore(scope)
+    const entry = personal !== undefined
+      ? personal
+      : (this.config.stores ?? []).find(s => !!s.url && s.scope === scope)
     if (!entry?.url) return false
     const id = this._meIdentities.get(this._meKey(entry.url, entry.token))
     if (!id) return false
@@ -2093,13 +2124,18 @@ export class Plur {
   /**
    * The configured scope a personal `user:` scope resolves to (#1515):
    * `personalStoreEntry` over EVERY configured store, path-backed and url —
-   * exact case first, else the first case-folded match in config order.
+   * exact case first, else case-folded; local before remote within each.
    * Returns `scope` unchanged when it is not personal, names no store, or
    * already names one exactly. One rule for writes (learn, learnAsync,
    * learnBatch) and for the read dial, so the same string reaches the same
    * store (re-audit N1/N3/N5).
    */
   private _canonicalPersonalScope(scope: string): string {
+    // Read the CURRENT config (re-audit M1): learnAsync/learnBatch fold here
+    // before the guard's own reload, and a store another process just added
+    // must already count — a stale list would send a write meant for a new
+    // local store to a remote case twin.
+    this.reloadConfigIfChanged()
     const entry = personalStoreEntry(scope, (this.config.stores ?? []).filter(s => typeof s.scope === 'string'))
     return entry ? entry.scope : scope
   }
