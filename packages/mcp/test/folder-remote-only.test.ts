@@ -205,3 +205,23 @@ describe('re-audit of #1521, B-2: roots discovery fails CLOSED', () => {
     expect(engramsText()).not.toMatch(/RACEA|RACEB/)
   }, 30_000)
 })
+
+describe('re-audit 2 of #1521, R2-S3: roots from a client that cannot announce changes', () => {
+  it('are asked again on every call, so a workspace that becomes remote-only is bound', async () => {
+    const { pathToFileURL } = await import('url')
+    const server = await createServer(new Plur({ path: root }), { profile: 'full', folder: home })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const c = new Client({ name: 'roots-nolc', version: '1.0.0' }, { capabilities: { roots: {} } })
+    let current = home
+    c.setRequestHandler('roots/list', async () => ({ roots: [{ uri: pathToFileURL(current).href }] }))
+    await c.connect(ct)
+    clients.push(c)
+    await c.callTool({ name: 'plur_status', arguments: {} })
+    current = work
+    const raw = await c.callTool({ name: 'plur_learn', arguments: { statement: 'NOLISTCHANGED personal note', scope: 'global' } })
+    expect(raw.isError).toBe(true)
+    const text = existsSync(join(root, 'engrams.yaml')) ? readFileSync(join(root, 'engrams.yaml'), 'utf8') : ''
+    expect(text).not.toContain('NOLISTCHANGED')
+  })
+})
