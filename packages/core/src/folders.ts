@@ -11,6 +11,7 @@ import { resolveProjectRemoteFromConfig } from './project-remote.js'
 import { isSharedScope } from './scope-util.js'
 import { isLocalOnlyScope } from './scope-target.js'
 import { renderFolderMapText } from './folder-map-text.js'
+import { parseDocument as parseYamlDocument } from 'yaml'
 
 /**
  * The folder map (#1347): `<PLUR home>/folders.yaml` holds the user's own
@@ -86,7 +87,14 @@ export interface FolderPolicy {
    * `untrusted-plur-yaml` (decision D1): the repo's `.plur.yaml` requests
    * settings that need trust, and they are ignored until the user says yes.
    */
-  reason?: 'untrusted-plur-yaml'
+  reason?: 'untrusted-plur-yaml' | 'malformed-map'
+  /**
+   * With `reason: 'malformed-map'`: why the folder map could not be read,
+   * naming the file and, where known, the line. The folder then behaves like
+   * `ask` and nothing is read or written (audit of #1521: fail safe, never
+   * fall back to `on`).
+   */
+  error?: string
   /** What that `.plur.yaml` requests, for the question. Never the token. */
   requested?: { scope?: string; domain?: string; remote_url?: string }
 }
@@ -280,20 +288,50 @@ function warnOnce(key: string, msg: string): void {
   logger.warning(msg)
 }
 
-interface LoadResult { map: FolderMap; malformed: boolean }
+interface LoadResult { map: FolderMap; malformed: boolean; error?: string }
+
+/** 1-based line of `offset` in `text`. */
+function lineOf(text: string, offset: number): number {
+  let n = 1
+  for (let i = 0; i < offset && i < text.length; i++) if (text.charCodeAt(i) === 10) n++
+  return n
+}
+
+/** Where a schema error's path points in the file, as "line N", when it can be found. */
+function schemaErrorLine(text: string, path: Array<string | number>): string {
+  try {
+    const doc = parseYamlDocument(text)
+    for (let n = path.length; n > 0; n--) {
+      const node = doc.getIn(path.slice(0, n), true) as { range?: [number, number, number] } | undefined
+      if (node?.range) return `line ${lineOf(text, node.range[0])}`
+    }
+  } catch { /* no position */ }
+  return 'line unknown'
+}
 
 function readMapFile(root: string): LoadResult | null {
   const file = folderMapPath(root)
   if (!existsSync(file)) return null
+  let text = ''
   try {
-    const raw = yaml.load(readFileSync(file, 'utf8').replace(/^﻿/, ''))
+    text = readFileSync(file, 'utf8').replace(/^﻿/, '')
+    const raw = yaml.load(text)
     if (raw === null || raw === undefined) return { map: { version: 1, folders: [] }, malformed: false }
     const parsed = FolderMapSchema.safeParse(raw)
-    if (!parsed.success) throw new Error(parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; '))
+    if (!parsed.success) {
+      throw new Error(parsed.error.issues.map(i =>
+        `${schemaErrorLine(text, i.path as Array<string | number>)}: ${i.path.join('.')}: ${i.message}`).join('; '))
+    }
     return { map: { version: 1, folders: (parsed.data.folders ?? []) as FolderEntry[] }, malformed: false }
   } catch (err) {
-    warnOnce(`malformed:${file}`, `[plur:folders] cannot read ${file}: ${(err as Error).message} — treating it as empty (folders fall back to ask)`)
-    return { map: { version: 1, folders: [] }, malformed: true }
+    // js-yaml errors carry a mark (0-based line); schema errors carry "line N".
+    const mark = (err as { mark?: { line?: number }; reason?: string }).mark
+    const detail = mark && typeof mark.line === 'number'
+      ? `line ${mark.line + 1}: ${(err as { reason?: string }).reason ?? (err as Error).message.split('\n')[0]}`
+      : (err as Error).message
+    const error = `${file} could not be read: ${detail.replace(/\s+/g, ' ').trim()}`
+    warnOnce(`malformed:${file}`, `[plur:folders] ${error} — every folder behaves like ask, and PLUR reads and writes nothing, until it is fixed`)
+    return { map: { version: 1, folders: [] }, malformed: true, error }
   }
 }
 
@@ -450,9 +488,11 @@ export function isTrustedInMap(entries: FolderEntry[], dir: string, home: string
  * Decide what PLUR does in `dir` (design r2 §Resolution, with owner decision
  * D1 "ignore-ask", 2026-09-29, matching #1228's E3):
  *  1. any matching `off` entry → off;
- *  1b. the most specific deciding map entry is `remote-only` → remote-only,
- *      with that entry's scope (else the most specific map scope); a repo
- *      marker below never overrides it;
+ *  0. a folders.yaml that cannot be read → ask, reason 'malformed-map';
+ *  1b. the most specific entry with an explicit mode is `remote-only` →
+ *      remote-only, with that entry's scope (else the most specific map
+ *      scope); a repo marker, or an entry that only sets `trusted`/`scope`,
+ *      never overrides it;
  *  2. a `.plur.yaml`:
  *     - TRUSTED (a covering `trusted: true` entry), or requesting nothing →
  *       on, exactly as before; a map `scope` beats its hint; its remote only
@@ -467,7 +507,15 @@ export function isTrustedInMap(entries: FolderEntry[], dir: string, home: string
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const home = opts.home ?? homedir()
-  const entries = loadFolderMap(opts.root).folders
+  const loaded = load(opts.root)
+  // A map that cannot be read fails SAFE (audit of #1521): it might hold an
+  // `off` or a `remote-only` decision, so nothing — not a repo marker, not a
+  // project MCP config — may turn memory on. The folder behaves like `ask`
+  // and the adapters say why, naming the file.
+  if (loaded.malformed) {
+    return { mode: 'ask', remoteAllowed: false, source: 'map', reason: 'malformed-map', ...(loaded.error ? { error: loaded.error } : {}) }
+  }
+  const entries = loaded.map.folders
   const strict = [canonicalize(dir)]
   const lax = [...new Set([strict[0], ...canonicalSpellings(dir), resolve(dir)])]
 
@@ -489,9 +537,16 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   // folder's memory stays on the team server, so a repo marker (`.plur.yaml`,
   // a project MCP config) must not turn it back into local memory. `off`
   // (above) still wins, and so does a MORE specific entry of the user's own.
-  const bestDeciding = mostSpecific(deciding, home)
-  if (bestDeciding?.plur === 'remote-only') {
-    const scope = bestDeciding.scope ?? mapScope
+  //
+  // Only an explicit MODE (on/off/ask/remote-only) decides here: an entry
+  // that only sets `trusted` or a `scope` is not a decision about memory
+  // (audit of #1521, B3). And a remote-only entry matches the same spellings
+  // `off` does (S4): a confidentiality mode fails closed, like `off`.
+  const modeEntries = entries.map((e, i) => ({ e, i })).filter(c => c.e.plur !== undefined &&
+    (c.e.plur === 'remote-only' ? entryCovers(c.e, lax, home, true) : entryCovers(c.e, strict, home, false)))
+  const bestMode = mostSpecific(modeEntries, home)
+  if (bestMode?.plur === 'remote-only') {
+    const scope = bestMode.scope ?? mapScope
     return { mode: 'remote-only', ...(scope ? { scope } : {}), remoteAllowed: false, source: 'map' }
   }
   if (untrustedRequest && deciding.length === 0) {
