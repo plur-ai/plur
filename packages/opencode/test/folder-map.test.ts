@@ -13,7 +13,7 @@
  * no network). Nothing here reads the user's own ~/.plur.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync, existsSync, readdirSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, saveFolderMap, type FolderEntry } from '@plur-ai/core'
@@ -113,9 +113,12 @@ describe('opencode follows the folder map (#1347)', () => {
     expect(first).toContain(`--path ${root}`)
     expect(first).toContain('Not now: run nothing')
 
-    // Asked once per session: the next turn is silent, and still no recall.
+    // Asked once per session, but the offer stays (audit F2 of #1517): the
+    // next turn carries the SAME commands, so a "yes" given then can be run.
     const second = await turn(hooks, 'ses-ask', 'and the staging host?', 2)
-    expect(second).toBe('')
+    expect(second).toContain(`--on --nonce ${yes![1]}`)
+    expect(second).toContain(`--off --nonce ${never![1]}`)
+    expect(second).toContain('Do not ask again')
     expect(inject).not.toHaveBeenCalled()
     await idleWithSelfReport(hooks, 'ses-ask')
     expect(learn).not.toHaveBeenCalled()
@@ -308,5 +311,39 @@ describe('opencode follows the folder map (#1347)', () => {
     expect(() => plur.setFolder(repo, { mode: 'on' }, { nonce: yes })).toThrow(/another session/)
     plur.setFolder(repo, { mode: 'on' }, { nonce: yes, session: 'ses-f5-a' })
     expect(plur.resolveFolderPolicy(repo).mode).toBe('on')
+  })
+
+  // F2 (audit of #1517): the offer stays actionable until the folder is decided.
+  it('F2: turn 2 carries the turn-1 commands, no new nonces are issued, and a yes ends the offer', async () => {
+    const hooks = await plugin()
+    const first = await turn(hooks, 'ses-f2', 'hello', 1)
+    const yes = /--on --nonce ([0-9a-f]{32})/.exec(first)![1]
+    const nonceFile = join(root, 'folder-nonces', 'ses-f2.yaml')
+    const issued = readFileSync(nonceFile, 'utf8')
+
+    const second = await turn(hooks, 'ses-f2', 'yes please', 2)
+    expect(second).toContain(`--on --nonce ${yes}`)
+    expect(readFileSync(nonceFile, 'utf8')).toBe(issued)
+
+    // The agent runs the "yes" command from this session.
+    plur.setFolder(repo, { mode: 'on' }, { nonce: yes, session: 'ses-f2' })
+    const third = await turn(hooks, 'ses-f2', 'go on', 3)
+    expect(third).not.toContain('--nonce')
+    expect(third).toContain('[ENG-1]')
+  })
+
+  it('F2: without system.transform (older opencode) the question still reaches the model', async () => {
+    const hooks = await plugin()
+    const texts: string[] = []
+    for (let n = 1; n <= 3; n++) {
+      const output = { message: { id: `msg-fb-${n}` }, parts: [{ type: 'text', text: 'hi' }] as any[] }
+      await hooks['chat.message']!({ sessionID: 'ses-fb', messageID: `msg-fb-${n}` } as any, output as any)
+      texts.push(output.parts.slice(1).map((p: any) => p.text).join('\n'))
+      await hooks.event!({ event: { type: 'session.idle', properties: { sessionID: 'ses-fb' } } } as any)
+    }
+    const delivered = texts.find(t => t.includes('--on --nonce'))
+    expect(delivered).toBeDefined()
+    // The first delivery is the full question, not a "you already asked" reminder.
+    expect(delivered).toContain('ask the user once')
   })
 })

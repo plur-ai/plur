@@ -21,6 +21,7 @@ import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
 import { resolveScopeRoot, resolveFolderDir, resolveTrustedScope, projectRemoteRefusalNotice, folderPolicy } from './scope.js'
 import { INJECT_TIMEOUT_MS } from './timeout.js'
+import { folderAskReminder } from './ask.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
 // Unconditional — unlike `log` above. A `.plur.yaml` scope the plugin refuses
@@ -141,6 +142,15 @@ export const PlurPlugin: Plugin = async (ctx) => {
     asked.add(sessionID)
     return true
   }
+  // The offer each undecided session was given (audit F2 of #1517): the full
+  // question until it has reached the model once, then a reminder with the
+  // same commands, until the folder is decided or the session ends.
+  const offers = new Map<string, { question: string; reminder: string; delivered: boolean }>()
+  /** The full question has reached the model: later turns get the reminder. */
+  const markDelivered = (sessionID: string, block: string) => {
+    const offer = offers.get(sessionID)
+    if (offer && block === offer.question) offer.delivered = true
+  }
   /** End a session's folder nonces (#1378): they die with the session, or after core's TTL. */
   const endNonces = (sessionID: string | undefined) => {
     if (!sessionID || !asked.has(sessionID)) return
@@ -178,6 +188,8 @@ export const PlurPlugin: Plugin = async (ctx) => {
           .map((p: any) => p.text).join('\n')
 
         const state = folderState()
+        // Decided (on or off): the offer, and its nonces, are done.
+        if (state.policy.mode !== 'ask' && offers.delete(input.sessionID)) endNonces(input.sessionID)
         if (state.policy.mode === 'off') {
           blocks.clear(input.sessionID)
           return
@@ -187,14 +199,21 @@ export const PlurPlugin: Plugin = async (ctx) => {
           // the one question — the same text, content rules and per-answer
           // nonces as the CLI hooks (core's folderAskOnce); later turns carry
           // nothing until the user decides.
-          const question = folderAskOnce({
-            dir: folderDir, policy: state.policy, sessionId: input.sessionID,
-            root: plur.storageRoot, plur, prompt: query, claim: claimAsk,
-            // Bound to this session (audit F5 of #1517): shell.env below tells
-            // the agent's shell which session it is in.
-            bindSession: true,
-          })
-          if (question) blocks.set(input.sessionID, question)
+          let offer = offers.get(input.sessionID)
+          if (!offer) {
+            const question = folderAskOnce({
+              dir: folderDir, policy: state.policy, sessionId: input.sessionID,
+              root: plur.storageRoot, plur, prompt: query, claim: claimAsk,
+              // Bound to this session (audit F5 of #1517): shell.env below tells
+              // the agent's shell which session it is in.
+              bindSession: true,
+            })
+            if (question) {
+              offer = { question, reminder: folderAskReminder(question), delivered: false }
+              offers.set(input.sessionID, offer)
+            }
+          }
+          if (offer) blocks.set(input.sessionID, offer.delivered ? offer.reminder : offer.question)
           else blocks.clear(input.sessionID)
         } else {
           const { settings, remote } = state
@@ -243,6 +262,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
               synthetic: true,
             })
             fallbackInjected.add(input.sessionID)
+            markDelivered(input.sessionID, block)
             log('system.transform unavailable — using chat.message fallback (accretes)')
           } else if (block) {
             // Per the spec's Known Gotcha #1: a part with messageID undefined
@@ -264,7 +284,10 @@ export const PlurPlugin: Plugin = async (ctx) => {
       await safe('system.transform', async () => {
         const block = input.sessionID ? blocks.get(input.sessionID) : undefined
         // Already in this request via the fallback part: do not render twice.
-        if (block && !fallbackInjected.has(input.sessionID!)) output.system.push(block)
+        if (block && !fallbackInjected.has(input.sessionID!)) {
+          output.system.push(block)
+          markDelivered(input.sessionID!, block)
+        }
         if (input.sessionID) path.markRendered(input.sessionID)
       })
     },
@@ -304,6 +327,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
           fallbackInjected.delete(sessionID)
           endNonces(sessionID)
           asked.delete(sessionID)
+          offers.delete(sessionID)
         }
       })
     },
@@ -342,6 +366,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
         // The process is going away: the question's nonces go with it.
         for (const sessionID of [...asked]) endNonces(sessionID)
         asked.clear()
+        offers.clear()
       })
     },
   } satisfies Hooks
