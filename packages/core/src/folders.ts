@@ -815,7 +815,18 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   if (mode !== undefined) entry.plur = mode
   if (change.scope !== undefined) {
     entry.scope = change.scope
-    if (change.mode === undefined) delete entry.plur
+    if (change.mode === undefined && entry.plur === 'remote-only') {
+      // Owner decision on #1521: `--scope X` alone on a remote-only folder
+      // changes only the scope. It must never silently switch the folder back
+      // to local memory; leaving remote-only takes --on/--off/--ask or rm. The
+      // new scope must be served by a url store, like any remote-only scope.
+      if (!(opts.remoteScopes ?? []).includes(change.scope)) {
+        throw new FolderMapError('scope-unconfigured',
+          `"${change.scope}" is not served by a remote store (a url store in config.yaml), and ${folder} is ` +
+          'remote-only, so its memory would have nowhere to go; nothing was changed. To keep memory on this ' +
+          `machine there instead, say so: plur folders set ${folder} --on.`)
+      }
+    } else if (change.mode === undefined) delete entry.plur
   }
   if (change.mode !== undefined) entry.plur = change.mode
   if (change.trusted === true) entry.trusted = true
