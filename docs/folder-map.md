@@ -46,15 +46,20 @@ read is never overwritten; fix or remove it first.
 
 ## Remote-only folders
 
-Use this for work whose memory must stay on a team server, for example client
-work under a contract that does not allow copies on a laptop.
+Use this for work whose memories belong on a team server rather than in your
+personal store.
 
 ```
 plur folders set ~/client-work --remote-only --scope group:acme/client
 ```
 
 The scope must be served by a team store (a `url` store in `config.yaml`; add
-one with `plur remote` or `plur stores add` first). In a remote-only folder:
+one with `plur remote` or `plur stores add` first). Every PLUR integration in
+that folder is bound to it: the editor hooks, the MCP server (the folders the
+editor lists as workspace roots, and the folder it was started in), and every
+`plur` command run there.
+
+### What happens there
 
 - **Saving without a scope** sends the memory to the folder's scope. That scope
   is the folder's "global".
@@ -65,32 +70,71 @@ one with `plur remote` or `plur stores add` first). In a remote-only folder:
 - **Saving to another team scope you can write** still works.
 - **Recall and injection** read the folder's scope from the team server and
   your installed packs. They never read your personal store.
-- **If the save cannot reach the server**, it waits in the outbox (a row in
+- **Your personal memories are out of reach there.** Looking one up by id finds
+  nothing; forgetting, pinning, rating, updating or rescoping one is refused.
+  So are operations on the personal store as a whole: saving meta-engrams,
+  exporting a pack, recording, confirming or resolving tensions, and turning a
+  timeline episode into a memory. The timeline, tension list and history
+  queries answer empty.
+- **A save that cannot reach the server** waits in the outbox (a row in
   `engrams.yaml` marked for delivery, see `plur outbox`) and is removed once it
-  is delivered. No other memory is kept on this machine.
+  is delivered. Such a queued save can only be delivered or forgotten, from any
+  folder: forgetting deletes it outright, and it cannot be rescoped or updated
+  to a local scope. If the team scope's sensitivity policy is tightened before
+  it is sent, it stays queued (with the reason) rather than being kept as a
+  local memory.
 - **If the server cannot be reached at session start**, the session starts
   without memory and says so once. It never falls back to your personal store.
-- A repository's `.plur.yaml` or project MCP config cannot turn a remote-only
-  folder back on. Only `off`, or a more specific entry of your own, overrides it.
-
 - **No session timeline is kept.** `plur capture`, `plur_capture` and the
   timeline entry the session-end hooks and `plur_session_end` would write are
-  refused or skipped there, because a timeline entry can hold session content.
-  A session's end-of-session suggestions still go to the team scope. `plur
-  status` statistics and the local embedding cache are unchanged.
+  refused or skipped, because a timeline entry can hold session content. A
+  session's end-of-session suggestions still go to the team scope.
 - **Changing the scope keeps the folder remote-only.** `plur folders set
   <folder> --scope <other>` only changes the scope (it must also be served by a
   team store). It never switches the folder back to local memory.
 - **An entry with no scope** (written by hand) refuses every save, and sessions
-  there say no team server serves the folder. Add a scope with `plur folders set
-  <folder> --remote-only --scope <s>`.
+  there say no team server serves the folder.
+- **Only an explicit decision of your own overrides it.** A repository's
+  `.plur.yaml` or project MCP config cannot turn the folder back on, and neither
+  can an entry below it that only sets `trusted` or a `scope` (`plur trust` on a
+  repository inside the folder). `off`, or a more specific entry with an
+  explicit mode (`--on`, `--ask`, `--off`), does. The entry also matches the
+  folder under another letter case or through a symlinked parent, the way `off`
+  does.
 
 To leave remote-only you say so explicitly: `plur folders set <folder> --on`
 (or `--off`, `--ask`), or `plur folders rm <folder>`.
 
-**Update every PLUR integration together.** A PLUR version older than 0.21.1
-cannot read a `folders.yaml` that holds a `remote-only` entry: it treats the
-whole file as unreadable, so in that integration every folder asks again and
-your `off` entries are not applied. Upgrade the CLI, the MCP server and the
-editor plugins (opencode, OpenClaw, Hermes) to the same version, and re-run
-`plur init` so pinned configs follow, before you add a remote-only entry.
+### What is still written on this machine
+
+Remote-only keeps your memories, and the client's, out of your personal store.
+It is not a guarantee that nothing about the session touches the disk:
+
+- the queued saves above, until they are delivered or forgotten;
+- the embedding cache (`.embeddings-cache.json`): vectors for team memories
+  that were ranked locally, keyed by id;
+- the remote store's in-process cache of team rows (memory only, not disk);
+- the history log (`history.jsonl`): events about saves and injections, with
+  ids and counts — in a remote-only folder the statement previews are left out;
+- `plur status` statistics and the outbox's own bookkeeping (attempts, errors,
+  idempotency keys).
+
+Session checkpoints that the editor hooks write while a session runs are
+dropped at session end in a remote-only folder, not captured.
+
+### If folders.yaml cannot be read
+
+A `folders.yaml` with a syntax error, or a value PLUR does not know, is never
+read as empty: every folder behaves like `ask`, PLUR reads and writes nothing,
+and the first prompt of a session says so, naming the file and the line. Fix
+or remove the file to continue. (`plur folders set` refuses to overwrite it.)
+
+### Update every PLUR integration together
+
+A PLUR version older than 0.21.1 cannot read a `folders.yaml` that holds a
+`remote-only` entry. It treats the whole file as unreadable and, being older,
+falls back to its old behaviour: every folder asks again, your `off` entries are
+not applied, and a folder with a project setup gets full local memory. Upgrade
+the CLI, the MCP server and the editor plugins (opencode, OpenClaw, Hermes) to
+the same version, and re-run `plur init` so pinned configs follow, before you
+add a remote-only entry.

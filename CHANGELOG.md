@@ -4,7 +4,8 @@
 
 ### remote-only folders keep memory on the team server (#1521)
 
-A new folder-map mode for work whose memory must not be kept on your machine:
+A new folder-map mode for work whose memories belong on a team server, not in
+your personal store:
 
 ```
 plur folders set ~/client-work --remote-only --scope group:acme/client
@@ -24,11 +25,20 @@ needs the usual `--nonce`. In a remote-only folder:
   injection (Cursor's session start, the hooks' fallback) dials the team server
   too; elsewhere it stays local, as before.
 - A save that cannot reach the server waits in the outbox and is removed once
-  delivered.
+  delivered. Such a queued save can only be delivered or forgotten (forgetting
+  deletes it); it cannot be rescoped or updated to a local scope, and a
+  tightened sensitivity policy holds it in the queue instead of demoting it to
+  a local memory.
+- Personal memories are out of reach: id lookups find nothing, and forget, pin,
+  feedback, update, rescope, meta-engram saves, pack export and tension changes
+  on them are refused. Write dedup only considers queued saves, so a team save
+  is never absorbed into a personal memory. LLM dedup decisions are off there.
 - When the server cannot be reached, the session starts without memory and says
   so once. It never falls back to the personal store.
-- A repository's `.plur.yaml` or project MCP config cannot turn the folder back
-  on; only `off` or a more specific entry of your own overrides it.
+- A repository's `.plur.yaml`, a project MCP config, or an entry below that only
+  sets `trusted` or a `scope` cannot turn the folder back on; only `off` or a
+  more specific entry with an explicit mode does. The entry matches the same
+  spellings `off` does.
 - No session timeline is kept there: `plur capture` / `plur_capture` are refused,
   and the session-end hooks and `plur_session_end` capture no episode (their
   engram suggestions still go to the team scope).
@@ -37,12 +47,23 @@ needs the usual `--nonce`. In a remote-only folder:
   takes `--on`, `--off`, `--ask` or `plur folders rm`.
 - An entry with no scope refuses every save and says so.
 
+- Still written locally: queued saves, the embedding cache, history events
+  (without statement previews in such a folder), statistics. See the docs.
+
+**A `folders.yaml` that cannot be read now fails safe.** Every folder behaves
+like `ask`, PLUR reads and writes nothing, and the session says so, naming the
+file and line. Before, it was read as empty, so a folder with a project setup
+got full memory.
+
 **Update every PLUR integration together.** Older versions read a
 `folders.yaml` holding a `remote-only` entry as unreadable, so in them every
-folder asks again and `off` entries are not applied.
+folder asks again, `off` entries are not applied, and a folder with a project
+setup gets full local memory.
 
-It applies to the Claude Code, Codex, Cursor and Antigravity hooks and to the
-MCP server, which now re-reads its folder's decision before each tool call. The
+It applies to the Claude Code, Codex, Cursor and Antigravity hooks, to every
+`plur` command (bound to the folder it runs in), and to the MCP server, which
+re-reads the decision before each tool call for its client's workspace roots
+and the folder it was started in, and fails closed when it cannot. The
 opencode plugin does not follow the folder map yet; it picks the mode up once
 its folder-map support (#1517) is in. Core: `Plur.bindFolder(dir)` /
 `bindFolderPolicy(dir, policy)`, `RemoteOnlyWriteError`, and
