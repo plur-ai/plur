@@ -90,6 +90,12 @@ import {
   type FolderChange,
   type FolderAnswer,
 } from './folders.js'
+import {
+  RemoteOnlyWriteError,
+  type RemoteOnlyBinding,
+  type RemoteOnlyStatus,
+  type RemoteOnlyRefusal,
+} from './remote-only.js'
 import type { Engram } from './schemas/engram.js'
 import { ATTRIBUTION_UNIDENTIFIED, MeasuredUnderSchema, type MeasuredUnder } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -167,6 +173,18 @@ export {
   type FolderAnswer,
   type FolderMapErrorCode,
 } from './folders.js'
+// remote-only folders (owner decisions 2026-10-01): what a bound instance
+// refuses and how it says so. See remote-only.ts and Plur.bindFolder.
+export {
+  RemoteOnlyWriteError,
+  remoteOnlyRefusalMessage,
+  remoteOnlyUnservedNotice,
+  remoteOnlySessionLine,
+  type RemoteOnlyBinding,
+  type RemoteOnlyStatus,
+  type RemoteOnlyRefusal,
+} from './remote-only.js'
+export { renderFolderMapText, FOLDER_MAP_TEMPLATE } from './folder-map-text.js'
 export { generateGuardrails } from './guardrails.js'
 // Shared memory system-prompt renderer (opencode plugin's task 1): one
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
@@ -1152,6 +1170,14 @@ export class Plur {
    */
   private _sessionScopes = new SessionScopeRegistry()
   /**
+   * Set when this instance is bound to a `remote-only` folder
+   * (`bindFolder` / `bindFolderPolicy`, owner decisions 2026-10-01): writes go
+   * only to the folder's team scope (or another writable team scope), and
+   * recall/inject read only that scope, dialled, plus installed packs. Null
+   * everywhere else, where nothing below changes.
+   */
+  private _remoteOnly: RemoteOnlyBinding | null = null
+  /**
    * Cross-encoder reranker adapter (#220). Resolved lazily on first recall with
    * `rerank: true`. Defaults to the "off" sentinel when PLUR_RERANKER is unset,
    * so existing call sites pay zero cost until they opt in.
@@ -1535,6 +1561,29 @@ export class Plur {
   }
 
   /**
+   * The corpus a WRITE dedups against. Everything, except in a remote-only
+   * folder: there the folder's read corpus plus this scope's own queued rows,
+   * so a team save is never matched to (or credited on) a personal engram.
+   */
+  private async _writeDedupCorpus(scope: string): Promise<Engram[]> {
+    if (!this._remoteOnly) return await this._loadAllEngrams()
+    const queued = (await this._loadCached(this.paths.engrams)).filter(e => e.scope === scope)
+    return [...queued, ...(await this._readCorpus())]
+  }
+
+  /**
+   * The corpus the READ paths (recall, inject) rank. Everything, except in a
+   * remote-only folder (owner decisions 2026-10-01): there it is the cached
+   * rows of the folder's team store plus installed packs, never the personal
+   * primary store or a local secondary store. Write paths keep
+   * `_loadAllEngrams` — they need the primary corpus for ids and dedup.
+   */
+  private async _readCorpus(): Promise<Engram[]> {
+    if (!this._remoteOnly) return await this._loadAllEngrams()
+    return await this._loadSecondaryAndPacks({ remoteOnlyScope: this._remoteOnly.scope })
+  }
+
+  /**
    * Everything that is NOT the primary store: configured secondary stores
    * (file-path AND remote) plus installed packs, with the id namespacing, scope
    * narrowing and containment guard applied.
@@ -1553,8 +1602,11 @@ export class Plur {
    *
    * One implementation, two callers. Duplicating it is what caused all three.
    */
-  private async _loadSecondaryAndPacks(): Promise<Engram[]> {
-    const stores = this.config.stores ?? []
+  private async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promise<Engram[]> {
+    // remote-only: only the url store(s) serving the folder's team scope — no
+    // secondary file store, which is this machine's disk like the primary.
+    const remoteOnly = opts !== undefined && 'remoteOnlyScope' in opts
+    const stores = (this.config.stores ?? []).filter(s => !remoteOnly || (!!s.url && s.scope === opts!.remoteOnlyScope))
     const all: Engram[] = []
     for (const store of stores) {
       const storeEngrams = store.url
@@ -3404,6 +3456,21 @@ export class Plur {
     // routed — against a `sensitivity` policy another process had since
     // tightened. One statSync; reloads only on an mtime change.
     this.reloadConfigIfChanged()
+    // remote-only folder (owner decisions 2026-10-01): the folder's team scope
+    // is the default, nothing is auto-routed, and anything that would stay on
+    // this machine is refused rather than written — including the sensitive
+    // content the guard below would otherwise demote to local.
+    if (this._remoteOnly) {
+      context = this._remoteOnlyContext(context)
+      const scope = context!.scope!
+      const scanText = `${statement}\n${JSON.stringify(context ?? {})}`
+      const offending = this._offendingHitsForScope(scanText, scope)
+      if (offending.length > 0) {
+        const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
+        throw new RemoteOnlyWriteError(this._remoteOnly.folder, this._remoteOnly.scope, scope, 'sensitive', patterns)
+      }
+      return { scope, context, demotion: null, routed: null, refusedShared: null, scopeSource: 'session' }
+    }
     // "Truly unscoped" = caller passed no scope AND no session/`.plur.yaml`
     // default is in effect (both land in the session scope registry). Only this
     // path auto-routes / applies unscoped_default; everything else is honored
@@ -3818,9 +3885,11 @@ export class Plur {
       // Secondary stores and packs are NOT the primary corpus. They are small,
       // separately loaded, and no seam speaks for them, so they are scanned in
       // memory in both modes; only the primary half moves into the store.
-      const allEngrams = canDelegate
-        ? await this._loadSecondaryAndPacks()
-        : await this._loadAllEngrams()
+      const allEngrams = this._remoteOnly
+        ? await this._writeDedupCorpus(scope)
+        : canDelegate
+          ? await this._loadSecondaryAndPacks()
+          : await this._loadAllEngrams()
 
       // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
       // On dedup hit, mutate: increment write_count, append source (#107).
@@ -3878,7 +3947,9 @@ export class Plur {
 
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
-        : generateEngramId(allEngrams, this._mintedTodayIds())
+        // remote-only: `allEngrams` leaves out most of the primary store, whose
+        // ids a queued (outbox) row must still not collide with.
+        : generateEngramId(this._remoteOnly ? [...engrams, ...allEngrams] : allEngrams, this._mintedTodayIds())
       // Claim it in-process immediately (#816). The history record is written
       // later and best-effort; without this, two writes in the same tick — or
       // one whose history append fails — could both take the same suffix.
@@ -4316,7 +4387,7 @@ export class Plur {
     // then POST and merge the server-assigned ID into the local engram
     // representation we hand back to the caller. On failure, save to
     // local outbox for retry (issue #26).
-    const allEngrams = await this._loadAllEngrams()
+    const allEngrams = await this._writeDedupCorpus(scope)
     // Decision A: a same-scope match only in a pack or a readonly store does
     // not absorb the write; it is POSTed and the match noted in history.
     const { hit: hashMatch, foreign: unpersistableHit } = await this._firstPersistableHit(
@@ -4716,7 +4787,7 @@ export class Plur {
       // readonly / other-remote match falls through to learn(), which stores
       // the write and notes the match in history.
       hashDedup: async (statement: string, scope?: string) => (await this._firstPersistableHit(
-        await this._loadAllEngrams(), this._hashDedupPredicate(statement, scope), scope,
+        await this._writeDedupCorpus(scope ?? ''), this._hashDedupPredicate(statement, scope), scope,
       )).hit,
       // remote:false (#776) — dedup queries are DERIVED FROM STATEMENTS. With
       // the remote leg on, every plur_learn would fire statement-derived POSTs
@@ -4770,6 +4841,9 @@ export class Plur {
   /** Async learn with LLM-driven deduplication (Ideas 1+2+19). */
   async learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
     this._assertWritable()
+    // remote-only: fill/refuse the scope up front, so the LLM dedup pass only
+    // ever compares against (and merges into) the folder's team scope.
+    if (this._remoteOnly) context = this._remoteOnlyContext(context)
     const { learnAsync: learnAsyncImpl } = await import('./learn-async.js')
     return learnAsyncImpl(await this._learnAsyncDeps(), statement, context)
   }
@@ -4781,6 +4855,9 @@ export class Plur {
     opts?: { maxLlmCalls?: number },
   ): Promise<LearnBatchResult> {
     this._assertWritable()
+    // remote-only: every item is checked BEFORE any is written, so a refused
+    // item never leaves the batch half-applied.
+    if (this._remoteOnly) statements = statements.map(s => ({ ...s, context: this._remoteOnlyContext(s.context) }))
     const { learnBatch: learnBatchImpl } = await import('./learn-async.js')
     return learnBatchImpl(await this._learnAsyncDeps(), statements, llm, opts)
   }
@@ -4835,7 +4912,8 @@ export class Plur {
     // a NARROWING step, not a replacement: it returns a superset, and the
     // remaining predicates are applied here. `limit` is applied last, after all
     // of them, so a row removed by expiry does not consume a slot.
-    const adapter = this._primaryQueryAdapter()
+    // remote-only: the primary store is never queried, so no pushdown.
+    const adapter = this._remoteOnly ? null : this._primaryQueryAdapter()
     if (adapter) {
       const pushdownFilter = {
         status: 'active' as const,
@@ -4985,7 +5063,12 @@ export class Plur {
     const fetchLimit = Math.max(intentFetch, rerankFetch)
     let results: Engram[]
     const primaryAdapter = this._primaryQueryAdapter()
-    if (this.pgliteAdapter) {
+    if (this._remoteOnly) {
+      // remote-only: rank the read corpus in memory; the index and the
+      // primary adapter hold the personal store.
+      const filtered = await this._filterEngrams(options)
+      results = await embeddingSearch(filtered, query, fetchLimit, this.paths.root)
+    } else if (this.pgliteAdapter) {
       const filtered = await this._filterEngrams(options)
       results = await this._pgliteSemanticRecall(query, fetchLimit, filtered, options)
     } else if (primaryAdapter) {
@@ -5036,9 +5119,11 @@ export class Plur {
     // When intent is off the hybrid call handles reranking inline so the
     // PGLite and JSON paths stay symmetric.
     const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
+    // remote-only: the PGLite index mirrors the personal store; rank in memory.
+    const pglite = this._remoteOnly ? null : this.pgliteAdapter
     let result: HybridSearchResult
     if (intent) {
-      result = this.pgliteAdapter
+      result = pglite
         ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
         : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
       let routed = applyIntentRouting(result.engrams, intent.profile)
@@ -5049,7 +5134,7 @@ export class Plur {
         rerankedCount = reranked.count
       }
       result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
-    } else if (this.pgliteAdapter) {
+    } else if (pglite) {
       result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
     } else {
       result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
@@ -5938,6 +6023,23 @@ export class Plur {
     // life of the process (#864).
     this.reloadConfigIfChanged()
     const stores = (this.config.stores ?? []).filter(s => s.url)
+    if (this._remoteOnly) {
+      // remote-only (owner decisions 2026-10-01): dial exactly the store(s)
+      // serving the folder's team scope, for that scope only — with or
+      // without a session scope, and never a `.plur.yaml` remote.
+      const scope = this._remoteOnly.scope
+      if (!scope) return []
+      const seen = new Set<string>()
+      const hosts: RemoteRecallHost[] = []
+      for (const s of stores) {
+        if (s.scope !== scope) continue
+        const key = `${normalizeEndpointUrl(s.url!)}::${s.token ?? ''}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        hosts.push({ url: s.url!, token: s.token ?? '', scopes: [scope], entries: [{ scope }] })
+      }
+      return hosts
+    }
     const rp = options?.remote_project
     const rpKey = rp ? normalizeEndpointUrl(rp.url) : null
     // Dialing context (#243): an explicit recall scope wins; otherwise the
@@ -6248,7 +6350,7 @@ export class Plur {
     query: string,
     options?: RecallOptions & { include_expired?: boolean },
   ): Promise<Engram[]> {
-    const adapter = this._primaryQueryAdapter()
+    const adapter = this._remoteOnly ? null : this._primaryQueryAdapter()
     if (adapter?.searchBM25Exhaustive) {
       try {
         const narrowed = await adapter.searchBM25Exhaustive(query, {
@@ -6270,7 +6372,7 @@ export class Plur {
 
   private async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
     let engrams: Engram[]
-    if (this.indexedStorage) {
+    if (this.indexedStorage && !this._remoteOnly) {
       engrams = await this.indexedStorage.loadFiltered({
         status: 'active',
         scope: options?.scope,
@@ -6282,7 +6384,7 @@ export class Plur {
         domain: options?.domain,
       })
     } else {
-      const adapter = this._primaryQueryAdapter()
+      const adapter = this._remoteOnly ? null : this._primaryQueryAdapter()
       if (adapter && typeof adapter.loadFiltered === 'function' && !this.pgliteAdapter) {
         // #906: primary-store adapter (e.g. Postgres) supports server-side
         // filtered load. Use it instead of _loadAllEngrams + in-memory filter:
@@ -6326,8 +6428,9 @@ export class Plur {
       // and remains in sync via _syncIndex on every write — but the
       // filtered relational path here goes through the YAML cache for
       // sync semantics. _loadAllEngrams reads through a mtime-based cache,
-      // so the cost is comparable.
-      engrams = await this._loadAllEngrams()
+      // so the cost is comparable. remote-only: the read corpus (team store
+      // rows + packs), never the personal store.
+      engrams = await this._readCorpus()
       engrams = engrams.filter(e => e.status === 'active')
       if (options?.scopes !== undefined) {
         // Permitted-scope allow-list (Phase 3). The in-memory twin of the SQL
@@ -6384,6 +6487,9 @@ export class Plur {
     // `.lock` files.
     if (this._readonly) return
     if (results.length === 0) return
+    // remote-only: results are team-store and pack rows; the personal store
+    // is neither read nor touched here.
+    if (this._remoteOnly) return
     // Filter out store engrams — they're managed by their source.
     // Via YAML path: store engrams have _originalId. Via SQLite path: namespaced IDs (ENG-XX-...).
     const isStoreEngram = (e: Engram) =>
@@ -6506,7 +6612,44 @@ export class Plur {
 
   /** Scored injection within token budget (BM25 only). Returns formatted strings. */
   async inject(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    if (this._remoteOnly) {
+      // remote-only (owner decisions 2026-10-01): there is no local store to
+      // inject from, so even the keyword path dials the folder's team server
+      // (one call, bounded by remote_timeout_ms). Elsewhere inject() stays
+      // local-only, as before.
+      const remotePromise = this._startRemoteRecall(task, {
+        scope: options?.scope,
+        session: options?.session_id,
+        remote: options?.remote,
+        remote_timeout_ms: options?.remote_timeout_ms,
+      })
+      const remote = await this._remoteInjectCandidates(remotePromise, options)
+      const result = await this._formatInjection(task, options, undefined, remote)
+      result.remote_only = this._remoteOnlyStatus(remotePromise ? await remotePromise : null)
+      return result
+    }
     return await this._formatInjection(task, options)
+  }
+
+  /**
+   * Whether the remote-only folder's team server served this read
+   * (`InjectionResult.remote_only`). Adapters say so, once per session, when
+   * it did not: the session then has no memory, by design — never a silent
+   * fallback to the personal store.
+   */
+  private _remoteOnlyStatus(remote: RemoteRecallResult | null): RemoteOnlyStatus {
+    const ro = this._remoteOnly!
+    const base = { folder: ro.folder, scope: ro.scope }
+    if (!ro.scope) return { ...base, served: false, reason: 'no-scope' }
+    const store = (this.config.stores ?? []).find(s => !!s.url && s.readonly !== true && s.scope === ro.scope)
+    if (!store?.url) return { ...base, served: false, reason: 'no-store' }
+    let host = store.url
+    try { host = new URL(store.url).host } catch { /* keep as configured */ }
+    if (!remote) return { ...base, host, served: false, reason: isRemoteRecallDisabled() ? 'disabled' : 'not-dialled' }
+    const key = normalizeEndpointUrl(store.url)
+    const outcome = remote.outcomes.find(o => normalizeEndpointUrl(o.url) === key)
+    if (!outcome) return { ...base, host, served: false, reason: 'not-dialled' }
+    return outcome.state === 'ok' ? { ...base, host, served: true } : { ...base, host, served: false, reason: outcome.state }
   }
 
   /** Scored injection with embedding boost when available. Falls back to BM25 if embeddings not installed. */
@@ -6538,11 +6681,13 @@ export class Plur {
     // quietly ran on keyword matching only and nobody could tell.
     let embedFailure: string | null = null
     try {
-      const engrams = (await this._loadAllEngrams()).filter(e => e.status === 'active')
+      // remote-only: the read corpus (team store rows + packs), and no PGLite
+      // index, which mirrors the personal store.
+      const engrams = (await this._readCorpus()).filter(e => e.status === 'active')
       // Route through PGLite/pgvector when active (#226 B-1), intersecting hits
       // with the YAML-rooted `engrams` set; else the JSON cache path.
       let results: SimilarityResult[] = []
-      if (this.pgliteAdapter) {
+      if (this.pgliteAdapter && !this._remoteOnly) {
         const { embed } = await import('./embeddings.js')
         const queryVec = await embed(task, 'query')
         if (queryVec) {
@@ -6553,7 +6698,7 @@ export class Plur {
             // but passing it keeps every vector path consistent, and a future
             // change to that limit would otherwise reintroduce the dilution
             // silently.
-            const hits = await this.pgliteAdapter.searchVector(queryVec, engrams.length, { scopes: options?.scopes })
+            const hits = await this.pgliteAdapter!.searchVector(queryVec, engrams.length, { scopes: options?.scopes })
             if (hits.length > 0) {
               const allowed = new Map<string, Engram>(engrams.map(e => [e.id, e]))
               for (const hit of hits) {
@@ -6641,6 +6786,7 @@ export class Plur {
     // boost exists to resurrect a scope-excluded row.
     const remote = await this._remoteInjectCandidates(remotePromise, options)
     const result = await this._formatInjection(task, options, embeddingBoosts, remote)
+    if (this._remoteOnly) result.remote_only = this._remoteOnlyStatus(remotePromise ? await remotePromise : null)
     // Reported as structured fields mirroring `HybridSearchResult`, not as a
     // `warnings` line: `warnings` is rendered into the injected context on
     // every prompt, and an install without the model would repeat the same
@@ -6670,7 +6816,8 @@ export class Plur {
     // remote call.
     remote?: { engrams: Engram[]; boosts: Map<string, number> },
   ): Promise<InjectionResult> {
-    let allEngrams = await this._loadAllEngrams()
+    // remote-only: team store rows + packs, never the personal store.
+    let allEngrams = await this._readCorpus()
     const allPacks = loadAllPacks(this.paths.packs)
 
     if (remote && remote.engrams.length > 0) {
@@ -11839,6 +11986,55 @@ Generate an improved version of the procedure that prevents this failure. Return
     return _resolveFolderPolicy(dir, { root: this.paths.root, ...(options?.home ? { home: options.home } : {}) })
   }
 
+  /**
+   * Resolve the folder policy for `dir` and bind this instance to it
+   * (`bindFolderPolicy`). Adapters call this with the folder the session runs
+   * in; only `remote-only` changes what the instance does.
+   */
+  bindFolder(dir: string, options?: { home?: string }): FolderPolicy {
+    const policy = this.resolveFolderPolicy(dir, options)
+    this.bindFolderPolicy(dir, policy)
+    return policy
+  }
+
+  /**
+   * Bind this instance to an already-resolved folder policy. A `remote-only`
+   * policy puts the instance in remote-only mode (owner decisions
+   * 2026-10-01); any other mode clears it, so a long-lived process (the MCP
+   * server) follows the map as it changes.
+   */
+  bindFolderPolicy(dir: string, policy: FolderPolicy): void {
+    this._remoteOnly = policy.mode === 'remote-only' ? { folder: dir, scope: policy.scope ?? null } : null
+  }
+
+  /** The remote-only folder this instance is bound to, or null. */
+  remoteOnlyFolder(): RemoteOnlyBinding | null {
+    return this._remoteOnly ? { ...this._remoteOnly } : null
+  }
+
+  /**
+   * The write context a remote-only instance accepts for `context`, with the
+   * folder's team scope filled in when none is given. Throws
+   * RemoteOnlyWriteError for anything that would stay on this machine.
+   */
+  private _remoteOnlyContext<T extends LearnContext>(context: T | undefined): T | undefined {
+    const ro = this._remoteOnly
+    if (!ro) return context
+    this.reloadConfigIfChanged()
+    const requested = context?.scope ?? undefined
+    const refuse = (why: RemoteOnlyRefusal): never => { throw new RemoteOnlyWriteError(ro.folder, ro.scope, requested, why) }
+    if (context?.visibility === 'private') refuse('private')
+    const target = requested ?? ro.scope
+    if (!target) refuse('no-scope')
+    if (requested !== undefined && requested !== ro.scope) {
+      if (!isSharedScope(requested)) refuse('personal-scope')
+      if (!this._isRemoteWriteScope(requested)) refuse('local-only-scope')
+    } else if (!this._isRemoteWriteScope(target!)) {
+      refuse('no-store')
+    }
+    return { ...(context ?? {}), scope: target! } as T
+  }
+
   /** The folder map entries, in file order (#1347). */
   listFolders(): FolderEntry[] {
     return _loadFolderMap(this.paths.root).folders
@@ -11855,7 +12051,9 @@ Generate an improved version of the procedure that prevents this failure. Return
   ): FolderEntry {
     this.reloadConfigIfChanged()
     const configuredScopes = (this.config.stores ?? []).map(s => s.scope)
-    return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, ...options })
+    // A remote-only entry's scope must be served by a writable url store.
+    const remoteScopes = (this.config.stores ?? []).filter(s => !!s.url && s.readonly !== true).map(s => s.scope)
+    return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, remoteScopes, ...options })
   }
 
   /** Remove the exact entry for `folder` (`plur folders rm`); `nonce` as for setFolder. */

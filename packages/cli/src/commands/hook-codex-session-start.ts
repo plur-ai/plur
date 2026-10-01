@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, clearFolderAsk, isResumeStart } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, clearFolderAsk, isResumeStart, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
@@ -37,7 +37,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // asked by hook-codex-inject on the first prompt; `off` is silent.
     const dir = payloadDir(input)
     const policy = hookFolderPolicy(dir, flags)
-    if (policy.mode !== 'on') return
+    if (policy.mode !== 'on' && policy.mode !== 'remote-only') return
     const sessionId = codexSessionId(input)
     if (!sessionId) return
 
@@ -50,6 +50,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     let context: string
     try {
       const plur = createPlur(flags)
+      bindHookFolder(plur, dir, policy)
       // #1198: carry the project's remote settings so Enterprise team memory
       // reaches Codex at session start too. The helper carries #1196's trust
       // gate, so this cannot reintroduce the exfiltration path.
@@ -75,7 +76,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const refusal = projectRemote.refusedFrom
         ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)}\n\n`
         : ''
-      context = refusal + (body ? `${header}\n\n${body}` : header)
+      // remote-only: where memory goes, and that the team server did not answer.
+      const fullHeader = [header, ...remoteOnlyLines(plur, result, true)].join('\n')
+      context = refusal + (body ? `${fullHeader}\n\n${body}` : fullHeader)
     } catch (err: unknown) {
       context = '[PLUR Memory — injection FAILED at session start] ' +
         `(${(err as Error)?.message ?? 'unknown error'}). Recalled memory is unavailable; run ` +

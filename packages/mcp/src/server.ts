@@ -173,9 +173,15 @@ Override with \`PLUR_PATH\` environment variable.
 // (tests create one per case — stacking an interval per server would leak).
 let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
 
-export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
+export async function createServer(plur?: Plur, options?: { profile?: ToolProfile; folder?: string }): Promise<Server> {
   const instance = plur ?? new Plur()
   const profile = options?.profile ?? 'lean'
+  // The folder this server serves (the editor starts it there): its folder-map
+  // decision is re-read before every tool call, so a `remote-only` folder
+  // (owner decisions 2026-10-01) binds the instance — writes go only to the
+  // team scope, recall reads only it and installed packs — and a change to
+  // folders.yaml applies from the next call.
+  const folder = options?.folder ?? process.cwd()
   // #761: record what we actually exposed, so plur_doctor reports THIS surface
   // rather than re-deriving one from the environment — which is not the
   // authority here, since the profile arrives as an option.
@@ -299,6 +305,11 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         }
       }
       args = validated.data
+      // A resolver failure must not take a tool call down; it leaves the
+      // previous binding in place (fail-closed for a remote-only folder).
+      if (typeof instance.bindFolder === 'function') try { instance.bindFolder(folder) } catch (err) {
+        try { process.stderr.write(`[plur] folder map: could not resolve ${folder} (${(err as Error)?.message ?? err})\n`) } catch { /* never fail a call over a log line */ }
+      }
       const result = await tool.handler(args, instance)
 
       // Generic _isError propagation (audit fix): a tool handler — currently

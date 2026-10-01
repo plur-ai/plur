@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { hookFolderPolicy, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
+import { hookFolderPolicy, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import type { FolderPolicy } from '@plur-ai/core'
 import {
   readStdinJson,
@@ -141,6 +141,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     agyMarkSessionStarted(conversationId)
 
     const plur = createPlur(flags)
+    if (workspace && policy) bindHookFolder(plur, workspace, policy)
     // The workspace path, not process.cwd(): agy runs hooks with cwd = the
     // hooks.json directory (~/.gemini/config), where the .plur.yaml walk can
     // never succeed — cwd here would silently strip project scoping from
@@ -168,8 +169,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
         : ''
       const header = isFirst
-        ? `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
-          (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
+        ? [
+          `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
+            (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : ''),
+          // remote-only: where memory goes, and that the team server did not answer.
+          ...remoteOnlyLines(plur, result, true),
+        ].join('\n')
         : `[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]`
       const refusal = isFirst
         ? [

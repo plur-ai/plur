@@ -6,7 +6,7 @@ import { randomUUID, randomBytes } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
@@ -856,6 +856,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (!task) return
 
     const plur = createPlur(flags)
+    bindHookFolder(plur, dir, policy)
     const label = `[PLUR Memory — ${event}]`
 
     // BM25-only, deliberately. Event hooks are SYNC — their whole point is
@@ -1068,6 +1069,8 @@ async function injectSession(
   // now — not later where it's only used for the label — so the injection is
   // attributed to this session on the co_injection event the receipt reads.
   const plur = createPlur(flags)
+  // remote-only folders: core reads only the team scope and packs (#remote-only).
+  bindHookFolder(plur, dir, policy)
   // Known before the search starts, so the watchdog can start a cache build too.
   storeRoot = plur.storageRoot
   runFlags = flags
@@ -1150,6 +1153,9 @@ async function injectSession(
 
   // A4′ (#776): degradation header — one line per (host, state) change.
   for (const line of degradationLines) parts.push(line)
+  // remote-only: where memory goes, and — once, at session start — that the
+  // team server did not answer, so there is no memory this session.
+  for (const line of remoteOnlyLines(plur, result, !isRehydrate)) parts.push(line)
 
   // #1196: say so. A remote leg that silently stops working is the regression
   // this gate could otherwise introduce — the user must be able to tell

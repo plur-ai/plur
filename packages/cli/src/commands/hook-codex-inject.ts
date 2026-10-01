@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, isSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
@@ -56,6 +56,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
     try {
       const plur = createPlur(flags)
+      bindHookFolder(plur, dir, policy)
       // #1198: pass the project's remote settings so PLUR Enterprise team
       // memory actually reaches Codex — this hook read `.plur.yaml` for `scope`
       // and dropped the remote fields, so a customer following the documented
@@ -78,6 +79,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // failure mode this is meant to end — once per session, not per prompt.
       const notices = !firstForSession ? [] : [
         projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
+        // remote-only: where memory goes, and that the team server did not answer.
+        ...remoteOnlyLines(plur, result, true),
       ].filter((n): n is string => n !== null)
       if (result.count === 0 || !body) {
         if (notices.length > 0) emitContext('UserPromptSubmit', notices.join('\n'))

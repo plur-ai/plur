@@ -7,9 +7,12 @@ import {
   loadConfig,
   findProjectConfigPath,
   canonicalize,
+  remoteOnlySessionLine,
+  remoteOnlyUnservedNotice,
   type FolderAnswer,
   type FolderPolicy,
   type Plur,
+  type RemoteOnlyStatus,
 } from '@plur-ai/core'
 
 /** One answer the folder question offers: its `plur folders set` flags and the answer its nonce is issued for. */
@@ -32,6 +35,11 @@ import { safeSessionKey } from './session-key.js'
  *   - `ask` → the hook is silent, except the prompt-level inject hook of each
  *             editor, which on the first prompt of a session emits the one
  *             question built by {@link folderAskOnce} instead of memories.
+ *   - `remote-only` → the hook works as for `on`, with its Plur instance bound
+ *             to the folder ({@link bindHookFolder}): core then writes only to
+ *             the folder's team scope and reads only that scope (dialled) and
+ *             installed packs. If the team server does not answer, the session
+ *             starts without memory and says so once ({@link remoteOnlyLines}).
  *
  * Only the CLI (`plur folders set`) writes the map; nothing here writes it.
  */
@@ -66,9 +74,38 @@ export function hookFolderPolicy(dir: string, flags?: { path?: string }): Folder
   }
 }
 
+/** True when a policy means the hooks do their normal work (`on`, or `remote-only`). */
+export function isWorkingMode(policy: FolderPolicy): boolean {
+  return policy.mode === 'on' || policy.mode === 'remote-only'
+}
+
 /** True when the hooks should do their normal work in `dir`. */
 export function hookFolderOn(dir: string, flags?: { path?: string }): boolean {
-  return hookFolderPolicy(dir, flags).mode === 'on'
+  return isWorkingMode(hookFolderPolicy(dir, flags))
+}
+
+/**
+ * Bind a hook's Plur instance to its folder. Only `remote-only` changes what
+ * the instance does (owner decisions 2026-10-01); every hook that recalls or
+ * writes calls this right after creating the instance.
+ */
+export function bindHookFolder(plur: Plur, dir: string, policy: FolderPolicy): void {
+  // Test doubles stand in for Plur with only the methods a hook used before.
+  if (typeof plur.bindFolderPolicy === 'function') plur.bindFolderPolicy(dir, policy)
+}
+
+/**
+ * The lines a remote-only session shows. At the session's first context
+ * (`first`): where memory goes, and — when the team server did not serve the
+ * injection — that the session starts without memory. Later contexts show
+ * nothing, so the notice is said once. Empty outside remote-only folders.
+ */
+export function remoteOnlyLines(plur: Plur, result: { remote_only?: RemoteOnlyStatus } | null, first: boolean): string[] {
+  const ro = typeof plur.remoteOnlyFolder === 'function' ? plur.remoteOnlyFolder() : null
+  if (!ro || !first) return []
+  const lines = [remoteOnlySessionLine(ro)]
+  if (result?.remote_only && !result.remote_only.served) lines.push(remoteOnlyUnservedNotice(result.remote_only))
+  return lines
 }
 
 /**

@@ -1,3 +1,4 @@
+import type { RemoteOnlyStatus } from './remote-only.js'
 import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { InjectionSource } from './history.js'
 export type { Engram, KnowledgeAnchor, Association, MeasuredUnder } from './schemas/engram.js'
@@ -355,6 +356,13 @@ export interface InjectionResult {
    */
   mode?: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   embedder_error?: string
+  /**
+   * Present only when the instance is bound to a remote-only folder (owner
+   * decisions 2026-10-01): whether the folder's team server served this
+   * injection. `served: false` means no memory this time — the personal store
+   * is never used instead — and an adapter says so once per session.
+   */
+  remote_only?: RemoteOnlyStatus
   /**
    * Pinned engrams that did NOT make this injection, with what each would have
    * cost and which cap it lost to (#1142).

@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### remote-only folders keep memory on the team server (#NNNN)
+
+A new folder-map mode for work whose memory must not be kept on your machine:
+
+```
+plur folders set ~/client-work --remote-only --scope group:acme/client
+```
+
+The scope must be served by a team store (a `url` store in `config.yaml`); the
+command refuses any other scope (`scope-unconfigured`) and, outside a terminal,
+needs the usual `--nonce`. In a remote-only folder:
+
+- A save with no scope goes to the folder's team scope. Saving to a personal or
+  local scope (`user:`, `agent:`, `global`, `local`, a `project:` scope no team
+  store serves, a private memory, or content the sensitivity guard would keep
+  local) is refused, and the message names the folder and how to change it.
+  Saving to another team scope you can write still works.
+- Recall and injection read the folder's scope from the team server and your
+  installed packs, never your personal store. In such a folder the keyword-only
+  injection (Cursor's session start, the hooks' fallback) dials the team server
+  too; elsewhere it stays local, as before.
+- A save that cannot reach the server waits in the outbox and is removed once
+  delivered.
+- When the server cannot be reached, the session starts without memory and says
+  so once. It never falls back to the personal store.
+- A repository's `.plur.yaml` or project MCP config cannot turn the folder back
+  on; only `off` or a more specific entry of your own overrides it.
+
+It applies to the Claude Code, Codex, Cursor and Antigravity hooks and to the
+MCP server, which now re-reads its folder's decision before each tool call. The
+opencode plugin does not follow the folder map yet; it picks the mode up once
+its folder-map support (#1517) is in. Core: `Plur.bindFolder(dir)` /
+`bindFolderPolicy(dir, policy)`, `RemoteOnlyWriteError`, and
+`InjectionResult.remote_only` (whether the team server served the injection).
+Folders without remote-only behave exactly as before. See
+[docs/folder-map.md](docs/folder-map.md).
+
+### folders.yaml starts with commented examples of every setting (#NNNN)
+
+When PLUR creates `~/.plur/folders.yaml` (the first `plur folders set`, `plur
+trust`, the folder question's answer, or `plur init` moving hooks), it now
+writes a commented example of every setting (`on`, `off`, `ask`, `scope`,
+`trusted`, `remote-only`) with one line saying what each does. Remove the `# `
+to use one.
+
+Every CLI write to the file (`set`, `rm`, `trust`, `untrust`, the folder
+question's answers) now edits it in place with the `yaml` package's Document
+API: only the entry that changed is rewritten, and your comments, blank lines
+and entry order are kept byte for byte. A file PLUR cannot read is still never
+overwritten. `@plur-ai/core` gains a dependency on `yaml` (already in the
+lockfile as a build-tool dependency).
+
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its

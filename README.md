@@ -367,6 +367,31 @@ The same thing is available to agents as `plur_outbox` (`{flush: true}` to
 retry), and `plur status` reports the pending count. Neither surface prints the
 target URL or the token.
 
+## The folder map
+
+`~/.plur/folders.yaml` records what PLUR does in each folder, and every
+integration follows it:
+
+| Setting | What it does |
+|---|---|
+| `plur: on` | Memory works here as usual |
+| `plur: off` | PLUR does nothing here |
+| `plur: ask` | Ask once per session |
+| `scope: <s>` | Default scope for memories saved here |
+| `trusted: true` | This folder's `.plur.yaml` may set its scope and team server |
+| `plur: remote-only` + `scope: <s>` | Memory lives only on the team server, in `<s>`; nothing is saved to or read from your personal store |
+
+```
+plur folders set ~/client-work --remote-only --scope group:acme/client
+plur folders set ~/private --off
+plur folders list
+```
+
+The file starts with a commented example of every setting, and the CLI keeps
+your comments and order when it writes. Details, including exactly what a
+remote-only folder refuses and what happens when the team server is down:
+[docs/folder-map.md](docs/folder-map.md).
+
 ## The memory receipt
 
 `plur receipt` (and the `plur_receipt` MCP tool) show what your memory actually did — counted from PLUR's own retrieval history, never estimated:
