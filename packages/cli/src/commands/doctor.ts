@@ -1304,9 +1304,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('    switch breaks it. Fix: re-run `plur init`, which rewrites the entry.')
     }
     if (!oc.ok) {
-      outputText('  Config exists but PLUR could not safely read it — invalid JSON (JSONC comments')
-      outputText('  and trailing commas are not supported here) or a `plugin`/`mcp` field in an')
-      outputText('  unexpected shape. Run `plur init --opencode` after fixing it by hand.')
+      outputText('  Config exists but PLUR could not safely read it — invalid JSON/JSONC or a')
+      outputText('  `plugin`/`mcp` field in an unexpected shape. Run `plur init --opencode` after')
+      outputText('  fixing it by hand.')
     }
     if (oc.pluginDeclared) {
       if (oc.pluginResolvable === 'yes') {
