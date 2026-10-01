@@ -267,3 +267,114 @@ describe('S5: tension warnings carry no personal text', () => {
     expect(JSON.stringify(r)).not.toContain('PERSONALZEBRA')
   })
 })
+
+describe('re-audit of #1521', () => {
+  async function queuedSave(statement: string) {
+    map([{ path: work, plur: 'remote-only', scope: TEAM }])
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    server.appendErrorResponse = { status: 503, body: 'down' }
+    const q = await plur.learnRouted(statement)
+    await backgroundPushesSettled(root)
+    server.appendErrorResponse = null
+    return { plur, q }
+  }
+
+  it('B-3: an unbound forget with an explicit local scope deletes a queued remote-only save outright', async () => {
+    const { q } = await queuedSave('Queued client secret X2')
+    await new Plur({ path: root }).forget(q.id, 'x', { scope: 'primary', force: true }).catch(() => {})
+    expect(rows().some(r => r.statement === 'Queued client secret X2')).toBe(false)
+  })
+
+  it('B-3: an unbound same-scope update keeps the queue marker', async () => {
+    const { q } = await queuedSave('Queued client fact E23')
+    const unbound = new Plur({ path: root })
+    const r = row(q.id)
+    await unbound.updateEngram({ ...r, structured_data: {} }).catch(() => {})
+    const after = row(q.id)
+    expect(after === undefined || !!after.structured_data?._outbox?.remote_only).toBe(true)
+  })
+
+  it('S-1: an unreadable folders.yaml refuses even an explicit team-scope save', async () => {
+    writeFileSync(join(root, 'folders.yaml'), 'version: 1\nfolders: [[[\n')
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    expect(await refused(() => plur.learnRouted('blocked team save', { scope: TEAM }))).toBeInstanceOf(RemoteOnlyWriteError)
+    expect(server.appendStatements).not.toContain('blocked team save')
+    expect(rows().some(r => r.statement === 'blocked team save')).toBe(false)
+  })
+
+  it('S-2: a personal row in a local secondary store cannot be rated or forgotten while bound', async () => {
+    const outside = new Plur({ path: root })
+    const p = await outside.learn('template row')
+    const second = join(root, 'mine.yaml')
+    writeFileSync(second, yaml.dump({ engrams: [{ ...row(p.id), id: 'ENG-2026-10-01-060', scope: 'project:mine', statement: 'second store fact' }] }))
+    config({ stores: undefined }, {})
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({
+      index: false, embeddings: { enabled: false },
+      stores: [{ url: baseUrl, token: TOKEN, scope: TEAM, shared: true, readonly: false }, { path: second, scope: 'project:mine' }],
+    }))
+    const before = readFileSync(second, 'utf8')
+    map([{ path: work, plur: 'remote-only', scope: TEAM }])
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    const ids = ['ENG-2026-10-01-060', 'ENG-PMI-2026-10-01-060']
+    for (const id of ids) {
+      await plur.feedback(id, 'positive').catch(() => {})
+      await plur.forget(id).catch(() => {})
+    }
+    expect(readFileSync(second, 'utf8')).toBe(before)
+  })
+
+  it('S-2: learn with supersedes never writes onto a personal row', async () => {
+    const { plur, personal } = await personalThenBound()
+    const before = row(personal.id)
+    await plur.learn('client replacement fact', { supersedes: [personal.id] } as never).catch(() => {})
+    await backgroundPushesSettled(root)
+    expect(row(personal.id)).toEqual(before)
+  })
+
+  it('S-2 regression: team-scoped feedback is not refused because a personal row shares the id', async () => {
+    const { plur, personal } = await personalThenBound()
+    server.seedEngram({ id: personal.id, scope: TEAM, status: 'active', data: { statement: 'team row with the same id' } })
+    const err = await refused(() => plur.feedback(personal.id, 'positive', TEAM))
+    expect(err).not.toBeInstanceOf(RemoteOnlyWriteError)
+  })
+
+  it('C-3: getByIds with a remote capability does not reach a personal remote store', async () => {
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({
+      index: false, embeddings: { enabled: false },
+      stores: [
+        { url: baseUrl, token: TOKEN, scope: TEAM, shared: true, readonly: false },
+        { url: baseUrl, token: TOKEN, scope: 'user:alice', readonly: false },
+      ],
+    }))
+    server.setMe({ capabilities: ['feedback.source'] })
+    server.seedEngram({ id: 'ENG-2026-10-01-070', scope: 'user:alice', status: 'active', data: { statement: 'alice personal remote PERSONALREMOTE' } })
+    map([{ path: work, plur: 'remote-only', scope: TEAM }])
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    const { namespaceEngramId } = await import('../src/engrams.js')
+    const got = await plur.getByIds([namespaceEngramId('ENG-2026-10-01-070', 'user:alice')], { remoteCapability: 'feedback.source' })
+    expect(JSON.stringify(got)).not.toContain('PERSONALREMOTE')
+  })
+
+  it('N-1 / N-2: a bound instance sees and absorbs only its own folder\'s queued saves', async () => {
+    const other = join(home, 'other-client')
+    mkdirSync(other)
+    map([{ path: work, plur: 'remote-only', scope: TEAM }, { path: other, plur: 'remote-only', scope: TEAM }])
+    const a = new Plur({ path: root }); a.bindFolder(other)
+    server.appendErrorResponse = { status: 503, body: 'down' }
+    const qa = await a.learnRouted('other client queued fact')
+    await backgroundPushesSettled(root)
+    // an ordinary queued team save, made outside any folder
+    const outside = new Plur({ path: root })
+    const qo = await outside.learnRouted('ordinary queued team fact', { scope: TEAM })
+    await backgroundPushesSettled(root)
+    server.appendErrorResponse = null
+    const b = new Plur({ path: root }); b.bindFolder(work)
+    expect(await b.getById(qa.id)).toBeNull()
+    const again = await b.learnRouted('ordinary queued team fact')
+    expect(again.id).not.toBe(qo.id)
+  })
+})

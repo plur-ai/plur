@@ -241,3 +241,41 @@ describe('audit of #1521: CLI commands and hooks fail closed', () => {
     expect(() => bindHookFolder({} as never, repo, { mode: 'remote-only', scope: TEAM, remoteAllowed: false, source: 'map' })).toThrow()
   })
 })
+
+describe('re-audit of #1521: no capture when in doubt, fail closed', () => {
+  it('C-1: a SessionEnd payload without cwd, from an ordinary folder, does not capture a remote-only checkpoint', () => {
+    mapRemoteOnly()
+    const plain = join(dir, 'plain')
+    mkdirSync(plain)
+    writeFileSync(join(plurHome, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: ${repo}\n    plur: remote-only\n    scope: ${TEAM}\n  - path: ${plain}\n    plur: on\n`)
+    const sessions = join(plurHome, 'sessions')
+    mkdirSync(sessions, { recursive: true })
+    writeFileSync(join(sessions, 'ro-nocwd.checkpoint.json'), JSON.stringify({
+      session_id: 'ro-nocwd', started_at: new Date(Date.now() - 3600_000).toISOString(),
+      last_checkpoint: new Date().toISOString(), stop_count: 3, cwd: repo,
+    }))
+    const r = cli(['hook-session-end'], { session_id: 'ro-nocwd', reason: 'other' }, plain)
+    expect(r.status, r.stderr).toBe(0)
+    const ep = join(plurHome, 'episodes.yaml')
+    expect(existsSync(ep) ? readFileSync(ep, 'utf8') : '').not.toContain('auto-closed')
+  }, 60_000)
+
+  it('C-1: the deferred wrap-up captures nothing when the checkpoint folder cannot be resolved', async () => {
+    const { processDeferredWrapups } = await import('../src/commands/hook-inject.js')
+    const sessions = join(plurHome, 'sessions')
+    mkdirSync(sessions, { recursive: true })
+    writeFileSync(join(sessions, 'old.checkpoint.json'), JSON.stringify({
+      session_id: 'old', started_at: new Date(Date.now() - 7200_000).toISOString(),
+      last_checkpoint: new Date(Date.now() - 3600_000).toISOString(), stop_count: 3, cwd: repo,
+    }))
+    const captured: string[] = []
+    const fake = {
+      capture: (s: string) => { captured.push(s); return { id: 'EP-1' } },
+      remoteOnlyFolder: () => null,
+      resolveFolderPolicy: () => { throw new Error('cannot resolve') },
+    }
+    processDeferredWrapups(fake as never, plurHome)
+    expect(captured).toEqual([])
+  })
+})

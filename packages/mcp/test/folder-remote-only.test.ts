@@ -163,3 +163,45 @@ describe('audit of #1521: MCP binds from the client roots and fails closed', () 
     expect(JSON.stringify(rec)).not.toContain('PERSONALZEBRA')
   })
 })
+
+describe('re-audit of #1521, B-2: roots discovery fails CLOSED', () => {
+  async function rootsClient(handler: () => Promise<unknown>) {
+    const server = await createServer(new Plur({ path: root }), { profile: 'full', folder: home })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const c = new Client({ name: 'roots-fail', version: '1.0.0' }, { capabilities: { roots: { listChanged: true } } })
+    c.setRequestHandler('roots/list', handler as never)
+    await c.connect(ct)
+    clients.push(c)
+    return c
+  }
+  const engramsText = () => (existsSync(join(root, 'engrams.yaml')) ? readFileSync(join(root, 'engrams.yaml'), 'utf8') : '')
+
+  it('roots/list throws: the call reads and writes nothing and says so', async () => {
+    const c = await rootsClient(async () => { throw new Error('no roots for you') })
+    const raw = await c.callTool({ name: 'plur_learn', arguments: { statement: 'ROOTSFAIL personal note', scope: 'global' } })
+    expect(raw.isError).toBe(true)
+    expect((raw.content as any)[0].text).toMatch(/workspace|roots/i)
+    expect(engramsText()).not.toContain('ROOTSFAIL')
+  })
+
+  it('roots/list is too slow: same', async () => {
+    const { pathToFileURL } = await import('url')
+    const c = await rootsClient(async () => { await new Promise(r => setTimeout(r, 2600)); return { roots: [{ uri: pathToFileURL(work).href }] } })
+    const raw = await c.callTool({ name: 'plur_learn', arguments: { statement: 'ROOTSSLOW personal note', scope: 'global' } })
+    expect(raw.isError).toBe(true)
+    expect(engramsText()).not.toContain('ROOTSSLOW')
+  }, 30_000)
+
+  it('two concurrent first calls both wait for the roots and are both bound', async () => {
+    const { pathToFileURL } = await import('url')
+    const c = await rootsClient(async () => { await new Promise(r => setTimeout(r, 400)); return { roots: [{ uri: pathToFileURL(work).href }] } })
+    const [a, b] = await Promise.all([
+      c.callTool({ name: 'plur_learn', arguments: { statement: 'RACEA personal note', scope: 'global' } }),
+      c.callTool({ name: 'plur_learn', arguments: { statement: 'RACEB personal note', scope: 'global' } }),
+    ])
+    expect(a.isError).toBe(true)
+    expect(b.isError).toBe(true)
+    expect(engramsText()).not.toMatch(/RACEA|RACEB/)
+  }, 30_000)
+})
