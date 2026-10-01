@@ -30,6 +30,13 @@ asked. `--scope` now works as it does in the `plur_inject` MCP tool, and on
 the default (hybrid) path it dials the store configured for that scope. The
 MCP tool takes no domain, so `plur inject` refuses `--domain`, and any other
 flag it does not know, with an error instead of ignoring it.
+
+Because `plur inject` now checks its flags, a task that starts with a dash
+and a letter (`-deploy …`, `--path=…`) must come after `--`:
+`plur inject -- "-deploy the service"`. Without `--` it is read as an unknown
+flag and the command exits 1. The current Python SDK and Hermes plugin already
+pass such tasks after `--`; older builds that do not will get exit 1 for those
+tasks (no memory injected for that turn) until they are updated.
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its
