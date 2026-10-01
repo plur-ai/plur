@@ -1,0 +1,19 @@
+// opencode config written by hand — JSONC, as opencode itself accepts.
+{
+  "$schema": "https://opencode.ai/config.json", // a URL: the `//` inside the string is not a comment
+  /* block comment
+     spanning lines, with a "quote" and a // inside */
+  "model": "anthropic/claude-sonnet-4-5",
+  "theme": "path/with/*/glob/*", // `/*` inside a string is not a comment opener either
+  "note": "escaped \" quote then // still in the string",
+  "plugin": [
+    "@plur-ai/opencode", // trailing comma follows
+  ],
+  "mcp": {
+    "plur": {
+      "type": "local",
+      "command": ["npx", "-y", "@plur-ai/mcp@0.21.0",],
+      "enabled": true,
+    },
+  },
+}
