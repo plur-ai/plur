@@ -17,7 +17,6 @@ import {
 
 /** One answer the folder question offers: its `plur folders set` flags and the answer its nonce is issued for. */
 interface Offer { flags: string; answer: FolderAnswer }
-import { isPlurConfigured } from './plur-configured.js'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { safeSessionKey } from './session-key.js'
 
@@ -67,10 +66,16 @@ export function hookFolderPolicy(dir: string, flags?: { path?: string }): Folder
   try {
     return resolveFolderPolicy(dir, { root: plurRoot(flags) })
   } catch (err) {
-    process.stderr.write(`[plur] folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); using the project marker.\n`)
-    return isPlurConfigured(dir)
-      ? { mode: 'on', remoteAllowed: false, source: 'plur-yaml' }
-      : { mode: 'ask', remoteAllowed: false, source: 'default' }
+    // Fail CLOSED (re-audit of #1521, C-2): the map may hold an `off` or a
+    // remote-only decision for this folder, so a lookup error never turns
+    // memory on — not even with a project marker. The folder behaves like an
+    // unreadable map: nothing is read or written, and the session says why.
+    const why = (err as Error)?.message ?? String(err)
+    process.stderr.write(`[plur] folder map: could not resolve ${dir} (${why}); PLUR stays off here for now.\n`)
+    return {
+      mode: 'ask', remoteAllowed: false, source: 'map', reason: 'malformed-map',
+      error: `the folder decision for ${dir} could not be resolved (${why})`,
+    }
   }
 }
 

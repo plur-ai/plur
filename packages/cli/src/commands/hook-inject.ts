@@ -583,9 +583,13 @@ export function processDeferredWrapups(
       // An orphan from a remote-only folder is dropped, not captured: its
       // timeline must not be kept on this machine (owner decision on #1521).
       if (typeof checkpoint.cwd === 'string' && checkpoint.cwd && plur.resolveFolderPolicy) {
-        let mode: string | null = null
-        try { mode = plur.resolveFolderPolicy(checkpoint.cwd).mode } catch { /* unresolvable: capture as before */ }
-        if (mode === 'remote-only') {
+        let policy: { mode: string; reason?: string } | null = null
+        // When in doubt, don't capture (re-audit of #1521, C-1): an
+        // unresolvable folder, or an unreadable map, leaves the checkpoint
+        // uncaptured for a session that can decide.
+        try { policy = plur.resolveFolderPolicy(checkpoint.cwd) } catch { continue }
+        if (policy.reason === 'malformed-map') continue
+        if (policy.mode === 'remote-only') {
           try { unlinkSync(path) } catch { /* gone */ }
           continue
         }
