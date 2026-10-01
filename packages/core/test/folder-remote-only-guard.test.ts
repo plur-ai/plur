@@ -125,6 +125,11 @@ describe('B2: every mutator and id read is guarded while bound', () => {
     expect(await refused(() => plur.exportPack([], join(base, 'out'), { name: 'x', version: '1.0', license: 'MIT' } as never))).toBeInstanceOf(RemoteOnlyWriteError)
   })
 
+  it('purgeTensions (it rewrites personal rows) is refused', async () => {
+    const { plur } = await personalThenBound()
+    expect(await refused(() => plur.purgeTensions())).toBeInstanceOf(RemoteOnlyWriteError)
+  })
+
   it('listPinned, timeline and listTensions show nothing personal', async () => {
     const outside = new Plur({ path: root })
     const p = await outside.learn('pinned personal rule PERSONALZEBRA')
