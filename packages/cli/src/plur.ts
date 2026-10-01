@@ -147,6 +147,17 @@ export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; a
     readonly: options?.readonly,
     ...(options?.autoDiscover !== undefined ? { autoDiscover: options.autoDiscover } : {}),
   })
+  // Every command is bound to the folder it runs in (audit of #1521, S1), so
+  // `plur learn`, `recall`, `inject`, `capture`, `import` … obey a remote-only
+  // folder exactly as the hooks and the MCP server do. Hooks re-bind to the
+  // folder their payload names. A folder that cannot be resolved binds
+  // CLOSED: nothing is read or written.
+  const cwd = process.cwd()
+  try {
+    lastInstance.bindFolder(cwd)
+  } catch (err) {
+    lastInstance.bindFolderUnresolved(cwd, (err as Error)?.message ?? String(err))
+  }
   return lastInstance
 }
 

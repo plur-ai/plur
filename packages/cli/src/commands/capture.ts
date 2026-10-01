@@ -32,8 +32,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur capture <summary> [--agent <name>] [--session <id>]')
   }
 
-  // A remote-only folder captures no timeline (owner decision on #1521).
-  plur.bindFolder(process.cwd())
+  // A remote-only folder captures no timeline (owner decision on #1521);
+  // createPlur bound the instance to this folder.
   let episode
   try {
     episode = plur.capture(summary, { agent, session_id })
