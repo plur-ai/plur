@@ -8,7 +8,6 @@ import {
   type FolderPolicy,
   type Plur,
 } from '@plur-ai/core'
-import { isPlurConfigured } from './plur-configured.js'
 import { createPlur, type GlobalFlags } from '../plur.js'
 
 // The question itself, its quoting rules and the session settings moved to
@@ -57,17 +56,17 @@ export function payloadDir(input: Record<string, unknown> | null | undefined): s
 
 /**
  * The folder policy for `dir`. A resolver failure must never break a hook, and
- * must not switch memory on where it was off before: it falls back to the old
- * gate (a project marker means on), otherwise to a silent `ask`.
+ * must not switch memory on where the map could say off: it fails safe to
+ * `ask` with reason `resolver-error` (no memory, a notice instead of commands).
  */
 export function hookFolderPolicy(dir: string, flags?: { path?: string }): FolderPolicy {
   try {
     return resolveFolderPolicy(dir, { root: plurRoot(flags) })
   } catch (err) {
-    process.stderr.write(`[plur] folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); using the project marker.\n`)
-    return isPlurConfigured(dir)
-      ? { mode: 'on', remoteAllowed: false, source: 'plur-yaml' }
-      : { mode: 'ask', remoteAllowed: false, source: 'default' }
+    // Fail SAFE (audit F4 of #1517, owner decision): an unreadable decision
+    // could be `off`, so no project marker turns memory on here.
+    process.stderr.write(`[plur] folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); memory is off here.\n`)
+    return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
   }
 }
 

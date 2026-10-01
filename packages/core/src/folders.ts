@@ -68,7 +68,14 @@ export interface FolderPolicy {
    * `untrusted-plur-yaml` (decision D1): the repo's `.plur.yaml` requests
    * settings that need trust, and they are ignored until the user says yes.
    */
-  reason?: 'untrusted-plur-yaml'
+  reason?: 'untrusted-plur-yaml' | 'malformed-map' | 'resolver-error'
+  /**
+   * For `malformed-map`: the folder map that could not be read, and the line
+   * of the YAML error when there is one (1-based). The decision fails SAFE:
+   * the folder is `ask` — no memory — until the file is fixed (audit F4 of
+   * #1517, owner decision), never `on` because a project marker is there.
+   */
+  mapError?: { file: string; line?: number }
   /** What that `.plur.yaml` requests, for the question. Never the token. */
   requested?: { scope?: string; domain?: string; remote_url?: string }
 }
@@ -260,7 +267,7 @@ function warnOnce(key: string, msg: string): void {
   logger.warning(msg)
 }
 
-interface LoadResult { map: FolderMap; malformed: boolean }
+interface LoadResult { map: FolderMap; malformed: boolean; line?: number }
 
 function readMapFile(root: string): LoadResult | null {
   const file = folderMapPath(root)
@@ -273,7 +280,10 @@ function readMapFile(root: string): LoadResult | null {
     return { map: { version: 1, folders: (parsed.data.folders ?? []) as FolderEntry[] }, malformed: false }
   } catch (err) {
     warnOnce(`malformed:${file}`, `[plur:folders] cannot read ${file}: ${(err as Error).message} — treating it as empty (folders fall back to ask)`)
-    return { map: { version: 1, folders: [] }, malformed: true }
+    // js-yaml's YAMLException carries a 0-based mark; a schema error has none.
+    const mark = (err as { mark?: { line?: unknown } }).mark
+    const line = typeof mark?.line === 'number' ? mark.line + 1 : undefined
+    return { map: { version: 1, folders: [] }, malformed: true, ...(line !== undefined ? { line } : {}) }
   }
 }
 
@@ -433,7 +443,17 @@ export function isTrustedInMap(entries: FolderEntry[], dir: string, home: string
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const home = opts.home ?? homedir()
-  const entries = loadFolderMap(opts.root).folders
+  const loaded = load(opts.root)
+  if (loaded.malformed) {
+    // Fail SAFE (audit F4 of #1517): an unreadable map could hold an `off`
+    // for this folder, so nothing — not even a project marker — turns memory
+    // on until it is fixed. `plur folders set` refuses to write it too.
+    return {
+      mode: 'ask', remoteAllowed: false, source: 'default', reason: 'malformed-map',
+      mapError: { file: folderMapPath(opts.root), ...(loaded.line !== undefined ? { line: loaded.line } : {}) },
+    }
+  }
+  const entries = loaded.map.folders
   const strict = [canonicalize(dir)]
   const lax = [...new Set([strict[0], ...canonicalSpellings(dir), resolve(dir)])]
 

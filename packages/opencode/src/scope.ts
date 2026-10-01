@@ -1,6 +1,6 @@
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { projectRemoteRefusalNotice as coreRefusalNotice, findPlurMarker, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
+import { projectRemoteRefusalNotice as coreRefusalNotice, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
 
 /**
  * Which path this session's memory is scoped by.
@@ -152,19 +152,15 @@ export interface FolderPolicySource {
 /**
  * What the folder map decides for `dir` (#1347): `Plur.resolveFolderPolicy`,
  * keyed on the store this plugin opened. A resolver failure must never break
- * the turn and must not switch memory on where the map could have said off:
- * it falls back to the rule the CLI hooks use (a project marker means on,
- * otherwise a silent-until-asked `ask`), the same fallback as the CLI's
- * `hookFolderPolicy`.
+ * the turn, and fails SAFE (audit F4 of #1517, owner decision): the folder is
+ * treated like `ask` with no memory and a notice, never `on` because a project
+ * marker is there. Core does the same for a folders.yaml it cannot read.
  */
 export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
   try {
     return plur.resolveFolderPolicy(dir)
   } catch (err) {
-    warn(`folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); using the project marker.`)
-    const marker = findPlurMarker(dir)
-    return marker
-      ? { mode: 'on', remoteAllowed: false, source: marker }
-      : { mode: 'ask', remoteAllowed: false, source: 'default' }
+    warn(`folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); memory is off here.`)
+    return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
   }
 }

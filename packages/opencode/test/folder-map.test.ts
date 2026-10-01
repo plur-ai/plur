@@ -258,4 +258,36 @@ describe('opencode follows the folder map (#1347)', () => {
     expect(seen).toContain(`folders set ${sub} --on --nonce`)
     expect(seen).not.toContain(`folders set ${repo} `)
   })
+
+  // F4 (audit of #1517, owner decision): a map that cannot be read, or a
+  // resolver that throws, fails SAFE — like ask, no memory — never `on`
+  // because a project marker happens to be there.
+  it('F4: a malformed folders.yaml means no memory, and the block names the file and line', async () => {
+    writeFileSync(join(repo, '.plur.yaml'), '# plur\n') // a marker: used to mean on
+    writeFileSync(join(root, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${repo}\n    plur: off\n  - path: [unclosed\n`)
+    const hooks = await plugin()
+
+    const seen = await turn(hooks, 'ses-f4-bad', 'hello')
+    await idleWithSelfReport(hooks, 'ses-f4-bad')
+
+    expect(inject).not.toHaveBeenCalled()
+    expect(learn).not.toHaveBeenCalled()
+    expect(seen).toContain('folders.yaml')
+    expect(seen).toMatch(/line \d+/)
+    expect(seen).not.toContain('--nonce')
+  })
+
+  it('F4: a resolver that throws means no memory, never the marker fallback to on', async () => {
+    writeFileSync(join(repo, '.plur.yaml'), '# plur\n')
+    ;(plur as any).resolveFolderPolicy = () => { throw new Error('boom') }
+    const hooks = await plugin()
+
+    const seen = await turn(hooks, 'ses-f4-throw', 'hello')
+    await idleWithSelfReport(hooks, 'ses-f4-throw')
+
+    expect(inject).not.toHaveBeenCalled()
+    expect(learn).not.toHaveBeenCalled()
+    expect(seen).toContain('memory is off')
+    expect(seen).not.toContain('--nonce')
+  })
 })
