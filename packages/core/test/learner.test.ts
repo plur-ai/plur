@@ -384,3 +384,33 @@ describe('extractSelfReportedLearnings — the memory line is not a learning (#1
     })
   }
 })
+
+describe('extractSelfReportedLearnings — every form of the memory line (#1520 re-audit R2)', () => {
+  const block = (tail: string) => ({ role: 'assistant' as const, content: `Answer.\n\n---\n🧠 I learned:\n- The deploy script needs NODE_ENV set\n${tail}` })
+  const forms = [
+    '`Memory — recalled 2 · used: ENG-2026-10-01-001`',
+    '**Memory — recalled 2 · used: ENG-2026-10-01-001**',
+    'Memory - recalled 2 · used: ENG-2026-10-01-001',
+    'Memory – recalled 2 · used: ENG-2026-10-01-001',
+    'Memory: recalled 2 · used: ENG-2026-10-01-001',
+    '_Memory — none_',
+    '> Memory — none',
+    '- Memory — written: ENG-2026-10-01-002',
+  ]
+  for (const line of forms) {
+    it(`not captured: ${line}`, () => {
+      expect(extractSelfReportedLearnings(block(line))).toEqual(['The deploy script needs NODE_ENV set'])
+    })
+  }
+
+  it('an empty learning block followed by the memory line yields nothing', () => {
+    for (const line of ['Memory — none', '`Memory — recalled 1 · used: ENG-1`']) {
+      expect(extractSelfReportedLearnings({ role: 'assistant', content: `Answer.\n\n---\n🧠 I learned:\n${line}` })).toEqual([])
+    }
+  })
+
+  it('a genuine learning that merely starts with "Memory" is kept', () => {
+    const r = extractSelfReportedLearnings(block('- Memory usage doubles once the BGE embedder is loaded'))
+    expect(r).toContain('Memory usage doubles once the BGE embedder is loaded')
+  })
+})

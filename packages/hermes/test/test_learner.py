@@ -283,3 +283,35 @@ class TestCorpusValidation:
 def test_memory_line_is_not_a_learning(line, sep, marker):
     text = f"Answer.\n\n{marker}\n- The deploy script needs NODE_ENV set{sep}{line}"
     assert extract_learning_patterns(text) == ["The deploy script needs NODE_ENV set"]
+
+
+# --- #1520 re-audit R2: every form of the memory line ---
+
+_FORMS = [
+    "`Memory — recalled 2 · used: ENG-2026-10-01-001`",
+    "**Memory — recalled 2 · used: ENG-2026-10-01-001**",
+    "Memory - recalled 2 · used: ENG-2026-10-01-001",
+    "Memory – recalled 2 · used: ENG-2026-10-01-001",
+    "Memory: recalled 2 · used: ENG-2026-10-01-001",
+    "_Memory — none_",
+    "> Memory — none",
+    "- Memory — written: ENG-2026-10-01-002",
+]
+
+
+@pytest.mark.parametrize("line", _FORMS)
+@pytest.mark.parametrize("marker", ["---\n\U0001f9e0 I learned:", "I learned:"])
+def test_memory_line_forms_are_not_learnings(line, marker):
+    text = f"Answer.\n\n{marker}\n- The deploy script needs NODE_ENV set\n{line}"
+    assert extract_learning_patterns(text) == ["The deploy script needs NODE_ENV set"]
+
+
+@pytest.mark.parametrize("line", ["Memory — none", "`Memory — recalled 1 · used: ENG-1`"])
+@pytest.mark.parametrize("marker", ["---\n\U0001f9e0 I learned:", "I learned:"])
+def test_empty_block_then_memory_line_yields_nothing(line, marker):
+    assert extract_learning_patterns(f"Answer.\n\n{marker}\n{line}") == []
+
+
+def test_learning_that_starts_with_memory_is_kept():
+    text = "Answer.\n\n---\n\U0001f9e0 I learned:\n- Memory usage doubles once the BGE embedder is loaded\n"
+    assert extract_learning_patterns(text) == ["Memory usage doubles once the BGE embedder is loaded"]

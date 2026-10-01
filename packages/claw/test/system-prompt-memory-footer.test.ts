@@ -125,3 +125,31 @@ describe('ensureSystemPrompt never deletes text it did not write (#1520 audit B2
     expect(readFileSync(join(ws, b[0]), 'utf-8')).toBe('# Agent\n' + legacyV3())
   })
 })
+
+describe('Claw loader with a SYSTEM.md that ends inside an open code fence (#1520 re-audit R1)', () => {
+  let ws: string
+  beforeEach(() => { ws = mkdtempSync(join(tmpdir(), 'plur-claw-r1-')) })
+  afterEach(() => rmSync(ws, { recursive: true, force: true }))
+
+  it('repeated loads do not grow the file or write more backups', () => {
+    const p = join(ws, 'SYSTEM.md')
+    writeFileSync(p, '# Agent\n\n```md\nUSER EXAMPLE\n')
+    ensureSystemPrompt(ws)
+    const once = readFileSync(p, 'utf-8')
+    const backupsAfterFirst = readdirSync(ws).filter(f => f.includes('plur-backup')).length
+    for (let i = 0; i < 3; i++) {
+      expect(ensureSystemPrompt(ws)).toMatchObject({ appended: false, updated: false })
+    }
+    expect(readFileSync(p, 'utf-8')).toBe(once)
+    expect(readdirSync(ws).filter(f => f.includes('plur-backup')).length).toBe(backupsAfterFirst)
+    expect(count(once, '## PLUR Memory System')).toBe(1)
+    expect(once.startsWith('# Agent\n\n```md\nUSER EXAMPLE\n```\n')).toBe(true)
+  })
+})
+
+describe('the current Claw section is in the shipped list (#1520 re-audit R3)', () => {
+  it('so the next marker bump recognises an unedited v4 section as PLUR\'s', async () => {
+    const { isShippedText, SHIPPED_CLAW_SECTIONS } = await import('@plur-ai/core')
+    expect(isShippedText(PLUR_SYSTEM_SECTION, SHIPPED_CLAW_SECTIONS)).toBe(true)
+  })
+})

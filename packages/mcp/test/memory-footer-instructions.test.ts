@@ -91,6 +91,13 @@ describe('plur-mcp init CLAUDE.md section — memory footer rule', () => {
     expect(readFileSync(path, 'utf-8').startsWith(edited.trimEnd())).toBe(true)
   })
 
+  it('the section it writes is in the shipped list (#1520 re-audit R3)', async () => {
+    await installClaudeMd(path)
+    const section = readFileSync(path, 'utf-8').replace(/^# CLAUDE\.md\n\n/, '')
+    const { isShippedText, SHIPPED_PLUR_SECTIONS } = await import('@plur-ai/core')
+    expect(isShippedText(section, SHIPPED_PLUR_SECTIONS)).toBe(true)
+  })
+
   it('has no local copy of the section logic: it uses the one in @plur-ai/core', () => {
     const src = readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf-8')
     expect(src).not.toMatch(/function upsertPlurSection/)

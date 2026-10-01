@@ -234,9 +234,13 @@ describe('plur init — never deletes text it did not write (#1520 audit B1, S2)
     writeFileSync(rulePath, mine)
     const out = run('--cursor', project)
     expect(readFileSync(rulePath, 'utf-8')).toBe(mine)
-    const b = backups(join(project, '.cursor', 'rules'), 'plur-memory.mdc')
-    expect(b).toHaveLength(1)
+    expect(backups(join(project, '.cursor', 'rules'), 'plur-memory.mdc')).toHaveLength(1)
     expect(out).toMatch(/rule kept as you edited it/)
+    // Re-audit low (c): running again does not write another copy of the same content.
+    run('--cursor', project)
+    run('--cursor', project)
+    expect(backups(join(project, '.cursor', 'rules'), 'plur-memory.mdc')).toHaveLength(1)
+    expect(readFileSync(rulePath, 'utf-8')).toBe(mine)
   })
 
   it('an unedited shipped Cursor rule is replaced and backed up', () => {
@@ -246,6 +250,35 @@ describe('plur init — never deletes text it did not write (#1520 audit B1, S2)
     run('--cursor', project)
     expect(readFileSync(rulePath, 'utf-8')).toContain(MEMORY_FOOTER_RULE)
     expect(backups(join(project, '.cursor', 'rules'), 'plur-memory.mdc')).toHaveLength(1)
+  })
+})
+
+describe('every section plur init writes is in the shipped list (#1520 re-audit R3)', () => {
+  // Fails when a section's text changes without `node scripts/extract-plur-section-history.mjs`
+  // being re-run: the next marker bump would then treat every unedited install as user text.
+  let home: string
+  let project: string
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'plur-footer-r3-home-'))
+    project = mkdtempSync(join(tmpdir(), 'plur-footer-r3-proj-'))
+  })
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(project, { recursive: true, force: true })
+  })
+
+  it('CLAUDE.md, AGENTS.md and the Cursor rule', async () => {
+    const env = isolatedHomeEnv(home)
+    const run = (args: string, cwd: string) => execSync(`node ${CLI} init --no-desktop --no-codex --no-opencode ${args}`, { encoding: 'utf-8', timeout: 30000, env, cwd })
+    run('--global', home)
+    run('--antigravity --cursor', project)
+    const { isShippedText, SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES } = await import('@plur-ai/core')
+    const claude = readFileSync(join(home, 'CLAUDE.md'), 'utf-8').replace(/^# CLAUDE\.md\n\n/, '')
+    const agents = readFileSync(join(project, 'AGENTS.md'), 'utf-8').replace(/^# AGENTS\.md\n\n/, '')
+    const rule = readFileSync(join(project, '.cursor', 'rules', 'plur-memory.mdc'), 'utf-8')
+    expect(isShippedText(claude, SHIPPED_PLUR_SECTIONS), 'CLAUDE.md section').toBe(true)
+    expect(isShippedText(agents, SHIPPED_PLUR_SECTIONS), 'AGENTS.md section').toBe(true)
+    expect(isShippedText(rule, SHIPPED_CURSOR_RULES), 'Cursor rule').toBe(true)
   })
 })
 

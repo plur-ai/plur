@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { upsertInstructionSection, writeWithBackup } from '../src/instruction-section.js'
+import { upsertInstructionSection, writeWithBackup, backupFile } from '../src/instruction-section.js'
 
 /**
  * The installers (`plur init`, `plur-mcp init`, the Claw loader) put PLUR's
@@ -51,11 +51,57 @@ describe('upsertInstructionSection — basic', () => {
     expect(r.keptSections).toBe(0)
   })
 
-  it('a shipped section differing only in whitespace still matches', () => {
-    const loose = OLD.replace('Old body line one.', '  Old body line one.   ').replace('\n\n### Sub', '\n\n\n### Sub')
+  it('trailing whitespace and line endings alone do not make a section edited', () => {
+    const loose = OLD.replace('Old body line one.', 'Old body line one.   \t').replace('### Sub', '### Sub  ')
     const r = upTwice(`${loose}`)
     expect(r.status).toBe('upgraded')
     expect(r.content).toBe(NEW)
+  })
+})
+
+describe('upsertInstructionSection — re-audit lows', () => {
+  it('(a) a change of indentation is a user edit: kept, the new section added beside it', () => {
+    const indented = OLD.replace('Old body line one.', '    Old body line one.')
+    const r = upTwice(indented)
+    expect(r.status).toBe('added')
+    expect(r.keptSections).toBe(1)
+    expect(r.content.startsWith(indented)).toBe(true)
+  })
+
+  it('(a) an added or removed blank line inside the section is a user edit', () => {
+    for (const edited of [OLD.replace('\n\n### Sub', '\n\n\n### Sub'), OLD.replace('Old body line one.\n\n', 'Old body line one.\n')]) {
+      expect(up(edited).status).toBe('added')
+    }
+  })
+
+  it('(b) a section inside an HTML comment is left alone, with no stray "-->"', () => {
+    const input = `# Mine\n\n<!--\n${OLD}-->\n`
+    const r = upTwice(input)
+    expect(r.status).toBe('added')
+    expect(r.content).toBe(`${input}\n${NEW}`)
+  })
+
+  it('(e) appending keeps the trailing whitespace of the last line', () => {
+    const r = upTwice('# Mine\n\nText.  \t')
+    expect(r.content).toBe(`# Mine\n\nText.  \t\n\n${NEW}`)
+  })
+})
+
+describe('upsertInstructionSection — a file ending inside an open block (re-audit R1)', () => {
+  it('an unclosed ``` fence is closed before the section is appended; the second run is a no-op', () => {
+    const r = upTwice('# Mine\n\n```md\nUSER EXAMPLE')
+    expect(r.status).toBe('added')
+    expect(r.content).toBe(`# Mine\n\n\`\`\`md\nUSER EXAMPLE\n\`\`\`\n\n${NEW}`)
+  })
+
+  it('the closing fence matches the opening one (~~~~)', () => {
+    const r = upTwice('~~~~\nX\n')
+    expect(r.content).toBe(`~~~~\nX\n~~~~\n\n${NEW}`)
+  })
+
+  it('an unclosed HTML comment is closed before the section is appended; the second run is a no-op', () => {
+    const r = upTwice('# Mine\n\n<!--\nhidden notes\n')
+    expect(r.content).toBe(`# Mine\n\n<!--\nhidden notes\n-->\n\n${NEW}`)
   })
 })
 
@@ -191,5 +237,32 @@ describe('writeWithBackup', () => {
   it('writes no backup for a new file', () => {
     expect(writeWithBackup(join(dir, 'NEW.md'), 'x')).toBeNull()
     expect(readdirSync(dir)).toEqual(['NEW.md'])
+  })
+})
+
+describe('backups (re-audit lows c, d)', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-backup-low-')) })
+  afterEach(() => { try { chmodSync(join(dir, 'CLAUDE.md'), 0o644) } catch {} ; rmSync(dir, { recursive: true, force: true }) })
+
+  it('(c) backupFile with once: a second backup of unchanged content is not written', () => {
+    const p = join(dir, 'rule.mdc')
+    writeFileSync(p, 'mine')
+    const a = backupFile(p, { once: true })
+    const b = backupFile(p, { once: true })
+    expect(b).toBe(a)
+    expect(readdirSync(dir).filter(f => f.includes('plur-backup'))).toHaveLength(1)
+    writeFileSync(p, 'mine, changed')
+    expect(backupFile(p, { once: true })).not.toBe(a)
+    expect(readdirSync(dir).filter(f => f.includes('plur-backup'))).toHaveLength(2)
+  })
+
+  it('(d) a write that fails leaves no backup behind', () => {
+    const p = join(dir, 'CLAUDE.md')
+    writeFileSync(p, 'before')
+    chmodSync(p, 0o444)
+    expect(() => writeWithBackup(p, 'after')).toThrow()
+    expect(readdirSync(dir)).toEqual(['CLAUDE.md'])
+    expect(readFileSync(p, 'utf-8')).toBe('before')
   })
 })
