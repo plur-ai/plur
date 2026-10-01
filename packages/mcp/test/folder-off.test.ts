@@ -430,6 +430,36 @@ describe('the roots cache never lets a memory call through an off root', () => {
     expect(sc.requests()).toBe(2)
   })
 
+  it('a failed roots/list fails closed for that call (no start-folder fallback); the next call retries and works', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other) // the start folder is `on`
+    const sc = await connectScripted(s.plur, async (i) => { if (i === 0) throw new Error('client busy'); return [s.other] })
+    const before = snapshot(s.home)
+    hits = []
+    const refused = await call(sc.client, 'plur_learn', { statement: 'zebra-fallback learning', scope: 'global' })
+    expect(refused.raw.isError, refused.text).not.toBe(true)
+    expect(refused.json?.plur).toBe('off')
+    expect(refused.json?.reason).toBe('workspace-unknown')
+    expect(refused.json?.message).toMatch(/workspace folders/)
+    expect(refused.json?.message).toMatch(/retr/)
+    expect(refused.text).not.toContain('zebra-')
+    expect(snapshot(s.home)).toEqual(before)
+    expect(hits).toEqual([])
+    const next = await call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    expect(next.json?.plur).toBeUndefined()
+    expect(next.text).toContain('zebra-local-fact')
+    expect(sc.requests()).toBe(2)
+  })
+
+  it('a roots/list timeout fails closed for that call too', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const sc = await connectScripted(s.plur, async (i) => { if (i === 0) { await sleep(3000); return [s.other] } return [s.other] })
+    const refused = await call(sc.client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
+    expect(refused.json?.reason).toBe('workspace-unknown')
+    expect(refused.text).not.toContain('zebra-')
+  })
+
   it('list_changed during an in-flight roots/list discards the stale answer', async () => {
     const s = await setup()
     const thirdOn = tmp('plur-mcp-folderoff-third-')

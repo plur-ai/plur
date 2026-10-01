@@ -20,7 +20,9 @@ The admin and diagnostic tools (status, doctor, stores list and add, sync
 status, packs list and preview, scope discovery) keep working; status, doctor
 and stores list still read stores to count or probe them, but return no engram
 text. The folder is the editor's workspace — the roots the client lists over
-MCP, plus the folder the server was started in — checked on every call. A
+MCP, plus the folder the server was started in — checked on every call; if the
+client's roots cannot be fetched, that call does nothing and the next one asks
+again. A
 `folders.yaml` that exists but cannot be read or parsed now fails safe: the
 memory tools do nothing and name the file and the problem. Server startup is
 not gated yet (#1523). `on` and `ask` folders are unchanged.

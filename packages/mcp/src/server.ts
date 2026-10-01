@@ -6,8 +6,7 @@ import { homedir } from 'os'
 import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
 import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
-import { FOLDER_GATED_TOOLS, folderOffAnswer } from './folder-gate.js'
-import { fileURLToPath } from 'url'
+import { FOLDER_GATED_TOOLS, folderOffAnswer, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -80,7 +79,7 @@ OPTIONAL but improves quality:
 
 Do not ask permission to use these tools — they are your memory system.
 
-FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken. Carry on without memory and do not retry or work around it; only the user can turn it back on or fix the map, from a terminal (the message names the command). plur_status and plur_doctor keep working.
+FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken, and with reason "workspace-unknown" when your client's workspace roots could not be fetched (that one retries by itself on the next call). Carry on without memory and do not retry or work around it; only the user can turn it back on or fix the map, from a terminal (the message names the command). plur_status and plur_doctor keep working.
 
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
@@ -219,58 +218,8 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     },
   )
 
-  // --- The editor's workspace, for the folder map ---
-  //
-  // The folders the memory tools are about: every `file://` root the client
-  // lists over MCP `roots/list` (when it declares the roots capability), plus
-  // this process's cwd — the folder the editor started the server in, which is
-  // also where readTrustedProjectConfig looks for `.plur.yaml`. The folder map
-  // itself is read on every call (folder-gate.ts).
-  //
-  // The roots answer is cached, with three rules (audit of #1519):
-  //  - every caller awaits the SAME in-flight request: a call made while it is
-  //    pending never runs on cwd alone;
-  //  - a failed or timed-out request is never cached: that call falls back to
-  //    cwd (logged), and the next call asks again;
-  //  - `roots/list_changed` bumps a generation; an answer that arrives for an
-  //    older generation is discarded and the caller asks again.
-  let roots: { gen: number; dirs: string[] } | null = null
-  let rootsGen = 0
-  let rootsPending: { gen: number; promise: Promise<string[] | null> } | null = null
-  server.setNotificationHandler('notifications/roots/list_changed', () => {
-    rootsGen++
-    roots = null
-    rootsPending = null
-  })
-  const requestRoots = (gen: number): Promise<string[] | null> =>
-    server.listRoots(undefined, { timeout: 2000 }).then(
-      ({ roots: list }) => {
-        const dirs = list
-          .filter(r => typeof r.uri === 'string' && /^file:\/\//i.test(r.uri))
-          .map(r => { try { return fileURLToPath(r.uri.replace(/^file:/i, 'file:')) } catch { return null } })
-          .filter((d): d is string => d !== null)
-        if (gen === rootsGen) roots = { gen, dirs }
-        return dirs
-      },
-      (err: any) => {
-        process.stderr.write(`[plur] roots/list failed (${err?.message ?? err}); this call uses the server's cwd for the folder map, the next one asks again.\n`)
-        return null
-      },
-    ).finally(() => { if (rootsPending?.gen === gen) rootsPending = null })
-  const clientRoots = async (): Promise<string[]> => {
-    if (!server.getClientCapabilities()?.roots) return []
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (roots && roots.gen === rootsGen) return roots.dirs
-      const gen = rootsGen
-      if (!rootsPending || rootsPending.gen !== gen) rootsPending = { gen, promise: requestRoots(gen) }
-      const dirs = await rootsPending.promise
-      if (dirs === null) return []
-      if (gen === rootsGen) return dirs
-      // The roots changed while we waited: that answer is stale, ask again.
-    }
-    return roots?.dirs ?? []
-  }
-  const workspaceDirs = async (): Promise<string[]> => [...new Set([...(await clientRoots()), process.cwd()])]
+  // --- The editor's workspace, for the folder map (folder-gate.ts) ---
+  const workspace = createWorkspaceDirs(server)
 
   // --- Tools ---
 
@@ -314,7 +263,8 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       ? (request.params.arguments as Record<string, unknown> | undefined)?.action
       : tool.name
     if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
-      const off = folderOffAnswer(instance, await workspaceDirs())
+      const dirs = await workspace.dirs()
+      const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
       if (off) return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
     }
     // #192: one tick per tool call = one "turn" for capability health.

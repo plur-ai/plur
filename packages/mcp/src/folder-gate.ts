@@ -1,4 +1,5 @@
 import { folderOffEntries, folderMapProblem, type Plur } from '@plur-ai/core'
+import { fileURLToPath } from 'url'
 import { folderOnCommand } from './tools.js'
 
 /**
@@ -84,7 +85,7 @@ export interface FolderOffAnswer {
   success: true
   plur: 'off'
   folder?: string
-  reason?: 'folder-map-unreadable'
+  reason?: 'folder-map-unreadable' | 'workspace-unknown'
   file?: string
   message: string
 }
@@ -160,4 +161,94 @@ export function folderOffAnswer(plur: Plur, dirs: string[]): FolderOffAnswer | n
     }
   }
   return null
+}
+
+/** What {@link createWorkspaceDirs} needs from an MCP server. */
+export interface RootsServer {
+  getClientCapabilities(): { roots?: unknown } | undefined
+  listRoots(params?: undefined, options?: { timeout?: number }): Promise<{ roots: Array<{ uri: string }> }>
+  setNotificationHandler(method: 'notifications/roots/list_changed', handler: () => void): void
+}
+
+/**
+ * The editor's workspace for the folder map: every `file://` root the client
+ * lists over MCP `roots/list` (when it declares the roots capability), plus
+ * the server's cwd — the folder the editor started it in, which is also where
+ * readTrustedProjectConfig looks for `.plur.yaml`.
+ *
+ * `dirs()` resolves to null when the roots could not be fetched (an error or
+ * the 2 s timeout). The caller then FAILS CLOSED for that call
+ * ({@link workspaceUnknownAnswer}) — it never falls back to cwd alone, which
+ * would run memory in a workspace the user may have turned off.
+ *
+ * The roots answer is cached, with three rules:
+ *  - every caller awaits the SAME in-flight request, so a call made while it
+ *    is pending never runs on a partial picture;
+ *  - a failed or timed-out request is never cached: the next call asks again;
+ *  - `roots/list_changed` bumps a generation; an answer that arrives for an
+ *    older generation is discarded and the caller asks again.
+ *
+ * Self-contained and exported so other server entry points can share it.
+ */
+export function createWorkspaceDirs(
+  server: RootsServer,
+  opts: { timeoutMs?: number; cwd?: () => string } = {},
+): { dirs(): Promise<string[] | null> } {
+  const timeout = opts.timeoutMs ?? 2000
+  const cwd = opts.cwd ?? (() => process.cwd())
+  let cached: { gen: number; dirs: string[] } | null = null
+  let gen = 0
+  let pending: { gen: number; promise: Promise<string[] | null> } | null = null
+  server.setNotificationHandler('notifications/roots/list_changed', () => {
+    gen++
+    cached = null
+    pending = null
+  })
+  const request = (g: number): Promise<string[] | null> =>
+    server.listRoots(undefined, { timeout }).then(
+      ({ roots }) => {
+        const dirs = roots
+          .filter(r => typeof r.uri === 'string' && /^file:\/\//i.test(r.uri))
+          .map(r => { try { return fileURLToPath(r.uri.replace(/^file:/i, 'file:')) } catch { return null } })
+          .filter((d): d is string => d !== null)
+        if (g === gen) cached = { gen: g, dirs }
+        return dirs
+      },
+      (err: unknown) => {
+        log(`roots/list failed (${(err as Error)?.message ?? err}); memory tools do nothing for this call, the next call asks again.`)
+        return null
+      },
+    ).finally(() => { if (pending?.gen === g) pending = null })
+  const clientRoots = async (): Promise<string[] | null> => {
+    if (!server.getClientCapabilities()?.roots) return []
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (cached && cached.gen === gen) return cached.dirs
+      const g = gen
+      if (!pending || pending.gen !== g) pending = { gen: g, promise: request(g) }
+      const dirs = await pending.promise
+      if (dirs === null) return null
+      if (g === gen) return dirs
+      // The roots changed while we waited: that answer is stale, ask again.
+    }
+    return null
+  }
+  return {
+    async dirs() {
+      const roots = await clientRoots()
+      return roots === null ? null : [...new Set([...roots, cwd()])]
+    },
+  }
+}
+
+/** The answer a gated tool gives when the editor's workspace folders could not be fetched. */
+export function workspaceUnknownAnswer(): FolderOffAnswer {
+  return {
+    success: true,
+    plur: 'off',
+    reason: 'workspace-unknown',
+    message:
+      `PLUR couldn't get the editor's workspace folders (the MCP roots request failed or timed out), so it cannot ` +
+      `tell whether memory is allowed here and is not using memory for this call: nothing was read from or ` +
+      `written to memory. This is not an error. It will retry on the next call.`,
+  }
 }
