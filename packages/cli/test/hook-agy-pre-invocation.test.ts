@@ -69,7 +69,7 @@ vi.mock('../src/plur.js', async (importOriginal) => {
   // The workspace directory is trusted: since decision E3 (2026-09-26) a
   // `.plur.yaml` scope is adopted only from a `plur trust`ed directory, and
   // this suite is about WHICH directory is read, not about trust.
-  return { ...actual, createPlur: () => ({ isDirectoryTrusted: () => true }) as never }
+  return { ...actual, createPlur: () => ({ isDirectoryTrusted: () => true, bindFolderPolicy: () => {}, remoteOnlyFolder: () => null }) as never }
 })
 
 vi.mock('@plur-ai/core', async (importOriginal) => {

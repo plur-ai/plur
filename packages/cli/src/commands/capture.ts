@@ -32,7 +32,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur capture <summary> [--agent <name>] [--session <id>]')
   }
 
-  const episode = plur.capture(summary, { agent, session_id })
+  // A remote-only folder captures no timeline (owner decision on #1521);
+  // createPlur bound the instance to this folder.
+  let episode
+  try {
+    episode = plur.capture(summary, { agent, session_id })
+  } catch (err) {
+    exit(1, (err as Error).message)
+  }
 
   if (shouldOutputJson(flags)) {
     outputJson({ id: episode.id, summary: episode.summary, timestamp: episode.timestamp })

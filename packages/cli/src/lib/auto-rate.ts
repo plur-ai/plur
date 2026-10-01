@@ -423,7 +423,10 @@ export async function autoRateTurn(opts: {
         // via `learn()`, which never routes, so it can never be auto-routed
         // into a shared scope either. A folder the map turns off gets nothing.
         const dir = opts.cwd ?? process.cwd()
-        const policy = plur.resolveFolderPolicy(dir)
+        // Bound, not just resolved: in a remote-only folder core then sends
+        // every captured statement to the folder's team scope and refuses
+        // anything that would stay on this machine (owner decisions 2026-10-01).
+        const policy = plur.bindFolder(dir)
         const configPath = findProjectConfigPath(dir)
         const hint = configPath ? readProjectConfigFromPath(configPath) : {}
         const trusted = configPath !== null && plur.isDirectoryTrusted(dirname(configPath))

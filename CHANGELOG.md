@@ -2,6 +2,107 @@
 
 ## Unreleased
 
+### remote-only folders keep memory on the team server (#1521)
+
+A new folder-map mode for work whose memories belong on a team server, not in
+your personal store:
+
+```
+plur folders set ~/client-work --remote-only --scope group:acme/client
+```
+
+The scope must be served by a team store (a `url` store in `config.yaml`); the
+command refuses any other scope (`scope-unconfigured`) and, outside a terminal,
+needs the usual `--nonce`. In a remote-only folder:
+
+- A save with no scope goes to the folder's team scope. Saving to a personal or
+  local scope (`user:`, `agent:`, `global`, `local`, a `project:` scope no team
+  store serves, a private memory, or content the sensitivity guard would keep
+  local) is refused, and the message names the folder and how to change it.
+  Saving to another team scope you can write still works.
+- Recall and injection read the folder's scope from the team server and your
+  installed packs, never your personal store. In such a folder the keyword-only
+  injection (Cursor's session start, the hooks' fallback) dials the team server
+  too; elsewhere it stays local, as before.
+- A save that cannot reach the server waits in the outbox and is removed once
+  delivered. Such a queued save can only be delivered or forgotten (forgetting
+  deletes it); it cannot be rescoped or updated to a local scope, and a
+  tightened sensitivity policy holds it in the queue instead of demoting it to
+  a local memory.
+- Personal memories are out of reach: id lookups find nothing, and forget, pin,
+  feedback, update, rescope, meta-engram saves, pack export and tension changes
+  on them are refused. Write dedup only considers queued saves, so a team save
+  is never absorbed into a personal memory. LLM dedup decisions are off there.
+- When the server cannot be reached, the session starts without memory and says
+  so once. It never falls back to the personal store.
+- A repository's `.plur.yaml`, a project MCP config, or an entry below that only
+  sets `trusted` or a `scope` cannot turn the folder back on; only `off` or a
+  more specific entry with an explicit mode does. The entry matches the same
+  spellings `off` does.
+- No session timeline is kept there: `plur capture` / `plur_capture` are refused,
+  and the session-end hooks and `plur_session_end` capture no episode (their
+  engram suggestions still go to the team scope).
+- `plur folders set <dir> --scope <s>` on a remote-only folder changes only the
+  scope; it never switches the folder back to local memory. Leaving remote-only
+  takes `--on`, `--off`, `--ask` or `plur folders rm`.
+- An entry with no scope refuses every save and says so.
+
+- Still written locally: queued saves, the daily backup and (when enabled) the
+  search index, which can hold a queued save until it is delivered, the
+  embedding cache, history events (without statement previews in such a
+  folder), statistics. See the docs.
+
+**A `folders.yaml` that cannot be read now fails safe.** Every folder behaves
+like `ask`, PLUR reads and writes nothing, and the session says so, naming the
+file and line. Before, it was read as empty, so a folder with a project setup
+got full memory.
+
+**Update every PLUR integration together.** Older versions read a
+`folders.yaml` holding a `remote-only` entry as unreadable, so in them every
+folder asks again, `off` entries are not applied, and a folder with a project
+setup gets full local memory.
+
+It applies to the Claude Code, Codex, Cursor and Antigravity hooks, to every
+`plur` command (bound to the folder it runs in), and to the MCP server, which
+re-reads the decision before each tool call for its client's workspace roots
+and the folder it was started in. When it cannot read the workspace roots, or
+cannot resolve a folder, that call reads and writes nothing and says so. The
+opencode plugin follows once #1517 is in; the OpenClaw and Hermes plugins do
+not read the folder map.
+
+Underneath the command-level refusals, every local store a bound instance
+opens is wrapped so that it shows and accepts only the folder's own queued
+saves, active and in a team scope, while keeping the store's lock (a test
+calls every public method in a bound instance against a store seeded with
+personal content; another runs 25 concurrent saves and a second process).
+This covers paths through PLUR, including the API's `primaryStore` handle; it
+does not cover programs reading the files directly. A queued save cannot be
+retired (tension resolve, a status update) — only delivered or forgotten.
+Store maintenance (`compact`, reindex, `sync`) is refused in the folder.
+`plur ingest` there saves to the folder's team scope. The
+opencode plugin does not follow the folder map yet; it picks the mode up once
+its folder-map support (#1517) is in. Core: `Plur.bindFolder(dir)` /
+`bindFolderPolicy(dir, policy)`, `RemoteOnlyWriteError`, and
+`InjectionResult.remote_only` (whether the team server served the injection).
+Folders without remote-only behave exactly as before. See
+[docs/folder-map.md](docs/folder-map.md).
+
+### folders.yaml starts with commented examples of every setting (#1521)
+
+When PLUR creates `~/.plur/folders.yaml` (the first `plur folders set`, `plur
+trust`, the folder question's answer, or `plur init` moving hooks), it now
+writes a commented example of every setting (`on`, `off`, `ask`, `scope`,
+`trusted`, `remote-only`) with one line saying what each does. Remove the `# `
+to use one.
+
+Every CLI write to the file (`set`, `rm`, `trust`, `untrust`, the folder
+question's answers) now edits it in place with the `yaml` package's Document
+API: only the entry that changed is rewritten, and your comments, blank lines
+and entry order are kept byte for byte. A file PLUR cannot read is still never
+overwritten. `@plur-ai/core` gains a dependency on `yaml` (already in the
+lockfile as a build-tool dependency).
+
+
 ### plur doctor reads an opencode config written with comments or trailing commas (#1516)
 
 opencode accepts JSONC in `~/.config/opencode/opencode.jsonc`. `plur doctor`
@@ -37,6 +138,7 @@ and a letter (`-deploy …`, `--path=…`) must come after `--`:
 flag and the command exits 1. The current Python SDK and Hermes plugin already
 pass such tasks after `--`; older builds that do not will get exit 1 for those
 tasks (no memory injected for that turn) until they are updated.
+
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its

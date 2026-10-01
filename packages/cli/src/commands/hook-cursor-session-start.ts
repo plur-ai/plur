@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
@@ -57,7 +57,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const dir = payloadDir(input)
   const policy = hookFolderPolicy(dir, flags)
   const rulePath = cursorContextRulePath(dir)
-  if (policy.mode !== 'on') removeStaleAsk(rulePath)
+  if (policy.mode !== 'on' && policy.mode !== 'remote-only') removeStaleAsk(rulePath)
   if (policy.mode === 'off') return
 
   const conversationId = cursorConversationId(input)
@@ -88,6 +88,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   let fullContext: string
   try {
     const plur = createPlur(flags)
+    // remote-only: core reads only the team scope (dialled, even from this
+    // keyword-only inject) and packs, never the personal store.
+    bindHookFolder(plur, dir, policy)
     const projectRemote = resolveProjectRemote(plur, dir)
     const projectConfig = sessionSettings(policy, projectRemote.config)
     const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
@@ -109,8 +112,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const count = result.count
     const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 
-    const header = `[PLUR Memory — session started, ${count} engrams injected]` +
-      (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
+    const header = [
+      `[PLUR Memory — session started, ${count} engrams injected]` +
+        (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : ''),
+      ...remoteOnlyLines(plur, result, true),
+    ].join('\n')
 
     // A refused .plur.yaml is still worth saying: the user's scope routing is
     // unaffected, but they should know the remote settings were not honoured —

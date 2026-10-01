@@ -6,7 +6,7 @@ import { randomUUID, randomBytes } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
@@ -527,13 +527,16 @@ export function pidAlive(pid: number): boolean {
  * Conservative: only reports metadata (stop count, duration, cwd).
  */
 export function processDeferredWrapups(
-  plur: Pick<Plur, 'capture'>,
+  plur: Pick<Plur, 'capture'> & Partial<Pick<Plur, 'remoteOnlyFolder' | 'resolveFolderPolicy'>>,
   root: string,
   now: number = Date.now(),
   isAlive: (pid: number) => boolean = pidAlive,
 ): string | null {
   const sessionsDir = join(root, 'sessions')
   if (!existsSync(sessionsDir)) return null
+  // A remote-only session captures no timeline (owner decision on #1521):
+  // other sessions' orphans wait for a session that can capture them.
+  if (plur.remoteOnlyFolder?.()) return null
 
   const notices: string[] = []
   try {
@@ -576,6 +579,21 @@ export function processDeferredWrapups(
       const where = typeof checkpoint.cwd === 'string' && checkpoint.cwd
         ? ', ' + checkpoint.cwd.split('/').slice(-2).join('/') : ''
       const facts = `${durationStr}, ${checkpoint.stop_count ?? 0} responses${where}`
+
+      // An orphan from a remote-only folder is dropped, not captured: its
+      // timeline must not be kept on this machine (owner decision on #1521).
+      if (typeof checkpoint.cwd === 'string' && checkpoint.cwd && plur.resolveFolderPolicy) {
+        let policy: { mode: string; reason?: string } | null = null
+        // When in doubt, don't capture (re-audit of #1521, C-1): an
+        // unresolvable folder, or an unreadable map, leaves the checkpoint
+        // uncaptured for a session that can decide.
+        try { policy = plur.resolveFolderPolicy(checkpoint.cwd) } catch { continue }
+        if (policy.reason === 'malformed-map') continue
+        if (policy.mode === 'remote-only') {
+          try { unlinkSync(path) } catch { /* gone */ }
+          continue
+        }
+      }
 
       // Durable FIRST. Only a successful capture licenses the unlink.
       try {
@@ -856,6 +874,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (!task) return
 
     const plur = createPlur(flags)
+    bindHookFolder(plur, dir, policy)
     const label = `[PLUR Memory — ${event}]`
 
     // BM25-only, deliberately. Event hooks are SYNC — their whole point is
@@ -1068,6 +1087,8 @@ async function injectSession(
   // now — not later where it's only used for the label — so the injection is
   // attributed to this session on the co_injection event the receipt reads.
   const plur = createPlur(flags)
+  // remote-only folders: core reads only the team scope and packs (#remote-only).
+  bindHookFolder(plur, dir, policy)
   // Known before the search starts, so the watchdog can start a cache build too.
   storeRoot = plur.storageRoot
   runFlags = flags
@@ -1150,6 +1171,9 @@ async function injectSession(
 
   // A4′ (#776): degradation header — one line per (host, state) change.
   for (const line of degradationLines) parts.push(line)
+  // remote-only: where memory goes, and — once, at session start — that the
+  // team server did not answer, so there is no memory this session.
+  for (const line of remoteOnlyLines(plur, result, !isRehydrate)) parts.push(line)
 
   // #1196: say so. A remote leg that silently stops working is the regression
   // this gate could otherwise introduce — the user must be able to tell

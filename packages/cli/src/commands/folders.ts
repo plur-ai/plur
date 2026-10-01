@@ -4,7 +4,7 @@ import { FolderMapError, type FolderChange, type FolderEntry } from '@plur-ai/co
 
 const USAGE =
   'Usage: plur folders list\n' +
-  '       plur folders set <folder> (--scope <s> | --on | --off | --ask) [--trusted | --no-trusted] [--nonce <n>]\n' +
+  '       plur folders set <folder> (--scope <s> | --on | --off | --ask | --remote-only --scope <s>) [--trusted | --no-trusted] [--nonce <n>]\n' +
   '       plur folders rm <folder> [--nonce <n>]\n' +
   'Without --nonce, set and rm work only from an interactive terminal.'
 
@@ -35,13 +35,19 @@ export function nonceRequired(stdinIsTTY: boolean | undefined, stdoutIsTTY: bool
  * stays the repo's request.
  *
  *   plur folders list
- *   plur folders set <folder> --scope <s> | --on | --off | --ask  [--trusted|--no-trusted] [--nonce <n>]
+ *   plur folders set <folder> --scope <s> | --on | --off | --ask | --remote-only --scope <s>
+ *                             [--trusted|--no-trusted] [--nonce <n>]
  *   plur folders rm <folder>
  *
  * `--nonce` is what the ask flow passes: it must be the nonce issued for this
  * folder in this session, and it works once. Without `--nonce`, `set` and `rm`
  * are accepted only from an interactive terminal (see nonceRequired). A team
  * `--scope` must name a store already configured in config.yaml.
+ *
+ * `--remote-only --scope <s>` (owner decisions 2026-10-01): the folder's memory
+ * lives only on the team server, in scope <s>, which must be served by a url
+ * store. Unscoped writes there go to <s>; personal and local scopes are
+ * refused; recall reads <s> and installed packs, never the personal store.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const json = shouldOutputJson(flags)
@@ -82,9 +88,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const change: FolderChange = {}
   let nonce: string | undefined
   let modes = 0
+  let remoteOnly = false
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]
     if (a === '--on' || a === '--off' || a === '--ask') { change.mode = a.slice(2) as FolderChange['mode']; modes++ }
+    else if (a === '--remote-only') remoteOnly = true
     else if (a === '--scope') {
       const v = rest[++i]
       if (!v || v.startsWith('--')) exit(1, `--scope needs a scope.\n${USAGE}`)
@@ -99,7 +107,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     else exit(1, `Unexpected argument ${a}.\n${USAGE}`)
   }
-  if (modes > 1) exit(1, `Pass only one of --scope, --on, --off, --ask.\n${USAGE}`)
+  if (remoteOnly) {
+    // `--remote-only --scope <s>` is one decision: the scope is where the
+    // folder's memory lives, so it is required, and no other mode goes with it.
+    if (change.scope === undefined) exit(1, `--remote-only needs --scope <s>: the team scope this folder's memory goes to.\n${USAGE}`)
+    if (change.mode !== undefined) exit(1, `--remote-only cannot be combined with --on, --off or --ask.\n${USAGE}`)
+    change.mode = 'remote-only'
+    modes = 1
+  }
+  if (modes > 1) exit(1, `Pass only one of --scope, --on, --off, --ask, --remote-only --scope <s>.\n${USAGE}`)
   if (modes === 0 && change.trusted === undefined) exit(1, `Nothing to set.\n${USAGE}`)
   refuseWithoutNonce(nonce, json)
 

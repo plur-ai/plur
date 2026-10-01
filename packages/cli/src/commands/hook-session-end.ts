@@ -3,7 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { createPlur } from '../plur.js'
-import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
+import { hookFolderOn, hookFolderPolicy, payloadDir } from '../lib/folder-gate.js'
 import { endFolderNonceSession } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
@@ -118,7 +118,11 @@ async function closeSession(flags: GlobalFlags): Promise<boolean> {
 
   // Nothing is captured unless the folder map says on (#1347; was #247's
   // project gate).
-  if (!hookFolderOn(payloadDir(payload as Record<string, unknown>), flags)) return false
+  const dir = payloadDir(payload as Record<string, unknown>)
+  if (!hookFolderOn(dir, flags)) return false
+  // remote-only (owner decision on #1521): no timeline capture. The session's
+  // checkpoint (its metadata) is dropped too, so no later session captures it.
+  const remoteOnly = hookFolderPolicy(dir, flags).mode === 'remote-only'
 
   const sessionsDir = join(plurPath(flags), 'sessions')
   if (!existsSync(sessionsDir)) return true
@@ -152,6 +156,20 @@ async function closeSession(flags: GlobalFlags): Promise<boolean> {
   // No checkpoint → clean close already happened, or session too short. Nothing
   // to close.
   if (!checkpointPath || !checkpoint) return true
+  // The checkpoint's OWN folder decides too (re-audit of #1521, C-1): a
+  // payload without a usable cwd falls back to this process's folder, which
+  // may not be the session's. When in doubt, nothing is captured.
+  let checkpointPolicy: { mode: string; reason?: string } | null = null
+  if (typeof checkpoint.cwd === 'string' && checkpoint.cwd) {
+    checkpointPolicy = hookFolderPolicy(checkpoint.cwd, flags)
+  }
+  if (remoteOnly || checkpointPolicy?.mode === 'remote-only') {
+    try { unlinkSync(checkpointPath) } catch { /* gone */ }
+    return true
+  }
+  // An unresolvable folder: no capture; the checkpoint stays for a later,
+  // resolvable session to decide.
+  if (checkpointPolicy?.reason === 'malformed-map') return true
 
   // Build a conservative, metadata-only summary — the same information the
   // deferred wrap-up (#216) reports, but captured as a durable episode.
