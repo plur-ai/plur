@@ -694,6 +694,9 @@ export function writePlurSection(path: string, section: string, title: string): 
       `${r.keptSections === 1 ? 'it has' : 'they have'} text PLUR did not write — remove it yourself once you have kept what you need`,
     )
   }
+  if (r.closedOpenBlock) {
+    notes.push(`closed the ${r.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of the file, so the new section is not inside it`)
+  }
   return notes.length ? `${head} (${notes.join('; ')})` : head
 }
 
@@ -1078,7 +1081,7 @@ function installCursor(cmd: string): string {
     const content = existingRule.includes('\r\n') ? CURSOR_RULE_CONTENT.replace(/\n/g, '\r\n') : CURSOR_RULE_CONTENT
     ruleStatus = `upgraded (backup: ${writeWithBackup(rulesPath, content)})`
   } else {
-    ruleStatus = `kept as you edited it (backup: ${backupFile(rulesPath)}); it lacks the newer instructions — ` +
+    ruleStatus = `kept as you edited it (backup: ${backupFile(rulesPath, { once: true })}); it lacks the newer instructions — ` +
       `delete it and re-run \`plur init --cursor\` to get them`
   }
 

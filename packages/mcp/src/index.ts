@@ -268,6 +268,9 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
       `${r.keptSections === 1 ? 'it has' : 'they have'} text PLUR did not write — remove it yourself once you have kept what you need`,
     )
   }
+  if (r.closedOpenBlock) {
+    notes.push(`closed the ${r.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of the file, so the new section is not inside it`)
+  }
   return notes.length ? `${head} (${notes.join('; ')})` : head
 }
 

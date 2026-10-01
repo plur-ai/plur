@@ -122,6 +122,8 @@ export interface EnsureSystemPromptResult {
   backup?: string
   /** Sections under the PLUR heading that PLUR did not write, left untouched. */
   keptSections: number
+  /** SYSTEM.md ended inside a code fence or HTML comment, closed before the section was appended. */
+  closedOpenBlock?: 'fence' | 'comment'
 }
 
 /**
@@ -158,5 +160,6 @@ export function ensureSystemPrompt(workspacePath: string): EnsureSystemPromptRes
     path: systemMdPath,
     backup,
     keptSections: r.keptSections,
+    ...(r.closedOpenBlock ? { closedOpenBlock: r.closedOpenBlock } : {}),
   }
 }
