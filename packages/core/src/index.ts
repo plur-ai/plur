@@ -2072,8 +2072,22 @@ export class Plur {
    * (`plur.primaryStore.kind`) instead of assuming `engrams.yaml`.
    */
   get primaryStore(): AsyncPrimaryStore {
-    return this._primaryStore
+    // A handle that follows the binding at every call (re-audit 2 of #1521,
+    // R2-S5): one taken before `bindFolder` is guarded once the instance is
+    // bound, and one taken while bound stops working after a blocked rebind.
+    if (!this._publicPrimaryStore) {
+      this._publicPrimaryStore = new Proxy({} as AsyncPrimaryStore, {
+        get: (_t, prop) => {
+          const s = this._primaryStore as unknown as Record<string | symbol, unknown>
+          const v = s[prop]
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(s) : v
+        },
+        has: (_t, prop) => prop in (this._primaryStore as object),
+      })
+    }
+    return this._publicPrimaryStore
   }
+  private _publicPrimaryStore: AsyncPrimaryStore | null = null
 
   /** Get or create a RemoteStore driver for a store config entry. */
   private _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteStore {
@@ -7868,6 +7882,7 @@ export class Plur {
     // A queued remote-only save keeps its queue entry through a same-scope
     // update (re-audit of #1521, B-3): it is read from the STORED row, so a
     // caller's object without `_outbox` cannot turn it into a local row.
+    if (pending && Plur._isRemoteOnlyQueued(stored) && toWrite.status !== 'active') throw this._queuedStaysRemote(stored)
     if (pending && Plur._isRemoteOnlyQueued(stored) && toWrite.scope === stored.scope) {
       sd._outbox = storedSd!._outbox
       changed = true
@@ -9567,7 +9582,9 @@ export class Plur {
       for (const candidate of candidates) {
         await this.learn(candidate.statement, {
           type: candidate.type,
-          scope: options?.scope ?? 'global',
+          // remote-only: no explicit scope, so it goes to the folder's team
+          // scope (re-audit 2 of #1521, R2-S4); elsewhere `global`, as before.
+          scope: options?.scope ?? (this._remoteOnly ? undefined : 'global'),
           domain: options?.domain,
           source: candidate.source,
         })
@@ -11318,6 +11335,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       const engrams = await this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
+      // A save queued from a remote-only folder is delivered or forgotten,
+      // never retired into a permanent local row (re-audit 2 of #1521, R2-B2).
+      if (Plur._isRemoteOnlyQueued(engram)) throw this._queuedStaysRemote(engram)
       stamp(engram)
       await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
@@ -12202,7 +12222,12 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (this._remoteOnly.blocked) throw this._remoteOnlyError('local-row')
     // An explicit url-store scope routes to that store, not to a local row
     // that happens to share the id (re-audit of #1521, S-2 regression).
-    if (scope && this._isRemoteBackedScope(scope)) return
+    if (scope && this._isRemoteBackedScope(scope)) {
+      // Only the folder's team scope or another TEAM scope; a personal url
+      // store (`user:`…) is out of reach here (re-audit 2 of #1521, R2-S2).
+      if (scope === this._remoteOnly.scope || isSharedScope(scope)) return
+      throw this._remoteOnlyError('personal-scope', scope)
+    }
     const folder = this._remoteOnly.folder
     const primary = await this._basePrimaryStore.loadCached()
     const hit = primary.find(e => e.id === id)

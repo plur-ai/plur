@@ -30,6 +30,7 @@
 import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind, SaveOptions } from './primary-store.js'
 import { RemoteOnlyWriteError } from '../remote-only.js'
+import { isSharedScope } from '../scope-util.js'
 
 export interface RemoteOnlyStoreBinding {
   folder: string
@@ -37,11 +38,26 @@ export interface RemoteOnlyStoreBinding {
   blocked?: string
 }
 
-/** True when `e` is a save queued from the remote-only folder `folder`. */
+/** True when `e` is marked as a save queued from the remote-only folder `folder`. */
 export function isQueuedForFolder(e: unknown, folder: string): boolean {
   const ob = (e as { structured_data?: { _outbox?: { remote_only?: unknown; remote_only_folder?: unknown } } } | null)
     ?.structured_data?._outbox
   return !!ob && ob.remote_only === true && ob.remote_only_folder === folder
+}
+
+/**
+ * True when `e` is a well-formed queued save of `folder` (re-audit 2 of #1521,
+ * R2-B2): marked for the folder, ACTIVE, and in the team scope its queue entry
+ * targets — the folder's scope or another shared scope. Anything else is not
+ * a deliverable queued save, so the guard does not accept it.
+ */
+export function isDeliverableQueuedSave(e: unknown, folder: string, folderScope: string | null): boolean {
+  if (!isQueuedForFolder(e, folder)) return false
+  const row = e as { status?: string; scope?: string; structured_data?: { _outbox?: { target_scope?: string } } }
+  if (row.status !== 'active') return false
+  const target = row.structured_data?._outbox?.target_scope
+  if (!row.scope || row.scope !== target) return false
+  return row.scope === folderScope || isSharedScope(row.scope)
 }
 
 export class RemoteOnlyStoreGuard implements PrimaryStore {
@@ -53,6 +69,12 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
   readonly updateMany?: (engrams: Engram[]) => Promise<void>
   readonly findActiveByContentHash?: (hash: string, scope: string) => Promise<Engram | null>
   readonly nextEngramId?: (datePrefix: string) => Promise<string>
+  /**
+   * Forwarded ONLY when the inner store has it (re-audit 2 of #1521, R2-B1).
+   * Implementing it unconditionally made `_withStoreLock` skip its own lock
+   * for a YAML store, and concurrent bound writes lost saves.
+   */
+  readonly withExclusiveAccess?: <T>(fn: () => Promise<T>) => Promise<T>
 
   constructor(
     private readonly _inner: PrimaryStore,
@@ -71,6 +93,7 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
       }
     }
     if (_inner.nextEngramId) this.nextEngramId = prefix => _inner.nextEngramId!(prefix)
+    if (_inner.withExclusiveAccess) this.withExclusiveAccess = fn => _inner.withExclusiveAccess!(fn)
     if (_inner.append) {
       this.append = async engram => {
         this._assertQueued(engram, 'Saving a new memory on this machine')
@@ -104,16 +127,12 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
   }
 
   private _assertQueued(e: Engram, what: string): void {
-    if (!this._visible(e)) this._refuse(what)
+    if (!this._visible(e) || !isDeliverableQueuedSave(e, this._binding.folder, this._binding.scope)) this._refuse(what)
   }
 
   async load(): Promise<Engram[]> { return (await this._inner.load()).filter(e => this._visible(e)) }
   async loadCached(): Promise<Engram[]> { return (await this._inner.loadCached()).filter(e => this._visible(e)) }
   invalidate(): void { this._inner.invalidate() }
-
-  async withExclusiveAccess<T>(fn: () => Promise<T>): Promise<T> {
-    return this._inner.withExclusiveAccess ? await this._inner.withExclusiveAccess(fn) : await fn()
-  }
 
   /** Every id the store holds — ids only, never content — for collision-free id minting. */
   async allIds(): Promise<string[]> {
