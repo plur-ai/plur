@@ -11418,6 +11418,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async purgeTensions(): Promise<{ purged_count: number; engrams_modified: number; stores_cleaned: number }> {
     this._assertWritable()
+    this._remoteOnlyRefuseLocalStore('Purging legacy tensions (it rewrites personal memories)')
     // Collect all filesystem store paths (primary + project-scoped + pack stores)
     const storePaths = new Set<string>()
     storePaths.add(this.paths.engrams)
