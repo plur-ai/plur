@@ -769,6 +769,32 @@ export function trustCommand(dir: string | null, storageRoot?: string, platform:
   return store === null ? null : `plur --path ${store} trust ${target}`
 }
 
+/**
+ * The command that turns PLUR back on for a folder-map entry, for the answer
+ * the memory tools give in an `off` folder (folder-gate.ts). Same store rule
+ * as {@link trustCommand}: a non-default store is named with `--path`, or the
+ * change lands in a map this server never reads. Null when the entry cannot
+ * be quoted safely.
+ */
+export function folderOnCommand(entry: string, storageRoot?: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (_UNSAFE_PATH_CHARS.test(entry)) return null
+  const target = _shellWord(entry, platform)
+  if (target === null) return null
+  if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur folders set ${target} --on`
+  const store = _shellWord(resolve(storageRoot), platform)
+  return store === null ? null : `plur --path ${store} folders set ${target} --on`
+}
+
+/**
+ * A store error without the file's contents. A YAML parse error carries a
+ * code frame — the lines around the fault, which are engram statements — and
+ * plur_status is an admin tool that answers in a folder where PLUR is off.
+ * Keep the first line (what went wrong, and the line and column).
+ */
+export function redactStoreErrors(errors: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(errors).map(([k, v]) => [k, String(v).split('\n', 1)[0].slice(0, 300)]))
+}
+
 /** Same grammar as the folder question's (cli folder-gate.ts): bounded, no spaces or controls. */
 const UNTRUSTED_SCOPE_GRAMMAR = /^(?:global|[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._@/:-]{0,199})$/
 const UNTRUSTED_DOMAIN_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/
@@ -2803,7 +2829,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Artifacts that could not be read (audit 2026-08-03, finding 14).
           // Core reports these; this hand-built response dropped them, so an
           // agent asking for status saw a healthy-looking `pack_count: 0`.
-          ...(status.store_errors ? { store_errors: status.store_errors } : {}),
+          ...(status.store_errors ? { store_errors: redactStoreErrors(status.store_errors) } : {}),
           // Spreading-activation drop counters — absent when both are zero.
           ...(status.spread_drops ? { spread_drops: status.spread_drops } : {}),
           // Version check (issue #151)
@@ -3428,7 +3454,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         // Surface a broken artifact where the operator will actually see it —
         // the session opener — rather than only in `plur status`.
-        const store_errors = status?.store_errors
+        const store_errors = status?.store_errors ? redactStoreErrors(status.store_errors) : undefined
 
         // Warm remote store caches before injection (#235)
         // Ensures enterprise engrams are available for the first injectHybrid call.

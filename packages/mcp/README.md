@@ -69,6 +69,24 @@ Less commonly needed tools (`plur_recall_hybrid`, `plur_inject_hybrid`, `plur_le
 
 A `plur_*` name missing from `tools/list` means it moved behind the gateway, not that the server is down. `plur_admin { action: "help" }` returns every action with a one-line description and its argument schema; `plur_doctor` reports the same inventory as `tool_surface`.
 
+## Folders where PLUR is off
+
+Your folder map (`~/.plur/folders.yaml`, changed by `plur folders set` from a terminal) can turn PLUR off for a folder. The editor hooks already go silent there; the MCP server's memory tools do too.
+
+**What is gated.** 33 tools — every tool that reads or writes engrams or episodes or returns their text: `plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`, `plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`, `plur_capture`, `plur_timeline`, `plur_feedback`, `plur_pin`, `plur_forget`, `plur_ingest`, `plur_promote`, `plur_rescope`, `plur_episode_to_engram`, `plur_report_failure`, `plur_extract_meta`, `plur_meta_engrams`, `plur_validate_meta`, `plur_tensions`, `plur_tensions_purge`, `plur_similarity_search`, `plur_history`, `plur_provenance`, `plur_profile`, `plur_receipt`, `plur_packs_install`, `plur_packs_uninstall`, `plur_packs_export`, `plur_sync`, `plur_outbox` — called directly or through `plur_admin`. In an `off` folder they read and write no store, local or remote (no outbox row either), and return a normal, non-error answer:
+
+```json
+{ "success": true, "plur": "off", "folder": "/work/secret", "message": "PLUR is off for this folder … plur folders set /work/secret --on" }
+```
+
+The message names every folder-map entry that turns the folder off (a parent folder or a glob can), with the command for each.
+
+**What is not gated.** The admin and diagnostic tools keep working: `plur_status`, `plur_doctor`, `plur_stores_list`, `plur_stores_add`, `plur_sync_status`, `plur_packs_list`, `plur_packs_discover`, `plur_packs_preview`, `plur_scopes_discover`, `plur_suggest_scope`, `plur_session_scope`. Some of them still read stores — status, doctor and stores_list load them to count or probe them, and doctor runs a recall probe. What they can return: counts, health and configuration; A store that cannot be parsed is reported by the error's first line only (what went wrong, line and column) — in `plur_status` and in the error any tool returns — never by the file's lines. One exception: `plur_packs_preview` previews any pack directory the agent names, including an installed pack under your PLUR home, and then returns that pack's statements. Server startup is not gated yet: starting the server in an `off` folder can still register a `.plur/` store found there ([#1523](https://github.com/plur-ai/plur/issues/1523)).
+
+**Which folder.** The editor's workspace: each root the client lists over MCP `roots/list`, plus the folder the server was started in. If any of them is `off`, the memory tools are off. The folder map is read on every call, so a change takes effect on the next one. Calls made while the roots are being fetched wait for them. If fetching them fails or times out, or a root does not resolve to a folder on this machine (`file://otherhost/…`, an encoded slash), that call does nothing (it answers `"reason": "workspace-unknown"`, not an error) and the next call asks again; it never falls back to the start folder alone. If the client's roots keep failing, memory stays off until they work. The roots answer is cached, and shared between calls made at the same time, only when the client declares `roots.listChanged`; otherwise every call sends its own roots request. A client that declares no roots capability at all, and was started outside the workspace, cannot be checked against it.
+
+**A broken folder map fails safe.** If `folders.yaml` exists but cannot be read or parsed — including a dangling symlink, a symlink loop, an empty or comments-only file, and an unknown top-level key such as a misspelled `folder:` — the gated tools do nothing and answer with `"reason": "folder-map-unreadable"`, naming the file and the problem (for YAML errors, the line). No `folders.yaml` at all (nothing at that path) means no decisions yet: the tools work as before. `on` and `ask` folders behave as before. On first read, an old `trust.yaml` is imported into a new `folders.yaml` (a one-time core migration); otherwise the server never writes the map.
+
 ## Sync across machines
 
 Your agent can sync memory to any git remote:

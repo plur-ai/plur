@@ -2,11 +2,13 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
 
 /**
- * Flags this command accepts (#986).
+ * Flags this command accepts (#986). `--tags` was declared here and never
+ * parsed, so `list --tags x` listed everything; with no tag filter to apply,
+ * it is no longer declared and the argv check refuses it.
  */
-export const FLAGS_WITH_VALUES = ['--scope', '--domain', '--type', '--tags', '--limit']
+export const FLAGS_WITH_VALUES = ['--scope', '--domain', '--type', '--limit']
 
-export const FLAGS = ['--scope', '--domain', '--type', '--tags', '--limit']
+export const FLAGS = ['--scope', '--domain', '--type', '--limit', '--meta']
 
 /**
  * Shorten a statement to a display WIDTH, never splitting a character.

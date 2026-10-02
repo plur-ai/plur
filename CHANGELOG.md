@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+### The MCP server respects a folder you turned PLUR off for (#1519)
+
+`plur folders set <folder> --off` silenced the editor hooks, but an agent that
+called `plur_learn` or `plur_recall` itself still read and wrote memory in that
+folder: the MCP server never read the folder map. Now, in an `off` folder, the
+33 MCP tools that read or write engrams or episodes or return their text —
+`plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`,
+`plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`,
+`plur_capture`, `plur_feedback`, `plur_receipt` and the rest (the full list is
+in the MCP README), called directly or through `plur_admin` — read and write no
+store, local or remote (no outbox row either), and answer without an error
+that PLUR is off for this folder, with the `plur folders set … --on` command
+for each map entry that turns it off.
+
+The admin and diagnostic tools (status, doctor, stores list and add, sync
+status, packs list and preview, scope discovery) keep working; status, doctor
+and stores list still read stores to count or probe them and return counts and
+health, not engram text (a store that cannot be parsed is reported by the
+error's first line only, by every MCP tool, never by the file's lines); `plur_packs_preview` still returns the statements of
+any pack directory it is pointed at, an installed one included. The folder is the editor's workspace — the roots the client lists over
+MCP, plus the folder the server was started in — checked on every call; if the
+client's roots cannot be fetched or a root is not a folder on this machine, that
+call does nothing and the next one asks again. A `folders.yaml` that exists but
+cannot be read or parsed — a dangling symlink, an empty file, an unknown
+top-level key included — now fails safe: the memory tools do nothing and name
+the file and the problem. Server startup is
+not gated yet (#1523). `on` and `ask` folders are unchanged.
+
+### plur doctor reads an opencode config written with comments or trailing commas (#1516)
+
+opencode accepts JSONC in `~/.config/opencode/opencode.jsonc`. `plur doctor`
+read it with a plain JSON parser, so a config that declares both the
+`@plur-ai/opencode` plugin and `mcp.plur` was reported as declaring neither,
+and doctor failed a working install. Doctor now reads comments and trailing
+commas, and leaves `//` and `/*` inside strings (such as the `$schema` URL)
+alone. Reading never changes the file. `plur init` still refuses to rewrite a
+JSONC config, because it cannot keep the comments.
+
+### plur recall --scope and --domain filter the results (#1516)
+
+`plur recall "<query>" --scope <scope>` accepted the flag and ignored it: the
+recall ran across every scope, and a team store for that scope was never
+asked. `--scope` and `--domain` now filter the same way as the `plur_recall`
+MCP tool, and `--scope` dials the store configured for that scope.
+`--tags` and `--type` were accepted and ignored the same way. There is no
+filter behind them, so `plur recall` now refuses them with an error. `plur list` likewise refuses `--tags`, and now accepts
+`--meta`, which it previously refused before reading it.
+
+### plur inject --scope limits the injection to that scope (#1516)
+
+`plur inject "<task>" --scope <scope>` ignored the flag the same way: the
+injection drew on every scope, and a team store for that scope was never
+asked. `--scope` now works as it does in the `plur_inject` MCP tool, and on
+the default (hybrid) path it dials the store configured for that scope. The
+MCP tool takes no domain, so `plur inject` refuses `--domain`, and any other
+flag it does not know, with an error instead of ignoring it.
+
+Because `plur inject` now checks its flags, a task that starts with a dash
+and a letter (`-deploy …`, `--path=…`) must come after `--`:
+`plur inject -- "-deploy the service"`. Without `--` it is read as an unknown
+flag and the command exits 1. The current Python SDK and Hermes plugin already
+pass such tasks after `--`; older builds that do not will get exit 1 for those
+tasks (no memory injected for that turn) until they are updated.
+
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its
