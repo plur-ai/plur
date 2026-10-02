@@ -27,10 +27,15 @@ needs the usual `--nonce`. In a remote-only folder:
   injection (Cursor's session start, the hooks' fallback) dials the team server
   too; elsewhere it stays local, as before.
 - A save that cannot reach the server waits in the outbox and is removed once
-  delivered. Such a queued save can only be delivered or forgotten (forgetting
-  deletes it); it cannot be rescoped or updated to a local scope, and a
-  tightened sensitivity policy holds it in the queue instead of demoting it to
-  a local memory.
+  delivered. From any PLUR session, in the folder or not, such a queued save
+  can only be delivered or forgotten (forgetting deletes it): every other
+  change to its scope, status or queue entry is refused where PLUR writes the
+  store, and background work (procedure evolution, LLM deduplication) skips it.
+  A tightened sensitivity policy holds it in the queue instead of demoting it.
+  It is only sent to a team scope a writable team store serves (one rule,
+  used everywhere).
+- Personal url stores (`user:`) on the same host are out of reach from the
+  folder: pin, feedback and forget act only on rows in a team scope.
 - Personal memories are out of reach: id lookups find nothing, and forget, pin,
   feedback, update, rescope, meta-engram saves, pack export and tension changes
   on them are refused. Write dedup only considers queued saves, so a team save
@@ -77,9 +82,11 @@ opens is wrapped so that it shows and accepts only the folder's own queued
 saves, active and in a team scope, while keeping the store's lock (a test
 calls every public method in a bound instance against a store seeded with
 personal content; another runs 25 concurrent saves and a second process).
-This covers paths through PLUR, including the API's `primaryStore` handle; it
-does not cover programs reading the files directly. A queued save cannot be
-retired (tension resolve, a status update) — only delivered or forgotten.
+This covers PLUR's own paths (CLI, hooks, MCP, every `Plur` method). It does
+not cover the API's `plur.primaryStore` handle, which stays the store you
+passed in, unwrapped (no shipped PLUR code writes through it), or programs
+reading the files directly. A rebind in the middle of a locked store operation
+cannot change which store it writes through.
 Store maintenance (`compact`, reindex, `sync`) is refused in the folder.
 `plur ingest` there saves to the folder's team scope. The
 opencode plugin does not follow the folder map yet; it picks the mode up once

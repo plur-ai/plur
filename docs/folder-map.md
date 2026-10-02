@@ -91,11 +91,19 @@ one with `plur remote` or `plur stores add` first).
   counted on that queued save instead of being queued twice.
 - **A save that cannot reach the server** waits in the outbox (a row in
   `engrams.yaml` marked for delivery, see `plur outbox`) and is removed once it
-  is delivered. Such a queued save can only be delivered or forgotten, from any
-  folder: forgetting deletes it outright, and it cannot be rescoped, updated to
-  a local scope, or retired (resolving a tension against it is refused). If the team scope's sensitivity policy is tightened before
-  it is sent, it stays queued (with the reason) rather than being kept as a
-  local memory.
+  is delivered. Such a queued save can only be delivered or forgotten,
+  whichever PLUR session acts on it, in the folder or not: forgetting deletes
+  it outright. Every other change that would make it something else is
+  refused where PLUR writes the store — a different scope (local, personal,
+  `user:`, or even another team scope), a status other than active, or losing
+  its queue entry. Background work (procedure evolution, LLM deduplication)
+  leaves it alone. If the team scope's sensitivity policy is tightened before
+  it is sent, it stays queued (with the reason); it is never demoted to a local
+  memory. It is only ever sent to a team scope that a writable team store in
+  `config.yaml` serves (never a `user:` store).
+- **A queued save that can no longer be delivered** (edited by hand, say) is
+  set aside with a warning naming it, so it cannot block other saves in the
+  folder. Forget it by id to remove it.
 - **If the server cannot be reached at session start**, the session starts
   without memory and says so once. It never falls back to your personal store.
 - **No session timeline is kept.** `plur capture`, `plur_capture` and the
@@ -121,10 +129,14 @@ To leave remote-only you say so explicitly: `plur folders set <folder> --on`
 The guarantee is enforced twice. The commands and tools refuse with a
 message, and underneath them every local store a PLUR instance opens in such a
 folder is wrapped so that it shows and accepts only the folder's own queued
-saves (active, in a team scope). That covers every path through PLUR itself,
-including the `primaryStore` handle of the API. It does not cover programs that
-read the files directly (a copy of `engrams.yaml`, your editor, the local
-search index — see below). Store maintenance
+saves (active, in a team scope). That covers PLUR's own paths: the CLI, the
+hooks, the MCP server, and every `Plur` method. It does not cover:
+
+- the API's `plur.primaryStore` handle, which is the store you passed in (or
+  the default YAML store), unwrapped — code that writes through it directly
+  bypasses the guard (no shipped PLUR integration does);
+- programs that read the files directly (a copy of `engrams.yaml`, your
+  editor, the local search index — see below). Store maintenance
 (`plur compact`, reindexing, `plur sync`) is refused in the folder; run it
 elsewhere.
 
