@@ -291,6 +291,8 @@ export interface FolderAsk {
   answers: FolderAskAnswer[]
   notice: boolean
   notNowNonce?: string
+  /** Every nonce the question issued, one per answer (none for a notice). */
+  nonces: string[]
 }
 
 /**
@@ -333,7 +335,7 @@ export function folderAsk(opts: FolderAskOptions): FolderAsk | null {
         : 'Run plur doctor in a terminal to see why.',
       'Tell the user once that PLUR memory stays off here until they fix or remove that file. Run no plur command for it.',
     ].join('\n')
-    return { folder: canonicalize(opts.dir), text, answers: [], notice: true }
+    return { folder: canonicalize(opts.dir), text, answers: [], notice: true, nonces: [] }
   }
   const untrusted = opts.policy.reason === 'untrusted-plur-yaml'
   const configPath = untrusted ? findProjectConfigPath(opts.dir) : null
@@ -365,7 +367,7 @@ export function folderAsk(opts: FolderAskOptions): FolderAsk | null {
           : `This folder cannot be registered from this question: the PLUR store this hook uses (PLUR_PATH or --path) has a path that cannot be printed safely in a command; ${UNOFFERABLE_REASON[blocked].replace(/^its path /, 'that path ')}`,
       'Tell the user once that PLUR memory stays off here until they set this folder by hand. Run no plur command for it. This session will not ask again.',
     ].join('\n')
-    return { folder, text, answers: [], notice: true }
+    return { folder, text, answers: [], notice: true, nonces: [] }
   }
   const { suggested, others } = suggestScopes(opts.plur ?? null, root, folder, opts.prompt ?? '', opts.policy.requested, untrusted)
   const f = quoted(folder)
@@ -462,6 +464,7 @@ export function folderAsk(opts: FolderAskOptions): FolderAsk | null {
     answers,
     notice: false,
     ...(notNow ? { notNowNonce: nonces.get(notNow)! } : {}),
+    nonces: [...nonces.values()],
   }
 }
 

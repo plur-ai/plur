@@ -295,6 +295,21 @@ describe('MCP memory tools in an undecided (`ask`) folder', () => {
     expect(r.json?.folder).toBe(s.workspace)
   })
 
+  it('a folder answered and then undecided again gets a fresh question, not one whose nonce was used', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur)
+    const q = await call(client, 'plur_learn', { statement: 'zebra-a' })
+    run(s.plur, answer(q.json, /^Never here/))
+    expect((await call(client, 'plur_learn', { statement: 'zebra-b' })).json?.plur).toBe('off')
+    s.plur.removeFolder(s.workspace)
+    const again = await call(client, 'plur_learn', { statement: 'zebra-c' })
+    expectAsk(again, s.workspace)
+    expect(again.json.answers).not.toEqual(q.json.answers)
+    run(s.plur, answer(again.json, /^Never here/))
+    expect((await call(client, 'plur_learn', { statement: 'zebra-d' })).json?.plur).toBe('off')
+  })
+
   it('a nonce redeemed from another session, or naming none, is refused and writes nothing', async () => {
     const s = await setup()
     vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)

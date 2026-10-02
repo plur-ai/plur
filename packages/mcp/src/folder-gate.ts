@@ -351,7 +351,7 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
 } {
   const sessionId = opts.sessionId ?? `mcp-${randomBytes(8).toString('hex')}`
   /** The question built for a workspace folder, by that folder, while it is undecided. */
-  const asked = new Map<string, { ask: FolderAsk; issuedAt: number }>()
+  const asked = new Map<string, { ask: FolderAsk; issuedAt: number; reason?: string }>()
   const notNow = new Set<string>()
   // Re-issue a minute before core would call the nonces expired.
   const reissueAfter = Math.max(0, FOLDER_NONCE_TTL_MS - 60_000)
@@ -368,14 +368,18 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
   })
 
   const askFor = (dir: string, policy: ReturnType<Plur['resolveFolderPolicy']>): FolderOffAnswer | FolderAskPayload => {
+    const outstanding = (nonce: string): boolean => {
+      try { return folderNonceOutstanding(plur.storageRoot, sessionId, nonce) } catch { return false }
+    }
     let entry = asked.get(dir)
-    if (entry && !entry.ask.notice && Date.now() - entry.issuedAt > reissueAfter) {
+    // Rebuilt when the nonces are about to expire, or the reason the folder
+    // is undecided changed (a repo .plur.yaml appeared or went away).
+    if (entry && ((!entry.ask.notice && Date.now() - entry.issuedAt > reissueAfter) || entry.reason !== policy.reason)) {
       asked.delete(dir)
       entry = undefined
     }
     if (entry?.ask.notNowNonce !== undefined) {
-      let open = false
-      try { open = folderNonceOutstanding(plur.storageRoot, sessionId, entry.ask.notNowNonce) } catch { open = false }
+      const open = outstanding(entry.ask.notNowNonce)
       if (!open) {
         // The not-now nonce was consumed (or this session's nonces are gone):
         // off for the rest of the session, never the question again.
@@ -384,6 +388,12 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
         asked.delete(dir)
         return notNowAnswer(entry.ask.folder)
       }
+    }
+    // Another answer was used, yet the folder is undecided again (its entry
+    // was removed since): that question no longer works, ask afresh.
+    if (entry && entry.ask.nonces.some(n => !outstanding(n))) {
+      asked.delete(dir)
+      entry = undefined
     }
     if (!entry) {
       let ask: FolderAsk | null = null
@@ -404,7 +414,7 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
             `The next call tries again; the user can also decide from a terminal: plur folders set <folder> --on | --off.`,
         }
       }
-      entry = { ask, issuedAt: Date.now() }
+      entry = { ask, issuedAt: Date.now(), ...(policy.reason ? { reason: policy.reason } : {}) }
       asked.set(dir, entry)
     }
     if (entry.ask.notice) {
