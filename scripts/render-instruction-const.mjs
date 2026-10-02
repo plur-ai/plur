@@ -24,9 +24,13 @@ export function lex(source) {
   const stack = [] // brace depths of open `${` inside templates
   let depth = 0
   let lastCode = ''
+  let lastWord = ''
+  let unterminated = false
   let i = 0
   const mark = (from, to, k) => { for (let x = from; x < to; x++) kind[x] = k }
-  const regexCanStart = () => lastCode === '' || '(,=:[!&|?{};+-*%<>~^'.includes(lastCode)
+  // After these keywords a `/` starts a regex, not a division (#1557 review L5).
+  const REGEX_KEYWORDS = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await'])
+  const regexCanStart = () => lastCode === '' || '(,=:[!&|?{};+-*%<>~^'.includes(lastCode) || REGEX_KEYWORDS.has(lastWord)
   const scanTemplate = (from) => {
     // from: index just after the opening backtick (or after a closing `}`)
     let j = from
@@ -37,6 +41,7 @@ export function lex(source) {
       j++
     }
     mark(from, source.length, 'template')
+    unterminated = true
     return { end: source.length, open: false }
   }
   while (i < source.length) {
@@ -49,13 +54,15 @@ export function lex(source) {
     }
     if (c === '/' && n === '*') {
       const end = source.indexOf('*/', i + 2)
+      if (end < 0) unterminated = true
       const stop = end < 0 ? source.length : end + 2
       mark(i, stop, 'comment'); i = stop; continue
     }
     if (c === "'" || c === '"') {
       let j = i + 1
       while (j < source.length && source[j] !== c && source[j] !== '\n') { if (source[j] === '\\') j++; j++ }
-      mark(i, j + 1, 'string'); i = j + 1; lastCode = c; continue
+      if (source[j] !== c) unterminated = true
+      mark(i, j + 1, 'string'); i = j + 1; lastCode = c; lastWord = ''; continue
     }
     if (c === '`') {
       kind[i] = 'template'
@@ -75,7 +82,7 @@ export function lex(source) {
         j++
       }
       while (/[a-z]/i.test(source[j + 1] ?? '')) j++
-      mark(i, j + 1, 'regex'); i = j + 1; lastCode = '/'; continue
+      mark(i, j + 1, 'regex'); i = j + 1; lastCode = '/'; lastWord = ''; continue
     }
     if (c === '{') depth++
     if (c === '}') {
@@ -89,21 +96,32 @@ export function lex(source) {
       }
       depth--
     }
-    if (!/\s/.test(c)) lastCode = c
+    if (/[A-Za-z_$]/.test(c)) {
+      let j = i
+      while (j < source.length && /[\w$]/.test(source[j])) j++
+      lastWord = source.slice(i, j)
+      lastCode = source[j - 1]
+      i = j
+      continue
+    }
+    if (!/\s/.test(c)) { lastCode = c; lastWord = '' }
     i++
   }
+  if (stack.length) unterminated = true
+  kind.unterminated = unterminated
   return kind
 }
 
 /** @returns {{text: string} | {missing: true} | {error: string}} */
 export function evaluateConst(source, name, depth = 0, kind = lex(source)) {
   if (depth > 8) return { error: 'interpolation too deep' }
+  if (kind.unterminated) return { error: 'the source ends inside a string, template or comment, so it cannot be read reliably' }
   const re = new RegExp(`\\bconst\\s+${name}\\b(?:\\s*:\\s*[\\w.<>\\[\\] |]+)?\\s*=(?!=)\\s*`, 'g')
   const defs = [...source.matchAll(re)].filter(m => {
     if (kind[m.index] !== 'code') return false
     const lineStart = source.lastIndexOf('\n', m.index - 1) + 1
     const before = [...source.slice(lineStart, m.index)].filter((_, k) => kind[lineStart + k] === 'code').join('')
-    return /^\s*(?:export\s+)?$/.test(before)
+    return /^(?:.*;)?\s*(?:export\s+)?$/.test(before)
   })
   if (defs.length === 0) return { missing: true }
   if (defs.length > 1) return { error: `${name} is defined ${defs.length} times` }
@@ -167,6 +185,8 @@ export function evaluateConst(source, name, depth = 0, kind = lex(source)) {
       if (kind[i] === 'comment') return { error: 'a comment between the parts' }
       continue
     }
+    // `in` and `instanceof` continue the expression even across a newline (#1557 review L5).
+    if (/^(?:in|instanceof)\b/.test(source.slice(i))) return { error: 'an in/instanceof continuation' }
     // A newline ends the statement only when the next token cannot continue it.
     if (sawNewline && (/[A-Za-z_$'"}\])]/.test(c))) return { text: out }
     return { error: `unsupported after a string: ${JSON.stringify(source.slice(i, i + 12))}` }
