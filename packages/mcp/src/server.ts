@@ -174,6 +174,22 @@ Use \`scope\` to namespace engrams per project:
 Override with \`PLUR_PATH\` environment variable.
 `
 
+/** Per server: resolves once no tools/call is running (or after the timeout). */
+const _whenIdle = new WeakMap<object, (timeoutMs: number) => Promise<void>>()
+
+/**
+ * Close `server` once the tool calls already running have answered (audit R1
+ * of #1529), waiting at most `timeoutMs`. Closing fires onclose, which ends
+ * the session's folder question (its nonces are deleted).
+ */
+export async function closeWhenIdle(server: Server, timeoutMs: number): Promise<void> {
+  // A request read in the same chunk as the end of stdin is dispatched on a
+  // later tick: let it start before checking whether anything is running.
+  await new Promise<void>(r => setTimeout(r, 10))
+  await (_whenIdle.get(server)?.(timeoutMs) ?? Promise.resolve())
+  await server.close().catch(() => { /* already closed */ })
+}
+
 // One periodic version re-check per process, however many servers are created
 // (tests create one per case — stacking an interval per server would leak).
 let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
@@ -220,6 +236,30 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     },
   )
 
+  // --- Requests in flight, so a closing session can answer them first ---
+  // (audit R1 of #1529): closing the transport under a running tools/call
+  // dropped its response while the write behind it still happened.
+  let inFlight = 0
+  let idleWaiters: Array<() => void> = []
+  const trackInFlight = async <T>(fn: () => Promise<T>): Promise<T> => {
+    inFlight++
+    try {
+      return await fn()
+    } finally {
+      inFlight--
+      if (inFlight === 0) {
+        // Let the protocol write the response before anyone closes.
+        setImmediate(() => { if (inFlight === 0) { const w = idleWaiters; idleWaiters = []; w.forEach(f => f()) } })
+      }
+    }
+  }
+  _whenIdle.set(server, (timeoutMs: number) => new Promise<void>(resolve => {
+    if (inFlight === 0) return resolve()
+    const timer = setTimeout(resolve, timeoutMs)
+    timer.unref?.()
+    idleWaiters.push(() => { clearTimeout(timer); resolve() })
+  }))
+
   // --- The editor's workspace, for the folder map (folder-gate.ts) ---
   const workspace = createWorkspaceDirs(server)
   // The folder map's off / ask for this MCP session (#1525). The session's
@@ -242,7 +282,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     })),
   }))
 
-  server.setRequestHandler('tools/call', async (request) => {
+  server.setRequestHandler('tools/call', (request) => trackInFlight(async () => {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
       // #625 audit: under a gated profile, a REAL tool that is merely hidden
@@ -363,7 +403,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         isError: true,
       }
     }
-  })
+  }))
 
   // --- Resources ---
 
@@ -614,20 +654,28 @@ export async function runStdio(): Promise<void> {
   // The SDK's stdio transport never reports that stdin ended, so close the
   // server ourselves (audit F1 of #1529): on stdin end and on SIGTERM /
   // SIGINT. Closing fires onclose, which deletes this session's folder-question
-  // nonces. A signal then exits (the handler replaces Node's default exit).
+  // nonces. The tool calls already running answer first (audit R1): on stdin
+  // end the process then exits by itself once its output is written; a
+  // signal waits at most 2 s for them, then exits (the handler replaces
+  // Node's default exit). On Windows a SIGTERM from another process cannot be
+  // caught; a server killed that way leaves its nonces to the 24 h sweep.
   let closing: Promise<void> | null = null
-  const closeServer = (): Promise<void> => {
-    if (!closing) closing = server.close().catch(() => { /* already closed */ })
+  const closeSession = (timeoutMs: number): Promise<void> => {
+    if (!closing) closing = closeWhenIdle(server, timeoutMs)
     return closing
   }
-  process.stdin.once('end', () => { void closeServer() })
-  process.stdin.once('close', () => { void closeServer() })
+  process.stdin.once('end', () => { void closeSession(30_000) })
+  process.stdin.once('close', () => { void closeSession(30_000) })
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.once(signal, () => {
       const code = signal === 'SIGTERM' ? 143 : 130
-      const timer = setTimeout(() => process.exit(code), 1000)
+      const timer = setTimeout(() => process.exit(code), 3000)
       timer.unref?.()
-      void closeServer().finally(() => process.exit(code))
+      void closeSession(2000).finally(() => {
+        // Let a response still in stdout's buffer reach the client.
+        if (process.stdout.writableLength > 0) process.stdout.once('drain', () => process.exit(code))
+        else process.exit(code)
+      })
     })
   }
 }

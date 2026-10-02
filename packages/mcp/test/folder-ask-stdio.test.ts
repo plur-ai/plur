@@ -141,8 +141,13 @@ describe.skipIf(!existsSync(DIST_ENTRY))('folder-question nonces over a real std
     const project = tmp('plur-stdio-on-')
     writeFileSync(join(project, '.plur.yaml'), '# on\n')
     const s = await start(e, project)
+    // End stdin right after the request is written, before any answer.
+    const send = s.transport.send.bind(s.transport)
+    s.transport.send = async (message: any, ...rest: any[]) => {
+      await (send as any)(message, ...rest)
+      if (message?.method === 'tools/call') (s.transport as any)._process.stdin.end()
+    }
     const pending = s.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra in-flight learning', scope: 'global' } })
-    ;(s.transport as any)._process.stdin.end()
     const raw = await Promise.race([pending, new Promise(r => setTimeout(() => r('no response'), 8000))])
     expect(raw).not.toBe('no response')
     const json = JSON.parse(((raw as any).content as any)[0].text)
@@ -155,9 +160,13 @@ describe.skipIf(!existsSync(DIST_ENTRY))('folder-question nonces over a real std
     const project = tmp('plur-stdio-on-')
     writeFileSync(join(project, '.plur.yaml'), '# on\n')
     const s = await start(e, project)
+    // SIGTERM right after the request is written, before any answer.
+    const send = s.transport.send.bind(s.transport)
+    s.transport.send = async (message: any, ...rest: any[]) => {
+      await (send as any)(message, ...rest)
+      if (message?.method === 'tools/call') process.kill(s.transport.pid!, 'SIGTERM')
+    }
     const pending = s.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra sigterm learning', scope: 'global' } })
-    await new Promise(r => setTimeout(r, 5))
-    process.kill(s.transport.pid!, 'SIGTERM')
     const raw = await Promise.race([pending, new Promise(r => setTimeout(() => r('no response'), 8000))])
     expect(raw).not.toBe('no response')
   }, 30_000)

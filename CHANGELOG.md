@@ -116,13 +116,16 @@ asks for settings.
   and the problem, no command, no nonce. The admin tools are unchanged; off wins
   over ask, and ask over on, across the workspace folders; a workspace that
   cannot be fetched stays off for that call.
-- Which folder is asked about: the client's MCP roots when it sends any (the
-  server's start folder is still checked for `off`, but never asked about);
-  without roots, the start folder — unless it is your home folder, a
-  filesystem root or a folder above home, where an answer would cover every
-  folder under it. There, memory runs as before.
+- Which folder is asked about: never your home folder, a filesystem root or
+  a folder above home — whether the client sends it as a root or started the
+  server there — since an answer would cover every folder under it; memory
+  there runs as before. Otherwise the client's MCP roots when it sends any
+  (the server's start folder is still checked for `off`, but not asked
+  about), and the start folder when it sends none or only such folders.
 - The session's unanswered nonces are deleted when the session closes: the
-  stdio server now shuts down on stdin end and on SIGTERM / SIGINT. Nonce
+  stdio server now shuts down on stdin end and on SIGTERM / SIGINT, after the
+  tool calls already running have sent their answers (a signal waits at most
+  2 s for them). An unanswered question whose nonces expired is asked afresh. Nonce
   files left by a session that never closed (killed outright, or a missed
   editor SessionEnd hook) are removed once their nonces have expired (24 h),
   whenever a nonce is issued and when the MCP server starts.

@@ -348,10 +348,11 @@ function isFilesystemRoot(dir: string): boolean {
  *
  * Precedence across the workspace folders: off > ask > on. `off` is checked
  * on every folder, the server's cwd included. The question is asked only
- * about the client's roots when it gives any (the cwd is wherever the client
- * started the process); without roots, about the cwd — unless that is the
- * home folder, a filesystem root or a folder above home, where an answer
- * would cover every folder under it (audit F2 of #1529). A filesystem root is
+ * about folders that are not the home folder, a filesystem root or above
+ * home (an answer there would cover every folder under it): the client's
+ * roots that are not such, when there are any (the cwd is wherever the client
+ * started the process); otherwise the cwd, unless it is such
+ * (audit F2, N6, N7 of #1529). A filesystem root is
  * never asked about. `end()` deletes the session's unanswered nonces; the
  * stdio server calls it on stdin end and on SIGTERM / SIGINT, and nonce files
  * of sessions killed outright are swept once expired (audit F1 of #1529).
@@ -395,8 +396,13 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
     // "Not now" first (audit N5 of #1529): it holds for the rest of the
     // session, whatever happens to the question afterwards.
     if (entry?.ask.notNowNonce !== undefined) {
-      const open = outstanding(entry.ask.notNowNonce)
-      if (!open) {
+      // Consumed, not just gone (audit R2 of #1529): "not now" leaves the
+      // question's other nonces in place (N1), while a session file that
+      // was swept or ended loses them all. Only the first is an answer; the
+      // second falls through and the question is asked afresh.
+      const notNowNonce = entry.ask.notNowNonce
+      const answered = !outstanding(notNowNonce) && entry.ask.nonces.some(n => n !== notNowNonce && outstanding(n))
+      if (answered) {
         // The not-now nonce was consumed (or this session's nonces are gone):
         // off for the rest of the session, never the question again.
         log(`folder ${JSON.stringify(entry.ask.folder)}: the user answered "not now"; memory tools do nothing for the rest of this session.`)
@@ -459,8 +465,12 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
       // server's cwd is wherever the client happened to start the process —
       // else the cwd, unless that is the home folder, a filesystem root or a
       // folder above home: an answer there would cover every folder under it.
-      const askable = workspace.roots.length > 0
-        ? workspace.roots
+      // A root that is the home folder, a filesystem root or above home is
+      // not asked about either (audit N7), and roots that are all such count
+      // as no roots (N6).
+      const usableRoots = workspace.roots.filter(r => !isHomeOrAbove(r))
+      const askable = usableRoots.length > 0
+        ? usableRoots
         : (isHomeOrAbove(workspace.cwd) ? [] : [workspace.cwd])
       const on: Array<{ dir: string; scope?: string }> = []
       for (const dir of askable) {
