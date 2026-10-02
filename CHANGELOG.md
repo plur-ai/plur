@@ -2,6 +2,79 @@
 
 ## Unreleased
 
+### A team save is never lost while the server hangs, and a slow save is not reported as failed (#1531)
+
+**Release blocker for 0.21.1.** `plur learn` raced the whole save against a
+5-second timer and exited as soon as the timer won. Two things went wrong:
+
+- **A team save could be lost.** With a team server that accepted the
+  connection and never answered, the process exited before core's own
+  fallback (save locally, queue in the outbox) could run. The engram was
+  written nowhere: not on the server, not locally, not in the outbox.
+- **A successful local save was reported as failed.** The timer covered local
+  work too. A save into a large store (about 13,000 engrams, about 6 seconds
+  of local work, no network) was reported as "remote store slow/unreachable",
+  exited 1, and left `engrams.yaml.lock` behind.
+
+Now only the request to the server has a deadline. It lives in core
+(`learnRouted(statement, context, { remoteTimeoutMs })`; the CLI uses 5 s).
+When it passes, the engram is saved on this machine and queued in the outbox.
+The CLI waits for the save however long the local write takes, and exits 1
+only when nothing was stored.
+
+**Learn says where the save landed, and why when it was queued.**
+`--json` always carries `delivery: "local" | "remote" | "outbox"`. When
+queued, it adds `delivery_reason` and `delivery_reason_code`:
+
+- `auth_rejected` (401/403): the token is expired, revoked or lacks access.
+  The reason points to `plur login --status`, then `plur outbox --flush`.
+- `unreachable`: no answer in time, or a network error.
+- `server_error` or `no_store`.
+
+Text output prints `Saved:` or `Queued in the outbox:` with the reason. The
+queued line is never hidden by `--quiet`. The MCP `plur_learn` result
+carries the same fields.
+
+**`plur forget` is not blocked by an expired token, and never holds the store
+lock while it waits.** Retiring a local engram first checks each team store
+for another engram with the same id. A 401/403 used to refuse the retire.
+Now it means this machine cannot touch that store anyway: the local engram
+is retired, with a warning naming the store whose token was rejected
+(`warnings` in `--json`). The check now runs before the store lock is taken,
+with 5 seconds per store. Before, a hanging server held the lock for 30
+seconds. A store that cannot be reached still refuses the retire, and the
+message names `--scope primary`. `plur feedback` follows the same rule,
+except that an unreachable store gives a warning instead of a refusal, as it
+did before.
+
+**Ids that collide across stores.** Every store, servers included, numbers
+its ids from 001 each day, so one bare id can name two unrelated engrams:
+
+- `plur learn` now prints the namespaced id for a team save (`ENG-XXX-…`, the
+  form `recall` and the MCP tool use). A queued save keeps its local id.
+- `plur feedback` takes `--scope primary|<team scope>`, and refuses unknown
+  flags and stray extra arguments instead of dropping them.
+- Pinning (`setPinned`, MCP `plur_pin`, which now takes `scope`) refuses a
+  bare id that exists both locally and in a team store, instead of pinning
+  the local one.
+- `updateEngram` refuses a team row whose bare id matches an unrelated local
+  engram, instead of writing the team content over it.
+
+A store-unique id format is planned for 0.22.
+
+**Hosts still on 0.19.x: upgrade.** Until you do:
+
+- A `plur learn` that reports "timed out" for a local scope has usually been
+  saved. Check with `plur list --json` before saving it again.
+- A team save that reports "timed out" may be lost. Save it again once the
+  server answers.
+- Such an exit can leave `engrams.yaml.lock` behind. Current versions take
+  over a lock whose process has died; on 0.19.x, if writes wait on it,
+  delete the file once no `plur` process is running.
+- `plur forget` ignores `--scope` on 0.19.x. To retire a local engram while a
+  team store rejects the token, use the MCP `plur_forget` with
+  `scope: "primary"`.
+
 ### Agents now end each reply with the memories they recalled, used and wrote (#1520)
 
 The instructions PLUR installs (the `plur init` section in CLAUDE.md and
