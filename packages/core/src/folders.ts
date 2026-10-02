@@ -303,7 +303,18 @@ function parseMapFile(file: string): { map: FolderMap } | { problem: string; lin
 
 function readMapFile(root: string): LoadResult | null {
   const file = folderMapPath(root)
-  if (!existsSync(file)) return null
+  // Absent means ENOENT on the path itself, as in folderMapProblem (#1519):
+  // existsSync() also answers false for a dangling symlink, a symlink loop or
+  // a parent that cannot be searched, and reading those as "no map" let a
+  // project marker turn memory on where the MCP gate fails safe.
+  try {
+    lstatSync(file)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return null
+    warnOnce(`malformed:${file}`, `[plur:folders] ${file} cannot be read (${code ?? (err as Error).message}) — treating it as empty (folders fall back to ask)`)
+    return { map: { version: 1, folders: [] }, malformed: true }
+  }
   const r = parseMapFile(file)
   if ('map' in r) return { map: r.map, malformed: false }
   warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.problem} — treating it as empty (folders fall back to ask)`)

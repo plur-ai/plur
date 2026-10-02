@@ -4,10 +4,10 @@
  * names the file and the line, never falls back to a project marker's `on`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, realpathSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, realpathSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { resolveFolderPolicy, folderMapPath, folderAskOnce } from '../src/index.js'
+import { resolveFolderPolicy, folderMapPath, folderAskOnce, folderMapProblem } from '../src/index.js'
 import { logger } from '../src/logger.js'
 
 let root: string
@@ -49,5 +49,17 @@ describe('malformed folders.yaml fails safe', () => {
     expect(text).toContain('folders.yaml')
     expect(text).toMatch(/line \d+/)
     expect(text).not.toContain('--nonce')
+  })
+
+  // The MCP gate (#1519) and the hooks/plugin must agree: a folders.yaml that
+  // exists but cannot be read is not "no map". existsSync() answers false for
+  // a dangling symlink, so a project marker used to turn memory on here.
+  it.skipIf(process.platform === 'win32')('a dangling symlink: ask with reason malformed-map, like the MCP gate', () => {
+    symlinkSync(join(root, 'missing-target.yaml'), folderMapPath(root))
+    expect(folderMapProblem(root)).not.toBeNull()
+    const p = resolveFolderPolicy(repo, { root })
+    expect(p.mode).toBe('ask')
+    expect(p.reason).toBe('malformed-map')
+    expect(p.mapError?.file).toBe(folderMapPath(root))
   })
 })

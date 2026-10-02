@@ -39,7 +39,10 @@ because their hosts cannot tell the agent's shell its session.
 marker (`.plur.yaml`, a project MCP config) switched memory on, even in a
 folder the map had switched off. Now the folder is treated like `ask` with no
 memory, and the agent is told which file to fix and on which line. A folder
-decision that cannot be resolved for any other reason does the same.
+decision that cannot be resolved for any other reason does the same, and so
+does a `folders.yaml` that exists but cannot be opened (a dangling symlink, a
+folder that cannot be searched), which was read as "no map" — the same rule
+the MCP server's folder gate applies.
 
 The question itself moved from the CLI into core (`folderAskOnce`,
 `sessionSettings`), so the hooks and the plugin share one implementation.
