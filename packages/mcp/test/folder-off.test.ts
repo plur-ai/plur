@@ -754,7 +754,7 @@ describe('plur_doctor reports a broken folder map', () => {
 
   it('the same folder_map as plur_status, a failing check, and the repair in remediation', async () => {
     const s = await setup()
-    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolder:\n  - path: "${s.workspace}/${SECRET}"\n     plur: off\n`)
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolder:\n  - path: "${s.workspace}/${SECRET}"\n    plur: off\n`)
     vi.spyOn(process, 'cwd').mockReturnValue(s.other)
     const client = await connect(s.plur)
     const status = await call(client, 'plur_status')

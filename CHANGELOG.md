@@ -9,7 +9,8 @@ direction. Until now the messages said only that the file was broken, or gave
 the YAML parser's line, and nothing helped you fix it. Now every place that
 reports a broken map names the line and column and says what is wrong in
 plain words. That covers `plur doctor`, `plur folders list`, the editor hooks'
-notice, the opencode plugin's notice, the MCP tools' answer and `plur_status`:
+notice, the opencode plugin's notice, the MCP tools' answer, `plur_status` and
+`plur_doctor`:
 
 ```
 line 4: indentation — `plur:` is indented 5 spaces, expected 4 (in line with `path:` on line 3)

@@ -3320,9 +3320,21 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // profiles, so it is where that answer belongs. Without this, doctor
         // can report green while the caller concludes the MCP is gone.
         const tool_surface = describeToolSurface()
+        // The folder map (#1526, re-review N5): a broken folders.yaml pauses
+        // every memory tool, so doctor says so the way plur_status and the CLI
+        // `plur doctor` do: the same folder_map, a failing check, the repair.
+        const folderMap = folderMapStatus(plur.storageRoot)
+        if (folderMap.folder_map) {
+          const fm = folderMap.folder_map as { file: string; problem: string; advice: string }
+          checks.push({ check: 'folder map', ok: false, detail: `${fm.file} ${fm.problem}` })
+          remediation.push(`Folder map: ${fm.file} ${fm.problem}. ${fm.advice}`)
+        } else {
+          checks.push({ check: 'folder map', ok: true, detail: 'folders.yaml is readable (or absent: no decisions yet)' })
+        }
         return {
           ok: checks.every(c => c.ok),
           checks,
+          ...folderMap,
           embedder: {
             before_probe: before,
             after_probe: after,
