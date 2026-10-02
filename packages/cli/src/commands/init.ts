@@ -1082,8 +1082,13 @@ function installCursor(cmd: string): string {
   const existingRule = existsSync(rulesPath) ? readFileSync(rulesPath, 'utf8') : null
   let ruleStatus: string
   if (existingRule === null) {
-    writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
-    ruleStatus = 'created'
+    try {
+      writeFileSync(rulesPath, CURSOR_RULE_CONTENT, { flag: 'wx' })
+      ruleStatus = 'created'
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      ruleStatus = 'not written: it was created while PLUR was updating it — run again'
+    }
   } else if (hasStandaloneMarker(existingRule, PLUR_INSTRUCTIONS_MARKER)) {
     ruleStatus = 'already present'
   } else if (isShippedText(existingRule, SHIPPED_CURSOR_RULES)) {

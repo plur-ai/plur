@@ -77,15 +77,22 @@ type OpenBlock =
 
 const indentOf = (line: string) => /^ */.exec(line)![0].length
 const LIST_MARKER = /^( *)([-*+]|\d{1,9}[.)])( {1,4})\S/
+/** A fence opened on a list item's marker line: `- ```lang`. */
+const MARKER_FENCE = /^( *)([-*+]|\d{1,9}[.)])( {1,4})(`{3,}|~{3,})(.*)$/
+/** CommonMark HTML block type 1: raw text up to the matching end tag. */
+const RAW_HTML_START = /^ {0,3}<(pre|script|style|textarea)(?:\s|>|$)/i
+const RAW_HTML_END = /<\/(?:pre|script|style|textarea)>/i
+/** CommonMark HTML blocks 6/7 (approximately): a line starting with a tag, up to a blank line. */
+const HTML_TAG_START = /^ {0,3}<\/?[A-Za-z][\w-]*(?:\s|\/?>|$)/
 
 /**
- * The content column of the list item a fence at `indent` (line `at`) sits
- * in, or null when it is not inside one. Walks back over the item's earlier
- * lines (blank, or indented at least as far as the fence) to its marker line;
- * the fence belongs to that item when it starts within the item's content
- * (column c to c+3).
+ * The list item a block at `indent` (line `at`) sits in: its content column
+ * and its marker line's indentation, or null when it is not inside one. Walks
+ * back over the item's earlier lines (blank, or indented at least as far as
+ * the block) to its marker line; the block belongs to that item when it
+ * starts within the item's content (column c to c+3).
  */
-function listContainer(lines: string[], hidden: boolean[], at: number, indent: number): number | null {
+function listContainer(lines: string[], hidden: boolean[], at: number, indent: number): { content: number; markerIndent: number } | null {
   for (let j = at - 1; j >= 0; j--) {
     const line = bare(lines[j])
     if (line.trim() === '') continue
@@ -93,7 +100,7 @@ function listContainer(lines: string[], hidden: boolean[], at: number, indent: n
     const m = LIST_MARKER.exec(line)
     if (m) {
       const c = m[1].length + m[2].length + m[3].length
-      if (indent >= c && indent <= c + 3) return c
+      if (indent >= c && indent <= c + 3) return { content: c, markerIndent: m[1].length }
       if (indentOf(line) < indent) return null
       continue
     }
@@ -102,74 +109,165 @@ function listContainer(lines: string[], hidden: boolean[], at: number, indent: n
   return null
 }
 
+/** A marker line indented 4+ is a list item only inside another list item; otherwise it is indented code. */
+function markerIsReal(lines: string[], hidden: boolean[], at: number, markerIndent: number): boolean {
+  if (markerIndent <= 3) return true
+  for (let j = at - 1; j >= 0; j--) {
+    const line = bare(lines[j])
+    if (line.trim() === '') continue
+    if (hidden[j]) return false
+    const m = LIST_MARKER.exec(line)
+    if (m && m[1].length < markerIndent) {
+      const c = m[1].length + m[2].length + m[3].length
+      return markerIndent >= c && markerIndent <= c + 3 && markerIsReal(lines, hidden, j, m[1].length)
+    }
+    if (indentOf(line) < markerIndent) return false
+  }
+  return false
+}
+
+/** The line index of the marker line for the container found by listContainer. */
+function markerLine(lines: string[], at: number, content: number): number {
+  for (let j = at - 1; j >= 0; j--) {
+    const m = LIST_MARKER.exec(bare(lines[j]))
+    if (m && m[1].length + m[2].length + m[3].length === content) return j
+  }
+  return -1
+}
+
 /**
- * Lines that are not markdown structure: lines of a fenced code block (fence
- * lines included, CommonMark ``` and ~~~) and lines of an HTML comment block
- * (a line starting with `<!--`, through the line holding `-->`). A heading
- * or marker on such a line is example or hidden text, never a section
- * (#1520 audit S1, re-audit low b). Also reports a block still open at the
- * end of the file (re-audit R1).
+ * Lines that are not markdown structure, and so never hold a section heading
+ * or marker (#1520 audit S1, re-audit low b): fenced code (``` and ~~~),
+ * HTML comment blocks, raw HTML blocks (`<pre>`, `<script>`, `<style>`,
+ * `<textarea>`, up to the end tag) and other HTML blocks (a line starting with
+ * a tag, up to a blank line). Also reports a block still open at the end of
+ * the file (re-audit R1).
  *
- * A fence inside a list item ends where the item ends — at the first
- * non-blank line indented less than the item's content — as CommonMark has
- * it, so a later paragraph or list item is not taken for code, and closing
- * the fence at the end of the file never opens a new block (third re-audit
- * N1). A fence indented 1-3 spaces outside any list item PLUR can see is
- * treated as top level; if a less-indented line follows it, PLUR cannot be
- * sure the block is still open and reports `unsure`.
+ * A fence or comment inside a list item ends where the item ends — at the
+ * first non-blank line indented less than the item's content — as CommonMark
+ * has it, so a later paragraph or list item is never taken for code or
+ * hidden text, and closing the block at the end of the file never opens a new
+ * one (third re-audit N1, #1557 review L1). A fence opened on the marker line
+ * itself (`- ```) is tracked the same way (L7).
+ *
+ * `unsure` — nothing will be appended — when a block open at the end of the
+ * file cannot be placed for certain: a fence indented with tabs (L2), a fence
+ * under what is really an indented code block (L7), an unclosed raw HTML block
+ * (L7), or an indented fence outside any visible list item followed by a
+ * less-indented line.
  */
 function hiddenLines(lines: string[]): { hidden: boolean[]; openAtEnd: OpenBlock } {
+  type Block =
+    | { kind: 'fence'; char: string; len: number; indent: number; container: number | null; doubtful: boolean }
+    | { kind: 'comment'; indent: number; container: number | null }
+    | { kind: 'raw-html' }
+    | { kind: 'html' }
   const hidden: boolean[] = new Array(lines.length).fill(false)
-  let fence: { char: string; len: number; indent: number; container: number | null; doubtful: boolean } | null = null
-  let comment = false
+  let open: Block | null = null
+  const containerAt = (at: number, indent: number) => {
+    const c = listContainer(lines, hidden, at, indent)
+    if (!c) return { container: null, real: true }
+    const mline = markerLine(lines, at, c.content)
+    return { container: c.content, real: markerIsReal(lines, hidden, mline, c.markerIndent) }
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = bare(lines[i])
-    if (fence) {
-      const blank = line.trim() === ''
-      if (fence.container !== null && !blank && indentOf(line) < fence.container) {
-        fence = null // the list item ended, and its code block with it
+    const blank = line.trim() === ''
+
+    if (open) {
+      const ended =
+        (open.kind === 'fence' || open.kind === 'comment') && open.container !== null && !blank && indentOf(line) < open.container
+      if (ended) {
+        open = null // the list item ended, and its block with it
       } else {
         hidden[i] = true
-        const base = fence.container ?? 0
-        const m = /^( *)(`{3,}|~{3,})[ \t]*$/.exec(line)
-        if (m && m[1].length - base >= 0 && m[1].length - base <= 3 && m[2][0] === fence.char && m[2].length >= fence.len) {
-          fence = null
-        } else if (fence.container === null && fence.indent > 0 && !blank && indentOf(line) < fence.indent) {
-          fence.doubtful = true
+        if (open.kind === 'fence') {
+          const base = open.container ?? 0
+          const close = open.doubtful
+            ? /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(line)
+            : /^( *)(`{3,}|~{3,})[ \t]*$/.exec(line)
+          const closeIndent = open.doubtful ? 0 : (close?.[1]?.length ?? 0)
+          const chars = open.doubtful ? close?.[1] : close?.[2]
+          if (close && chars && chars[0] === open.char && chars.length >= open.len && closeIndent - base >= 0 && closeIndent - base <= 3) {
+            open = null
+          } else if (open.container === null && open.indent > 0 && !blank && indentOf(line) < open.indent) {
+            open.doubtful = true
+          }
+        } else if (open.kind === 'comment') {
+          if (line.includes('-->')) open = null
+        } else if (open.kind === 'raw-html') {
+          if (RAW_HTML_END.test(line)) open = null
+        } else if (blank) {
+          open = null
         }
         continue
       }
     }
-    if (comment) {
+    if (blank) continue
+
+    // A fence indented with tabs: columns cannot be placed for certain.
+    const tabbed = /^([ \t]*\t[ \t]*)(`{3,}|~{3,})(.*)$/.exec(line)
+    if (tabbed && !(tabbed[2][0] === '`' && tabbed[3].includes('`'))) {
       hidden[i] = true
-      if (line.includes('-->')) comment = false
+      open = { kind: 'fence', char: tabbed[2][0], len: tabbed[2].length, indent: 0, container: null, doubtful: true }
       continue
     }
-    const m = /^( *)(`{3,}|~{3,})(.*)$/.exec(line)
-    if (m && !(m[2][0] === '`' && m[3].includes('`'))) {
-      const indent = m[1].length
-      const container = listContainer(lines, hidden, i, indent)
+    const onMarker = MARKER_FENCE.exec(line)
+    if (onMarker && !(onMarker[4][0] === '`' && onMarker[5].includes('`'))) {
+      const c = onMarker[1].length + onMarker[2].length + onMarker[3].length
+      hidden[i] = true
+      open = {
+        kind: 'fence', char: onMarker[4][0], len: onMarker[4].length, indent: c, container: c,
+        doubtful: !markerIsReal(lines, hidden, i, onMarker[1].length),
+      }
+      continue
+    }
+    const fence = /^( *)(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence && !(fence[2][0] === '`' && fence[3].includes('`'))) {
+      const indent = fence[1].length
+      const { container, real } = containerAt(i, indent)
       if (indent <= 3 || container !== null) {
         hidden[i] = true
-        fence = { char: m[2][0], len: m[2].length, indent, container, doubtful: false }
+        open = { kind: 'fence', char: fence[2][0], len: fence[2].length, indent, container, doubtful: !real }
         continue
       }
     }
-    const c = /^ {0,3}<!--/.exec(line)
-    if (c && !line.slice(c[0].length).includes('-->')) {
+    const comment = /^( *)<!--/.exec(line)
+    if (comment) {
+      const indent = comment[1].length
+      const { container, real } = containerAt(i, indent)
+      if ((indent <= 3 || container !== null) && real) {
+        if (!line.slice(comment[0].length).includes('-->')) {
+          hidden[i] = true
+          open = { kind: 'comment', indent, container }
+        }
+        continue
+      }
+    }
+    if (RAW_HTML_START.test(line)) {
       hidden[i] = true
-      comment = true
+      if (!RAW_HTML_END.test(line)) open = { kind: 'raw-html' }
+      continue
+    }
+    const prevBlank = i === 0 || bare(lines[i - 1]).trim() === ''
+    if (prevBlank && HTML_TAG_START.test(line)) {
+      hidden[i] = true
+      open = { kind: 'html' }
     }
   }
+
   let openAtEnd: OpenBlock = null
-  if (fence) {
+  if (open?.kind === 'fence') {
     // The close carries the opening fence's indentation, so a fence in a list
     // item is closed inside that item (#1520 second re-audit L1).
-    openAtEnd = fence.doubtful
+    openAtEnd = open.doubtful
       ? { kind: 'unsure' }
-      : { kind: 'fence', close: ' '.repeat(fence.indent) + fence.char.repeat(fence.len) }
-  } else if (comment) {
-    openAtEnd = { kind: 'comment', close: '-->' }
+      : { kind: 'fence', close: ' '.repeat(open.indent) + open.char.repeat(open.len) }
+  } else if (open?.kind === 'comment') {
+    openAtEnd = { kind: 'comment', close: ' '.repeat(open.container ?? 0) + '-->' }
+  } else if (open?.kind === 'raw-html') {
+    openAtEnd = { kind: 'unsure' }
   }
   return { hidden, openAtEnd }
 }
@@ -263,7 +361,7 @@ export function upsertInstructionSection(
     if (openAtEnd?.kind === 'unsure') {
       return {
         content, status: 'skipped', keptSections,
-        skipReason: 'the file ends inside a code block that PLUR cannot tell is closed — close it and run again',
+        skipReason: 'the file ends inside a code block or HTML block that PLUR cannot tell is closed — close it and run again',
       }
     }
     let out = body
@@ -383,8 +481,9 @@ export class InstructionWriteRefused extends Error {
  * Write `content` to `path`, first copying any existing file to a timestamped
  * backup beside it. Returns the backup path, or null when the file is new.
  *
- * `expected` is the text the caller read and built `content` from (null:
- * the caller saw no file). If the file no longer holds it — the user saved
+ * `expected` is the text the caller read and built `content` from: null when
+ * the caller saw no file (then an existing file is refused), undefined to skip
+ * the check. If the file no longer holds it — the user saved
  * in between — nothing is written and InstructionWriteRefused is thrown, so
  * the user's edit is never overwritten (third re-audit N2). The same check
  * runs again just before the new content is swapped in.
@@ -398,9 +497,11 @@ export class InstructionWriteRefused extends Error {
  *
  * What the file is, is kept (third re-audit N2): a symlink is written through
  * to its target; a symlink to a missing file is refused rather than replaced
- * by a regular file; a file with several hard links is written in place
- * (after the backup) so every name still sees the same text. A file that is
- * not writable is refused before anything is copied (re-audit low d).
+ * by a regular file; a file with several hard links is refused — rewriting it
+ * in place risks emptying every name on a full disk (#1557 review M1). A file
+ * that is not valid UTF-8, or one that appeared after the caller saw none, is
+ * refused too. A file that is not writable is refused before anything is
+ * copied (re-audit low d).
  */
 export function writeWithBackup(path: string, content: string, expected?: string | Buffer | null): string | null {
   const asBuffer = (v: string | Buffer) => (typeof v === 'string' ? Buffer.from(v) : v)
@@ -428,8 +529,27 @@ export function writeWithBackup(path: string, content: string, expected?: string
   accessSync(target, constants.W_OK)
   const original = readFileSync(target)
   const st = statSync(target)
-  if (expected != null && !original.equals(asBuffer(expected))) {
+  if (!Buffer.from(original.toString('utf8'), 'utf8').equals(original)) {
+    // The caller worked on a decoded copy; writing it back would replace the
+    // bytes that are not UTF-8 (#1557 review L3).
+    throw new InstructionWriteRefused('PLUR cannot read it as UTF-8 text, so nothing was changed — add the section by hand or save the file as UTF-8')
+  }
+  if (expected === null) {
+    // The caller saw no file and built a whole new one (#1557 review L6).
+    throw new InstructionWriteRefused('it was created while PLUR was updating it — run again')
+  }
+  if (expected !== undefined && !original.equals(asBuffer(expected))) {
     throw new InstructionWriteRefused('it changed after PLUR read it — run again')
+  }
+  if (st.nlink > 1) {
+    // Another name shares this file. Writing it in place truncates it first,
+    // so a full disk would empty every name; renaming would split the names
+    // apart. PLUR leaves it to the user (#1557 review M1).
+    throw new InstructionWriteRefused(
+      `it shares its contents with ${st.nlink - 1} other name${st.nlink === 2 ? '' : 's'} (a hard link), ` +
+      'and PLUR does not rewrite shared files — break the link (copy the file and replace it with the copy) ' +
+      'and run again, or add the section by hand',
+    )
   }
   const backup = backupFile(target)
   const dropBackupIfUnchanged = () => {
@@ -437,19 +557,6 @@ export function writeWithBackup(path: string, content: string, expected?: string
     let unchanged = false
     try { unchanged = readFileSync(target).equals(original) } catch { /* unreadable: keep the backup */ }
     if (unchanged) { try { unlinkSync(backup) } catch { /* report the original error, not this */ } }
-  }
-
-  if (st.nlink > 1) {
-    // Several names share this file: writing in place keeps them shared. The
-    // backup taken above is what protects the text if this write fails.
-    try {
-      writeFileSync(target, content)
-      syncPath(target, 'r+')
-    } catch (err) {
-      dropBackupIfUnchanged()
-      throw err
-    }
-    return backup
   }
 
   const tmp = join(dirname(target), `.${basename(target)}.plur-tmp-${process.pid}-${randomBytes(4).toString('hex')}`)
