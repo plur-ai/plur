@@ -1,7 +1,8 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem } from '@plur-ai/core'
+import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -776,6 +777,27 @@ export function trustCommand(dir: string | null, storageRoot?: string, platform:
  * change lands in a map this server never reads. Null when the entry cannot
  * be quoted safely.
  */
+/** plur_status's `folder_map` field: present only when the map is broken (#1526). */
+function folderMapStatus(root: string): { folder_map?: Record<string, unknown> } {
+  let p: FolderMapProblem | null
+  try { p = folderMapProblem(root) } catch { return {} }
+  if (!p) return {}
+  const advice = folderMapAdvice(p, root)
+  return {
+    folder_map: {
+      ok: false,
+      file: p.file,
+      problem: p.problem,
+      ...(p.line !== undefined ? { line: p.line } : {}),
+      ...(p.column !== undefined ? { column: p.column } : {}),
+      fixable: p.fixable,
+      ...(advice.command ? { repair_command: advice.command } : {}),
+      ...(advice.summary ? { repair_summary: advice.summary } : {}),
+      advice: `Memory tools are paused until it is fixed. ${advice.text}`,
+    },
+  }
+}
+
 export function folderOnCommand(entry: string, storageRoot?: string, platform: NodeJS.Platform = process.platform): string | null {
   if (_UNSAFE_PATH_CHARS.test(entry)) return null
   const target = _shellWord(entry, platform)
@@ -2853,6 +2875,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
             },
           } : {}),
           capabilities: await mcpCanary.status(),
+          // #1526: a broken folders.yaml pauses every memory tool. Status is
+          // where an agent looks, so it names the line, the problem in plain
+          // words, and the repair (run only after the user agrees).
+          ...folderMapStatus(plur.storageRoot),
         }
       },
     },
@@ -3306,9 +3332,21 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // profiles, so it is where that answer belongs. Without this, doctor
         // can report green while the caller concludes the MCP is gone.
         const tool_surface = describeToolSurface()
+        // The folder map (#1526, re-review N5): a broken folders.yaml pauses
+        // every memory tool, so doctor says so the way plur_status and the CLI
+        // `plur doctor` do: the same folder_map, a failing check, the repair.
+        const folderMap = folderMapStatus(plur.storageRoot)
+        if (folderMap.folder_map) {
+          const fm = folderMap.folder_map as { file: string; problem: string; advice: string }
+          checks.push({ check: 'folder map', ok: false, detail: `${fm.file} ${fm.problem}` })
+          remediation.push(`Folder map: ${fm.file} ${fm.problem}. ${fm.advice}`)
+        } else {
+          checks.push({ check: 'folder map', ok: true, detail: 'folders.yaml is readable (or absent: no decisions yet)' })
+        }
         return {
           ok: checks.every(c => c.ok),
           checks,
+          ...folderMap,
           embedder: {
             before_probe: before,
             after_probe: after,

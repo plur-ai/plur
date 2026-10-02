@@ -187,7 +187,7 @@ describe.skipIf(!existsSync(DIST_ENTRY))('folder-question nonces over a real std
         await (send as any)(message, ...rest)
         if (message?.method === 'tools/call') (t.transport as any)._process.stdin.end()
       }
-      const pending = t.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra slow learning', scope: 'global' } }, undefined, { timeout: 60_000 })
+      const pending = t.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra slow learning', scope: 'global' } }, { timeout: 60_000 })
       const raw = await Promise.race([pending, new Promise(r => setTimeout(() => r('no response'), 55_000))])
       expect(raw).not.toBe('no response')
       expect(readFileSync(join(e.home, 'engrams.yaml'), 'utf8')).toContain('zebra slow learning')
@@ -217,7 +217,7 @@ describe.skipIf(!existsSync(DIST_ENTRY))('folder-question nonces over a real std
         await (send as any)(message, ...rest)
         if (message?.method === 'tools/call') (s.transport as any)._process.stdin.end()
       }
-      void s.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra waits', scope: 'global' } }, undefined, { timeout: 60_000 }).catch(() => {})
+      void s.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra waits', scope: 'global' } }, { timeout: 60_000 }).catch(() => {})
       expect(await until(() => nonceFiles(e).length === 0, 3000)).toBe(true)
     } finally {
       rmSync(lock, { force: true })

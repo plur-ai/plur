@@ -1,7 +1,8 @@
 import {
   folderOffEntries, folderMapProblem, folderAsk, folderNonceOutstanding, endFolderNonceSession,
-  sweepFolderNonces, coversHomeOrRoot, FOLDER_NONCE_TTL_MS, type Plur, type FolderAsk, type FolderAskAnswer,
+  sweepFolderNonces, coversHomeOrRoot, FOLDER_NONCE_TTL_MS, type FolderMapProblem, type Plur, type FolderAsk, type FolderAskAnswer,
 } from '@plur-ai/core'
+import { folderMapAdvice } from './folder-map-advice.js'
 import { fileURLToPath } from 'url'
 import { randomBytes } from 'crypto'
 import { dirname, resolve } from 'path'
@@ -94,6 +95,15 @@ export interface FolderOffAnswer {
   folder?: string
   reason?: 'folder-map-unreadable' | 'workspace-unknown' | 'not-now' | 'folder-cannot-be-asked' | 'folder-ask-failed'
   file?: string
+  /** For a broken map (#1526): where the problem is (1-based). */
+  line?: number
+  column?: number
+  /** Whether `plur folders repair` can fix it. */
+  fixable?: boolean
+  /** The exact command to run, only after the user agrees (when fixable). */
+  repair_command?: string
+  /** What that command changes (lines and keys, no values): show it to the user first. */
+  repair_summary?: string
   message: string
 }
 
@@ -101,17 +111,22 @@ function log(line: string): void {
   try { process.stderr.write(`[plur] ${line}\n`) } catch { /* never fail a tool over a log line */ }
 }
 
-function unreadable(file: string, problem: string): FolderOffAnswer {
+function unreadable(problem: FolderMapProblem, root: string): FolderOffAnswer {
+  const advice = folderMapAdvice(problem, root)
   return {
     success: true,
     plur: 'off',
     reason: 'folder-map-unreadable',
-    file,
+    file: problem.file,
+    ...(problem.line !== undefined ? { line: problem.line } : {}),
+    ...(problem.column !== undefined ? { column: problem.column } : {}),
+    fixable: problem.fixable,
+    ...(advice.command ? { repair_command: advice.command } : {}),
+    ...(advice.summary ? { repair_summary: advice.summary } : {}),
     message:
-      `PLUR memory is paused: the folder map ${JSON.stringify(file)} ${problem}. ` +
+      `PLUR memory is paused: the folder map ${JSON.stringify(problem.file)} ${problem.problem}. ` +
       `Until it is fixed, PLUR cannot tell whether memory is allowed in this folder, so nothing was read from or ` +
-      `written to memory. This is not an error — carry on without memory. The user can fix the file, or ` +
-      `rewrite it from a terminal with plur folders set / plur folders rm.`,
+      `written to memory. This is not an error — carry on without memory. ${advice.text}`,
   }
 }
 
@@ -127,15 +142,15 @@ function unreadable(file: string, problem: string): FolderOffAnswer {
  */
 export function folderOffAnswer(plur: Plur, dirs: string[]): FolderOffAnswer | null {
   const root = plur.storageRoot
-  let problem: { file: string; problem: string } | null
+  let problem: FolderMapProblem | null
   try {
     problem = folderMapProblem(root)
   } catch (err) {
-    problem = { file: `${root}/folders.yaml`, problem: `could not be checked (${(err as Error)?.message ?? err})` }
+    problem = { file: `${root}/folders.yaml`, problem: `could not be checked (${(err as Error)?.message ?? err})`, fixable: false }
   }
   if (problem) {
     log(`folder map ${problem.file} ${problem.problem}; memory tools do nothing until it is fixed.`)
-    return unreadable(problem.file, problem.problem)
+    return unreadable(problem, root)
   }
   for (const dir of dirs) {
     let mode: string
@@ -144,7 +159,7 @@ export function folderOffAnswer(plur: Plur, dirs: string[]): FolderOffAnswer | n
     } catch (err) {
       const why = `could not be applied to ${JSON.stringify(dir)} (${(err as Error)?.message ?? err})`
       log(`folder map: ${why}; memory tools do nothing.`)
-      return unreadable(`${root}/folders.yaml`, why)
+      return unreadable({ file: `${root}/folders.yaml`, problem: why, fixable: false }, root)
     }
     if (mode !== 'off') continue
     let entries: string[] = []
@@ -494,7 +509,7 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
         } catch (err) {
           const why = `could not be applied to ${JSON.stringify(dir)} (${(err as Error)?.message ?? err})`
           log(`folder map: ${why}; memory tools do nothing.`)
-          return unreadable(`${plur.storageRoot}/folders.yaml`, why)
+          return unreadable({ file: `${plur.storageRoot}/folders.yaml`, problem: why, fixable: false }, plur.storageRoot)
         }
         if (policy.mode === 'ask') {
           if (notNow.has(dir)) return notNowAnswer(asked.get(dir)?.ask.folder ?? dir)

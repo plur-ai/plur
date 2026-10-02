@@ -76,6 +76,7 @@ Commands:
   remote --url <u> --token <t> --scope <s>
                           Connect this folder to a team store (verified; [--scopes a,b])
   folders list            Your per-folder decisions (~/.plur/folders.yaml, #1347)
+  folders repair [--yes]  Fix a broken folders.yaml: shows the change, asks, keeps a backup (#1526)
   folders set <folder>    --scope <s> | --on | --off | --ask  [--trusted|--no-trusted] [--nonce <n>]
   folders rm <folder>     Remove a folder's entry
   scopes                  List authorized-but-unregistered shared scopes (#647)

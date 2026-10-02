@@ -668,3 +668,120 @@ describe('re-audit edge cases', () => {
     expect(readFileSync(join(s.home, 'engrams.yaml'), 'utf8')).not.toContain('zebra-switch')
   })
 })
+
+// #1526: a broken map is pinpointed (line, column, plain words) and the agent
+// is given the exact repair command to run after the user agrees. Nothing
+// from the file but the key on that line is ever quoted.
+describe('a broken folder map is pinpointed and the repair is offered', () => {
+  const SECRET = 'sk-live-SECRET-0123456789'
+
+  it('fixable: line, column, plain words, and `plur folders repair --yes` after the user agrees', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolders:\n  - path: "${s.workspace}/${SECRET}"\n     plur: off\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const before = snapshot(s.home)
+    hits = []
+    const r = await call(client, 'plur_recall', { query: 'zebra-local-fact' })
+    expect(r.raw.isError, r.text).not.toBe(true)
+    expect(r.json?.reason).toBe('folder-map-unreadable')
+    expect(r.json?.line).toBe(4)
+    expect(r.json?.column).toBe(6)
+    expect(r.json?.fixable).toBe(true)
+    expect(r.json?.message).toContain('line 4: indentation')
+    expect(r.json?.repair_command).toBe(`plur --path ${s.home} folders repair --yes`)
+    expect(r.json?.message).toContain(`plur --path ${s.home} folders repair --yes`)
+    expect(r.json?.message).toMatch(/agree/)
+    expect(r.text).not.toContain(SECRET)
+    expect(r.text).not.toContain('zebra-')
+    expect(snapshot(s.home)).toEqual(before)
+    expect(hits).toEqual([])
+  })
+
+  it('a misspelled top-level key: did you mean, and the repair', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolder:\n  - path: "${s.workspace}"\n    plur: off\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const r = await call(client, 'plur_learn', { statement: 'zebra-typo learning', scope: 'global' })
+    expect(r.json?.message).toContain('line 2: unknown key `folder:` — did you mean `folders:`?')
+    expect(r.json?.message).toContain('folders repair --yes')
+    // Round 2: a short summary of what the repair changes, shown to the user first.
+    expect(r.json?.repair_summary).toBe('line 2: `folder:` → `folders:`')
+    expect(r.json?.message).toContain('line 2: `folder:` → `folders:`')
+    expect(r.json?.message).toMatch(/[Ss]how/)
+  })
+
+  it('unfixable: pinpointed, fixed by hand, no command to run', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolders:\n  - path: "${s.workspace}"\n    plur: of\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const r = await call(client, 'plur_recall', { query: 'zebra-local-fact' })
+    expect(r.json?.fixable).toBe(false)
+    expect(r.json?.line).toBe(4)
+    expect(r.json?.repair_command).toBeUndefined()
+    expect(r.json?.message).toMatch(/by hand/)
+    expect(r.json?.message).not.toContain('repair --yes')
+  })
+
+  it('plur_status names the problem and the repair (and still answers)', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolders:\n  - path: "${s.workspace}/${SECRET}"\n     plur: off\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const r = await call(client, 'plur_status')
+    expect(r.json?.engram_count).toBeGreaterThanOrEqual(1)
+    expect(r.json?.folder_map?.ok).toBe(false)
+    expect(r.json?.folder_map?.line).toBe(4)
+    expect(r.json?.folder_map?.problem).toContain('line 4: indentation')
+    expect(r.json?.folder_map?.repair_command).toBe(`plur --path ${s.home} folders repair --yes`)
+    expect(r.text).not.toContain(SECRET)
+  })
+
+  it('plur_status on a healthy map reports no folder-map problem', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const r = await call(client, 'plur_status')
+    expect(r.json?.folder_map).toBeUndefined()
+  })
+})
+
+// N5 (re-review of #1530): the MCP plur_doctor tool reports a broken map the
+// same way plur_status and the CLI `plur doctor` do.
+describe('plur_doctor reports a broken folder map', () => {
+  const SECRET = 'sk-live-SECRET-0123456789'
+
+  it('the same folder_map as plur_status, a failing check, and the repair in remediation', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolder:\n  - path: "${s.workspace}/${SECRET}"\n    plur: off\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const status = await call(client, 'plur_status')
+    const doctor = await call(client, 'plur_doctor')
+    expect(doctor.raw.isError, doctor.text).not.toBe(true)
+    expect(doctor.json?.folder_map).toEqual(status.json?.folder_map)
+    expect(doctor.json?.folder_map?.line).toBe(2)
+    expect(doctor.json?.folder_map?.column).toBe(1)
+    expect(doctor.json?.folder_map?.fixable).toBe(true)
+    expect(doctor.json?.folder_map?.problem).toContain('line 2: unknown key `folder:`')
+    expect(doctor.json?.folder_map?.repair_summary).toContain('line 2: `folder:` → `folders:`')
+    expect(doctor.json?.folder_map?.repair_command).toBe(`plur --path ${s.home} folders repair --yes`)
+    expect(doctor.json?.ok).toBe(false)
+    const check = doctor.json?.checks?.find((c: any) => c.check === 'folder map')
+    expect(check?.ok).toBe(false)
+    expect(check?.detail).toContain('line 2')
+    expect((doctor.json?.remediation ?? []).join('\n')).toContain('folders repair --yes')
+    expect(doctor.text).not.toContain(SECRET)
+  }, 60_000)
+
+  it('a healthy map: no folder_map field and the folder map check passes', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const doctor = await call(client, 'plur_doctor')
+    expect(doctor.json?.folder_map).toBeUndefined()
+    expect(doctor.json?.checks?.find((c: any) => c.check === 'folder map')?.ok).toBe(true)
+  }, 60_000)
+})
