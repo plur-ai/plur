@@ -38,7 +38,7 @@ carries the same fields.
 **Every routed save has a bounded server deadline.** `plur_learn` (MCP),
 `plur_learn_batch`, and the Claw and opencode plugins now take the outbox after
 10 seconds instead of waiting 30. Hook auto-capture gets 4 seconds for all the
-statements of one run together, so every save is queued before the hook's
+statements of one hook run together (every turn it drains), so every save is queued before the hook's
 9-second watchdog can exit. Before, that
 watchdog could exit while the request was in flight, and the captured
 statement was lost. A request that lands after its deadline is sent again
@@ -63,10 +63,14 @@ the retire is refused instead, naming `--scope primary`. "Met" means any of:
 - a save or an outbox delivery got it back from the server;
 - its history or cached team rows show it.
 
-Those ids are now kept in `seen-on-server.jsonl` in the PLUR directory: the
-latest 50,000, outside `cache/`, so they are not pruned with the outbox id
-map. A `rescope --keep-local` no longer marks the local engram's id as a
-server id. Looking up an id that is not stored
+Those ids are now kept in `seen-on-server.jsonl` in the PLUR directory,
+outside `cache/`, so they are not pruned with the outbox id map. The record is
+kept to about 16 MB by rotating it, never rewriting it: when the file passes
+8 MB it replaces the previous generation, and lookups read both. So a line
+another process appends at that moment is never lost, and a line cut short
+by a killed writer does not swallow the next one. A `rescope --keep-local` no
+longer marks the local engram's id as a server id, and a rescope that finds
+the content already on the team server records that server's id. Looking up an id that is not stored
 locally is also limited to 5 seconds per store (it was 30). `plur feedback` follows the same rule,
 except that an unreachable store gives a warning instead of a refusal, as it
 did before.
