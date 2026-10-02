@@ -795,7 +795,7 @@ export function redactStoreErrors(errors: Record<string, string>): Record<string
   return Object.fromEntries(Object.entries(errors).map(([k, v]) => [k, String(v).split('\n', 1)[0].slice(0, 300)]))
 }
 
-/** Same grammar as the folder question's (cli folder-gate.ts): bounded, no spaces or controls. */
+/** Same grammar as the folder question's (core folder-ask.ts): bounded, no spaces or controls. */
 const UNTRUSTED_SCOPE_GRAMMAR = /^(?:global|[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._@/:-]{0,199})$/
 const UNTRUSTED_DOMAIN_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/
 /** Characters that break a line, reorder text or hide in a path printed to the model. */
