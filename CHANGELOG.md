@@ -4,7 +4,33 @@
 
 ### CLI tests never touch the real home or PLUR store (tests only)
 
-Every CLI test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH, and the run fails if the real `~/.plur` changed while it ran.
+Every CLI, mcp and dsh test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH. The run checks whether the real `~/.plur` changed while it ran: in CI (`CI=true`) a change fails the run, locally it is reported as a warning (`PLUR_TEST_HOME_GUARD=fail|warn|off` overrides). In CI this check found mcp and dsh tests writing `server.pid`, `packs/` and `.tensions-purged` into the real home.
+
+### Instruction upgrades respect lists, links, edits and look-alike learnings
+
+These follow up #1520 from its third audit.
+
+- **Markdown structure.** A code block inside a list item now ends where the
+  item ends, as in CommonMark, so appending the PLUR section no longer opens a
+  new code block or adds an empty one to your next list item; the same goes for
+  an HTML comment in a list item and a fence on the item's own line. Raw HTML
+  blocks such as `<pre>` are read as HTML. When PLUR cannot tell whether a block
+  at the end of the file is still open (a tab-indented fence, for instance), it
+  leaves the file alone and says so.
+- **The file itself.** A file that shares its contents with another name (a
+  hard link) is not rewritten: init says so and how to proceed, because
+  rewriting it in place could empty every name on a full disk. A symlink to a
+  missing file, a file that is not UTF-8, and a file that appeared after PLUR
+  looked are also left as they are, with the reason. The new text is flushed to
+  disk before it replaces the old. Backups are created exclusively, so two
+  installers never share one. Owner and group are kept where the process may
+  set them.
+- **Your edits.** If the file changes between PLUR reading it and writing it,
+  for instance because you saved it meanwhile, PLUR writes nothing and asks you
+  to run again.
+- **Learnings.** The memory line is matched on its whole shape, the same way in
+  core and Hermes. "Memory: recalled 3 times faster…" is still saved as a
+  learning, and "Memory — none recalled" is not.
 
 ### A team save is never lost while the server hangs, and a slow save is not reported as failed (#1531)
 

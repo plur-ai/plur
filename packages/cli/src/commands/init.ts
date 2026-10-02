@@ -680,7 +680,16 @@ export function writePlurSection(path: string, section: string, title: string): 
   const r = upsertInstructionSection(existing, {
     section, title, heading: '## PLUR Memory', marker: PLUR_INSTRUCTIONS_MARKER, shipped: SHIPPED_PLUR_SECTIONS,
   })
-  const backup = r.status === 'already' ? null : writeWithBackup(path, r.content)
+  if (r.status === 'skipped') return `not written to ${path}: ${r.skipReason}`
+  let backup: string | null
+  try {
+    backup = r.status === 'already' ? null : writeWithBackup(path, r.content, existing)
+  } catch (err) {
+    // A write PLUR declined (a dangling symlink, an edit made meanwhile): say
+    // so and let the rest of the install carry on.
+    if ((err as { code?: string }).code === 'PLUR_REFUSED') return `not written to ${path}: ${(err as Error).message}`
+    throw err
+  }
   const head = {
     created: `created ${path}`,
     added: `added to ${path}`,
@@ -1074,13 +1083,23 @@ function installCursor(cmd: string): string {
   const existingRule = existsSync(rulesPath) ? readFileSync(rulesPath, 'utf8') : null
   let ruleStatus: string
   if (existingRule === null) {
-    writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
-    ruleStatus = 'created'
+    try {
+      writeFileSync(rulesPath, CURSOR_RULE_CONTENT, { flag: 'wx' })
+      ruleStatus = 'created'
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      ruleStatus = 'not written: it was created while PLUR was updating it — run again'
+    }
   } else if (hasStandaloneMarker(existingRule, PLUR_INSTRUCTIONS_MARKER)) {
     ruleStatus = 'already present'
   } else if (isShippedText(existingRule, SHIPPED_CURSOR_RULES)) {
     const content = existingRule.includes('\r\n') ? CURSOR_RULE_CONTENT.replace(/\n/g, '\r\n') : CURSOR_RULE_CONTENT
-    ruleStatus = `upgraded (backup: ${writeWithBackup(rulesPath, content)})`
+    try {
+      ruleStatus = `upgraded (backup: ${writeWithBackup(rulesPath, content, existingRule)})`
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'PLUR_REFUSED') throw err
+      ruleStatus = `not written: ${(err as Error).message}`
+    }
   } else {
     ruleStatus = `kept as you edited it (backup: ${backupFile(rulesPath, { once: true })}); it lacks the newer instructions — ` +
       `delete it and re-run \`plur init --cursor\` to get them`

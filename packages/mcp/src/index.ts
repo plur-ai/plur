@@ -253,7 +253,16 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
     section: CLAUDE_MD_SECTION, title: '# CLAUDE.md', heading: '## PLUR Memory',
     marker: PLUR_INSTRUCTIONS_MARKER, shipped: SHIPPED_PLUR_SECTIONS,
   })
-  const backup = r.status === 'already' ? null : writeWithBackup(claudeMdPath, r.content)
+  if (r.status === 'skipped') return `not written to ${claudeMdPath}: ${r.skipReason}`
+  let backup: string | null
+  try {
+    backup = r.status === 'already' ? null : writeWithBackup(claudeMdPath, r.content, existing)
+  } catch (err) {
+    // A write PLUR declined (a dangling symlink, an edit made meanwhile): say
+    // so and let the rest of the install carry on.
+    if ((err as { code?: string }).code === 'PLUR_REFUSED') return `not written to ${claudeMdPath}: ${(err as Error).message}`
+    throw err
+  }
   const head = {
     created: `created ${claudeMdPath}`,
     added: `added to ${claudeMdPath}`,

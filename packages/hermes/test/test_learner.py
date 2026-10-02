@@ -344,3 +344,29 @@ def test_learnings_starting_with_memory_are_kept(marker):
 def test_more_footer_forms_are_dropped(footer, marker):
     text = f"Answer.\n\n{marker}\n- The deploy script needs NODE_ENV set\n{footer}"
     assert extract_learning_patterns(text) == ["The deploy script needs NODE_ENV set"]
+
+
+# --- #1520 third re-audit N3: the same cases as core, from one shared file ---
+
+import json as _json
+from pathlib import Path as _Path
+
+_CASES = _json.loads(
+    (_Path(__file__).resolve().parents[2] / "core" / "test" / "fixtures" / "memory-line-cases.json").read_text("utf-8")
+)
+
+
+def _extract_after_learning(line):
+    return extract_learning_patterns(
+        f"Answer.\n\n---\n\U0001f9e0 I learned:\n- The deploy script needs NODE_ENV set\n{line}"
+    )
+
+
+@pytest.mark.parametrize("line", _CASES["footer"])
+def test_shared_footer_cases_are_dropped(line):
+    assert _extract_after_learning(line) == ["The deploy script needs NODE_ENV set"]
+
+
+@pytest.mark.parametrize("line", _CASES["learning"])
+def test_shared_learning_cases_are_kept(line):
+    assert _extract_after_learning(f"- {line}") == ["The deploy script needs NODE_ENV set", line]

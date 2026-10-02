@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, linkSync, symlinkSync, lstatSync, existsSync, constants } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -12,7 +12,12 @@ import { tmpdir } from 'os'
  * `fail.mode` makes the next writeFileSync behave like a disk that fills up
  * after the file was opened: it writes the first few bytes, then throws.
  */
-const fail = vi.hoisted(() => ({ mode: 'off' as 'off' | 'partial-write' | 'rename' }))
+const fail = vi.hoisted(() => ({
+  mode: 'off' as 'off' | 'partial-write' | 'rename' | 'edit-before-rename',
+  copies: [] as Array<{ dest: string; mode: number | undefined }>,
+  events: [] as string[],
+  target: '',
+}))
 vi.mock('fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('fs')>()
   const enospc = () => Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
@@ -27,7 +32,22 @@ vi.mock('fs', async (importOriginal) => {
     },
     renameSync: (a: any, b: any) => {
       if (fail.mode === 'rename') throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' })
+      fail.events.push(`rename ${String(a).split('/').pop()}`)
       return real.renameSync(a, b)
+    },
+    copyFileSync: (src: any, dest: any, mode?: number) => {
+      fail.copies.push({ dest: String(dest), mode })
+      return (real.copyFileSync as any)(src, dest, mode)
+    },
+    fsyncSync: (fd: number) => {
+      // Simulates the user saving the file after PLUR wrote its temp file and
+      // before it swaps it in.
+      if (fail.mode === 'edit-before-rename' && fail.target) {
+        real.writeFileSync(fail.target, 'THE USER SAVED THIS JUST NOW\n')
+        fail.target = ''
+      }
+      fail.events.push('fsync')
+      return real.fsyncSync(fd)
     },
   }
 })
@@ -37,7 +57,7 @@ import { writeWithBackup } from '../src/instruction-section.js'
 describe('writeWithBackup keeps the original when the write fails partway (#1520 re-audit H1)', () => {
   let dir: string
   const ORIGINAL = '# Mine\n\n' + 'user text\n'.repeat(500)
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-h1-')); fail.mode = 'off' })
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-h1-')); fail.mode = 'off'; fail.copies = []; fail.events = [] })
   afterEach(() => { fail.mode = 'off'; rmSync(dir, { recursive: true, force: true }) })
 
   const recoverable = (p: string) => {
@@ -75,5 +95,92 @@ describe('writeWithBackup keeps the original when the write fails partway (#1520
     expect(readFileSync(p, 'utf-8')).toBe('new content')
     expect(statSync(p).mode & 0o777).toBe(0o640)
     expect(readFileSync(backup!, 'utf-8')).toBe(ORIGINAL)
+  })
+})
+
+describe('writeWithBackup keeps what the file is (#1520 third re-audit N2)', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-n2-')); fail.mode = 'off'; fail.copies = []; fail.events = [] })
+  afterEach(() => { fail.mode = 'off'; rmSync(dir, { recursive: true, force: true }) })
+
+  it('a hard-linked file is not written at all: refused with a reason, both names unchanged, no backup (#1557 review M1)', () => {
+    // Writing a shared file in place truncates it first; a full disk would
+    // leave every name empty. PLUR leaves such a file to the user.
+    const a = join(dir, 'CLAUDE.md')
+    const b = join(dir, 'AGENTS.md')
+    writeFileSync(a, 'original\n')
+    linkSync(a, b)
+    fail.mode = 'partial-write'
+    expect(() => writeWithBackup(a, 'new\n', 'original\n')).toThrow(/hard link/i)
+    fail.mode = 'off'
+    expect(readFileSync(a, 'utf-8')).toBe('original\n')
+    expect(readFileSync(b, 'utf-8')).toBe('original\n')
+    expect(statSync(a).nlink).toBe(2)
+    expect(readdirSync(dir).sort()).toEqual(['AGENTS.md', 'CLAUDE.md'])
+  })
+
+  it('a file that is not valid UTF-8 is refused with that reason, not "run again" (#1557 review L3)', () => {
+    const p = join(dir, 'CLAUDE.md')
+    const latin1 = Buffer.from([0x23, 0x20, 0x43, 0x61, 0x66, 0xe9, 0x0a]) // "# Café" in Latin-1
+    writeFileSync(p, latin1)
+    let message = ''
+    try { writeWithBackup(p, 'new\n', latin1.toString('utf8')) } catch (err) { message = (err as Error).message }
+    expect(message).toMatch(/UTF-8/)
+    expect(message).not.toMatch(/run again/)
+    expect(readFileSync(p).equals(latin1)).toBe(true)
+    expect(readdirSync(dir)).toEqual(['CLAUDE.md'])
+  })
+
+  it('a caller that saw no file does not overwrite one created meanwhile (#1557 review L6)', () => {
+    const p = join(dir, 'CLAUDE.md')
+    writeFileSync(p, 'created by the user just now\n')
+    expect(() => writeWithBackup(p, 'new\n', null)).toThrow(/created/i)
+    expect(readFileSync(p, 'utf-8')).toBe('created by the user just now\n')
+    expect(readdirSync(dir)).toEqual(['CLAUDE.md'])
+  })
+
+  it('a dangling symlink is refused, not replaced by a regular file', () => {
+    const link = join(dir, 'CLAUDE.md')
+    symlinkSync(join(dir, 'missing.md'), link)
+    expect(() => writeWithBackup(link, 'new\n', null)).toThrow(/missing|dangling|symlink/i)
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(dir, 'missing.md'))).toBe(false)
+  })
+
+  it('the backup is created exclusively, so two writers can never share one', () => {
+    const p = join(dir, 'CLAUDE.md')
+    writeFileSync(p, 'original\n')
+    writeWithBackup(p, 'new\n', 'original\n')
+    const backupCopy = fail.copies.find(c => c.dest.includes('plur-backup'))
+    expect(backupCopy, 'backup made with copyFileSync').toBeDefined()
+    expect((backupCopy!.mode ?? 0) & constants.COPYFILE_EXCL).toBe(constants.COPYFILE_EXCL)
+  })
+
+  it('the new content is flushed to disk before it replaces the file', () => {
+    const p = join(dir, 'CLAUDE.md')
+    writeFileSync(p, 'original\n')
+    writeWithBackup(p, 'new\n', 'original\n')
+    const rename = fail.events.findIndex(e => e.startsWith('rename'))
+    expect(rename).toBeGreaterThan(0)
+    expect(fail.events.slice(0, rename)).toContain('fsync')
+  })
+
+  it('an edit saved while PLUR was writing is kept: the write is abandoned', () => {
+    const p = join(dir, 'CLAUDE.md')
+    writeFileSync(p, 'original\n')
+    fail.mode = 'edit-before-rename'
+    fail.target = p
+    expect(() => writeWithBackup(p, 'new\n', 'original\n')).toThrow(/changed/i)
+    fail.mode = 'off'
+    expect(readFileSync(p, 'utf-8')).toBe('THE USER SAVED THIS JUST NOW\n')
+    expect(readdirSync(dir).filter(f => f.includes('plur-tmp'))).toEqual([])
+  })
+
+  it('a file that changed since the caller read it is not written at all', () => {
+    const p = join(dir, 'CLAUDE.md')
+    writeFileSync(p, 'edited after the read\n')
+    expect(() => writeWithBackup(p, 'new\n', 'what the caller read\n')).toThrow(/changed/i)
+    expect(readFileSync(p, 'utf-8')).toBe('edited after the read\n')
+    expect(readdirSync(dir)).toEqual(['CLAUDE.md'])
   })
 })

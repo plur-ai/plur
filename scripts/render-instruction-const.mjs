@@ -2,55 +2,134 @@
  * Render a string constant the way the code builds it, for
  * scripts/extract-plur-section-history.mjs.
  *
+ * The source is first lexed (code, comments, strings, template literals with
+ * nested `${…}`, regex literals), so a `const` inside a comment or a string is
+ * never taken for a definition, and a `/*` inside a string or `//` comment
+ * hides nothing (#1520 third re-audit N4).
+ *
  * Supported: a `+` concatenation of '…', "…" and `…` literals, where a
- * template literal's `${NAME}` parts name other constants in the same file.
- * Anything else — a function call, a trailing `.replace()` or
- * `.toUpperCase()`, a ternary, a comment between the parts, two definitions
- * of the same name — returns { error }, so the generator exits non-zero
- * rather than recording a text the code never installs (#1520 second
- * re-audit L3). Definitions in `//` or `/* … *\/` comments are ignored.
+ * template literal's `${NAME}` parts name other constants in the same file,
+ * ended by `;`, the end of the file, or a newline followed by the next
+ * statement. Everything else returns { error } — a function call, a trailing
+ * `.replace()`, `&&`/`||`, a ternary, a comment between the parts, two
+ * definitions of the same name — so the generator exits non-zero rather than
+ * record a text the code never installs (second re-audit L3).
  */
 
 const cook = (raw, quote) => new Function(`return ${quote}${raw}${quote}`)()
 
-/** Start offsets of lines that sit inside a block comment. */
-function commentedLineStarts(source) {
-  const starts = new Set()
-  let inBlock = false
-  let offset = 0
-  for (const line of source.split('\n')) {
-    if (inBlock) starts.add(offset)
-    let rest = line
-    for (;;) {
-      if (inBlock) {
-        const end = rest.indexOf('*/')
-        if (end < 0) break
-        inBlock = false
-        rest = rest.slice(end + 2)
-      } else {
-        const open = rest.indexOf('/*')
-        if (open < 0) break
-        inBlock = true
-        rest = rest.slice(open + 2)
-      }
+/** Per character: 'code', 'comment', 'string', 'template' or 'regex'. */
+export function lex(source) {
+  const kind = new Array(source.length).fill('code')
+  const stack = [] // brace depths of open `${` inside templates
+  let depth = 0
+  let lastCode = ''
+  let lastWord = ''
+  let unterminated = false
+  let i = 0
+  const mark = (from, to, k) => { for (let x = from; x < to; x++) kind[x] = k }
+  // After these keywords a `/` starts a regex, not a division (#1557 review L5).
+  const REGEX_KEYWORDS = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await'])
+  const regexCanStart = () => lastCode === '' || '(,=:[!&|?{};+-*%<>~^'.includes(lastCode) || REGEX_KEYWORDS.has(lastWord)
+  const scanTemplate = (from) => {
+    // from: index just after the opening backtick (or after a closing `}`)
+    let j = from
+    while (j < source.length) {
+      if (source[j] === '\\') { j += 2; continue }
+      if (source[j] === '`') { mark(from, j + 1, 'template'); return { end: j + 1, open: false } }
+      if (source[j] === '$' && source[j + 1] === '{') { mark(from, j + 2, 'template'); return { end: j + 2, open: true } }
+      j++
     }
-    offset += line.length + 1
+    mark(from, source.length, 'template')
+    unterminated = true
+    return { end: source.length, open: false }
   }
-  return starts
+  while (i < source.length) {
+    const c = source[i]
+    const n = source[i + 1]
+    if (c === '/' && n === '/') {
+      const end = source.indexOf('\n', i)
+      const stop = end < 0 ? source.length : end
+      mark(i, stop, 'comment'); i = stop; continue
+    }
+    if (c === '/' && n === '*') {
+      const end = source.indexOf('*/', i + 2)
+      if (end < 0) unterminated = true
+      const stop = end < 0 ? source.length : end + 2
+      mark(i, stop, 'comment'); i = stop; continue
+    }
+    if (c === "'" || c === '"') {
+      let j = i + 1
+      while (j < source.length && source[j] !== c && source[j] !== '\n') { if (source[j] === '\\') j++; j++ }
+      if (source[j] !== c) unterminated = true
+      mark(i, j + 1, 'string'); i = j + 1; lastCode = c; lastWord = ''; continue
+    }
+    if (c === '`') {
+      kind[i] = 'template'
+      const t = scanTemplate(i + 1)
+      i = t.end
+      if (t.open) { stack.push(depth); depth = 0 } else lastCode = '`'
+      continue
+    }
+    if (c === '/' && regexCanStart()) {
+      let j = i + 1
+      let inClass = false
+      while (j < source.length && source[j] !== '\n') {
+        if (source[j] === '\\') { j += 2; continue }
+        if (source[j] === '[') inClass = true
+        else if (source[j] === ']') inClass = false
+        else if (source[j] === '/' && !inClass) break
+        j++
+      }
+      while (/[a-z]/i.test(source[j + 1] ?? '')) j++
+      mark(i, j + 1, 'regex'); i = j + 1; lastCode = '/'; lastWord = ''; continue
+    }
+    if (c === '{') depth++
+    if (c === '}') {
+      if (depth === 0 && stack.length) {
+        depth = stack.pop()
+        kind[i] = 'template'
+        const t = scanTemplate(i + 1)
+        i = t.end
+        if (t.open) { stack.push(depth); depth = 0 } else lastCode = '`'
+        continue
+      }
+      depth--
+    }
+    if (/[A-Za-z_$]/.test(c)) {
+      let j = i
+      while (j < source.length && /[\w$]/.test(source[j])) j++
+      lastWord = source.slice(i, j)
+      lastCode = source[j - 1]
+      i = j
+      continue
+    }
+    if (!/\s/.test(c)) { lastCode = c; lastWord = '' }
+    i++
+  }
+  if (stack.length) unterminated = true
+  kind.unterminated = unterminated
+  return kind
 }
 
 /** @returns {{text: string} | {missing: true} | {error: string}} */
-export function evaluateConst(source, name, depth = 0) {
+export function evaluateConst(source, name, depth = 0, kind = lex(source)) {
   if (depth > 8) return { error: 'interpolation too deep' }
-  const re = new RegExp(`^[ \\t]*(?:export\\s+)?const\\s+${name}(?:\\s*:\\s*[\\w.<>\\[\\] |]+)?\\s*=\\s*`, 'gm')
-  const commented = commentedLineStarts(source)
-  const defs = [...source.matchAll(re)].filter(m => !commented.has(m.index))
+  if (kind.unterminated) return { error: 'the source ends inside a string, template or comment, so it cannot be read reliably' }
+  const re = new RegExp(`\\bconst\\s+${name}\\b(?:\\s*:\\s*[\\w.<>\\[\\] |]+)?\\s*=(?!=)\\s*`, 'g')
+  const defs = [...source.matchAll(re)].filter(m => {
+    if (kind[m.index] !== 'code') return false
+    const lineStart = source.lastIndexOf('\n', m.index - 1) + 1
+    const before = [...source.slice(lineStart, m.index)].filter((_, k) => kind[lineStart + k] === 'code').join('')
+    return /^(?:.*;)?\s*(?:export\s+)?$/.test(before)
+  })
   if (defs.length === 0) return { missing: true }
   if (defs.length > 1) return { error: `${name} is defined ${defs.length} times` }
+
   let i = defs[0].index + defs[0][0].length
+  if (kind[i] === 'comment') return { error: 'a comment inside the expression' }
   let out = ''
   for (;;) {
-    while (/\s/.test(source[i] ?? '')) i++
     const q = source[i]
     if (q === "'" || q === '"') {
       let j = i + 1
@@ -73,7 +152,7 @@ export function evaluateConst(source, name, depth = 0) {
           const end = source.indexOf('}', j)
           const ref = source.slice(j + 2, end).trim()
           if (!/^[A-Za-z_$][\w$]*$/.test(ref)) return { error: `interpolates an expression: ${ref}` }
-          const inner = evaluateConst(source, ref, depth + 1)
+          const inner = evaluateConst(source, ref, depth + 1, kind)
           if (inner.text === undefined) return { error: `cannot resolve \${${ref}}: ${inner.error ?? 'not defined'}` }
           out += cook(chunk, '`') + inner.text
           chunk = ''
@@ -88,21 +167,28 @@ export function evaluateConst(source, name, depth = 0) {
     } else {
       return { error: 'not a string expression' }
     }
+
     // What follows a literal: `+` and another part, or the end of the statement.
-    while (source[i] === ' ' || source[i] === '\t') i++
-    if (source[i] === '+') { i++; continue }
-    if (source[i] === ';') i++
-    while (source[i] === ' ' || source[i] === '\t') i++
-    if (source[i] !== undefined && source[i] !== '\n' && source[i] !== '\r') {
-      return { error: `unsupported after a string: ${JSON.stringify(source.slice(i, i + 12))}` }
+    let sawComment = false
+    let sawNewline = false
+    while (i < source.length && (kind[i] === 'comment' || /\s/.test(source[i]))) {
+      if (kind[i] === 'comment') sawComment = true
+      if (source[i] === '\n') sawNewline = true
+      i++
     }
-    // A continuation on the next line (`.replace(…)`, `+ '…'`, `? …`).
-    let k = i
-    while (/\s/.test(source[k] ?? '')) k++
-    if (source[k] === '+') { i = k + 1; continue }
-    if ('.?[(:'.includes(source[k] ?? '\0') && source[k] !== undefined) {
-      return { error: `unsupported continuation: ${JSON.stringify(source.slice(k, k + 12))}` }
+    const c = source[i]
+    if (c === undefined || c === ';') return { text: out }
+    if (c === '+' && source[i + 1] !== '+' && source[i + 1] !== '=') {
+      if (sawComment) return { error: 'a comment between the parts' }
+      i++
+      while (i < source.length && /\s/.test(source[i])) i++
+      if (kind[i] === 'comment') return { error: 'a comment between the parts' }
+      continue
     }
-    return { text: out }
+    // `in` and `instanceof` continue the expression even across a newline (#1557 review L5).
+    if (/^(?:in|instanceof)\b/.test(source.slice(i))) return { error: 'an in/instanceof continuation' }
+    // A newline ends the statement only when the next token cannot continue it.
+    if (sawNewline && (/[A-Za-z_$'"}\])]/.test(c))) return { text: out }
+    return { error: `unsupported after a string: ${JSON.stringify(source.slice(i, i + 12))}` }
   }
 }

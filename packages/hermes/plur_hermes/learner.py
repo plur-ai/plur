@@ -98,22 +98,48 @@ _NEUTRAL_PREFIX = re.compile(
 
 # The per-reply memory line PLUR's instructions ask for
 # (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`) in
-# the forms an agent may write it: plain, in backticks, bold or italics, as a
-# bullet, numbered item or quote, after a 🧠, inside an HTML tag, with an em
-# dash, en dash, hyphen or colon. It is never a learning (#1520 S3, R2). It is
-# anchored on the footer's shape, so "Memory: used 4GB is too low" or
-# "Memory — none of the caches survive" are still learnings (L2), and only the
-# matching line is dropped. Mirrors MEMORY_LINE_RE in packages/core/src/learner.ts.
+# the forms an agent may write it. It is never a learning (#1520 S3, R2, L2,
+# N3). The WHOLE line must have the footer's shape, so "Memory: recalled 3
+# times faster…" stays a learning. This mirrors MEMORY_LINE_RE in
+# packages/core/src/learner.ts piece for piece (Python's \d is Unicode Nd, as
+# JavaScript's \p{Nd}); both are tested on
+# packages/core/test/fixtures/memory-line-cases.json. Whitespace is [ \t], and a
+# leading BOM is stripped before matching, because the two languages' \s differ.
+_ML_MARK = r'[*_`]*'
+
+
+def _ci(word: str) -> str:
+    """ASCII-only case-insensitivity, written out, as in core: Python's
+    IGNORECASE folds Turkish İ/ı to I/i and JavaScript's flag does not, so
+    neither side uses a flag (#1557 review L4)."""
+    return ''.join(f'[{ch.upper()}{ch.lower()}]' if ch.isascii() and ch.isalpha() else ch for ch in word)
+
+
+_ML_ID = r'ENG-[A-Za-z0-9\u2026-]*'
+_ML_IDS = _ML_ID + r'(?:[ \t]*,[ \t]*' + _ML_ID + r')*'
+_ML_PART = (
+    r'(?:' + _ci('recalled') + _ML_MARK + r'[ \t]*(?:\d+|:[ \t]*' + _ML_MARK + r'[ \t]*(?:' + _ML_IDS + r'|' + _ci('none') + r')|' + _ci('none') + r')'
+    r'|(?:' + _ci('used') + r'|' + _ci('written') + r')' + _ML_MARK + r'[ \t]*:[ \t]*' + _ML_MARK + r'[ \t]*(?:' + _ML_IDS + r'|' + _ci('none') + r')'
+    r'|' + _ci('none') + r'(?:[ \t]+' + _ci('recalled') + r')?)'
+)
 _MEMORY_LINE_RE = re.compile(
-    r'^[\s>*_`~\u2022-]*(?:\d+[.)]\s*)?(?:\U0001f9e0\s*)?(?:<[a-z][^>]*>\s*)?[*_`]*'
-    r'Memory[\s*_`]*(?:[\u2014\u2013-]+|:)\s*[*_`]*\s*'
-    r'(?:recalled\s*(?::|\d)|(?:used|written)\s*:\s*[*_`]*\s*ENG-|none[\s*_`.]*(?:</[a-z]+>)?[\s*_`.]*$)',
-    re.IGNORECASE,
+    r'^[ \t>*_`~\u2022-]*(?:\d+[.)][ \t]*)?(?:\U0001f9e0[ \t]*)?(?:<[A-Za-z][^>]*>[ \t]*)*' + _ML_MARK
+    + _ci('memory') + _ML_MARK + r'[ \t]*(?:[\u2014\u2013-]+|:)[ \t]*' + _ML_MARK
+    + _ML_PART + _ML_MARK + r'(?:[ \t]*[\u00b7\u2022][ \t]*' + _ML_MARK + _ML_PART + _ML_MARK + r')*'
+    + r'[ \t]*(?:</[A-Za-z]+>[ \t]*)*[.]?[ \t]*$'
 )
 
 
+def _is_memory_line(line: str) -> bool:
+    if line.startswith('﻿'):
+        line = line[1:]
+    if line.endswith('\r'):
+        line = line[:-1]
+    return _MEMORY_LINE_RE.match(line) is not None
+
+
 def _extract_lines(block: str) -> list[str]:
-    lines = [raw_line for raw_line in block.split('\n') if not _MEMORY_LINE_RE.match(raw_line)]
+    lines = [raw_line for raw_line in block.split('\n') if not _is_memory_line(raw_line)]
     return [
         line.strip()
         for raw_line in lines
