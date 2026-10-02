@@ -460,4 +460,39 @@ describe('opencode follows the folder map (#1347)', () => {
     expect(withPlur).toHaveLength(1)
     expect(withPlur[0]).toContain('ask the user once')
   })
+
+  // #1526: the unreadable-map notice pinpoints the problem and offers the
+  // repair in agent form (the exact command, run only after the user agrees);
+  // the next turn's reminder carries that command, since opencode keeps none
+  // of the system prompt in history.
+  it('#1526: a fixable broken map: no memory, the line and problem, and the repair command on both turns', async () => {
+    writeFileSync(join(repo, '.plur.yaml'), '# plur\n')
+    writeFileSync(join(root, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${repo}\n     plur: off\n`)
+    const hooks = await plugin()
+
+    const first = await turn(hooks, 'ses-repair', 'hello', 1)
+    await idleWithSelfReport(hooks, 'ses-repair')
+    expect(inject).not.toHaveBeenCalled()
+    expect(learn).not.toHaveBeenCalled()
+    expect(first).toContain('line 4: indentation')
+    expect(first).toContain(`plur --path ${root} folders repair --yes`)
+    expect(first).not.toContain('--nonce')
+
+    const second = await turn(hooks, 'ses-repair', 'yes, repair it', 2)
+    expect(second).toContain(`plur --path ${root} folders repair --yes`)
+    expect(second).not.toContain('--nonce')
+  })
+
+  it('#1526: an empty folders.yaml beside a project marker is no memory (agrees with the MCP gate)', async () => {
+    writeFileSync(join(repo, '.plur.yaml'), '# plur\n')
+    writeFileSync(join(root, 'folders.yaml'), '# nothing yet\n')
+    const hooks = await plugin()
+
+    const seen = await turn(hooks, 'ses-empty', 'hello')
+    await idleWithSelfReport(hooks, 'ses-empty')
+    expect(inject).not.toHaveBeenCalled()
+    expect(learn).not.toHaveBeenCalled()
+    expect(seen).toMatch(/empty/)
+    expect(seen).toContain('folders repair --yes')
+  })
 })
