@@ -187,7 +187,7 @@ export { generateGuardrails } from './guardrails.js'
 // memory block byte-identically instead of each vendoring a copy.
 export { renderMemoryBlock, PLUR_MEMORY_INSTRUCTIONS } from './memory-block.js'
 export {
-  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile,
+  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile, InstructionWriteRefused,
   type InstructionSectionOptions, type InstructionSectionResult,
 } from './instruction-section.js'
 export { SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES, SHIPPED_CLAW_SECTIONS } from './instruction-history.js'

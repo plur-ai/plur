@@ -1,6 +1,7 @@
 import {
-  accessSync, chmodSync, constants, copyFileSync, existsSync, readFileSync, readdirSync, realpathSync,
-  renameSync, statSync, unlinkSync, writeFileSync,
+  accessSync, chmodSync, chownSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync,
+  openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync,
+  writeFileSync,
 } from 'fs'
 import { randomBytes } from 'crypto'
 import { basename, dirname, join } from 'path'
@@ -49,11 +50,13 @@ export interface InstructionSectionResult {
    * upgraded: a shipped section was replaced (and any other shipped copies
    * removed). already: a current section is present and nothing else changed.
    */
-  status: 'created' | 'added' | 'upgraded' | 'already'
+  status: 'created' | 'added' | 'upgraded' | 'already' | 'skipped'
   /** Sections under the PLUR heading that PLUR did not write, left untouched. */
   keptSections: number
   /** The file ended inside a code fence or HTML comment, which was closed before the section was appended. */
   closedOpenBlock?: 'fence' | 'comment'
+  /** With status `skipped`: why nothing was written. */
+  skipReason?: string
 }
 
 const BOM = '﻿'
@@ -61,8 +64,43 @@ const BOM = '﻿'
 /** The text a line holds, without a trailing CR. */
 const bare = (line: string) => line.endsWith('\r') ? line.slice(0, -1) : line
 
-/** What a file still has open at its end, if anything. */
-type OpenBlock = { kind: 'fence'; close: string } | { kind: 'comment'; close: string } | null
+/**
+ * What a file still has open at its end, if anything. `unsure`: a code block
+ * may or may not still be open, depending on Markdown structure PLUR cannot
+ * see, so nothing is appended (#1520 third re-audit N1).
+ */
+type OpenBlock =
+  | { kind: 'fence'; close: string }
+  | { kind: 'comment'; close: string }
+  | { kind: 'unsure' }
+  | null
+
+const indentOf = (line: string) => /^ */.exec(line)![0].length
+const LIST_MARKER = /^( *)([-*+]|\d{1,9}[.)])( {1,4})\S/
+
+/**
+ * The content column of the list item a fence at `indent` (line `at`) sits
+ * in, or null when it is not inside one. Walks back over the item's earlier
+ * lines (blank, or indented at least as far as the fence) to its marker line;
+ * the fence belongs to that item when it starts within the item's content
+ * (column c to c+3).
+ */
+function listContainer(lines: string[], hidden: boolean[], at: number, indent: number): number | null {
+  for (let j = at - 1; j >= 0; j--) {
+    const line = bare(lines[j])
+    if (line.trim() === '') continue
+    if (hidden[j]) return null
+    const m = LIST_MARKER.exec(line)
+    if (m) {
+      const c = m[1].length + m[2].length + m[3].length
+      if (indent >= c && indent <= c + 3) return c
+      if (indentOf(line) < indent) return null
+      continue
+    }
+    if (indentOf(line) < indent) return null
+  }
+  return null
+}
 
 /**
  * Lines that are not markdown structure: lines of a fenced code block (fence
@@ -71,29 +109,51 @@ type OpenBlock = { kind: 'fence'; close: string } | { kind: 'comment'; close: st
  * or marker on such a line is example or hidden text, never a section
  * (#1520 audit S1, re-audit low b). Also reports a block still open at the
  * end of the file (re-audit R1).
+ *
+ * A fence inside a list item ends where the item ends — at the first
+ * non-blank line indented less than the item's content — as CommonMark has
+ * it, so a later paragraph or list item is not taken for code, and closing
+ * the fence at the end of the file never opens a new block (third re-audit
+ * N1). A fence indented 1-3 spaces outside any list item PLUR can see is
+ * treated as top level; if a less-indented line follows it, PLUR cannot be
+ * sure the block is still open and reports `unsure`.
  */
 function hiddenLines(lines: string[]): { hidden: boolean[]; openAtEnd: OpenBlock } {
   const hidden: boolean[] = new Array(lines.length).fill(false)
-  let fence: { char: string; len: number; indent: string } | null = null
+  let fence: { char: string; len: number; indent: number; container: number | null; doubtful: boolean } | null = null
   let comment = false
   for (let i = 0; i < lines.length; i++) {
     const line = bare(lines[i])
     if (fence) {
-      hidden[i] = true
-      const m = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
-      if (m && m[1][0] === fence.char && m[1].length >= fence.len) fence = null
-      continue
+      const blank = line.trim() === ''
+      if (fence.container !== null && !blank && indentOf(line) < fence.container) {
+        fence = null // the list item ended, and its code block with it
+      } else {
+        hidden[i] = true
+        const base = fence.container ?? 0
+        const m = /^( *)(`{3,}|~{3,})[ \t]*$/.exec(line)
+        if (m && m[1].length - base >= 0 && m[1].length - base <= 3 && m[2][0] === fence.char && m[2].length >= fence.len) {
+          fence = null
+        } else if (fence.container === null && fence.indent > 0 && !blank && indentOf(line) < fence.indent) {
+          fence.doubtful = true
+        }
+        continue
+      }
     }
     if (comment) {
       hidden[i] = true
       if (line.includes('-->')) comment = false
       continue
     }
-    const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line)
+    const m = /^( *)(`{3,}|~{3,})(.*)$/.exec(line)
     if (m && !(m[2][0] === '`' && m[3].includes('`'))) {
-      hidden[i] = true
-      fence = { char: m[2][0], len: m[2].length, indent: m[1] }
-      continue
+      const indent = m[1].length
+      const container = listContainer(lines, hidden, i, indent)
+      if (indent <= 3 || container !== null) {
+        hidden[i] = true
+        fence = { char: m[2][0], len: m[2].length, indent, container, doubtful: false }
+        continue
+      }
     }
     const c = /^ {0,3}<!--/.exec(line)
     if (c && !line.slice(c[0].length).includes('-->')) {
@@ -101,12 +161,16 @@ function hiddenLines(lines: string[]): { hidden: boolean[]; openAtEnd: OpenBlock
       comment = true
     }
   }
-  const openAtEnd: OpenBlock = fence
-    // The close carries the opening fence's indentation: a fence opened inside
-    // a list item is closed inside that item, not by a column-0 fence that
-    // would open a new block around the section (#1520 second re-audit L1).
-    ? { kind: 'fence', close: fence.indent + fence.char.repeat(fence.len) }
-    : comment ? { kind: 'comment', close: '-->' } : null
+  let openAtEnd: OpenBlock = null
+  if (fence) {
+    // The close carries the opening fence's indentation, so a fence in a list
+    // item is closed inside that item (#1520 second re-audit L1).
+    openAtEnd = fence.doubtful
+      ? { kind: 'unsure' }
+      : { kind: 'fence', close: ' '.repeat(fence.indent) + fence.char.repeat(fence.len) }
+  } else if (comment) {
+    openAtEnd = { kind: 'comment', close: '-->' }
+  }
   return { hidden, openAtEnd }
 }
 
@@ -196,6 +260,12 @@ export function upsertInstructionSection(
     // run would append another (re-audit R1). Closing a block at the end of the
     // file does not change how anything before it renders: an unclosed block
     // already runs to the end of the document.
+    if (openAtEnd?.kind === 'unsure') {
+      return {
+        content, status: 'skipped', keptSections,
+        skipReason: 'the file ends inside a code block that PLUR cannot tell is closed — close it and run again',
+      }
+    }
     let out = body
     if (out !== '' && !out.endsWith('\n')) out += eol
     if (openAtEnd) out += openAtEnd.close + eol
@@ -259,10 +329,24 @@ export function backupPath(path: string, now: Date = new Date()): string {
   return candidate
 }
 
+/** Best-effort fsync of a file or directory; some platforms cannot fsync a directory. */
+function syncPath(path: string, flags: string): void {
+  let fd: number | undefined
+  try {
+    fd = openSync(path, flags)
+    fsyncSync(fd)
+  } catch { /* not supported here (e.g. a directory on Windows) */ } finally {
+    if (fd !== undefined) try { closeSync(fd) } catch { /* ignore */ }
+  }
+}
+
 /**
  * Copy an existing file to a timestamped backup beside it; returns the backup
  * path. With `once`, an existing backup holding the same content is reused,
  * so re-running on an unchanged file does not pile up copies (re-audit low c).
+ * The copy is created exclusively (COPYFILE_EXCL, retrying with a new name),
+ * so two writers can never share or overwrite one backup (third re-audit N2),
+ * and it is flushed to disk.
  */
 export function backupFile(path: string, opts: { once?: boolean } = {}): string | null {
   if (!existsSync(path)) return null
@@ -274,49 +358,116 @@ export function backupFile(path: string, opts: { once?: boolean } = {}): string 
       try { if (readFileSync(join(dir, f)).equals(current)) return join(dir, f) } catch { /* unreadable: ignore */ }
     }
   }
-  const dest = backupPath(path)
-  copyFileSync(path, dest)
-  return dest
+  for (let attempt = 0; ; attempt++) {
+    const dest = backupPath(path)
+    try {
+      copyFileSync(path, dest, constants.COPYFILE_EXCL)
+      syncPath(dest, 'r')
+      return dest
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 20) throw err
+    }
+  }
+}
+
+/** A write PLUR declined to make; the message says why. Callers report it and carry on. */
+export class InstructionWriteRefused extends Error {
+  readonly code = 'PLUR_REFUSED'
+  constructor(message: string) {
+    super(message)
+    this.name = 'InstructionWriteRefused'
+  }
 }
 
 /**
  * Write `content` to `path`, first copying any existing file to a timestamped
  * backup beside it. Returns the backup path, or null when the file is new.
  *
- * The new content goes to a temporary file in the same directory, which is
- * then renamed over the target, so the target is never truncated or half
- * written: a failure partway (a full disk, an I/O error) leaves the user's
- * file exactly as it was (#1520 second re-audit H1). The temporary file is
- * removed on failure, and so is the backup, but only after checking that the
- * target still holds the original bytes. The file's permission bits are
- * kept, and a symlink is written through to its target rather than replaced.
- * A file that is not writable is refused before anything is copied
- * (re-audit low d).
+ * `expected` is the text the caller read and built `content` from (null:
+ * the caller saw no file). If the file no longer holds it — the user saved
+ * in between — nothing is written and InstructionWriteRefused is thrown, so
+ * the user's edit is never overwritten (third re-audit N2). The same check
+ * runs again just before the new content is swapped in.
+ *
+ * The new content goes to a temporary file in the same directory, flushed to
+ * disk, then renamed over the target, so the target is never truncated or half
+ * written: a failure partway leaves the user's file exactly as it was (second
+ * re-audit H1). The temporary file is removed on failure, and so is the
+ * backup, but only when the target still holds the original bytes. Permission
+ * bits are kept, and owner and group too where the process may set them.
+ *
+ * What the file is, is kept (third re-audit N2): a symlink is written through
+ * to its target; a symlink to a missing file is refused rather than replaced
+ * by a regular file; a file with several hard links is written in place
+ * (after the backup) so every name still sees the same text. A file that is
+ * not writable is refused before anything is copied (re-audit low d).
  */
-export function writeWithBackup(path: string, content: string): string | null {
+export function writeWithBackup(path: string, content: string, expected?: string | Buffer | null): string | null {
+  const asBuffer = (v: string | Buffer) => (typeof v === 'string' ? Buffer.from(v) : v)
+  let link: ReturnType<typeof lstatSync> | null = null
+  try { link = lstatSync(path) } catch { link = null }
   const exists = existsSync(path)
-  const target = exists ? realpathSync(path) : path
-  let original: Buffer | null = null
-  let mode: number | undefined
-  if (exists) {
-    accessSync(target, constants.W_OK)
-    original = readFileSync(target)
-    mode = statSync(target).mode & 0o7777
+
+  if (link?.isSymbolicLink() && !exists) {
+    throw new InstructionWriteRefused(`it is a symlink to ${readlinkSync(path)}, which is missing — PLUR will not replace the link`)
   }
-  const backup = exists ? backupFile(path) : null
+  if (!exists) {
+    if (expected != null) throw new InstructionWriteRefused('it was removed while PLUR was updating it — run again')
+    try {
+      writeFileSync(path, content, { flag: 'wx' })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new InstructionWriteRefused('it was created while PLUR was updating it — run again')
+      }
+      throw err
+    }
+    return null
+  }
+
+  const target = realpathSync(path)
+  accessSync(target, constants.W_OK)
+  const original = readFileSync(target)
+  const st = statSync(target)
+  if (expected != null && !original.equals(asBuffer(expected))) {
+    throw new InstructionWriteRefused('it changed after PLUR read it — run again')
+  }
+  const backup = backupFile(target)
+  const dropBackupIfUnchanged = () => {
+    if (!backup) return
+    let unchanged = false
+    try { unchanged = readFileSync(target).equals(original) } catch { /* unreadable: keep the backup */ }
+    if (unchanged) { try { unlinkSync(backup) } catch { /* report the original error, not this */ } }
+  }
+
+  if (st.nlink > 1) {
+    // Several names share this file: writing in place keeps them shared. The
+    // backup taken above is what protects the text if this write fails.
+    try {
+      writeFileSync(target, content)
+      syncPath(target, 'r+')
+    } catch (err) {
+      dropBackupIfUnchanged()
+      throw err
+    }
+    return backup
+  }
+
   const tmp = join(dirname(target), `.${basename(target)}.plur-tmp-${process.pid}-${randomBytes(4).toString('hex')}`)
   try {
-    writeFileSync(tmp, content, mode === undefined ? undefined : { mode })
-    if (mode !== undefined) chmodSync(tmp, mode)
+    writeFileSync(tmp, content, { flag: 'wx', mode: st.mode & 0o7777 })
+    chmodSync(tmp, st.mode & 0o7777)
+    try { chownSync(tmp, st.uid, st.gid) } catch { /* not permitted for this process: keep ours */ }
+    syncPath(tmp, 'r+')
+    if (!readFileSync(target).equals(original)) {
+      throw new InstructionWriteRefused('it changed while PLUR was updating it — run again')
+    }
     renameSync(tmp, target)
   } catch (err) {
     try { unlinkSync(tmp) } catch { /* never created, or already gone */ }
-    if (backup && original) {
-      let unchanged = false
-      try { unchanged = readFileSync(target).equals(original) } catch { /* unreadable: keep the backup */ }
-      if (unchanged) { try { unlinkSync(backup) } catch { /* report the write error, not this */ } }
-    }
+    dropBackupIfUnchanged()
+    if (err instanceof InstructionWriteRefused && backup) { try { unlinkSync(backup) } catch { /* ignore */ } }
     throw err
   }
+  syncPath(dirname(target), 'r')
   return backup
 }
