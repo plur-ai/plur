@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.22.0 (unreleased)
+
+Targets 0.22, not 0.21.1 (owner decision 2026-10-02).
 
 ### remote-only folders keep memory on the team server (#1521)
 
@@ -102,6 +104,7 @@ and entry order are kept byte for byte. A file PLUR cannot read is still never
 overwritten. `@plur-ai/core` gains a dependency on `yaml` (already in the
 lockfile as a build-tool dependency).
 
+## Unreleased
 
 ### plur doctor reads an opencode config written with comments or trailing commas (#1516)
 
