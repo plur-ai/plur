@@ -9247,6 +9247,10 @@ export class Plur {
       && ((e as any)._fromRemoteStore !== true || remoteCounts))
     if (existing) {
       const targetId = ((existing as any)._originalId as string | undefined) ?? existing.id
+      // The server id handed back is now this machine's knowledge of a server
+      // engram (#1532 re-audit 2, S6): record it, or a later 401 forget of an
+      // unrelated local engram with that bare id is not refused.
+      if ((existing as any)._fromRemoteStore === true) this._noteSeenOnServer([{ id: targetId, scope: target }])
       const retire = route === 'local' || !opts.keepLocal
       if (!opts.dryRun && retire) {
         await this._retireRescopedSource(id, target, targetId)

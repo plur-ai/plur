@@ -12,7 +12,7 @@
  *       re-compact the file.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, statSync, appendFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, statSync, appendFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { spawn } from 'child_process'
@@ -33,24 +33,39 @@ describe('seen-on-server record', () => {
   it('S1: concurrent writers lose no line while the file is being bounded', async () => {
     // Fill close to the bound, so bounding happens while the children append.
     const scope = 'group:' + 'x'.repeat(200)
-    const filler = Array.from({ length: 60_000 }, (_, i) => ({ id: `ENG-FILL-${i}`, scope }))
+    const filler = Array.from({ length: 52_000 }, (_, i) => ({ id: `ENG-FILL-${i}`, scope }))
     for (let i = 0; i < filler.length; i += 5_000) recordSeenOnServer(dir, filler.slice(i, i + 5_000))
     const child = (tag: string): Promise<number> => new Promise(resolve => {
       const script = `
         const { recordSeenOnServer } = await import(${JSON.stringify('file://' + SRC)});
         const scope = 'group:' + 'y'.repeat(200);
-        for (let i = 0; i < 1500; i++) recordSeenOnServer(${JSON.stringify(dir)}, [{ id: '${tag}-' + i, scope }]);
+        for (let i = 0; i < 12000; i++) recordSeenOnServer(${JSON.stringify(dir)}, [{ id: '${tag}-' + i, scope }]);
       `
       const c = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { stdio: 'ignore', cwd: join(__dirname, '..') })
       c.on('exit', code => resolve(code ?? 1))
     })
     const codes = await Promise.all([child('A'), child('B'), child('C')])
     expect(codes).toEqual([0, 0, 0])
+    // Every line on disk, across whatever files the record keeps (one read,
+    // instead of a full lookup per id).
+    const onDisk = new Set<string>()
+    for (const f of readdirSync(dir).filter(n => n.startsWith('seen-on-server') && n.endsWith('.jsonl'))) {
+      for (const line of readFileSync(join(dir, f), 'utf8').split('\n')) {
+        try { onDisk.add(JSON.parse(line).id) } catch { /* torn or empty */ }
+      }
+    }
     const missing: string[] = []
-    for (const tag of ['A', 'B', 'C']) for (let i = 0; i < 1500; i++) {
-      if (!seenOnServer(dir, `${tag}-${i}`)) missing.push(`${tag}-${i}`)
+    for (const tag of ['A', 'B', 'C']) for (let i = 0; i < 12000; i++) {
+      if (!onDisk.has(`${tag}-${i}`)) missing.push(`${tag}-${i}`)
     }
     expect(missing).toEqual([])
+    // The record was bounded WHILE the children wrote: some of their lines
+    // are in a generation that was rotated during the run.
+    const previous = join(dir, 'seen-on-server.1.jsonl')
+    expect(readdirSync(dir)).toContain('seen-on-server.1.jsonl')
+    expect(/"[ABC]-\d+"/.test(readFileSync(previous, 'utf8'))).toBe(true)
+    // And the public lookup finds a child's id.
+    expect(seenOnServer(dir, 'C-11999')).not.toBeNull()
   }, 180_000)
 
   it('S2: a record appended after a torn last line is found', () => {
