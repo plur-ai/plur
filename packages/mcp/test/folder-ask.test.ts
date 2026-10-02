@@ -19,7 +19,7 @@ import { createHash } from 'crypto'
 import { pathToFileURL } from 'url'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
-import { Plur, FOLDER_NONCE_TTL_MS } from '@plur-ai/core'
+import { Plur, FOLDER_NONCE_TTL_MS, sweepFolderNonces } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
 
@@ -552,5 +552,75 @@ describe('a folder already `on` with a map scope (audit N3 of #1529)', () => {
     expect(r.json?.scope_source).toBe('folder-map')
     await call(client, 'plur_learn', { statement: 'zebra-mapscope unscoped learning', session_id: r.json.session_id })
     expect(readFileSync(join(s.home, 'engrams.yaml'), 'utf8')).toMatch(/zebra-mapscope[\s\S]*?scope: project:frommap|scope: project:frommap[\s\S]*?zebra-mapscope/)
+  })
+})
+
+describe('a swept question is asked afresh, not read as not now (audit R2 of #1529)', () => {
+  it('an unanswered question whose nonce file was swept after the lifetime is asked again', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur)
+    const q = await call(client, 'plur_learn', { statement: 'zebra-a' })
+    expectAsk(q, s.workspace)
+    const dir = join(s.home, 'folder-nonces')
+    const [f] = readdirSync(dir)
+    const old = Date.now() - FOLDER_NONCE_TTL_MS - 60_000
+    writeFileSync(join(dir, f), readFileSync(join(dir, f), 'utf8').replace(/issued_at: \d+/g, `issued_at: ${old}`))
+    sweepFolderNonces(s.home)
+    expect(existsSync(join(dir, f))).toBe(false)
+    const r = await call(client, 'plur_learn', { statement: 'zebra-b' })
+    expectAsk(r, s.workspace)
+    expect(r.json.answers).not.toEqual(q.json.answers)
+  })
+})
+
+describe('roots that are not a project folder (audit N6/N7 of #1529)', () => {
+  it('roots of only `/` count as no roots: an undecided start folder is asked about', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur, { roots: ['/'] })
+    expectAsk(await call(client, 'plur_learn', { statement: 'zebra-a' }), s.workspace)
+  })
+
+  it('a root that is the home folder is not asked about; with an undecided start folder, that is asked', async () => {
+    const s = await setup()
+    const fakeHome = tmp('plur-mcp-ask-fakehome-')
+    vi.stubEnv('HOME', fakeHome)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur, { roots: [fakeHome] })
+    const r = await call(client, 'plur_learn', { statement: 'zebra-a' })
+    expectAsk(r, s.workspace)
+    expect(r.text).not.toContain(`folders set ${fakeHome} `)
+  })
+
+  it('a root that is the home folder, started in the home folder: memory as today, no question', async () => {
+    const s = await setup()
+    const fakeHome = tmp('plur-mcp-ask-fakehome-')
+    vi.stubEnv('HOME', fakeHome)
+    vi.spyOn(process, 'cwd').mockReturnValue(fakeHome)
+    const client = await connect(s.plur, { roots: [fakeHome] })
+    const r = await call(client, 'plur_recall', { query: 'zebra', scope: 'global' })
+    expect(r.json?.plur, r.text).toBeUndefined()
+    expect(existsSync(join(s.home, 'folder-nonces'))).toBe(false)
+  })
+
+  it('a root above home is not asked about either', async () => {
+    const s = await setup()
+    const above = tmp('plur-mcp-ask-above-')
+    const fakeHome = join(above, 'me')
+    mkdirSync(fakeHome)
+    vi.stubEnv('HOME', fakeHome)
+    vi.spyOn(process, 'cwd').mockReturnValue(fakeHome)
+    const client = await connect(s.plur, { roots: [above] })
+    expect((await call(client, 'plur_recall', { query: 'zebra', scope: 'global' })).json?.plur).toBeUndefined()
+  })
+
+  it('home among real roots: only the project root is asked about', async () => {
+    const s = await setup()
+    const fakeHome = tmp('plur-mcp-ask-fakehome-')
+    vi.stubEnv('HOME', fakeHome)
+    vi.spyOn(process, 'cwd').mockReturnValue(fakeHome)
+    const client = await connect(s.plur, { roots: [fakeHome, s.workspace] })
+    expectAsk(await call(client, 'plur_learn', { statement: 'zebra-a' }), s.workspace)
   })
 })

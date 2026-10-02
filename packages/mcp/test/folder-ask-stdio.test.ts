@@ -46,11 +46,11 @@ function env(): Env {
   return { home, fakeHome: tmp('plur-stdio-ask-home-'), workspace: tmp('plur-stdio-ask-ws-') }
 }
 
-async function start(e: Env): Promise<{ client: Client; transport: StdioClientTransport }> {
+async function start(e: Env, cwd?: string): Promise<{ client: Client; transport: StdioClientTransport }> {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [DIST_ENTRY],
-    cwd: e.workspace,
+    cwd: cwd ?? e.workspace,
     stderr: 'ignore',
     env: {
       ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
@@ -104,7 +104,9 @@ describe.skipIf(!existsSync(DIST_ENTRY))('folder-question nonces over a real std
     expect(() => plur.setFolder(yes.folder, { mode: 'on' }, { nonce: yes.nonce, session: yes.session })).toThrow(/Unknown or already-used/)
   }, 30_000)
 
-  it('SIGTERM closes the session: its nonce file is deleted', async () => {
+  // SIGTERM from another process cannot be caught on Windows (it is a
+  // TerminateProcess); there a killed server's file is left for the sweep.
+  it.skipIf(process.platform === 'win32')('SIGTERM closes the session: its nonce file is deleted', async () => {
     const e = env()
     const s = await start(e)
     expect((await ask(s.client)).plur).toBe('ask')
@@ -132,5 +134,31 @@ describe.skipIf(!existsSync(DIST_ENTRY))('folder-question nonces over a real std
     const third = await start(e)
     await third.client.listTools()
     expect(nonceFiles(e)).not.toContain(file)
+  }, 30_000)
+
+  it('a request in flight when stdin ends still gets its response (audit R1 of #1529)', async () => {
+    const e = env()
+    const project = tmp('plur-stdio-on-')
+    writeFileSync(join(project, '.plur.yaml'), '# on\n')
+    const s = await start(e, project)
+    const pending = s.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra in-flight learning', scope: 'global' } })
+    ;(s.transport as any)._process.stdin.end()
+    const raw = await Promise.race([pending, new Promise(r => setTimeout(() => r('no response'), 8000))])
+    expect(raw).not.toBe('no response')
+    const json = JSON.parse(((raw as any).content as any)[0].text)
+    expect(json.plur).toBeUndefined()
+    expect(readFileSync(join(e.home, 'engrams.yaml'), 'utf8')).toContain('zebra in-flight learning')
+  }, 30_000)
+
+  it.skipIf(process.platform === 'win32')('a request in flight on SIGTERM still gets its response (audit R1 of #1529)', async () => {
+    const e = env()
+    const project = tmp('plur-stdio-on-')
+    writeFileSync(join(project, '.plur.yaml'), '# on\n')
+    const s = await start(e, project)
+    const pending = s.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra sigterm learning', scope: 'global' } })
+    await new Promise(r => setTimeout(r, 5))
+    process.kill(s.transport.pid!, 'SIGTERM')
+    const raw = await Promise.race([pending, new Promise(r => setTimeout(() => r('no response'), 8000))])
+    expect(raw).not.toBe('no response')
   }, 30_000)
 })
