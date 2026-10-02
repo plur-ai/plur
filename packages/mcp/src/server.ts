@@ -6,6 +6,7 @@ import { homedir } from 'os'
 import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
 import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
+import { FOLDER_GATED_TOOLS, folderOffAnswer, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -79,6 +80,8 @@ OPTIONAL but improves quality:
 - Call plur_recall before answering factual questions — the answer may be in memory
 
 Do not ask permission to use these tools — they are your memory system.
+
+FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken, and with reason "workspace-unknown" when your client's workspace roots could not be fetched (that one retries by itself on the next call). Carry on without memory and do not retry or work around it; only the user can turn it back on or fix the map, from a terminal (the message names the command). plur_status and plur_doctor keep working.
 
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
@@ -217,6 +220,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     },
   )
 
+  // --- The editor's workspace, for the folder map (folder-gate.ts) ---
+  const workspace = createWorkspaceDirs(server)
+
   // --- Tools ---
 
   server.setRequestHandler('tools/list', async () => ({
@@ -251,6 +257,17 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${request.params.name}`, success: false }) }],
         isError: true,
       }
+    }
+    // The folder map's `off` (folder-gate.ts): a memory tool, called directly
+    // or through plur_admin, touches no store in an `off` folder and says so.
+    // Before the canary tick: a refused call is not a turn of memory use.
+    const gated = tool.name === 'plur_admin'
+      ? (request.params.arguments as Record<string, unknown> | undefined)?.action
+      : tool.name
+    if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
+      const dirs = await workspace.dirs()
+      const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
+      if (off) return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -322,7 +339,10 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         ...(resultIsError ? { isError: true } : {}),
       }
     } catch (err: any) {
-      const message = err?.message ?? String(err)
+      // First line only: a store that does not parse throws a YAML error whose
+      // later lines are a code frame of the file (engram statements), and an
+      // admin tool still answers in a folder where PLUR is off (#1519).
+      const message = String(err?.message ?? err).split('\n', 1)[0]
       server.sendLoggingMessage({ level: 'error', data: `Tool ${request.params.name} failed: ${message}` })
       return {
         content: [{ type: 'text', text: JSON.stringify({ error: message, success: false }) }],
