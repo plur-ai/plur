@@ -106,19 +106,27 @@ _NEUTRAL_PREFIX = re.compile(
 # packages/core/test/fixtures/memory-line-cases.json. Whitespace is [ \t], and a
 # leading BOM is stripped before matching, because the two languages' \s differ.
 _ML_MARK = r'[*_`]*'
-_ML_ID = r'ENG-[A-Za-z0-9…-]*'
+
+
+def _ci(word: str) -> str:
+    """ASCII-only case-insensitivity, written out, as in core: Python's
+    IGNORECASE folds Turkish İ/ı to I/i and JavaScript's flag does not, so
+    neither side uses a flag (#1557 review L4)."""
+    return ''.join(f'[{ch.upper()}{ch.lower()}]' if ch.isascii() and ch.isalpha() else ch for ch in word)
+
+
+_ML_ID = r'ENG-[A-Za-z0-9\u2026-]*'
 _ML_IDS = _ML_ID + r'(?:[ \t]*,[ \t]*' + _ML_ID + r')*'
 _ML_PART = (
-    r'(?:recalled' + _ML_MARK + r'[ \t]*(?:\d+|:[ \t]*' + _ML_MARK + r'[ \t]*(?:' + _ML_IDS + r'|none)|none)'
-    r'|(?:used|written)' + _ML_MARK + r'[ \t]*:[ \t]*' + _ML_MARK + r'[ \t]*(?:' + _ML_IDS + r'|none)'
-    r'|none(?:[ \t]+recalled)?)'
+    r'(?:' + _ci('recalled') + _ML_MARK + r'[ \t]*(?:\d+|:[ \t]*' + _ML_MARK + r'[ \t]*(?:' + _ML_IDS + r'|' + _ci('none') + r')|' + _ci('none') + r')'
+    r'|(?:' + _ci('used') + r'|' + _ci('written') + r')' + _ML_MARK + r'[ \t]*:[ \t]*' + _ML_MARK + r'[ \t]*(?:' + _ML_IDS + r'|' + _ci('none') + r')'
+    r'|' + _ci('none') + r'(?:[ \t]+' + _ci('recalled') + r')?)'
 )
 _MEMORY_LINE_RE = re.compile(
-    r'^[ \t>*_`~•-]*(?:\d+[.)][ \t]*)?(?:\U0001f9e0[ \t]*)?(?:<[a-z][^>]*>[ \t]*)*' + _ML_MARK
-    + r'Memory' + _ML_MARK + r'[ \t]*(?:[—–-]+|:)[ \t]*' + _ML_MARK
-    + _ML_PART + _ML_MARK + r'(?:[ \t]*[·•][ \t]*' + _ML_MARK + _ML_PART + _ML_MARK + r')*'
-    + r'[ \t]*(?:</[a-z]+>[ \t]*)*[.]?[ \t]*$',
-    re.IGNORECASE,
+    r'^[ \t>*_`~\u2022-]*(?:\d+[.)][ \t]*)?(?:\U0001f9e0[ \t]*)?(?:<[A-Za-z][^>]*>[ \t]*)*' + _ML_MARK
+    + _ci('memory') + _ML_MARK + r'[ \t]*(?:[\u2014\u2013-]+|:)[ \t]*' + _ML_MARK
+    + _ML_PART + _ML_MARK + r'(?:[ \t]*[\u00b7\u2022][ \t]*' + _ML_MARK + _ML_PART + _ML_MARK + r')*'
+    + r'[ \t]*(?:</[A-Za-z]+>[ \t]*)*[.]?[ \t]*$'
 )
 
 

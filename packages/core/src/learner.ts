@@ -105,18 +105,25 @@ const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
  * JavaScript's and Python's `\s` differ on it.
  */
 const ML_MARK = '[*_`]*'
+/**
+ * Case-insensitive for ASCII letters only, written out (`[Mm][Ee]…`) rather
+ * than with a flag: JavaScript's `i` and Python's IGNORECASE fold different
+ * letters (Turkish İ and ı fold to I/i in Python only), so neither side uses a
+ * flag and both stay identical (#1557 review L4).
+ */
+const ci = (word: string) => [...word].map(ch => /[a-z]/i.test(ch) ? `[${ch.toUpperCase()}${ch.toLowerCase()}]` : ch).join('')
 const ML_ID = 'ENG-[A-Za-z0-9…-]*'
 const ML_IDS = `${ML_ID}(?:[ \\t]*,[ \\t]*${ML_ID})*`
 const ML_PART =
-  `(?:recalled${ML_MARK}[ \\t]*(?:\\p{Nd}+|:[ \\t]*${ML_MARK}[ \\t]*(?:${ML_IDS}|none)|none)` +
-  `|(?:used|written)${ML_MARK}[ \\t]*:[ \\t]*${ML_MARK}[ \\t]*(?:${ML_IDS}|none)` +
-  `|none(?:[ \\t]+recalled)?)`
+  `(?:${ci('recalled')}${ML_MARK}[ \\t]*(?:\\p{Nd}+|:[ \\t]*${ML_MARK}[ \\t]*(?:${ML_IDS}|${ci('none')})|${ci('none')})` +
+  `|(?:${ci('used')}|${ci('written')})${ML_MARK}[ \\t]*:[ \\t]*${ML_MARK}[ \\t]*(?:${ML_IDS}|${ci('none')})` +
+  `|${ci('none')}(?:[ \\t]+${ci('recalled')})?)`
 export const MEMORY_LINE_RE = new RegExp(
-  '^[ \\t>*_`~•-]*(?:\\p{Nd}+[.)][ \\t]*)?(?:🧠[ \\t]*)?(?:<[a-z][^>]*>[ \\t]*)*' + ML_MARK +
-  'Memory' + ML_MARK + '[ \\t]*(?:[—–-]+|:)[ \\t]*' + ML_MARK +
+  '^[ \\t>*_`~•-]*(?:\\p{Nd}+[.)][ \\t]*)?(?:🧠[ \\t]*)?(?:<[A-Za-z][^>]*>[ \\t]*)*' + ML_MARK +
+  ci('memory') + ML_MARK + '[ \\t]*(?:[—–-]+|:)[ \\t]*' + ML_MARK +
   ML_PART + ML_MARK + `(?:[ \\t]*[·•][ \\t]*${ML_MARK}${ML_PART}${ML_MARK})*` +
-  '[ \\t]*(?:</[a-z]+>[ \\t]*)*[.]?[ \\t]*$',
-  'iu',
+  '[ \\t]*(?:</[A-Za-z]+>[ \\t]*)*[.]?[ \\t]*$',
+  'u',
 )
 
 /** True when `line` is the memory line (see MEMORY_LINE_RE). */
