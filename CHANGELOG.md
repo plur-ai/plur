@@ -119,6 +119,72 @@ one that is not a function ("Plugin export is not a function"), so the whole
 plugin failed to load. The constant now lives in its own module, and a test
 keeps the entry module to functions only.
 
+### A recall in your personal scope now reads your personal remote store (#1515)
+
+**Personal remote memory is no longer write-only.** With a remote store
+configured for a personal scope (for example `scope: user:acme:me`),
+`plur_learn` to that scope saved the engram on the server, but `plur_recall`
+or `plur_recall_hybrid` with the same scope never contacted the server and
+returned only local results. The remote leg dialed a host only for a shared
+(`group:`/`project:`) scope of the same org, an explicit `.plur.yaml` remote
+project, or a store marked `dial: always`; a personal scope qualified for none
+of them.
+
+Now a recall or a hybrid injection whose personal `user:` scope was passed by
+the caller, or registered by that session itself, dials the one store whose
+own scope matches it, asking that host for that one scope.
+
+- The match ignores case, the same way local-only scope targets do
+  (`USER:Acme:Me` finds a store configured as `user:acme:me`). Exactly one
+  configured store is chosen, local path-backed ones included. Stores whose
+  scope matches exactly are preferred; only when none does are case-insensitive
+  matches considered. Among those candidates the choice is fail-safe: a local
+  store first, then a writable remote store, then a readonly one, with config
+  order breaking ties. An exact remote match still beats a case-insensitive
+  local match: `USER:ACME:ME` goes to a remote store configured as exactly
+  `USER:ACME:ME` even when a local store is configured as `user:acme:me`. A
+  write leaves the machine only when no local store matches the same way
+  (exactly, or, with no exact match, case-insensitively).
+- That one choice decides the recall dial, where `learn`, `learnRouted`,
+  `learnAsync` and `learnBatch` write, the "is this my own remote namespace"
+  check, whether an existing remote copy counts as a duplicate of the write,
+  and where an update that moves a queued engram into the scope sends it (a
+  local choice cancels the queued delivery). The writes make it before their
+  duplicate check and read the current config first, so a store another
+  process just added already counts. A write and a read with the same string
+  therefore pick the same store, even when a remote store has the identical
+  scope. One exception, as before: a readonly remote store is read but never
+  written, so when it is the chosen store the write stays local.
+- The secret check does not use the choice. Content headed for a scope that
+  any remote store holds exactly is checked for secrets, whichever store is
+  chosen, and so is an update to an engram already on the server and an
+  outbox delivery. With a local store and a remote store on the identical
+  scope, a sensitive write is kept local and private, as before this change.
+- When the chosen store is local, or is set to `dial: never`, the
+  personal-scope rule dials nothing. It never uses a remote store whose scope
+  differs only in case instead.
+- The personal-scope rule adds only that store. Other stores, a case twin
+  included, can still be dialed by the existing rules: a store set to
+  `dial: always`, a trusted `.plur.yaml` remote project, or an org context
+  (a shared `group:`/`project:` scope of the same org), which also adds that
+  host's personal stores. `dial: never` still wins.
+- A session that never registered its own scope does not dial through the
+  process-wide default; that default is some other caller's choice.
+- When a core `recall`, `recallHybrid` or `injectHybrid` call passes a
+  `scopes` allow-list, only stores that can hold an allowed scope are dialed:
+  the store's scope equals an allowed scope or is a parent of one (a
+  `group:acme/eng` store is dialed for `scopes: ['group:acme/eng/x']`; a
+  `group:acme/eng/x` store is not dialed for `scopes: ['group:acme/eng']`).
+  `scopes: []` dials nothing. Before, every store was dialed and the rows were
+  filtered afterwards; that exact-membership filter on returned rows still
+  runs. The MCP tools do not take a `scopes` argument.
+- A session whose default scope is a personal store scope now makes one
+  timeout-bounded remote call per hybrid injection, where it made none.
+
+Shared-scope dialing is otherwise unchanged. The `plur_recall` tool description
+(and its `plur_recall_hybrid` alias) now says a personal scope reads its own
+matching remote store.
+
 ## 0.21.0
 
 More control over what your agents remember, and where.
