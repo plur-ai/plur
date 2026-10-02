@@ -12,14 +12,14 @@
  * safe with no commands; admin tools are unchanged; off > ask > on.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, realpathSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, realpathSync, existsSync } from 'fs'
 import { join, relative } from 'path'
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 import { pathToFileURL } from 'url'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
-import { Plur } from '@plur-ai/core'
+import { Plur, FOLDER_NONCE_TTL_MS } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
 
@@ -158,6 +158,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   await Promise.all(clients.map(c => c.close().catch(() => {})))
   clients = []
   servers = []
@@ -446,5 +447,110 @@ describe('MCP memory tools in an undecided (`ask`) folder', () => {
     const left = existsSync(join(s.home, 'folder-nonces')) ? readdirSync(join(s.home, 'folder-nonces')) : []
     expect(left).toHaveLength(0)
     expect(() => run(s.plur, answer(q.json, /^Yes/))).toThrow(/Unknown or already-used/)
+  })
+})
+
+describe('the server\'s own folder (audit F2 of #1529)', () => {
+  it('with roots, the server\'s cwd is not asked about: started in the home folder, root an `on` project → memory runs', async () => {
+    const s = await setup()
+    const fakeHome = tmp('plur-mcp-ask-fakehome-')
+    vi.stubEnv('HOME', fakeHome)
+    vi.spyOn(process, 'cwd').mockReturnValue(fakeHome)
+    const client = await connect(s.plur, { roots: [s.onDir] })
+    const r = await call(client, 'plur_recall', { query: 'zebra deploy target', scope: 'global' })
+    expect(r.json?.plur, r.text).toBeUndefined()
+    expect(r.text).toContain('zebra-local-fact')
+    expect(r.text).not.toContain(fakeHome)
+  })
+
+  it('with roots, an undecided cwd is not asked about either (roots only)', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur, { roots: [s.onDir] })
+    const r = await call(client, 'plur_recall', { query: 'zebra', scope: 'global' })
+    expect(r.json?.plur, r.text).toBeUndefined()
+  })
+
+  it('with roots, an `off` cwd still turns memory off (#1519 unchanged)', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.offDir)
+    const client = await connect(s.plur, { roots: [s.onDir] })
+    expect((await call(client, 'plur_learn', { statement: 'zebra-a' })).json?.plur).toBe('off')
+  })
+
+  it('without roots, a client started in the home folder is not asked: memory as today', async () => {
+    const s = await setup()
+    const fakeHome = tmp('plur-mcp-ask-fakehome-')
+    vi.stubEnv('HOME', fakeHome)
+    vi.spyOn(process, 'cwd').mockReturnValue(fakeHome)
+    const client = await connect(s.plur)
+    const r = await call(client, 'plur_recall', { query: 'zebra', scope: 'global' })
+    expect(r.json?.plur, r.text).toBeUndefined()
+    expect(existsSync(join(s.home, 'folder-nonces'))).toBe(false)
+  })
+
+  it('without roots, a folder above the home folder is not asked either', async () => {
+    const s = await setup()
+    const above = tmp('plur-mcp-ask-above-')
+    const fakeHome = join(above, 'me')
+    mkdirSync(fakeHome)
+    vi.stubEnv('HOME', fakeHome)
+    vi.spyOn(process, 'cwd').mockReturnValue(above)
+    const client = await connect(s.plur)
+    expect((await call(client, 'plur_recall', { query: 'zebra', scope: 'global' })).json?.plur).toBeUndefined()
+  })
+
+  it('without roots, an `off` home folder still turns memory off', async () => {
+    const s = await setup()
+    const fakeHome = tmp('plur-mcp-ask-fakehome-')
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolders:\n  - path: "${fakeHome}"\n    plur: off\n`)
+    vi.stubEnv('HOME', fakeHome)
+    vi.spyOn(process, 'cwd').mockReturnValue(fakeHome)
+    const client = await connect(s.plur)
+    expect((await call(client, 'plur_learn', { statement: 'zebra-a' })).json?.plur).toBe('off')
+  })
+})
+
+describe('not now holds for the rest of the session (audit N5 of #1529)', () => {
+  it('past the nonce re-issue time', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur)
+    const q = await call(client, 'plur_learn', { statement: 'zebra-a' })
+    run(s.plur, answer(q.json, /^Not now/))
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now + FOLDER_NONCE_TTL_MS + 120_000)
+    const r = await call(client, 'plur_learn', { statement: 'zebra-b' })
+    expect(r.json?.plur, r.text).toBe('off')
+    expect(r.json?.reason).toBe('not-now')
+  })
+
+  it('after the reason the folder is undecided changes', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
+    const client = await connect(s.plur)
+    const q = await call(client, 'plur_learn', { statement: 'zebra-a' })
+    run(s.plur, answer(q.json, /^Not now/))
+    writeFileSync(join(s.workspace, '.plur.yaml'), `scope: ${SCOPE}\n`)
+    const r = await call(client, 'plur_learn', { statement: 'zebra-b' })
+    expect(r.json?.plur, r.text).toBe('off')
+    expect(r.json?.reason).toBe('not-now')
+  })
+})
+
+describe('a folder already `on` with a map scope (audit N3 of #1529)', () => {
+  it('plur_session_start defaults to the map scope, ahead of a trusted .plur.yaml, and an unscoped learn lands there', async () => {
+    const s = await setup()
+    const proj = tmp('plur-mcp-ask-mapscope-')
+    writeFileSync(join(proj, '.plur.yaml'), 'scope: project:fromyaml\n')
+    writeFileSync(join(s.home, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: "${proj}"\n    plur: on\n    scope: project:frommap\n    trusted: true\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(proj)
+    const client = await connect(s.plur)
+    const r = await call(client, 'plur_session_start', { task: 'zebra map scope' })
+    expect(r.json?.default_scope, r.text).toBe('project:frommap')
+    expect(r.json?.scope_source).toBe('folder-map')
+    await call(client, 'plur_learn', { statement: 'zebra-mapscope unscoped learning', session_id: r.json.session_id })
+    expect(readFileSync(join(s.home, 'engrams.yaml'), 'utf8')).toMatch(/zebra-mapscope[\s\S]*?scope: project:frommap|scope: project:frommap[\s\S]*?zebra-mapscope/)
   })
 })
