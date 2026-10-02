@@ -453,7 +453,8 @@ export function buildInjectionHooks(launch: HookLaunch | string): Record<string,
     ],
 
     // Learning reflection — nudge the LLM to call plur_learn after responses
-    // where it discovered or learned something. Fires every 3rd Stop to avoid fatigue.
+    // where it discovered or learned something. Fires after a correction, preference or
+    // decision in the user's last message, plus every 10th Stop as a fallback.
     Stop: [
       {
         matcher: '*',
@@ -1825,7 +1826,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo('  PreToolUse        — observation capture for pattern learning', flags)
   outputInfo('  PostToolUse       — observation results capture', flags)
   outputInfo('  SubagentStart     — inject agent-scoped engrams into subagents', flags)
-  outputInfo('  Stop              — learning reflection nudge (every 3rd response)', flags)
+  outputInfo('  Stop              — learning reflection nudge (after corrections, preferences, decisions)', flags)
   outputInfo('', flags)
   outputInfo(`Enforcement file: ${enforcementPath}`, flags)
   if (!samePath) outputInfo(`Injection file:   ${injectionPath}`, flags)

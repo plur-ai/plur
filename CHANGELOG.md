@@ -28,6 +28,28 @@ These follow up #1520 from its third audit.
   core and Hermes. "Memory: recalled 3 times faster…" is still saved as a
   learning, and "Memory — none recalled" is not.
 
+### The Claude Code memory check speaks up only after a correction, preference or decision
+
+The Stop-hook memory check used to fire after every third response, forcing an
+extra turn that usually ended in a bare "ok". It now reads the last message you
+typed from the transcript and nudges only when it reads as a correction aimed
+at the agent ("no, use pnpm", "that's wrong", "you edited the wrong file"), a
+preference ("I prefer …", "I'd rather …") or a standing rule ("from now on
+…", "never …", "remember that …"), or a decision-board answer. Slovenian and
+German count in the same shapes ("ne, uporabi …", "to je narobe", "narobe si
+…", "vedno uporabi …", "prosim, ne …", "pri nas …", "od zdaj naprej";
+"nein, nimm …", "das ist falsch", "Füge niemals …", "bei uns gilt", "ab
+jetzt"), with or without č/š/ž, and curly apostrophes match like straight
+ones. Decisions count too ("we decided …", "odločili smo …", "Q1: yes"). Ordinary requests, bug reports and answers do not ("It should
+return 200", "Nekaj je narobe s prijavo", "Immer wenn ich …", "No, keep
+going"), nor do pasted logs, code blocks, quoted text, compaction summaries,
+command output or task notifications. At most one nudge per message, and none
+when the agent already called `plur_learn` in that reply. When nothing is
+worth keeping, the forced turn asks for no "ok": the memory line the agent
+ends every reply with is enough.
+A fallback still checks every 10th response; set
+`PLUR_LEARN_FALLBACK_INTERVAL` to change it, or `0` to turn it off.
+
 ### Agents now end each reply with the memories they recalled, used and wrote (#1520)
 
 The instructions PLUR installs (the `plur init` section in CLAUDE.md and
@@ -200,13 +222,18 @@ own scope matches it, asking that host for that one scope.
   order breaking ties. An exact remote match still beats a case-insensitive
   local match: `USER:ACME:ME` goes to a remote store configured as exactly
   `USER:ACME:ME` even when a local store is configured as `user:acme:me`. A
-  write leaves the machine only when no local store matches the same way
-  (exactly, or, with no exact match, case-insensitively).
+  new write leaves the machine only when no local store matches the same way
+  (exactly, or, with no exact match, case-insensitively). A delivery already
+  queued before a local store was added still goes, after the secret check,
+  to the remote store it was queued for.
 - That one choice decides the recall dial, where `learn`, `learnRouted`,
   `learnAsync` and `learnBatch` write, the "is this my own remote namespace"
-  check, whether an existing remote copy counts as a duplicate of the write,
-  and where an update that moves a queued engram into the scope sends it (a
-  local choice cancels the queued delivery). The writes make it before their
+  check, whether a cached remote copy counts as a duplicate of a learn or a
+  `rescope` (when the choice is local, the local copy is kept), and where an
+  update that moves a queued engram into the scope sends it. That update
+  spells the scope as a fresh write would, so `user:acme:me` moves it to a
+  remote store configured only as `USER:ACME:ME`; a local choice cancels the
+  queued delivery. The writes make it before their
   duplicate check and read the current config first, so a store another
   process just added already counts. A write and a read with the same string
   therefore pick the same store, even when a remote store has the identical
