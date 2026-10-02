@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Instruction upgrades respect lists, links, edits and look-alike learnings
+
+These follow up #1520 from its third audit.
+
+- **Markdown structure.** A code block inside a list item now ends where the
+  item ends, as in CommonMark, so appending the PLUR section no longer opens a
+  new code block or adds an empty one to your next list item. When PLUR cannot
+  tell whether a block at the end of the file is still open, it leaves the file
+  alone and says so.
+- **The file itself.** A file with several hard links is written in place, so
+  every name keeps seeing the same text. A symlink to a missing file is left as
+  it is, and init says the section was not written. The new text is flushed to
+  disk before it replaces the old. Backups are created exclusively, so two
+  installers never share one. Owner and group are kept where the process may
+  set them.
+- **Your edits.** If the file changes between PLUR reading it and writing it,
+  for instance because you saved it meanwhile, PLUR writes nothing and asks you
+  to run again.
+- **Learnings.** The memory line is matched on its whole shape, the same way in
+  core and Hermes. "Memory: recalled 3 times faster…" is still saved as a
+  learning, and "Memory — none recalled" is not.
+
 ### Agents now end each reply with the memories they recalled, used and wrote (#1520)
 
 The instructions PLUR installs (the `plur init` section in CLAUDE.md and
