@@ -1,6 +1,11 @@
-import { folderOffEntries, folderMapProblem, type FolderMapProblem, type Plur } from '@plur-ai/core'
+import {
+  folderOffEntries, folderMapProblem, folderAsk, folderNonceOutstanding, endFolderNonceSession,
+  sweepFolderNonces, coversHomeOrRoot, FOLDER_NONCE_TTL_MS, type FolderMapProblem, type Plur, type FolderAsk, type FolderAskAnswer,
+} from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import { fileURLToPath } from 'url'
+import { randomBytes } from 'crypto'
+import { dirname, resolve } from 'path'
 import { folderOnCommand } from './tools.js'
 
 /**
@@ -22,9 +27,10 @@ import { folderOnCommand } from './tools.js'
  * test holds this), so a new tool cannot slip through ungated unnoticed.
  *
  * A folder map that exists but cannot be read or parsed fails SAFE: the gated
- * tools do nothing and name the file and the problem. `on` and `ask` folders
- * are unchanged. The gate never writes folders.yaml itself (core's one-time
- * trust.yaml import can create it on the first read).
+ * tools do nothing and name the file and the problem. An undecided (`ask`)
+ * folder gets the folder question instead of memory (createFolderGate, #1525);
+ * `on` folders are unchanged. The gate never writes folders.yaml itself
+ * (core's one-time trust.yaml import can create it on the first read).
  */
 export const FOLDER_GATED_TOOLS: ReadonlySet<string> = new Set([
   // write engrams
@@ -87,7 +93,7 @@ export interface FolderOffAnswer {
   success: true
   plur: 'off'
   folder?: string
-  reason?: 'folder-map-unreadable' | 'workspace-unknown'
+  reason?: 'folder-map-unreadable' | 'workspace-unknown' | 'not-now' | 'folder-cannot-be-asked' | 'folder-ask-failed'
   file?: string
   /** For a broken map (#1526): where the problem is (1-based). */
   line?: number
@@ -212,7 +218,7 @@ export interface RootsServer {
 export function createWorkspaceDirs(
   server: RootsServer,
   opts: { timeoutMs?: number; cwd?: () => string } = {},
-): { dirs(): Promise<string[] | null> } {
+): { dirs(): Promise<string[] | null>; workspace(): Promise<Workspace | null> } {
   const timeout = opts.timeoutMs ?? 2000
   const cwd = opts.cwd ?? (() => process.cwd())
   let cached: { gen: number; dirs: string[] } | null = null
@@ -283,8 +289,15 @@ export function createWorkspaceDirs(
       const roots = await clientRoots()
       return roots === null ? null : [...new Set([...roots, cwd()])]
     },
+    async workspace() {
+      const roots = await clientRoots()
+      return roots === null ? null : { roots: [...new Set(roots)], cwd: cwd() }
+    },
   }
 }
+
+/** The editor's workspace as the folder gate needs it: the client's roots, and the server's own cwd. */
+export interface Workspace { roots: string[]; cwd: string }
 
 /** The answer a gated tool gives when the editor's workspace folders could not be fetched. */
 export function workspaceUnknownAnswer(): FolderOffAnswer {
@@ -297,5 +310,234 @@ export function workspaceUnknownAnswer(): FolderOffAnswer {
       `folder that is not on this machine), so it cannot tell whether memory is allowed here: memory is off for ` +
       `this call, and nothing was read from or written to memory. This is not an error. The next call will ask ` +
       `again; if the editor's roots keep failing, memory stays off until they work.`,
+  }
+}
+
+/** The non-error answer a gated tool gives in an undecided folder: the folder question (#1525). */
+export interface FolderAskPayload {
+  success: true
+  plur: 'ask'
+  folder: string
+  /** The whole question, as the editor hooks word it, with every command. */
+  question: string
+  /** Each offered answer and the command that records it (one nonce each). */
+  answers: FolderAskAnswer[]
+}
+
+/** Every workspace folder is `on`: the tool runs, with the folder map's scope when there is one. */
+export interface FolderOn { plur: 'on'; scope?: string }
+
+/** True for the home folder, a filesystem root or a folder above home. */
+function isHomeOrAbove(dir: string): boolean {
+  try { return coversHomeOrRoot(dir) } catch { return true }
+}
+
+/** True for a filesystem root (`/`, `C:\\`): not a project folder, never asked about. */
+function isFilesystemRoot(dir: string): boolean {
+  const r = resolve(dir)
+  return dirname(r) === r
+}
+
+/**
+ * The folder map in the MCP server, per MCP session (one per createServer):
+ * `off` (folderOffAnswer) and, since #1525, `ask`.
+ *
+ * In a workspace whose folder resolves to `ask` (undecided, or a `.plur.yaml`
+ * asking for settings not yet trusted), a gated tool touches no memory and
+ * answers with the folder question the editor hooks ask: one command per
+ * answer, each with its own nonce from core, bound to this MCP session (the
+ * command names it with `--session`, and a nonce redeemed from another
+ * session or naming none is refused). The question and its nonces are built
+ * once per folder and returned on every gated call until the user answers;
+ * they are re-issued only after the nonce lifetime. The server never writes
+ * the folder map: the user (or the agent, after the user's explicit answer)
+ * runs the command, and the next call resolves the folder again and follows
+ * the new decision. Yes → memory on, with the answer's scope as this
+ * session's default write scope when nothing set one. Never here → off.
+ *
+ * "Not now" has a command too, because the server cannot see the chat:
+ * `plur folders set <folder> --not-now --nonce <n> --session <id>` consumes
+ * its nonce and writes nothing. Once it is gone from this session's nonce
+ * file, the folder is off for the rest of this session, without the question.
+ * The folder stays undecided, so another session asks again.
+ *
+ * Precedence across the workspace folders: off > ask > on. `off` is checked
+ * on every folder, the server's cwd included. The question is asked only
+ * about folders that are not the home folder, a filesystem root or above
+ * home (an answer there would cover every folder under it): the client's
+ * roots that are not such, when there are any (the cwd is wherever the client
+ * started the process); otherwise the cwd, unless it is such
+ * (audit F2, N6, N7 of #1529). A filesystem root is
+ * never asked about. `end()` deletes the session's unanswered nonces; the
+ * stdio server calls it on stdin end and on SIGTERM / SIGINT, and nonce files
+ * of sessions killed outright are swept once expired (audit F1 of #1529).
+ */
+export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}): {
+  sessionId: string
+  /**
+   * The off answer, the folder question, or — every folder decided `on` — the
+   * folder map's write scope for the workspace (the first folder that has
+   * one), for plur_session_start's default.
+   */
+  check(workspace: Workspace): FolderOffAnswer | FolderAskPayload | FolderOn
+  end(): void
+} {
+  const sessionId = opts.sessionId ?? `mcp-${randomBytes(8).toString('hex')}`
+  // Nonce files left by sessions that never closed (a server killed
+  // outright) are removed once their nonces have expired (audit F1 of #1529).
+  try { sweepFolderNonces(plur.storageRoot) } catch { /* best-effort */ }
+  /** The question built for a workspace folder, by that folder, while it is undecided. */
+  const asked = new Map<string, { ask: FolderAsk; issuedAt: number; reason?: string }>()
+  const notNow = new Set<string>()
+  /** Set by end(): a closing session issues no new question (no nonce outlives it). */
+  let ended = false
+  // Re-issue a minute before core would call the nonces expired.
+  const reissueAfter = Math.max(0, FOLDER_NONCE_TTL_MS - 60_000)
+
+  const notNowAnswer = (folder: string): FolderOffAnswer => ({
+    success: true,
+    plur: 'off',
+    reason: 'not-now',
+    folder,
+    message:
+      `PLUR memory is off in this folder (${JSON.stringify(folder)}) for the rest of this session: the user answered ` +
+      `"not now" to the folder question, so nothing was read from or written to memory. This is not an error — carry ` +
+      `on without memory, and do not ask again. The folder is still undecided; a new session will ask.`,
+  })
+
+  const askFor = (dir: string, policy: ReturnType<Plur['resolveFolderPolicy']>): FolderOffAnswer | FolderAskPayload => {
+    const outstanding = (nonce: string): boolean => {
+      try { return folderNonceOutstanding(plur.storageRoot, sessionId, nonce) } catch { return false }
+    }
+    let entry = asked.get(dir)
+    // "Not now" first (audit N5 of #1529): it holds for the rest of the
+    // session, whatever happens to the question afterwards.
+    if (entry?.ask.notNowNonce !== undefined) {
+      // Consumed, not just gone (audit R2 of #1529): "not now" leaves the
+      // question's other nonces in place (N1), while a session file that
+      // was swept or ended loses them all. Only the first is an answer; the
+      // second falls through and the question is asked afresh.
+      const notNowNonce = entry.ask.notNowNonce
+      const answered = !outstanding(notNowNonce) && entry.ask.nonces.some(n => n !== notNowNonce && outstanding(n))
+      if (answered) {
+        // The not-now nonce was consumed (or this session's nonces are gone):
+        // off for the rest of the session, never the question again.
+        log(`folder ${JSON.stringify(entry.ask.folder)}: the user answered "not now"; memory tools do nothing for the rest of this session.`)
+        notNow.add(dir)
+        asked.delete(dir)
+        return notNowAnswer(entry.ask.folder)
+      }
+    }
+    // Rebuilt when the nonces are about to expire, or the reason the folder
+    // is undecided changed (a repo .plur.yaml appeared or went away).
+    if (entry && ((!entry.ask.notice && Date.now() - entry.issuedAt > reissueAfter) || entry.reason !== policy.reason)) {
+      asked.delete(dir)
+      entry = undefined
+    }
+    // Another answer was used, yet the folder is undecided again (its entry
+    // was removed since): that question no longer works, ask afresh.
+    if (entry && entry.ask.nonces.some(n => !outstanding(n))) {
+      asked.delete(dir)
+      entry = undefined
+    }
+    if (!entry && ended) {
+      return {
+        success: true,
+        plur: 'off',
+        reason: 'folder-ask-failed',
+        folder: dir,
+        message:
+          `PLUR has no decision for this folder (${JSON.stringify(dir)}) and this session is closing, so it did not ` +
+          `ask; nothing was read from or written to memory. This is not an error. A new session will ask.`,
+      }
+    }
+    if (!entry) {
+      let ask: FolderAsk | null = null
+      try {
+        ask = folderAsk({ dir, policy, sessionId, root: plur.storageRoot, plur, claim: () => true, bindSession: true, mcp: true })
+      } catch (err) {
+        log(`folder question for ${JSON.stringify(dir)} could not be built (${(err as Error)?.message ?? err}).`)
+      }
+      if (!ask) {
+        return {
+          success: true,
+          plur: 'off',
+          reason: 'folder-ask-failed',
+          folder: dir,
+          message:
+            `PLUR has no decision for this folder (${JSON.stringify(dir)}) and could not prepare the question that asks ` +
+            `the user, so nothing was read from or written to memory. This is not an error — carry on without memory. ` +
+            `The next call tries again; the user can also decide from a terminal: plur folders set <folder> --on | --off.`,
+        }
+      }
+      entry = { ask, issuedAt: Date.now(), ...(policy.reason ? { reason: policy.reason } : {}) }
+      asked.set(dir, entry)
+    }
+    if (entry.ask.notice) {
+      // A folder the question cannot name safely in a command: no command,
+      // no nonce. Memory stays off here until the user sets it by hand.
+      return { success: true, plur: 'off', reason: 'folder-cannot-be-asked', folder: entry.ask.folder, message: entry.ask.text }
+    }
+    return { success: true, plur: 'ask', folder: entry.ask.folder, question: entry.ask.text, answers: entry.ask.answers }
+  }
+
+  return {
+    sessionId,
+    check(workspace) {
+      // `off` is checked on every folder, the server's cwd included (#1519):
+      // there, checking more folders only ever turns memory off.
+      const off = folderOffAnswer(plur, [...new Set([...workspace.roots, workspace.cwd])])
+      if (off) return off
+      // The question is asked only about the folders the user works in
+      // (audit F2 of #1529): the client's roots when it gives any — the
+      // server's cwd is wherever the client happened to start the process —
+      // else the cwd, unless that is the home folder, a filesystem root or a
+      // folder above home: an answer there would cover every folder under it.
+      // A root that is the home folder, a filesystem root or above home is
+      // not asked about either (audit N7), and roots that are all such count
+      // as no roots (N6).
+      const usableRoots = workspace.roots.filter(r => !isHomeOrAbove(r))
+      const askable = usableRoots.length > 0
+        ? usableRoots
+        : (isHomeOrAbove(workspace.cwd) ? [] : [workspace.cwd])
+      const on: Array<{ dir: string; scope?: string }> = []
+      for (const dir of askable) {
+        if (isFilesystemRoot(dir)) continue
+        let policy: ReturnType<Plur['resolveFolderPolicy']>
+        try {
+          policy = plur.resolveFolderPolicy(dir)
+        } catch (err) {
+          const why = `could not be applied to ${JSON.stringify(dir)} (${(err as Error)?.message ?? err})`
+          log(`folder map: ${why}; memory tools do nothing.`)
+          return unreadable({ file: `${plur.storageRoot}/folders.yaml`, problem: why, fixable: false }, plur.storageRoot)
+        }
+        if (policy.mode === 'ask') {
+          if (notNow.has(dir)) return notNowAnswer(asked.get(dir)?.ask.folder ?? dir)
+          return askFor(dir, policy)
+        }
+        on.push({ dir, ...(policy.scope ? { scope: policy.scope } : {}) })
+      }
+      // Every folder is decided. A folder this session asked about and the
+      // user answered "yes" for: its scope becomes the session's default
+      // write scope, unless something already set one. (plur_session_start
+      // gets the workspace scope through FOLDER_SCOPE as well.)
+      for (const { dir, scope } of on) {
+        if (!asked.has(dir)) continue
+        asked.delete(dir)
+        notNow.delete(dir)
+        if (scope) {
+          try {
+            if (plur.getSessionScope() == null) plur.setSessionScope(scope)
+          } catch { /* the scope is a default, never a reason to fail the call */ }
+        }
+      }
+      const scope = on.find(o => o.scope)?.scope
+      return { plur: 'on', ...(scope ? { scope } : {}) }
+    },
+    end() {
+      ended = true
+      asked.clear()
+      try { endFolderNonceSession(plur.storageRoot, sessionId) } catch { /* best-effort */ }
+    },
   }
 }

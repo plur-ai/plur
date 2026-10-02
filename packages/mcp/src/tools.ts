@@ -611,7 +611,7 @@ interface SessionTelemetry {
    */
   default_scope?: string | null
   /** How the session-start default was derived (#243). */
-  default_scope_source?: 'caller' | 'project-config' | 'none'
+  default_scope_source?: 'caller' | 'folder-map' | 'project-config' | 'none'
   /** True while a mid-session plur_session_scope op:"set" is in effect (#243). */
   scope_adjusted?: boolean
 }
@@ -827,6 +827,14 @@ function _escapedText(s: string): string {
   return JSON.stringify(s.length > 1024 ? s.slice(0, 1024) + '…' : s)
     .replace(/[\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
 }
+
+/**
+ * The folder map's write scope for the editor's workspace (#1525), attached
+ * by the server's folder gate to a gated call's arguments. plur_session_start
+ * uses it as the session default when the caller passes none. A Symbol key,
+ * so a client cannot set it: JSON arguments carry only string keys.
+ */
+export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
 
 export function readTrustedProjectConfig(
   trust: { isDirectoryTrusted(dir: string): boolean; readonly storageRoot?: string },
@@ -1146,7 +1154,11 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
         return { ...validated.errorPayload, error: inner.startsWith(`${action}:`) ? inner : `${action}: ${inner}` }
       }
       try {
-        return await target.handler(validated.data, plur)
+        // The folder gate's scope (#1525) rides on the outer args under a
+        // Symbol key, which the inner validation does not copy.
+        const carried = (args as Record<PropertyKey, unknown>)[FOLDER_SCOPE]
+        const data = carried !== undefined ? { ...validated.data, [FOLDER_SCOPE]: carried } : validated.data
+        return await target.handler(data, plur)
       } catch (err: unknown) {
         // Audit fix (evaluator review, 2026-07-08): an uncaught throw from
         // the wrapped handler propagates up to server.ts's top-level catch,
@@ -3439,12 +3451,20 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Decision E3: only from a trusted directory (readTrustedProjectConfig).
         const projectConfig = readTrustedProjectConfig(plur)
         const explicit_default_scope = (args.default_scope as string | undefined) ?? null
-        const default_scope = explicit_default_scope ?? projectConfig.scope ?? null
+        // The folder map's scope for this workspace (#1525), set by the
+        // server's folder gate: a map entry's scope, else a trusted
+        // .plur.yaml's, which is what the editor hooks use. Never from the
+        // client: it travels under a Symbol key, which JSON cannot carry.
+        const carried = (args as Record<PropertyKey, unknown>)[FOLDER_SCOPE]
+        const folder_scope = typeof carried === 'string' ? carried : null
+        const default_scope = explicit_default_scope ?? folder_scope ?? projectConfig.scope ?? null
         const scope_source = explicit_default_scope
           ? 'caller'
-          : projectConfig.scope
-            ? 'project-config'
-            : 'none'
+          : folder_scope && folder_scope !== projectConfig.scope
+            ? 'folder-map'
+            : default_scope
+              ? 'project-config'
+              : 'none'
 
         // Surface the project domain the same way (#1147). `scope` and `domain`
         // sit adjacent in .plur.yaml and in `plur init`'s own usage line, so a
@@ -3472,7 +3492,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const t = _sessionTelemetry.get(session_id)
           if (t) {
             t.default_scope = default_scope
-            t.default_scope_source = scope_source as 'caller' | 'project-config' | 'none'
+            t.default_scope_source = scope_source as 'caller' | 'folder-map' | 'project-config' | 'none'
           }
         }
 
@@ -3606,7 +3626,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         // Project scope guidance (#177) — surface auto-detected project
         // scope so the agent knows engrams will be tagged with it.
-        if (scope_source === 'project-config') {
+        if (scope_source === 'folder-map') {
+          guide += `\n\nThis folder's scope: "${default_scope}" (from your folder map, plur folders). ` +
+            `plur_learn calls without an explicit scope will be tagged with this scope. Pass scope: "global" only ` +
+            `for genuinely cross-project knowledge.`
+        } else if (scope_source === 'project-config') {
           guide += `\n\nAuto-detected project scope: "${default_scope}" (from .plur.yaml in the current project). ` +
             `plur_learn calls without an explicit scope will be tagged with this scope, keeping this project's ` +
             `knowledge separate from your other projects. Pass scope: "global" only for genuinely cross-project ` +

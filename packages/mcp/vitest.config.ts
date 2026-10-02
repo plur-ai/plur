@@ -10,6 +10,6 @@ export default defineConfig({
     // e2e-remote drives MCP → core → RemoteStore in-process, so the #1069
     // host breaker's process-global state leaks across tests here exactly as
     // it did in core (evaluator audit finding 6). Same per-test reset.
-    setupFiles: ['test/helpers/reset-remote-breaker-setup.ts'],
+    setupFiles: ['test/helpers/reset-remote-breaker-setup.ts', 'test/helpers/folder-on-cwd-setup.ts'],
   },
 })

@@ -85,6 +85,7 @@ import {
   removeFolderEntry as _removeFolderEntry,
   issueFolderNonce as _issueFolderNonce,
   endFolderNonceSession as _endFolderNonceSession,
+  answerFolderNotNow as _answerFolderNotNow,
   type FolderPolicy,
   type FolderEntry,
   type FolderChange,
@@ -157,6 +158,9 @@ export {
   consumeFolderNonce,
   verifyFolderNonce,
   endFolderNonceSession,
+  folderNonceOutstanding,
+  answerFolderNotNow,
+  sweepFolderNonces,
   removeLegacyTrustEntry,
   FolderMapError,
   FOLDER_NONCE_TTL_MS,
@@ -187,6 +191,7 @@ export {
 // shared by the CLI's editor hooks and the opencode plugin. See folder-ask.ts.
 export {
   folderAskOnce,
+  folderAsk,
   sessionSettings,
   clearFolderAsk,
   quoted as folderQuoted,
@@ -195,6 +200,8 @@ export {
   folderRepairCommand,
   type FolderAskOptions,
   type FolderAskScopeRanker,
+  type FolderAsk,
+  type FolderAskAnswer,
 } from './folder-ask.js'
 export { generateGuardrails } from './guardrails.js'
 // Shared memory system-prompt renderer (opencode plugin's task 1): one
@@ -12080,6 +12087,15 @@ Generate an improved version of the procedure that prevents this failure. Return
   /** Expire every folder nonce of `sessionId` (call at session end). */
   endFolderNonceSession(sessionId: string): void {
     _endFolderNonceSession(this.paths.root, sessionId)
+  }
+
+  /**
+   * The MCP folder question's "not now" (`plur folders set --not-now`, #1525):
+   * consume the nonce issued for that answer on `folder`; nothing is written
+   * to the folder map. See folders.ts answerFolderNotNow.
+   */
+  notNowFolder(folder: string, options: { nonce: string; session?: string }): void {
+    _answerFolderNotNow(this.paths.root, folder, options.nonce, { ...(options.session !== undefined ? { session: options.session } : {}) })
   }
 
   autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {

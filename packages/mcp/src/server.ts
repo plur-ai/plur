@@ -4,9 +4,9 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
-import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
+import { FOLDER_SCOPE, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
-import { FOLDER_GATED_TOOLS, folderOffAnswer, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
+import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -174,6 +174,28 @@ Use \`scope\` to namespace engrams per project:
 Override with \`PLUR_PATH\` environment variable.
 `
 
+/** Per server: resolves once no tools/call is running (or after the timeout, when one is given). */
+const _whenIdle = new WeakMap<object, (timeoutMs?: number) => Promise<void>>()
+/** Per server: ends its folder question (deletes the session's nonces). */
+const _endFolderQuestion = new WeakMap<object, () => void>()
+
+/**
+ * Close a session: end its folder question at once (its nonces are deleted;
+ * no request can issue new ones once the session is closing), then close
+ * `server` once the tool calls already running have answered (audits R1 and
+ * R3 of #1529). With `timeoutMs`, wait at most that long; without it, wait
+ * as long as they run, so a call that is still writing is never cut off from
+ * its answer.
+ */
+export async function closeWhenIdle(server: Server, timeoutMs?: number): Promise<void> {
+  try { _endFolderQuestion.get(server)?.() } catch { /* best-effort */ }
+  // A request read in the same chunk as the end of stdin is dispatched on a
+  // later tick: let it start before checking whether anything is running.
+  await new Promise<void>(r => setTimeout(r, 10))
+  await (_whenIdle.get(server)?.(timeoutMs) ?? Promise.resolve())
+  await server.close().catch(() => { /* already closed */ })
+}
+
 // One periodic version re-check per process, however many servers are created
 // (tests create one per case — stacking an interval per server would leak).
 let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
@@ -220,8 +242,41 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     },
   )
 
+  // --- Requests in flight, so a closing session can answer them first ---
+  // (audit R1 of #1529): closing the transport under a running tools/call
+  // dropped its response while the write behind it still happened.
+  let inFlight = 0
+  let idleWaiters: Array<() => void> = []
+  const trackInFlight = async <T>(fn: () => Promise<T>): Promise<T> => {
+    inFlight++
+    try {
+      return await fn()
+    } finally {
+      inFlight--
+      if (inFlight === 0) {
+        // Let the protocol write the response before anyone closes.
+        setImmediate(() => { if (inFlight === 0) { const w = idleWaiters; idleWaiters = []; w.forEach(f => f()) } })
+      }
+    }
+  }
+  _whenIdle.set(server, (timeoutMs?: number) => new Promise<void>(resolve => {
+    if (inFlight === 0) return resolve()
+    const timer = timeoutMs === undefined ? undefined : setTimeout(resolve, timeoutMs)
+    timer?.unref?.()
+    idleWaiters.push(() => { if (timer) clearTimeout(timer); resolve() })
+  }))
+
   // --- The editor's workspace, for the folder map (folder-gate.ts) ---
   const workspace = createWorkspaceDirs(server)
+  // The folder map's off / ask for this MCP session (#1525). The session's
+  // unanswered folder-question nonces die with the connection.
+  const folderGate = createFolderGate(instance)
+  _endFolderQuestion.set(server, () => folderGate.end())
+  const priorOnClose = server.onclose
+  server.onclose = () => {
+    folderGate.end()
+    priorOnClose?.()
+  }
 
   // --- Tools ---
 
@@ -234,7 +289,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     })),
   }))
 
-  server.setRequestHandler('tools/call', async (request) => {
+  server.setRequestHandler('tools/call', (request) => trackInFlight(async () => {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
       // #625 audit: under a gated profile, a REAL tool that is merely hidden
@@ -258,16 +313,19 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         isError: true,
       }
     }
-    // The folder map's `off` (folder-gate.ts): a memory tool, called directly
-    // or through plur_admin, touches no store in an `off` folder and says so.
+    // The folder map (folder-gate.ts): a memory tool, called directly or
+    // through plur_admin, touches no store in an `off` folder and says so, and
+    // in an undecided (`ask`) folder answers with the folder question (#1525).
     // Before the canary tick: a refused call is not a turn of memory use.
+    let folderScope: string | undefined
     const gated = tool.name === 'plur_admin'
       ? (request.params.arguments as Record<string, unknown> | undefined)?.action
       : tool.name
     if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
-      const dirs = await workspace.dirs()
-      const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
-      if (off) return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
+      const ws = await workspace.workspace()
+      const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
+      if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
+      folderScope = decision.scope
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -318,6 +376,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         }
       }
       args = validated.data
+      // The folder map's scope for this workspace (#1525), for
+      // plur_session_start's default; under a Symbol key no client can set.
+      if (folderScope !== undefined) args = { ...args, [FOLDER_SCOPE]: folderScope }
       const result = await tool.handler(args, instance)
 
       // Generic _isError propagation (audit fix): a tool handler — currently
@@ -349,7 +410,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         isError: true,
       }
     }
-  })
+  }))
 
   // --- Resources ---
 
@@ -596,4 +657,37 @@ export async function runStdio(): Promise<void> {
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
+
+  // The SDK's stdio transport never reports that stdin ended, so close the
+  // server ourselves (audit F1 of #1529): on stdin end and on SIGTERM /
+  // SIGINT. Closing fires onclose, which deletes this session's folder-question
+  // nonces at once. The tool calls already running answer first (audits R1,
+  // R3): on stdin end, however long they take, and the process then exits by
+  // itself once its output is written; a signal waits at most 2 s for them,
+  // then exits (the handler replaces
+  // Node's default exit). On Windows a SIGTERM from another process cannot be
+  // caught; a server killed that way leaves its nonces to the 24 h sweep.
+  let closing: Promise<void> | null = null
+  const closeSession = (timeoutMs?: number): Promise<void> => {
+    if (!closing) closing = closeWhenIdle(server, timeoutMs)
+    return closing
+  }
+  // No cap after stdin ends (audit R3): no new request can arrive, the
+  // nonces are already gone, and a call still running (a store lock, a slow
+  // remote) keeps the process alive anyway, so waiting costs nothing and its
+  // answer is never dropped.
+  process.stdin.once('end', () => { void closeSession() })
+  process.stdin.once('close', () => { void closeSession() })
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      const code = signal === 'SIGTERM' ? 143 : 130
+      const timer = setTimeout(() => process.exit(code), 3000)
+      timer.unref?.()
+      void closeSession(2000).finally(() => {
+        // Let a response still in stdout's buffer reach the client.
+        if (process.stdout.writableLength > 0) process.stdout.once('drain', () => process.exit(code))
+        else process.exit(code)
+      })
+    })
+  }
 }
