@@ -7,10 +7,18 @@
  * applied test/setup/isolate-home.ts, so HOME and PLUR_PATH here are the
  * shell's. Guarded: `$HOME/.plur`, plus `$PLUR_PATH` when set elsewhere.
  *
- * A PLUR client running on the same machine during the suite (an MCP server, an
- * editor hook) legitimately writes to the real store and will trip this guard.
- * The failure lists the changed paths so they can be told apart; set
- * PLUR_TEST_HOME_GUARD=warn to report without failing, or =off to skip.
+ * Mode (resolveGuardMode):
+ *   - CI (env CI=true or 1): `fail`. CI has no live PLUR client, so any change
+ *     to the real store came from a test, and the run goes red.
+ *   - Anywhere else: `warn`. A PLUR client running on a workstation during the
+ *     suite (an MCP server, an editor hook) legitimately writes to the real
+ *     store; the changed paths are printed so they can be told apart, but the
+ *     run does not fail.
+ *   - PLUR_TEST_HOME_GUARD=fail|warn|off overrides either default (`off` skips
+ *     the snapshot entirely). An unrecognised value is ignored.
+ *
+ * In a root (whole-workspace) run this globalSetup spans every project, so a
+ * leak from another package's tests (mcp, dsh, ...) is caught here too.
  */
 import { existsSync, lstatSync, readdirSync } from 'fs'
 import { homedir } from 'os'
@@ -64,8 +72,17 @@ export function diffSnapshots(before: Snapshot, after: Snapshot): string[] {
   return changes.sort()
 }
 
+export type GuardMode = 'fail' | 'warn' | 'off'
+
+export function resolveGuardMode(env: NodeJS.ProcessEnv = process.env): GuardMode {
+  const explicit = env.PLUR_TEST_HOME_GUARD
+  if (explicit === 'fail' || explicit === 'warn' || explicit === 'off') return explicit
+  const ci = (env.CI ?? '').toLowerCase()
+  return ci === 'true' || ci === '1' ? 'fail' : 'warn'
+}
+
 export default function setup(): (() => void) | void {
-  const mode = process.env.PLUR_TEST_HOME_GUARD
+  const mode = resolveGuardMode()
   if (mode === 'off') return
 
   const roots = [resolve(homedir(), '.plur')]
@@ -82,7 +99,9 @@ export default function setup(): (() => void) | void {
     const message =
       `REAL PLUR STORE CHANGED during the CLI test run (${roots.join(', ')}):\n  ${shown}${more}\n` +
       'A test (or a CLI process it spawned) reached the real home or store. ' +
-      'If a live PLUR client on this machine wrote these, rerun with PLUR_TEST_HOME_GUARD=warn.'
+      (mode === 'warn'
+        ? 'Not failing the run (warn mode, the default outside CI): a live PLUR client on this machine may have written these.'
+        : 'If a live PLUR client on this machine wrote these, rerun with PLUR_TEST_HOME_GUARD=warn.')
     if (mode === 'warn') {
       console.warn(message)
       return
