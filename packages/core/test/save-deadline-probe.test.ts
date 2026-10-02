@@ -179,6 +179,8 @@ describe('save deadline and remote probes (core)', () => {
 
   it('updateEngram: a team row whose bare id collides with a local row is refused, not written over the local one', async () => {
     const id = await localEngram('local row an update must not overwrite')
+    // The twin the server holds (#1532 review F5: refused on evidence only).
+    stub.seedEngram({ id, scope: TEAM, status: 'active', data: { statement: 'team twin', type: 'behavioral' } })
     config(stubUrl)
     const p = await open()
     const local = (await p.getById(id))!

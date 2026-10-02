@@ -980,12 +980,12 @@ export class RemoteStore {
    * it — same acceptance, no behaviour change for reachable stores — and only
    * the failure modes are split out.
    */
-  async probeById(id: string): Promise<'owned' | 'absent' | 'unknown'> {
+  async probeById(id: string, opts?: { signal?: AbortSignal }): Promise<'owned' | 'absent' | 'unknown'> {
     let r: BoundedResponse
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      }, RemoteStore.readBounded)
+      }, RemoteStore.readBounded, opts?.signal)
     } catch {
       return 'unknown'
     }
