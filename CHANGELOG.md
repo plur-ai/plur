@@ -28,6 +28,78 @@ These follow up #1520 from its third audit.
   core and Hermes. "Memory: recalled 3 times faster…" is still saved as a
   learning, and "Memory — none recalled" is not.
 
+### A broken folders.yaml says what is wrong, and `plur folders repair` fixes it (#1526)
+
+When `~/.plur/folders.yaml` is broken, PLUR pauses memory, which is the safe
+direction. Until now the messages said only that the file was broken, or gave
+the YAML parser's line, and nothing helped you fix it. Now every place that
+reports a broken map names the line and column and says what is wrong in
+plain words. That covers `plur doctor`, `plur folders list`, the editor hooks'
+notice, the opencode plugin's notice, the MCP tools' answer, `plur_status` and
+`plur_doctor`:
+
+```
+line 4: indentation — `plur:` is indented 5 spaces, expected 4 (in line with `path:` on line 3)
+line 2: unknown key `folder:` — did you mean `folders:`?
+line 5: `plur:` in entry 2 must be on, off or ask — it looks like `off` with the wrong case or a typo
+```
+
+A message quotes at most the key on that line. It never shows a path, a
+scope or any other value from the file, nor a YAML alias or tag name. A
+misspelled `plur:` or `path:` key (`plru: off`) is now reported like a
+misspelled top-level key, because it, too, silently dropped that decision. Each place also offers the fix:
+
+- **`plur folders repair`** fixes what is unambiguous, which covers:
+  - list items and keys indented unevenly, and tabs in the indentation;
+  - a misspelled top-level key (`folder` → `folders`, `verison` → `version`);
+  - a `plur:` mode in the wrong case (`ON` → `on`), or one wrong letter of
+    `off` or `ask` (`oof` → `off`). A typo never becomes `on`: `ok`, `in`,
+    `onn` and `of` are left to you;
+  - an empty or comments-only file, which becomes a minimal valid map.
+
+  It also fixes a misspelled `plur:` or `path:` key (`plru:` → `plur:`,
+  `pth:` → `path:`: swapped or missing letters) when the entry lacks the right
+  key. Other hand-added keys (`paths:`, `score:`, `trust:`, `note:`, …) stay
+  as they are and are not a problem.
+
+  **A repair adds no `on` to the map.** After a repair, a map entry is `on`
+  only if it had a literal `plur: on` line of its own (any case, no escapes),
+  so an entry that would be on only through `scope:` or `trusted:` is not
+  repaired either. Folders with their own trusted `.plur.yaml` or project MCP
+  config are on again, as before the map broke (the same as after a fix by
+  hand). Every entry, key and value stays the one written on
+  its own line, and a commented-out mode (`plur: #on`) stays a comment. A file
+  that uses any YAML beyond a plain map (a tag `!`, anchor `&`, alias `*` or
+  block of text `|`/`>`), a key whose value may continue on the next lines,
+  an old-Mac line break (a lone CR) or more than 2,000 lines is never
+  repaired. PLUR names the line and leaves the file alone.
+
+  It shows a unified diff and asks before writing. `--yes` skips the
+  question. Without `--yes`, a run that is not in an interactive terminal is
+  a dry run: it changes nothing and exits nonzero. Before writing it saves the
+  original as `folders.yaml.plur-backup-<UTC time>` next to the file, writes
+  the new file atomically (to the target, when the map is a symlink), and
+  checks the result again. It keeps your comments. A problem it cannot fix is
+  reported with its line, and the file is left exactly as it was.
+- **Agents get the same offer.** The MCP answer (`repair_command` and
+  `repair_summary`), the hooks' notice and the opencode notice say in one line
+  what the repair changes ("line 4: indentation; line 2: `folder:` →
+  `folders:`"), tell the agent to show that to you first, and give the exact
+  command,
+  `plur folders repair --yes` (with `--path` for a store other than
+  `~/.plur`), and tell the agent to run it only after you agree. In opencode,
+  the next turn carries the command once more, so a "yes" given there can
+  still be acted on.
+
+**Behaviour change in the editor hooks and the opencode plugin (the safe
+direction).** They read an empty or comments-only `folders.yaml`, or one with
+an unknown top-level key such as `folder:` (or, now, a misspelled entry key
+such as `plru:`), as an empty map. That gave `ask`,
+or memory ON in a folder with a project marker. The MCP server already refused
+such a file. Now the hooks and the plugin refuse every file the MCP server
+refuses: such a map gives `ask` with no memory, and `plur folders set` will not
+write over it until it is repaired.
+
 ### The Claude Code memory check speaks up only after a correction, preference or decision
 
 The Stop-hook memory check used to fire after every third response, forcing an
