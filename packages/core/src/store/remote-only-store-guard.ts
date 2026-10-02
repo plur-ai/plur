@@ -69,6 +69,21 @@ function marker(e: unknown): Record<string, unknown> | undefined {
   return (e as { structured_data?: { _outbox?: Record<string, unknown> } } | null)?.structured_data?._outbox
 }
 
+/** A row that carries a remote-only queue marker (well-formed or not). */
+function isQueuedRow(e: Engram): boolean {
+  const ob = marker(e)
+  return !!ob && (ob.remote_only === true || ob.remote_only_folder !== undefined)
+}
+
+/**
+ * A copy of the fields the hold compares. Callers mutate the rows a read
+ * returned before writing them back, so the remembered state must not share
+ * objects with what the read handed out.
+ */
+function heldState(e: Engram): Engram {
+  return { id: e.id, scope: e.scope, status: e.status, structured_data: { _outbox: { ...marker(e) } } } as unknown as Engram
+}
+
 /**
  * The queue hold (re-audit 3 of #1521, owner 2026-10-02): why writing `next`
  * over `stored` would break a remote-only queued save, or null when it does
@@ -148,12 +163,23 @@ export class QueueHoldStore implements PrimaryStore {
         },
       })
     }
+    if (inner.loadByIds) {
+      Object.defineProperty(this, 'loadByIds', {
+        configurable: true,
+        value: async (ids: string[]) => {
+          const rows = await inner.loadByIds!(ids)
+          this._seeIds(ids, rows)
+          return rows
+        },
+      })
+    }
     if (inner.append) {
       Object.defineProperty(this, 'append', {
         configurable: true,
         value: async (engram: Engram) => {
-          this._check([engram], await this._current([engram.id]))
+          this._check([engram], await this._current([engram]))
           await inner.append!(engram)
+          this._seeIds([engram.id], [engram])
         },
       })
     }
@@ -161,16 +187,64 @@ export class QueueHoldStore implements PrimaryStore {
       Object.defineProperty(this, 'updateMany', {
         configurable: true,
         value: async (engrams: Engram[]) => {
-          this._check(engrams, await this._current(engrams.map(e => e.id)))
+          this._check(engrams, await this._current(engrams))
           await inner.updateMany!(engrams)
+          this._seeIds(engrams.map(e => e.id), engrams)
         },
       })
     }
   }
 
-  private async _current(ids: string[]): Promise<Map<string, Engram>> {
-    const rows = this.inner.loadByIds ? await this.inner.loadByIds(ids) : await this.inner.loadCached()
-    return new Map(rows.map(e => [e.id, e]))
+  /**
+   * The stored state of every remote-only queued row this store has read or
+   * written, by id. Writers read a row before they write it (under the store
+   * lock), so the write is checked against what that read returned — at no
+   * extra read: the #740/#827 write paths keep their exact load counts. A row
+   * that is NOT known here is read in a targeted way when the incoming row
+   * itself carries the marker (a new queued save, or a retarget of a row this
+   * instance never read), and when an unmarked row's id was never returned by
+   * this store and no whole-corpus read has happened (a writer that did not
+   * read first). After a whole-corpus read, an id it did not return is a new
+   * row. A queue marker is only ever set when a row is created, so a row once
+   * read without one does not gain one later except through this check.
+   */
+  private readonly _queued = new Map<string, Engram>()
+  /** Ids some read through this store returned, and whether one read all. */
+  private readonly _seen = new Set<string>()
+  private _readAll = false
+
+  private _seeAll(rows: Engram[]): void {
+    this._queued.clear()
+    this._seen.clear()
+    this._readAll = true
+    for (const e of rows) this._seen.add(e.id)
+    for (const e of rows) if (isQueuedRow(e)) this._queued.set(e.id, heldState(e))
+  }
+
+  private _seeIds(ids: string[], rows: Engram[]): void {
+    for (const id of ids) { this._queued.delete(id); this._seen.add(id) }
+    for (const e of rows) if (isQueuedRow(e)) this._queued.set(e.id, heldState(e))
+  }
+
+  private async _current(next: Engram[]): Promise<Map<string, Engram>> {
+    const current = new Map<string, Engram>()
+    const unknown: string[] = []
+    for (const e of next) {
+      const known = this._queued.get(e.id)
+      if (known) current.set(e.id, known)
+      // A marked row not known as queued: a new queued save, or a retarget of
+      // one this store never returned. An unmarked row this store never
+      // returned, before any whole-corpus read: it may overwrite a queued row.
+      else if (isQueuedRow(e) || (!this._readAll && !this._seen.has(e.id))) unknown.push(e.id)
+    }
+    if (unknown.length > 0) {
+      const want = new Set(unknown)
+      const rows = this.inner.loadByIds
+        ? await this.inner.loadByIds(unknown)
+        : (await this.inner.load()).filter(e => want.has(e.id))
+      for (const e of rows) if (want.has(e.id)) current.set(e.id, e)
+    }
+    return current
   }
 
   private _check(next: Engram[], current: Map<string, Engram>): void {
@@ -186,16 +260,25 @@ export class QueueHoldStore implements PrimaryStore {
     }
   }
 
-  load(): Promise<Engram[]> { return this.inner.load() }
-  loadCached(): Promise<Engram[]> { return this.inner.loadCached() }
+  async load(): Promise<Engram[]> {
+    const rows = await this.inner.load()
+    this._seeAll(rows)
+    return rows
+  }
+  async loadCached(): Promise<Engram[]> {
+    const rows = await this.inner.loadCached()
+    this._seeAll(rows)
+    return rows
+  }
   invalidate(): void { this.inner.invalidate() }
 
   async save(engrams: Engram[], opts?: SaveOptions): Promise<void> {
-    // Fresh read: the caller holds the store lock, so this is the state the
-    // write replaces. Deleted rows are not checked (delivery and forget).
-    const current = new Map((await this.inner.load()).map(e => [e.id, e]))
-    this._check(engrams, current)
+    // Checked against the queued rows the caller's own read returned (the
+    // caller holds the store lock and loaded the corpus it replaces). Rows
+    // left out are deletions, which the hold allows (delivery and forget).
+    this._check(engrams, await this._current(engrams))
     await this.inner.save(engrams, opts)
+    this._seeAll(engrams)
   }
 }
 

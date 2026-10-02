@@ -125,6 +125,29 @@ describe('R3-2 / R3-3: the hold is on the row, for every writer', () => {
     stillQueued(q.id)
   })
 
+  it('a writer that never read the store cannot strip a queue entry', async () => {
+    const q = await queue('client fact whose queue entry gets stripped')
+    const outside = new Plur({ path: root })
+    const hold = (outside as any)._primaryStore
+    // Rows obtained from somewhere other than this store (here: the file).
+    const stripped = rows().map(r => (r.id === q.id ? { ...r, structured_data: {} } : r))
+    expect(await refused(() => hold.save(stripped))).toBeInstanceOf(RemoteOnlyWriteError)
+    stillQueued(q.id)
+  })
+
+  it('the hold compares against what was read, not the object the writer mutated in place', async () => {
+    const q = await queue('client fact mutated in place by a writer')
+    const outside = new Plur({ path: root })
+    const hold = (outside as any)._primaryStore
+    const all = await hold.load()
+    const mine = all.find((e: any) => e.id === q.id)
+    // A retarget in place: scope and queue entry moved together.
+    mine.scope = 'group:acme/other'
+    mine.structured_data._outbox.target_scope = 'group:acme/other'
+    expect(await refused(() => hold.save(all))).toBeInstanceOf(RemoteOnlyWriteError)
+    stillQueued(q.id)
+  })
+
   it('a malformed queued row does not block saves in the folder', async () => {
     const q = await queue('client fact that gets broken by hand')
     const all = rows()
