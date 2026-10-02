@@ -351,6 +351,22 @@ describe('save deadline, outbox fallback and remote probes (0.21.1)', () => {
     expect(stub.feedbackBodies.length).toBe(0)
   }, TEST_TIMEOUT_MS)
 
+  it('F4: feedback --batch honours --scope and a per-item scope', async () => {
+    writeConfig([])
+    const id = await learnLocal('Local engram rated in a batch')
+    stub.seedEngram({ id, scope: TEAM, status: 'active', data: { statement: 'unrelated team engram', type: 'behavioral' } })
+    writeConfig([{ url: stubUrl, scope: TEAM }])
+    const batch = JSON.stringify([{ id, signal: 'positive' }])
+    const r = await cli(['feedback', '--batch', batch, '--scope', 'primary', '--json'])
+    expect(r.status, `${r.stdout} ${r.stderr}`).toBe(0)
+    expect(JSON.parse(r.stdout).results[0]).toMatchObject({ id, success: true })
+    // Per item: the item's own scope wins.
+    const perItem = JSON.stringify([{ id, signal: 'negative', scope: 'primary' }])
+    const r2 = await cli(['feedback', '--batch', perItem, '--json'])
+    expect(r2.status, `${r2.stdout} ${r2.stderr}`).toBe(0)
+    expect(stub.feedbackBodies.length).toBe(0)
+  }, TEST_TIMEOUT_MS)
+
   it('6: feedback refuses an unknown flag and a stray extra argument', async () => {
     writeConfig([])
     const id = await learnLocal('Local engram for argument checks')
