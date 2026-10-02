@@ -165,7 +165,7 @@ describe('R3-5: a rebind during a locked operation', () => {
     const mem: any = {
       kind: 'memory', location: null, refusesUnreadable: true,
       load: () => inner.load(), loadCached: () => inner.loadCached(),
-      save: (rows: any[], o?: any) => inner.save(rows, o), invalidate: () => inner.invalidate(),
+      save: (rows: any[]) => inner.save(rows), invalidate: () => inner.invalidate(),
     }
     const plur = new Plur({ path: root, store: mem })
     for (let i = 0; i < 12; i++) await plur.learn(`personal memory number ${i}`, { scope: 'global' })
