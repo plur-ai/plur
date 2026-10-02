@@ -183,10 +183,16 @@ whole repo (audit F1 of #1517).
 - `on`: the session scope is the policy's (a map `scope` beats a trusted
   `.plur.yaml` hint), via core's `sessionSettings`.
 
-Fail safe: a `folders.yaml` that does not parse makes core's resolver answer
-`ask` with reason `malformed-map` (file and line), and a resolver that throws
-gives `ask` with reason `resolver-error` — here and in the CLI hooks. Neither
-offers a command; a project marker no longer turns memory on (audit F4).
+Fail safe: a `folders.yaml` that core's `folderMapProblem` refuses (it does
+not parse, is empty or comments-only, has an unknown top-level key, or cannot
+be opened) makes core's resolver answer `ask` with reason `malformed-map`
+(file, line, column, the problem in plain words, and whether
+`plur folders repair` can fix it), and a resolver that throws gives `ask` with
+reason `resolver-error` — here and in the CLI hooks. Neither offers a folder
+command; a project marker no longer turns memory on (audit F4). A fixable map
+gets one command, `plur folders repair --yes` (with `--path` for this store),
+to run only after the user agrees; `folderAskReminder` carries it into the
+next turn like the question's commands (#1526).
 
 Nonces: one single-use nonce per offered answer through core's
 `issueFolderNonce`, in the PLUR home this plugin opened, bound to the folder,
