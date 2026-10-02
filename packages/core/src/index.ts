@@ -7641,6 +7641,16 @@ export class Plur {
       const engrams = await this._loadTargeted([updated.id])
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
+      // A row still queued for a remote store that moves into a personal scope
+      // takes the spelling a fresh write would (`_canonicalPersonalScope`, as
+      // in learn), BEFORE the leak guard, so the guard scans the scope the
+      // delivery is retargeted to (#1515 re-audit 4, L-A).
+      const storedRow = engrams[idx] as any
+      if (storedRow.structured_data?._outbox && storedRow.status !== 'retired'
+        && typeof updated.scope === 'string' && updated.scope !== storedRow.scope) {
+        const canonical = this._canonicalPersonalScope(updated.scope)
+        if (canonical !== updated.scope) updated = { ...updated, scope: canonical }
+      }
       // Leak guard (#353): local-resident → demote a sensitive update in place.
       // LOW-2: scan context fields too, not just the statement.
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
@@ -8820,8 +8830,13 @@ export class Plur {
     // cache the server's own content-hash dedup is the backstop.
     const hash = (source as any).content_hash ?? computeContentHash(source.statement)
     const all = await this._loadAllEngrams()
+    // A url store's cached row counts only when a write to `target` goes to
+    // that url store. When the choice for a personal scope is local, the
+    // local copy is kept, as in learn's duplicate check (#1515 re-audit 4, L-B).
+    const remoteCounts = this._isRemoteWriteScope(target)
     const existing = all.find(e =>
-      e.id !== id && e.status === 'active' && (e as any).content_hash === hash && e.scope === target)
+      e.id !== id && e.status === 'active' && (e as any).content_hash === hash && e.scope === target
+      && ((e as any)._fromRemoteStore !== true || remoteCounts))
     if (existing) {
       const targetId = ((existing as any)._originalId as string | undefined) ?? existing.id
       const retire = route === 'local' || !opts.keepLocal
