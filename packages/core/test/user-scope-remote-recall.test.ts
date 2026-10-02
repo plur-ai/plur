@@ -630,4 +630,62 @@ describe('identical personal scope on a path store and a url store: scan and ded
     ]
     expect(local.some(r => r.statement === S && r.status === 'active')).toBe(true)
   })
+
+  // 0.21.1 follow-up (re-audit 4, L-A): a queued row moved into a personal
+  // scope folds case like a fresh write and goes to the store that write picks.
+  it('an update moving a queued row to a case variant of a url-only personal scope retargets like a fresh write', async () => {
+    const dir = tmp('plur-userscope-la-')
+    const cfg = join(dir, 'config.yaml')
+    writeConfig(cfg, urlStore(DEAD, 'group:acme/team') + urlStore(baseUrl, 'USER:ACME:ME'))
+    const plur = new Plur({ path: dir })
+    const fresh = await plur.learnRouted('the bike pump is behind the door', { scope: ME })
+    expect(fresh.scope).toBe('USER:ACME:ME')
+    const appendsAfterFresh = server.appendCalls
+    const e = await plur.learn('the team lunch is on thursdays', { scope: 'group:acme/team' })
+    await waitQueued(plur, e.id)
+    const row = (await plur.getById(e.id))!
+    await plur.updateEngram({ ...row, scope: ME })
+    const stored = ((await (plur as any)._primaryStore.load()) as any[]).find(r => r.id === e.id)
+    expect(stored.scope).toBe('USER:ACME:ME')
+    expect(stored.structured_data?._outbox?.target_scope).toBe('USER:ACME:ME')
+    await plur.flushOutbox()
+    expect(server.appendCalls).toBe(appendsAfterFresh + 1)
+    expect(server.appendStatements).toContain('the team lunch is on thursdays')
+  })
+
+  it('the folded retarget is still scanned: a secret moved to a case variant never reaches the server', async () => {
+    const dir = tmp('plur-userscope-las-')
+    const cfg = join(dir, 'config.yaml')
+    writeConfig(cfg, urlStore(DEAD, 'group:acme/team') + urlStore(baseUrl, 'USER:ACME:ME'))
+    const plur = new Plur({ path: dir })
+    const e = await plur.learn('the team offsite is in may', { scope: 'group:acme/team' })
+    await waitQueued(plur, e.id)
+    const row = (await plur.getById(e.id))!
+    await plur.updateEngram({ ...row, scope: ME, statement: `the offsite token is ${SECRET}` })
+    await plur.flushOutbox()
+    expect(onServer()).not.toContain(SECRET)
+  })
+
+  // 0.21.1 follow-up (re-audit 4, L-B): rescope keeps the local copy when the
+  // choice for the target scope is local, like learn's duplicate check (L2).
+  it('rescope into an identical-scope personal store does not dedup against a cached remote row', async () => {
+    const dir = tmp('plur-userscope-lb-')
+    writeConfig(join(dir, 'config.yaml'), urlStore(baseUrl, ME) + pathStore(join(dir, 'me.yaml'), ME))
+    const plur = new Plur({ path: dir })
+    const S = 'the gas meter reading is taken monthly'
+    const seed = new Plur({ path: tmp('plur-userscope-lbseed-') })
+    const s0 = await seed.learn(S, { scope: 'global' })
+    const cached = { ...(await seed.getById(s0.id)), id: 'ENG-2026-1002-002', scope: ME }
+    ;(plur as any)._getRemoteDriver({ url: baseUrl, token: TOKEN, scope: ME }).cache = { ts: Date.now(), engrams: [cached] }
+    const src = await plur.learn(S, { scope: 'global' })
+    const { results } = await plur.rescope(src.id, ME)
+    expect(results[0].status).toBe('rescoped')
+    expect(results[0].action).toBe('local_rewrite')
+    expect(server.appendCalls).toBe(0)
+    const local = [
+      ...((await (plur as any)._primaryStore.load()) as any[]),
+      ...(await (plur as any)._loadSecondaryAndPacks() as any[]).filter((r: any) => !r._pack && !r._fromRemoteStore),
+    ]
+    expect(local.some(r => r.statement === S && r.status === 'active' && r.scope === ME)).toBe(true)
+  })
 })
