@@ -2120,7 +2120,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // present — this is the only moment where "unpin one or raise the
         // limit" is a question someone can actually answer.
         if (target === true) {
-          const q = await plur.pinnedQuota(args.id as string)
+          // Cost the engram this pin will change (#1532 review F6): with a
+          // scope, the one that scope holds, not a local id twin.
+          const q = await plur.pinnedQuota(args.id as string, args.scope ? { scope: args.scope as string } : undefined)
           if (q.candidate && !q.candidate.fits) {
             const deficit = q.candidate.would_be - q.quota
             // Take entries until the deficit is covered. This accumulated
