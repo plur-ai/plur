@@ -4,7 +4,7 @@
  * each label would invite tuning to these exact phrasings. Gate (owner):
  * precision >= 85%, recall >= 60% overall and >= 55% for Slovenian.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { hasLearnSignal } from '../src/lib/learn-signal.js'
 import { HELDOUT } from './fixtures/learn-signal-heldout.js'
 
@@ -30,5 +30,18 @@ describe('hasLearnSignal on the held-out set', () => {
     const { precision, recall } = score('sl')
     expect(precision).toBeGreaterThanOrEqual(0.85)
     expect(recall).toBeGreaterThanOrEqual(0.55)
+  })
+
+  // The hook runs on every Stop in a fresh process, so the FIRST call (regex
+  // compilation included) is what a user waits for. Unicode-aware word
+  // boundaries made that first call cost 0.4–1 s. A fresh module instance
+  // gives fresh regexes; the bound is loose so a busy CI box does not flake.
+  it('a cold first call stays fast', async () => {
+    vi.resetModules()
+    const fresh = await import('../src/lib/learn-signal.js')
+    const t = performance.now()
+    fresh.hasLearnSignal('zakaj si spet spremenil package.json? tega ne delaj brez vprasanja')
+    fresh.hasLearnSignal('Pri nas commit sporočila pišemo v angleščini, ne v slovenščini.')
+    expect(performance.now() - t).toBeLessThan(250)
   })
 })
