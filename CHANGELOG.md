@@ -37,12 +37,15 @@ carries the same fields.
 
 **Every routed save has a bounded server deadline.** `plur_learn` (MCP),
 `plur_learn_batch`, and the Claw and opencode plugins now take the outbox after
-10 seconds instead of waiting 30. Hook auto-capture uses 3 seconds, so the
-save is queued before the hook's 9-second watchdog can exit. Before, that
+10 seconds instead of waiting 30. Hook auto-capture gets 4 seconds for all the
+statements of one run together, so every save is queued before the hook's
+9-second watchdog can exit. Before, that
 watchdog could exit while the request was in flight, and the captured
 statement was lost. A request that lands after its deadline is sent again
 with the same idempotency key, so a server that honours the key (the team
-server does) stores it once.
+server does) stores it once. A server that ignores the key and answers after
+10 seconds can store it twice; under the old 30-second wait that only happened
+past 30 seconds.
 
 **`plur forget` is not blocked by an expired token, and never holds the store
 lock while it waits.** Retiring a local engram first checks each team store
@@ -53,9 +56,17 @@ is retired, with a warning naming the store whose token was rejected
 with 5 seconds per store. Before, a hanging server held the lock for 30
 seconds. A store that cannot be reached still refuses the retire, and the
 message names `--scope primary`. A rejected token is not proof there is no other
-engram with that id, though. If this machine has ever met that id on a server
-(its history, the outbox's delivered ids, or cached team rows), the retire is
-refused instead, naming `--scope primary`. Looking up an id that is not stored
+engram with that id, though. If this machine has ever met that id on a server,
+the retire is refused instead, naming `--scope primary`. "Met" means any of:
+
+- `recall` or an injection returned it as a team engram;
+- a save or an outbox delivery got it back from the server;
+- its history or cached team rows show it.
+
+Those ids are now kept in `seen-on-server.jsonl` in the PLUR directory: the
+latest 50,000, outside `cache/`, so they are not pruned with the outbox id
+map. A `rescope --keep-local` no longer marks the local engram's id as a
+server id. Looking up an id that is not stored
 locally is also limited to 5 seconds per store (it was 30). `plur feedback` follows the same rule,
 except that an unreachable store gives a warning instead of a refusal, as it
 did before.
@@ -72,12 +83,16 @@ its ids from 001 each day, so one bare id can name two unrelated engrams:
   bare id that exists both locally and in a team store, instead of pinning
   the local one.
 - `updateEngram` refuses a team row whose bare id matches an unrelated local
-  engram, instead of writing the team content over it. It refuses only when
-  there is evidence of such a twin: the server holds that id, or this machine
-  met it remotely. Moving a local engram into a team scope with no twin still
-  works as before; `rescope` remains the way to send it to the team store.
-- `plur_pin` with a `scope` checks the pinned quota against the engram that
-  scope holds, not a local engram with the same bare id.
+  engram, instead of writing the team content over it. It refuses unless
+  every team store positively answers that it has no engram with that id: a
+  server that hangs or rejects the token refuses the move too. Moving a local
+  engram into a team scope still works when the server confirms there is no
+  twin; `rescope` remains the way to send it to the team store.
+- `plur_pin` with a `scope` checks the pinned quota against the engram the pin
+  will change (in the first writable store for that scope), not a local
+  engram with the same bare id.
+- `plur_learn_batch` reports `delivery` (and, when queued, the reason) for each
+  item, as `plur_learn` does.
 
 A store-unique id format is planned for 0.22.
 
