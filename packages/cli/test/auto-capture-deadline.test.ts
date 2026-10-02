@@ -19,7 +19,7 @@ import { tmpdir } from 'os'
 import { createServer, type Server } from 'http'
 import type { Socket } from 'net'
 import { Plur, trustDirectory } from '@plur-ai/core'
-import { autoRateTurn, AUTO_CAPTURE_REMOTE_TIMEOUT_MS } from '../src/lib/auto-rate.js'
+import { autoRateTurn, enqueueTurn, runWorker, AUTO_CAPTURE_REMOTE_TIMEOUT_MS } from '../src/lib/auto-rate.js'
 
 const TEAM = 'group:test'
 /** The inline watchdog in hook-auto-rate (WATCHDOG_CEILING). */
@@ -83,6 +83,31 @@ describe('auto-capture team save is bounded below the inline watchdog (#1532 F3)
     const outcome = await autoRateTurn({ editor: 'claude', sessionId: 'cap-multi', reply, flags: { path: plurPath }, cwd: project, plur })
     const ms = Date.now() - t0
     expect(outcome.captured).toBe(4)
+    expect(ms).toBeLessThan(INLINE_WATCHDOG_MS - 2_000)
+    const yaml = readFileSync(join(plurPath, 'engrams.yaml'), 'utf8')
+    expect((yaml.match(/_outbox:/g) ?? []).length).toBe(4)
+  }, 60_000)
+
+  it('S5: several queued turns drained in one hook run share ONE server budget', async () => {
+    const plurPath = join(root, '.plur')
+    writeFileSync(join(plurPath, 'engrams.yaml'), 'engrams: []\n')
+    writeFileSync(join(plurPath, 'config.yaml'), JSON.stringify({
+      embeddings: { enabled: false }, index: false,
+      stores: [{ url, token: 't', scope: TEAM, readonly: false }],
+    }))
+    const project = join(root, 'project')
+    writeFileSync(join(project, '.plur.yaml'), `scope: ${TEAM}\n`)
+    trustDirectory(project, plurPath)
+    const session = `cap-run-${process.pid}-${Date.now()}`
+    const turn = (a: string, b: string) => `Done.\n\n---\n🧠 I learned:\n- ${a}\n- ${b}\n---\n`
+    expect(enqueueTurn({ editor: 'claude', sessionId: session, cwd: project,
+      reply: turn('Release candidates are tagged with the sprint number', 'Database migrations run in their own deploy step') })).toBe(true)
+    expect(enqueueTurn({ editor: 'claude', sessionId: session, cwd: project,
+      reply: turn('Feature flags are removed within two sprints of rollout', 'The staging cluster is rebuilt every Monday morning') })).toBe(true)
+    const t0 = Date.now()
+    const total = await runWorker('claude', session, { path: plurPath })
+    const ms = Date.now() - t0
+    expect(total.captured).toBe(4)
     expect(ms).toBeLessThan(INLINE_WATCHDOG_MS - 2_000)
     const yaml = readFileSync(join(plurPath, 'engrams.yaml'), 'utf8')
     expect((yaml.match(/_outbox:/g) ?? []).length).toBe(4)
