@@ -270,3 +270,77 @@ class TestCorpusValidation:
         assert recall >= 0.80, f"Recall too low: {recall:.1%} ({true_positives}/{total_learning_instruction})"
         # Assert ≤15% false positive rate on hypothetical + reasoning
         assert fp_rate <= 0.15, f"False positive rate too high: {fp_rate:.1%} ({false_positives}/{total_hypothetical_reasoning})"
+
+
+# --- #1520 audit S3: the memory line is never captured as a learning ---
+
+@pytest.mark.parametrize("line", [
+    "Memory — recalled 3 · used: ENG-2026-10-01-001 · written: ENG-2026-10-01-002",
+    "Memory — none",
+])
+@pytest.mark.parametrize("sep", ["\n", "\n\n"])
+@pytest.mark.parametrize("marker", ["---\n\U0001f9e0 I learned:", "I learned:"])
+def test_memory_line_is_not_a_learning(line, sep, marker):
+    text = f"Answer.\n\n{marker}\n- The deploy script needs NODE_ENV set{sep}{line}"
+    assert extract_learning_patterns(text) == ["The deploy script needs NODE_ENV set"]
+
+
+# --- #1520 re-audit R2: every form of the memory line ---
+
+_FORMS = [
+    "`Memory — recalled 2 · used: ENG-2026-10-01-001`",
+    "**Memory — recalled 2 · used: ENG-2026-10-01-001**",
+    "Memory - recalled 2 · used: ENG-2026-10-01-001",
+    "Memory – recalled 2 · used: ENG-2026-10-01-001",
+    "Memory: recalled 2 · used: ENG-2026-10-01-001",
+    "_Memory — none_",
+    "> Memory — none",
+    "- Memory — written: ENG-2026-10-01-002",
+]
+
+
+@pytest.mark.parametrize("line", _FORMS)
+@pytest.mark.parametrize("marker", ["---\n\U0001f9e0 I learned:", "I learned:"])
+def test_memory_line_forms_are_not_learnings(line, marker):
+    text = f"Answer.\n\n{marker}\n- The deploy script needs NODE_ENV set\n{line}"
+    assert extract_learning_patterns(text) == ["The deploy script needs NODE_ENV set"]
+
+
+@pytest.mark.parametrize("line", ["Memory — none", "`Memory — recalled 1 · used: ENG-1`"])
+@pytest.mark.parametrize("marker", ["---\n\U0001f9e0 I learned:", "I learned:"])
+def test_empty_block_then_memory_line_yields_nothing(line, marker):
+    assert extract_learning_patterns(f"Answer.\n\n{marker}\n{line}") == []
+
+
+def test_learning_that_starts_with_memory_is_kept():
+    text = "Answer.\n\n---\n\U0001f9e0 I learned:\n- Memory usage doubles once the BGE embedder is loaded\n"
+    assert extract_learning_patterns(text) == ["Memory usage doubles once the BGE embedder is loaded"]
+
+
+# --- #1520 second re-audit L2: only the footer shape is dropped ---
+
+@pytest.mark.parametrize("marker", ["---\n\U0001f9e0 I learned:", "I learned:"])
+def test_learnings_starting_with_memory_are_kept(marker):
+    text = (
+        f"Answer.\n\n{marker}\n"
+        "- Memory: used 4GB is too low for the build, set 8GB\n"
+        "- Memory — none of the caches survive a restart, warm them\n"
+        "- The deploy script needs NODE_ENV set"
+    )
+    assert extract_learning_patterns(text) == [
+        "Memory: used 4GB is too low for the build, set 8GB",
+        "Memory — none of the caches survive a restart, warm them",
+        "The deploy script needs NODE_ENV set",
+    ]
+
+
+@pytest.mark.parametrize("footer", [
+    "\U0001f9e0 Memory — recalled 2 · used: ENG-2026-10-01-001",
+    "<sub>Memory — recalled 2 · used: ENG-2026-10-01-001</sub>",
+    "1. Memory — recalled 2 · used: ENG-2026-10-01-001",
+    "Memory — recalled: ENG-2026-10-01-001, ENG-2026-10-01-002 · used: ENG-2026-10-01-001",
+])
+@pytest.mark.parametrize("marker", ["---\n\U0001f9e0 I learned:", "I learned:"])
+def test_more_footer_forms_are_dropped(footer, marker):
+    text = f"Answer.\n\n{marker}\n- The deploy script needs NODE_ENV set\n{footer}"
+    assert extract_learning_patterns(text) == ["The deploy script needs NODE_ENV set"]
