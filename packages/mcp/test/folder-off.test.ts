@@ -746,3 +746,41 @@ describe('a broken folder map is pinpointed and the repair is offered', () => {
     expect(r.json?.folder_map).toBeUndefined()
   })
 })
+
+// N5 (re-review of #1530): the MCP plur_doctor tool reports a broken map the
+// same way plur_status and the CLI `plur doctor` do.
+describe('plur_doctor reports a broken folder map', () => {
+  const SECRET = 'sk-live-SECRET-0123456789'
+
+  it('the same folder_map as plur_status, a failing check, and the repair in remediation', async () => {
+    const s = await setup()
+    writeFileSync(join(s.home, 'folders.yaml'), `version: 1\nfolder:\n  - path: "${s.workspace}/${SECRET}"\n     plur: off\n`)
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const status = await call(client, 'plur_status')
+    const doctor = await call(client, 'plur_doctor')
+    expect(doctor.raw.isError, doctor.text).not.toBe(true)
+    expect(doctor.json?.folder_map).toEqual(status.json?.folder_map)
+    expect(doctor.json?.folder_map?.line).toBe(2)
+    expect(doctor.json?.folder_map?.column).toBe(1)
+    expect(doctor.json?.folder_map?.fixable).toBe(true)
+    expect(doctor.json?.folder_map?.problem).toContain('line 2: unknown key `folder:`')
+    expect(doctor.json?.folder_map?.repair_summary).toContain('line 2: `folder:` → `folders:`')
+    expect(doctor.json?.folder_map?.repair_command).toBe(`plur --path ${s.home} folders repair --yes`)
+    expect(doctor.json?.ok).toBe(false)
+    const check = doctor.json?.checks?.find((c: any) => c.check === 'folder map')
+    expect(check?.ok).toBe(false)
+    expect(check?.detail).toContain('line 2')
+    expect((doctor.json?.remediation ?? []).join('\n')).toContain('folders repair --yes')
+    expect(doctor.text).not.toContain(SECRET)
+  }, 60_000)
+
+  it('a healthy map: no folder_map field and the folder map check passes', async () => {
+    const s = await setup()
+    vi.spyOn(process, 'cwd').mockReturnValue(s.other)
+    const client = await connect(s.plur)
+    const doctor = await call(client, 'plur_doctor')
+    expect(doctor.json?.folder_map).toBeUndefined()
+    expect(doctor.json?.checks?.find((c: any) => c.check === 'folder map')?.ok).toBe(true)
+  }, 60_000)
+})
