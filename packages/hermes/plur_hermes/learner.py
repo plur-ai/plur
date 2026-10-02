@@ -19,12 +19,8 @@ import re
 
 # --- Strategy 1: Brain-emoji block ---
 
-# The per-reply memory line (`Memory — recalled …`) ends a learning block: agents
-# put it last and may write it straight after the final bullet (#1520 audit S3).
-_MEMORY_LINE = r'\n[ \t]*Memory \u2014'
-
 _BRAIN_PATTERN = re.compile(
-    r'---\s*\n\U0001f9e0 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|' + _MEMORY_LINE + r'|$)'
+    r'---\s*\n\U0001f9e0 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)'
 )
 
 # --- Strategy 2: Alternative markers ---
@@ -38,7 +34,7 @@ _ALT_MARKERS = (
 )
 _ALT_MARKER_PATTERN = re.compile(
     r'(?:^|\n)\s*(?:' + '|'.join(_ALT_MARKERS) + r')[ \t]*\n'
-    r'([\s\S]*?)(?:\n[ \t]*\n|\n---|' + _MEMORY_LINE + r'|$)'
+    r'([\s\S]*?)(?:\n[ \t]*\n|\n---|$)'
 )
 
 _BULLET_PREFIX = re.compile(r'^[-*•]\s+|^\d+[.)]\s+')
@@ -100,22 +96,24 @@ _NEUTRAL_PREFIX = re.compile(
 )
 
 
-# The per-reply memory line in any form an agent writes it: plain, in
-# backticks or bold, as a bullet or quote, with an em dash, en dash, hyphen or
-# colon. It reports on the turn and is never a learning (#1520 re-audit R2).
-# Mirrors MEMORY_LINE_RE in packages/core/src/learner.ts.
+# The per-reply memory line PLUR's instructions ask for
+# (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`) in
+# the forms an agent may write it: plain, in backticks, bold or italics, as a
+# bullet, numbered item or quote, after a 🧠, inside an HTML tag, with an em
+# dash, en dash, hyphen or colon. It is never a learning (#1520 S3, R2). It is
+# anchored on the footer's shape, so "Memory: used 4GB is too low" or
+# "Memory — none of the caches survive" are still learnings (L2), and only the
+# matching line is dropped. Mirrors MEMORY_LINE_RE in packages/core/src/learner.ts.
 _MEMORY_LINE_RE = re.compile(
-    r'^[\s>*_`~\u2022-]*Memory[\s*_`]*(?:[\u2014\u2013-]+|:)\s*[*_`]*\s*(?:recalled|none|used|written)(?![a-z])',
+    r'^[\s>*_`~\u2022-]*(?:\d+[.)]\s*)?(?:\U0001f9e0\s*)?(?:<[a-z][^>]*>\s*)?[*_`]*'
+    r'Memory[\s*_`]*(?:[\u2014\u2013-]+|:)\s*[*_`]*\s*'
+    r'(?:recalled\s*(?::|\d)|(?:used|written)\s*:\s*[*_`]*\s*ENG-|none[\s*_`.]*(?:</[a-z]+>)?[\s*_`.]*$)',
     re.IGNORECASE,
 )
 
 
 def _extract_lines(block: str) -> list[str]:
-    lines = block.split('\n')
-    for i, raw_line in enumerate(lines):
-        if _MEMORY_LINE_RE.match(raw_line):
-            lines = lines[:i]
-            break
+    lines = [raw_line for raw_line in block.split('\n') if not _MEMORY_LINE_RE.match(raw_line)]
     return [
         line.strip()
         for raw_line in lines
