@@ -89,7 +89,7 @@ describe('hasLearnSignal — ordinary requests and pasted text stay quiet (F1)',
     'No.',
     'No — go ahead.',
     'no, not yet',
-    'Nope, that is all',
+    'No, that is all',
     'What is review.decisions.json?',
     "Actually, let's also bump the version.",
     'Error: you should not call this before init',
@@ -330,6 +330,27 @@ describe('lastUserMessage — reads the last human prompt from a Claude Code tra
     expect(lastUserMessage(path)).toMatchObject({ id: 'm', learned: false })
   })
 
+  // H4: a failed or unrelated tool call is not "learned".
+  it('a plur_learn call that returned an error, or a look-alike tool name, does not count as learned', () => {
+    const call = (id: string, name: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: {} }] } })
+    const result = (id: string, isError: boolean) => ({ type: 'user', toolUseResult: {}, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content: isError ? 'failed' : 'ok' }] } })
+    const failed = transcript([human('from now on use pnpm', { uuid: 'f' }), call('a', 'mcp__plur__plur_learn'), result('a', true)])
+    expect(lastUserMessage(failed)).toMatchObject({ id: 'f', learned: false })
+    rmSync(dir, { recursive: true, force: true })
+    const lookalike = transcript([human('from now on use pnpm', { uuid: 'l' }), call('b', 'mcp__x__plur_learning_stats'), result('b', false)])
+    expect(lastUserMessage(lookalike)).toMatchObject({ id: 'l', learned: false })
+    rmSync(dir, { recursive: true, force: true })
+    const ok = transcript([human('from now on use pnpm', { uuid: 'o' }), call('c', 'mcp__plur__plur_learn'), result('c', false)])
+    expect(lastUserMessage(ok)).toMatchObject({ id: 'o', learned: true })
+  })
+
+  it('a message typed with a literal <system-reminder> is still the latest message, with its text (H5)', () => {
+    const path = transcript([human('never push to main', { uuid: 'old' }), assistant('ok'), human('<system-reminder> what is this tag? From now on use pnpm.', { uuid: 'new' })])
+    const m = lastUserMessage(path)
+    expect(m?.id).toBe('new')
+    expect(m?.text).toContain('From now on')
+  })
+
   it('reads only a bounded tail of a large transcript', () => {
     // The old message sits before the tail window; only filler follows within it.
     const filler = assistant('x'.repeat(1024))
@@ -376,6 +397,58 @@ describe('claimNudge', () => {
 // Fallback default: every 10th Stop (see learnFallbackInterval).
 // Re-audit R2: pasted text is removed BEFORE the length bound, and the bound
 // keeps the tail, where the typed text usually is.
+// Re-audit round 3 (H2, H3, H5 and the requested generalisations).
+describe('hasLearnSignal — round 3', () => {
+  const signals = [
+    // H2: a task-scope word exempts only its own sentence
+    'Never push to main. Fix the failing test here.',
+    'Always use pnpm. Also, the build is broken today, can you look?',
+    'Fix this PR. Always use pnpm.',
+    // diacritic-insensitive
+    'To je napacno.',
+    'narobe si razumel, gre za macos',
+    // Slovenian negative commands anywhere, nikar, ne smeš
+    'Prosim, ne briši vej.',
+    'tega ne delaj brez vprašanja',
+    'Nikar ne pushaj na main.',
+    'Tega ne smeš commitat.',
+    // rule words inside an imperative sentence
+    'Teste vedno poženi pred commitom.',
+    'Füge niemals Secrets in Logs ein.',
+    'Keine Emojis, bitte.',
+    "Don't ever log the token.",
+    // conventions, corrections, decisions
+    'Pri nas uporabljamo pnpm.',
+    'Bei uns gilt: erst Test, dann Code.',
+    'Nisi pravilno popravil.',
+    'Mislim, da si se zmotil.',
+    'Falsch verstanden, es geht um Linux.',
+    'Nope, it lives in core.',
+    'Remember: the helper owns dates.',
+    'We decided to drop Node 18.',
+    'Odločili smo, da gremo s SQLite.',
+    'Q1: yes. Q2: keep both.',
+  ]
+  for (const text of signals) it(`signals: ${JSON.stringify(text)}`, () => expect(hasLearnSignal(text)).toBe(true))
+
+  const plain = [
+    // H3
+    'Narobe si je zapomnil geslo, ponastavi ga.',
+    'Napačen vrstni red elementov po sortiranju, popravi sort.',
+    'Spet si mi poslal isti link, a je to prav?',
+    'A to ni prav, prav?',
+    'Is it true that we always use npm, ok?',
+    // H5: a literal tag typed in prose does not hide what follows; still no signal here
+    'What does the <system-reminder> tag do in a transcript?',
+  ]
+  for (const text of plain) it(`no signal: ${JSON.stringify(text)}`, () => expect(hasLearnSignal(text)).toBe(false))
+
+  it('a literal, unclosed <system-reminder> typed by the user does not swallow the rest (H5)', () => {
+    expect(hasLearnSignal('Why does `<system-reminder>` show up in logs? From now on use pnpm.')).toBe(true)
+    expect(normaliseForSignal('see <system-reminder> here. From now on use pnpm.')).toContain('From now on')
+  })
+})
+
 describe('normaliseForSignal', () => {
   it('keeps a correction typed after a long pasted log', () => {
     const log = Array.from({ length: 200 }, (_, i) => `2026-10-01 12:00:${String(i % 60).padStart(2, '0')} INFO request served ok`).join('\n')

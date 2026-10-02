@@ -13,6 +13,18 @@ import { CORPUS } from './fixtures/learn-signal-corpus.js'
 
 /** Messages the detector is known to label wrongly, with the reason. Asserted as the opposite of their label. */
 const KNOWN: Record<string, string> = {
+  'a lahko nehaš uporabljat `any` v typescriptu? raje unknown pa narrowing':
+    'phrased as a question ("a lahko …?"); questions are never signals.',
+  'hmm, the tests you wrote only test the mock. that tells us nothing.':
+    'a correction with no correction phrase. Left to the fallback.',
+  "Use British spelling in user-facing copy, colour not color. that's the brand guide.":
+    'a convention stated as a plain instruction; "X not Y" without a comma or "use X" is too common in requests. Left to the fallback.',
+  'Die Antwort war viel zu lang. Kurz und knapp reicht mir.':
+    'a preference with no preference phrase. Left to the fallback.',
+  'Napačna datoteka, konfiguracija je v packages/core.':
+    'opens like a bug report ("Napačen vrstni red …"); the sentence-start "napač… <noun>" rule was dropped for its false nudges (re-audit H3).',
+  'Napačen ukaz, uporabi pnpm.':
+    'same shape as a bug report opening; see above.',
   'Actually, the staging host is the second one, not the first.':
     'a correction with no correction phrase; "actually" fired on plain requests in round 1, so it is not on the list. Left to the fallback.',
   'Again: no emojis in commits.':
