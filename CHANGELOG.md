@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Agents now end each reply with the memories they recalled, used and wrote (#1520)
+
+The instructions PLUR installs (the `plur init` section in CLAUDE.md and
+AGENTS.md, the Cursor rule, the MCP server instructions, the `plur-mcp init`
+section, the Claw system prompt and the plur-memory skill) now ask the agent to
+end every reply with one short line such as
+`Memory — recalled 4 · used: ENG-…, ENG-… · written: ENG-…`, or
+`Memory — none`: a count of what was recalled and the ids used and written, no
+statements, and only ids it actually saw that turn. Ask a follow-up for the
+details. That line is never saved as a learning, in any form an agent writes
+it: plain, in backticks or bold, as a bullet, numbered item or quote, after a
+🧠 or inside an HTML tag, with an em dash, en dash, hyphen or colon, straight
+after an "I learned" list or in place of one. A learning that merely starts
+with "Memory", such as "Memory: used 4GB is too low", is still saved.
+
+Re-running `plur init` or `plur-mcp init`, or reloading the Claw plugin, now
+brings an existing install up to date. Before, `plur init` left an existing
+section untouched, so changed instructions never reached an existing install.
+It never removes text PLUR did not write. An old PLUR section is replaced only
+when it is, line for line, a text PLUR shipped; only trailing spaces and line
+endings may differ. A section you wrote or edited, including one you only
+re-indented, stays exactly as it is, the new section is added beside it, and
+init tells you so, so you can tidy up. A section inside a code block or an
+HTML comment is left alone, and a file that ends inside one has it closed
+before the new section is added, so a second run changes nothing. An edited
+`.cursor/rules/plur-memory.mdc` is kept rather than overwritten. Every file
+that is changed is first copied to a timestamped `*.plur-backup-*` file beside
+it (an edited Cursor rule only once per version of its content). The new file
+is written beside the old one and swapped in whole, so a write that fails
+partway, on a full disk for instance, leaves your file exactly as it was.
+
 ### opencode follows the folder map (#1517)
 
 **The opencode plugin now does what you decided for each folder**, like the

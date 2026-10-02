@@ -107,21 +107,6 @@ reversible direction.
 - `packages/langchain/pyproject.toml`
 - `packages/langchain/plur_langchain/__init__.py` — `__version__`
 
-## Changing the instructions PLUR installs
-
-The sections `plur init`, `plur-mcp init` and the Claw plugin write into a
-user's CLAUDE.md / AGENTS.md / `.cursor/rules/plur-memory.mdc` / SYSTEM.md are
-upgraded in place only when the installed text is, line for line, one PLUR
-shipped (`packages/core/src/instruction-section.ts`). The shipped texts live in
-`packages/core/src/instruction-history.ts`. To change a section:
-
-1. Edit the text (`packages/cli/src/commands/init.ts`, `packages/mcp/src/index.ts`, `packages/claw/src/system-prompt.ts`).
-2. Bump the marker `plur-instructions-vN` in all of them together.
-3. Run `node scripts/extract-plur-section-history.mjs` and commit `instruction-history.ts` with the change.
-
-The cli, mcp and claw tests fail while the section they install is missing
-from that list.
-
 ## Publishing
 
 See [RELEASING.md](RELEASING.md) for the authoritative publish procedure (including the manifest gate that runs before any irreversible step). Quick reference for npm packages — authenticate as `plur9` first, publish core before dependents:

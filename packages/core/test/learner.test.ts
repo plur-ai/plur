@@ -366,3 +366,79 @@ describe('isCorrection', () => {
     expect(isCorrection({ role: 'assistant', content: 'No, that is wrong' })).toBe(false)
   })
 })
+
+describe('extractSelfReportedLearnings — the memory line is not a learning (#1520 audit S3)', () => {
+  const reply = (sep: string, line: string) => ({
+    role: 'assistant' as const,
+    content: `Answer.\n\n---\n🧠 I learned:\n- The deploy script needs NODE_ENV set${sep}${line}`,
+  })
+  for (const line of [
+    'Memory — recalled 3 · used: ENG-2026-10-01-001 · written: ENG-2026-10-01-002',
+    'Memory — none',
+  ]) {
+    it(`straight after the last bullet: ${line.slice(0, 20)}`, () => {
+      expect(extractSelfReportedLearnings(reply('\n', line))).toEqual(['The deploy script needs NODE_ENV set'])
+    })
+    it(`after a blank line: ${line.slice(0, 20)}`, () => {
+      expect(extractSelfReportedLearnings(reply('\n\n', line))).toEqual(['The deploy script needs NODE_ENV set'])
+    })
+  }
+})
+
+describe('extractSelfReportedLearnings — every form of the memory line (#1520 re-audit R2)', () => {
+  const block = (tail: string) => ({ role: 'assistant' as const, content: `Answer.\n\n---\n🧠 I learned:\n- The deploy script needs NODE_ENV set\n${tail}` })
+  const forms = [
+    '`Memory — recalled 2 · used: ENG-2026-10-01-001`',
+    '**Memory — recalled 2 · used: ENG-2026-10-01-001**',
+    'Memory - recalled 2 · used: ENG-2026-10-01-001',
+    'Memory – recalled 2 · used: ENG-2026-10-01-001',
+    'Memory: recalled 2 · used: ENG-2026-10-01-001',
+    '_Memory — none_',
+    '> Memory — none',
+    '- Memory — written: ENG-2026-10-01-002',
+  ]
+  for (const line of forms) {
+    it(`not captured: ${line}`, () => {
+      expect(extractSelfReportedLearnings(block(line))).toEqual(['The deploy script needs NODE_ENV set'])
+    })
+  }
+
+  it('an empty learning block followed by the memory line yields nothing', () => {
+    for (const line of ['Memory — none', '`Memory — recalled 1 · used: ENG-1`']) {
+      expect(extractSelfReportedLearnings({ role: 'assistant', content: `Answer.\n\n---\n🧠 I learned:\n${line}` })).toEqual([])
+    }
+  })
+
+  it('a genuine learning that merely starts with "Memory" is kept', () => {
+    const r = extractSelfReportedLearnings(block('- Memory usage doubles once the BGE embedder is loaded'))
+    expect(r).toContain('Memory usage doubles once the BGE embedder is loaded')
+  })
+})
+
+describe('extractSelfReportedLearnings — only the footer shape is dropped (#1520 second re-audit L2)', () => {
+  const block = (...lines: string[]) => ({ role: 'assistant' as const, content: `Answer.\n\n---\n🧠 I learned:\n${lines.join('\n')}` })
+
+  it('real learnings that start "Memory: used" or "Memory — none" are kept, and so is what follows them', () => {
+    expect(extractSelfReportedLearnings(block(
+      '- Memory: used 4GB is too low for the build, set 8GB',
+      '- Memory — none of the caches survive a restart, warm them',
+      '- The deploy script needs NODE_ENV set',
+    ))).toEqual([
+      'Memory: used 4GB is too low for the build, set 8GB',
+      'Memory — none of the caches survive a restart, warm them',
+      'The deploy script needs NODE_ENV set',
+    ])
+  })
+
+  for (const footer of [
+    '🧠 Memory — recalled 2 · used: ENG-2026-10-01-001',
+    '<sub>Memory — recalled 2 · used: ENG-2026-10-01-001</sub>',
+    '1. Memory — recalled 2 · used: ENG-2026-10-01-001',
+    'Memory — recalled: ENG-2026-10-01-001, ENG-2026-10-01-002 · used: ENG-2026-10-01-001',
+  ]) {
+    it(`drops the footer: ${footer.slice(0, 24)}`, () => {
+      expect(extractSelfReportedLearnings(block('- The deploy script needs NODE_ENV set', footer)))
+        .toEqual(['The deploy script needs NODE_ENV set'])
+    })
+  }
+})
