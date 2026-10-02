@@ -479,12 +479,14 @@ describe('personal user: scope against a live (stub) remote store', () => {
       `  - path: "${join(dir, 'me.yaml')}"\n    scope: "${ME}"\n`)
     const future = new Date(Date.now() + 5000)
     utimesSync(cfg, future, future)
-    const a = await plur.learnAsync('the lathe chuck key hangs on the left hook', { scope: ME })
-    expect(a.engram.scope).toBe(ME)
+    // Batch and routed run FIRST, so neither is warmed by learnAsync's own
+    // reload (re-audit 3, I8): each must read the current config itself.
     const b = await plur.learnBatch([{ statement: 'the drill bits live in the blue case', context: { scope: ME } }])
     expect(b.results[0].engram.scope).toBe(ME)
     const r = await plur.learnRouted('the saw blades are in the top drawer', { scope: ME })
     expect(r.scope).toBe(ME)
+    const a = await plur.learnAsync('the lathe chuck key hangs on the left hook', { scope: ME })
+    expect(a.engram.scope).toBe(ME)
     expect(server.appendCalls).toBe(0)
   })
 
@@ -511,5 +513,121 @@ describe('personal user: scope against a live (stub) remote store', () => {
     const results = await plur.recall('heronslate', { scope: 'project:acme/app' })
     expect(server.recallCalls).toBe(1)
     expect(results.some(e => (e as any)._originalId === 'ENG-2026-1001-906')).toBe(true)
+  })
+})
+
+// Re-audit 3 (M2, L2): the one-store selection decides ROUTING only. The secret
+// scan still runs whenever content can reach a url store with this exact
+// scope, and a cached remote row does not absorb a write that stays local.
+describe('identical personal scope on a path store and a url store: scan and dedup (re-audit 3)', () => {
+  // A GitHub-token-shaped string, built at runtime so no literal sits in source.
+  const SECRET = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0'.repeat(2).slice(0, 36)
+  const DEAD = 'http://127.0.0.1:9'
+  const onServer = (): string =>
+    JSON.stringify([...((server as any).engrams as Map<string, unknown>).values()]) + JSON.stringify(server.appendStatements)
+
+  let bump = 0
+  function writeConfig(cfg: string, stores: string) {
+    writeFileSync(cfg, `embeddings:\n  enabled: false\nstores:\n${stores}`)
+    bump += 2000
+    const future = new Date(Date.now() + bump)
+    utimesSync(cfg, future, future)
+  }
+  const urlStore = (url: string, scope: string) => `  - url: "${url}"\n    token: "${TOKEN}"\n    scope: "${scope}"\n`
+  const pathStore = (file: string, scope: string) => `  - path: "${file}"\n    scope: "${scope}"\n`
+
+  async function waitQueued(plur: Plur, id: string) {
+    const deadline = Date.now() + 5000
+    for (;;) {
+      const rows = await (plur as any)._primaryStore.load() as any[]
+      if (rows.find(r => r.id === id)?.structured_data?._outbox?.last_error) break
+      if (Date.now() > deadline) throw new Error('never queued')
+      await new Promise(r => setTimeout(r, 10))
+    }
+    await new Promise(r => setTimeout(r, 30))
+  }
+
+  it('M2: updating an engram already on the server refuses a secret even when a path store shares the scope', async () => {
+    const dir = tmp('plur-userscope-m2u-')
+    const cfg = join(dir, 'config.yaml')
+    writeConfig(cfg, urlStore(baseUrl, ME))
+    const plur = new Plur({ path: dir })
+    const e = await plur.learnRouted('the shop wifi name is workshop5', { scope: ME })
+    expect(server.appendCalls).toBe(1)
+    // The user (or another process) then adds a local store with the identical scope.
+    writeConfig(cfg, urlStore(baseUrl, ME) + pathStore(join(dir, 'me.yaml'), ME))
+    await expect(plur.updateEngramAsync({ ...e, statement: `the shop token is ${SECRET}` })).rejects.toThrow(/sensitive/)
+    expect(onServer()).not.toContain(SECRET)
+  })
+
+  it('M2: an update that moves a queued row to the scope does not retarget a secret to the url store', async () => {
+    const dir = tmp('plur-userscope-m2r-')
+    const cfg = join(dir, 'config.yaml')
+    writeConfig(cfg,
+      urlStore(DEAD, 'group:acme/team') + urlStore(baseUrl, ME) + pathStore(join(dir, 'me.yaml'), ME))
+    const plur = new Plur({ path: dir })
+    const e = await plur.learn('the team standup is at nine', { scope: 'group:acme/team' })
+    await waitQueued(plur, e.id)
+    const row = (await plur.getById(e.id))!
+    await plur.updateEngram({ ...row, scope: ME, statement: `the deploy token is ${SECRET}` })
+    await plur.flushOutbox()
+    expect(onServer()).not.toContain(SECRET)
+    expect(server.appendCalls).toBe(0)
+  })
+
+  it('an update that moves a queued row to the scope cancels its delivery: the selected store is local', async () => {
+    const dir = tmp('plur-userscope-rt-')
+    const cfg = join(dir, 'config.yaml')
+    writeConfig(cfg,
+      urlStore(DEAD, 'group:acme/team') + urlStore(baseUrl, ME) + pathStore(join(dir, 'me.yaml'), ME))
+    const plur = new Plur({ path: dir })
+    const e = await plur.learn('the team retro is on fridays', { scope: 'group:acme/team' })
+    await waitQueued(plur, e.id)
+    const row = (await plur.getById(e.id))!
+    await plur.updateEngram({ ...row, scope: ME })
+    const stored = ((await (plur as any)._primaryStore.load()) as any[]).find(r => r.id === e.id)
+    expect(stored.scope).toBe(ME)
+    expect(stored.structured_data?._outbox).toBeUndefined()
+    await plur.flushOutbox()
+    expect(server.appendCalls).toBe(0)
+  })
+
+  it('M2: the outbox flush scans a queued row before it reaches the url store', async () => {
+    const dir = tmp('plur-userscope-m2f-')
+    const cfg = join(dir, 'config.yaml')
+    // 1. Queued for the personal url store while it is unreachable.
+    writeConfig(cfg, urlStore(DEAD, ME))
+    const plur = new Plur({ path: dir })
+    const e = await plur.learn('the shop alarm code is set', { scope: ME })
+    await waitQueued(plur, e.id)
+    // 2. A local store with the identical scope is added; the queued row is edited.
+    writeConfig(cfg, urlStore(DEAD, ME) + pathStore(join(dir, 'me.yaml'), ME))
+    const row = (await plur.getById(e.id))!
+    await plur.updateEngram({ ...row, statement: `the shop token is ${SECRET}` })
+    // 3. The url store becomes reachable and the outbox is flushed.
+    writeConfig(cfg, urlStore(baseUrl, ME) + pathStore(join(dir, 'me.yaml'), ME))
+    await plur.flushOutbox()
+    expect(onServer()).not.toContain(SECRET)
+  })
+
+  it('L2: a cached remote row does not swallow a write that the selection keeps local', async () => {
+    const dir = tmp('plur-userscope-l2-')
+    const mePath = join(dir, 'me.yaml')
+    writeConfig(join(dir, 'config.yaml'), urlStore(baseUrl, ME) + pathStore(mePath, ME))
+    const plur = new Plur({ path: dir })
+    const S = 'the spare house key is under the blue pot'
+    const seed = new Plur({ path: tmp('plur-userscope-l2seed-') })
+    const s = await seed.learn(S, { scope: 'global' })
+    const cached = { ...(await seed.getById(s.id)), id: 'ENG-2026-1002-001', scope: ME }
+    ;(plur as any)._getRemoteDriver({ url: baseUrl, token: TOKEN, scope: ME }).cache = { ts: Date.now(), engrams: [cached] }
+    const e = await plur.learnRouted(S, { scope: ME })
+    expect(e.scope).toBe(ME)
+    expect(server.appendCalls).toBe(0)
+    // Saved locally: the path store (or the primary) holds the statement.
+    const local = [
+      ...((await (plur as any)._primaryStore.load()) as any[]),
+      ...(await (plur as any)._loadSecondaryAndPacks() as any[]).filter((r: any) => !r._pack && !r._fromRemoteStore),
+    ]
+    expect(local.some(r => r.statement === S && r.status === 'active')).toBe(true)
   })
 })
