@@ -1571,6 +1571,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // more specific `warning` below (outbox, demotion, refusal) still
             // wins that key; `delivery_warning` keeps this one either way.
             delivery: delivered.delivery,
+            // 0.21.1: why it was queued (rejected token vs unreachable server).
+            ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning, warning: delivered.warning } : {}),
             ...(dedup?.near_duplicates?.length ? { dedup } : {}),
             ...(redraft ? { redraft } : {}),
@@ -1578,7 +1580,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed),
             ...domainHint(!!routed),
-            ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
+            ...(isOutbox ? { outbox: true, warning: delivered.reason ?? 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
             ...(demoted ? { demoted: true, requested_scope: demoted.from, warning: `Sensitive content (${demoted.patterns}) detected — stored at "${demoted.to}"/private instead of the requested shared scope "${demoted.from}". If this is a false positive, re-scope deliberately.` } : {}),
             ...(routed ? { routed: { scope: routed.scope, confidence: routed.confidence, reason: routed.reason }, info: `No scope was provided; auto-routed to "${routed.scope}" (confidence ${routed.confidence}) because its content matched that scope's covers. Pass an explicit scope to override.` } : {}),
             // #1115: a shared scope matched but was NOT adopted. Said plainly,
@@ -1609,6 +1611,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, ...learnDecision(engram),
             delivery: delivered.delivery,
+            ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routedFallback),
@@ -2072,8 +2075,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         // Single mode
         try {
-          await plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral', args.scope as string | undefined)
-          return { success: true, id: args.id, signal: args.signal }
+          const { warnings } = await plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral', args.scope as string | undefined)
+          return { success: true, id: args.id, signal: args.signal, ...(warnings.length > 0 ? { warnings } : {}) }
         } catch (err: any) {
           if (err.message?.includes('readonly store')) {
             return { success: false, id: args.id, signal: args.signal, note: 'Engram is in a readonly store. Feedback noted for this session but not persisted.' }
@@ -2093,6 +2096,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           id: { type: 'string', description: 'Engram ID to pin or unpin' },
           pinned: { type: 'boolean', description: 'Target value (default true)' },
           list: { type: 'boolean', description: 'If true, just return the current set of pinned engrams (no mutation)' },
+          scope: { type: 'string', description: 'Which store holds it. Ids are minted per store, so one bare id can name a local engram and an unrelated remote one; such an id is refused. Pass "primary" for the local engram, or a remote store\'s scope (or the namespaced ENG-XXX-… id from recall) for the remote one.' },
         },
       },
       handler: async (args, plur) => {
@@ -2158,7 +2162,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // a synthesized {id, pinned} object — caller observes stale state on
         // immediate getById. The async variant awaits and returns the real
         // server response.
-        const updated = await plur.setPinnedAsync(args.id as string, target)
+        const updated = await plur.setPinnedAsync(args.id as string, target, args.scope ? { scope: args.scope as string } : undefined)
         if (!updated) throw new Error(`Engram not found: ${args.id}`)
         return {
           id: updated.id,
@@ -2197,15 +2201,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // force:true — explicit user forget always fully retires, ignoring
             // reference_count. The ref-count decrement path is for internal
             // multi-agent dedup; one plur_forget call = full retirement (#766).
-            await plur.forget(args.id as string, args.reason as string | undefined, { force: true })
-            return { success: true, retired: { id: engram.id, statement: engram.statement } }
+            const { warnings } = await plur.forget(args.id as string, args.reason as string | undefined, { force: true })
+            return { success: true, retired: { id: engram.id, statement: engram.statement }, ...(warnings.length > 0 ? { warnings } : {}) }
           }
           // Not in local store, or an explicit scope was given — let
           // plur.forget() resolve. It routes to remote stores (with prefix
           // stripping per #86 / PR #186), refuses an ambiguous unqualified id
           // (#831), and throws "Engram not found" if it is nowhere.
-          await plur.forget(args.id as string, args.reason as string | undefined, { force: true, ...(scope ? { scope } : {}) })
-          return { success: true, retired: { id: args.id as string, ...(scope ? { scope } : {}) } }
+          const { warnings } = await plur.forget(args.id as string, args.reason as string | undefined, { force: true, ...(scope ? { scope } : {}) })
+          return { success: true, retired: { id: args.id as string, ...(scope ? { scope } : {}) }, ...(warnings.length > 0 ? { warnings } : {}) }
         }
         if (args.search) {
           // remote:false (#776) — forget-by-search resolves local retirement
@@ -2213,8 +2217,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const matches = await plur.recall(args.search as string, { limit: 100, remote: false })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
-            await plur.forget(matches[0].id, args.reason as string | undefined, { force: true })
-            return { success: true, retired: { id: matches[0].id, statement: matches[0].statement } }
+            const { warnings } = await plur.forget(matches[0].id, args.reason as string | undefined, { force: true })
+            return { success: true, retired: { id: matches[0].id, statement: matches[0].statement }, ...(warnings.length > 0 ? { warnings } : {}) }
           }
           return {
             success: false,
