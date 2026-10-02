@@ -59,7 +59,9 @@ describe('ambiguity guards are bounded across the whole store walk', () => {
     const warn = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     // Must not throw: a mis-targeted rating is recoverable and rating is hot.
-    await expect(plur.feedback(e.id, 'positive')).resolves.toBeUndefined()
+    // 0.21.1: the unverified stores are reported back, not only logged.
+    const res = await plur.feedback(e.id, 'positive')
+    expect(res.warnings.length).toBeGreaterThan(0)
     warn.mockRestore()
   })
 

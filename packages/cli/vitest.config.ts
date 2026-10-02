@@ -42,6 +42,9 @@ export const SPAWN_SUITES = [
   'test/hook-outbox-flush.test.ts',
   // #1299: spawns status / doctor / outbox / sync against a real-HTTP stub.
   'test/outbox-needs-action.test.ts',
+  // 0.21.1 save deadline: spawns learn/forget/feedback against hanging, 401
+  // and real-HTTP stubs, wall-clock timed, plus a 13k-engram store.
+  'test/save-deadline-outbox.test.ts',
 ]
 
 export default defineConfig({
