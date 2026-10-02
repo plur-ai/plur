@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { describe, it, expect } from 'vitest'
 import { extractLearnings, extractSelfReportedLearnings, isCorrection } from '../src/learner.js'
 
@@ -439,6 +441,23 @@ describe('extractSelfReportedLearnings — only the footer shape is dropped (#15
     it(`drops the footer: ${footer.slice(0, 24)}`, () => {
       expect(extractSelfReportedLearnings(block('- The deploy script needs NODE_ENV set', footer)))
         .toEqual(['The deploy script needs NODE_ENV set'])
+    })
+  }
+})
+
+describe('the memory-line filter, case by case — shared with Hermes (#1520 third re-audit N3)', () => {
+  const cases = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'memory-line-cases.json'), 'utf-8')) as { footer: string[]; learning: string[] }
+  const extract = (line: string) => extractSelfReportedLearnings({
+    role: 'assistant', content: `Answer.\n\n---\n🧠 I learned:\n- The deploy script needs NODE_ENV set\n${line}`,
+  })
+  for (const line of cases.footer) {
+    it(`footer dropped: ${JSON.stringify(line)}`, () => {
+      expect(extract(line)).toEqual(['The deploy script needs NODE_ENV set'])
+    })
+  }
+  for (const line of cases.learning) {
+    it(`learning kept: ${JSON.stringify(line)}`, () => {
+      expect(extract(`- ${line}`)).toEqual(['The deploy script needs NODE_ENV set', line])
     })
   }
 })

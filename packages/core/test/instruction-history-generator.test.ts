@@ -39,3 +39,35 @@ describe('evaluateConst — renders what it can, refuses what it cannot', () => 
     })
   }
 })
+
+describe('evaluateConst — the forms the third re-audit found (#1520 re-audit3 N4)', () => {
+  for (const [what, src] of [
+    ['a // comment line between + parts', "const S='a'\n// note\n+ 'b'\n"],
+    ['an && continuation', "const S='a'\n&& 'b'\n"],
+    ['a || continuation', "const S='a' || 'b'\n"],
+  ] as const) {
+    it(`refuses ${what}`, () => {
+      expect(evaluateConst(src, 'S').error, JSON.stringify(evaluateConst(src, 'S'))).toBeTruthy()
+    })
+  }
+
+  it('a statement ending in ; ends the value, as in JavaScript', () => {
+    const r = evaluateConst("const S='a';\n+ 'b'\n", 'S')
+    expect(r.text === 'a' || r.error !== undefined).toBe(true)
+  })
+
+  it('a "definition" inside a template string is not a definition', () => {
+    expect(evaluateConst("const DOC=`example:\nconst S='fake'\n`\n", 'S')).toEqual({ missing: true })
+  })
+
+  for (const [what, src] of [
+    ['/* inside a // comment', "// matches src/*.ts\nconst S = 'actual'\n"],
+    ['/* inside a string', "const GLOB = 'src/*'\nconst S = 'actual'\n"],
+    ['/* inside a template', "const U = `https://x.y/*`\nconst S = 'actual'\n"],
+    ['a block comment before the definition on the same line', "/* comment */ const S = 'actual'\n"],
+  ] as const) {
+    it(`still finds the definition after ${what}`, () => {
+      expect(evaluateConst(src, 'S')).toEqual({ text: 'actual' })
+    })
+  }
+})

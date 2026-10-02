@@ -1,0 +1,36 @@
+{
+  "_comment": "Shared by packages/core/test/learner.test.ts and packages/hermes/test/test_learner.py: both extractors must agree on every line (#1520 third re-audit N3).",
+  "footer": [
+    "Memory — recalled 2 · used: ENG-2026-10-01-001 · written: ENG-2026-10-01-002",
+    "Memory — none",
+    "Memory — none recalled",
+    "Memory — recalled none",
+    "Memory — used: none",
+    "Memory — recalled: ENG-2026-10-01-001, ENG-2026-10-01-002 · used: ENG-2026-10-01-001",
+    "`Memory — recalled 2 · used: ENG-1`",
+    "**Memory — recalled** 2 · used: ENG-1",
+    "**Memory — recalled 2 · used: ENG-1**",
+    "_Memory — none_",
+    "<sub>Memory — recalled 2 · used: ENG-1</sub>",
+    "<small><i>Memory — none</i></small>",
+    "🧠 Memory — recalled 2 · used: ENG-1",
+    "1. Memory — recalled 2 · used: ENG-1",
+    "- Memory — written: ENG-2026-10-01-002",
+    "> Memory — none",
+    "Memory - recalled 2 · used: ENG-1",
+    "Memory – recalled 2 · used: ENG-1",
+    "Memory: recalled 2 · used: ENG-1",
+    "﻿Memory — none",
+    "Memory — recalled ٢ · used: ENG-1"
+  ],
+  "learning": [
+    "Memory: recalled 3 times faster when the cache is warm",
+    "1. Memory: recalled 2 items is the default limit for recall",
+    "Memory: used: ENG-123 is obsolete; prefer ENG-456",
+    "Memory: used 4GB is too low for the build, set 8GB",
+    "Memory — none of the caches survive a restart, warm them",
+    "Memory: recalled 2GB remains allocated after cache eviction",
+    "Memory usage doubles once the BGE embedder is loaded",
+    "Memory-mapped files are faster for the index"
+  ]
+}
