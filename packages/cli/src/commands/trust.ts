@@ -1,7 +1,7 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { findProjectConfigPath, readProjectConfigFromPath, FolderMapError } from '@plur-ai/core'
-import { nonceRequired, fail } from './folders.js'
+import { nonceRequired, fail, nonceSession } from './folders.js'
 
 /**
  * Split `[dir] [--nonce <n>]` (#1378). Returns null on a malformed argument
@@ -80,7 +80,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // be read is refused rather than overwritten.
   let trusted: string
   try {
-    trusted = plur.trustDirectory(dir, parsed.nonce !== undefined ? { nonce: parsed.nonce } : undefined)
+    trusted = plur.trustDirectory(dir, parsed.nonce !== undefined ? { nonce: parsed.nonce, ...nonceSession() } : undefined)
   } catch (err) {
     if (err instanceof FolderMapError && err.code.startsWith('nonce-')) return fail(err, shouldOutputJson(flags))
     return exit(1, (err as Error).message)

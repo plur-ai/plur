@@ -71,7 +71,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     refuseWithoutNonce(rmNonce, json)
     const plur = createPlur(flags)
     try {
-      const removed = plur.removeFolder(folder, rmNonce !== undefined ? { nonce: rmNonce } : undefined)
+      const removed = plur.removeFolder(folder, rmNonce !== undefined ? { nonce: rmNonce, ...nonceSession() } : undefined)
       if (json) return outputJson({ success: true, removed })
       return outputText(removed ? `Removed the entry for ${folder}.` : `${folder} has no entry of its own.`)
     } catch (err) {
@@ -105,12 +105,24 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const plur = createPlur(flags)
   try {
-    const entry = plur.setFolder(folder, change, nonce !== undefined ? { nonce } : undefined)
+    const entry = plur.setFolder(folder, change, nonce !== undefined ? { nonce, ...nonceSession() } : undefined)
     if (json) return outputJson({ success: true, entry })
     outputInfo(`Recorded: ${describe(entry)}`, flags)
   } catch (err) {
     fail(err, json)
   }
+}
+
+/**
+ * The agent session this command runs in, when its host says so (audit F5 of
+ * #1517). The opencode plugin sets PLUR_FOLDER_SESSION for every shell its
+ * agent runs, and binds the nonces it issues to that session; a nonce is then
+ * checked only against the named session's nonces. The editor hooks' hosts
+ * set nothing, and their unbound nonces work as before.
+ */
+export function nonceSession(): { session?: string } {
+  const s = process.env.PLUR_FOLDER_SESSION
+  return s ? { session: s } : {}
 }
 
 export function refuseWithoutNonce(nonce: string | undefined, json: boolean): void {
