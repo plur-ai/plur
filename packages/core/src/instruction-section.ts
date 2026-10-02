@@ -1,4 +1,8 @@
-import { copyFileSync, existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs'
+import {
+  accessSync, chmodSync, constants, copyFileSync, existsSync, readFileSync, readdirSync, realpathSync,
+  renameSync, statSync, unlinkSync, writeFileSync,
+} from 'fs'
+import { randomBytes } from 'crypto'
 import { basename, dirname, join } from 'path'
 
 /**
@@ -70,7 +74,7 @@ type OpenBlock = { kind: 'fence'; close: string } | { kind: 'comment'; close: st
  */
 function hiddenLines(lines: string[]): { hidden: boolean[]; openAtEnd: OpenBlock } {
   const hidden: boolean[] = new Array(lines.length).fill(false)
-  let fence: { char: string; len: number } | null = null
+  let fence: { char: string; len: number; indent: string } | null = null
   let comment = false
   for (let i = 0; i < lines.length; i++) {
     const line = bare(lines[i])
@@ -85,10 +89,10 @@ function hiddenLines(lines: string[]): { hidden: boolean[]; openAtEnd: OpenBlock
       if (line.includes('-->')) comment = false
       continue
     }
-    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
-    if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
+    const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line)
+    if (m && !(m[2][0] === '`' && m[3].includes('`'))) {
       hidden[i] = true
-      fence = { char: m[1][0], len: m[1].length }
+      fence = { char: m[2][0], len: m[2].length, indent: m[1] }
       continue
     }
     const c = /^ {0,3}<!--/.exec(line)
@@ -98,7 +102,10 @@ function hiddenLines(lines: string[]): { hidden: boolean[]; openAtEnd: OpenBlock
     }
   }
   const openAtEnd: OpenBlock = fence
-    ? { kind: 'fence', close: fence.char.repeat(fence.len) }
+    // The close carries the opening fence's indentation: a fence opened inside
+    // a list item is closed inside that item, not by a column-0 fence that
+    // would open a new block around the section (#1520 second re-audit L1).
+    ? { kind: 'fence', close: fence.indent + fence.char.repeat(fence.len) }
     : comment ? { kind: 'comment', close: '-->' } : null
   return { hidden, openAtEnd }
 }
@@ -275,16 +282,40 @@ export function backupFile(path: string, opts: { once?: boolean } = {}): string 
 /**
  * Write `content` to `path`, first copying any existing file to a timestamped
  * backup beside it. Returns the backup path, or null when the file is new.
- * When the write fails (a read-only file, say) the backup just made is
- * removed and the error is thrown, so a failed run leaves nothing behind
+ *
+ * The new content goes to a temporary file in the same directory, which is
+ * then renamed over the target, so the target is never truncated or half
+ * written: a failure partway (a full disk, an I/O error) leaves the user's
+ * file exactly as it was (#1520 second re-audit H1). The temporary file is
+ * removed on failure, and so is the backup, but only after checking that the
+ * target still holds the original bytes. The file's permission bits are
+ * kept, and a symlink is written through to its target rather than replaced.
+ * A file that is not writable is refused before anything is copied
  * (re-audit low d).
  */
 export function writeWithBackup(path: string, content: string): string | null {
-  const backup = backupFile(path)
+  const exists = existsSync(path)
+  const target = exists ? realpathSync(path) : path
+  let original: Buffer | null = null
+  let mode: number | undefined
+  if (exists) {
+    accessSync(target, constants.W_OK)
+    original = readFileSync(target)
+    mode = statSync(target).mode & 0o7777
+  }
+  const backup = exists ? backupFile(path) : null
+  const tmp = join(dirname(target), `.${basename(target)}.plur-tmp-${process.pid}-${randomBytes(4).toString('hex')}`)
   try {
-    writeFileSync(path, content)
+    writeFileSync(tmp, content, mode === undefined ? undefined : { mode })
+    if (mode !== undefined) chmodSync(tmp, mode)
+    renameSync(tmp, target)
   } catch (err) {
-    if (backup) { try { unlinkSync(backup) } catch { /* report the write error, not this */ } }
+    try { unlinkSync(tmp) } catch { /* never created, or already gone */ }
+    if (backup && original) {
+      let unchanged = false
+      try { unchanged = readFileSync(target).equals(original) } catch { /* unreadable: keep the backup */ }
+      if (unchanged) { try { unlinkSync(backup) } catch { /* report the write error, not this */ } }
+    }
     throw err
   }
   return backup
