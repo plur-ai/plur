@@ -143,6 +143,7 @@ export {
   resolveFolderPolicy,
   folderOffEntries,
   folderMapProblem,
+  repairFolderMap,
   loadFolderMap,
   saveFolderMap,
   folderMapPath,
@@ -169,7 +170,20 @@ export {
   type FolderChange,
   type FolderAnswer,
   type FolderMapErrorCode,
+  type FolderMapFault,
+  type FolderMapProblem,
+  type FolderMapRepairResult,
 } from './folders.js'
+// Pinpointing and repairing a broken folders.yaml (#1526): pure text checks.
+export {
+  checkFolderMapText,
+  planFolderMapRepair,
+  describeFolderMapIssues,
+  unifiedDiff,
+  type FolderMapIssue,
+  type FolderMapCheck,
+  type FolderMapRepairPlan,
+} from './folder-map-check.js'
 // The one-time folder question and an `on` folder's session settings (#1347),
 // shared by the CLI's editor hooks and the opencode plugin. See folder-ask.ts.
 export {
@@ -179,6 +193,7 @@ export {
   quoted as folderQuoted,
   escapedPath as folderEscapedPath,
   isFolderAskText,
+  folderRepairCommand,
   type FolderAskOptions,
   type FolderAskScopeRanker,
 } from './folder-ask.js'

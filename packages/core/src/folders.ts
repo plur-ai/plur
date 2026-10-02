@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync, writeFileSync } from 'fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
 import yaml from 'js-yaml'
-import { z } from 'zod'
+import { checkFolderMapText, describeFolderMapIssues, planFolderMapRepair, type FolderMapIssue } from './folder-map-check.js'
 import { logger } from './logger.js'
 import { atomicWrite, withLock } from './sync.js'
 import { canonicalize, canonicalSpellings, findProjectConfigPath, readProjectConfigFromPath } from './project-config.js'
@@ -54,6 +54,19 @@ export interface FolderMap {
 }
 
 /** Where a policy decision came from. */
+/** Where and why the folder map cannot be used (#1526). */
+export interface FolderMapFault {
+  file: string
+  line?: number
+  column?: number
+  /** Plain words, e.g. "line 4: indentation — `plur:` is indented 5 spaces, expected 4 (…)". */
+  problem?: string
+  /** True when `plur folders repair` can fix it. */
+  fixable?: boolean
+  /** When fixable: what the repair changes, in one line without values (shown to the user before `--yes`). */
+  repair_summary?: string
+}
+
 export type FolderPolicySource = 'map' | 'plur-yaml' | 'mcp-config' | 'default'
 
 export interface FolderPolicy {
@@ -70,28 +83,17 @@ export interface FolderPolicy {
    */
   reason?: 'untrusted-plur-yaml' | 'malformed-map' | 'resolver-error'
   /**
-   * For `malformed-map`: the folder map that could not be read, and the line
-   * of the YAML error when there is one (1-based). The decision fails SAFE:
-   * the folder is `ask` — no memory — until the file is fixed (audit F4 of
-   * #1517, owner decision), never `on` because a project marker is there.
+   * For `malformed-map`: the folder map that could not be read, the line and
+   * column of the problem when there is one (1-based), the problem in plain
+   * words (it quotes at most the key on that line, #1526), and whether
+   * `plur folders repair` can fix it. The decision fails SAFE: the folder is
+   * `ask` — no memory — until the file is fixed (audit F4 of #1517, owner
+   * decision), never `on` because a project marker is there.
    */
-  mapError?: { file: string; line?: number }
+  mapError?: FolderMapFault
   /** What that `.plur.yaml` requests, for the question. Never the token. */
   requested?: { scope?: string; domain?: string; remote_url?: string }
 }
-
-const FolderEntrySchema = z.object({
-  path: z.string().min(1),
-  plur: z.enum(['on', 'off', 'ask']).optional(),
-  scope: z.string().min(1).optional(),
-  trusted: z.boolean().optional(),
-  literal: z.boolean().optional(),
-}).passthrough()
-
-const FolderMapSchema = z.object({
-  version: z.literal(1).optional(),
-  folders: z.array(FolderEntrySchema).optional(),
-}).passthrough()
 
 export function folderMapPath(root: string): string {
   return join(root, 'folders.yaml')
@@ -267,59 +269,99 @@ function warnOnce(key: string, msg: string): void {
   logger.warning(msg)
 }
 
-interface LoadResult { map: FolderMap; malformed: boolean; line?: number }
+interface LoadResult { map: FolderMap; malformed: boolean; error?: Omit<FolderMapFault, 'file'> }
 
-/** Parse folders.yaml. `problem` says, in words, why it cannot be used. */
-function parseMapFile(file: string): { map: FolderMap } | { problem: string; line?: number } {
-  let text: string
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch (err) {
-    return { problem: `cannot be read (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})` }
-  }
-  let raw: unknown
-  try {
-    raw = yaml.load(text.replace(/^\uFEFF/, ''))
-  } catch (err) {
-    const mark = (err as { mark?: { line?: number; column?: number } }).mark
-    const reason = (err as { reason?: string }).reason ?? (err as Error).message.split('\n')[0]
-    return mark && typeof mark.line === 'number'
-      ? { problem: `is not valid YAML at line ${mark.line + 1}, column ${(mark.column ?? 0) + 1}: ${reason}`, line: mark.line + 1 }
-      : { problem: `is not valid YAML: ${reason}` }
-  }
-  if (raw === null || raw === undefined) return { map: { version: 1, folders: [] } }
-  const parsed = FolderMapSchema.safeParse(raw)
-  if (!parsed.success) {
-    return { problem: 'has an invalid entry: ' + parsed.error.issues.map(i => {
-      const [top, idx, ...rest] = i.path
-      const where = top === 'folders' && typeof idx === 'number'
-        ? `entry ${idx + 1} (folders.${idx}${rest.length ? '.' + rest.join('.') : ''})`
-        : i.path.join('.') || 'the file'
-      return `${where}: ${i.message}`
-    }).join('; ') }
-  }
-  return { map: { version: 1, folders: (parsed.data.folders ?? []) as FolderEntry[] } }
+/** The problem with a folders.yaml's text, or its map (#1526: strict, pinpointed). */
+function parseMapText(text: string): { map: FolderMap } | { issues: FolderMapIssue[] } {
+  const check = checkFolderMapText(text)
+  if (!check.ok) return { issues: check.issues }
+  const folders = (check.raw.folders ?? []) as FolderEntry[]
+  return { map: { version: 1, folders } }
 }
 
-function readMapFile(root: string): LoadResult | null {
-  const file = folderMapPath(root)
-  // Absent means ENOENT on the path itself, as in folderMapProblem (#1519):
-  // existsSync() also answers false for a dangling symlink, a symlink loop or
-  // a parent that cannot be searched, and reading those as "no map" let a
-  // project marker turn memory on where the MCP gate fails safe.
+/** A broken map's error: the first problem, located, and whether repair can fix the file. */
+/**
+ * The last broken map's error, by file and exact text. Every hook prompt and
+ * gated MCP call asks for it while the map is broken, and the repair plan
+ * behind `fixable` is not free; the text comparison is (#1530 review F5).
+ */
+const mapErrorCache = new Map<string, { text: string; error: Omit<FolderMapFault, 'file'> }>()
+
+function mapErrorOf(file: string, text: string, issues: FolderMapIssue[], utf8 = true): Omit<FolderMapFault, 'file'> {
+  const hit = mapErrorCache.get(file)
+  if (hit && hit.text === text && utf8) return hit.error
+  const first = issues[0]
+  let fixable = false
+  let summary: string | undefined
+  if (utf8) try {
+    // No diff: only `plur folders repair` shows one.
+    const plan = planFolderMapRepair(text, { diff: false })
+    if (plan.status === 'fixable') { fixable = true; summary = plan.summary }
+  } catch { /* not fixable */ }
+  const error = {
+    ...(first.line !== undefined ? { line: first.line } : {}),
+    ...(first.column !== undefined ? { column: first.column } : {}),
+    problem: describeFolderMapIssues(issues),
+    fixable,
+    ...(summary ? { repair_summary: summary } : {}),
+  }
+  if (utf8) mapErrorCache.set(file, { text, error })
+  return error
+}
+
+/** "has a problem at line 4: …" / "has a problem: the file is empty …". */
+function problemPhrase(message: string): string {
+  return /^line \d+/.test(message) ? `has a problem at ${message}` : `has a problem: ${message}`
+}
+
+/**
+ * Read folders.yaml: null when absent, else the map or why it cannot be used.
+ * Absent means ENOENT on the path itself, nothing else. existsSync() also
+ * answers false for a dangling symlink, a symlink loop or a parent that
+ * cannot be searched — each of those is a map that cannot be read.
+ */
+function readMapText(file: string): null | { text: string; utf8: boolean } | { unreadable: string } {
   try {
     lstatSync(file)
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return null
-    warnOnce(`malformed:${file}`, `[plur:folders] ${file} cannot be read (${code ?? (err as Error).message}) — treating it as empty (folders fall back to ask)`)
-    return { map: { version: 1, folders: [] }, malformed: true }
+    return { unreadable: `cannot be read (${code ?? (err as Error).message})` }
   }
-  const r = parseMapFile(file)
-  if ('map' in r) return { map: r.map, malformed: false }
-  warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.problem} — treating it as empty (folders fall back to ask)`)
-  // The line (1-based) for the fail-safe notice (audit F4 of #1517); a schema error has none.
-  return { map: { version: 1, folders: [] }, malformed: true, ...(r.line !== undefined ? { line: r.line } : {}) }
+  try {
+    const bytes = readFileSync(file)
+    const text = bytes.toString('utf8')
+    // Bytes that do not round-trip are not UTF-8: reported, never repaired (#1530 re-review R5).
+    return { text, utf8: Buffer.from(text, 'utf8').equals(bytes) }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    const link = (() => { try { return lstatSync(file).isSymbolicLink() } catch { return false } })()
+    return { unreadable: `cannot be read (${code ?? (err as Error).message}${link ? ', it is a symlink whose target cannot be read' : ''})` }
+  }
+}
+
+function readMapFile(root: string): LoadResult | null {
+  const file = folderMapPath(root)
+  const r = readMapText(file)
+  if (r === null) return null
+  if ('unreadable' in r) {
+    warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.unreadable} — treating it as empty (folders fall back to ask)`)
+    return { map: { version: 1, folders: [] }, malformed: true, error: { problem: r.unreadable, fixable: false } }
+  }
+  const parsed = parseMapText(r.text)
+  if ('map' in parsed) return { map: parsed.map, malformed: false }
+  // The same cases the MCP gate refuses (#1519): an empty file and an unknown
+  // top-level key count too, so the hooks and plugins agree with it (#1526).
+  const error = mapErrorOf(file, r.text, parsed.issues, r.utf8)
+  warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${problemPhrase(error.problem!)} — treating it as empty (folders fall back to ask)`)
+  return { map: { version: 1, folders: [] }, malformed: true, error }
+}
+
+/** What a broken folder map is, where, and whether `plur folders repair` can fix it (#1526). */
+export interface FolderMapProblem extends FolderMapFault {
+  /** The problem as a predicate on the file: "<file> <problem>". */
+  problem: string
+  fixable: boolean
 }
 
 /**
@@ -327,43 +369,20 @@ function readMapFile(root: string): LoadResult | null {
  * Read-only: unlike {@link loadFolderMap} it never imports trust.yaml, so it
  * never writes folders.yaml. For callers that must fail safe on a broken map
  * (the MCP memory tools) instead of reading it as empty.
+ *
+ * Strict where the loader once was lenient: a map that says nothing is not
+ * "no decisions" when the file exists, and an unknown top-level key (a typo
+ * such as `folder:`) would otherwise drop every decision silently.
  */
-export function folderMapProblem(root: string): { file: string; problem: string } | null {
+export function folderMapProblem(root: string): FolderMapProblem | null {
   const file = folderMapPath(root)
-  // Absent means ENOENT on the path itself, nothing else. existsSync() also
-  // answers false for a dangling symlink, a symlink loop or a parent that
-  // cannot be searched — each of those is a map that cannot be read.
-  try {
-    lstatSync(file)
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT') return null
-    return { file, problem: `cannot be read (${code ?? (err as Error).message})` }
-  }
-  let text: string
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    const link = (() => { try { return lstatSync(file).isSymbolicLink() } catch { return false } })()
-    return { file, problem: `cannot be read (${code ?? (err as Error).message}${link ? ', it is a symlink whose target cannot be read' : ''})` }
-  }
-  const r = parseMapFile(file)
-  if ('problem' in r) return { file, problem: r.problem }
-  // Strict where the loader is lenient: a map that says nothing is not "no
-  // decisions" when the file exists, and an unknown top-level key (a typo
-  // such as `folder:`) would otherwise drop every decision silently.
-  let raw: unknown
-  try { raw = yaml.load(text.replace(/^\uFEFF/, '')) } catch { raw = undefined }
-  if (raw === null || raw === undefined) {
-    return { file, problem: 'is empty (no `version:` or `folders:` key); run plur folders list to see the map, or delete the file if you meant to have none' }
-  }
-  if (typeof raw !== 'object' || Array.isArray(raw)) return { file, problem: 'is not a mapping with `version:` and `folders:` keys' }
-  const unknown = Object.keys(raw as Record<string, unknown>).filter(k => k !== 'version' && k !== 'folders')
-  if (unknown.length > 0) {
-    return { file, problem: `has an unknown top-level key ${unknown.map(k => JSON.stringify(k)).join(', ')} (only "version" and "folders" are allowed)` }
-  }
-  return null
+  const r = readMapText(file)
+  if (r === null) return null
+  if ('unreadable' in r) return { file, problem: r.unreadable, fixable: false }
+  const parsed = parseMapText(r.text)
+  if ('map' in parsed) return null
+  const error = mapErrorOf(file, r.text, parsed.issues, r.utf8)
+  return { file, ...error, problem: problemPhrase(error.problem!), fixable: error.fixable === true }
 }
 
 /** Read the pre-#1347 `trust.yaml` list. Never writes it. */
@@ -438,6 +457,101 @@ export function loadFolderMap(root: string): FolderMap {
 export function saveFolderMap(root: string, map: FolderMap): void {
   const body = yaml.dump({ version: 1, folders: map.folders.map(cleanEntry) }, { lineWidth: 120, noRefs: true })
   atomicWrite(folderMapPath(root), body, { mode: 0o600 })
+}
+
+/** What {@link repairFolderMap} found or did (#1526). */
+export interface FolderMapRepairResult {
+  /**
+   * `absent`: no folders.yaml. `ok`: nothing to repair. `fixable`: a repair
+   * is possible (dry run). `repaired`: written. `unfixable`: needs a hand fix,
+   * nothing changed. `unreadable`: the file cannot be read (a dangling symlink,
+   * a permission), nothing changed. `changed`: the file changed since the
+   * caller's dry run, nothing written.
+   */
+  status: 'absent' | 'ok' | 'fixable' | 'repaired' | 'unfixable' | 'unreadable' | 'changed'
+  file: string
+  /** The text the plan was made from (pass it back as `expect`). */
+  before?: string
+  diff?: string
+  /** What the repair changes, in one line without values. */
+  summary?: string
+  fixes?: FolderMapIssue[]
+  issues?: FolderMapIssue[]
+  /** For `unreadable`: why. */
+  problem?: string
+  backup?: string
+  /** After a write: the map re-checked from disk (null = it is fine now). */
+  problemAfter?: FolderMapProblem | null
+}
+
+/** `20261002T090807Z`: the UTC time, for a backup's name. */
+function utcStamp(d: Date): string {
+  return d.toISOString().replace(/\.\d+Z$/, 'Z').replace(/[-:]/g, '')
+}
+
+/**
+ * `plur folders repair` (#1526). Plans the repair of a broken folders.yaml
+ * and, with `apply`, performs it under the folder-map lock: a backup
+ * `folders.yaml.plur-backup-<UTC>` next to the file (the original bytes),
+ * an atomic write of the repaired text (to the symlink's target when the map
+ * is a symlink, so the link stays a link), then a re-check from disk.
+ *
+ * Only unambiguous fixes are made (see planFolderMapRepair); when any problem
+ * needs a hand fix, nothing is written at all. `expect`, when given, must be
+ * the text the caller showed the user (its dry run's `before`): if the file
+ * changed since, nothing is written.
+ */
+export function repairFolderMap(root: string, opts: { apply: boolean; expect?: string; now?: Date }): FolderMapRepairResult {
+  const file = folderMapPath(root)
+  const plan = (): FolderMapRepairResult & { bytes?: Buffer; target?: string } => {
+    const r = readMapText(file)
+    if (r === null) return { status: 'absent', file }
+    if ('unreadable' in r) return { status: 'unreadable', file, problem: r.unreadable }
+    // Resolve a symlinked map once, and read, back up and write that same
+    // file (#1530 review N9): the link stays a link.
+    let target = file
+    try { if (lstatSync(file).isSymbolicLink()) target = realpathSync(file) } catch { /* the path itself */ }
+    let bytes: Buffer
+    try { bytes = readFileSync(target) } catch (err) {
+      return { status: 'unreadable', file, problem: `cannot be read (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})` }
+    }
+    const text = bytes.toString('utf8')
+    // Text that does not round-trip is not UTF-8: a repair would replace the
+    // bytes it cannot decode (#1530 review F6). Pinpoint, change nothing.
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      const n = text.slice(0, text.indexOf('\uFFFD')).split('\n').length
+      return { status: 'unfixable', file, before: text, issues: [{ line: n, column: 1, fixable: false,
+        message: `line ${n}: the file is not valid UTF-8 text; plur folders repair does not change it — fix that line by hand` }] }
+    }
+    const p = planFolderMapRepair(text)
+    if (p.status === 'ok') return { status: 'ok', file, before: text }
+    if (p.status === 'unfixable') return { status: 'unfixable', file, before: text, issues: p.issues }
+    return { status: 'fixable', file, before: text, diff: p.diff, fixes: p.fixes, summary: p.summary, bytes, target }
+  }
+  const strip = ({ bytes: _b, target: _t, ...rest }: ReturnType<typeof plan>): FolderMapRepairResult => rest
+  if (!opts.apply) return strip(plan())
+  return locked(root, () => {
+    const shown = plan()
+    if (shown.status !== 'fixable') return strip(shown)
+    if (opts.expect !== undefined && opts.expect !== shown.before) return { ...strip(shown), status: 'changed' }
+    const p = planFolderMapRepair(shown.before!, { diff: false })
+    if (p.status !== 'fixable') return strip(shown)
+    // The original bytes, private like the map; never overwrite an earlier
+    // backup (two repairs in one second get -2, -3, …).
+    const stem = `${file}.plur-backup-${utcStamp(opts.now ?? new Date())}`
+    let backup = stem
+    for (let n = 2; ; n++) {
+      try {
+        writeFileSync(backup, shown.bytes!, { mode: 0o600, flag: 'wx' })
+        break
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || n > 99) throw err
+        backup = `${stem}-${n}`
+      }
+    }
+    atomicWrite(shown.target!, p.after, { mode: 0o600 })
+    return { ...strip(shown), status: 'repaired', backup, problemAfter: folderMapProblem(root) }
+  })
 }
 
 function cleanEntry(e: FolderEntry): FolderEntry {
@@ -544,7 +658,7 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
     // on until it is fixed. `plur folders set` refuses to write it too.
     return {
       mode: 'ask', remoteAllowed: false, source: 'default', reason: 'malformed-map',
-      mapError: { file: folderMapPath(opts.root), ...(loaded.line !== undefined ? { line: loaded.line } : {}) },
+      mapError: { file: folderMapPath(opts.root), ...(loaded.error ?? {}) },
     }
   }
   const entries = loaded.map.folders
@@ -789,7 +903,9 @@ function mostRestrictive(modes: Array<FolderMode | undefined>): FolderMode | und
 function loadForWrite(root: string): FolderMap {
   const r = load(root)
   if (r.malformed) {
-    throw new FolderMapError('malformed', `${folderMapPath(root)} could not be read; fix or remove it before writing (nothing was changed).`)
+    const why = r.error?.problem ? ` — ${r.error.problem}` : ''
+    const how = r.error?.fixable ? 'run `plur folders repair` to fix it' : 'fix it by hand (`plur folders repair` re-checks it)'
+    throw new FolderMapError('malformed', `${folderMapPath(root)} cannot be used${why}; ${how} before writing (nothing was changed).`)
   }
   return r.map
 }
