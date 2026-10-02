@@ -275,8 +275,8 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       ? (request.params.arguments as Record<string, unknown> | undefined)?.action
       : tool.name
     if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
-      const dirs = await workspace.dirs()
-      const decision = dirs === null ? workspaceUnknownAnswer() : folderGate.check(dirs)
+      const ws = await workspace.workspace()
+      const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
       if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
       folderScope = decision.scope
     }
@@ -610,4 +610,24 @@ export async function runStdio(): Promise<void> {
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
+
+  // The SDK's stdio transport never reports that stdin ended, so close the
+  // server ourselves (audit F1 of #1529): on stdin end and on SIGTERM /
+  // SIGINT. Closing fires onclose, which deletes this session's folder-question
+  // nonces. A signal then exits (the handler replaces Node's default exit).
+  let closing: Promise<void> | null = null
+  const closeServer = (): Promise<void> => {
+    if (!closing) closing = server.close().catch(() => { /* already closed */ })
+    return closing
+  }
+  process.stdin.once('end', () => { void closeServer() })
+  process.stdin.once('close', () => { void closeServer() })
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      const code = signal === 'SIGTERM' ? 143 : 130
+      const timer = setTimeout(() => process.exit(code), 1000)
+      timer.unref?.()
+      void closeServer().finally(() => process.exit(code))
+    })
+  }
 }

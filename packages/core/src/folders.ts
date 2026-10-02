@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -1112,6 +1112,8 @@ export function issueFolderNonce(
 
 function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number, bound: boolean): string {
   mkdirSync(nonceDir(root), { recursive: true, mode: 0o700 })
+  // Orphans of sessions whose end was never reported go first (audit F1 of #1529).
+  sweepFolderNoncesUnlocked(root, now)
   const file = nonceFile(root, sessionId)
   const data = readNonceFile(file) ?? { session: safeSessionKey(sessionId), nonces: [] }
   const nonce = randomBytes(16).toString('hex')
@@ -1156,6 +1158,34 @@ export function answerFolderNotNow(
   options: { home?: string; session?: string; now?: number } = {},
 ): void {
   consumeFolderNonce(root, nonce, folder, { notNow: true }, options.now ?? Date.now(), { home: options.home, session: options.session })
+}
+
+/**
+ * Delete the nonce files of sessions whose end was never reported (a server
+ * killed outright, a missed SessionEnd hook): every file whose newest nonce
+ * is older than FOLDER_NONCE_TTL_MS, so none of its nonces could still be
+ * redeemed. A file that cannot be read is judged by its age on disk.
+ * Redemption reads every file in the directory, so orphans must not pile up
+ * (audit F1 of #1529). Runs on every issue, and from the MCP server at start.
+ */
+export function sweepFolderNonces(root: string, now: number = Date.now()): void {
+  if (!existsSync(nonceDir(root))) return
+  locked(root, () => sweepFolderNoncesUnlocked(root, now))
+}
+
+function sweepFolderNoncesUnlocked(root: string, now: number): void {
+  let names: string[] = []
+  try { names = readdirSync(nonceDir(root)).filter(f => f.endsWith('.yaml')) } catch { return }
+  for (const name of names) {
+    const file = join(nonceDir(root), name)
+    try {
+      const data = readNonceFile(file)
+      const newest = data && data.nonces.length > 0
+        ? Math.max(...data.nonces.map(r => Number(r.issued_at) || 0))
+        : statSync(file).mtimeMs
+      if (now - newest > FOLDER_NONCE_TTL_MS) rmSync(file, { force: true })
+    } catch { /* best-effort: a file that vanished or cannot be removed is left */ }
+  }
 }
 
 /** Drop every nonce of `sessionId` — called when the session ends. */

@@ -28,8 +28,8 @@ const files = () => (existsSync(join(root, 'folder-nonces')) ? readdirSync(join(
 describe('sweeping orphaned folder-nonce files', () => {
   it('deletes a session file whose newest nonce is past the lifetime, keeps a live one', () => {
     const t0 = Date.now() - FOLDER_NONCE_TTL_MS - 60_000
-    const old = issueFolderNonce(root, 'dead-session', dir, { mode: 'on' }, t0)
     const live = issueFolderNonce(root, 'live-session', dir, { mode: 'on' })
+    const old = issueFolderNonce(root, 'dead-session', dir, { mode: 'on' }, t0)
     expect(files()).toHaveLength(2)
     sweepFolderNonces(root)
     expect(folderNonceOutstanding(root, 'dead-session', old)).toBe(false)

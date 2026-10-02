@@ -1,6 +1,6 @@
 import {
   folderOffEntries, folderMapProblem, folderAsk, folderNonceOutstanding, endFolderNonceSession,
-  FOLDER_NONCE_TTL_MS, type Plur, type FolderAsk, type FolderAskAnswer,
+  sweepFolderNonces, coversHomeOrRoot, FOLDER_NONCE_TTL_MS, type Plur, type FolderAsk, type FolderAskAnswer,
 } from '@plur-ai/core'
 import { fileURLToPath } from 'url'
 import { randomBytes } from 'crypto'
@@ -203,7 +203,7 @@ export interface RootsServer {
 export function createWorkspaceDirs(
   server: RootsServer,
   opts: { timeoutMs?: number; cwd?: () => string } = {},
-): { dirs(): Promise<string[] | null> } {
+): { dirs(): Promise<string[] | null>; workspace(): Promise<Workspace | null> } {
   const timeout = opts.timeoutMs ?? 2000
   const cwd = opts.cwd ?? (() => process.cwd())
   let cached: { gen: number; dirs: string[] } | null = null
@@ -274,8 +274,15 @@ export function createWorkspaceDirs(
       const roots = await clientRoots()
       return roots === null ? null : [...new Set([...roots, cwd()])]
     },
+    async workspace() {
+      const roots = await clientRoots()
+      return roots === null ? null : { roots: [...new Set(roots)], cwd: cwd() }
+    },
   }
 }
+
+/** The editor's workspace as the folder gate needs it: the client's roots, and the server's own cwd. */
+export interface Workspace { roots: string[]; cwd: string }
 
 /** The answer a gated tool gives when the editor's workspace folders could not be fetched. */
 export function workspaceUnknownAnswer(): FolderOffAnswer {
@@ -304,6 +311,11 @@ export interface FolderAskPayload {
 
 /** Every workspace folder is `on`: the tool runs, with the folder map's scope when there is one. */
 export interface FolderOn { plur: 'on'; scope?: string }
+
+/** True for the home folder, a filesystem root or a folder above home. */
+function isHomeOrAbove(dir: string): boolean {
+  try { return coversHomeOrRoot(dir) } catch { return true }
+}
 
 /** True for a filesystem root (`/`, `C:\\`): not a project folder, never asked about. */
 function isFilesystemRoot(dir: string): boolean {
@@ -334,10 +346,15 @@ function isFilesystemRoot(dir: string): boolean {
  * file, the folder is off for the rest of this session, without the question.
  * The folder stays undecided, so another session asks again.
  *
- * Precedence across the workspace folders: off > ask > on. A filesystem root
- * (some clients start MCP servers in `/`) is not a project folder: it is never
- * asked about, and its `ask` does not hold memory back. `end()` deletes the
- * session's unanswered nonces (called when the MCP connection closes).
+ * Precedence across the workspace folders: off > ask > on. `off` is checked
+ * on every folder, the server's cwd included. The question is asked only
+ * about the client's roots when it gives any (the cwd is wherever the client
+ * started the process); without roots, about the cwd — unless that is the
+ * home folder, a filesystem root or a folder above home, where an answer
+ * would cover every folder under it (audit F2 of #1529). A filesystem root is
+ * never asked about. `end()` deletes the session's unanswered nonces; the
+ * stdio server calls it on stdin end and on SIGTERM / SIGINT, and nonce files
+ * of sessions killed outright are swept once expired (audit F1 of #1529).
  */
 export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}): {
   sessionId: string
@@ -346,10 +363,13 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
    * folder map's write scope for the workspace (the first folder that has
    * one), for plur_session_start's default.
    */
-  check(dirs: string[]): FolderOffAnswer | FolderAskPayload | FolderOn
+  check(workspace: Workspace): FolderOffAnswer | FolderAskPayload | FolderOn
   end(): void
 } {
   const sessionId = opts.sessionId ?? `mcp-${randomBytes(8).toString('hex')}`
+  // Nonce files left by sessions that never closed (a server killed
+  // outright) are removed once their nonces have expired (audit F1 of #1529).
+  try { sweepFolderNonces(plur.storageRoot) } catch { /* best-effort */ }
   /** The question built for a workspace folder, by that folder, while it is undecided. */
   const asked = new Map<string, { ask: FolderAsk; issuedAt: number; reason?: string }>()
   const notNow = new Set<string>()
@@ -372,12 +392,8 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
       try { return folderNonceOutstanding(plur.storageRoot, sessionId, nonce) } catch { return false }
     }
     let entry = asked.get(dir)
-    // Rebuilt when the nonces are about to expire, or the reason the folder
-    // is undecided changed (a repo .plur.yaml appeared or went away).
-    if (entry && ((!entry.ask.notice && Date.now() - entry.issuedAt > reissueAfter) || entry.reason !== policy.reason)) {
-      asked.delete(dir)
-      entry = undefined
-    }
+    // "Not now" first (audit N5 of #1529): it holds for the rest of the
+    // session, whatever happens to the question afterwards.
     if (entry?.ask.notNowNonce !== undefined) {
       const open = outstanding(entry.ask.notNowNonce)
       if (!open) {
@@ -388,6 +404,12 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
         asked.delete(dir)
         return notNowAnswer(entry.ask.folder)
       }
+    }
+    // Rebuilt when the nonces are about to expire, or the reason the folder
+    // is undecided changed (a repo .plur.yaml appeared or went away).
+    if (entry && ((!entry.ask.notice && Date.now() - entry.issuedAt > reissueAfter) || entry.reason !== policy.reason)) {
+      asked.delete(dir)
+      entry = undefined
     }
     // Another answer was used, yet the folder is undecided again (its entry
     // was removed since): that question no longer works, ask afresh.
@@ -427,11 +449,21 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
 
   return {
     sessionId,
-    check(dirs) {
-      const off = folderOffAnswer(plur, dirs)
+    check(workspace) {
+      // `off` is checked on every folder, the server's cwd included (#1519):
+      // there, checking more folders only ever turns memory off.
+      const off = folderOffAnswer(plur, [...new Set([...workspace.roots, workspace.cwd])])
       if (off) return off
+      // The question is asked only about the folders the user works in
+      // (audit F2 of #1529): the client's roots when it gives any — the
+      // server's cwd is wherever the client happened to start the process —
+      // else the cwd, unless that is the home folder, a filesystem root or a
+      // folder above home: an answer there would cover every folder under it.
+      const askable = workspace.roots.length > 0
+        ? workspace.roots
+        : (isHomeOrAbove(workspace.cwd) ? [] : [workspace.cwd])
       const on: Array<{ dir: string; scope?: string }> = []
-      for (const dir of dirs) {
+      for (const dir of askable) {
         if (isFilesystemRoot(dir)) continue
         let policy: ReturnType<Plur['resolveFolderPolicy']>
         try {

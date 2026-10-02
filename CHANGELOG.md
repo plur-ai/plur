@@ -108,12 +108,24 @@ asks for settings.
 - `plur_session_start` now uses the folder map's scope for this workspace as
   its default when you pass no `default_scope` (`scope_source: "folder-map"`),
   ahead of a trusted `.plur.yaml`'s, as the editor hooks already do.
+- **This also changes folders you had already turned on with a scope**
+  (`plur folders set <folder> --scope <s>`): over MCP, an unscoped
+  `plur_learn` there now goes to that scope — possibly a team store — where
+  before it went to the `.plur.yaml` scope or to `global`.
 - A broken `folders.yaml` keeps #1519's fail-safe answer: off, naming the file
   and the problem, no command, no nonce. The admin tools are unchanged; off wins
   over ask, and ask over on, across the workspace folders; a workspace that
-  cannot be fetched stays off for that call. A filesystem root (`/`, where some
-  clients start MCP servers) is never asked about. The session's unanswered
-  nonces are deleted when the MCP connection closes.
+  cannot be fetched stays off for that call.
+- Which folder is asked about: the client's MCP roots when it sends any (the
+  server's start folder is still checked for `off`, but never asked about);
+  without roots, the start folder — unless it is your home folder, a
+  filesystem root or a folder above home, where an answer would cover every
+  folder under it. There, memory runs as before.
+- The session's unanswered nonces are deleted when the session closes: the
+  stdio server now shuts down on stdin end and on SIGTERM / SIGINT. Nonce
+  files left by a session that never closed (killed outright, or a missed
+  editor SessionEnd hook) are removed once their nonces have expired (24 h),
+  whenever a nonce is issued and when the MCP server starts.
 
 If you use PLUR through a global MCP config and have no folder decisions yet,
 the first memory call in each project now asks once. The CLI hooks' question

@@ -159,6 +159,7 @@ export {
   endFolderNonceSession,
   folderNonceOutstanding,
   answerFolderNotNow,
+  sweepFolderNonces,
   removeLegacyTrustEntry,
   FolderMapError,
   FOLDER_NONCE_TTL_MS,
