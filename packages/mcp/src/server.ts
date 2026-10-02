@@ -4,9 +4,9 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
-import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
+import { FOLDER_SCOPE, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
-import { FOLDER_GATED_TOOLS, folderOffAnswer, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
+import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -220,6 +220,14 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 
   // --- The editor's workspace, for the folder map (folder-gate.ts) ---
   const workspace = createWorkspaceDirs(server)
+  // The folder map's off / ask for this MCP session (#1525). The session's
+  // unanswered folder-question nonces die with the connection.
+  const folderGate = createFolderGate(instance)
+  const priorOnClose = server.onclose
+  server.onclose = () => {
+    folderGate.end()
+    priorOnClose?.()
+  }
 
   // --- Tools ---
 
@@ -256,16 +264,19 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         isError: true,
       }
     }
-    // The folder map's `off` (folder-gate.ts): a memory tool, called directly
-    // or through plur_admin, touches no store in an `off` folder and says so.
+    // The folder map (folder-gate.ts): a memory tool, called directly or
+    // through plur_admin, touches no store in an `off` folder and says so, and
+    // in an undecided (`ask`) folder answers with the folder question (#1525).
     // Before the canary tick: a refused call is not a turn of memory use.
+    let folderScope: string | undefined
     const gated = tool.name === 'plur_admin'
       ? (request.params.arguments as Record<string, unknown> | undefined)?.action
       : tool.name
     if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
       const dirs = await workspace.dirs()
-      const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
-      if (off) return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
+      const decision = dirs === null ? workspaceUnknownAnswer() : folderGate.check(dirs)
+      if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
+      folderScope = decision.scope
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -316,6 +327,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         }
       }
       args = validated.data
+      // The folder map's scope for this workspace (#1525), for
+      // plur_session_start's default; under a Symbol key no client can set.
+      if (folderScope !== undefined) args = { ...args, [FOLDER_SCOPE]: folderScope }
       const result = await tool.handler(args, instance)
 
       // Generic _isError propagation (audit fix): a tool handler — currently

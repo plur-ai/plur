@@ -535,14 +535,15 @@ describe('a folder map that cannot be read fails safe', () => {
     expectMapProblem(await call(client, 'plur_recall', { query: 'zebra-local-fact' }), s.home, /entry 1|folders\.0/)
   })
 
-  it('no folders.yaml at all behaves as before', async () => {
+  it('no folders.yaml at all is not a problem: the folder is undecided and gets the question (#1525)', async () => {
     const s = await setup()
     rmSync(join(s.home, 'folders.yaml'))
     vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
     const client = await connect(s.plur)
     const r = await call(client, 'plur_recall', { query: 'zebra-local-fact deploy target' })
-    expect(r.json?.plur).toBeUndefined()
-    expect(r.text).toContain('zebra-local-fact')
+    expect(r.json?.reason).toBeUndefined()
+    expect(r.json?.plur).toBe('ask')
+    expect(r.text).not.toContain('zebra-local-fact')
   })
 })
 
