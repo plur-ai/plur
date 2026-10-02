@@ -16,13 +16,13 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSy
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, RemoteOnlyWriteError } from '../src/index.js'
+import { Plur, RemoteOnlyWriteError, YamlPrimaryStore } from '../src/index.js'
 import { StubServer } from './helpers/stub-server.js'
 import { backgroundPushesSettled } from './helpers/background-pushes.js'
 
 const TOKEN = 'every-method-token'
 const TEAM = 'group:acme/client'
-const MARKERS = ['PERSONALZEBRA', 'PERSONALPIN', 'PERSONALSECOND', 'PERSONALEPISODE']
+const MARKERS = ['PERSONALZEBRA', 'PERSONALPIN', 'PERSONALSECOND', 'PERSONALEPISODE', 'PERSONALREMOTE']
 
 let server: StubServer
 let baseUrl: string
@@ -74,6 +74,8 @@ describe('every public Plur method in a remote-only folder', () => {
       stores: [
         { url: baseUrl, token: TOKEN, scope: TEAM, shared: true, readonly: false },
         { path: secondary, scope: 'project:mine' },
+        // A personal url store on the same host as the team store.
+        { url: baseUrl, token: TOKEN, scope: 'user:me', readonly: false },
       ],
     }))
     const rec = await outside.recordTensions([{ id_a: personal.id, id_b: pinned.id, statement_a: personalRow.statement, statement_b: 'always PERSONALPIN rule for me', confidence: 0.9, reason: 'x' }])
@@ -96,7 +98,13 @@ describe('every public Plur method in a remote-only folder', () => {
     const beforeTensions = read(join(root, 'tensions.yaml'))
     const beforeHistory = read(join(root, 'history.jsonl'))
 
-    const plur = new Plur({ path: root })
+    // The stub's /me authorises the team scope and the personal one, so
+    // verifyRemoteStore must SUCCEED (no tolerated error).
+    server.setMe({ scopes: [TEAM, 'user:me'] })
+    server.seedEngram({ id: 'ENG-2026-10-02-099', scope: 'user:me', status: 'active', data: { statement: 'my remote PERSONALREMOTE note' } })
+    // A store passed in at construction: its identity must survive binding.
+    const outsideStore = new YamlPrimaryStore(join(root, 'engrams.yaml'))
+    const plur = new Plur({ path: root, store: outsideStore })
     plur.bindFolder(work)
     expect(plur.remoteOnlyFolder()?.scope).toBe(TEAM)
     const llm = async () => '[]'
@@ -160,10 +168,17 @@ describe('every public Plur method in a remote-only folder', () => {
       rerankerSelfEval: /reranker|PLUR_RERANKER|off/i, // the reranker is off in this fixture
       checkRerankerFit: /reranker|PLUR_RERANKER|off|embed/i,
       addRemoteStore: /fetch|connect|ECONNREFUSED|reach|token|failed/i, // points at a closed port on purpose
-      verifyRemoteStore: /./, // the stub server does not implement every verification route
       registerScope: /not|unknown|authori|scope/i, // the stub /me does not grant that scope
       reportFailure: /not found/i, // the personal row it names is invisible here — the point of the test
     }
+    // These must be REFUSED in the folder (with the arguments above: a personal
+    // id, a local scope, or a personal-store operation). Every other method
+    // must not be refused: a wrong refusal is a failure too.
+    const MUST_REFUSE = new Set([
+      'capture', 'episodeToEngram', 'saveMetaEngrams', 'exportPack', 'recordTensions', 'confirmTension',
+      'dismissTension', 'resolveTension', 'purgeTensions', 'compact', 'reindex', 'reindexAsync', 'sync',
+      'feedback', 'setPinned', 'setPinnedAsync', 'updateEngram', 'updateEngramAsync', 'forget', 'rescope',
+    ])
     const unexpected: string[] = []
     const leaks: string[] = []
     const check = (name: string, value: unknown) => {
@@ -180,9 +195,14 @@ describe('every public Plur method in a remote-only folder', () => {
           (plur as any)[name](...args),
           new Promise(r => setTimeout(() => r('(timed out)'), 20_000)),
         ])
+        if (MUST_REFUSE.has(name)) unexpected.push(`${name}: should have been refused, but succeeded`)
       } catch (err) {
         out = (err as Error)?.message ?? String(err)
-        if (!(err instanceof RemoteOnlyWriteError) && !(EXPECTED_ERRORS[name]?.test(String(out)))) unexpected.push(`${name}: ${String(out).slice(0, 160)}`)
+        if (err instanceof RemoteOnlyWriteError) {
+          if (!MUST_REFUSE.has(name)) unexpected.push(`${name}: refused, but it should work in the folder: ${String(out).slice(0, 120)}`)
+        } else if (!(EXPECTED_ERRORS[name]?.test(String(out)))) {
+          unexpected.push(`${name}: ${String(out).slice(0, 200)}`)
+        }
       }
       if (out === '(timed out)') unexpected.push(`${name}: timed out`)
       check(name, out)
@@ -190,12 +210,20 @@ describe('every public Plur method in a remote-only folder', () => {
     for (const g of getters) {
       const v = (plur as any)[g]
       if (g === 'primaryStore') {
-        check('primaryStore.load', await v.load())
-        check('primaryStore.loadCached', await v.loadCached())
+        // The public handle is the store as passed in, by identity, and is not
+        // guarded (owner decision 2026-10-02, re-audit 3 R3-1). PLUR's own
+        // paths go through the guarded internal access, checked here instead.
+        expect(v).toBe(outsideStore)
+        check('internal store.load', await (plur as any)._primaryStore.load())
+        check('internal store.loadCached', await (plur as any)._primaryStore.loadCached())
       } else check(g, v)
     }
     await backgroundPushesSettled(root).catch(() => {})
     expect(leaks).toEqual([])
+    // The personal url store on the team's host was not touched.
+    const remote = server.getEngram('ENG-2026-10-02-099')!
+    expect(remote.status).toBe('active')
+    expect((remote.data as any).pinned).not.toBe(true)
     expect(unexpected, 'methods that failed for a reason other than the remote-only refusal').toEqual([])
     // Queued rows are real queued saves: active, in the team scope, marked for this folder.
     for (const r of primaryRows().filter(x => x.structured_data?._outbox)) {
@@ -213,4 +241,55 @@ describe('every public Plur method in a remote-only folder', () => {
     expect(read(join(root, 'tensions.yaml'))).toBe(beforeTensions)
     plur.close()
   }, 600_000)
+})
+
+describe('a queued remote-only save, acted on from outside the folder', () => {
+  it('stays a well-formed queued save after every mutator, unless it is deleted', async () => {
+    rmSync(root, { recursive: true, force: true }); mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({
+      index: false, embeddings: { enabled: false },
+      stores: [
+        { url: baseUrl, token: TOKEN, scope: TEAM, shared: true, readonly: false, sensitivity: { forbid: ['infra'] } },
+        { url: baseUrl, token: TOKEN, scope: 'group:acme/other', shared: true, readonly: false },
+        { url: baseUrl, token: TOKEN, scope: 'user:me', readonly: false },
+        { url: baseUrl, token: TOKEN, scope: 'global', readonly: false },
+      ],
+    }))
+    writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: work, plur: 'remote-only', scope: TEAM }] }))
+    const bound = new Plur({ path: root }); bound.bindFolder(work)
+    server.reset()
+    server.appendErrorResponse = { status: 503, body: 'down' }
+    const q = await bound.learnRouted('to release the client app run the release script', { type: 'procedural' })
+    await backgroundPushesSettled(root)
+    const outside = new Plur({ path: root })
+    const personal = await outside.learn('a personal winner', { scope: 'global' })
+    const row = () => primaryRows().find(r => r.id === q.id)
+    const tries: Array<[string, () => Promise<unknown>]> = [
+      ['update to global', () => outside.updateEngram({ ...row(), scope: 'global' })],
+      ['update to local', () => outside.updateEngram({ ...row(), scope: 'local' })],
+      ['update to user:me', () => outside.updateEngram({ ...row(), scope: 'user:me' })],
+      ['retarget to another team', () => outside.updateEngram({ ...row(), scope: 'group:acme/other' })],
+      ['retire by update', () => outside.updateEngram({ ...row(), status: 'retired' })],
+      ['strip the queue entry', () => outside.updateEngram({ ...row(), structured_data: {} })],
+      ['rescope local', () => outside.rescope(q.id, 'local')],
+      ['procedure evolution', () => outside.reportFailure(q.id, 'failed', async () => 'ssh to 139.59.155.82 then run the release script')],
+      ['tension resolve', async () => {
+        const rec = await outside.recordTensions([{ id_a: personal.id, id_b: q.id, statement_a: 'a', statement_b: 'b', confidence: 0.9, reason: 'x' }])
+        return outside.resolveTension(rec.records[0].id, personal.id)
+      }],
+      ['pin', () => outside.setPinned(q.id, true)],
+      ['feedback', () => outside.feedback(q.id, 'negative')],
+    ]
+    for (const [label, fn] of tries) {
+      await fn().catch(() => {})
+      const r = row()
+      expect(r, `${label}: the row disappeared without a forget or delivery`).toBeDefined()
+      expect(r.status, label).toBe('active')
+      expect(r.scope, label).toBe(TEAM)
+      expect(r.structured_data?._outbox?.remote_only, label).toBe(true)
+      expect(r.structured_data?._outbox?.target_scope, label).toBe(TEAM)
+    }
+    await outside.forget(q.id, 'done', { scope: 'primary', force: true }).catch(() => {})
+    expect(row(), 'forget deletes it outright').toBeUndefined()
+  }, 120_000)
 })

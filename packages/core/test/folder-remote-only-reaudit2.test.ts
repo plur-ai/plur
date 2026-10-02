@@ -139,7 +139,10 @@ describe('R2-B2: a queued remote-only save is never retired', () => {
   it('the guard refuses a queue-marked row that is retired or in a personal scope', async () => {
     const q = await queue('queued client fact for the guard')
     const plur = bound()
-    const ps = plur.primaryStore
+    // The internal (guarded) store access. The public `primaryStore` handle is
+    // the store as passed in and is not guarded (re-audit 3, R3-1, owner
+    // decision 2026-10-02).
+    const ps = (plur as any)._primaryStore
     const current = row(q.id)
     expect(await refused(() => ps.save([{ ...current, status: 'retired' }]))).toBeInstanceOf(RemoteOnlyWriteError)
     expect(await refused(() => ps.save([current, { ...current, id: 'ENG-2026-10-02-900', scope: 'global' }]))).toBeInstanceOf(RemoteOnlyWriteError)
@@ -169,14 +172,18 @@ describe('R2-S4: an unscoped ingest goes to the folder scope', () => {
   })
 })
 
-describe('R2-S5: a primaryStore handle taken before binding follows the binding', () => {
-  it('reads no personal row after the instance is bound', async () => {
+describe('R2-S5 (revised by re-audit 3, R3-1): the primaryStore handle', () => {
+  // Owner decision 2026-10-02: `primaryStore` is the store as passed in, by
+  // identity, and is not guarded; PLUR's own paths use the guarded internal
+  // access. What remains to check: the internal access follows the binding
+  // whenever it is taken, and the public handle keeps its identity.
+  it('keeps identity across binding, while internal access is guarded from the moment of binding', async () => {
     const plur = new Plur({ path: root })
     await plur.learn('personal handle note PERSONALHANDLE', { scope: 'global' })
     const ps = plur.primaryStore
     plur.bindFolder(work)
-    expect(JSON.stringify(await ps.load())).not.toContain('PERSONALHANDLE')
-    expect(await refused(() => ps.save([]))).toBeNull() // an empty visible save keeps hidden rows
+    expect(plur.primaryStore).toBe(ps)
+    expect(JSON.stringify(await (plur as any)._primaryStore.load())).not.toContain('PERSONALHANDLE')
     expect(rows().some(r => r.statement === 'personal handle note PERSONALHANDLE')).toBe(true)
   })
 })
