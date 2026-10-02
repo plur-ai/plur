@@ -278,11 +278,11 @@ describe('save deadline, outbox fallback and remote probes (0.21.1)', () => {
       { url: unauth.url, scope: 'group:test/product' },
       { url: unauth.url, scope: 'project:test/registered' },
     ])
-    const r = await cli(['learn', 'Lesson for an unregistered project', '--scope', 'project:meridian/jimo', '--json'])
+    const r = await cli(['learn', 'Lesson for an unregistered project', '--scope', 'project:example/unregistered', '--json'])
     expect(r.status, `${r.stdout} ${r.stderr}`).toBe(0)
     const out = JSON.parse(r.stdout)
     expect(out.delivery).toBe('local')
-    expect(out.scope).toBe('project:meridian/jimo')
+    expect(out.scope).toBe('project:example/unregistered')
     expect(yamlText()).toContain('Lesson for an unregistered project')
     expect(hang.requests).toEqual([])
     expect(unauth.requests).toEqual([])
