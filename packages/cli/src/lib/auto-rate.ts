@@ -86,8 +86,8 @@ export function autoCaptureEnabled(env: NodeJS.ProcessEnv = process.env): boolea
 export const AUTO_RATE_MAX_TURNS = 3
 
 /**
- * Server time for ALL the team saves of one auto-capture run together
- * (#1532 review F3, re-audit R4). Well inside the inline watchdog
+ * Server time for ALL the team saves of one hook run together — every
+ * statement of every turn the run drains (#1532 review F3, re-audit R4, S5). Well inside the inline watchdog
  * (hook-auto-rate, 9 s): every save must have reached the server or fallen
  * through to the outbox before the watchdog can exit. One budget for the run,
  * not one per statement — three statements at 3 s each already passed the
@@ -311,6 +311,9 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
   // Batches a killed worker renamed but never finished. Only ever read while
   // holding the lock, and the lock is only taken over from a dead or stale
   // owner, so no live worker is still working on them.
+  // ONE server budget for every turn this run drains (#1532 re-audit 2, S5):
+  // the inline fallback drains all queued turns under one 9 s watchdog.
+  const captureDeadline = Date.now() + AUTO_CAPTURE_REMOTE_TIMEOUT_MS
   const orphans = (): string[] => {
     try {
       const prefix = `${basename(queue)}.`
@@ -333,7 +336,7 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
           let turn: QueuedTurn
           try { turn = JSON.parse(line) as QueuedTurn } catch { continue }
           plur ??= createPlur(flags)
-          const out = await autoRateTurn({ editor, sessionId, reply: turn.reply, flags, cwd: turn.cwd, plur })
+          const out = await autoRateTurn({ editor, sessionId, reply: turn.reply, flags, cwd: turn.cwd, plur, captureDeadline })
           total.rated.push(...out.rated)
           total.captured += out.captured
         }
@@ -363,6 +366,8 @@ export async function autoRateTurn(opts: {
   cwd?: string
   /** Reuse an open store (the worker handles several turns with one). */
   plur?: ReturnType<typeof createPlur>
+  /** When the run's capture budget ends (epoch ms); shared by every turn a worker drains. */
+  captureDeadline?: number
 }): Promise<AutoRateOutcome> {
   const outcome: AutoRateOutcome = { rated: [], captured: 0 }
   try {
@@ -454,7 +459,7 @@ export async function autoRateTurn(opts: {
           tags: ['auto-capture'],
           claim_class: 'inferred' as const,
         }
-        const budgetEnd = Date.now() + AUTO_CAPTURE_REMOTE_TIMEOUT_MS
+        const budgetEnd = opts.captureDeadline ?? Date.now() + AUTO_CAPTURE_REMOTE_TIMEOUT_MS
         for (const statement of statements) {
           try {
             if (project.scope) {
