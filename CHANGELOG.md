@@ -35,6 +35,15 @@ Text output prints `Saved:` or `Queued in the outbox:` with the reason. The
 queued line is never hidden by `--quiet`. The MCP `plur_learn` result
 carries the same fields.
 
+**Every routed save has a bounded server deadline.** `plur_learn` (MCP),
+`plur_learn_batch`, and the Claw and opencode plugins now take the outbox after
+10 seconds instead of waiting 30. Hook auto-capture uses 3 seconds, so the
+save is queued before the hook's 9-second watchdog can exit. Before, that
+watchdog could exit while the request was in flight, and the captured
+statement was lost. A request that lands after its deadline is sent again
+with the same idempotency key, so a server that honours the key (the team
+server does) stores it once.
+
 **`plur forget` is not blocked by an expired token, and never holds the store
 lock while it waits.** Retiring a local engram first checks each team store
 for another engram with the same id. A 401/403 used to refuse the retire.
@@ -43,7 +52,11 @@ is retired, with a warning naming the store whose token was rejected
 (`warnings` in `--json`). The check now runs before the store lock is taken,
 with 5 seconds per store. Before, a hanging server held the lock for 30
 seconds. A store that cannot be reached still refuses the retire, and the
-message names `--scope primary`. `plur feedback` follows the same rule,
+message names `--scope primary`. A rejected token is not proof there is no other
+engram with that id, though. If this machine has ever met that id on a server
+(its history, the outbox's delivered ids, or cached team rows), the retire is
+refused instead, naming `--scope primary`. Looking up an id that is not stored
+locally is also limited to 5 seconds per store (it was 30). `plur feedback` follows the same rule,
 except that an unreachable store gives a warning instead of a refusal, as it
 did before.
 
@@ -53,12 +66,18 @@ its ids from 001 each day, so one bare id can name two unrelated engrams:
 - `plur learn` now prints the namespaced id for a team save (`ENG-XXX-…`, the
   form `recall` and the MCP tool use). A queued save keeps its local id.
 - `plur feedback` takes `--scope primary|<team scope>`, and refuses unknown
-  flags and stray extra arguments instead of dropping them.
+  flags and stray extra arguments instead of dropping them. `--batch` honours
+  `--scope` too, and each item may carry its own `scope`.
 - Pinning (`setPinned`, MCP `plur_pin`, which now takes `scope`) refuses a
   bare id that exists both locally and in a team store, instead of pinning
   the local one.
 - `updateEngram` refuses a team row whose bare id matches an unrelated local
-  engram, instead of writing the team content over it.
+  engram, instead of writing the team content over it. It refuses only when
+  there is evidence of such a twin: the server holds that id, or this machine
+  met it remotely. Moving a local engram into a team scope with no twin still
+  works as before; `rescope` remains the way to send it to the team store.
+- `plur_pin` with a `scope` checks the pinned quota against the engram that
+  scope holds, not a local engram with the same bare id.
 
 A store-unique id format is planned for 0.22.
 
