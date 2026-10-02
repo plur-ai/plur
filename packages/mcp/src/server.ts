@@ -4,9 +4,9 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, type FolderPolicy } from '@plur-ai/core'
-import { fileURLToPath } from 'url'
 import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
+import { FOLDER_GATED_TOOLS, folderOffAnswer, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -78,6 +78,8 @@ OPTIONAL but improves quality:
 - Call plur_recall before answering factual questions — the answer may be in memory
 
 Do not ask permission to use these tools — they are your memory system.
+
+FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken, and with reason "workspace-unknown" when your client's workspace roots could not be fetched (that one retries by itself on the next call). Carry on without memory and do not retry or work around it; only the user can turn it back on or fix the map, from a terminal (the message names the command). plur_status and plur_doctor keep working.
 
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
@@ -209,82 +211,6 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     versionRecheckTimer.unref?.()
   }
 
-  // --- The editor's workspace, for the folder map (audit of #1521, S2/B-2) ---
-  //
-  // The folders this server serves: every `file://` root the client lists
-  // over MCP `roots/list` (when it declares the roots capability), plus the
-  // folder it was started in. Same rule as #1519's `off` gate; whichever of
-  // the two merges second should share one helper.
-  //
-  // Fail CLOSED (re-audit B-2): when the client declared roots and
-  // `roots/list` fails or times out, the call reads and writes nothing and
-  // says so; the next call asks again. One in-flight request is shared by
-  // concurrent calls, and a generation counter discards an answer that a
-  // `roots/list_changed` made stale during discovery.
-  let rootsGen = 0
-  let rootsCache: { gen: number; dirs: string[] } | null = null
-  let rootsInFlight: { gen: number; promise: Promise<string[] | Error> } | null = null
-  const clientRoots = async (retry = true): Promise<{ ok: true; dirs: string[] } | { ok: false; why: string }> => {
-    if (!server.getClientCapabilities()?.roots) return { ok: true, dirs: [] }
-    const gen = rootsGen
-    if (rootsCache && rootsCache.gen === gen) return { ok: true, dirs: rootsCache.dirs }
-    if (!rootsInFlight || rootsInFlight.gen !== gen) {
-      rootsInFlight = {
-        gen,
-        promise: server.listRoots(undefined, { timeout: 2000 })
-          .then(({ roots }) => roots
-            .filter(r => typeof r.uri === 'string' && r.uri.startsWith('file://'))
-            .map(r => { try { return fileURLToPath(r.uri) } catch { return null } })
-            .filter((d): d is string => d !== null))
-          .catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
-      }
-    }
-    const answer = await rootsInFlight.promise
-    if (rootsInFlight?.gen === gen) rootsInFlight = null
-    if (gen !== rootsGen) return retry ? clientRoots(false) : { ok: false, why: 'the workspace folders changed while they were being read' }
-    if (answer instanceof Error) return { ok: false, why: answer.message }
-    // Cache only when the client can say the roots changed (#1519's rule;
-    // re-audit 2 of #1521, R2-S3). Otherwise every call asks again.
-    if (server.getClientCapabilities()?.roots?.listChanged === true) rootsCache = { gen, dirs: answer }
-    return { ok: true, dirs: answer }
-  }
-  // Bind before every tool call, failing CLOSED: unreadable roots, a folder
-  // whose decision cannot be resolved, or a folders.yaml that cannot be read
-  // bind the instance to read and write nothing; any remote-only workspace
-  // folder binds remote-only. Only when every folder resolves to something
-  // else is the binding cleared. Returns why the call must not run, if so.
-  const bindWorkspace = async (): Promise<string | null> => {
-    const roots = await clientRoots()
-    if (!roots.ok) {
-      const why = `PLUR could not read the editor's workspace folders (${roots.why}), so this call read and wrote nothing. It tries again on the next call.`
-      instance.bindFolderUnresolved(folder, `the editor's workspace folders could not be read (${roots.why})`)
-      return why
-    }
-    const dirs = [...new Set([...roots.dirs, folder])]
-    const resolved: Array<{ dir: string; policy: FolderPolicy }> = []
-    for (const dir of dirs) {
-      try {
-        resolved.push({ dir, policy: instance.resolveFolderPolicy(dir) })
-      } catch (err) {
-        instance.bindFolderUnresolved(dir, (err as Error)?.message ?? String(err))
-        return null
-      }
-    }
-    const pick = resolved.find(r => r.policy.reason === 'malformed-map')
-      ?? resolved.find(r => r.policy.mode === 'remote-only')
-      ?? resolved[resolved.length - 1]
-    instance.bindFolderPolicy(pick.dir, pick.policy)
-    return null
-  }
-  // Tool calls run one at a time: the binding lives on the one shared Plur
-  // instance, so a concurrent call must not rebind it under a running one.
-  let callChain: Promise<unknown> = Promise.resolve()
-  const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
-    const run = callChain.then(fn, fn)
-    callChain = run.catch(() => {})
-    return run
-  }
-
   const server = new Server(
     { name: 'plur-mcp', version: VERSION },
     {
@@ -298,7 +224,47 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     },
   )
 
-  server.setNotificationHandler('notifications/roots/list_changed', () => { rootsGen++; rootsCache = null })
+  // --- The editor's workspace, for the folder map (folder-gate.ts) ---
+  // One helper (#1519's createWorkspaceDirs): one roots cache, one
+  // list_changed handler, fail closed on a roots failure. Its folder is the
+  // one this server serves (`folder`, default cwd).
+  const workspace = createWorkspaceDirs(server, { cwd: () => folder })
+
+  // Bind the instance to the workspace's folder decision (remote-only), or
+  // block it (off, unknown workspace, unreadable map), for this call.
+  // Precedence: off > remote-only > on (#1521 with #1519).
+  const bindWorkspace = (dirs: string[] | null, blocked: string | null): void => {
+    if (dirs === null || blocked !== null) {
+      instance.bindFolderUnresolved(folder, blocked ?? 'the editor\'s workspace folders could not be read')
+      return
+    }
+    const resolved: Array<{ dir: string; policy: FolderPolicy }> = []
+    for (const dir of dirs) {
+      try {
+        resolved.push({ dir, policy: instance.resolveFolderPolicy(dir) })
+      } catch (err) {
+        instance.bindFolderUnresolved(dir, (err as Error)?.message ?? String(err))
+        return
+      }
+    }
+    const pick = resolved.find(r => r.policy.reason === 'malformed-map')
+      ?? resolved.find(r => r.policy.mode === 'remote-only')
+      ?? resolved[resolved.length - 1]
+    instance.bindFolderPolicy(pick.dir, pick.policy)
+  }
+
+  // Tool calls run one at a time: the folder gate and the binding live on the
+  // one shared Plur instance, so a concurrent call must not change them under
+  // a running one. The gate runs inside the same serialized step (#1521).
+  let callTail: Promise<void> = Promise.resolve()
+  const acquireCall = async (): Promise<() => void> => {
+    let release!: () => void
+    const next = new Promise<void>(r => { release = r })
+    const prev = callTail
+    callTail = prev.then(() => next)
+    await prev
+    return release
+  }
 
   // --- Tools ---
 
@@ -312,6 +278,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   }))
 
   server.setRequestHandler('tools/call', async (request) => {
+   // One call at a time (see acquireCall); released on every return path.
+   const release = await acquireCall()
+   try {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
       // #625 audit: under a gated profile, a REAL tool that is merely hidden
@@ -334,6 +303,21 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${request.params.name}`, success: false }) }],
         isError: true,
       }
+    }
+    // The folder map's `off` (folder-gate.ts): a memory tool, called directly
+    // or through plur_admin, touches no store in an `off` folder and says so.
+    // Before the canary tick: a refused call is not a turn of memory use.
+    const gated = tool.name === 'plur_admin'
+      ? (request.params.arguments as Record<string, unknown> | undefined)?.action
+      : tool.name
+    // Every call: resolve the workspace once, bind (or block) the instance,
+    // and answer `off` for a gated tool where memory is off — all inside this
+    // call's serialized step, so gate and binding see the same roots.
+    const dirs = await workspace.dirs()
+    const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
+    bindWorkspace(dirs, off ? off.message : null)
+    if (off && typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
+      return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -384,21 +368,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         }
       }
       args = validated.data
-      const boundArgs = args
-      const outcome = await serialized(async () => {
-        const blockedWhy = await bindWorkspace()
-        // Diagnostics keep working with nothing bound in; every other tool
-        // answers with the reason instead of running.
-        if (blockedWhy && tool.name !== 'plur_doctor' && tool.name !== 'plur_status') return { blockedWhy }
-        return { result: await tool.handler(boundArgs, instance) }
-      })
-      if ('blockedWhy' in outcome) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ error: outcome.blockedWhy, success: false }) }],
-          isError: true,
-        }
-      }
-      const result = outcome.result
+      const result = await tool.handler(args, instance)
 
       // Generic _isError propagation (audit fix): a tool handler — currently
       // only plur_admin's, when the ACTION it dispatched to fails its own
@@ -419,13 +389,19 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         ...(resultIsError ? { isError: true } : {}),
       }
     } catch (err: any) {
-      const message = err?.message ?? String(err)
+      // First line only: a store that does not parse throws a YAML error whose
+      // later lines are a code frame of the file (engram statements), and an
+      // admin tool still answers in a folder where PLUR is off (#1519).
+      const message = String(err?.message ?? err).split('\n', 1)[0]
       server.sendLoggingMessage({ level: 'error', data: `Tool ${request.params.name} failed: ${message}` })
       return {
         content: [{ type: 'text', text: JSON.stringify({ error: message, success: false }) }],
         isError: true,
       }
     }
+   } finally {
+     release()
+   }
   })
 
   // --- Resources ---

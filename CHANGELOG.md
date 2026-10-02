@@ -113,6 +113,34 @@ lockfile as a build-tool dependency).
 
 ## Unreleased
 
+### The MCP server respects a folder you turned PLUR off for (#1519)
+
+`plur folders set <folder> --off` silenced the editor hooks, but an agent that
+called `plur_learn` or `plur_recall` itself still read and wrote memory in that
+folder: the MCP server never read the folder map. Now, in an `off` folder, the
+33 MCP tools that read or write engrams or episodes or return their text —
+`plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`,
+`plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`,
+`plur_capture`, `plur_feedback`, `plur_receipt` and the rest (the full list is
+in the MCP README), called directly or through `plur_admin` — read and write no
+store, local or remote (no outbox row either), and answer without an error
+that PLUR is off for this folder, with the `plur folders set … --on` command
+for each map entry that turns it off.
+
+The admin and diagnostic tools (status, doctor, stores list and add, sync
+status, packs list and preview, scope discovery) keep working; status, doctor
+and stores list still read stores to count or probe them and return counts and
+health, not engram text (a store that cannot be parsed is reported by the
+error's first line only, by every MCP tool, never by the file's lines); `plur_packs_preview` still returns the statements of
+any pack directory it is pointed at, an installed one included. The folder is the editor's workspace — the roots the client lists over
+MCP, plus the folder the server was started in — checked on every call; if the
+client's roots cannot be fetched or a root is not a folder on this machine, that
+call does nothing and the next one asks again. A `folders.yaml` that exists but
+cannot be read or parsed — a dangling symlink, an empty file, an unknown
+top-level key included — now fails safe: the memory tools do nothing and name
+the file and the problem. Server startup is
+not gated yet (#1523). `on` and `ask` folders are unchanged.
+
 ### plur doctor reads an opencode config written with comments or trailing commas (#1516)
 
 opencode accepts JSONC in `~/.config/opencode/opencode.jsonc`. `plur doctor`
