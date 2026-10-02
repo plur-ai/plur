@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, realpathSync, readdirSync, existsSync, writeFileSync, mkdirSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { issueFolderNonce, sweepFolderNonces, folderNonceOutstanding, FOLDER_NONCE_TTL_MS } from '../src/index.js'
+import { issueFolderNonce, sweepFolderNonces, folderNonceOutstanding, setFolderEntry, FolderMapError, FOLDER_NONCE_TTL_MS } from '../src/index.js'
 
 let root: string
 let dir: string
@@ -65,5 +65,44 @@ describe('sweeping orphaned folder-nonce files', () => {
 
   it('no nonce directory is not an error', () => {
     expect(() => sweepFolderNonces(root)).not.toThrow()
+  })
+})
+
+describe('malformed nonce files never break folder answers (N12 of the #1529 review)', () => {
+  const code = (fn: () => unknown): string | null => {
+    try { fn(); return null } catch (e) { return e instanceof FolderMapError ? e.code : `${(e as Error)?.name}: ${(e as Error)?.message}` }
+  }
+  const garbage = (name: string, body: string) => {
+    mkdirSync(join(root, 'folder-nonces'), { recursive: true })
+    writeFileSync(join(root, 'folder-nonces', name), body)
+    return join(root, 'folder-nonces', name)
+  }
+
+  it('a file with a null or garbage record does not make another session\'s answer fail', () => {
+    garbage('broken.yaml', 'session: broken\nnonces:\n  - null\n  - 42\n  - nonce: 7\n')
+    const n = issueFolderNonce(root, 'ses_ok', dir, { mode: 'on' }, Date.now(), { bindSession: true })
+    expect(code(() => setFolderEntry(root, dir, { mode: 'on' }, { configuredScopes: [], nonce: n, session: 'ses_ok' }))).toBeNull()
+  })
+
+  it('an unknown nonce with a garbage file present is refused as unknown, not a TypeError', () => {
+    garbage('broken.yaml', 'session: broken\nnonces: [null]\n')
+    expect(code(() => setFolderEntry(root, dir, { mode: 'on' }, { configuredScopes: [], nonce: 'deadbeef' }))).toBe('nonce-unknown')
+  })
+
+  it('the sweep removes a file with only invalid records once it is old, and leaves a fresh one alone', () => {
+    const stale = garbage('stale.yaml', 'session: stale\nnonces: [null]\n')
+    const fresh = garbage('fresh.yaml', 'session: fresh\nnonces: [null]\n')
+    const past = (Date.now() - FOLDER_NONCE_TTL_MS - 60_000) / 1000
+    utimesSync(stale, past, past)
+    sweepFolderNonces(root)
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+  })
+
+  it('a session file whose `session:` field is wrong does not make its new nonces unusable', () => {
+    garbage('mcp-a.yaml', 'session: someone-else\nnonces: []\n')
+    const n = issueFolderNonce(root, 'mcp-a', dir, { mode: 'on' }, Date.now(), { bindSession: true })
+    expect(folderNonceOutstanding(root, 'mcp-a', n)).toBe(true)
+    expect(code(() => setFolderEntry(root, dir, { mode: 'on' }, { configuredScopes: [], nonce: n, session: 'mcp-a' }))).toBeNull()
   })
 })

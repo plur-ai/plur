@@ -15,7 +15,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { join, dirname } from 'path'
-import { tmpdir } from 'os'
+import { tmpdir, hostname } from 'os'
 import { fileURLToPath } from 'url'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
@@ -169,5 +169,58 @@ describe.skipIf(!existsSync(DIST_ENTRY))('folder-question nonces over a real std
     const pending = s.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra sigterm learning', scope: 'global' } })
     const raw = await Promise.race([pending, new Promise(r => setTimeout(() => r('no response'), 8000))])
     expect(raw).not.toBe('no response')
+  }, 30_000)
+
+  it('a call still running long after stdin ends (store lock held 35 s) still gets its answer (audit R3 of #1529)', async () => {
+    const e = env()
+    const project = tmp('plur-stdio-on-')
+    writeFileSync(join(project, '.plur.yaml'), '# on\n')
+    const t = await start(e, project)
+    // The store exists before the lock is taken (the first learn creates it).
+    await t.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra warm-up', scope: 'global' } })
+    const lock = join(e.home, 'engrams.yaml.lock')
+    writeFileSync(lock, `${hostname()}:${process.pid}:${Date.now()}:0`)
+    const release = setTimeout(() => rmSync(lock, { force: true }), 35_000)
+    try {
+      const send = t.transport.send.bind(t.transport)
+      t.transport.send = async (message: any, ...rest: any[]) => {
+        await (send as any)(message, ...rest)
+        if (message?.method === 'tools/call') (t.transport as any)._process.stdin.end()
+      }
+      const pending = t.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra slow learning', scope: 'global' } }, undefined, { timeout: 60_000 })
+      const raw = await Promise.race([pending, new Promise(r => setTimeout(() => r('no response'), 55_000))])
+      expect(raw).not.toBe('no response')
+      expect(readFileSync(join(e.home, 'engrams.yaml'), 'utf8')).toContain('zebra slow learning')
+    } finally {
+      clearTimeout(release)
+      rmSync(lock, { force: true })
+    }
+  }, 90_000)
+
+  it('stdin end deletes the session\'s nonces at once, even while a call is still running (audit R3 of #1529)', async () => {
+    const e = env()
+    const undecided = tmp('plur-stdio-undecided-')
+    // Ask in the undecided start folder, answer yes, then hold the store
+    // lock and send a learn that waits on it while stdin ends.
+    const s = await start(e, undecided)
+    const q = await ask(s.client)
+    expect(q.plur).toBe('ask')
+    expect(nonceFiles(e)).toHaveLength(1)
+    // Answer yes so the next learn runs (and waits on the lock).
+    const yes = yesCommand(q)
+    new Plur({ path: e.home }).setFolder(yes.folder, { mode: 'on' }, { nonce: yes.nonce, session: yes.session })
+    const lock = join(e.home, 'engrams.yaml.lock')
+    writeFileSync(lock, `${hostname()}:${process.pid}:${Date.now()}:0`)
+    try {
+      const send = s.transport.send.bind(s.transport)
+      s.transport.send = async (message: any, ...rest: any[]) => {
+        await (send as any)(message, ...rest)
+        if (message?.method === 'tools/call') (s.transport as any)._process.stdin.end()
+      }
+      void s.client.callTool({ name: 'plur_learn', arguments: { statement: 'zebra waits', scope: 'global' } }, undefined, { timeout: 60_000 }).catch(() => {})
+      expect(await until(() => nonceFiles(e).length === 0, 3000)).toBe(true)
+    } finally {
+      rmSync(lock, { force: true })
+    }
   }, 30_000)
 })
