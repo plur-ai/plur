@@ -174,15 +174,21 @@ Use \`scope\` to namespace engrams per project:
 Override with \`PLUR_PATH\` environment variable.
 `
 
-/** Per server: resolves once no tools/call is running (or after the timeout). */
-const _whenIdle = new WeakMap<object, (timeoutMs: number) => Promise<void>>()
+/** Per server: resolves once no tools/call is running (or after the timeout, when one is given). */
+const _whenIdle = new WeakMap<object, (timeoutMs?: number) => Promise<void>>()
+/** Per server: ends its folder question (deletes the session's nonces). */
+const _endFolderQuestion = new WeakMap<object, () => void>()
 
 /**
- * Close `server` once the tool calls already running have answered (audit R1
- * of #1529), waiting at most `timeoutMs`. Closing fires onclose, which ends
- * the session's folder question (its nonces are deleted).
+ * Close a session: end its folder question at once (its nonces are deleted;
+ * no request can issue new ones once the session is closing), then close
+ * `server` once the tool calls already running have answered (audits R1 and
+ * R3 of #1529). With `timeoutMs`, wait at most that long; without it, wait
+ * as long as they run, so a call that is still writing is never cut off from
+ * its answer.
  */
-export async function closeWhenIdle(server: Server, timeoutMs: number): Promise<void> {
+export async function closeWhenIdle(server: Server, timeoutMs?: number): Promise<void> {
+  try { _endFolderQuestion.get(server)?.() } catch { /* best-effort */ }
   // A request read in the same chunk as the end of stdin is dispatched on a
   // later tick: let it start before checking whether anything is running.
   await new Promise<void>(r => setTimeout(r, 10))
@@ -253,11 +259,11 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       }
     }
   }
-  _whenIdle.set(server, (timeoutMs: number) => new Promise<void>(resolve => {
+  _whenIdle.set(server, (timeoutMs?: number) => new Promise<void>(resolve => {
     if (inFlight === 0) return resolve()
-    const timer = setTimeout(resolve, timeoutMs)
-    timer.unref?.()
-    idleWaiters.push(() => { clearTimeout(timer); resolve() })
+    const timer = timeoutMs === undefined ? undefined : setTimeout(resolve, timeoutMs)
+    timer?.unref?.()
+    idleWaiters.push(() => { if (timer) clearTimeout(timer); resolve() })
   }))
 
   // --- The editor's workspace, for the folder map (folder-gate.ts) ---
@@ -265,6 +271,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   // The folder map's off / ask for this MCP session (#1525). The session's
   // unanswered folder-question nonces die with the connection.
   const folderGate = createFolderGate(instance)
+  _endFolderQuestion.set(server, () => folderGate.end())
   const priorOnClose = server.onclose
   server.onclose = () => {
     folderGate.end()
@@ -654,18 +661,23 @@ export async function runStdio(): Promise<void> {
   // The SDK's stdio transport never reports that stdin ended, so close the
   // server ourselves (audit F1 of #1529): on stdin end and on SIGTERM /
   // SIGINT. Closing fires onclose, which deletes this session's folder-question
-  // nonces. The tool calls already running answer first (audit R1): on stdin
-  // end the process then exits by itself once its output is written; a
-  // signal waits at most 2 s for them, then exits (the handler replaces
+  // nonces at once. The tool calls already running answer first (audits R1,
+  // R3): on stdin end, however long they take, and the process then exits by
+  // itself once its output is written; a signal waits at most 2 s for them,
+  // then exits (the handler replaces
   // Node's default exit). On Windows a SIGTERM from another process cannot be
   // caught; a server killed that way leaves its nonces to the 24 h sweep.
   let closing: Promise<void> | null = null
-  const closeSession = (timeoutMs: number): Promise<void> => {
+  const closeSession = (timeoutMs?: number): Promise<void> => {
     if (!closing) closing = closeWhenIdle(server, timeoutMs)
     return closing
   }
-  process.stdin.once('end', () => { void closeSession(30_000) })
-  process.stdin.once('close', () => { void closeSession(30_000) })
+  // No cap after stdin ends (audit R3): no new request can arrive, the
+  // nonces are already gone, and a call still running (a store lock, a slow
+  // remote) keeps the process alive anyway, so waiting costs nothing and its
+  // answer is never dropped.
+  process.stdin.once('end', () => { void closeSession() })
+  process.stdin.once('close', () => { void closeSession() })
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.once(signal, () => {
       const code = signal === 'SIGTERM' ? 143 : 130

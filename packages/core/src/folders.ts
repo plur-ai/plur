@@ -1076,8 +1076,16 @@ function nonceFile(root: string, sessionId: string): string {
 function readNonceFile(file: string): NonceFile | null {
   try {
     const raw = yaml.load(readFileSync(file, 'utf8')) as NonceFile | null
-    if (!raw || !Array.isArray(raw.nonces)) return null
-    return raw
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.nonces)) return null
+    // Only well-formed records (N12 of the #1529 review): a null or garbage
+    // record in one hand-edited or corrupted file must not make every
+    // session's folder answer fail with a TypeError.
+    const nonces = raw.nonces.filter((r: unknown): r is NonceRecord =>
+      !!r && typeof r === 'object' &&
+      typeof (r as NonceRecord).nonce === 'string' &&
+      typeof (r as NonceRecord).folder === 'string' &&
+      typeof (r as NonceRecord).issued_at === 'number')
+    return { session: typeof raw.session === 'string' ? raw.session : '', nonces }
   } catch {
     return null
   }
@@ -1116,6 +1124,9 @@ function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, 
   sweepFolderNoncesUnlocked(root, now)
   const file = nonceFile(root, sessionId)
   const data = readNonceFile(file) ?? { session: safeSessionKey(sessionId), nonces: [] }
+  // The file is this session's by its name; a wrong `session:` field (hand
+  // edited) would make every nonce issued into it refused (N12).
+  data.session = safeSessionKey(sessionId)
   const nonce = randomBytes(16).toString('hex')
   // The same key a write of this folder records (#1477 review): `~` expands
   // to the home, a literal folder is canonicalised, a glob is kept as typed.
@@ -1179,9 +1190,11 @@ function sweepFolderNoncesUnlocked(root: string, now: number): void {
   for (const name of names) {
     const file = join(nonceDir(root), name)
     try {
+      // A file with no valid record (unreadable, or only garbage) is judged
+      // by its age on disk.
       const data = readNonceFile(file)
       const newest = data && data.nonces.length > 0
-        ? Math.max(...data.nonces.map(r => Number(r.issued_at) || 0))
+        ? Math.max(...data.nonces.map(r => r.issued_at))
         : statSync(file).mtimeMs
       if (now - newest > FOLDER_NONCE_TTL_MS) rmSync(file, { force: true })
     } catch { /* best-effort: a file that vanished or cannot be removed is left */ }

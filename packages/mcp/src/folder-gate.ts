@@ -374,6 +374,8 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
   /** The question built for a workspace folder, by that folder, while it is undecided. */
   const asked = new Map<string, { ask: FolderAsk; issuedAt: number; reason?: string }>()
   const notNow = new Set<string>()
+  /** Set by end(): a closing session issues no new question (no nonce outlives it). */
+  let ended = false
   // Re-issue a minute before core would call the nonces expired.
   const reissueAfter = Math.max(0, FOLDER_NONCE_TTL_MS - 60_000)
 
@@ -422,6 +424,17 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
     if (entry && entry.ask.nonces.some(n => !outstanding(n))) {
       asked.delete(dir)
       entry = undefined
+    }
+    if (!entry && ended) {
+      return {
+        success: true,
+        plur: 'off',
+        reason: 'folder-ask-failed',
+        folder: dir,
+        message:
+          `PLUR has no decision for this folder (${JSON.stringify(dir)}) and this session is closing, so it did not ` +
+          `ask; nothing was read from or written to memory. This is not an error. A new session will ask.`,
+      }
     }
     if (!entry) {
       let ask: FolderAsk | null = null
@@ -507,6 +520,7 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string } = {}):
       return { plur: 'on', ...(scope ? { scope } : {}) }
     },
     end() {
+      ended = true
       asked.clear()
       try { endFolderNonceSession(plur.storageRoot, sessionId) } catch { /* best-effort */ }
     },

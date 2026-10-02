@@ -122,10 +122,15 @@ asks for settings.
   there runs as before. Otherwise the client's MCP roots when it sends any
   (the server's start folder is still checked for `off`, but not asked
   about), and the start folder when it sends none or only such folders.
-- The session's unanswered nonces are deleted when the session closes: the
-  stdio server now shuts down on stdin end and on SIGTERM / SIGINT, after the
-  tool calls already running have sent their answers (a signal waits at most
-  2 s for them). An unanswered question whose nonces expired is asked afresh. Nonce
+- The session's unanswered nonces are deleted as soon as the session closes
+  (stdin ends, or SIGTERM / SIGINT). The stdio server then shuts down once
+  the tool calls already running have sent their answers — after stdin ends,
+  however long they take; on a signal, within 2 s. An unanswered question
+  whose nonces expired is asked afresh.
+- A folder-nonce file holding a null or malformed record (hand-edited or
+  corrupted) no longer makes every folder answer fail with a TypeError: such
+  records are ignored, a file with none left is swept by its age, and a wrong
+  `session:` field no longer makes a session's new nonces unusable. Nonce
   files left by a session that never closed (killed outright, or a missed
   editor SessionEnd hook) are removed once their nonces have expired (24 h),
   whenever a nonce is issued and when the MCP server starts.
