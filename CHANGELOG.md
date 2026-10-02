@@ -47,6 +47,47 @@ the MCP server's folder gate applies.
 The question itself moved from the CLI into core (`folderAskOnce`,
 `sessionSettings`), so the hooks and the plugin share one implementation.
 
+### The MCP server asks the folder question in a folder you have not decided about (#1525)
+
+Most PLUR use is MCP calls, and until now the MCP server treated an undecided
+folder (folder map `ask`) as `on`: an agent that called `plur_learn` or
+`plur_recall` itself read and wrote memory in a folder you were never asked
+about. Now the 33 memory tools (#1519's list), called directly or through
+`plur_admin`, read and write no memory there and answer, without an error,
+with the question the editor hooks ask: `{ "plur": "ask", "question",
+"answers": [{ "label", "command" }] }` — yes (with the suggested team scope,
+or without one), not now, never here, and trust for a repo whose `.plur.yaml`
+asks for settings.
+
+- Each answer's command carries its own nonce from core, bound to that folder,
+  that answer and this MCP session. The command names the session
+  (`plur folders set … --session mcp-…`, new), because the server cannot set the
+  agent's shell environment; a nonce from another session, or a command that
+  drops `--session`, is refused and nothing is written. If the shell also has
+  `PLUR_FOLDER_SESSION` (the opencode plugin), the two must agree.
+- Every memory call returns the same question with the same nonces until you
+  answer; the next call after an answer follows it. Yes → memory on, and the
+  answer's team scope becomes the session's default write scope. Never here →
+  off.
+- Not now has a command too (`plur folders set <folder> --not-now --nonce …
+  --session …`, new), because the server cannot see the chat: it consumes its
+  nonce and writes nothing to the folder map. Memory stays off for the rest of
+  that MCP session, without the question; the folder stays undecided, so the
+  next session asks again.
+- `plur_session_start` now uses the folder map's scope for this workspace as
+  its default when you pass no `default_scope` (`scope_source: "folder-map"`),
+  ahead of a trusted `.plur.yaml`'s, as the editor hooks already do.
+- A broken `folders.yaml` keeps #1519's fail-safe answer: off, naming the file
+  and the problem, no command, no nonce. The admin tools are unchanged; off wins
+  over ask, and ask over on, across the workspace folders; a workspace that
+  cannot be fetched stays off for that call. A filesystem root (`/`, where some
+  clients start MCP servers) is never asked about. The session's unanswered
+  nonces are deleted when the MCP connection closes.
+
+If you use PLUR through a global MCP config and have no folder decisions yet,
+the first memory call in each project now asks once. The CLI hooks' question
+and the opencode plugin are unchanged.
+
 ### The MCP server respects a folder you turned PLUR off for (#1519)
 
 `plur folders set <folder> --off` silenced the editor hooks, but an agent that
@@ -73,7 +114,8 @@ call does nothing and the next one asks again. A `folders.yaml` that exists but
 cannot be read or parsed — a dangling symlink, an empty file, an unknown
 top-level key included — now fails safe: the memory tools do nothing and name
 the file and the problem. Server startup is
-not gated yet (#1523). `on` and `ask` folders are unchanged.
+not gated yet (#1523). `on` and `ask` folders are unchanged (for `ask`, see
+#1525 above).
 
 ### plur doctor reads an opencode config written with comments or trailing commas (#1516)
 
