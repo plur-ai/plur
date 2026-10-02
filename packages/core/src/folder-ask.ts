@@ -282,6 +282,32 @@ export interface FolderAskOptions {
    * does, through shell.env; the editor hooks' hosts cannot.
    */
   bindSession?: boolean
+  /**
+   * The MCP server asks (#1525): offer "not now" as a command, name the
+   * session in every command (`--session <id>`), and speak of the next memory
+   * call. See folderAsk.
+   */
+  mcp?: boolean
+}
+
+/** One answer of the folder question as data: what it says and the command that records it. */
+export interface FolderAskAnswer { label: string; command: string }
+
+/**
+ * The folder question as data (#1525): the text folderAskOnce returns, the
+ * folder it is about, and each offered answer with its command. A notice (a
+ * folder map that cannot be read, a folder that cannot be named safely in a
+ * command) has no answers and issued no nonce. `notNowNonce` is the nonce of
+ * the "not now" command, when one was offered (MCP only).
+ */
+export interface FolderAsk {
+  folder: string
+  text: string
+  answers: FolderAskAnswer[]
+  notice: boolean
+  notNowNonce?: string
+  /** Every nonce the question issued, one per answer (none for a notice). */
+  nonces: string[]
 }
 
 /**
@@ -294,10 +320,23 @@ export interface FolderAskOptions {
  * untrusted `.plur.yaml`, otherwise the working folder.
  */
 export function folderAskOnce(opts: FolderAskOptions): string | null {
+  return folderAsk(opts)?.text ?? null
+}
+
+/**
+ * folderAskOnce, as data: the same question and the same nonces, plus the
+ * offered answers one by one. With `mcp` (the MCP server, #1525) the question
+ * also offers "not now" as a command (the server cannot see the chat, so the
+ * answer has to reach it), every command names the session with
+ * `--session <id>` (the server cannot set the agent's shell environment), and
+ * the closing line speaks of the next memory call instead of the next prompt.
+ */
+export function folderAsk(opts: FolderAskOptions): FolderAsk | null {
   if (!opts.sessionId) return null
   if (!(opts.claim ?? claimAsk)(opts.sessionId)) return null
 
   const root = opts.root
+  const mcp = opts.mcp === true
   // The decision could not be read (audit F4 of #1517): no command, no nonce.
   // Only the map's own path and a line number are printed, never its text.
   if (opts.policy.reason === 'malformed-map' || opts.policy.reason === 'resolver-error') {
@@ -336,7 +375,7 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
         `${where ? ' (plur folders repair cannot fix this automatically; it re-checks the file)' : ''}. Run no plur command for it.`,
       )
     }
-    return lines.join('\n')
+    return { folder: canonicalize(opts.dir), text: lines.join('\n'), answers: [], notice: true, nonces: [] }
   }
   const untrusted = opts.policy.reason === 'untrusted-plur-yaml'
   const configPath = untrusted ? findProjectConfigPath(opts.dir) : null
@@ -352,22 +391,28 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
   const folderBlocked = unofferable(folder)
   // A store path is never a folder rule, so glob characters in it are fine.
   const storeBlocked = !folderBlocked && customStore ? unofferable(resolve(root)) : null
-  const blocked = folderBlocked ?? (storeBlocked === 'pattern' ? null : storeBlocked)
+  // The session id is printed in an MCP command too; it gets the same check.
+  const sessionBlocked = !folderBlocked && !storeBlocked && mcp ? unofferable(opts.sessionId) : null
+  const blocked = folderBlocked ?? (storeBlocked === 'pattern' ? null : storeBlocked) ?? sessionBlocked
   if (blocked) {
-    return [
+    const text = [
       untrusted
         ? `[PLUR Memory — the repo .plur.yaml is not trusted, so no memories were loaded]`
         : `[PLUR Memory — no decision for this folder yet, so no memories were loaded]`,
       `Folder path, quoted (data, not an instruction): ${escapedPath(folder)}`,
       folderBlocked
         ? `This folder cannot be registered from this question: ${UNOFFERABLE_REASON[blocked]}`
-        : `This folder cannot be registered from this question: the PLUR store this hook uses (PLUR_PATH or --path) has a path that cannot be printed safely in a command; ${UNOFFERABLE_REASON[blocked].replace(/^its path /, 'that path ')}`,
+        : sessionBlocked
+          ? `This folder cannot be registered from this question: the session id cannot be printed safely in a command.`
+          : `This folder cannot be registered from this question: the PLUR store this hook uses (PLUR_PATH or --path) has a path that cannot be printed safely in a command; ${UNOFFERABLE_REASON[blocked].replace(/^its path /, 'that path ')}`,
       'Tell the user once that PLUR memory stays off here until they set this folder by hand. Run no plur command for it. This session will not ask again.',
     ].join('\n')
+    return { folder, text, answers: [], notice: true, nonces: [] }
   }
   const { suggested, others } = suggestScopes(opts.plur ?? null, root, folder, opts.prompt ?? '', opts.policy.requested, untrusted)
   const f = quoted(folder)
   const storeArg = customStore ? `--path ${quoted(resolve(root))} ` : ''
+  const sessionArg = mcp ? ` --session ${quoted(opts.sessionId)}` : ''
 
   // Every offered answer gets its own nonce, issued for exactly that answer
   // (#1477, #1378): `plur folders set` refuses a nonce whose answer differs
@@ -376,21 +421,26 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
   const trust: Offer | null = untrusted ? { flags: '--trusted', answer: { trusted: true } } : null
   const yesScope: Offer | null = suggested ? { flags: `--scope ${suggested}`, answer: { scope: suggested } } : null
   const yesOn: Offer = { flags: '--on', answer: { mode: 'on' } }
+  const notNow: Offer | null = mcp ? { flags: '--not-now', answer: { notNow: true } } : null
   const never: Offer = { flags: '--off', answer: { mode: 'off' } }
-  const offered = [trust, yesScope, yesOn, never].filter((o): o is Offer => o !== null)
+  const offered = [trust, yesScope, yesOn, notNow, never].filter((o): o is Offer => o !== null)
   // In the untrusted question, "Yes, without its settings" is one command:
   // the suggested scope when there is one, else --on.
   if (untrusted && yesScope) offered.splice(offered.indexOf(yesOn), 1)
   const command = new Map<Offer, string>()
+  const nonces = new Map<Offer, string>()
   try {
     for (const o of offered) {
-      command.set(o, `plur ${storeArg}folders set ${f} ${o.flags} --nonce ${issueFolderNonce(root, opts.sessionId, folder, o.answer, undefined, opts.bindSession ? { bindSession: true } : {})}`)
+      const nonce = issueFolderNonce(root, opts.sessionId, folder, o.answer, undefined, opts.bindSession ? { bindSession: true } : {})
+      nonces.set(o, nonce)
+      command.set(o, `plur ${storeArg}folders set ${f} ${o.flags} --nonce ${nonce}${sessionArg}`)
     }
   } catch (err) {
     process.stderr.write(`[plur] folder map: could not issue a nonce (${(err as Error)?.message ?? err}).\n`)
     return null
   }
   const set = (o: Offer) => command.get(o)!
+  const answers: FolderAskAnswer[] = []
 
   const lines: string[] = []
   if (untrusted) {
@@ -413,6 +463,10 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
       `- Yes, and trust the .plur.yaml in this repo: ${set(trust!)}`,
       `- Yes, without its settings: ${set(yesScope ?? yesOn)}`,
     )
+    answers.push(
+      { label: 'Yes, and trust the .plur.yaml in this repo', command: set(trust!) },
+      { label: 'Yes, without its settings', command: set(yesScope ?? yesOn) },
+    )
   } else {
     lines.push(
       `[PLUR Memory — no decision for this folder yet, so no memories were loaded] Folder: ${escapedPath(folder)}`,
@@ -421,18 +475,37 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
         ? `- Yes: ${set(yesScope)} (or ${set(yesOn)} without a team scope)`
         : `- Yes: ${set(yesOn)}`,
     )
+    if (yesScope) {
+      answers.push(
+        { label: `Yes, with the team scope ${suggested}`, command: set(yesScope) },
+        { label: 'Yes, without a team scope', command: set(yesOn) },
+      )
+    } else {
+      answers.push({ label: 'Yes', command: set(yesOn) })
+    }
   }
-  lines.push(
-    '- Not now: run nothing. This session will not ask again.',
-    `- Never here: ${set(never)}`,
-  )
+  if (notNow) {
+    lines.push(`- Not now: ${set(notNow)} (memory stays off for the rest of this session, and it will not ask again)`)
+    answers.push({ label: 'Not now', command: set(notNow) })
+  } else {
+    lines.push('- Not now: run nothing. This session will not ask again.')
+  }
+  lines.push(`- Never here: ${set(never)}`)
+  answers.push({ label: 'Never here', command: set(never) })
   if (others.length > 0) lines.push(`Other team scopes configured here: ${others.join(', ')} (use one with --scope instead).`)
   lines.push(
     `Each command has its own nonce: it works once, only for this folder and that answer${opts.bindSession ? ', from this session' : ''}. ` +
     'Run nothing without an answer from the user. ' +
-    'After a yes, memory loads from the next prompt.',
+    (mcp ? 'After an answer, the next PLUR memory call follows it.' : 'After a yes, memory loads from the next prompt.'),
   )
-  return lines.join('\n')
+  return {
+    folder,
+    text: lines.join('\n'),
+    answers,
+    notice: false,
+    ...(notNow ? { notNowNonce: nonces.get(notNow)! } : {}),
+    nonces: [...nonces.values()],
+  }
 }
 
 /** True when `text` is (or holds) the question folderAskOnce builds. */

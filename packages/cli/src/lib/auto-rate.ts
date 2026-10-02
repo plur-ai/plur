@@ -85,6 +85,19 @@ export function autoCaptureEnabled(env: NodeJS.ProcessEnv = process.env): boolea
  */
 export const AUTO_RATE_MAX_TURNS = 3
 
+/**
+ * Server time for ALL the team saves of one auto-capture run together
+ * (#1532 review F3, re-audit R4). Well inside the inline watchdog
+ * (hook-auto-rate, 9 s): every save must have reached the server or fallen
+ * through to the outbox before the watchdog can exit. One budget for the run,
+ * not one per statement — three statements at 3 s each already passed the
+ * watchdog. Once it is spent, the remaining statements go straight to the
+ * outbox (a minimal deadline aborts their request at once).
+ */
+export const AUTO_CAPTURE_REMOTE_TIMEOUT_MS = 4_000
+/** Floor for a statement's deadline once the run's budget is spent. */
+const AUTO_CAPTURE_SPENT_MS = 1
+
 function fileFor(editor: AutoRateEditor, sessionId: string, kind: 'injected' | 'rated' | 'tries' | 'queue' | 'worker'): string {
   return join(DIR, `${editor}-${safeSessionKey(sessionId)}.${kind}`)
 }
@@ -441,10 +454,19 @@ export async function autoRateTurn(opts: {
           tags: ['auto-capture'],
           claim_class: 'inferred' as const,
         }
+        const budgetEnd = Date.now() + AUTO_CAPTURE_REMOTE_TIMEOUT_MS
         for (const statement of statements) {
           try {
             if (project.scope) {
-              await plur.learnRouted(statement, { ...base, scope: project.scope, ...(project.domain ? { domain: project.domain } : {}) })
+              // Bounded below the inline watchdog (#1532 review F3): the POST runs
+              // outside the store lock, so to the watchdog the store looks idle
+              // mid-request, and an exit there lost the statement. Past this
+              // deadline it is saved here and queued in the outbox.
+              await plur.learnRouted(
+                statement,
+                { ...base, scope: project.scope, ...(project.domain ? { domain: project.domain } : {}) },
+                { remoteTimeoutMs: Math.max(AUTO_CAPTURE_SPENT_MS, budgetEnd - Date.now()) },
+              )
             } else {
               await plur.learn(statement, base)
             }

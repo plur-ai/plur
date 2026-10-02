@@ -1166,6 +1166,8 @@ describe('feedback() — cross-store ID collision guard (issue #850)', () => {
     const plur = new Plur({ path: primaryDir })
     const e = await plur.learn('local engram unreachable remote', { scope: 'global' })
 
-    await expect(plur.feedback(e.id, 'positive')).resolves.toBeUndefined()
+    // 0.21.1: the unverified store is reported back, not only logged.
+    const res = await plur.feedback(e.id, 'positive')
+    expect(res.warnings.join(' ')).toMatch(/could not be reached/)
   })
 })

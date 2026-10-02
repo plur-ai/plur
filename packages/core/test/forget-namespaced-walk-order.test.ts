@@ -109,7 +109,7 @@ describe('forget() — namespaced-id walk order with shared prefix (#1126)', () 
     mockReachableOwns()
     const plur = new Plur({ path: dir })
 
-    await expect(plur.forget(NAMESPACED_ID, 'no longer needed', { force: true })).resolves.toBeUndefined()
+    await expect(plur.forget(NAMESPACED_ID, 'no longer needed', { force: true })).resolves.toEqual({ warnings: [] })
 
     // RemoteStore sends DELETE to /api/v1/..., not /sse — filter by hostname.
     const deleteCalls = (fetchMock.mock.calls as [string, any][]).filter(
@@ -131,7 +131,7 @@ describe('forget() — namespaced-id walk order with shared prefix (#1126)', () 
     mockReachableOwns()
     const plur = new Plur({ path: dir })
 
-    await expect(plur.forget(NAMESPACED_ID, undefined, { force: true })).resolves.toBeUndefined()
+    await expect(plur.forget(NAMESPACED_ID, undefined, { force: true })).resolves.toEqual({ warnings: [] })
   })
 
   // Deferred throw fires when the walk completes without a retirement (#1126).

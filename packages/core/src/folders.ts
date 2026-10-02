@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync, statSync, writeFileSync } from 'fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -734,8 +734,11 @@ export interface FolderChange {
  * FolderChange it will be compared with) or the removal of the entry.
  * `plur trust` is the answer `{ trusted: true }`. `folders set --no-trusted`
  * is `{ trusted: false }`; `plur untrust` needs no nonce (#1477 review).
+ * `{ notNow: true }` is the MCP question's "not now" (#1525): its nonce
+ * authorises no write at all; `plur folders set --not-now` only consumes it,
+ * which tells the MCP session that asked to stop asking.
  */
-export type FolderAnswer = FolderChange | { remove: true }
+export type FolderAnswer = FolderChange | { remove: true } | { notNow: true }
 
 /**
  * The comparable form of an answer. `--scope X` means on, so it equals
@@ -745,6 +748,7 @@ export type FolderAnswer = FolderChange | { remove: true }
 function answerKey(a: FolderAnswer | undefined | null): string | null {
   if (!a || typeof a !== 'object') return null
   if ('remove' in a) return a.remove === true ? 'remove' : null
+  if ('notNow' in a) return a.notNow === true ? 'not-now' : null
   const mode = a.mode ?? (a.scope !== undefined ? 'on' : null)
   return JSON.stringify(['set', mode, a.scope ?? null, a.trusted ?? null])
 }
@@ -752,6 +756,7 @@ function answerKey(a: FolderAnswer | undefined | null): string | null {
 function describeAnswer(a: FolderAnswer | undefined | null): string {
   if (!a || typeof a !== 'object') return 'no answer'
   if ('remove' in a) return 'removing the entry'
+  if ('notNow' in a) return '--not-now'
   const parts: string[] = []
   if (a.scope !== undefined) parts.push(`--scope ${a.scope}`)
   else if (a.mode !== undefined) parts.push(`--${a.mode}`)
@@ -1187,8 +1192,16 @@ function nonceFile(root: string, sessionId: string): string {
 function readNonceFile(file: string): NonceFile | null {
   try {
     const raw = yaml.load(readFileSync(file, 'utf8')) as NonceFile | null
-    if (!raw || !Array.isArray(raw.nonces)) return null
-    return raw
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.nonces)) return null
+    // Only well-formed records (N12 of the #1529 review): a null or garbage
+    // record in one hand-edited or corrupted file must not make every
+    // session's folder answer fail with a TypeError.
+    const nonces = raw.nonces.filter((r: unknown): r is NonceRecord =>
+      !!r && typeof r === 'object' &&
+      typeof (r as NonceRecord).nonce === 'string' &&
+      typeof (r as NonceRecord).folder === 'string' &&
+      typeof (r as NonceRecord).issued_at === 'number')
+    return { session: typeof raw.session === 'string' ? raw.session : '', nonces }
   } catch {
     return null
   }
@@ -1223,8 +1236,13 @@ export function issueFolderNonce(
 
 function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number, bound: boolean): string {
   mkdirSync(nonceDir(root), { recursive: true, mode: 0o700 })
+  // Orphans of sessions whose end was never reported go first (audit F1 of #1529).
+  sweepFolderNoncesUnlocked(root, now)
   const file = nonceFile(root, sessionId)
   const data = readNonceFile(file) ?? { session: safeSessionKey(sessionId), nonces: [] }
+  // The file is this session's by its name; a wrong `session:` field (hand
+  // edited) would make every nonce issued into it refused (N12).
+  data.session = safeSessionKey(sessionId)
   const nonce = randomBytes(16).toString('hex')
   // The same key a write of this folder records (#1477 review): `~` expands
   // to the home, a literal folder is canonicalised, a glob is kept as typed.
@@ -1236,10 +1254,66 @@ function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, 
 /** Only the fields an answer has, so the nonce file holds nothing else. */
 function cleanAnswer(a: FolderAnswer): FolderAnswer {
   if ('remove' in a) return { remove: true }
+  if ('notNow' in a) return { notNow: true }
   return {
     ...(a.mode !== undefined ? { mode: a.mode } : {}),
     ...(a.scope !== undefined ? { scope: a.scope } : {}),
     ...(a.trusted !== undefined ? { trusted: a.trusted } : {}),
+  }
+}
+
+/**
+ * True while `nonce` is still in `sessionId`'s nonce file: issued, not yet
+ * consumed, and the session not ended. An unreadable file answers false.
+ * The MCP server reads its own "not now" nonce this way (#1525): once
+ * `plur folders set --not-now` has consumed it, the session stops asking.
+ */
+export function folderNonceOutstanding(root: string, sessionId: string, nonce: string): boolean {
+  const data = readNonceFile(nonceFile(root, sessionId))
+  return !!data && data.nonces.some(r => r.nonce === nonce)
+}
+
+/**
+ * The "not now" answer of the MCP folder question (#1525): verify `nonce`
+ * as issued for `{ notNow: true }` on exactly `folder` (and, for a
+ * session-bound nonce, from its own session), then consume it. Writes
+ * nothing to the folder map; the folder stays undecided. Throws
+ * FolderMapError as verifyFolderNonce does.
+ */
+export function answerFolderNotNow(
+  root: string, folder: string, nonce: string,
+  options: { home?: string; session?: string; now?: number } = {},
+): void {
+  consumeFolderNonce(root, nonce, folder, { notNow: true }, options.now ?? Date.now(), { home: options.home, session: options.session })
+}
+
+/**
+ * Delete the nonce files of sessions whose end was never reported (a server
+ * killed outright, a missed SessionEnd hook): every file whose newest nonce
+ * is older than FOLDER_NONCE_TTL_MS, so none of its nonces could still be
+ * redeemed. A file that cannot be read is judged by its age on disk.
+ * Redemption reads every file in the directory, so orphans must not pile up
+ * (audit F1 of #1529). Runs on every issue, and from the MCP server at start.
+ */
+export function sweepFolderNonces(root: string, now: number = Date.now()): void {
+  if (!existsSync(nonceDir(root))) return
+  locked(root, () => sweepFolderNoncesUnlocked(root, now))
+}
+
+function sweepFolderNoncesUnlocked(root: string, now: number): void {
+  let names: string[] = []
+  try { names = readdirSync(nonceDir(root)).filter(f => f.endsWith('.yaml')) } catch { return }
+  for (const name of names) {
+    const file = join(nonceDir(root), name)
+    try {
+      // A file with no valid record (unreadable, or only garbage) is judged
+      // by its age on disk.
+      const data = readNonceFile(file)
+      const newest = data && data.nonces.length > 0
+        ? Math.max(...data.nonces.map(r => r.issued_at))
+        : statSync(file).mtimeMs
+      if (now - newest > FOLDER_NONCE_TTL_MS) rmSync(file, { force: true })
+    } catch { /* best-effort: a file that vanished or cannot be removed is left */ }
   }
 }
 
