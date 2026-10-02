@@ -769,7 +769,33 @@ export function trustCommand(dir: string | null, storageRoot?: string, platform:
   return store === null ? null : `plur --path ${store} trust ${target}`
 }
 
-/** Same grammar as the folder question's (cli folder-gate.ts): bounded, no spaces or controls. */
+/**
+ * The command that turns PLUR back on for a folder-map entry, for the answer
+ * the memory tools give in an `off` folder (folder-gate.ts). Same store rule
+ * as {@link trustCommand}: a non-default store is named with `--path`, or the
+ * change lands in a map this server never reads. Null when the entry cannot
+ * be quoted safely.
+ */
+export function folderOnCommand(entry: string, storageRoot?: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (_UNSAFE_PATH_CHARS.test(entry)) return null
+  const target = _shellWord(entry, platform)
+  if (target === null) return null
+  if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur folders set ${target} --on`
+  const store = _shellWord(resolve(storageRoot), platform)
+  return store === null ? null : `plur --path ${store} folders set ${target} --on`
+}
+
+/**
+ * A store error without the file's contents. A YAML parse error carries a
+ * code frame — the lines around the fault, which are engram statements — and
+ * plur_status is an admin tool that answers in a folder where PLUR is off.
+ * Keep the first line (what went wrong, and the line and column).
+ */
+export function redactStoreErrors(errors: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(errors).map(([k, v]) => [k, String(v).split('\n', 1)[0].slice(0, 300)]))
+}
+
+/** Same grammar as the folder question's (core folder-ask.ts): bounded, no spaces or controls. */
 const UNTRUSTED_SCOPE_GRAMMAR = /^(?:global|[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._@/:-]{0,199})$/
 const UNTRUSTED_DOMAIN_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/
 /** Characters that break a line, reorder text or hide in a path printed to the model. */
@@ -1859,7 +1885,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall',
-      description: 'Search engrams by topic. Default mode is hybrid (BM25 + local embeddings via RRF) — set mode:"keyword" for BM25-only. Local search plus, when a configured enterprise store is part of the current project/work, one live timeout-bounded recall per remote host merged in (a `remote_stores` block + warning appears when a host is degraded; no host configured or implicated = fully local). Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
+      description: 'Search engrams by topic. Default mode is hybrid (BM25 + local embeddings via RRF) — set mode:"keyword" for BM25-only. Local search plus, when a configured enterprise store is part of the current project/work — or when the scope (or the default scope this session registered itself) is a personal user: scope and a remote store is configured with that same scope (exact match, case-insensitive; that rule adds only the matching store, though a store set to dial: always or a trusted project remote can still add others) — one live timeout-bounded recall per remote host merged in (a `remote_stores` block + warning appears when a host is degraded; no host configured or implicated = fully local). Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
       annotations: { title: 'Recall', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1887,7 +1913,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall_hybrid',
-      description: '[Deprecated since 0.16 — use plur_recall (mode defaults to hybrid). Alias kept for backwards compatibility; removal earliest 0.18.] Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion, plus the live enterprise-store recall leg when one is configured and project-relevant.',
+      description: '[Deprecated since 0.16 — use plur_recall (mode defaults to hybrid). Alias kept for backwards compatibility; removal earliest 0.18.] Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion, plus the live enterprise-store recall leg when one is configured and project-relevant, or when the scope is a personal user: scope matching the own scope of a configured remote store (exact, case-insensitive; adds only that store, while dial: always and a trusted project remote still apply).',
       annotations: { title: 'Recall (hybrid) [deprecated alias]', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -2803,7 +2829,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Artifacts that could not be read (audit 2026-08-03, finding 14).
           // Core reports these; this hand-built response dropped them, so an
           // agent asking for status saw a healthy-looking `pack_count: 0`.
-          ...(status.store_errors ? { store_errors: status.store_errors } : {}),
+          ...(status.store_errors ? { store_errors: redactStoreErrors(status.store_errors) } : {}),
           // Spreading-activation drop counters — absent when both are zero.
           ...(status.spread_drops ? { spread_drops: status.spread_drops } : {}),
           // Version check (issue #151)
@@ -3428,7 +3454,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         // Surface a broken artifact where the operator will actually see it —
         // the session opener — rather than only in `plur status`.
-        const store_errors = status?.store_errors
+        const store_errors = status?.store_errors ? redactStoreErrors(status.store_errors) : undefined
 
         // Warm remote store caches before injection (#235)
         // Ensures enterprise engrams are available for the first injectHybrid call.

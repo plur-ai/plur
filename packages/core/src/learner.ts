@@ -87,6 +87,26 @@ function extractMessageText(message: LearnableMessage): string {
 const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 
 /**
+ * The per-reply memory line PLUR's instructions ask for
+ * (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`),
+ * in the forms an agent may write it: plain, in backticks, bold or italics, as
+ * a bullet, numbered item or quote, after a 🧠, inside an HTML tag, with an em
+ * dash, en dash, hyphen or colon. It reports on the turn; it is never a
+ * learning (#1520 audit S3, re-audit R2).
+ *
+ * Anchored on the footer's shape, not just its first word (second re-audit
+ * L2): `recalled` then a count or a colon, `used:`/`written:` then an engram
+ * id, or `none` alone on the line. A learning such as "Memory: used 4GB is too
+ * low" or "Memory — none of the caches survive" does not match.
+ */
+export const MEMORY_LINE_RE = new RegExp(
+  '^[\\s>*_`~•-]*(?:\\d+[.)]\\s*)?(?:🧠\\s*)?(?:<[a-z][^>]*>\\s*)?[*_`]*' +
+  'Memory[\\s*_`]*(?:[—–-]+|:)\\s*[*_`]*\\s*' +
+  '(?:recalled\\s*(?::|\\d)|(?:used|written)\\s*:\\s*[*_`]*\\s*ENG-|none[\\s*_`.]*(?:</[a-z]+>)?[\\s*_`.]*$)',
+  'i',
+)
+
+/**
  * Extract self-reported learnings from a message.
  * Looks for the 🧠 I learned: section and parses bullet points.
  *
@@ -100,11 +120,15 @@ const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 export function extractSelfReportedLearnings(message: LearnableMessage): string[] {
   const content = extractMessageText(message)
   // Match the learning section: ---\n🧠 I learned:\n- item\n- item
+  // The per-reply memory line may follow the last bullet with no blank line,
+  // so it can land inside the block; it is filtered out below, line by line,
+  // so a real learning after it is never lost (#1520 audit S3, re-audits R2, L2).
   const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)/)
   if (!match) return []
 
   return match[1]
     .split('\n')
+    .filter(line => !MEMORY_LINE_RE.test(line))
     .map(line => line.replace(/^[-•*]\s*/, '').trim())
     .filter(line => line.length >= 10 && !PLACEHOLDER_BULLET_RE.test(line)) // skip empty, trivial, or placeholder lines
 }

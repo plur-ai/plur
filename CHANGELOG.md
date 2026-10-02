@@ -20,6 +20,146 @@ asks for no "ok": the memory line the agent ends every reply with is enough.
 A fallback still checks every 10th response; set
 `PLUR_LEARN_FALLBACK_INTERVAL` to change it, or `0` to turn it off.
 
+### Agents now end each reply with the memories they recalled, used and wrote (#1520)
+
+The instructions PLUR installs (the `plur init` section in CLAUDE.md and
+AGENTS.md, the Cursor rule, the MCP server instructions, the `plur-mcp init`
+section, the Claw system prompt and the plur-memory skill) now ask the agent to
+end every reply with one short line such as
+`Memory — recalled 4 · used: ENG-…, ENG-… · written: ENG-…`, or
+`Memory — none`: a count of what was recalled and the ids used and written, no
+statements, and only ids it actually saw that turn. Ask a follow-up for the
+details. That line is never saved as a learning, in any form an agent writes
+it: plain, in backticks or bold, as a bullet, numbered item or quote, after a
+🧠 or inside an HTML tag, with an em dash, en dash, hyphen or colon, straight
+after an "I learned" list or in place of one. A learning that merely starts
+with "Memory", such as "Memory: used 4GB is too low", is still saved.
+
+Re-running `plur init` or `plur-mcp init`, or reloading the Claw plugin, now
+brings an existing install up to date. Before, `plur init` left an existing
+section untouched, so changed instructions never reached an existing install.
+It never removes text PLUR did not write. An old PLUR section is replaced only
+when it is, line for line, a text PLUR shipped; only trailing spaces and line
+endings may differ. A section you wrote or edited, including one you only
+re-indented, stays exactly as it is, the new section is added beside it, and
+init tells you so, so you can tidy up. A section inside a code block or an
+HTML comment is left alone, and a file that ends inside one has it closed
+before the new section is added, so a second run changes nothing. An edited
+`.cursor/rules/plur-memory.mdc` is kept rather than overwritten. Every file
+that is changed is first copied to a timestamped `*.plur-backup-*` file beside
+it (an edited Cursor rule only once per version of its content). The new file
+is written beside the old one and swapped in whole, so a write that fails
+partway, on a full disk for instance, leaves your file exactly as it was.
+
+### opencode follows the folder map (#1517)
+
+**The opencode plugin now does what you decided for each folder**, like the
+Claude Code, Codex, Cursor and Antigravity hooks have since #1347. Before, it
+recalled and learned in every folder it was opened in, and the folder map
+(`~/.plur/folders.yaml`) was not read at all. The decision is for the folder
+opencode is open in, so an `off` subfolder of a repo that is `on` stays off.
+
+- **off**: nothing happens in that folder — no recall, no memory block, no
+  question, no learning.
+- **ask** (any folder you have not decided about, including your home folder,
+  and a repo whose `.plur.yaml` asks for settings you have not trusted): no
+  memories. The session's first message carries the same question the hooks
+  ask, with a single-use command per answer (yes, never here, and trust this
+  repo's `.plur.yaml` when it has one). The next message of that session
+  carries the same commands once more, without asking again, so the agent can
+  still run your answer when you give it; after that the session carries
+  nothing and the unanswered commands stop working, so a later "yes" to
+  something else is never taken as consent. What the repo requests is shown only
+  as quoted data, never its token. Without the `plur` CLI on `PATH`, the
+  plugin says so and how to install it instead of offering commands.
+- **on**: the session scope is the folder's scope from the map, else the scope
+  of a trusted `.plur.yaml`, and recall reaches the team store for that scope.
+
+The question's commands carry nonces issued the same way the hooks issue
+them: one per answer, bound to that folder and that answer, ended when
+opencode deletes the session or exits, and after 24 hours at most. The
+plugin's nonces are also bound to their session: opencode tells the agent's
+shell which session it is in (`PLUR_FOLDER_SESSION`), and `plur folders set`
+refuses a nonce from another session. The editor hooks' nonces stay unbound,
+because their hosts cannot tell the agent's shell its session.
+
+**A folder map that cannot be read now fails safe, in every editor.** A
+`folders.yaml` that does not parse was read as empty, after which a project
+marker (`.plur.yaml`, a project MCP config) switched memory on, even in a
+folder the map had switched off. Now the folder is treated like `ask` with no
+memory, and the agent is told which file to fix and on which line. A folder
+decision that cannot be resolved for any other reason does the same, and so
+does a `folders.yaml` that exists but cannot be opened (a dangling symlink, a
+folder that cannot be searched), which was read as "no map" — the same rule
+the MCP server's folder gate applies.
+
+The question itself moved from the CLI into core (`folderAskOnce`,
+`sessionSettings`), so the hooks and the plugin share one implementation.
+
+### The MCP server respects a folder you turned PLUR off for (#1519)
+
+`plur folders set <folder> --off` silenced the editor hooks, but an agent that
+called `plur_learn` or `plur_recall` itself still read and wrote memory in that
+folder: the MCP server never read the folder map. Now, in an `off` folder, the
+33 MCP tools that read or write engrams or episodes or return their text —
+`plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`,
+`plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`,
+`plur_capture`, `plur_feedback`, `plur_receipt` and the rest (the full list is
+in the MCP README), called directly or through `plur_admin` — read and write no
+store, local or remote (no outbox row either), and answer without an error
+that PLUR is off for this folder, with the `plur folders set … --on` command
+for each map entry that turns it off.
+
+The admin and diagnostic tools (status, doctor, stores list and add, sync
+status, packs list and preview, scope discovery) keep working; status, doctor
+and stores list still read stores to count or probe them and return counts and
+health, not engram text (a store that cannot be parsed is reported by the
+error's first line only, by every MCP tool, never by the file's lines); `plur_packs_preview` still returns the statements of
+any pack directory it is pointed at, an installed one included. The folder is the editor's workspace — the roots the client lists over
+MCP, plus the folder the server was started in — checked on every call; if the
+client's roots cannot be fetched or a root is not a folder on this machine, that
+call does nothing and the next one asks again. A `folders.yaml` that exists but
+cannot be read or parsed — a dangling symlink, an empty file, an unknown
+top-level key included — now fails safe: the memory tools do nothing and name
+the file and the problem. Server startup is
+not gated yet (#1523). `on` and `ask` folders are unchanged.
+
+### plur doctor reads an opencode config written with comments or trailing commas (#1516)
+
+opencode accepts JSONC in `~/.config/opencode/opencode.jsonc`. `plur doctor`
+read it with a plain JSON parser, so a config that declares both the
+`@plur-ai/opencode` plugin and `mcp.plur` was reported as declaring neither,
+and doctor failed a working install. Doctor now reads comments and trailing
+commas, and leaves `//` and `/*` inside strings (such as the `$schema` URL)
+alone. Reading never changes the file. `plur init` still refuses to rewrite a
+JSONC config, because it cannot keep the comments.
+
+### plur recall --scope and --domain filter the results (#1516)
+
+`plur recall "<query>" --scope <scope>` accepted the flag and ignored it: the
+recall ran across every scope, and a team store for that scope was never
+asked. `--scope` and `--domain` now filter the same way as the `plur_recall`
+MCP tool, and `--scope` dials the store configured for that scope.
+`--tags` and `--type` were accepted and ignored the same way. There is no
+filter behind them, so `plur recall` now refuses them with an error. `plur list` likewise refuses `--tags`, and now accepts
+`--meta`, which it previously refused before reading it.
+
+### plur inject --scope limits the injection to that scope (#1516)
+
+`plur inject "<task>" --scope <scope>` ignored the flag the same way: the
+injection drew on every scope, and a team store for that scope was never
+asked. `--scope` now works as it does in the `plur_inject` MCP tool, and on
+the default (hybrid) path it dials the store configured for that scope. The
+MCP tool takes no domain, so `plur inject` refuses `--domain`, and any other
+flag it does not know, with an error instead of ignoring it.
+
+Because `plur inject` now checks its flags, a task that starts with a dash
+and a letter (`-deploy …`, `--path=…`) must come after `--`:
+`plur inject -- "-deploy the service"`. Without `--` it is read as an unknown
+flag and the command exits 1. The current Python SDK and Hermes plugin already
+pass such tasks after `--`; older builds that do not will get exit 1 for those
+tasks (no memory injected for that turn) until they are updated.
+
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its
@@ -27,6 +167,72 @@ entry module. opencode loads every export of that module as a plugin and refuses
 one that is not a function ("Plugin export is not a function"), so the whole
 plugin failed to load. The constant now lives in its own module, and a test
 keeps the entry module to functions only.
+
+### A recall in your personal scope now reads your personal remote store (#1515)
+
+**Personal remote memory is no longer write-only.** With a remote store
+configured for a personal scope (for example `scope: user:acme:me`),
+`plur_learn` to that scope saved the engram on the server, but `plur_recall`
+or `plur_recall_hybrid` with the same scope never contacted the server and
+returned only local results. The remote leg dialed a host only for a shared
+(`group:`/`project:`) scope of the same org, an explicit `.plur.yaml` remote
+project, or a store marked `dial: always`; a personal scope qualified for none
+of them.
+
+Now a recall or a hybrid injection whose personal `user:` scope was passed by
+the caller, or registered by that session itself, dials the one store whose
+own scope matches it, asking that host for that one scope.
+
+- The match ignores case, the same way local-only scope targets do
+  (`USER:Acme:Me` finds a store configured as `user:acme:me`). Exactly one
+  configured store is chosen, local path-backed ones included. Stores whose
+  scope matches exactly are preferred; only when none does are case-insensitive
+  matches considered. Among those candidates the choice is fail-safe: a local
+  store first, then a writable remote store, then a readonly one, with config
+  order breaking ties. An exact remote match still beats a case-insensitive
+  local match: `USER:ACME:ME` goes to a remote store configured as exactly
+  `USER:ACME:ME` even when a local store is configured as `user:acme:me`. A
+  write leaves the machine only when no local store matches the same way
+  (exactly, or, with no exact match, case-insensitively).
+- That one choice decides the recall dial, where `learn`, `learnRouted`,
+  `learnAsync` and `learnBatch` write, the "is this my own remote namespace"
+  check, whether an existing remote copy counts as a duplicate of the write,
+  and where an update that moves a queued engram into the scope sends it (a
+  local choice cancels the queued delivery). The writes make it before their
+  duplicate check and read the current config first, so a store another
+  process just added already counts. A write and a read with the same string
+  therefore pick the same store, even when a remote store has the identical
+  scope. One exception, as before: a readonly remote store is read but never
+  written, so when it is the chosen store the write stays local.
+- The secret check does not use the choice. Content headed for a scope that
+  any remote store holds exactly is checked for secrets, whichever store is
+  chosen, and so is an update to an engram already on the server and an
+  outbox delivery. With a local store and a remote store on the identical
+  scope, a sensitive write is kept local and private, as before this change.
+- When the chosen store is local, or is set to `dial: never`, the
+  personal-scope rule dials nothing. It never uses a remote store whose scope
+  differs only in case instead.
+- The personal-scope rule adds only that store. Other stores, a case twin
+  included, can still be dialed by the existing rules: a store set to
+  `dial: always`, a trusted `.plur.yaml` remote project, or an org context
+  (a shared `group:`/`project:` scope of the same org), which also adds that
+  host's personal stores. `dial: never` still wins.
+- A session that never registered its own scope does not dial through the
+  process-wide default; that default is some other caller's choice.
+- When a core `recall`, `recallHybrid` or `injectHybrid` call passes a
+  `scopes` allow-list, only stores that can hold an allowed scope are dialed:
+  the store's scope equals an allowed scope or is a parent of one (a
+  `group:acme/eng` store is dialed for `scopes: ['group:acme/eng/x']`; a
+  `group:acme/eng/x` store is not dialed for `scopes: ['group:acme/eng']`).
+  `scopes: []` dials nothing. Before, every store was dialed and the rows were
+  filtered afterwards; that exact-membership filter on returned rows still
+  runs. The MCP tools do not take a `scopes` argument.
+- A session whose default scope is a personal store scope now makes one
+  timeout-bounded remote call per hybrid injection, where it made none.
+
+Shared-scope dialing is otherwise unchanged. The `plur_recall` tool description
+(and its `plur_recall_hybrid` alias) now says a personal scope reads its own
+matching remote store.
 
 ## 0.21.0
 

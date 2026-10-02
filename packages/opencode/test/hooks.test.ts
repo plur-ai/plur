@@ -1,9 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { PlurPlugin } from '../src/index.js'
+import { folderOn } from './folder-fixture.js'
 
-const fakePlur = () => ({
+// A folder switched on in the folder map (#1347): see folder-fixture.ts.
+const fakePlur = () => folderOn({
   injectHybrid: vi.fn().mockResolvedValue({ count: 1, directives: '[ENG-1] Use pnpm.', constraints: '', text: '' }),
-})
+}, '/tmp/p')
 
 describe('recall / render split', () => {
   it('chat.message runs recall but injects nothing into parts', async () => {
@@ -45,7 +47,7 @@ describe('recall / render split', () => {
   })
 
   it('a recall failure degrades to no memory rather than throwing', async () => {
-    const plur = { injectHybrid: vi.fn().mockRejectedValue(new Error('store down')) }
+    const plur = folderOn({ injectHybrid: vi.fn().mockRejectedValue(new Error('store down')) }, '/tmp/p')
     const hooks = await PlurPlugin({ directory: '/tmp/p', _plur: plur } as any)
     const output = { message: { id: 'msg_1' }, parts: [] }
 

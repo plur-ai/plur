@@ -96,10 +96,27 @@ _NEUTRAL_PREFIX = re.compile(
 )
 
 
+# The per-reply memory line PLUR's instructions ask for
+# (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`) in
+# the forms an agent may write it: plain, in backticks, bold or italics, as a
+# bullet, numbered item or quote, after a 🧠, inside an HTML tag, with an em
+# dash, en dash, hyphen or colon. It is never a learning (#1520 S3, R2). It is
+# anchored on the footer's shape, so "Memory: used 4GB is too low" or
+# "Memory — none of the caches survive" are still learnings (L2), and only the
+# matching line is dropped. Mirrors MEMORY_LINE_RE in packages/core/src/learner.ts.
+_MEMORY_LINE_RE = re.compile(
+    r'^[\s>*_`~\u2022-]*(?:\d+[.)]\s*)?(?:\U0001f9e0\s*)?(?:<[a-z][^>]*>\s*)?[*_`]*'
+    r'Memory[\s*_`]*(?:[\u2014\u2013-]+|:)\s*[*_`]*\s*'
+    r'(?:recalled\s*(?::|\d)|(?:used|written)\s*:\s*[*_`]*\s*ENG-|none[\s*_`.]*(?:</[a-z]+>)?[\s*_`.]*$)',
+    re.IGNORECASE,
+)
+
+
 def _extract_lines(block: str) -> list[str]:
+    lines = [raw_line for raw_line in block.split('\n') if not _MEMORY_LINE_RE.match(raw_line)]
     return [
         line.strip()
-        for raw_line in block.split('\n')
+        for raw_line in lines
         if (line := _BULLET_PREFIX.sub('', raw_line).strip())
         and len(line) >= 10
     ]

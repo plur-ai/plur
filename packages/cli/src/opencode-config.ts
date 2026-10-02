@@ -3,6 +3,7 @@ import { join } from 'path'
 import { homedir, platform } from 'os'
 import { atomicWrite } from '@plur-ai/core'
 import { buildMcpServerEntry, isOwnWin32NodeEntry, isPathResolvedCommand, missingNodeEntryPaths } from './mcp-config.js'
+import { parseJsonc } from './lib/jsonc.js'
 
 /**
  * Support for opencode's config file: `~/.config/opencode/opencode.json`
@@ -39,6 +40,10 @@ import { buildMcpServerEntry, isOwnWin32NodeEntry, isPathResolvedCommand, missin
  * completely untouched, never silently coerced to `{}` and written back
  * over. Same refusal shape every other host leg in `init.ts` gives for a
  * config file it cannot safely parse (#1059 class).
+ *
+ * The READ path is different: `readOpencodeConfig` (what `plur doctor`
+ * reports from) parses JSONC (`lib/jsonc.ts`), because opencode itself
+ * accepts it and reading never changes the file. Only the writer refuses.
  */
 
 export interface WriteOpencodeConfigResult {
@@ -207,11 +212,15 @@ export interface OpencodeConfigSnapshot {
   exists: boolean
   /**
    * False when the file exists but doctor cannot safely read PLUR's
-   * declarations out of it — the exact same refusal cases
-   * `WriteOpencodeConfigResult.ok` documents: invalid JSON (most commonly
-   * JSONC comments/trailing commas), a top-level value that isn't a plain
+   * declarations out of it: invalid JSON even after JSONC comments and
+   * trailing commas are allowed, a top-level value that isn't a plain
    * object, or an existing `plugin`/`mcp` field in the wrong shape. `true`
    * when the file doesn't exist — there is nothing unsafe about "not there".
+   *
+   * Unlike `WriteOpencodeConfigResult.ok`, JSONC is NOT a refusal here:
+   * opencode accepts it, and reading it changes nothing on disk. Reporting
+   * a working JSONC config as "not declared" sent doctor to fail on a
+   * healthy install.
    */
   ok: boolean
   /** `plugin` is an array containing `PLUR_OPENCODE_PLUGIN` in any form (`isPlurOpencodePluginEntry`). False when `ok` is false. */
@@ -242,7 +251,9 @@ export function readOpencodeConfig(configPath: string): OpencodeConfigSnapshot {
 
   let parsed: unknown
   try {
-    parsed = JSON.parse(readFileSync(configPath, 'utf8'))
+    // JSONC-tolerant on this read-only path only; writeOpencodeConfig keeps
+    // a plain JSON.parse and refuses JSONC it cannot round-trip.
+    parsed = parseJsonc(readFileSync(configPath, 'utf8'))
   } catch {
     return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
   }
