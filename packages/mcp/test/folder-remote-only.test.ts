@@ -73,6 +73,12 @@ async function client(): Promise<Client> {
 }
 
 const result = (raw: Awaited<ReturnType<Client['callTool']>>): any => JSON.parse((raw.content as any)[0].text)
+const rows_ = (): any[] => {
+  const f = join(root, 'engrams.yaml')
+  if (!existsSync(f)) return []
+  const text = readFileSync(f, 'utf8')
+  return text.includes('should not be kept') ? [{ statement: 'should not be kept' }] : []
+}
 
 describe('MCP in a remote-only folder', () => {
   it('plur_learn with no scope goes to the team scope on the server', async () => {
@@ -156,9 +162,13 @@ describe('audit of #1521: MCP binds from the client roots and fails closed', () 
     await new Plur({ path: root }).learn('malformed codeword PERSONALZEBRA')
     writeFileSync(join(root, 'folders.yaml'), 'version: 1\nfolders: [[[\n')
     const c = await client()
+    // One answer style with #1519: a non-error `off` answer naming the file.
     const raw = await c.callTool({ name: 'plur_learn', arguments: { statement: 'should not be kept' } })
-    expect(raw.isError).toBe(true)
+    expect(raw.isError).not.toBe(true)
+    expect(result(raw).plur).toBe('off')
+    expect(result(raw).reason).toBe('folder-map-unreadable')
     expect((raw.content as any)[0].text).toContain('folders.yaml')
+    expect(rows_().some((r: any) => r.statement === 'should not be kept')).toBe(false)
     const rec = await c.callTool({ name: 'plur_recall', arguments: { query: 'malformed codeword' } })
     expect(JSON.stringify(rec)).not.toContain('PERSONALZEBRA')
   })
@@ -180,8 +190,10 @@ describe('re-audit of #1521, B-2: roots discovery fails CLOSED', () => {
   it('roots/list throws: the call reads and writes nothing and says so', async () => {
     const c = await rootsClient(async () => { throw new Error('no roots for you') })
     const raw = await c.callTool({ name: 'plur_learn', arguments: { statement: 'ROOTSFAIL personal note', scope: 'global' } })
-    expect(raw.isError).toBe(true)
-    expect((raw.content as any)[0].text).toMatch(/workspace|roots/i)
+    // One answer style with #1519: a non-error `off` answer, reason workspace-unknown.
+    expect(raw.isError).not.toBe(true)
+    expect(result(raw).plur).toBe('off')
+    expect(result(raw).reason).toBe('workspace-unknown')
     expect(engramsText()).not.toContain('ROOTSFAIL')
   })
 
@@ -189,7 +201,8 @@ describe('re-audit of #1521, B-2: roots discovery fails CLOSED', () => {
     const { pathToFileURL } = await import('url')
     const c = await rootsClient(async () => { await new Promise(r => setTimeout(r, 2600)); return { roots: [{ uri: pathToFileURL(work).href }] } })
     const raw = await c.callTool({ name: 'plur_learn', arguments: { statement: 'ROOTSSLOW personal note', scope: 'global' } })
-    expect(raw.isError).toBe(true)
+    expect(result(raw).plur).toBe('off')
+    expect(result(raw).reason).toBe('workspace-unknown')
     expect(engramsText()).not.toContain('ROOTSSLOW')
   }, 30_000)
 
