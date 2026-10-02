@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### A broken folders.yaml says what is wrong, and `plur folders repair` fixes it (#1526)
+
+When `~/.plur/folders.yaml` is broken, PLUR pauses memory, which is the safe
+direction. Until now the messages said only that the file was broken, or gave
+the YAML parser's line, and nothing helped you fix it. Now every place that
+reports a broken map names the line and column and says what is wrong in
+plain words. That covers `plur doctor`, `plur folders list`, the editor hooks'
+notice, the opencode plugin's notice, the MCP tools' answer and `plur_status`:
+
+```
+line 4: indentation — `plur:` is indented 5 spaces, expected 4 (in line with `path:` on line 3)
+line 2: unknown key `folder:` — did you mean `folders:`?
+line 5: `plur:` in entry 2 must be on, off or ask — it looks like `off` with the wrong case or a typo
+```
+
+A message quotes at most the key on that line. It never shows a path, a
+scope or any other value from the file. Each place also offers the fix:
+
+- **`plur folders repair`** fixes what is unambiguous, which covers:
+  - list items and keys indented unevenly, and tabs in the indentation;
+  - a misspelled top-level key (`folder` → `folders`, `verison` → `version`);
+  - a `plur:` mode with the wrong case or one wrong letter, when exactly one
+    of on, off and ask matches (`of` is one letter from both `on` and `off`,
+    so it is left to you);
+  - an empty or comments-only file, which becomes a minimal valid map.
+
+  It shows a unified diff and asks before writing. `--yes` skips the
+  question. Without `--yes`, a run that is not in an interactive terminal is
+  a dry run: it changes nothing and exits nonzero. Before writing it saves the
+  original as `folders.yaml.plur-backup-<UTC time>` next to the file, writes
+  the new file atomically (to the target, when the map is a symlink), and
+  checks the result again. It keeps your comments. A problem it cannot fix is
+  reported with its line, and the file is left exactly as it was.
+- **Agents get the same offer.** The MCP answer (`repair_command`), the hooks'
+  notice and the opencode notice give the exact command,
+  `plur folders repair --yes` (with `--path` for a store other than
+  `~/.plur`), and tell the agent to run it only after you agree. In opencode,
+  the next turn carries the command once more, so a "yes" given there can
+  still be acted on.
+
+**Behaviour change in the editor hooks and the opencode plugin (the safe
+direction).** They read an empty or comments-only `folders.yaml`, or one with
+an unknown top-level key such as `folder:`, as an empty map. That gave `ask`,
+or memory ON in a folder with a project marker. The MCP server already refused
+such a file. Now the hooks and the plugin refuse every file the MCP server
+refuses: such a map gives `ask` with no memory, and `plur folders set` will not
+write over it until it is repaired.
+
 ### opencode follows the folder map (#1517)
 
 **The opencode plugin now does what you decided for each folder**, like the

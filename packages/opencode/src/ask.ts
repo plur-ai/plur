@@ -16,6 +16,17 @@ export function folderAskReminder(question: string): string {
   const header = /^\[PLUR Memory — [^\]]*\]/.exec(lines[0] ?? '')?.[0] ?? '[PLUR Memory — no decision for this folder yet, so no memories were loaded]'
   const commands = lines.filter(l => l.startsWith('- ') || l.startsWith('Other team scopes configured here:'))
   const offersCommands = commands.some(l => l.includes('--nonce '))
+  // The broken-map notice's repair offer (#1526): its one command, kept for
+  // the turn the user answers in, like the question's.
+  const repair = commands.find(l => l.includes(' folders repair --yes'))
+  if (!offersCommands && repair) {
+    return [
+      header,
+      'The user was already told in this session that the folder map is broken. Do not raise it again. ' +
+      'Run the command below only if the latest message from the user agrees to repair it; a yes to anything else is not an answer:',
+      repair,
+    ].join('\n')
+  }
   if (!offersCommands) {
     return `${header} PLUR memory stays off in this folder; the user was told earlier in this session. Do not raise it again.`
   }
