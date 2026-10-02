@@ -490,9 +490,19 @@ export function repairFolderMap(root: string, opts: { apply: boolean; expect?: s
     if (opts.expect !== undefined && opts.expect !== shown.before) return { ...shown, status: 'changed' }
     const p = planFolderMapRepair(shown.before!)
     if (p.status !== 'fixable') return shown
-    const backup = `${file}.plur-backup-${utcStamp(opts.now ?? new Date())}`
-    // The original bytes, private like the map; never overwrite an earlier backup.
-    writeFileSync(backup, shown.before!, { mode: 0o600, flag: 'wx' })
+    // The original bytes, private like the map; never overwrite an earlier
+    // backup (two repairs in one second get -2, -3, …).
+    const stem = `${file}.plur-backup-${utcStamp(opts.now ?? new Date())}`
+    let backup = stem
+    for (let n = 2; ; n++) {
+      try {
+        writeFileSync(backup, shown.before!, { mode: 0o600, flag: 'wx' })
+        break
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || n > 99) throw err
+        backup = `${stem}-${n}`
+      }
+    }
     let target = file
     try { if (lstatSync(file).isSymbolicLink()) target = realpathSync(file) } catch { /* write the path itself */ }
     atomicWrite(target, p.after, { mode: 0o600 })

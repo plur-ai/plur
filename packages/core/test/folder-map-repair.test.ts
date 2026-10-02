@@ -256,6 +256,17 @@ describe('repairFolderMap writes safely', () => {
     expect(folderMapProblem(root)).toBeNull()
   })
 
+  it('two repairs in the same second keep both backups', () => {
+    const now = new Date('2026-10-02T09:08:07Z')
+    writeFileSync(file(), 'version: 1\nfolder:\n  - path: /a\n')
+    expect(repairFolderMap(root, { apply: true, now }).status).toBe('repaired')
+    writeFileSync(file(), 'verison: 1\nfolders: []\n')
+    const r = repairFolderMap(root, { apply: true, now })
+    expect(r.status).toBe('repaired')
+    expect(r.backup).toBe(join(root, 'folders.yaml.plur-backup-20261002T090807Z-2'))
+    expect(backups().sort()).toEqual(['folders.yaml.plur-backup-20261002T090807Z', 'folders.yaml.plur-backup-20261002T090807Z-2'])
+  })
+
   it('apply refuses when the file changed since the diff was shown', () => {
     writeFileSync(file(), 'version: 1\nfolder:\n  - path: /a\n')
     const shown = repairFolderMap(root, { apply: false })
