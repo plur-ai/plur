@@ -96,6 +96,8 @@ export interface FolderOffAnswer {
   fixable?: boolean
   /** The exact command to run, only after the user agrees (when fixable). */
   repair_command?: string
+  /** What that command changes (lines and keys, no values): show it to the user first. */
+  repair_summary?: string
   message: string
 }
 
@@ -114,6 +116,7 @@ function unreadable(problem: FolderMapProblem, root: string): FolderOffAnswer {
     ...(problem.column !== undefined ? { column: problem.column } : {}),
     fixable: problem.fixable,
     ...(advice.command ? { repair_command: advice.command } : {}),
+    ...(advice.summary ? { repair_summary: advice.summary } : {}),
     message:
       `PLUR memory is paused: the folder map ${JSON.stringify(problem.file)} ${problem.problem}. ` +
       `Until it is fixed, PLUR cannot tell whether memory is allowed in this folder, so nothing was read from or ` +

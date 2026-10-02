@@ -1,5 +1,6 @@
 import yaml from 'js-yaml'
 import { z } from 'zod'
+import { isDeepStrictEqual } from 'util'
 
 /**
  * A broken folders.yaml, pinpointed and — where the fix is unambiguous —
@@ -19,6 +20,10 @@ import { z } from 'zod'
  * and nothing is changed — there is no half repair.
  */
 
+// #1521 (0.22) extends these two: `plur` gains `remote-only`, and an empty
+// `folders:` (null) becomes valid. When it lands, change them HERE — this is
+// the one schema the loader, the MCP gate and the repair share — and add
+// `remote-only` to MODES below.
 export const FolderEntrySchema = z.object({
   path: z.string().min(1),
   plur: z.enum(['on', 'off', 'ask']).optional(),
@@ -41,6 +46,8 @@ export interface FolderMapIssue {
   message: string
   /** True when `plur folders repair` can fix this one by itself. */
   fixable: boolean
+  /** For a fix: what the repair changes on that line, in a few words (no values). */
+  change?: string
 }
 
 export type FolderMapCheck =
@@ -49,14 +56,26 @@ export type FolderMapCheck =
 
 export type FolderMapRepairPlan =
   | { status: 'ok' }
-  | { status: 'fixable'; after: string; fixes: FolderMapIssue[]; diff: string }
+  | {
+      status: 'fixable'
+      after: string
+      fixes: FolderMapIssue[]
+      /** One line: what changes where, e.g. "line 4: indentation; line 2: `folder:` → `folders:`". No values. */
+      summary: string
+      /** Unified diff; '' when planned with `{ diff: false }`. */
+      diff: string
+    }
   | { status: 'unfixable'; issues: FolderMapIssue[] }
 
 const TOP_KEYS = ['version', 'folders'] as const
 const ENTRY_KEYS = new Set(['path', 'plur', 'scope', 'trusted', 'literal'])
 const MODES = ['on', 'off', 'ask'] as const
 /** Words that read as a yes/no: never guessed into a mode (`no` is one letter from `on`). */
-const YES_NO = new Set(['yes', 'no', 'y', 'n', 'true', 'false', 'none', 'null', '~'])
+const YES_NO = new Set(['yes', 'no', 'y', 'n', 'true', 'false', 'none', 'non', 'null', '~'])
+/** A block scalar indicator (`|`, `>`, with chomping / indentation markers): its lines are text, not structure. */
+const BLOCK = /^[|>][-+0-9]*[ \t]*(#.*)?$/
+/** Above this, a broken map is pinpointed but never planned for repair (the planner and the diff are not free). */
+const MAX_REPAIR_LINES = 2000
 /** A key PLUR may print: a plain identifier, bounded. Anything else is "a key". */
 const SAFE_KEY = /^[A-Za-z_][A-Za-z0-9_-]{0,39}$/
 const KEY_RE = /^([A-Za-z_][A-Za-z0-9_-]{0,39})[ \t]*:(?=[ \t]|$)/
@@ -80,6 +99,8 @@ interface Line {
   gap?: string
   /** `item` lines whose content is not a key (`- {path: x}`, `- x`). */
   inlineValue?: boolean
+  /** Key lines (and items with a key): what follows `key:`, trimmed. */
+  value?: string
 }
 
 interface Scan { lines: Line[]; eol: string; bom: boolean; finalNewline: boolean }
@@ -101,11 +122,11 @@ function scan(text: string): Scan {
     if (dash && (rest.length === 1 || /[ \t]/.test(rest[1]))) {
       const inner = rest.slice(dash[0].length)
       const k = KEY_RE.exec(inner)
-      if (k) return { ...base, kind: 'item', key: k[1], gap: dash[1] }
+      if (k) return { ...base, kind: 'item', key: k[1], gap: dash[1], value: inner.slice(k[0].length).trim() }
       return { ...base, kind: 'item', gap: dash[1], inlineValue: inner !== '' && !inner.startsWith('#') }
     }
     const k = KEY_RE.exec(rest)
-    if (k) return { ...base, kind: 'key', key: k[1] }
+    if (k) return { ...base, kind: 'key', key: k[1], value: rest.slice(k[0].length).trim() }
     return { ...base, kind: 'other' }
   })
   return { lines, eol, bom, finalNewline }
@@ -128,7 +149,15 @@ type Role =
 
 interface Entry { line: Line; keys: Map<string, Line> }
 
-interface Structure { roles: Role[]; entries: Entry[]; tops: Map<string, Line[]> }
+interface Structure {
+  roles: Role[]
+  entries: Entry[]
+  tops: Map<string, Line[]>
+  /** The first line opening a block scalar (`key: |`), whose lines are text. */
+  block?: Line
+  /** The first key with no value on its line followed by deeper lines (a nested value). */
+  nested?: Line
+}
 
 /** Damerau (optimal string alignment) distance: a swapped pair counts as one. */
 export function editDistance(a: string, b: string): number {
@@ -142,6 +171,24 @@ export function editDistance(a: string, b: string): number {
     }
   }
   return d[a.length][b.length]
+}
+
+/**
+ * The entry key a misspelling most likely means (`plru` → `plur`), or null.
+ * One edit for a key of up to four letters, two for longer ones, and only a
+ * single nearest key: an unrelated key such as `note:` is left alone.
+ */
+export function suggestEntryKey(key: string): string | null {
+  const k = key.toLowerCase()
+  if (ENTRY_KEYS.has(k)) return k === key ? null : k
+  const max = k.length <= 4 ? 1 : 2
+  let best: string[] = []
+  let bestD = Infinity
+  for (const e of ENTRY_KEYS) {
+    const d = editDistance(k, e)
+    if (d < bestD) { bestD = d; best = [e] } else if (d === bestD) best.push(e)
+  }
+  return bestD <= max && best.length === 1 ? best[0] : null
 }
 
 /** The top-level key a misspelling most likely means, or null. */
@@ -159,8 +206,28 @@ function structure(s: Scan): Structure {
   const tops = new Map<string, Line[]>()
   let inFolders = false
   let current: Entry | null = null
+  let block: Line | undefined
+  let nested: Line | undefined
+  /** Inside a block scalar: lines deeper than the line that opened it are its text. */
+  let blockLead = -1
+  let prevEmptyKey: Line | null = null
   for (const l of s.lines) {
+    if (blockLead >= 0) {
+      if (l.kind === 'blank' || l.lead.length > blockLead) { roles.push({ role: 'none' }); continue }
+      blockLead = -1
+    }
     if (l.kind === 'blank' || l.kind === 'comment') { roles.push({ role: 'none' }); continue }
+    // A key with no value on its line, followed by deeper lines: its value is
+    // nested (a mapping or list). `folders:` is the one key that may do so.
+    const keyCol = (k: Line) => k.lead.length + (k.kind === 'item' ? 1 + (k.gap ?? '').length : 0)
+    if (prevEmptyKey && l.lead.length > keyCol(prevEmptyKey) && suggestTopKey(prevEmptyKey.key!) === null) {
+      nested ??= prevEmptyKey
+    }
+    prevEmptyKey = (l.kind === 'key' || (l.kind === 'item' && l.key)) && (l.value === '' || l.value!.startsWith('#')) ? l : null
+    if (l.value !== undefined && BLOCK.test(l.value)) {
+      block ??= l
+      blockLead = l.lead.length + (l.kind === 'item' ? 1 + (l.gap ?? '').length : 0)
+    }
     if (l.kind === 'other') { roles.push({ role: 'stray' }); continue }
     if (l.kind === 'item') {
       if (!inFolders) { roles.push({ role: 'stray' }); continue }
@@ -187,7 +254,7 @@ function structure(s: Scan): Structure {
     }
     roles.push({ role: 'stray' })
   }
-  return { roles, entries, tops }
+  return { roles, entries, tops, ...(block ? { block } : {}), ...(nested ? { nested } : {}) }
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +268,8 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
  * typed (a token pasted on the wrong line), so it is never printed.
  */
 const printable = (k: string | undefined): k is string =>
-  !!k && SAFE_KEY.test(k) && ((TOP_KEYS as readonly string[]).includes(k) || ENTRY_KEYS.has(k) || suggestTopKey(k) !== null)
+  !!k && SAFE_KEY.test(k) && ((TOP_KEYS as readonly string[]).includes(k) || ENTRY_KEYS.has(k) ||
+    suggestTopKey(k) !== null || suggestEntryKey(k) !== null)
 const keyName = (k: string | undefined) => (printable(k) ? `\`${k}:\`` : 'this line')
 
 interface Layout { target: Array<string | null>; issues: FolderMapIssue[] }
@@ -242,11 +310,11 @@ function layout(s: Scan, st: Structure): Layout {
     target[i] = ' '.repeat(want)
     const gapTab = r.role === 'item' && (l.gap ?? '').includes('\t')
     if (l.lead.includes('\t') || gapTab) {
-      issues.push({ line: l.n, column: 1, fixable: true,
+      issues.push({ line: l.n, column: 1, fixable: true, change: 'tab replaced by spaces',
         message: `line ${l.n}: a tab in the indentation of ${keyName(l.key)} — YAML allows only spaces there` })
     } else if (l.lead.length !== want) {
       const k = r.role === 'item' ? (printable(l.key) ? `\`- ${l.key}:\`` : 'this list item') : keyName(l.key)
-      issues.push({ line: l.n, column: l.lead.length + 1, fixable: true,
+      issues.push({ line: l.n, column: l.lead.length + 1, fixable: true, change: 'indentation',
         message: `line ${l.n}: indentation — ${k} is indented ${plural(l.lead.length, 'space')}, expected ${want} (${what})` })
     }
   })
@@ -290,16 +358,31 @@ function valueSpan(l: Line): { start: number; end: number; value: string } | nul
     raw = tail.slice(1, close)
     start += 1
   } else {
+    // `plur: #on` is a comment, not a value (YAML reads it as null): never a mode.
+    if (tail.startsWith('#')) return null
     raw = tail.replace(/[ \t]+#.*$/, '').replace(/[ \t]+$/, '')
   }
   return { start, end: start + raw.length, value: raw }
+}
+
+/**
+ * The parser's reason without any text from the file. js-yaml quotes alias,
+ * anchor, tag and directive names (`unidentified alias "x"`, `unknown tag !<x>`),
+ * which are whatever the user typed: those become a fixed phrase, and any other
+ * quoted or bracketed token is dropped (#1530 review F3).
+ */
+function safeReason(reason: string): string {
+  if (/alias|anchor/i.test(reason)) return 'it uses a YAML alias or anchor, which a folder map does not support'
+  if (/\btag\b/i.test(reason)) return 'it uses a YAML tag, which a folder map does not support'
+  if (/directive/i.test(reason)) return 'it holds a YAML directive line, which a folder map does not support'
+  return reason.replace(/"[^"]*"|'[^']*'|<[^>]*>|![^\s,]*/g, '…').slice(0, 200)
 }
 
 function yamlError(err: unknown): FolderMapIssue {
   const mark = (err as { mark?: { line?: number; column?: number } }).mark
   // Only the parser's one-line reason: its message carries a code frame (the
   // lines around the fault), which is file content.
-  const reason = String((err as { reason?: string }).reason ?? 'it cannot be parsed').split('\n')[0].slice(0, 200)
+  const reason = safeReason(String((err as { reason?: string }).reason ?? 'it cannot be parsed').split('\n')[0])
   if (mark && typeof mark.line === 'number') {
     const line = mark.line + 1
     const column = (mark.column ?? 0) + 1
@@ -356,6 +439,23 @@ export function checkFolderMapText(text: string): FolderMapCheck {
           (want && taken ? ` (\`${want}:\` is already there)` : '') })
     }
   }
+  // A misspelled entry key (`plru: off`) would drop that decision silently,
+  // exactly like a misspelled top-level key: it is a problem too (#1530
+  // review). A key that is not near any of the map's keys (`note:`) passes.
+  const entriesRaw = Array.isArray(obj.folders) ? obj.folders as unknown[] : []
+  entriesRaw.forEach((e, idx) => {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) return
+    for (const k of Object.keys(e)) {
+      if (ENTRY_KEYS.has(k) || !SAFE_KEY.test(k)) continue
+      const want = suggestEntryKey(k)
+      if (!want) continue
+      const at = st.entries[idx]?.keys.get(k)
+      const taken = Object.prototype.hasOwnProperty.call(e, want)
+      issues.push({ ...(at ? { line: at.n, column: at.lead.length + 1 } : {}), fixable: !!at && !taken,
+        message: `${at ? `line ${at.n}: ` : ''}unknown key \`${k}:\` in entry ${idx + 1} — did you mean \`${want}:\`?` +
+          (taken ? ` (\`${want}:\` is already there)` : '') })
+    }
+  })
   const parsed = FolderMapSchema.safeParse(raw)
   if (!parsed.success) {
     const seen = new Set<string>()
@@ -422,7 +522,7 @@ export function describeFolderMapIssues(issues: FolderMapIssue[]): string {
  * new text and a unified diff; `unfixable` the problems that need a hand fix
  * (then nothing may be changed at all).
  */
-export function planFolderMapRepair(text: string): FolderMapRepairPlan {
+export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {}): FolderMapRepairPlan {
   const check = checkFolderMapText(text)
   if (check.ok) return { status: 'ok' }
   const s = scan(text)
@@ -431,17 +531,30 @@ export function planFolderMapRepair(text: string): FolderMapRepairPlan {
 
   if (isEmpty(s)) {
     out = [...out, 'version: 1', 'folders: []']
-    fixes.push(check.issues[0])
-    const after = (s.bom ? '﻿' : '') + out.join(s.eol) + s.eol
-    return finish(text, after, fixes)
+    fixes.push({ ...check.issues[0], change: 'adds `version: 1` and `folders: []`' })
+    const after = (s.bom ? '\uFEFF' : '') + out.join(s.eol) + s.eol
+    return finish(text, after, fixes, opts)
+  }
+  if (s.lines.length > MAX_REPAIR_LINES) {
+    return refuse(check, `the file has ${s.lines.length} lines, more than plur folders repair changes automatically (${MAX_REPAIR_LINES})`)
   }
 
   const st = structure(s)
+  // Lines the line-based repair could read differently from the YAML parser
+  // are never touched: the whole repair is refused (#1530 review F2).
+  if (st.block) {
+    return refuse(check, `line ${st.block.n}: ${keyName(st.block.key)} starts a block of text (\`|\` or \`>\`); plur folders repair does not change a file that holds one`)
+  }
+  if (st.nested) {
+    return refuse(check, `line ${st.nested.n}: ${keyName(st.nested.key)} has lines nested under it; plur folders repair does not change a file that holds them`)
+  }
+  const stray = s.lines.find((_, i) => st.roles[i].role === 'stray')
+  if (stray) return refuse(check, `line ${stray.n}: plur folders repair cannot tell where this line belongs`)
+
   // 1. Indentation and tabs — only when the parser refuses the file.
   let parses = true
-  try { yaml.load(text.replace(/^﻿/, '')) } catch { parses = false }
+  try { yaml.load(text.replace(/^\uFEFF/, '')) } catch { parses = false }
   if (!parses) {
-    if (st.roles.some(r => r.role === 'stray')) return unfixable(check)
     const lay = layout(s, st)
     if (lay.issues.length === 0) return unfixable(check)
     fixes.push(...lay.issues)
@@ -463,7 +576,7 @@ export function planFolderMapRepair(text: string): FolderMapRepairPlan {
     })
   }
 
-  // 2. Misspelled top-level keys, 3. modes: on the (re-indented) text.
+  // 2. Misspelled keys, 3. modes: on the (re-indented) text.
   const s2 = scan(join(s, out))
   const st2 = structure(s2)
   const present = new Set([...st2.tops.keys()])
@@ -473,17 +586,32 @@ export function planFolderMapRepair(text: string): FolderMapRepairPlan {
       const want = suggestTopKey(r.key)
       if (!want || present.has(want)) return
       present.add(want)
-      const at = l.text.indexOf(r.key)
-      out[i] = l.text.slice(0, at) + want + l.text.slice(at + r.key.length)
-      fixes.push({ line: l.n, column: 1, fixable: true, message: `line ${l.n}: unknown key ${keyName(r.key)} — did you mean \`${want}:\`?` })
+      out[i] = renameKey(l, r.key, want)
+      fixes.push({ line: l.n, column: 1, fixable: true, change: `\`${r.key}:\` → \`${want}:\``,
+        message: `line ${l.n}: unknown key ${keyName(r.key)} — did you mean \`${want}:\`?` })
+      return
     }
-    if ((r.role === 'entry-key' && r.key === 'plur') || (r.role === 'item' && l.key === 'plur')) {
-      const span = valueSpan(l)
+    const entryKey = r.role === 'entry-key' ? r.key : r.role === 'item' ? l.key : undefined
+    if (entryKey === undefined) return
+    let key = entryKey
+    if (!ENTRY_KEYS.has(entryKey)) {
+      const want = suggestEntryKey(entryKey)
+      const entry = st2.entries[r.role === 'item' || r.role === 'entry-key' ? r.entry : -1]
+      if (!want || !entry || entry.keys.has(want)) return
+      out[i] = renameKey(l, entryKey, want)
+      fixes.push({ line: l.n, column: l.lead.length + 1, fixable: true, change: `\`${entryKey}:\` → \`${want}:\``,
+        message: `line ${l.n}: unknown key \`${entryKey}:\` — did you mean \`${want}:\`?` })
+      key = want
+    }
+    if (key === 'plur') {
+      const line = scan(out[i]).lines[0] ?? l
+      const span = valueSpan({ ...line, n: l.n })
       if (!span || (MODES as readonly string[]).includes(span.value)) return
       const want = suggestMode(span.value)
       if (!want) return
-      out[i] = l.text.slice(0, span.start) + want + l.text.slice(span.end)
-      fixes.push({ line: l.n, column: span.start + 1, fixable: true, message: `line ${l.n}: \`plur:\` must be on, off or ask — set to \`${want}\`` })
+      out[i] = out[i].slice(0, span.start) + want + out[i].slice(span.end)
+      fixes.push({ line: l.n, column: span.start + 1, fixable: true, change: `\`plur:\` set to ${want}`,
+        message: `line ${l.n}: \`plur:\` must be on, off or ask — set to \`${want}\`` })
     }
   })
 
@@ -491,7 +619,102 @@ export function planFolderMapRepair(text: string): FolderMapRepairPlan {
   if (after === text) return unfixable(check)
   const recheck = checkFolderMapText(after)
   if (!recheck.ok) return unfixable(recheck)
-  return finish(text, after, fixes)
+  // The hard rule (#1530 review): the result holds exactly the entries, keys
+  // and values written on their own lines in the original; only an active
+  // `plur:` mode may change, and only to the mode its case or letter points at.
+  const broken = keepsWhatWasWritten(s, st, after)
+  if (broken) return refuse(check, broken)
+  return finish(text, after, fixes, opts)
+}
+
+function renameKey(l: Line, from: string, to: string): string {
+  const at = l.text.indexOf(from, l.lead.length)
+  return l.text.slice(0, at) + to + l.text.slice(at + from.length)
+}
+
+/** The value a single key line holds on its own line, or undefined when that line is not a self-contained `key: value`. */
+function lineValue(l: Line): { ok: true; value: unknown } | { ok: false } {
+  const content = l.kind === 'item' ? l.body.slice(1 + (l.gap ?? '').length) : l.body
+  try {
+    const v = yaml.load(content)
+    if (l.kind === 'item' && l.inlineValue) return { ok: true, value: v }
+    if (!v || typeof v !== 'object' || Array.isArray(v) || !l.key) return { ok: false }
+    const keys = Object.keys(v)
+    if (keys.length !== 1 || keys[0] !== l.key) return { ok: false }
+    return { ok: true, value: (v as Record<string, unknown>)[l.key] }
+  } catch {
+    return { ok: false }
+  }
+}
+
+/**
+ * Null when `after` parses to exactly what the original says line by line,
+ * else why not. Compared on the parsed result, so nothing the line-based
+ * repair might misread can slip through: the same number of entries, each
+ * with exactly the keys written on its own lines (a misspelled key counts as
+ * the key it was renamed to), each value equal to the one on that line —
+ * except an active `plur:` value, which may only become suggestMode() of it.
+ * A commented-out mode is no value, so it can never become one.
+ */
+function keepsWhatWasWritten(s: Scan, st: Structure, after: string): string | null {
+  const fail = (n?: number) => `${n !== undefined ? `line ${n}: ` : ''}plur folders repair cannot show that the repair keeps every entry exactly as written`
+  let parsed: unknown
+  try { parsed = yaml.load(after.replace(/^\uFEFF/, '')) } catch { return fail() }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail()
+  const obj = parsed as Record<string, unknown>
+  const s2 = scan(after)
+  if (s2.lines.length !== s.lines.length) return fail()
+  const folders = Array.isArray(obj.folders) ? obj.folders as Array<Record<string, unknown>> : obj.folders == null ? [] : null
+  if (!folders || folders.length !== st.entries.length) return fail()
+  // version, as written.
+  for (const [k, ls] of st.tops) {
+    const name = suggestTopKey(k)
+    if (name !== 'version') continue
+    const lv = lineValue(ls[0])
+    if (!lv.ok || !isDeepStrictEqual(lv.value, obj.version)) return fail(ls[0].n)
+  }
+  const seen: Array<Set<string>> = folders.map(() => new Set())
+  for (let i = 0; i < s.lines.length; i++) {
+    const r = st.roles[i]
+    if (r.role !== 'item' && r.role !== 'entry-key') continue
+    const l = s.lines[i]
+    const entry = folders[r.entry]
+    if (!entry || typeof entry !== 'object') return fail(l.n)
+    if (r.role === 'item' && l.inlineValue) {
+      const lv = lineValue(l)
+      if (!lv.ok || !isDeepStrictEqual(lv.value, entry)) return fail(l.n)
+      for (const k of Object.keys(entry)) seen[r.entry].add(k)
+      continue
+    }
+    if (r.role === 'item' && !l.key) continue
+    const orig = l.key!
+    const now = s2.lines[i].key
+    if (!now) return fail(l.n)
+    if (now !== orig && (ENTRY_KEYS.has(orig) || suggestEntryKey(orig) !== now)) return fail(l.n)
+    if (seen[r.entry].has(now)) return fail(l.n)
+    seen[r.entry].add(now)
+    const lv = lineValue(l)
+    if (!lv.ok) return fail(l.n)
+    const v = entry[now]
+    if (now === 'plur' && !isDeepStrictEqual(lv.value, v)) {
+      if (typeof lv.value !== 'string' || suggestMode(lv.value) !== v) return fail(l.n)
+    } else if (!isDeepStrictEqual(lv.value, v)) {
+      return fail(l.n)
+    }
+  }
+  for (let e = 0; e < folders.length; e++) {
+    const keys = Object.keys(folders[e] ?? {})
+    if (keys.length !== seen[e].size || keys.some(k => !seen[e].has(k))) return fail(st.entries[e]?.line.n)
+  }
+  return null
+}
+
+/** Unfixable, with the reason the repair refuses first. */
+function refuse(check: { ok: false; issues: FolderMapIssue[] }, why: string): FolderMapRepairPlan {
+  const m = /^line (\d+): /.exec(why)
+  const reason: FolderMapIssue = { ...(m ? { line: Number(m[1]), column: 1 } : {}), fixable: false, message: why }
+  const rest = check.issues.map(i => ({ ...i, fixable: false }))
+  return { status: 'unfixable', issues: [...rest.slice(0, 1), reason, ...rest.slice(1)] }
 }
 
 function unfixable(check: { ok: false; issues: FolderMapIssue[] }): FolderMapRepairPlan {
@@ -500,9 +723,17 @@ function unfixable(check: { ok: false; issues: FolderMapIssue[] }): FolderMapRep
   return { status: 'unfixable', issues }
 }
 
-function finish(before: string, after: string, fixes: FolderMapIssue[]): FolderMapRepairPlan {
+/** "line 4: indentation; line 2: `folder:` → `folders:`" — what the repair changes, without values. */
+function summarize(fixes: FolderMapIssue[]): string {
+  return fixes.map(f => (f.line !== undefined ? `line ${f.line}: ` : '') + (f.change ?? 'fixed')).join('; ')
+}
+
+function finish(before: string, after: string, fixes: FolderMapIssue[], opts: { diff?: boolean }): FolderMapRepairPlan {
   fixes.sort((a, b) => (a.line ?? Infinity) - (b.line ?? Infinity))
-  return { status: 'fixable', after, fixes, diff: unifiedDiff(before, after, 'folders.yaml (now)', 'folders.yaml (repaired)') }
+  return {
+    status: 'fixable', after, fixes, summary: summarize(fixes),
+    diff: opts.diff === false ? '' : unifiedDiff(before, after, 'folders.yaml (now)', 'folders.yaml (repaired)'),
+  }
 }
 
 // ---------------------------------------------------------------------------

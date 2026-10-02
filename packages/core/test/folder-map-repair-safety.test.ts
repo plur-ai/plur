@@ -103,13 +103,22 @@ describe('F3: alias and tag names from a YAML error never reach a message', () =
     `version: 1\nfolders:\n  - path: !<${SECRET}%20text> /a\n`,
     `version: 1\nfolders:\n  - path: !${SECRET}tag /a\n`,
     `version: 1\nfolders:\n  - path: &${SECRET}anchor /a\n  - path: *${SECRET}other\n`,
-    `%${SECRET} x\n---\nversion: 1\n`,
   ]) it(JSON.stringify(t), () => {
     const c = checkFolderMapText(t)
     expect(c.ok).toBe(false)
     if (!c.ok) for (const i of c.issues) expect(i.message).not.toContain(SECRET)
     const p = planFolderMapRepair(t)
     if (p.status === 'unfixable') for (const i of p.issues) expect(i.message).not.toContain(SECRET)
+  })
+})
+
+describe('F3: a YAML directive line never leaks its name either', () => {
+  // js-yaml only warns on an unknown directive, so this map is valid; what
+  // matters is that no message ever carries the name.
+  it('no leak', () => {
+    const c = checkFolderMapText(`%${SECRET} x\n---\nversion: 1\nfolder: []\n`)
+    expect(c.ok).toBe(false)
+    if (!c.ok) for (const i of c.issues) expect(i.message).not.toContain(SECRET)
   })
 })
 
@@ -265,7 +274,7 @@ describe('fuzz (audit harness, seeded)', () => {
       case 'indent': { const nl = Math.max(0, lead.length + pick([-3, -2, -1, 1, 2, 3])); if (nl === lead.length) return null; l = ' '.repeat(nl) + l.trimStart(); break }
       case 'tab': if (!lead.length) return null; l = '\t' + l.trimStart(); break
       case 'topkey': { const m = /^(version|folders):/.exec(l); if (!m) return null; l = l.replace(m[1], pick(m[1] === 'version' ? ['verison', 'Version'] : ['folder', 'Folders', 'fodlers'])); break }
-      case 'mode': { const m = /plur: (on|off|ask)\b/.exec(l); if (!m) return null; l = l.replace(`plur: ${m[1]}`, `plur: ${pick(['On', 'OFF', 'onn', 'of', 'oof', 'aks', 'no', 'yes', 'non'])}`); break }
+      case 'mode': { const m = /plur: (on|off|ask)\b/.exec(l); if (!m) return null; l = l.replace(`plur: ${m[1]}`, `plur: ${pick({ on: ['On', 'ON', 'onn', 'of', 'non', 'no'], off: ['Off', 'OFF', 'oof', 'offf', 'of', 'no'], ask: ['Ask', 'aks', 'yes'] }[m[1]]!)}`); break }
       case 'comment-mode': { const m = /plur: (on|off|ask)\b/.exec(l); if (!m) return null; l = l.replace(`plur: ${m[1]}`, `plur: #${pick(['on', 'off', 'ask'])}`); break }
       case 'entrykey': { const m = /\b(plur|path|scope|trusted):/.exec(l); if (!m) return null; l = l.replace(`${m[1]}:`, `${pick({ plur: ['plru', 'pur', 'plu'], path: ['pth', 'pat'], scope: ['sope', 'scop'], trusted: ['trsuted', 'trusted-'] }[m[1]]!)}:`); break }
       default: { const pos = int(0, l.length); l = rnd() < 0.5 ? l.slice(0, pos) + l.slice(pos + 1) : l.slice(0, pos) + pick([' ', '-', ':', '#', '"', '{', '|']) + l.slice(pos) }

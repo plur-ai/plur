@@ -318,10 +318,14 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
     // which shows the change and asks.
     const repair = where?.fixable ? folderRepairCommand(root) : null
     if (repair) {
+      // What the repair changes (lines and keys, no values), shown to the
+      // user before they agree (#1530 review). On the `- ` line, so the
+      // opencode reminder carries it with the command.
+      const changes = where?.repair_summary ? ` (it changes ${where.repair_summary})` : ''
       lines.push(
-        'Tell the user once what is wrong and ask whether PLUR should repair the file: it saves a backup first, ' +
-        'and they can see the change before it is made by running plur folders repair in a terminal. Run nothing without their yes.',
-        `- Repair, only after the user agrees: ${repair}`,
+        'Tell the user once what is wrong, show them what the repair changes, and ask whether PLUR should repair the file: ' +
+        'it saves a backup first, and they can see the full change by running plur folders repair in a terminal. Run nothing without their yes.',
+        `- Repair${changes}, only after the user agrees: ${repair}`,
         'Run no other plur command for it. PLUR reads the repaired map from the next prompt.',
       )
     } else if (where?.fixable) {

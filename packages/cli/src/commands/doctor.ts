@@ -231,6 +231,8 @@ interface DoctorReport {
     fixable: boolean
     /** The command that fixes it, when it can. */
     repair?: string
+    /** What that repair changes (lines and keys, no values). */
+    repair_summary?: string
   } | null
   overall: 'ok' | 'fail'
 }
@@ -1154,6 +1156,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
           ...(p.column !== undefined ? { column: p.column } : {}),
           fixable: p.fixable,
           ...(p.fixable ? { repair: repairCommandFor(flags) } : {}),
+          ...(p.repair_summary ? { repair_summary: p.repair_summary } : {}),
         }
       }
     } catch { /* doctor never fails on its own probe */ }
@@ -1261,6 +1264,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText(`✗ Folder map: ${m.file} ${m.problem}`)
     outputText('  Memory is paused in every folder until it is fixed (nothing is read or written).')
     outputText(`  ${repairAdvice(m, flags ?? {})}`)
+    if (m.repair_summary) outputText(`  The repair changes ${m.repair_summary}.`)
   }
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
   // #1299

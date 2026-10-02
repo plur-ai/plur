@@ -18,7 +18,9 @@ line 5: `plur:` in entry 2 must be on, off or ask — it looks like `off` with t
 ```
 
 A message quotes at most the key on that line. It never shows a path, a
-scope or any other value from the file. Each place also offers the fix:
+scope or any other value from the file, nor a YAML alias or tag name. A
+misspelled entry key (`plru: off`) is now reported like a misspelled
+top-level key, because it, too, silently dropped that decision. Each place also offers the fix:
 
 - **`plur folders repair`** fixes what is unambiguous, which covers:
   - list items and keys indented unevenly, and tabs in the indentation;
@@ -28,6 +30,17 @@ scope or any other value from the file. Each place also offers the fix:
     so it is left to you);
   - an empty or comments-only file, which becomes a minimal valid map.
 
+  It also fixes a misspelled entry key (`plru:` → `plur:`, `pth:` → `path:`)
+  when exactly one key is meant and the right one is not already there.
+
+  **A repair never switches memory on.** After a repair, every entry, key and
+  value is the one written on that entry's own line before it. The only value
+  it may change is a `plur:` mode that is really there, and only by its case
+  or one letter. A commented-out mode (`plur: #on`) stays a comment. A file
+  holding a block of text (`note: |`) or a value nested under another key is
+  never repaired, because those lines could be read as entries. PLUR names the
+  line and leaves the file alone.
+
   It shows a unified diff and asks before writing. `--yes` skips the
   question. Without `--yes`, a run that is not in an interactive terminal is
   a dry run: it changes nothing and exits nonzero. Before writing it saves the
@@ -35,8 +48,11 @@ scope or any other value from the file. Each place also offers the fix:
   the new file atomically (to the target, when the map is a symlink), and
   checks the result again. It keeps your comments. A problem it cannot fix is
   reported with its line, and the file is left exactly as it was.
-- **Agents get the same offer.** The MCP answer (`repair_command`), the hooks'
-  notice and the opencode notice give the exact command,
+- **Agents get the same offer.** The MCP answer (`repair_command` and
+  `repair_summary`), the hooks' notice and the opencode notice say in one line
+  what the repair changes ("line 4: indentation; line 2: `folder:` →
+  `folders:`"), tell the agent to show that to you first, and give the exact
+  command,
   `plur folders repair --yes` (with `--path` for a store other than
   `~/.plur`), and tell the agent to run it only after you agree. In opencode,
   the next turn carries the command once more, so a "yes" given there can
@@ -44,7 +60,8 @@ scope or any other value from the file. Each place also offers the fix:
 
 **Behaviour change in the editor hooks and the opencode plugin (the safe
 direction).** They read an empty or comments-only `folders.yaml`, or one with
-an unknown top-level key such as `folder:`, as an empty map. That gave `ask`,
+an unknown top-level key such as `folder:` (or, now, a misspelled entry key
+such as `plru:`), as an empty map. That gave `ask`,
 or memory ON in a folder with a project marker. The MCP server already refused
 such a file. Now the hooks and the plugin refuse every file the MCP server
 refuses: such a map gives `ask` with no memory, and `plur folders set` will not

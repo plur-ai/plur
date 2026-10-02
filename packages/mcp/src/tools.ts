@@ -792,6 +792,7 @@ function folderMapStatus(root: string): { folder_map?: Record<string, unknown> }
       ...(p.column !== undefined ? { column: p.column } : {}),
       fixable: p.fixable,
       ...(advice.command ? { repair_command: advice.command } : {}),
+      ...(advice.summary ? { repair_summary: advice.summary } : {}),
       advice: `Memory tools are paused until it is fixed. ${advice.text}`,
     },
   }

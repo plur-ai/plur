@@ -2,7 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { createInterface } from 'readline'
 import {
-  FolderMapError, folderMapProblem, repairFolderMap,
+  FolderMapError, folderMapProblem, repairFolderMap, folderRepairCommand, folderQuoted,
   type FolderChange, type FolderEntry, type FolderMapIssue, type FolderMapProblem,
 } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
@@ -163,8 +163,16 @@ export function fail(err: unknown, json: boolean): never {
 }
 
 /** `plur folders repair` as the user types it: with `--path` when they gave one. */
+/**
+ * `plur folders repair` as the user types it, with `--path` when they gave
+ * one — quoted by core's rules, the same as the agent form (#1530 review F4):
+ * POSIX single quotes, so a pasted command never runs what a path holds.
+ */
 export function repairCommandFor(flags: GlobalFlags): string {
-  return flags.path ? `plur --path ${JSON.stringify(flags.path)} folders repair` : 'plur folders repair'
+  if (!flags.path) return 'plur folders repair'
+  const agent = folderRepairCommand(flags.path)
+  if (agent === null) return 'plur folders repair (with --path naming your store)'
+  return agent.startsWith('plur --path ') ? agent.replace(/ --yes$/, '') : `plur --path ${folderQuoted(flags.path)} folders repair`
 }
 
 /** What to do about a broken map, in one sentence (the CLI form of the offer). */
@@ -256,13 +264,15 @@ async function repair(rest: string[], flags: GlobalFlags, json: boolean): Promis
     `${shown.file} has ${shown.fixes!.length === 1 ? 'a problem' : 'problems'} plur folders repair can fix:`,
     ...issueLines(shown.fixes!),
     '',
+    `In short: ${shown.summary}`,
+    '',
     shown.diff!.trimEnd(),
     '',
   ]
   const interactive = !json && process.stdin.isTTY === true && process.stdout.isTTY === true
   if (!yes) {
     if (!interactive) {
-      return out({ status: 'dry-run', problems: shown.fixes, diff: shown.diff }, [
+      return out({ status: 'dry-run', problems: shown.fixes, summary: shown.summary, diff: shown.diff }, [
         ...preview,
         `Dry run (not an interactive terminal): nothing was changed. To apply it: ${repairCommandFor(flags)} --yes`,
       ], 1)
@@ -285,7 +295,7 @@ async function repair(rest: string[], flags: GlobalFlags, json: boolean): Promis
   }
   const after = done.problemAfter ?? null
   return out({
-    status: 'repaired', backup: done.backup, problems: shown.fixes, diff: shown.diff, ok_after: after === null,
+    status: 'repaired', backup: done.backup, problems: shown.fixes, summary: shown.summary, diff: shown.diff, ok_after: after === null,
     ...(after ? { problem_after: after.problem } : {}),
   }, [
     `Repaired ${shown.file}.`,
