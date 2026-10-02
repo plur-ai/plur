@@ -43,7 +43,7 @@ describe('hook-learn-check', () => {
   })
 
   // The interval-shape tests below pin the no-signal fallback to every 3rd
-  // Stop so they stay short; the default (20) has its own test.
+  // Stop so they stay short; the default (10) has its own test.
   function runHook(sessionId: string, cwd: string = home, extraEnv: Record<string, string> = { PLUR_LEARN_FALLBACK_INTERVAL: '3' }): { stdout: string; status: number } {
     const result = runCli('node', [CLI, 'hook-learn-check'], {
       input: JSON.stringify({ cwd }),
@@ -406,6 +406,29 @@ describe('hook-learn-check', () => {
     const r = runStop({ session_id: 'f8-1', transcript_path: fifo }, { PLUR_LEARN_FALLBACK_INTERVAL: '1' })
     expect(r.status).toBe(0)
     expect(nudgeText(r.stdout)).toContain('plur_learn') // no message → only the fallback
+    expect(Date.now() - started).toBeLessThan(8000)
+  })
+
+  // ── 0.21.1 re-audit (R3, R5) ──────────────────────────────────────────────
+
+  // R3: one nudge per user message at most. A signal nudge on Stop 9, then a
+  // background task ends the turn again on Stop 10 (the fallback count) with
+  // the same last message: no second nudge for it.
+  it('the fallback never nudges again for a message that already got a signal nudge', () => {
+    const transcript_path = writeTranscript('r3', 'No, use pnpm.')
+    seedCounter('r3-1', 8)
+    expect(nudgeText(runStop({ session_id: 'r3-1', transcript_path }, {}).stdout)).toContain('plur_learn') // 9th: signal
+    expect(runStop({ session_id: 'r3-1', transcript_path }, {}).stdout).toBe('') // 10th: fallback count, same message
+  })
+
+  // R5: the checkpoint read never blocks on a FIFO planted at its path.
+  it.skipIf(process.platform === 'win32')('never blocks on a FIFO at the checkpoint path', () => {
+    const store = join(home, 'store')
+    mkdirSync(join(store, 'sessions'), { recursive: true, mode: 0o700 })
+    execFileSync('mkfifo', [join(store, 'sessions', 'r5-1.checkpoint.json')])
+    const started = Date.now()
+    const r = runStop({ session_id: 'r5-1' }, { PLUR_PATH: store, PLUR_CHECKPOINT_INTERVAL: '1', PLUR_LEARN_FALLBACK_INTERVAL: '0' })
+    expect(r.status).toBe(0)
     expect(Date.now() - started).toBeLessThan(8000)
   })
 })

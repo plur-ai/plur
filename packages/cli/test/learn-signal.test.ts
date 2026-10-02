@@ -7,6 +7,7 @@ import {
   lastUserMessage,
   learnFallbackInterval,
   claimNudge,
+  normaliseForSignal,
   TRANSCRIPT_TAIL_BYTES,
 } from '../src/lib/learn-signal.js'
 
@@ -138,7 +139,7 @@ describe('hasLearnSignal — misses the old list had (F2)', () => {
     'Ab jetzt immer pnpm verwenden.',
     'Nie auf main pushen.',
     'Immer zuerst die Tests laufen lassen.',
-    'Lieber yaml als json.',
+    'Lieber nimm yaml statt json.',
   ]
   for (const text of missed) {
     it(`signals: ${JSON.stringify(text)}`, () => {
@@ -290,6 +291,45 @@ describe('lastUserMessage — reads the last human prompt from a Claude Code tra
     expect(lastUserMessage(earlier)).toMatchObject({ id: 'm3', learned: false })
   })
 
+  // Re-audit R4: every text block is checked, not only the start of the joined text.
+  it('drops system-reminder and notification echoes inside a typed message', () => {
+    const path = transcript([
+      human([{ type: 'text', text: 'Add tests.' }, { type: 'text', text: '<system-reminder>\nNever push to main.\n</system-reminder>' }], { uuid: 'mixed' }),
+    ])
+    const m = lastUserMessage(path)
+    expect(m?.id).toBe('mixed')
+    expect(m?.text).not.toContain('Never push')
+    rmSync(dir, { recursive: true, force: true })
+    const inline = transcript([human('Add tests.\n<system-reminder>\nAlways use pnpm.\n</system-reminder>', { uuid: 'inline' })])
+    expect(lastUserMessage(inline)?.text).not.toContain('Always use pnpm')
+  })
+
+  it('an image-only turn is the latest message, not the correction before it', () => {
+    const path = transcript([
+      human('never push to main', { uuid: 'old' }),
+      assistant('ok'),
+      human([{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }], { uuid: 'img' }),
+    ])
+    expect(lastUserMessage(path)).toMatchObject({ id: 'img', text: '' })
+  })
+
+  it('an interrupt marker is the latest message, not the correction before it', () => {
+    const path = transcript([
+      human('never push to main', { uuid: 'old' }),
+      assistant('working'),
+      human([{ type: 'text', text: '[Request interrupted by user]' }], { uuid: 'intr' }),
+    ])
+    expect(lastUserMessage(path)?.id).toBe('intr')
+  })
+
+  it('a plur_learn call in a sidechain does not count as learned in this reply', () => {
+    const path = transcript([
+      human('from now on use pnpm', { uuid: 'm' }),
+      { type: 'assistant', isSidechain: true, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'x', name: 'mcp__plur__plur_learn', input: {} }] } },
+    ])
+    expect(lastUserMessage(path)).toMatchObject({ id: 'm', learned: false })
+  })
+
   it('reads only a bounded tail of a large transcript', () => {
     // The old message sits before the tail window; only filler follows within it.
     const filler = assistant('x'.repeat(1024))
@@ -334,6 +374,23 @@ describe('claimNudge', () => {
 })
 
 // Fallback default: every 10th Stop (see learnFallbackInterval).
+// Re-audit R2: pasted text is removed BEFORE the length bound, and the bound
+// keeps the tail, where the typed text usually is.
+describe('normaliseForSignal', () => {
+  it('keeps a correction typed after a long pasted log', () => {
+    const log = Array.from({ length: 200 }, (_, i) => `2026-10-01 12:00:${String(i % 60).padStart(2, '0')} INFO request served ok`).join('\n')
+    expect(normaliseForSignal(`${log}\n\nThat's wrong, revert it.`)).toContain("That's wrong")
+  })
+  it('keeps the tail of long prose', () => {
+    expect(normaliseForSignal('x '.repeat(5000) + 'From now on use pnpm.')).toContain('From now on use pnpm.')
+  })
+  it('keeps Markdown headings and sentences that start with "At"', () => {
+    expect(normaliseForSignal('# From now on, use pnpm.')).toContain('From now on')
+    expect(normaliseForSignal('At work, from now on use pnpm.')).toContain('from now on')
+    expect(normaliseForSignal('    at foo (src/x.ts:3:9)')).not.toContain('foo')
+  })
+})
+
 describe('learnFallbackInterval', () => {
   it('defaults to 10', () => expect(learnFallbackInterval({})).toBe(10))
   it('reads PLUR_LEARN_FALLBACK_INTERVAL', () => expect(learnFallbackInterval({ PLUR_LEARN_FALLBACK_INTERVAL: '5' })).toBe(5))
