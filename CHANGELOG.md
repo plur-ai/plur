@@ -143,13 +143,18 @@ own scope matches it, asking that host for that one scope.
   order breaking ties. An exact remote match still beats a case-insensitive
   local match: `USER:ACME:ME` goes to a remote store configured as exactly
   `USER:ACME:ME` even when a local store is configured as `user:acme:me`. A
-  write leaves the machine only when no local store matches the same way
-  (exactly, or, with no exact match, case-insensitively).
+  new write leaves the machine only when no local store matches the same way
+  (exactly, or, with no exact match, case-insensitively). A delivery already
+  queued before a local store was added still goes, after the secret check,
+  to the remote store it was queued for.
 - That one choice decides the recall dial, where `learn`, `learnRouted`,
   `learnAsync` and `learnBatch` write, the "is this my own remote namespace"
-  check, whether an existing remote copy counts as a duplicate of the write,
-  and where an update that moves a queued engram into the scope sends it (a
-  local choice cancels the queued delivery). The writes make it before their
+  check, whether a cached remote copy counts as a duplicate of a learn or a
+  `rescope` (when the choice is local, the local copy is kept), and where an
+  update that moves a queued engram into the scope sends it. That update
+  spells the scope as a fresh write would, so `user:acme:me` moves it to a
+  remote store configured only as `USER:ACME:ME`; a local choice cancels the
+  queued delivery. The writes make it before their
   duplicate check and read the current config first, so a store another
   process just added already counts. A write and a read with the same string
   therefore pick the same store, even when a remote store has the identical
