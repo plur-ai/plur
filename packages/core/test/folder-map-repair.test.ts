@@ -365,6 +365,9 @@ describe('the hooks/plugin notice offers the repair in agent form', () => {
     expect(text).toContain('line 4: indentation')
     expect(text).toContain(`plur --path ${root} folders repair --yes`)
     expect(text).toMatch(/agree/)
+    // Round 2: what the repair will change, to show the user before --yes.
+    expect(text).toContain('line 4: indentation')
+    expect(text).toMatch(/show/i)
     expect(text).not.toContain('--nonce')
     expect(text).not.toContain(SECRET)
   })

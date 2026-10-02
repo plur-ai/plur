@@ -166,4 +166,23 @@ describe('plur folders repair (#1526)', () => {
     expect(backups().length).toBe(1)
     expect(r.stdout).toMatch(/backup/i)
   }, 60_000)
+  // Round 2 (F4): the CLI form quotes --path like the agent form does, so a
+  // pasted command never runs what a store path holds.
+  it.skipIf(process.platform === 'win32')('the CLI repair advice single-quotes --path', () => {
+    const store = join(dir, 'st$(touch PWNED)')
+    mkdirSync(store)
+    writeFileSync(join(store, 'folders.yaml'), 'version: 1\nfolder:\n  - path: /a\n')
+    const r = runCli('node', [CLI, '--path', store, 'folders', 'list', '--json'], { encoding: 'utf-8', env: env(), cwd: dir })
+    const out = JSON.parse(r.stdout)
+    expect(out.repair).toBe(`plur --path '${store}' folders repair`)
+    expect(out.error).toContain(`plur --path '${store}' folders repair`)
+    expect(out.error).not.toContain(`"${store}"`)
+  })
+
+  it('the dry run and --json carry the one-line summary of what changes', () => {
+    writeFileSync(file, BROKEN)
+    const r = run(['folders', 'repair'])
+    expect(r.out.summary).toContain('line 3: `folder:` → `folders:`')
+    expect(r.out.summary).toContain('line 5: indentation')
+  })
 })

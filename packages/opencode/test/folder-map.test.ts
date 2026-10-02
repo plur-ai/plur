@@ -480,6 +480,8 @@ describe('opencode follows the folder map (#1347)', () => {
 
     const second = await turn(hooks, 'ses-repair', 'yes, repair it', 2)
     expect(second).toContain(`plur --path ${root} folders repair --yes`)
+    // Round 2: the reminder still says what the repair changes.
+    expect(second).toContain('line 4: indentation')
     expect(second).not.toContain('--nonce')
   })
 

@@ -705,6 +705,10 @@ describe('a broken folder map is pinpointed and the repair is offered', () => {
     const r = await call(client, 'plur_learn', { statement: 'zebra-typo learning', scope: 'global' })
     expect(r.json?.message).toContain('line 2: unknown key `folder:` — did you mean `folders:`?')
     expect(r.json?.message).toContain('folders repair --yes')
+    // Round 2: a short summary of what the repair changes, shown to the user first.
+    expect(r.json?.repair_summary).toBe('line 2: `folder:` → `folders:`')
+    expect(r.json?.message).toContain('line 2: `folder:` → `folders:`')
+    expect(r.json?.message).toMatch(/[Ss]how/)
   })
 
   it('unfixable: pinpointed, fixed by hand, no command to run', async () => {
