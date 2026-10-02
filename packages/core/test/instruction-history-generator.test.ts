@@ -71,3 +71,29 @@ describe('evaluateConst — the forms the third re-audit found (#1520 re-audit3 
     })
   }
 })
+
+describe('evaluateConst — the #1557 review forms (L5)', () => {
+  it('a regex literal with a backtick after return does not hide a later definition', () => {
+    const src = "function f(x) {\n  return /`/.test(x)\n}\nconst S = 'actual'\n"
+    expect(evaluateConst(src, 'S')).toEqual({ text: 'actual' })
+  })
+
+  for (const [what, src] of [
+    ['an in continuation on the next line', "const S = 'a'\nin {}\n"],
+    ['an instanceof continuation on the next line', "const S = 'a'\ninstanceof Object\n"],
+    ['an in continuation on the same line', "const S = 'a' in {}\n"],
+  ] as const) {
+    it(`refuses ${what}`, () => {
+      expect(evaluateConst(src, 'S').error, JSON.stringify(evaluateConst(src, 'S'))).toBeTruthy()
+    })
+  }
+
+  it('finds a definition after another statement on the same line', () => {
+    expect(evaluateConst("let x = 1; const S = 'actual'\n", 'S')).toEqual({ text: 'actual' })
+  })
+
+  it('refuses a source whose lexing ends inside a string or template', () => {
+    const r = evaluateConst("const S = 'actual'\nconst T = `never closed\n", 'S')
+    expect(r.error).toBeTruthy()
+  })
+})

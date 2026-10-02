@@ -32,6 +32,9 @@ describe('appending after an open code block keeps the user text rendering uncha
     ['a top-level fence still open', '# Doc\n\n```md\nEXAMPLE\n'],
     ['a top-level fence indented two spaces, still open', '# Doc\n\n  ```\n  code\n'],
     ['a list item that ended, then a top-level fence still open', '- item\n  ```\n  code\nafter\n\n```\nopen\n'],
+    ['an HTML comment in a list item that ended (#1557 review L1)', '- item\n  <!--\n  hidden\n\noutside\n'],
+    ['backticks inside a closed <pre> block (#1557 review L7)', '<pre>\n```\ntext\n</pre>\n'],
+    ['a fence opened on the list-marker line (#1557 review L7)', '- ```\n  code\n  ```\n'],
   ] as const
   for (const [what, input] of appended) {
     it(what, () => {
@@ -41,6 +44,34 @@ describe('appending after an open code block keeps the user text rendering uncha
       expect(out.startsWith(html(input).trimEnd()), `user html changed:\n${html(input)}\n---\n${out}`).toBe(true)
       expect(out).toContain('<h2>PLUR Memory</h2>')
       expect(out).not.toMatch(/<pre><code>\s*<\/code><\/pre>/)
+    })
+  }
+
+  for (const [what, input] of [
+    ['an HTML comment still open in a list item (#1557 review L1)', '- item\n  <!--\n  hidden\n'],
+  ] as const) {
+    it(what, () => {
+      const r = check(input)
+      if (r.status === 'skipped') { expect(r.content).toBe(input); return }
+      const out = html(r.content)
+      expect(out).toContain('<h2>PLUR Memory</h2>')
+      expect(out).not.toContain('--&gt;')
+      expect(out).not.toMatch(/<p>\s*--&gt;|<p>-->/)
+    })
+  }
+
+  for (const [what, input] of [
+    ['an unclosed <pre> block', '<pre>\n```\nopen pre\n'],
+    ['an indented code block that looks like a list with a fence', '    - item\n      ```\n      code\n'],
+    ['a tab-indented fence in a list item', '- item\n\t```\n\tcode\n'],
+    ['a tab after the marker and a tab-indented fence', '-\titem\n\t```\n\tcode\n'],
+    ['spaces then a tab before a fence', '- item\n  \t```\n  \tcode\n'],
+  ] as const) {
+    it(`cannot tell, so skipped (#1557 review L2, L7): ${what}`, () => {
+      const r = check(input)
+      expect(r.status).toBe('skipped')
+      expect(r.content).toBe(input)
+      expect(r.skipReason).toBeTruthy()
     })
   }
 

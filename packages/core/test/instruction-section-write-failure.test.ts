@@ -103,15 +103,40 @@ describe('writeWithBackup keeps what the file is (#1520 third re-audit N2)', () 
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-n2-')); fail.mode = 'off'; fail.copies = []; fail.events = [] })
   afterEach(() => { fail.mode = 'off'; rmSync(dir, { recursive: true, force: true }) })
 
-  it('a hard-linked file keeps its links: both names see the new text', () => {
+  it('a hard-linked file is not written at all: refused with a reason, both names unchanged, no backup (#1557 review M1)', () => {
+    // Writing a shared file in place truncates it first; a full disk would
+    // leave every name empty. PLUR leaves such a file to the user.
     const a = join(dir, 'CLAUDE.md')
     const b = join(dir, 'AGENTS.md')
     writeFileSync(a, 'original\n')
     linkSync(a, b)
-    const backup = writeWithBackup(a, 'new\n', 'original\n')
-    expect(readFileSync(b, 'utf-8')).toBe('new\n')
+    fail.mode = 'partial-write'
+    expect(() => writeWithBackup(a, 'new\n', 'original\n')).toThrow(/hard link/i)
+    fail.mode = 'off'
+    expect(readFileSync(a, 'utf-8')).toBe('original\n')
+    expect(readFileSync(b, 'utf-8')).toBe('original\n')
     expect(statSync(a).nlink).toBe(2)
-    expect(readFileSync(backup!, 'utf-8')).toBe('original\n')
+    expect(readdirSync(dir).sort()).toEqual(['AGENTS.md', 'CLAUDE.md'])
+  })
+
+  it('a file that is not valid UTF-8 is refused with that reason, not "run again" (#1557 review L3)', () => {
+    const p = join(dir, 'CLAUDE.md')
+    const latin1 = Buffer.from([0x23, 0x20, 0x43, 0x61, 0x66, 0xe9, 0x0a]) // "# Café" in Latin-1
+    writeFileSync(p, latin1)
+    let message = ''
+    try { writeWithBackup(p, 'new\n', latin1.toString('utf8')) } catch (err) { message = (err as Error).message }
+    expect(message).toMatch(/UTF-8/)
+    expect(message).not.toMatch(/run again/)
+    expect(readFileSync(p).equals(latin1)).toBe(true)
+    expect(readdirSync(dir)).toEqual(['CLAUDE.md'])
+  })
+
+  it('a caller that saw no file does not overwrite one created meanwhile (#1557 review L6)', () => {
+    const p = join(dir, 'CLAUDE.md')
+    writeFileSync(p, 'created by the user just now\n')
+    expect(() => writeWithBackup(p, 'new\n', null)).toThrow(/created/i)
+    expect(readFileSync(p, 'utf-8')).toBe('created by the user just now\n')
+    expect(readdirSync(dir)).toEqual(['CLAUDE.md'])
   })
 
   it('a dangling symlink is refused, not replaced by a regular file', () => {

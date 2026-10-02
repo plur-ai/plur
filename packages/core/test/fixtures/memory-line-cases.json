@@ -31,6 +31,9 @@
     "Memory — none of the caches survive a restart, warm them",
     "Memory: recalled 2GB remains allocated after cache eviction",
     "Memory usage doubles once the BGE embedder is loaded",
-    "Memory-mapped files are faster for the index"
+    "Memory-mapped files are faster for the index",
+    "Memory — used: ENG-ı",
+    "Memory — recalled 2 · used: ENG-İ",
+    "Memory — wrıtten: ENG-1"
   ]
 }
