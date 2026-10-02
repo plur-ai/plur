@@ -12,8 +12,10 @@ end every reply with one short line such as
 `Memory — none`: a count of what was recalled and the ids used and written, no
 statements, and only ids it actually saw that turn. Ask a follow-up for the
 details. That line is never saved as a learning, in any form an agent writes
-it: plain, in backticks or bold, as a bullet or quote, with an em dash, en
-dash, hyphen or colon, straight after an "I learned" list or in place of one.
+it: plain, in backticks or bold, as a bullet, numbered item or quote, after a
+🧠 or inside an HTML tag, with an em dash, en dash, hyphen or colon, straight
+after an "I learned" list or in place of one. A learning that merely starts
+with "Memory", such as "Memory: used 4GB is too low", is still saved.
 
 Re-running `plur init` or `plur-mcp init`, or reloading the Claw plugin, now
 brings an existing install up to date. Before, `plur init` left an existing
@@ -27,8 +29,9 @@ HTML comment is left alone, and a file that ends inside one has it closed
 before the new section is added, so a second run changes nothing. An edited
 `.cursor/rules/plur-memory.mdc` is kept rather than overwritten. Every file
 that is changed is first copied to a timestamped `*.plur-backup-*` file beside
-it (an edited Cursor rule only once per version of its content), and a failed
-write leaves no backup behind.
+it (an edited Cursor rule only once per version of its content). The new file
+is written beside the old one and swapped in whole, so a write that fails
+partway, on a full disk for instance, leaves your file exactly as it was.
 
 ### The MCP server respects a folder you turned PLUR off for (#1519)
 
