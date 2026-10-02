@@ -2034,10 +2034,11 @@ export class Plur {
 
   /**
    * True when `scope` is backed by a REMOTE store — i.e. a `stores` entry with a
-   * `url` (data leaves this machine) whose scope exactly matches. The leak guard
-   * uses this alongside `isSharedScope`: a scope like `user:plur:gregor` is NOT
-   * `isSharedScope` (personal prefix) yet routes to plur.datafund.io, so sensitive
-   * content written there would cross the machine boundary unguarded.
+   * `url` (data leaves this machine) whose scope exactly matches; for a personal
+   * scope, when the ONE selected store is a url store. Used for routing
+   * decisions (auto-route refusal, `readIdFor`). The secret scan does NOT use
+   * it: it uses {@link _hasUrlStoreForScope}, which ignores the selection
+   * (#1515 re-audit 3, M2).
    *
    * Pure CONFIG lookup — NO driver instantiation, NO network, NO side effects —
    * because this runs on every learn(). It uses `_resolveRemoteStoreForScope`'s
@@ -2051,6 +2052,19 @@ export class Plur {
   private _isRemoteBackedScope(scope: string): boolean {
     const personal = this._exactPersonalStore(scope)
     if (personal !== undefined) return !!personal?.url
+    return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
+  }
+
+  /**
+   * The SECRET-SCAN predicate (#1515 re-audit 3, M2): any url store whose
+   * scope is exactly `scope`, readonly or not, whatever the personal-store
+   * selection says. The selection decides ROUTING only. Callers of the scan
+   * also act on a concrete url entry — the remote update walk, the outbox
+   * flush, a queued-row retarget — and that entry is not the selected one
+   * when a local store shares the identical scope. Scanning there too can
+   * only demote a write that would have stayed local; it never lets one out.
+   */
+  private _hasUrlStoreForScope(scope: string): boolean {
     return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
   }
 
@@ -3186,7 +3200,7 @@ export class Plur {
   /**
    * Write-time leak guard. If the target scope can let data leave the machine —
    * either SHARED (`isSharedScope`: group:/project:/space:/team:/org:/public, so
-   * others can read it) OR REMOTE-backed (`_isRemoteBackedScope`: routes to a
+   * others can read it) OR REMOTE-backed (`_hasUrlStoreForScope`: routes to a
    * remote store, e.g. a personal `user:` scope on plur.datafund.io) — AND the
    * statement trips `detectSensitive` (IPs, internal hosts, basic-auth, host:port,
    * secrets), DEMOTE to a private local scope — the engram is kept but never
@@ -3212,7 +3226,7 @@ export class Plur {
    * when there are none.
    *
    * Scope discipline: data can leak when the scope is SHARED (`isSharedScope`,
-   * others can read it) OR REMOTE-backed (`_isRemoteBackedScope`, it routes off
+   * others can read it) OR REMOTE-backed (`_hasUrlStoreForScope`, it routes off
    * this machine — e.g. a `user:` scope on plur.datafund.io). For a scope that is
    * neither — `global`/`local`/a local-file store — this returns `[]`
    * unconditionally: infra notes legitimately live in local storage, the content
@@ -3235,7 +3249,10 @@ export class Plur {
     // OR a REMOTE-backed scope (routes to a remote store). A scope that is neither
     // — `global`/`local`/a local-file store — stays on this machine, so there is
     // nothing to leak and the demotion target (local) is where it lives anyway.
-    if (!isSharedScope(scope) && !this._isRemoteBackedScope(scope)) return []
+    // "Remote-backed" here is ANY url store with this exact scope, not the
+    // personal-store selection: callers that PATCH or push to a concrete url
+    // entry rely on this scan (#1515 re-audit 3, M2).
+    if (!isSharedScope(scope) && !this._hasUrlStoreForScope(scope)) return []
     const hits = detectSensitive(statement)
     if (hits.length === 0) return []
     const policy = this.getScopeMetadata(scope)?.sensitivity
@@ -3512,7 +3529,9 @@ export class Plur {
     // `user:` scope on plur.datafund.io). Purely-local scopes (`global`/`local`/
     // local-file stores) stay on this machine and are exempt — same gate as
     // _offendingHitsForScope, kept in sync because this short-circuits before it.
-    if (!isSharedScope(scope) && !this._isRemoteBackedScope(scope)) {
+    // The scan gate is "a url store has this exact scope" (`_hasUrlStoreForScope`),
+    // not the personal-store selection (#1515 re-audit 3, M2).
+    if (!isSharedScope(scope) && !this._hasUrlStoreForScope(scope)) {
       return { scope, context, demotion: null, routed, refusedShared, scopeSource }
     }
     // Scan the FULL content the engram will carry — the statement AND the
@@ -3722,7 +3741,10 @@ export class Plur {
     // writable URL entry matches either, and it is treated as not persistable).
     const urlEntries = (this.config.stores ?? []).filter(s => !!s.url && s.scope === storeScope)
     if (!urlEntries.some(s => s.readonly !== true)) return 'readonly'
-    return storeScope === scope ? 'own-remote' : 'remote-cache'
+    // Own only when a write to `scope` actually goes to that url store: with a
+    // local store selected for the identical personal scope (#1515 re-audit 3,
+    // L2) the write stays local, so the cached row must not absorb it.
+    return storeScope === scope && this._isRemoteWriteScope(scope) ? 'own-remote' : 'remote-cache'
   }
 
   /** The first candidate matching `pred` that the writer can persist (`hit`),
@@ -7763,8 +7785,20 @@ export class Plur {
       changed = true
       const stores = this.config.stores ?? []
       const newScope = toWrite.scope
-      const writable = stores.find(st => !!st.url && st.scope === newScope && st.readonly !== true)
-      if (isLocalOnlyScope(newScope, stores)) {
+      // A personal scope goes where the ONE selected store is (#1515 re-audit
+      // 3): a local store sharing the identical scope keeps the row local, so
+      // its pending delivery is cancelled rather than retargeted to the url.
+      const personal = this._exactPersonalStore(newScope)
+      const writable = personal !== undefined
+        ? (personal?.url && personal.readonly !== true ? personal : undefined)
+        : stores.find(st => !!st.url && st.scope === newScope && st.readonly !== true)
+      if (personal && !personal.url) {
+        delete sd._outbox
+        logger.warning(
+          `[plur] update of ${stored.id} moved it to "${newScope}", which a local store holds, and cancelled its `
+          + `pending delivery to ${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}").`,
+        )
+      } else if (isLocalOnlyScope(newScope, stores)) {
         delete sd._outbox
         logger.warning(
           `[plur] update of ${stored.id} moved it to "${newScope}" and cancelled its pending delivery to `
