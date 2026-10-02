@@ -450,7 +450,7 @@ export function buildInjectionHooks(launch: HookLaunch | string): Record<string,
 
     // Learning reflection — nudge the LLM to call plur_learn after responses
     // where it discovered or learned something. Fires after a correction, preference or
-    // decision in the user's last message, plus every 20th Stop as a fallback.
+    // decision in the user's last message, plus every 10th Stop as a fallback.
     Stop: [
       {
         matcher: '*',

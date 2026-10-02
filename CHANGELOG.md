@@ -5,12 +5,20 @@
 ### The Claude Code memory check speaks up only after a correction, preference or decision
 
 The Stop-hook memory check used to fire after every third response, forcing an
-extra turn that usually ended in a bare "ok". It now reads the user's last
-message from the transcript and nudges only when that message reads as a
-correction ("no, …", "actually …", "don't …"), a preference ("I prefer …",
-"from now on …") or a decision-board answer, once per message. A rare fallback
-still checks every 20th response; set `PLUR_LEARN_FALLBACK_INTERVAL` to change
-it, or `0` to turn it off.
+extra turn that usually ended in a bare "ok". It now reads the last message you
+typed from the transcript and nudges only when it reads as a correction ("no,
+use pnpm", "that's wrong", "wrong file"), a preference ("I prefer …", "I'd
+rather …") or a standing rule ("from now on …", "never …", "remember that …"),
+or a decision-board answer — once per message. Slovenian and German core forms
+count too ("ne, …", "narobe", "od zdaj naprej", "nein, …", "falsch", "ab
+jetzt"), and curly apostrophes match like straight ones. Ordinary requests do
+not ("It should return 200", "call it from the parser instead", a bare "no"),
+nor do pasted logs, code blocks or quoted text, compaction summaries, command
+output or task notifications. No nudge when the agent already called
+`plur_learn` in that reply. When nothing is worth keeping, the forced turn
+asks for no "ok": the memory line the agent ends every reply with is enough.
+A fallback still checks every 10th response; set
+`PLUR_LEARN_FALLBACK_INTERVAL` to change it, or `0` to turn it off.
 
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 

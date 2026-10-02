@@ -1,4 +1,5 @@
 import { readSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs'
+import { createHash } from 'crypto'
 import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
@@ -6,7 +7,7 @@ import { ensureSessionDir, ticketCounter } from '../lib/codex-hook-io.js'
 import { hookFolderOn, payloadDir, parsePayload } from '../lib/folder-gate.js'
 import { hookSessionKey } from '../lib/session-key.js'
 import { hookSessionDir } from '../lib/session-task.js'
-import { hasLearnSignal, lastUserMessage, learnFallbackInterval } from '../lib/learn-signal.js'
+import { claimNudge, hasLearnSignal, lastUserMessage, learnFallbackInterval } from '../lib/learn-signal.js'
 
 /**
  * plur hook-learn-check — Stop hook that prompts learning reflection
@@ -16,7 +17,7 @@ import { hasLearnSignal, lastUserMessage, learnFallbackInterval } from '../lib/l
  * - Nudges when the user's last message (read from the payload's
  *   `transcript_path`) carries a correction / preference / decision signal
  *   (lib/learn-signal.ts) — once per message — and otherwise only on every
- *   PLUR_LEARN_FALLBACK_INTERVAL-th Stop (default 20; 0 = off). It used to
+ *   PLUR_LEARN_FALLBACK_INTERVAL-th Stop (default 10; 0 = off). It used to
  *   nudge every 3rd Stop, and the forced turn mostly ended in a bare "ok".
  *   A missing or unreadable transcript leaves only the fallback.
  * - Every 10th Stop: writes a session checkpoint to ~/.plur/sessions/
@@ -76,15 +77,15 @@ function counterPath(key: string): string | null {
   return dir ? join(dir, `${key}.stop-count`) : null
 }
 
-// The id of the last user message a signal nudge fired for, next to the
+// One marker per (session, message) a signal nudge fired for, next to the
 // counter: a later Stop with no new human message (a background task ending)
-// still sees the same message and must not nudge for it again.
-function lastNudgedPath(counter: string): string {
-  return counter.replace(/\.stop-count$/, '.learn-nudged')
-}
-
-function alreadyNudged(path: string, id: string): boolean {
-  try { return readFileSync(path, 'utf8') === id } catch { return false }
+// still sees the same message and must not nudge for it again. Claimed with an
+// exclusive, no-follow create (claimNudge), so two racing Stops cannot both
+// nudge and an unwritable marker means no nudge. The 7-day sweep of the hook
+// dir (cleanupStaleSessionFiles) removes old markers.
+function nudgeMarkerPath(counter: string, messageId: string): string {
+  const h = createHash('sha256').update(messageId).digest('hex').slice(0, 16)
+  return counter.replace(/\.stop-count$/, `.learn-${h}.nudged`)
 }
 
 /**
@@ -179,14 +180,19 @@ function readStdinRaw(): string {
   }
 }
 
-// Delivered as a one-turn instruction: Claude Code gives the model exactly one
-// continuation turn to act on it. Keep it short and give the "nothing" path an
-// explicit, near-silent answer so that turn costs as little as possible.
-export const LEARN_PROMPT = `[PLUR] Memory check: if your last response involved a correction, a stated preference, or a reusable discovery, call plur_learn for it now. Otherwise reply with just "ok". Do not repeat or continue your previous answer.`
+// Delivered as a one-turn instruction: Claude Code gives the model one
+// continuation turn to act on it. Keep it short and make the "nothing" path
+// near-silent. PLUR's instructions (#1520) have the agent end every reply
+// with a memory line, so the "nothing" answer is that line alone — never a
+// separate "ok" on top of it. Without the memory-line rule installed, the
+// same sentence still means "say nothing else".
+const NOTHING_TO_KEEP = 'Otherwise add nothing: no reply is needed beyond your usual memory line, if you end replies with one. Do not repeat or continue your previous answer.'
+
+export const LEARN_PROMPT = `[PLUR] Memory check: if your last response involved a correction, a stated preference, or a reusable discovery, call plur_learn for it now. ${NOTHING_TO_KEEP}`
 
 // Sent when the user's last message looked like a correction, preference or
 // decision: say why, so the turn is spent on that message, not a recap.
-export const SIGNAL_PROMPT = `[PLUR] Memory check: the user's last message looks like a correction, a preference or a decision. If it states something worth keeping beyond this task, call plur_learn for it now. Otherwise reply with just "ok". Do not repeat or continue your previous answer.`
+export const SIGNAL_PROMPT = `[PLUR] Memory check: the user's last message looks like a correction, a preference or a decision. If it states something worth keeping beyond this task, call plur_learn for it now. ${NOTHING_TO_KEEP}`
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
@@ -228,17 +234,16 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     try { writeCheckpoint(key, count, cwd, flags) } catch { /* never block on checkpoint failure */ }
   }
 
-  // Signal nudge: the user's last message reads as a correction, preference
-  // or decision, and has not been nudged for yet. Any failure here is "no
-  // signal" — lastUserMessage never throws, the marker write is best-effort.
+  // Signal nudge: the user's last typed message reads as a correction,
+  // preference or decision, and has not been nudged for yet. lastUserMessage
+  // never throws; an unclaimable marker is "no nudge".
+  // No nudge at all when the agent already called plur_learn in that reply:
+  // the memory was saved, a forced turn would only repeat it.
   let prompt: string | null = null
   const msg = lastUserMessage(data.transcript_path)
-  if (msg && hasLearnSignal(msg.text)) {
-    const marker = lastNudgedPath(counter)
-    if (!alreadyNudged(marker, msg.id)) {
-      try { writeFileSync(marker, msg.id) } catch { /* worst case: one repeat nudge */ }
-      prompt = SIGNAL_PROMPT
-    }
+  if (msg?.learned) return
+  if (msg && hasLearnSignal(msg.text) && claimNudge(nudgeMarkerPath(counter, msg.id))) {
+    prompt = SIGNAL_PROMPT
   }
 
   // Rare fallback, so a session with no explicit signal still gets a check.
