@@ -414,3 +414,31 @@ describe('extractSelfReportedLearnings — every form of the memory line (#1520 
     expect(r).toContain('Memory usage doubles once the BGE embedder is loaded')
   })
 })
+
+describe('extractSelfReportedLearnings — only the footer shape is dropped (#1520 second re-audit L2)', () => {
+  const block = (...lines: string[]) => ({ role: 'assistant' as const, content: `Answer.\n\n---\n🧠 I learned:\n${lines.join('\n')}` })
+
+  it('real learnings that start "Memory: used" or "Memory — none" are kept, and so is what follows them', () => {
+    expect(extractSelfReportedLearnings(block(
+      '- Memory: used 4GB is too low for the build, set 8GB',
+      '- Memory — none of the caches survive a restart, warm them',
+      '- The deploy script needs NODE_ENV set',
+    ))).toEqual([
+      'Memory: used 4GB is too low for the build, set 8GB',
+      'Memory — none of the caches survive a restart, warm them',
+      'The deploy script needs NODE_ENV set',
+    ])
+  })
+
+  for (const footer of [
+    '🧠 Memory — recalled 2 · used: ENG-2026-10-01-001',
+    '<sub>Memory — recalled 2 · used: ENG-2026-10-01-001</sub>',
+    '1. Memory — recalled 2 · used: ENG-2026-10-01-001',
+    'Memory — recalled: ENG-2026-10-01-001, ENG-2026-10-01-002 · used: ENG-2026-10-01-001',
+  ]) {
+    it(`drops the footer: ${footer.slice(0, 24)}`, () => {
+      expect(extractSelfReportedLearnings(block('- The deploy script needs NODE_ENV set', footer)))
+        .toEqual(['The deploy script needs NODE_ENV set'])
+    })
+  }
+})

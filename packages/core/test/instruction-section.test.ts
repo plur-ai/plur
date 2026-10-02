@@ -240,6 +240,15 @@ describe('writeWithBackup', () => {
   })
 })
 
+describe('a code block left open inside a list item (#1520 second re-audit L1)', () => {
+  it('is closed with the opening fence\'s indentation, so the section is outside the list and the block', () => {
+    const r = upTwice('- step one\n  ```bash\n  USER-CMD\n')
+    expect(r.status).toBe('added')
+    expect(r.closedOpenBlock).toBe('fence')
+    expect(r.content).toBe(`- step one\n  \`\`\`bash\n  USER-CMD\n  \`\`\`\n\n${NEW}`)
+  })
+})
+
 describe('backups (re-audit lows c, d)', () => {
   let dir: string
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-backup-low-')) })
