@@ -1,5 +1,16 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputInfo, outputError, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputInfo, outputText, outputError, exit } from '../output.js'
+
+/**
+ * Flags this command accepts (#986): anything else is refused rather than
+ * silently dropped. `--scope` names the store holding the engram (0.21.1).
+ */
+export const FLAGS_WITH_VALUES = ['--scope', '--batch']
+
+export const FLAGS = ['--scope', '--batch']
+
+const USAGE = 'Usage: plur feedback <id> <positive|negative|neutral> [--scope primary|<remote scope>]\n' +
+  '       plur feedback --batch \'[{"id":"ENG-1","signal":"positive"}]\''
 
 const VALID_SIGNALS = ['positive', 'negative', 'neutral'] as const
 type Signal = (typeof VALID_SIGNALS)[number]
@@ -50,31 +61,45 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Single mode: plur feedback <id> <signal>
+  // Single mode: plur feedback <id> <signal> [--scope <scope>]
+  //
+  // `--scope` (0.21.1): ids are minted per store, so a bare id can name a local
+  // engram and an unrelated remote one, and an ambiguous id is refused. Without
+  // the flag a colliding LOCAL engram could not be rated from the CLI at all.
+  // `primary` = the local engram; a remote store's scope = that store's.
+  // An extra argument used to be dropped without a word; it is now refused.
   let id = ''
   let signal = ''
+  let scope: string | undefined
 
   let i = 0
   while (i < args.length) {
     const arg = args[i]
-    if (!id) { id = arg; i++ }
+    if (arg === '--scope') {
+      if (i + 1 >= args.length || args[i + 1].trim() === '' || /^--[A-Za-z]/.test(args[i + 1])) {
+        exit(1, `--scope requires a value\n${USAGE}`)
+      }
+      scope = args[++i]; i++
+    }
+    else if (!id) { id = arg; i++ }
     else if (!signal) { signal = arg; i++ }
-    else { i++ }
+    else exit(1, `Unexpected argument "${arg}".\n${USAGE}`)
   }
 
   if (!id || !signal) {
-    exit(1, 'Usage: plur feedback <id> <signal> [or --batch <json>]')
+    exit(1, USAGE)
   }
 
   if (!(VALID_SIGNALS as readonly string[]).includes(signal)) {
     exit(1, `Invalid signal: "${signal}". Must be one of: positive, negative, neutral`)
   }
 
-  await plur.feedback(id, signal as Signal)
+  const { warnings } = await plur.feedback(id, signal as Signal, scope)
 
   if (shouldOutputJson(flags)) {
-    outputJson({ id, signal, status: 'recorded' })
+    outputJson({ id, signal, status: 'recorded', ...(scope ? { scope } : {}), ...(warnings.length > 0 ? { warnings } : {}) })
   } else {
-    outputInfo(`Feedback recorded: ${signal} for ${id}`, flags)
+    outputInfo(`Feedback recorded: ${signal} for ${id}${scope ? ` (scope: ${scope})` : ''}`, flags)
+    for (const w of warnings) outputText(`  Warning: ${w}`)
   }
 }
