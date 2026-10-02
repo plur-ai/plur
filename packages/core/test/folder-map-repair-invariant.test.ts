@@ -138,6 +138,28 @@ describe('the invariant also refuses an implicit on', () => {
   })
 })
 
+describe('S1: an escaped plur: value is never a literal on (final review)', () => {
+  for (const v of ['"\\x6fn"', '"o\\x6e"', '"\\u006fn"', '"\\U0000006fn"']) {
+    it(v, () => notFixable(L('version: 1', 'folder:', '  - path: /a', `    plur: ${v}`)))
+  }
+  it('a quoted literal "on" still counts', () => {
+    expect(planFolderMapRepair(L('version: 1', 'folder:', '  - path: /a', '    plur: "on"')).status).toBe('fixable')
+  })
+})
+
+describe('S3: the refusal for an implicit on points at the slip, not at adding plur: on (final review)', () => {
+  it('scope-only entry with an indentation slip', () => {
+    const p = planFolderMapRepair(L('version: 1', 'folders:', '  - path: /a', '     scope: group:x/y'))
+    expect(p.status).toBe('unfixable')
+    if (p.status !== 'unfixable') return
+    const msgs = p.issues.map(i => i.message).join('\n')
+    expect(msgs).toContain('line 4: indentation')
+    expect(msgs).not.toMatch(/has no `plur: on` line/)
+    expect(msgs).toMatch(/through `scope:`/)
+    expect(msgs).toMatch(/by hand/)
+  })
+})
+
 describe('R5: a map that is not UTF-8 is not fixable on any surface', () => {
   it('folderMapProblem, the resolver and repair agree', () => {
     writeFileSync(folderMapPath(root), Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from('\nversion: 1\nfolders:\n  - path: /a\n    plur: On\n')]))
@@ -188,14 +210,21 @@ function onPaths(m: unknown): string[] {
  * one or at a line at column 0.
  */
 function literalOnPaths(text: string): Set<string> {
-  // Every scalar written on a line of an entry that has a literal active
-  // `plur: on`: the repair keeps values as written, so the entry's path after
-  // the repair is one of them (its key may have been a misspelled `path`).
+  // The path of every entry that has a literal active `plur: on` line. The
+  // path is the value of a `path:` key or of a near-miss of it the repair may
+  // rename (another case, two neighbouring letters swapped, one inner letter
+  // missing) — never any other value of the entry (final review S4).
+  const pathLike = (k: string) => {
+    const x = k.toLowerCase()
+    if (x === 'path') return true
+    if (x.length === 4) for (let i = 0; i < 3; i++) if (x.slice(0, i) + x[i + 1] + x[i] + x.slice(i + 2) === 'path') return true
+    return ['pth', 'pah'].includes(x)
+  }
   const out = new Set<string>()
-  let values: string[] = []
+  let paths: string[] = []
   let on = false
   let inEntry = false
-  const flush = () => { if (inEntry && on) for (const v of values) out.add(v); values = []; on = false; inEntry = false }
+  const flush = () => { if (inEntry && on) for (const v of paths) out.add(v); paths = []; on = false; inEntry = false }
   for (const raw of text.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)) {
     const t = raw.replace(/^[ \t]+/, '')
     if (raw !== '' && !/^[ \t]/.test(raw) && !t.startsWith('-')) { flush(); continue }
@@ -204,7 +233,9 @@ function literalOnPaths(text: string): Set<string> {
     if (/^plur[ \t]*:[ \t]*(['"]?)on\1[ \t]*(#.*)?$/i.test(body)) on = true
     try {
       const v = yaml.load(body)
-      if (v && typeof v === 'object' && !Array.isArray(v)) for (const x of Object.values(v)) if (typeof x === 'string') values.push(x)
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        for (const [k, x] of Object.entries(v)) if (pathLike(k) && typeof x === 'string') paths.push(x)
+      }
     } catch { /* not a single key: value line */ }
   }
   flush()
