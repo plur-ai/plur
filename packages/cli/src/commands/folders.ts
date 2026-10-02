@@ -4,7 +4,8 @@ import { FolderMapError, type FolderChange, type FolderEntry } from '@plur-ai/co
 
 const USAGE =
   'Usage: plur folders list\n' +
-  '       plur folders set <folder> (--scope <s> | --on | --off | --ask) [--trusted | --no-trusted] [--nonce <n>]\n' +
+  '       plur folders set <folder> (--scope <s> | --on | --off | --ask) [--trusted | --no-trusted] [--nonce <n>] [--session <id>]\n' +
+  '       plur folders set <folder> --not-now --nonce <n> [--session <id>]\n' +
   '       plur folders rm <folder> [--nonce <n>]\n' +
   'Without --nonce, set and rm work only from an interactive terminal.'
 
@@ -81,6 +82,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const change: FolderChange = {}
   let nonce: string | undefined
+  let session: string | undefined
+  let notNow = false
   let modes = 0
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]
@@ -97,15 +100,36 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (!v || v.startsWith('--')) exit(1, `--nonce needs a value.\n${USAGE}`)
       nonce = v
     }
+    else if (a === '--session') {
+      const v = rest[++i]
+      if (!v || v.startsWith('--')) exit(1, `--session needs a value.\n${USAGE}`)
+      session = v
+    }
+    else if (a === '--not-now') { notNow = true; modes++ }
     else exit(1, `Unexpected argument ${a}.\n${USAGE}`)
   }
-  if (modes > 1) exit(1, `Pass only one of --scope, --on, --off, --ask.\n${USAGE}`)
+  if (modes > 1) exit(1, `Pass only one of --scope, --on, --off, --ask, --not-now.\n${USAGE}`)
   if (modes === 0 && change.trusted === undefined) exit(1, `Nothing to set.\n${USAGE}`)
+
+  // "Not now" (the MCP folder question, #1525): consume the nonce issued for
+  // that answer and write nothing. It means nothing without its nonce.
+  if (notNow) {
+    if (change.trusted !== undefined) exit(1, `--not-now takes no --trusted / --no-trusted.\n${USAGE}`)
+    if (nonce === undefined) exit(1, `--not-now is an answer to the folder question and needs its --nonce.\n${USAGE}`)
+    const plur = createPlur(flags)
+    try {
+      plur.notNowFolder(folder, { nonce: nonce!, ...nonceSession(session, json) })
+      if (json) return outputJson({ success: true, notNow: true })
+      return outputInfo(`Not now: nothing recorded for ${folder}; the session that asked stops asking.`, flags)
+    } catch (err) {
+      return fail(err, json)
+    }
+  }
   refuseWithoutNonce(nonce, json)
 
   const plur = createPlur(flags)
   try {
-    const entry = plur.setFolder(folder, change, nonce !== undefined ? { nonce, ...nonceSession() } : undefined)
+    const entry = plur.setFolder(folder, change, nonce !== undefined ? { nonce, ...nonceSession(session, json) } : undefined)
     if (json) return outputJson({ success: true, entry })
     outputInfo(`Recorded: ${describe(entry)}`, flags)
   } catch (err) {
@@ -119,9 +143,21 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
  * agent runs, and binds the nonces it issues to that session; a nonce is then
  * checked only against the named session's nonces. The editor hooks' hosts
  * set nothing, and their unbound nonces work as before.
+ *
+ * `flag` is `--session <id>` (#1525): the MCP server cannot set the agent's
+ * shell environment, so its commands name the session themselves. When the
+ * environment names a session too, the two must agree; otherwise the command
+ * is refused, so a host's PLUR_FOLDER_SESSION binding cannot be overridden
+ * from the command line.
  */
-export function nonceSession(): { session?: string } {
-  const s = process.env.PLUR_FOLDER_SESSION
+export function nonceSession(flag?: string, json = false): { session?: string } {
+  const env = process.env.PLUR_FOLDER_SESSION
+  if (flag !== undefined && env && env !== flag) {
+    fail(new FolderMapError('nonce-session',
+      'This command names a different session (--session) from the one this shell belongs to (PLUR_FOLDER_SESSION); nothing was changed. ' +
+      'Run the command from the session that showed it, or decide by hand in a terminal: plur folders set <folder> --on | --off.'), json)
+  }
+  const s = flag ?? env
   return s ? { session: s } : {}
 }
 

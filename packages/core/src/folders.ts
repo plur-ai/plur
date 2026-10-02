@@ -620,8 +620,11 @@ export interface FolderChange {
  * FolderChange it will be compared with) or the removal of the entry.
  * `plur trust` is the answer `{ trusted: true }`. `folders set --no-trusted`
  * is `{ trusted: false }`; `plur untrust` needs no nonce (#1477 review).
+ * `{ notNow: true }` is the MCP question's "not now" (#1525): its nonce
+ * authorises no write at all; `plur folders set --not-now` only consumes it,
+ * which tells the MCP session that asked to stop asking.
  */
-export type FolderAnswer = FolderChange | { remove: true }
+export type FolderAnswer = FolderChange | { remove: true } | { notNow: true }
 
 /**
  * The comparable form of an answer. `--scope X` means on, so it equals
@@ -631,6 +634,7 @@ export type FolderAnswer = FolderChange | { remove: true }
 function answerKey(a: FolderAnswer | undefined | null): string | null {
   if (!a || typeof a !== 'object') return null
   if ('remove' in a) return a.remove === true ? 'remove' : null
+  if ('notNow' in a) return a.notNow === true ? 'not-now' : null
   const mode = a.mode ?? (a.scope !== undefined ? 'on' : null)
   return JSON.stringify(['set', mode, a.scope ?? null, a.trusted ?? null])
 }
@@ -638,6 +642,7 @@ function answerKey(a: FolderAnswer | undefined | null): string | null {
 function describeAnswer(a: FolderAnswer | undefined | null): string {
   if (!a || typeof a !== 'object') return 'no answer'
   if ('remove' in a) return 'removing the entry'
+  if ('notNow' in a) return '--not-now'
   const parts: string[] = []
   if (a.scope !== undefined) parts.push(`--scope ${a.scope}`)
   else if (a.mode !== undefined) parts.push(`--${a.mode}`)
@@ -1120,11 +1125,37 @@ function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, 
 /** Only the fields an answer has, so the nonce file holds nothing else. */
 function cleanAnswer(a: FolderAnswer): FolderAnswer {
   if ('remove' in a) return { remove: true }
+  if ('notNow' in a) return { notNow: true }
   return {
     ...(a.mode !== undefined ? { mode: a.mode } : {}),
     ...(a.scope !== undefined ? { scope: a.scope } : {}),
     ...(a.trusted !== undefined ? { trusted: a.trusted } : {}),
   }
+}
+
+/**
+ * True while `nonce` is still in `sessionId`'s nonce file: issued, not yet
+ * consumed, and the session not ended. An unreadable file answers false.
+ * The MCP server reads its own "not now" nonce this way (#1525): once
+ * `plur folders set --not-now` has consumed it, the session stops asking.
+ */
+export function folderNonceOutstanding(root: string, sessionId: string, nonce: string): boolean {
+  const data = readNonceFile(nonceFile(root, sessionId))
+  return !!data && data.nonces.some(r => r.nonce === nonce)
+}
+
+/**
+ * The "not now" answer of the MCP folder question (#1525): verify `nonce`
+ * as issued for `{ notNow: true }` on exactly `folder` (and, for a
+ * session-bound nonce, from its own session), then consume it. Writes
+ * nothing to the folder map; the folder stays undecided. Throws
+ * FolderMapError as verifyFolderNonce does.
+ */
+export function answerFolderNotNow(
+  root: string, folder: string, nonce: string,
+  options: { home?: string; session?: string; now?: number } = {},
+): void {
+  consumeFolderNonce(root, nonce, folder, { notNow: true }, options.now ?? Date.now(), { home: options.home, session: options.session })
 }
 
 /** Drop every nonce of `sessionId` — called when the session ends. */
