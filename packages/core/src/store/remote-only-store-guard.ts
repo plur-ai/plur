@@ -30,7 +30,7 @@
 import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind, SaveOptions } from './primary-store.js'
 import { RemoteOnlyWriteError } from '../remote-only.js'
-import { isSharedScope } from '../scope-util.js'
+import { logger } from '../logger.js'
 
 export interface RemoteOnlyStoreBinding {
   folder: string
@@ -51,13 +51,152 @@ export function isQueuedForFolder(e: unknown, folder: string): boolean {
  * targets — the folder's scope or another shared scope. Anything else is not
  * a deliverable queued save, so the guard does not accept it.
  */
-export function isDeliverableQueuedSave(e: unknown, folder: string, folderScope: string | null): boolean {
+export function isDeliverableQueuedSave(e: unknown, folder: string, isDeliverableScope: (scope: string) => boolean): boolean {
   if (!isQueuedForFolder(e, folder)) return false
+  return isWellFormedQueuedSave(e, isDeliverableScope)
+}
+
+/** Active, in the scope its queue entry targets, and that scope is deliverable. */
+export function isWellFormedQueuedSave(e: unknown, isDeliverableScope: (scope: string) => boolean): boolean {
   const row = e as { status?: string; scope?: string; structured_data?: { _outbox?: { target_scope?: string } } }
   if (row.status !== 'active') return false
   const target = row.structured_data?._outbox?.target_scope
   if (!row.scope || row.scope !== target) return false
-  return row.scope === folderScope || isSharedScope(row.scope)
+  return isDeliverableScope(row.scope)
+}
+
+function marker(e: unknown): Record<string, unknown> | undefined {
+  return (e as { structured_data?: { _outbox?: Record<string, unknown> } } | null)?.structured_data?._outbox
+}
+
+/**
+ * The queue hold (re-audit 3 of #1521, owner 2026-10-02): why writing `next`
+ * over `stored` would break a remote-only queued save, or null when it does
+ * not. A row carrying the remote-only queue marker may be written back only
+ * with the same scope, status `active` and the same marker (its delivery
+ * bookkeeping may change); deleting it (delivery, forget) is not a write and
+ * is always allowed. A row that newly carries the marker must be a
+ * well-formed queued save.
+ */
+export function queueHoldViolation(
+  stored: Engram | undefined, next: Engram, isDeliverableScope: (scope: string) => boolean,
+): string | null {
+  const was = marker(stored)
+  const now = marker(next)
+  if (was?.remote_only === true) {
+    if (now?.remote_only !== true) return 'its queue entry would be removed'
+    for (const k of ['remote_only_folder', 'target_scope', 'target_url']) {
+      if (now[k] !== was[k]) return `its queue entry's ${k} would change`
+    }
+    if (next.scope !== stored!.scope) return `its scope would change to "${next.scope}"`
+    if (next.status !== 'active') return `it would be ${next.status}`
+    return null
+  }
+  if (now?.remote_only === true && !isWellFormedQueuedSave(next, isDeliverableScope)) {
+    return 'it is not a well-formed queued save (active, in a team scope served by a writable team store)'
+  }
+  return null
+}
+
+/**
+ * QueueHoldStore — the write choke point for the queue hold. EVERY internal
+ * access to the primary store goes through it, in every instance, bound to a
+ * folder or not. Reads and the query surface pass through unchanged; each
+ * write is checked against the rows as stored now (read under the caller's
+ * lock) and refused with RemoteOnlyWriteError when it would break a queued
+ * remote-only save. The public `Plur.primaryStore` handle is the store as
+ * passed in, not this wrapper (its identity is part of the API).
+ */
+export class QueueHoldStore implements PrimaryStore {
+  readonly kind: PrimaryStoreKind
+  readonly location: string | null
+  readonly refusesUnreadable?: boolean
+  // Optional members are DECLARED, not initialised: every non-write member of
+  // the inner store (capabilities and the whole query-adapter surface, e.g.
+  // role / searchBM25 / corpusStats) is forwarded generically below, so a
+  // member added to a store later is never silently dropped (the #830/#753
+  // lesson of ReadonlyStoreGuard). Only the three writes are wrapped.
+  declare readonly loadByIds?: (ids: string[]) => Promise<Engram[]>
+  declare readonly estimateCount?: () => number
+  declare readonly append?: (engram: Engram) => Promise<void>
+  declare readonly updateMany?: (engrams: Engram[]) => Promise<void>
+  declare readonly findActiveByContentHash?: (hash: string, scope: string) => Promise<Engram | null>
+  declare readonly nextEngramId?: (datePrefix: string) => Promise<string>
+  declare readonly withExclusiveAccess?: <T>(fn: () => Promise<T>) => Promise<T>
+  declare readonly afterCommit?: (callback: () => void) => void
+
+  constructor(
+    readonly inner: PrimaryStore,
+    private readonly _isDeliverableScope: (scope: string) => boolean,
+  ) {
+    this.kind = inner.kind
+    this.location = inner.location
+    this.refusesUnreadable = inner.refusesUnreadable
+    const writes = new Set(['save', 'append', 'updateMany'])
+    const names = new Set<string>()
+    for (let o: object | null = inner; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
+      for (const n of Object.getOwnPropertyNames(o)) names.add(n)
+    }
+    for (const n of names) {
+      if (n === 'constructor' || writes.has(n) || n in this) continue
+      Object.defineProperty(this, n, {
+        configurable: true,
+        enumerable: false,
+        get: () => {
+          const v = (inner as unknown as Record<string, unknown>)[n]
+          return typeof v === 'function' ? (v as Function).bind(inner) : v
+        },
+      })
+    }
+    if (inner.append) {
+      Object.defineProperty(this, 'append', {
+        configurable: true,
+        value: async (engram: Engram) => {
+          this._check([engram], await this._current([engram.id]))
+          await inner.append!(engram)
+        },
+      })
+    }
+    if (inner.updateMany) {
+      Object.defineProperty(this, 'updateMany', {
+        configurable: true,
+        value: async (engrams: Engram[]) => {
+          this._check(engrams, await this._current(engrams.map(e => e.id)))
+          await inner.updateMany!(engrams)
+        },
+      })
+    }
+  }
+
+  private async _current(ids: string[]): Promise<Map<string, Engram>> {
+    const rows = this.inner.loadByIds ? await this.inner.loadByIds(ids) : await this.inner.loadCached()
+    return new Map(rows.map(e => [e.id, e]))
+  }
+
+  private _check(next: Engram[], current: Map<string, Engram>): void {
+    for (const e of next) {
+      const stored = current.get(e.id)
+      const why = queueHoldViolation(stored, e, this._isDeliverableScope)
+      if (why) {
+        const ob = marker(stored) ?? marker(e) ?? {}
+        throw new RemoteOnlyWriteError(
+          String(ob.remote_only_folder ?? 'a remote-only folder'), String(ob.target_scope ?? e.scope), undefined,
+          'queued-stays-remote', `${e.id} (${why})`)
+      }
+    }
+  }
+
+  load(): Promise<Engram[]> { return this.inner.load() }
+  loadCached(): Promise<Engram[]> { return this.inner.loadCached() }
+  invalidate(): void { this.inner.invalidate() }
+
+  async save(engrams: Engram[], opts?: SaveOptions): Promise<void> {
+    // Fresh read: the caller holds the store lock, so this is the state the
+    // write replaces. Deleted rows are not checked (delivery and forget).
+    const current = new Map((await this.inner.load()).map(e => [e.id, e]))
+    this._check(engrams, current)
+    await this.inner.save(engrams, opts)
+  }
 }
 
 export class RemoteOnlyStoreGuard implements PrimaryStore {
@@ -81,6 +220,8 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
     private readonly _binding: RemoteOnlyStoreBinding,
     /** The primary store holds queued saves; a secondary file store holds none. */
     private readonly _isPrimary: boolean,
+    /** The one rule for a deliverable team scope (Plur._isDeliverableTeamScope). */
+    private readonly _isDeliverableScope: (scope: string) => boolean = () => false,
   ) {
     this.kind = _inner.kind
     this.location = _inner.location
@@ -115,9 +256,24 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
     }
   }
 
+  /**
+   * Only WELL-FORMED queued saves of this folder are visible (re-audit 3,
+   * R3-3): a malformed one (retired, moved off its target, or targeting a
+   * scope no writable team store serves) is treated like a hidden row —
+   * carried through unchanged — so it cannot block every save in the folder.
+   * It is reported once; forgetting it by id removes it.
+   */
   private _visible(e: Engram): boolean {
-    return this._isPrimary && !this._binding.blocked && isQueuedForFolder(e, this._binding.folder)
+    if (!this._isPrimary || this._binding.blocked || !isQueuedForFolder(e, this._binding.folder)) return false
+    if (isDeliverableQueuedSave(e, this._binding.folder, this._isDeliverableScope)) return true
+    if (!RemoteOnlyStoreGuard._warned.has(e.id)) {
+      RemoteOnlyStoreGuard._warned.add(e.id)
+      logger.warning(`[plur] ${e.id} is a queued save from ${this._binding.folder} that can no longer be delivered ` +
+        `(its scope or status changed, or no writable team store serves it). It is set aside; forget it by id to remove it.`)
+    }
+    return false
   }
+  private static _warned = new Set<string>()
 
   private _refuse(what: string): never {
     const b = this._binding
@@ -127,7 +283,7 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
   }
 
   private _assertQueued(e: Engram, what: string): void {
-    if (!this._visible(e) || !isDeliverableQueuedSave(e, this._binding.folder, this._binding.scope)) this._refuse(what)
+    if (!this._visible(e)) this._refuse(what)
   }
 
   async load(): Promise<Engram[]> { return (await this._inner.load()).filter(e => this._visible(e)) }

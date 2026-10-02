@@ -247,6 +247,10 @@ async function executeDedupDecision(
             // candidate 7): `existing` is a pre-lock snapshot, and an engram locked
             // since then must not be rewritten — same outcome as locked-before: ADD.
             if ((engrams[idx] as any).commitment === 'locked') return null
+            // A save queued from a remote-only folder is never rewritten by a
+            // dedup decision: it is delivered or forgotten as it was saved
+            // (re-audit 3 of #1521). Same outcome as locked: ADD.
+            if ((engrams[idx] as any).structured_data?._outbox?.remote_only) return null
             const previousStatement = engrams[idx].statement
             const updated = { ...engrams[idx] } as any
             updated.statement = statement
@@ -289,6 +293,8 @@ async function executeDedupDecision(
             if (idx === -1) return null
             // Locked since the pre-lock check: do not merge into it (see UPDATE).
             if ((engrams[idx] as any).commitment === 'locked') return null
+            // Never merge into a remote-only queued save (see UPDATE).
+            if ((engrams[idx] as any).structured_data?._outbox?.remote_only) return null
             const merged = { ...engrams[idx] } as any
             merged.statement = `${merged.statement} ${statement}`
             merged.content_hash = computeContentHash(merged.statement)
