@@ -48,7 +48,9 @@
  *       project scope (org of `project:plur/plur-ai/enterprise` is `plur` →
  *       all `group:plur/…` + `project:plur/…` scopes for that host);
  *   (b) the host's `user:*` (personal-family) scopes ONLY when an org context
- *       exists implicating that host.
+ *       exists implicating that host;
+ *   (c) a personal `user:` recall/session scope dials the one store entry
+ *       whose scope equals it exactly — never another user's, never wider.
  * No project/work context implicating a remote store → ZERO remote calls. A
  * host with an empty relevant subset is not dialed. Per-store `dial:
  * always|never` overrides; the `PLUR_REMOTE_RECALL` env kill-switch

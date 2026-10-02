@@ -1,7 +1,8 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem } from '@plur-ai/core'
+import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -610,7 +611,7 @@ interface SessionTelemetry {
    */
   default_scope?: string | null
   /** How the session-start default was derived (#243). */
-  default_scope_source?: 'caller' | 'project-config' | 'none'
+  default_scope_source?: 'caller' | 'folder-map' | 'project-config' | 'none'
   /** True while a mid-session plur_session_scope op:"set" is in effect (#243). */
   scope_adjusted?: boolean
 }
@@ -769,7 +770,54 @@ export function trustCommand(dir: string | null, storageRoot?: string, platform:
   return store === null ? null : `plur --path ${store} trust ${target}`
 }
 
-/** Same grammar as the folder question's (cli folder-gate.ts): bounded, no spaces or controls. */
+/**
+ * The command that turns PLUR back on for a folder-map entry, for the answer
+ * the memory tools give in an `off` folder (folder-gate.ts). Same store rule
+ * as {@link trustCommand}: a non-default store is named with `--path`, or the
+ * change lands in a map this server never reads. Null when the entry cannot
+ * be quoted safely.
+ */
+/** plur_status's `folder_map` field: present only when the map is broken (#1526). */
+function folderMapStatus(root: string): { folder_map?: Record<string, unknown> } {
+  let p: FolderMapProblem | null
+  try { p = folderMapProblem(root) } catch { return {} }
+  if (!p) return {}
+  const advice = folderMapAdvice(p, root)
+  return {
+    folder_map: {
+      ok: false,
+      file: p.file,
+      problem: p.problem,
+      ...(p.line !== undefined ? { line: p.line } : {}),
+      ...(p.column !== undefined ? { column: p.column } : {}),
+      fixable: p.fixable,
+      ...(advice.command ? { repair_command: advice.command } : {}),
+      ...(advice.summary ? { repair_summary: advice.summary } : {}),
+      advice: `Memory tools are paused until it is fixed. ${advice.text}`,
+    },
+  }
+}
+
+export function folderOnCommand(entry: string, storageRoot?: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (_UNSAFE_PATH_CHARS.test(entry)) return null
+  const target = _shellWord(entry, platform)
+  if (target === null) return null
+  if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur folders set ${target} --on`
+  const store = _shellWord(resolve(storageRoot), platform)
+  return store === null ? null : `plur --path ${store} folders set ${target} --on`
+}
+
+/**
+ * A store error without the file's contents. A YAML parse error carries a
+ * code frame — the lines around the fault, which are engram statements — and
+ * plur_status is an admin tool that answers in a folder where PLUR is off.
+ * Keep the first line (what went wrong, and the line and column).
+ */
+export function redactStoreErrors(errors: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(errors).map(([k, v]) => [k, String(v).split('\n', 1)[0].slice(0, 300)]))
+}
+
+/** Same grammar as the folder question's (core folder-ask.ts): bounded, no spaces or controls. */
 const UNTRUSTED_SCOPE_GRAMMAR = /^(?:global|[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._@/:-]{0,199})$/
 const UNTRUSTED_DOMAIN_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/
 /** Characters that break a line, reorder text or hide in a path printed to the model. */
@@ -779,6 +827,14 @@ function _escapedText(s: string): string {
   return JSON.stringify(s.length > 1024 ? s.slice(0, 1024) + '…' : s)
     .replace(/[\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
 }
+
+/**
+ * The folder map's write scope for the editor's workspace (#1525), attached
+ * by the server's folder gate to a gated call's arguments. plur_session_start
+ * uses it as the session default when the caller passes none. A Symbol key,
+ * so a client cannot set it: JSON arguments carry only string keys.
+ */
+export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
 
 export function readTrustedProjectConfig(
   trust: { isDirectoryTrusted(dir: string): boolean; readonly storageRoot?: string },
@@ -1098,7 +1154,11 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
         return { ...validated.errorPayload, error: inner.startsWith(`${action}:`) ? inner : `${action}: ${inner}` }
       }
       try {
-        return await target.handler(validated.data, plur)
+        // The folder gate's scope (#1525) rides on the outer args under a
+        // Symbol key, which the inner validation does not copy.
+        const carried = (args as Record<PropertyKey, unknown>)[FOLDER_SCOPE]
+        const data = carried !== undefined ? { ...validated.data, [FOLDER_SCOPE]: carried } : validated.data
+        return await target.handler(data, plur)
       } catch (err: unknown) {
         // Audit fix (evaluator review, 2026-07-08): an uncaught throw from
         // the wrapped handler propagates up to server.ts's top-level catch,
@@ -1545,6 +1605,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // more specific `warning` below (outbox, demotion, refusal) still
             // wins that key; `delivery_warning` keeps this one either way.
             delivery: delivered.delivery,
+            // 0.21.1: why it was queued (rejected token vs unreachable server).
+            ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning, warning: delivered.warning } : {}),
             ...(dedup?.near_duplicates?.length ? { dedup } : {}),
             ...(redraft ? { redraft } : {}),
@@ -1552,7 +1614,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed),
             ...domainHint(!!routed),
-            ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
+            ...(isOutbox ? { outbox: true, warning: delivered.reason ?? 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
             ...(demoted ? { demoted: true, requested_scope: demoted.from, warning: `Sensitive content (${demoted.patterns}) detected — stored at "${demoted.to}"/private instead of the requested shared scope "${demoted.from}". If this is a false positive, re-scope deliberately.` } : {}),
             ...(routed ? { routed: { scope: routed.scope, confidence: routed.confidence, reason: routed.reason }, info: `No scope was provided; auto-routed to "${routed.scope}" (confidence ${routed.confidence}) because its content matched that scope's covers. Pass an explicit scope to override.` } : {}),
             // #1115: a shared scope matched but was NOT adopted. Said plainly,
@@ -1583,6 +1645,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, ...learnDecision(engram),
             delivery: delivered.delivery,
+            ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routedFallback),
@@ -1833,9 +1896,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // shared one — reached the caller with no signal of either.
             const routed = (r.engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
             const routeRefused = (r.engram as any).structured_data?._routeRefused as { scope: string; confidence: number; reason: string } | undefined
+            // Where each item landed (#1532 re-audit R6), as plur_learn says it:
+            // the default server deadline sends more team items to the outbox.
+            const requested = r.input_index !== undefined ? (raw[r.input_index] as { scope?: unknown } | undefined)?.scope : undefined
+            const delivered = plur.deliveryOf(r.engram, typeof requested === 'string' ? requested : undefined)
             return {
             input_index: r.input_index,
             id: isOutbox ? r.engram.id : plur.readIdFor(r.engram),
+            delivery: delivered.delivery,
+            ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
+            ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             statement: r.engram.statement,
             scope: r.engram.scope,
             type: r.engram.type,
@@ -1859,7 +1929,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall',
-      description: 'Search engrams by topic. Default mode is hybrid (BM25 + local embeddings via RRF) — set mode:"keyword" for BM25-only. Local search plus, when a configured enterprise store is part of the current project/work, one live timeout-bounded recall per remote host merged in (a `remote_stores` block + warning appears when a host is degraded; no host configured or implicated = fully local). Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
+      description: 'Search engrams by topic. Default mode is hybrid (BM25 + local embeddings via RRF) — set mode:"keyword" for BM25-only. Local search plus, when a configured enterprise store is part of the current project/work — or when the scope (or the default scope this session registered itself) is a personal user: scope and a remote store is configured with that same scope (exact match, case-insensitive; that rule adds only the matching store, though a store set to dial: always or a trusted project remote can still add others) — one live timeout-bounded recall per remote host merged in (a `remote_stores` block + warning appears when a host is degraded; no host configured or implicated = fully local). Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
       annotations: { title: 'Recall', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1887,7 +1957,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall_hybrid',
-      description: '[Deprecated since 0.16 — use plur_recall (mode defaults to hybrid). Alias kept for backwards compatibility; removal earliest 0.18.] Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion, plus the live enterprise-store recall leg when one is configured and project-relevant.',
+      description: '[Deprecated since 0.16 — use plur_recall (mode defaults to hybrid). Alias kept for backwards compatibility; removal earliest 0.18.] Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion, plus the live enterprise-store recall leg when one is configured and project-relevant, or when the scope is a personal user: scope matching the own scope of a configured remote store (exact, case-insensitive; adds only that store, while dial: always and a trusted project remote still apply).',
       annotations: { title: 'Recall (hybrid) [deprecated alias]', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -2046,8 +2116,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         // Single mode
         try {
-          await plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral', args.scope as string | undefined)
-          return { success: true, id: args.id, signal: args.signal }
+          const { warnings } = await plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral', args.scope as string | undefined)
+          return { success: true, id: args.id, signal: args.signal, ...(warnings.length > 0 ? { warnings } : {}) }
         } catch (err: any) {
           if (err.message?.includes('readonly store')) {
             return { success: false, id: args.id, signal: args.signal, note: 'Engram is in a readonly store. Feedback noted for this session but not persisted.' }
@@ -2067,6 +2137,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           id: { type: 'string', description: 'Engram ID to pin or unpin' },
           pinned: { type: 'boolean', description: 'Target value (default true)' },
           list: { type: 'boolean', description: 'If true, just return the current set of pinned engrams (no mutation)' },
+          scope: { type: 'string', description: 'Which store holds it. Ids are minted per store, so one bare id can name a local engram and an unrelated remote one; such an id is refused. Pass "primary" for the local engram, or a remote store\'s scope (or the namespaced ENG-XXX-… id from recall) for the remote one.' },
         },
       },
       handler: async (args, plur) => {
@@ -2090,7 +2161,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // present — this is the only moment where "unpin one or raise the
         // limit" is a question someone can actually answer.
         if (target === true) {
-          const q = await plur.pinnedQuota(args.id as string)
+          // Cost the engram this pin will change (#1532 review F6): with a
+          // scope, the one that scope holds, not a local id twin.
+          const q = await plur.pinnedQuota(args.id as string, args.scope ? { scope: args.scope as string } : undefined)
           if (q.candidate && !q.candidate.fits) {
             const deficit = q.candidate.would_be - q.quota
             // Take entries until the deficit is covered. This accumulated
@@ -2132,7 +2205,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // a synthesized {id, pinned} object — caller observes stale state on
         // immediate getById. The async variant awaits and returns the real
         // server response.
-        const updated = await plur.setPinnedAsync(args.id as string, target)
+        const updated = await plur.setPinnedAsync(args.id as string, target, args.scope ? { scope: args.scope as string } : undefined)
         if (!updated) throw new Error(`Engram not found: ${args.id}`)
         return {
           id: updated.id,
@@ -2171,15 +2244,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // force:true — explicit user forget always fully retires, ignoring
             // reference_count. The ref-count decrement path is for internal
             // multi-agent dedup; one plur_forget call = full retirement (#766).
-            await plur.forget(args.id as string, args.reason as string | undefined, { force: true })
-            return { success: true, retired: { id: engram.id, statement: engram.statement } }
+            const { warnings } = await plur.forget(args.id as string, args.reason as string | undefined, { force: true })
+            return { success: true, retired: { id: engram.id, statement: engram.statement }, ...(warnings.length > 0 ? { warnings } : {}) }
           }
           // Not in local store, or an explicit scope was given — let
           // plur.forget() resolve. It routes to remote stores (with prefix
           // stripping per #86 / PR #186), refuses an ambiguous unqualified id
           // (#831), and throws "Engram not found" if it is nowhere.
-          await plur.forget(args.id as string, args.reason as string | undefined, { force: true, ...(scope ? { scope } : {}) })
-          return { success: true, retired: { id: args.id as string, ...(scope ? { scope } : {}) } }
+          const { warnings } = await plur.forget(args.id as string, args.reason as string | undefined, { force: true, ...(scope ? { scope } : {}) })
+          return { success: true, retired: { id: args.id as string, ...(scope ? { scope } : {}) }, ...(warnings.length > 0 ? { warnings } : {}) }
         }
         if (args.search) {
           // remote:false (#776) — forget-by-search resolves local retirement
@@ -2187,8 +2260,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const matches = await plur.recall(args.search as string, { limit: 100, remote: false })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
-            await plur.forget(matches[0].id, args.reason as string | undefined, { force: true })
-            return { success: true, retired: { id: matches[0].id, statement: matches[0].statement } }
+            const { warnings } = await plur.forget(matches[0].id, args.reason as string | undefined, { force: true })
+            return { success: true, retired: { id: matches[0].id, statement: matches[0].statement }, ...(warnings.length > 0 ? { warnings } : {}) }
           }
           return {
             success: false,
@@ -2803,7 +2876,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Artifacts that could not be read (audit 2026-08-03, finding 14).
           // Core reports these; this hand-built response dropped them, so an
           // agent asking for status saw a healthy-looking `pack_count: 0`.
-          ...(status.store_errors ? { store_errors: status.store_errors } : {}),
+          ...(status.store_errors ? { store_errors: redactStoreErrors(status.store_errors) } : {}),
           // Spreading-activation drop counters — absent when both are zero.
           ...(status.spread_drops ? { spread_drops: status.spread_drops } : {}),
           // Version check (issue #151)
@@ -2815,6 +2888,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
             },
           } : {}),
           capabilities: await mcpCanary.status(),
+          // #1526: a broken folders.yaml pauses every memory tool. Status is
+          // where an agent looks, so it names the line, the problem in plain
+          // words, and the repair (run only after the user agrees).
+          ...folderMapStatus(plur.storageRoot),
         }
       },
     },
@@ -3268,9 +3345,21 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // profiles, so it is where that answer belongs. Without this, doctor
         // can report green while the caller concludes the MCP is gone.
         const tool_surface = describeToolSurface()
+        // The folder map (#1526, re-review N5): a broken folders.yaml pauses
+        // every memory tool, so doctor says so the way plur_status and the CLI
+        // `plur doctor` do: the same folder_map, a failing check, the repair.
+        const folderMap = folderMapStatus(plur.storageRoot)
+        if (folderMap.folder_map) {
+          const fm = folderMap.folder_map as { file: string; problem: string; advice: string }
+          checks.push({ check: 'folder map', ok: false, detail: `${fm.file} ${fm.problem}` })
+          remediation.push(`Folder map: ${fm.file} ${fm.problem}. ${fm.advice}`)
+        } else {
+          checks.push({ check: 'folder map', ok: true, detail: 'folders.yaml is readable (or absent: no decisions yet)' })
+        }
         return {
           ok: checks.every(c => c.ok),
           checks,
+          ...folderMap,
           embedder: {
             before_probe: before,
             after_probe: after,
@@ -3375,12 +3464,20 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Decision E3: only from a trusted directory (readTrustedProjectConfig).
         const projectConfig = readTrustedProjectConfig(plur)
         const explicit_default_scope = (args.default_scope as string | undefined) ?? null
-        const default_scope = explicit_default_scope ?? projectConfig.scope ?? null
+        // The folder map's scope for this workspace (#1525), set by the
+        // server's folder gate: a map entry's scope, else a trusted
+        // .plur.yaml's, which is what the editor hooks use. Never from the
+        // client: it travels under a Symbol key, which JSON cannot carry.
+        const carried = (args as Record<PropertyKey, unknown>)[FOLDER_SCOPE]
+        const folder_scope = typeof carried === 'string' ? carried : null
+        const default_scope = explicit_default_scope ?? folder_scope ?? projectConfig.scope ?? null
         const scope_source = explicit_default_scope
           ? 'caller'
-          : projectConfig.scope
-            ? 'project-config'
-            : 'none'
+          : folder_scope && folder_scope !== projectConfig.scope
+            ? 'folder-map'
+            : default_scope
+              ? 'project-config'
+              : 'none'
 
         // Surface the project domain the same way (#1147). `scope` and `domain`
         // sit adjacent in .plur.yaml and in `plur init`'s own usage line, so a
@@ -3408,7 +3505,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const t = _sessionTelemetry.get(session_id)
           if (t) {
             t.default_scope = default_scope
-            t.default_scope_source = scope_source as 'caller' | 'project-config' | 'none'
+            t.default_scope_source = scope_source as 'caller' | 'folder-map' | 'project-config' | 'none'
           }
         }
 
@@ -3428,7 +3525,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         // Surface a broken artifact where the operator will actually see it —
         // the session opener — rather than only in `plur status`.
-        const store_errors = status?.store_errors
+        const store_errors = status?.store_errors ? redactStoreErrors(status.store_errors) : undefined
 
         // Warm remote store caches before injection (#235)
         // Ensures enterprise engrams are available for the first injectHybrid call.
@@ -3542,7 +3639,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         // Project scope guidance (#177) — surface auto-detected project
         // scope so the agent knows engrams will be tagged with it.
-        if (scope_source === 'project-config') {
+        if (scope_source === 'folder-map') {
+          guide += `\n\nThis folder's scope: "${default_scope}" (from your folder map, plur folders). ` +
+            `plur_learn calls without an explicit scope will be tagged with this scope. Pass scope: "global" only ` +
+            `for genuinely cross-project knowledge.`
+        } else if (scope_source === 'project-config') {
           guide += `\n\nAuto-detected project scope: "${default_scope}" (from .plur.yaml in the current project). ` +
             `plur_learn calls without an explicit scope will be tagged with this scope, keeping this project's ` +
             `knowledge separate from your other projects. Pass scope: "global" only for genuinely cross-project ` +

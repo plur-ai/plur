@@ -6,6 +6,373 @@
 
 Every CLI test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH, and the run fails if the real `~/.plur` changed while it ran.
 
+### A team save is never lost while the server hangs, and a slow save is not reported as failed (#1531)
+
+**Release blocker for 0.21.1.** `plur learn` raced the whole save against a
+5-second timer and exited as soon as the timer won. Two things went wrong:
+
+- **A team save could be lost.** With a team server that accepted the
+  connection and never answered, the process exited before core's own
+  fallback (save locally, queue in the outbox) could run. The engram was
+  written nowhere: not on the server, not locally, not in the outbox.
+- **A successful local save was reported as failed.** The timer covered local
+  work too. A save into a large store (about 13,000 engrams, about 6 seconds
+  of local work, no network) was reported as "remote store slow/unreachable",
+  exited 1, and left `engrams.yaml.lock` behind.
+
+Now only the request to the server has a deadline. It lives in core
+(`learnRouted(statement, context, { remoteTimeoutMs })`; the CLI uses 5 s).
+When it passes, the engram is saved on this machine and queued in the outbox.
+The CLI waits for the save however long the local write takes, and exits 1
+only when nothing was stored.
+
+**Learn says where the save landed, and why when it was queued.**
+`--json` always carries `delivery: "local" | "remote" | "outbox"`. When
+queued, it adds `delivery_reason` and `delivery_reason_code`:
+
+- `auth_rejected` (401/403): the token is expired, revoked or lacks access.
+  The reason points to `plur login --status`, then `plur outbox --flush`.
+- `unreachable`: no answer in time, or a network error.
+- `server_error` or `no_store`.
+
+Text output prints `Saved:` or `Queued in the outbox:` with the reason. The
+queued line is never hidden by `--quiet`. The MCP `plur_learn` result
+carries the same fields.
+
+**Every routed save has a bounded server deadline.** `plur_learn` (MCP),
+`plur_learn_batch`, and the Claw and opencode plugins now take the outbox after
+10 seconds instead of waiting 30. Hook auto-capture gets 4 seconds for all the
+statements of one run together, so every save is queued before the hook's
+9-second watchdog can exit. Before, that
+watchdog could exit while the request was in flight, and the captured
+statement was lost. A request that lands after its deadline is sent again
+with the same idempotency key, so a server that honours the key (the team
+server does) stores it once. A server that ignores the key and answers after
+10 seconds can store it twice; under the old 30-second wait that only happened
+past 30 seconds.
+
+**`plur forget` is not blocked by an expired token, and never holds the store
+lock while it waits.** Retiring a local engram first checks each team store
+for another engram with the same id. A 401/403 used to refuse the retire.
+Now it means this machine cannot touch that store anyway: the local engram
+is retired, with a warning naming the store whose token was rejected
+(`warnings` in `--json`). The check now runs before the store lock is taken,
+with 5 seconds per store. Before, a hanging server held the lock for 30
+seconds. A store that cannot be reached still refuses the retire, and the
+message names `--scope primary`. A rejected token is not proof there is no other
+engram with that id, though. If this machine has ever met that id on a server,
+the retire is refused instead, naming `--scope primary`. "Met" means any of:
+
+- `recall` or an injection returned it as a team engram;
+- a save or an outbox delivery got it back from the server;
+- its history or cached team rows show it.
+
+Those ids are now kept in `seen-on-server.jsonl` in the PLUR directory: the
+latest 50,000, outside `cache/`, so they are not pruned with the outbox id
+map. A `rescope --keep-local` no longer marks the local engram's id as a
+server id. Looking up an id that is not stored
+locally is also limited to 5 seconds per store (it was 30). `plur feedback` follows the same rule,
+except that an unreachable store gives a warning instead of a refusal, as it
+did before.
+
+**Ids that collide across stores.** Every store, servers included, numbers
+its ids from 001 each day, so one bare id can name two unrelated engrams:
+
+- `plur learn` now prints the namespaced id for a team save (`ENG-XXX-…`, the
+  form `recall` and the MCP tool use). A queued save keeps its local id.
+- `plur feedback` takes `--scope primary|<team scope>`, and refuses unknown
+  flags and stray extra arguments instead of dropping them. `--batch` honours
+  `--scope` too, and each item may carry its own `scope`.
+- Pinning (`setPinned`, MCP `plur_pin`, which now takes `scope`) refuses a
+  bare id that exists both locally and in a team store, instead of pinning
+  the local one.
+- `updateEngram` refuses a team row whose bare id matches an unrelated local
+  engram, instead of writing the team content over it. It refuses unless
+  every team store positively answers that it has no engram with that id: a
+  server that hangs or rejects the token refuses the move too. Moving a local
+  engram into a team scope still works when the server confirms there is no
+  twin; `rescope` remains the way to send it to the team store.
+- `plur_pin` with a `scope` checks the pinned quota against the engram the pin
+  will change (in the first writable store for that scope), not a local
+  engram with the same bare id.
+- `plur_learn_batch` reports `delivery` (and, when queued, the reason) for each
+  item, as `plur_learn` does.
+
+A store-unique id format is planned for 0.22.
+
+**Hosts still on 0.19.x: upgrade.** Until you do:
+
+- A `plur learn` that reports "timed out" for a local scope has usually been
+  saved. Check with `plur list --json` before saving it again.
+- A team save that reports "timed out" may be lost. Save it again once the
+  server answers.
+- Such an exit can leave `engrams.yaml.lock` behind. Current versions take
+  over a lock whose process has died; on 0.19.x, if writes wait on it,
+  delete the file once no `plur` process is running.
+- `plur forget` ignores `--scope` on 0.19.x. To retire a local engram while a
+  team store rejects the token, use the MCP `plur_forget` with
+  `scope: "primary"`.
+
+### A broken folders.yaml says what is wrong, and `plur folders repair` fixes it (#1526)
+
+When `~/.plur/folders.yaml` is broken, PLUR pauses memory, which is the safe
+direction. Until now the messages said only that the file was broken, or gave
+the YAML parser's line, and nothing helped you fix it. Now every place that
+reports a broken map names the line and column and says what is wrong in
+plain words. That covers `plur doctor`, `plur folders list`, the editor hooks'
+notice, the opencode plugin's notice, the MCP tools' answer, `plur_status` and
+`plur_doctor`:
+
+```
+line 4: indentation — `plur:` is indented 5 spaces, expected 4 (in line with `path:` on line 3)
+line 2: unknown key `folder:` — did you mean `folders:`?
+line 5: `plur:` in entry 2 must be on, off or ask — it looks like `off` with the wrong case or a typo
+```
+
+A message quotes at most the key on that line. It never shows a path, a
+scope or any other value from the file, nor a YAML alias or tag name. A
+misspelled `plur:` or `path:` key (`plru: off`) is now reported like a
+misspelled top-level key, because it, too, silently dropped that decision. Each place also offers the fix:
+
+- **`plur folders repair`** fixes what is unambiguous, which covers:
+  - list items and keys indented unevenly, and tabs in the indentation;
+  - a misspelled top-level key (`folder` → `folders`, `verison` → `version`);
+  - a `plur:` mode in the wrong case (`ON` → `on`), or one wrong letter of
+    `off` or `ask` (`oof` → `off`). A typo never becomes `on`: `ok`, `in`,
+    `onn` and `of` are left to you;
+  - an empty or comments-only file, which becomes a minimal valid map.
+
+  It also fixes a misspelled `plur:` or `path:` key (`plru:` → `plur:`,
+  `pth:` → `path:`: swapped or missing letters) when the entry lacks the right
+  key. Other hand-added keys (`paths:`, `score:`, `trust:`, `note:`, …) stay
+  as they are and are not a problem.
+
+  **A repair adds no `on` to the map.** After a repair, a map entry is `on`
+  only if it had a literal `plur: on` line of its own (any case, no escapes),
+  so an entry that would be on only through `scope:` or `trusted:` is not
+  repaired either. Folders with their own trusted `.plur.yaml` or project MCP
+  config are on again, as before the map broke (the same as after a fix by
+  hand). Every entry, key and value stays the one written on
+  its own line, and a commented-out mode (`plur: #on`) stays a comment. A file
+  that uses any YAML beyond a plain map (a tag `!`, anchor `&`, alias `*` or
+  block of text `|`/`>`), a key whose value may continue on the next lines,
+  an old-Mac line break (a lone CR) or more than 2,000 lines is never
+  repaired. PLUR names the line and leaves the file alone.
+
+  It shows a unified diff and asks before writing. `--yes` skips the
+  question. Without `--yes`, a run that is not in an interactive terminal is
+  a dry run: it changes nothing and exits nonzero. Before writing it saves the
+  original as `folders.yaml.plur-backup-<UTC time>` next to the file, writes
+  the new file atomically (to the target, when the map is a symlink), and
+  checks the result again. It keeps your comments. A problem it cannot fix is
+  reported with its line, and the file is left exactly as it was.
+- **Agents get the same offer.** The MCP answer (`repair_command` and
+  `repair_summary`), the hooks' notice and the opencode notice say in one line
+  what the repair changes ("line 4: indentation; line 2: `folder:` →
+  `folders:`"), tell the agent to show that to you first, and give the exact
+  command,
+  `plur folders repair --yes` (with `--path` for a store other than
+  `~/.plur`), and tell the agent to run it only after you agree. In opencode,
+  the next turn carries the command once more, so a "yes" given there can
+  still be acted on.
+
+**Behaviour change in the editor hooks and the opencode plugin (the safe
+direction).** They read an empty or comments-only `folders.yaml`, or one with
+an unknown top-level key such as `folder:` (or, now, a misspelled entry key
+such as `plru:`), as an empty map. That gave `ask`,
+or memory ON in a folder with a project marker. The MCP server already refused
+such a file. Now the hooks and the plugin refuse every file the MCP server
+refuses: such a map gives `ask` with no memory, and `plur folders set` will not
+write over it until it is repaired.
+
+### The Claude Code memory check speaks up only after a correction, preference or decision
+
+The Stop-hook memory check used to fire after every third response, forcing an
+extra turn that usually ended in a bare "ok". It now reads the last message you
+typed from the transcript and nudges only when it reads as a correction aimed
+at the agent ("no, use pnpm", "that's wrong", "you edited the wrong file"), a
+preference ("I prefer …", "I'd rather …") or a standing rule ("from now on
+…", "never …", "remember that …"), or a decision-board answer. Slovenian and
+German count in the same shapes ("ne, uporabi …", "to je narobe", "narobe si
+…", "vedno uporabi …", "prosim, ne …", "pri nas …", "od zdaj naprej";
+"nein, nimm …", "das ist falsch", "Füge niemals …", "bei uns gilt", "ab
+jetzt"), with or without č/š/ž, and curly apostrophes match like straight
+ones. Decisions count too ("we decided …", "odločili smo …", "Q1: yes"). Ordinary requests, bug reports and answers do not ("It should
+return 200", "Nekaj je narobe s prijavo", "Immer wenn ich …", "No, keep
+going"), nor do pasted logs, code blocks, quoted text, compaction summaries,
+command output or task notifications. At most one nudge per message, and none
+when the agent already called `plur_learn` in that reply. When nothing is
+worth keeping, the forced turn asks for no "ok": the memory line the agent
+ends every reply with is enough.
+A fallback still checks every 10th response; set
+`PLUR_LEARN_FALLBACK_INTERVAL` to change it, or `0` to turn it off.
+
+### Agents now end each reply with the memories they recalled, used and wrote (#1520)
+
+The instructions PLUR installs (the `plur init` section in CLAUDE.md and
+AGENTS.md, the Cursor rule, the MCP server instructions, the `plur-mcp init`
+section, the Claw system prompt and the plur-memory skill) now ask the agent to
+end every reply with one short line such as
+`Memory — recalled 4 · used: ENG-…, ENG-… · written: ENG-…`, or
+`Memory — none`: a count of what was recalled and the ids used and written, no
+statements, and only ids it actually saw that turn. Ask a follow-up for the
+details. That line is never saved as a learning, in any form an agent writes
+it: plain, in backticks or bold, as a bullet, numbered item or quote, after a
+🧠 or inside an HTML tag, with an em dash, en dash, hyphen or colon, straight
+after an "I learned" list or in place of one. A learning that merely starts
+with "Memory", such as "Memory: used 4GB is too low", is still saved.
+
+Re-running `plur init` or `plur-mcp init`, or reloading the Claw plugin, now
+brings an existing install up to date. Before, `plur init` left an existing
+section untouched, so changed instructions never reached an existing install.
+It never removes text PLUR did not write. An old PLUR section is replaced only
+when it is, line for line, a text PLUR shipped; only trailing spaces and line
+endings may differ. A section you wrote or edited, including one you only
+re-indented, stays exactly as it is, the new section is added beside it, and
+init tells you so, so you can tidy up. A section inside a code block or an
+HTML comment is left alone, and a file that ends inside one has it closed
+before the new section is added, so a second run changes nothing. An edited
+`.cursor/rules/plur-memory.mdc` is kept rather than overwritten. Every file
+that is changed is first copied to a timestamped `*.plur-backup-*` file beside
+it (an edited Cursor rule only once per version of its content). The new file
+is written beside the old one and swapped in whole, so a write that fails
+partway, on a full disk for instance, leaves your file exactly as it was.
+
+### opencode follows the folder map (#1517)
+
+**The opencode plugin now does what you decided for each folder**, like the
+Claude Code, Codex, Cursor and Antigravity hooks have since #1347. Before, it
+recalled and learned in every folder it was opened in, and the folder map
+(`~/.plur/folders.yaml`) was not read at all. The decision is for the folder
+opencode is open in, so an `off` subfolder of a repo that is `on` stays off.
+
+- **off**: nothing happens in that folder — no recall, no memory block, no
+  question, no learning.
+- **ask** (any folder you have not decided about, including your home folder,
+  and a repo whose `.plur.yaml` asks for settings you have not trusted): no
+  memories. The session's first message carries the same question the hooks
+  ask, with a single-use command per answer (yes, never here, and trust this
+  repo's `.plur.yaml` when it has one). The next message of that session
+  carries the same commands once more, without asking again, so the agent can
+  still run your answer when you give it; after that the session carries
+  nothing and the unanswered commands stop working, so a later "yes" to
+  something else is never taken as consent. What the repo requests is shown only
+  as quoted data, never its token. Without the `plur` CLI on `PATH`, the
+  plugin says so and how to install it instead of offering commands.
+- **on**: the session scope is the folder's scope from the map, else the scope
+  of a trusted `.plur.yaml`, and recall reaches the team store for that scope.
+
+The question's commands carry nonces issued the same way the hooks issue
+them: one per answer, bound to that folder and that answer, ended when
+opencode deletes the session or exits, and after 24 hours at most. The
+plugin's nonces are also bound to their session: opencode tells the agent's
+shell which session it is in (`PLUR_FOLDER_SESSION`), and `plur folders set`
+refuses a nonce from another session. The editor hooks' nonces stay unbound,
+because their hosts cannot tell the agent's shell its session.
+
+**A folder map that cannot be read now fails safe, in every editor.** A
+`folders.yaml` that does not parse was read as empty, after which a project
+marker (`.plur.yaml`, a project MCP config) switched memory on, even in a
+folder the map had switched off. Now the folder is treated like `ask` with no
+memory, and the agent is told which file to fix and on which line. A folder
+decision that cannot be resolved for any other reason does the same, and so
+does a `folders.yaml` that exists but cannot be opened (a dangling symlink, a
+folder that cannot be searched), which was read as "no map" — the same rule
+the MCP server's folder gate applies.
+
+The question itself moved from the CLI into core (`folderAskOnce`,
+`sessionSettings`), so the hooks and the plugin share one implementation.
+
+### The MCP server asks the folder question in a folder you have not decided about (#1525)
+
+Most PLUR use is MCP calls, and until now the MCP server treated an undecided
+folder (folder map `ask`) as `on`: an agent that called `plur_learn` or
+`plur_recall` itself read and wrote memory in a folder you were never asked
+about. Now the 33 memory tools (#1519's list), called directly or through
+`plur_admin`, read and write no memory there and answer, without an error,
+with the question the editor hooks ask: `{ "plur": "ask", "question",
+"answers": [{ "label", "command" }] }` — yes (with the suggested team scope,
+or without one), not now, never here, and trust for a repo whose `.plur.yaml`
+asks for settings.
+
+- Each answer's command carries its own nonce from core, bound to that folder,
+  that answer and this MCP session. The command names the session
+  (`plur folders set … --session mcp-…`, new), because the server cannot set the
+  agent's shell environment; a nonce from another session, or a command that
+  drops `--session`, is refused and nothing is written. If the shell also has
+  `PLUR_FOLDER_SESSION` (the opencode plugin), the two must agree.
+- Every memory call returns the same question with the same nonces until you
+  answer; the next call after an answer follows it. Yes → memory on, and the
+  answer's team scope becomes the session's default write scope. Never here →
+  off.
+- Not now has a command too (`plur folders set <folder> --not-now --nonce …
+  --session …`, new), because the server cannot see the chat: it consumes its
+  nonce and writes nothing to the folder map. Memory stays off for the rest of
+  that MCP session, without the question; the folder stays undecided, so the
+  next session asks again.
+- `plur_session_start` now uses the folder map's scope for this workspace as
+  its default when you pass no `default_scope` (`scope_source: "folder-map"`),
+  ahead of a trusted `.plur.yaml`'s, as the editor hooks already do.
+- **This also changes folders you had already turned on with a scope**
+  (`plur folders set <folder> --scope <s>`): over MCP, an unscoped
+  `plur_learn` there now goes to that scope — possibly a team store — where
+  before it went to the `.plur.yaml` scope or to `global`.
+- A broken `folders.yaml` keeps #1519's fail-safe answer: off, naming the file
+  and the problem, no command, no nonce. The admin tools are unchanged; off wins
+  over ask, and ask over on, across the workspace folders; a workspace that
+  cannot be fetched stays off for that call.
+- Which folder is asked about: never your home folder, a filesystem root or
+  a folder above home — whether the client sends it as a root or started the
+  server there — since an answer would cover every folder under it; memory
+  there runs as before. Otherwise the client's MCP roots when it sends any
+  (the server's start folder is still checked for `off`, but not asked
+  about), and the start folder when it sends none or only such folders.
+- The session's unanswered nonces are deleted as soon as the session closes
+  (stdin ends, or SIGTERM / SIGINT). The stdio server then shuts down once
+  the tool calls already running have sent their answers — after stdin ends,
+  however long they take; on a signal, within 2 s. An unanswered question
+  whose nonces expired is asked afresh.
+- A folder-nonce file holding a null or malformed record (hand-edited or
+  corrupted) no longer makes every folder answer fail with a TypeError: such
+  records are ignored, a file with none left is swept by its age, and a wrong
+  `session:` field no longer makes a session's new nonces unusable. Nonce
+  files left by a session that never closed (killed outright, or a missed
+  editor SessionEnd hook) are removed once their nonces have expired (24 h),
+  whenever a nonce is issued and when the MCP server starts.
+
+If you use PLUR through a global MCP config and have no folder decisions yet,
+the first memory call in each project now asks once. The CLI hooks' question
+and the opencode plugin are unchanged.
+
+### The MCP server respects a folder you turned PLUR off for (#1519)
+
+`plur folders set <folder> --off` silenced the editor hooks, but an agent that
+called `plur_learn` or `plur_recall` itself still read and wrote memory in that
+folder: the MCP server never read the folder map. Now, in an `off` folder, the
+33 MCP tools that read or write engrams or episodes or return their text —
+`plur_learn`, `plur_learn_batch`, `plur_recall`, `plur_recall_hybrid`,
+`plur_inject`, `plur_inject_hybrid`, `plur_session_start`, `plur_session_end`,
+`plur_capture`, `plur_feedback`, `plur_receipt` and the rest (the full list is
+in the MCP README), called directly or through `plur_admin` — read and write no
+store, local or remote (no outbox row either), and answer without an error
+that PLUR is off for this folder, with the `plur folders set … --on` command
+for each map entry that turns it off.
+
+The admin and diagnostic tools (status, doctor, stores list and add, sync
+status, packs list and preview, scope discovery) keep working; status, doctor
+and stores list still read stores to count or probe them and return counts and
+health, not engram text (a store that cannot be parsed is reported by the
+error's first line only, by every MCP tool, never by the file's lines); `plur_packs_preview` still returns the statements of
+any pack directory it is pointed at, an installed one included. The folder is the editor's workspace — the roots the client lists over
+MCP, plus the folder the server was started in — checked on every call; if the
+client's roots cannot be fetched or a root is not a folder on this machine, that
+call does nothing and the next one asks again. A `folders.yaml` that exists but
+cannot be read or parsed — a dangling symlink, an empty file, an unknown
+top-level key included — now fails safe: the memory tools do nothing and name
+the file and the problem. Server startup is
+not gated yet (#1523). `on` and `ask` folders are unchanged (for `ask`, see
+#1525 above).
+
 ### plur doctor reads an opencode config written with comments or trailing commas (#1516)
 
 opencode accepts JSONC in `~/.config/opencode/opencode.jsonc`. `plur doctor`
@@ -41,6 +408,7 @@ and a letter (`-deploy …`, `--path=…`) must come after `--`:
 flag and the command exits 1. The current Python SDK and Hermes plugin already
 pass such tasks after `--`; older builds that do not will get exit 1 for those
 tasks (no memory injected for that turn) until they are updated.
+
 ### The opencode plugin loads again on opencode 1.18.33 (`@plur-ai/opencode` 0.1.3)
 
 `@plur-ai/opencode` 0.1.2 exported a constant (`INJECT_TIMEOUT_MS`) from its
@@ -48,6 +416,77 @@ entry module. opencode loads every export of that module as a plugin and refuses
 one that is not a function ("Plugin export is not a function"), so the whole
 plugin failed to load. The constant now lives in its own module, and a test
 keeps the entry module to functions only.
+
+### A recall in your personal scope now reads your personal remote store (#1515)
+
+**Personal remote memory is no longer write-only.** With a remote store
+configured for a personal scope (for example `scope: user:acme:me`),
+`plur_learn` to that scope saved the engram on the server, but `plur_recall`
+or `plur_recall_hybrid` with the same scope never contacted the server and
+returned only local results. The remote leg dialed a host only for a shared
+(`group:`/`project:`) scope of the same org, an explicit `.plur.yaml` remote
+project, or a store marked `dial: always`; a personal scope qualified for none
+of them.
+
+Now a recall or a hybrid injection whose personal `user:` scope was passed by
+the caller, or registered by that session itself, dials the one store whose
+own scope matches it, asking that host for that one scope.
+
+- The match ignores case, the same way local-only scope targets do
+  (`USER:Acme:Me` finds a store configured as `user:acme:me`). Exactly one
+  configured store is chosen, local path-backed ones included. Stores whose
+  scope matches exactly are preferred; only when none does are case-insensitive
+  matches considered. Among those candidates the choice is fail-safe: a local
+  store first, then a writable remote store, then a readonly one, with config
+  order breaking ties. An exact remote match still beats a case-insensitive
+  local match: `USER:ACME:ME` goes to a remote store configured as exactly
+  `USER:ACME:ME` even when a local store is configured as `user:acme:me`. A
+  new write leaves the machine only when no local store matches the same way
+  (exactly, or, with no exact match, case-insensitively). A delivery already
+  queued before a local store was added still goes, after the secret check,
+  to the remote store it was queued for.
+- That one choice decides the recall dial, where `learn`, `learnRouted`,
+  `learnAsync` and `learnBatch` write, the "is this my own remote namespace"
+  check, whether a cached remote copy counts as a duplicate of a learn or a
+  `rescope` (when the choice is local, the local copy is kept), and where an
+  update that moves a queued engram into the scope sends it. That update
+  spells the scope as a fresh write would, so `user:acme:me` moves it to a
+  remote store configured only as `USER:ACME:ME`; a local choice cancels the
+  queued delivery. The writes make it before their
+  duplicate check and read the current config first, so a store another
+  process just added already counts. A write and a read with the same string
+  therefore pick the same store, even when a remote store has the identical
+  scope. One exception, as before: a readonly remote store is read but never
+  written, so when it is the chosen store the write stays local.
+- The secret check does not use the choice. Content headed for a scope that
+  any remote store holds exactly is checked for secrets, whichever store is
+  chosen, and so is an update to an engram already on the server and an
+  outbox delivery. With a local store and a remote store on the identical
+  scope, a sensitive write is kept local and private, as before this change.
+- When the chosen store is local, or is set to `dial: never`, the
+  personal-scope rule dials nothing. It never uses a remote store whose scope
+  differs only in case instead.
+- The personal-scope rule adds only that store. Other stores, a case twin
+  included, can still be dialed by the existing rules: a store set to
+  `dial: always`, a trusted `.plur.yaml` remote project, or an org context
+  (a shared `group:`/`project:` scope of the same org), which also adds that
+  host's personal stores. `dial: never` still wins.
+- A session that never registered its own scope does not dial through the
+  process-wide default; that default is some other caller's choice.
+- When a core `recall`, `recallHybrid` or `injectHybrid` call passes a
+  `scopes` allow-list, only stores that can hold an allowed scope are dialed:
+  the store's scope equals an allowed scope or is a parent of one (a
+  `group:acme/eng` store is dialed for `scopes: ['group:acme/eng/x']`; a
+  `group:acme/eng/x` store is not dialed for `scopes: ['group:acme/eng']`).
+  `scopes: []` dials nothing. Before, every store was dialed and the rows were
+  filtered afterwards; that exact-membership filter on returned rows still
+  runs. The MCP tools do not take a `scopes` argument.
+- A session whose default scope is a personal store scope now makes one
+  timeout-bounded remote call per hybrid injection, where it made none.
+
+Shared-scope dialing is otherwise unchanged. The `plur_recall` tool description
+(and its `plur_recall_hybrid` alias) now says a personal scope reads its own
+matching remote store.
 
 ## 0.21.0
 

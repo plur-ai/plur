@@ -1,6 +1,6 @@
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { projectRemoteRefusalNotice as coreRefusalNotice, type ProjectConfig } from '@plur-ai/core'
+import { projectRemoteRefusalNotice as coreRefusalNotice, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
 
 /**
  * Which path this session's memory is scoped by.
@@ -14,6 +14,18 @@ export function resolveScopeRoot(ctx: { directory?: string; worktree?: string })
   if (wt && wt !== '/' && wt.length > 1) return wt
   if (ctx.directory) return ctx.directory
   return process.cwd()
+}
+
+/**
+ * The folder the folder-map decision is about (#1347; audit F1 of #1517): the
+ * folder opencode is OPEN IN — `directory` — the way the CLI hooks decide on
+ * the editor's working folder. Not the git worktree root: an `off` rule for
+ * `/repo/private` must hold when opencode runs there, even though `/repo` is
+ * the worktree and is `on`, and an undecided subfolder is asked about itself.
+ */
+export function resolveFolderDir(ctx: { directory?: string; worktree?: string }): string {
+  if (ctx.directory) return ctx.directory
+  return resolveScopeRoot(ctx)
 }
 
 /** The subset of `Plur` this module needs — narrow so tests can stub it cheaply. */
@@ -130,4 +142,25 @@ export function resolveTrustedScope(
     `scope honored, run: ${trustCommand(configDir, plur.storageRoot)}`,
   )
   return {}
+}
+
+/** The subset of `Plur` the folder decision needs. */
+export interface FolderPolicySource {
+  resolveFolderPolicy(dir: string): FolderPolicy
+}
+
+/**
+ * What the folder map decides for `dir` (#1347): `Plur.resolveFolderPolicy`,
+ * keyed on the store this plugin opened. A resolver failure must never break
+ * the turn, and fails SAFE (audit F4 of #1517, owner decision): the folder is
+ * treated like `ask` with no memory and a notice, never `on` because a project
+ * marker is there. Core does the same for a folders.yaml it cannot read.
+ */
+export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
+  try {
+    return plur.resolveFolderPolicy(dir)
+  } catch (err) {
+    warn(`folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); memory is off here.`)
+    return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
+  }
 }

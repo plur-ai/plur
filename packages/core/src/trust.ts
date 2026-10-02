@@ -46,12 +46,13 @@ export function isDirectoryTrusted(dir: string, root: string): boolean {
  * A `nonce` (#1378) must be one issued for `dir` and the answer
  * `{ trusted: true }`; it is consumed once the grant is saved.
  */
-export function trustDirectory(dir: string, root: string, opts?: { nonce?: string; now?: number }): string {
+export function trustDirectory(dir: string, root: string, opts?: { nonce?: string; now?: number; session?: string }): string {
   const target = canonicalize(dir)
   setFolderEntry(root, target, { trusted: true }, {
     configuredScopes: [],
     ...(opts?.nonce !== undefined ? { nonce: opts.nonce } : {}),
     ...(opts?.now !== undefined ? { now: opts.now } : {}),
+    ...(opts?.session !== undefined ? { session: opts.session } : {}),
   })
   return target
 }

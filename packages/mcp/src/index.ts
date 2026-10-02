@@ -180,6 +180,21 @@ export interface HookEntry {
   hooks: Array<{ type: string; command: string; args?: string[]; timeout?: number; async?: boolean }>
 }
 
+/**
+ * Closes the CLAUDE.md section. Same as PLUR_INSTRUCTIONS_MARKER in
+ * packages/cli/src/commands/init.ts — when the section text changes, run
+ * scripts/extract-plur-section-history.mjs first, then bump both together.
+ */
+const PLUR_INSTRUCTIONS_MARKER = '<!-- plur-instructions-v4 -->'
+
+/** The memory line — verbatim the same rule as `plur init` and the server instructions. */
+const MEMORY_FOOTER_RULE =
+  'End every reply with one short line: ' +
+  '`Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…` ' +
+  '(recalled as a count; used and written as ids only, no statements), or `Memory — none`. ' +
+  'Only count/list ids you actually saw this turn; never invent an id. ' +
+  'Give details only if the user asks.'
+
 const CLAUDE_MD_SECTION = `## PLUR Memory
 
 You have persistent memory via PLUR. Corrections, preferences, and conventions persist across sessions as engrams.
@@ -200,36 +215,63 @@ Hooks inject engrams automatically on every first message — you do not need to
 
 Do not ask permission to use these tools — they are your memory system.
 
+### Memory line on every reply
+
+${MEMORY_FOOTER_RULE}
+
 ### When corrected
 
 When the user corrects you ("no, use X not Y", "that's wrong"):
 1. Call \`plur_learn\` immediately — before continuing the task
 2. Call \`plur_feedback\` with negative signal on the wrong engram if one was injected
 3. Then continue with the corrected approach
+
+${PLUR_INSTRUCTIONS_MARKER}
 `
 
 // --- Functions ---
 
-function installClaudeMd(): string {
-  const marker = '## PLUR Memory'
+function defaultClaudeMdPath(): string {
   // Check project CLAUDE.md first, then global
   const projectClaudeMd = join(process.cwd(), 'CLAUDE.md')
   const globalClaudeMd = join(homedir(), 'CLAUDE.md')
-  const claudeMdPath = existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
+  return existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
+}
 
-  if (existsSync(claudeMdPath)) {
-    const content = readFileSync(claudeMdPath, 'utf8')
-    if (content.includes(marker)) {
-      return `already in ${claudeMdPath}`
-    }
-    // Append to existing file
-    writeFileSync(claudeMdPath, content.trimEnd() + '\n\n' + CLAUDE_MD_SECTION)
-    return `added to ${claudeMdPath}`
+/**
+ * Write the PLUR section into CLAUDE.md with core's `upsertInstructionSection`
+ * — the same logic as `plur init`: only a section PLUR shipped is replaced,
+ * one the user wrote or edited is kept and the new one added beside it, and a
+ * timestamped backup precedes any change to an existing file.
+ */
+export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath()): Promise<string> {
+  // Loaded lazily, like every other core use in this entry point, so
+  // `plur-mcp --help` / `--version` do not pay for loading core.
+  const { upsertInstructionSection, writeWithBackup, SHIPPED_PLUR_SECTIONS } = await import('@plur-ai/core')
+  const existing = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf8') : null
+  const r = upsertInstructionSection(existing, {
+    section: CLAUDE_MD_SECTION, title: '# CLAUDE.md', heading: '## PLUR Memory',
+    marker: PLUR_INSTRUCTIONS_MARKER, shipped: SHIPPED_PLUR_SECTIONS,
+  })
+  const backup = r.status === 'already' ? null : writeWithBackup(claudeMdPath, r.content)
+  const head = {
+    created: `created ${claudeMdPath}`,
+    added: `added to ${claudeMdPath}`,
+    upgraded: `upgraded in ${claudeMdPath}`,
+    already: `already in ${claudeMdPath}`,
+  }[r.status]
+  const notes: string[] = []
+  if (backup) notes.push(`backup: ${backup}`)
+  if (r.keptSections > 0) {
+    notes.push(
+      `left ${r.keptSections} older "## PLUR Memory" section${r.keptSections === 1 ? '' : 's'} untouched because ` +
+      `${r.keptSections === 1 ? 'it has' : 'they have'} text PLUR did not write — remove it yourself once you have kept what you need`,
+    )
   }
-
-  // Create new CLAUDE.md with just the PLUR section
-  writeFileSync(claudeMdPath, `# CLAUDE.md\n\n${CLAUDE_MD_SECTION}`)
-  return `created ${claudeMdPath}`
+  if (r.closedOpenBlock) {
+    notes.push(`closed the ${r.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of the file before adding the section`)
+  }
+  return notes.length ? `${head} (${notes.join('; ')})` : head
 }
 
 function findMcpConfig(): string {
@@ -476,7 +518,7 @@ async function runInit() {
   results.push(`Hooks:    ${hooksStatus}`)
 
   // Step 4: Add PLUR section to CLAUDE.md
-  const claudeMdStatus = installClaudeMd()
+  const claudeMdStatus = await installClaudeMd()
   results.push(`CLAUDE.md: ${claudeMdStatus}`)
 
   // Step 5: Install bundled knowledge packs.

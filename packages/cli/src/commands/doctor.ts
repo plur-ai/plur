@@ -22,7 +22,9 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates, folderMapProblem } from '@plur-ai/core'
+import { plurRoot } from '../lib/folder-gate.js'
+import { repairAdvice, repairCommandFor } from './folders.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -214,6 +216,23 @@ interface DoctorReport {
     retrying: number
     needs_action: number
     scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
+  } | null
+  /**
+   * The folder map (`folders.yaml`) when it exists but cannot be used (#1526):
+   * where, what in plain words, and whether `plur folders repair` fixes it.
+   * While it is broken every memory surface pauses (fail safe), so this FAILS
+   * `overall`. `null` when the map is fine or absent.
+   */
+  folderMap?: {
+    file: string
+    problem: string
+    line?: number
+    column?: number
+    fixable: boolean
+    /** The command that fixes it, when it can. */
+    repair?: string
+    /** What that repair changes (lines and keys, no values). */
+    repair_summary?: string
   } | null
   overall: 'ok' | 'fail'
 }
@@ -1126,7 +1145,23 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // the overall doctor check (BM25 still works); it just signals semantic
     // recall is disabled until the model loads.
     const outbox = await checkOutbox(flags)
+    // #1526: a broken folders.yaml pauses memory everywhere — a real failure.
+    let folderMap: NonNullable<DoctorReport['folderMap']> | null = null
+    try {
+      const p = folderMapProblem(plurRoot(flags))
+      if (p) {
+        folderMap = {
+          file: p.file, problem: p.problem,
+          ...(p.line !== undefined ? { line: p.line } : {}),
+          ...(p.column !== undefined ? { column: p.column } : {}),
+          fixable: p.fixable,
+          ...(p.fixable ? { repair: repairCommandFor(flags) } : {}),
+          ...(p.repair_summary ? { repair_summary: p.repair_summary } : {}),
+        }
+      }
+    } catch { /* doctor never fails on its own probe */ }
     const overall: 'ok' | 'fail' =
+      folderMap === null &&
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
       brokenNodeMcp.length === 0 &&
       (!cursorProjectDetected || cursorWired) &&
@@ -1189,7 +1224,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, opencode, outbox, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, opencode, outbox, folderMap, overall,
     }
   })
 }
@@ -1223,6 +1258,14 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   }
 
   outputText('')
+  // #1526: first, because while it is broken no memory runs anywhere.
+  if (report.folderMap) {
+    const m = report.folderMap
+    outputText(`✗ Folder map: ${m.file} ${m.problem}`)
+    outputText('  Memory is paused in every folder until it is fixed (nothing is read or written).')
+    outputText(`  ${repairAdvice(m, flags ?? {})}`)
+    if (m.repair_summary) outputText(`  The repair changes ${m.repair_summary}.`)
+  }
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
   // #1299
   if (report.outbox && report.outbox.pending > 0) {
@@ -1496,6 +1539,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     }
     if (report.outbox && !report.outbox.ok) {
       outputText('  Fix: see the Outbox line above — queued team writes need a person to act.')
+    }
+    if (report.folderMap) {
+      outputText(`  Fix: ${report.folderMap.fixable ? `run \`${report.folderMap.repair}\`` : 'edit the folder map by hand'} — see the Folder map line above.`)
     }
     if (report.cursorProjectDetected && !report.cursorWired) {
       outputText('  Fix: run `plur init --cursor` from this project — this project\'s own')

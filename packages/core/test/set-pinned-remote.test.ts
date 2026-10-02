@@ -247,7 +247,7 @@ describe('forget() when the remote refuses the delete', () => {
 
   it('a successful remote retire still succeeds', async () => {
     removeResult = true
-    await expect(plur.forget('ENG-2026-0728-500', 'obsolete')).resolves.toBeUndefined()
+    await expect(plur.forget('ENG-2026-0728-500', 'obsolete')).resolves.toEqual({ warnings: [] })
   })
 })
 
