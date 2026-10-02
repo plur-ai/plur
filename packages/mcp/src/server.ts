@@ -81,6 +81,8 @@ Do not ask permission to use these tools — they are your memory system.
 
 FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken, and with reason "workspace-unknown" when your client's workspace roots could not be fetched (that one retries by itself on the next call). Carry on without memory and do not retry or work around it; only the user can turn it back on or fix the map, from a terminal (the message names the command). plur_status and plur_doctor keep working.
 
+REMOTE-ONLY FOLDERS: a folder the user set to remote-only keeps its memory on the team server only. There, plur_learn without a scope saves to the folder's team scope; a personal or local scope (user:, global, local, a project: scope no team store serves, a private memory) is refused with an error that names the folder — save without a scope instead, and do not retry with another personal scope. Recall reads only the team scope and installed packs.
+
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
 
@@ -228,16 +230,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   // One helper (#1519's createWorkspaceDirs): one roots cache, one
   // list_changed handler, fail closed on a roots failure. Its folder is the
   // one this server serves (`folder`, default cwd).
-  const workspace = createWorkspaceDirs(server, { cwd: () => folder })
+  const workspace = createWorkspaceDirs(server, { cwd: () => options?.folder ?? process.cwd() })
 
   // Bind the instance to the workspace's folder decision (remote-only), or
   // block it (off, unknown workspace, unreadable map), for this call.
   // Precedence: off > remote-only > on (#1521 with #1519).
-  const bindWorkspace = (dirs: string[] | null, blocked: string | null): void => {
-    if (dirs === null || blocked !== null) {
-      instance.bindFolderUnresolved(folder, blocked ?? 'the editor\'s workspace folders could not be read')
-      return
-    }
+  const bindWorkspace = (dirs: string[]): void => {
     const resolved: Array<{ dir: string; policy: FolderPolicy }> = []
     for (const dir of dirs) {
       try {
@@ -315,9 +313,15 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     // call's serialized step, so gate and binding see the same roots.
     const dirs = await workspace.dirs()
     const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
-    bindWorkspace(dirs, off ? off.message : null)
-    if (off && typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
-      return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
+    const isGated = typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)
+    // A gated tool where memory is off answers without touching the instance.
+    if (off && isGated) return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
+    // An admin tool there runs unbound, as #1519 defines (no engram text in
+    // its answers); otherwise the instance is bound to the workspace.
+    if (off) {
+      instance.bindFolderPolicy(folder, { mode: 'ask', remoteAllowed: false, source: 'default' })
+    } else {
+      bindWorkspace(dirs!)
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
