@@ -679,7 +679,7 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   if (broken) return refuse(check, broken)
   const switchedOn = onWithoutLiteralOn(s, st, after)
   if (switchedOn !== null) {
-    return refuse(check, `line ${switchedOn}: after the repair this entry would have memory on, but it has no \`plur: on\` line of its own; fix it by hand`)
+    return refuse(check, `line ${switchedOn}: this entry turns memory on through \`scope:\` or \`trusted:\` (or a \`plur:\` that is not written as a plain \`on\`), and plur folders repair never repairs such an entry — fix the problem named for it by hand`)
   }
   return finish(text, after, fixes, opts)
 }
@@ -718,8 +718,10 @@ function onWithoutLiteralOn(s: Scan, st: Structure, after: string): number | nul
   s.lines.forEach((l, i) => {
     const r = st.roles[i]
     if ((r.role !== 'item' && r.role !== 'entry-key') || l.key !== 'plur') return
-    const v = lineValue(l)
-    if (v.ok && typeof v.value === 'string' && v.value.toLowerCase() === 'on') literalOn[r.entry] = true
+    // The token as written, not the decoded value: an escape (`"\x6fn"`)
+    // means `on` to YAML but is not a literal `on` (final review S1).
+    const span = valueSpan(l)
+    if (span && !span.value.includes('\\') && span.value.toLowerCase() === 'on') literalOn[r.entry] = true
   })
   for (let i = 0; i < folders.length; i++) {
     const e = folders[i] as Record<string, unknown> | null

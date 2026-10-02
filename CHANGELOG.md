@@ -36,10 +36,12 @@ misspelled top-level key, because it, too, silently dropped that decision. Each 
   key. Other hand-added keys (`paths:`, `score:`, `trust:`, `note:`, …) stay
   as they are and are not a problem.
 
-  **A repair never switches memory on.** After a repair, a folder resolves
-  to `on` only if its entry had a literal `plur: on` line of its own (any
-  case). So an entry that would be on only through `scope:` or `trusted:` is
-  not repaired either. Every entry, key and value stays the one written on
+  **A repair adds no `on` to the map.** After a repair, a map entry is `on`
+  only if it had a literal `plur: on` line of its own (any case, no escapes),
+  so an entry that would be on only through `scope:` or `trusted:` is not
+  repaired either. Folders with their own trusted `.plur.yaml` or project MCP
+  config are on again, as before the map broke (the same as after a fix by
+  hand). Every entry, key and value stays the one written on
   its own line, and a commented-out mode (`plur: #on`) stays a comment. A file
   that uses any YAML beyond a plain map (a tag `!`, anchor `&`, alias `*` or
   block of text `|`/`>`), a key whose value may continue on the next lines,
