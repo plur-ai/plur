@@ -74,6 +74,28 @@ such a file. Now the hooks and the plugin refuse every file the MCP server
 refuses: such a map gives `ask` with no memory, and `plur folders set` will not
 write over it until it is repaired.
 
+### The Claude Code memory check speaks up only after a correction, preference or decision
+
+The Stop-hook memory check used to fire after every third response, forcing an
+extra turn that usually ended in a bare "ok". It now reads the last message you
+typed from the transcript and nudges only when it reads as a correction aimed
+at the agent ("no, use pnpm", "that's wrong", "you edited the wrong file"), a
+preference ("I prefer …", "I'd rather …") or a standing rule ("from now on
+…", "never …", "remember that …"), or a decision-board answer. Slovenian and
+German count in the same shapes ("ne, uporabi …", "to je narobe", "narobe si
+…", "vedno uporabi …", "prosim, ne …", "pri nas …", "od zdaj naprej";
+"nein, nimm …", "das ist falsch", "Füge niemals …", "bei uns gilt", "ab
+jetzt"), with or without č/š/ž, and curly apostrophes match like straight
+ones. Decisions count too ("we decided …", "odločili smo …", "Q1: yes"). Ordinary requests, bug reports and answers do not ("It should
+return 200", "Nekaj je narobe s prijavo", "Immer wenn ich …", "No, keep
+going"), nor do pasted logs, code blocks, quoted text, compaction summaries,
+command output or task notifications. At most one nudge per message, and none
+when the agent already called `plur_learn` in that reply. When nothing is
+worth keeping, the forced turn asks for no "ok": the memory line the agent
+ends every reply with is enough.
+A fallback still checks every 10th response; set
+`PLUR_LEARN_FALLBACK_INTERVAL` to change it, or `0` to turn it off.
+
 ### Agents now end each reply with the memories they recalled, used and wrote (#1520)
 
 The instructions PLUR installs (the `plur init` section in CLAUDE.md and
