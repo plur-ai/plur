@@ -71,10 +71,10 @@ describe('F2: block scalars and nested values are never re-indented into structu
 
 describe('the hard rule, checked on the parsed result', () => {
   it('fixable repairs only ever produce entries, keys and values written on their own lines', () => {
-    const p = planFolderMapRepair('verison: 1\nfolder:\n  - path: /a   # work\n     plur: Off\n - path: /b\n   scope: group:x/y\n')
+    const p = planFolderMapRepair('verison: 1\nfolder:\n  - path: /a   # work\n     plur: Off\n - path: /b\n   scope: group:x/y\n   plur: ask\n')
     expect(p.status).toBe('fixable')
     if (p.status !== 'fixable') return
-    expect(yaml.load(p.after)).toEqual({ version: 1, folders: [{ path: '/a', plur: 'off' }, { path: '/b', scope: 'group:x/y' }] })
+    expect(yaml.load(p.after)).toEqual({ version: 1, folders: [{ path: '/a', plur: 'off' }, { path: '/b', scope: 'group:x/y', plur: 'ask' }] })
   })
 })
 
@@ -142,13 +142,13 @@ describe('a misspelled entry key is a problem, repaired only when unambiguous', 
     if (p.status === 'fixable') expect(p.after).toBe('version: 1\nfolders:\n  - path: /a\n    plur: off  # never\n')
   })
 
-  it('`pth:`, `litera:` and `trsuted:` are caught too; an unrelated key (`note:`) is not', () => {
-    for (const [k, want] of [['pth', 'path'], ['litera', 'literal'], ['trsuted', 'trusted'], ['sope', 'scope']]) {
-      const c = checkFolderMapText(`version: 1\nfolders:\n  - path: /a\n    ${k}: x\n`)
-      expect(c.ok, k).toBe(false)
-      if (!c.ok) expect(c.issues[0].message).toContain(`did you mean \`${want}:\``)
+  it('`pth:` (an entry without path) is caught; scope/trusted/literal look-alikes and `note:` are custom keys (round 3, R2)', () => {
+    const c = checkFolderMapText('version: 1\nfolders:\n  - pth: /a\n')
+    expect(c.ok).toBe(false)
+    if (!c.ok) expect(c.issues.map(i => i.message).join('\n')).toContain('did you mean `path:`')
+    for (const k of ['litera', 'trsuted', 'sope', 'note']) {
+      expect(checkFolderMapText(`version: 1\nfolders:\n  - path: /a\n    ${k}: x\n`).ok, k).toBe(true)
     }
-    expect(checkFolderMapText('version: 1\nfolders:\n  - path: /a\n    note: hello\n').ok).toBe(true)
   })
 
   it('not when the right key is already in the entry', () => {

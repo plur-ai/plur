@@ -103,13 +103,23 @@ interface Line {
   value?: string
 }
 
-interface Scan { lines: Line[]; eol: string; bom: boolean; finalNewline: boolean }
+interface Scan {
+  lines: Line[]
+  eol: string
+  bom: boolean
+  finalNewline: boolean
+  /** The text has a CR that is not part of a CRLF (an old-Mac line break). Never repaired. */
+  loneCR: boolean
+}
 
 function scan(text: string): Scan {
   const bom = text.startsWith('﻿')
   const body = bom ? text.slice(1) : text
   const eol = body.includes('\r\n') ? '\r\n' : '\n'
-  const parts = body.split(/\r?\n/)
+  // A lone CR is a line break to YAML, so it is one here too: every line
+  // counts (the cap, the empty-file check), and the repair refuses such text.
+  const parts = body.split(/\r\n|\r|\n/)
+  const loneCR = /\r(?!\n)/.test(body)
   const finalNewline = parts.length > 1 && parts[parts.length - 1] === ''
   if (finalNewline || (parts.length === 1 && parts[0] === '')) parts.pop()
   const lines = parts.map((t, i): Line => {
@@ -129,7 +139,7 @@ function scan(text: string): Scan {
     if (k) return { ...base, kind: 'key', key: k[1], value: rest.slice(k[0].length).trim() }
     return { ...base, kind: 'other' }
   })
-  return { lines, eol, bom, finalNewline }
+  return { lines, eol, bom, finalNewline, loneCR }
 }
 
 function join(s: Scan, lines: string[]): string {
@@ -174,21 +184,30 @@ export function editDistance(a: string, b: string): number {
 }
 
 /**
- * The entry key a misspelling most likely means (`plru` → `plur`), or null.
- * One edit for a key of up to four letters, two for longer ones, and only a
- * single nearest key: an unrelated key such as `note:` is left alone.
+ * The entry key a misspelling most likely means, or null (#1530 re-review
+ * R2). Only `plur` and `path` — the two keys whose loss silently drops a
+ * decision — and only a near-miss that reads as the same word typed wrong:
+ * another case (`Plur`), two neighbouring letters swapped (`plru`, `paht`),
+ * or one inner letter missing (`pur`, `pth`). An added or changed letter is a
+ * different word (`paths`, `pat`, `plus`, `blur`), and so is a negation
+ * (`un…`, `not…`): those stay custom keys, as before.
  */
 export function suggestEntryKey(key: string): string | null {
   const k = key.toLowerCase()
-  if (ENTRY_KEYS.has(k)) return k === key ? null : k
-  const max = k.length <= 4 ? 1 : 2
-  let best: string[] = []
-  let bestD = Infinity
-  for (const e of ENTRY_KEYS) {
-    const d = editDistance(k, e)
-    if (d < bestD) { bestD = d; best = [e] } else if (d === bestD) best.push(e)
+  if (/^(un|not)/.test(k)) return null
+  for (const target of ['plur', 'path'] as const) {
+    if (k === target) return key === target ? null : target
+    if (k.length === target.length) {
+      for (let i = 0; i + 1 < k.length; i++) {
+        if (k[i] !== target[i] && k[i] === target[i + 1] && k[i + 1] === target[i] &&
+            k.slice(0, i) === target.slice(0, i) && k.slice(i + 2) === target.slice(i + 2)) return target
+      }
+    }
+    if (k.length === target.length - 1) {
+      for (let i = 1; i < target.length - 1; i++) if (target.slice(0, i) + target.slice(i + 1) === k) return target
+    }
   }
-  return bestD <= max && best.length === 1 ? best[0] : null
+  return null
 }
 
 /** The top-level key a misspelling most likely means, or null. */
@@ -333,12 +352,18 @@ const EMPTY_MESSAGE = 'the file is empty — it has only comments or blank lines
 
 /** The mode a wrong `plur:` value most likely means, or null when it is not clear. */
 export function suggestMode(value: string): string | null {
-  const t = value.trim()
+  // Only ASCII spaces around the token are ignored: a BOM, zero-width or
+  // other hidden character means the token is not what it looks like.
+  const t = value.replace(/^[ \t]+|[ \t]+$/g, '')
+  if (!/^[\x21-\x7e]+$/.test(t)) return null
   const lower = t.toLowerCase()
+  // Another case of a literal mode (`ON`, `Off`): that mode (#1530 re-review R3).
   if ((MODES as readonly string[]).includes(lower)) return lower
-  if (t.length < 2 || YES_NO.has(lower)) return null
+  if (t.length < 3 || YES_NO.has(lower)) return null
+  // One letter off: only ever `off` or `ask`, and only when `on` is not just
+  // as close — a guess never switches memory on (`ok`, `in`, `onn` stay put).
   const near = MODES.filter(m => editDistance(lower, m) === 1)
-  return near.length === 1 ? near[0] : null
+  return near.length === 1 && near[0] !== 'on' ? near[0] : null
 }
 
 /** The value token of a `key: value` line: [start, end) of the text inside any quotes, and the text. */
@@ -448,12 +473,12 @@ export function checkFolderMapText(text: string): FolderMapCheck {
     for (const k of Object.keys(e)) {
       if (ENTRY_KEYS.has(k) || !SAFE_KEY.test(k)) continue
       const want = suggestEntryKey(k)
-      if (!want) continue
+      // A near-miss is a problem only when the entry lacks the real key:
+      // otherwise it is just another custom key (#1530 re-review R2).
+      if (!want || Object.prototype.hasOwnProperty.call(e, want)) continue
       const at = st.entries[idx]?.keys.get(k)
-      const taken = Object.prototype.hasOwnProperty.call(e, want)
-      issues.push({ ...(at ? { line: at.n, column: at.lead.length + 1 } : {}), fixable: !!at && !taken,
-        message: `${at ? `line ${at.n}: ` : ''}unknown key \`${k}:\` in entry ${idx + 1} — did you mean \`${want}:\`?` +
-          (taken ? ` (\`${want}:\` is already there)` : '') })
+      issues.push({ ...(at ? { line: at.n, column: at.lead.length + 1 } : {}), fixable: !!at,
+        message: `${at ? `line ${at.n}: ` : ''}unknown key \`${k}:\` in entry ${idx + 1} — did you mean \`${want}:\`?` })
     }
   })
   const parsed = FolderMapSchema.safeParse(raw)
@@ -529,14 +554,28 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   const fixes: FolderMapIssue[] = []
   let out = s.lines.map(l => l.text)
 
+  // Narrow by construction (#1530 re-review): before anything is planned,
+  // refuse every file the line-based repair could read differently from
+  // YAML. Every line counts toward the cap, comments and lone CRs included.
+  if (s.lines.length > MAX_REPAIR_LINES) {
+    return refuse(check, `the file has ${s.lines.length} lines, more than plur folders repair changes automatically (${MAX_REPAIR_LINES})`)
+  }
+  if (s.loneCR) {
+    const n = text.replace(/^\uFEFF/, '').split(/\r\n|\n/).findIndex(l => l.includes('\r')) + 1
+    return refuse(check, `line ${n}: a lone carriage return (an old-Mac line break); plur folders repair does not change a file that holds one`)
+  }
+  const yamlOnly = yamlFeatureLine(s)
+  if (yamlOnly) {
+    return refuse(check, `line ${yamlOnly.n}: a YAML tag, anchor, alias or block of text (\`!\`, \`&\`, \`*\`, \`|\` or \`>\`); plur folders repair does not change a file that holds one`)
+  }
+
   if (isEmpty(s)) {
     out = [...out, 'version: 1', 'folders: []']
     fixes.push({ ...check.issues[0], change: 'adds `version: 1` and `folders: []`' })
     const after = (s.bom ? '\uFEFF' : '') + out.join(s.eol) + s.eol
+    const recheck = checkFolderMapText(after)
+    if (!recheck.ok) return unfixable(recheck)
     return finish(text, after, fixes, opts)
-  }
-  if (s.lines.length > MAX_REPAIR_LINES) {
-    return refuse(check, `the file has ${s.lines.length} lines, more than plur folders repair changes automatically (${MAX_REPAIR_LINES})`)
   }
 
   const st = structure(s)
@@ -544,6 +583,18 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   // are never touched: the whole repair is refused (#1530 review F2).
   if (st.block) {
     return refuse(check, `line ${st.block.n}: ${keyName(st.block.key)} starts a block of text (\`|\` or \`>\`); plur folders repair does not change a file that holds one`)
+  }
+  // A key with no value on its own line may take its value from the lines
+  // after it — YAML even allows a list at the key's own indentation — so a
+  // slip there cannot be read reliably. Only `folders:` may do so.
+  const open = s.lines.find((l, i) => {
+    const r = st.roles[i]
+    if (r.role !== 'item' && r.role !== 'entry-key' && r.role !== 'top') return false
+    if (r.role === 'top' && suggestTopKey(r.key) === 'folders') return false
+    return l.key !== undefined && (l.value === '' || l.value!.startsWith('#'))
+  })
+  if (open) {
+    return refuse(check, `line ${open.n}: ${keyName(open.key)} has no value on its line; plur folders repair does not change a file where a value may continue on the next lines`)
   }
   if (st.nested) {
     return refuse(check, `line ${st.nested.n}: ${keyName(st.nested.key)} has lines nested under it; plur folders repair does not change a file that holds them`)
@@ -602,6 +653,8 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
       fixes.push({ line: l.n, column: l.lead.length + 1, fixable: true, change: `\`${entryKey}:\` → \`${want}:\``,
         message: `line ${l.n}: unknown key \`${entryKey}:\` — did you mean \`${want}:\`?` })
       key = want
+      // A renamed `plur:` keeps its value exactly: it must already be a mode.
+      if (key === 'plur') return
     }
     if (key === 'plur') {
       const line = scan(out[i]).lines[0] ?? l
@@ -624,7 +677,57 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   // `plur:` mode may change, and only to the mode its case or letter points at.
   const broken = keepsWhatWasWritten(s, st, after)
   if (broken) return refuse(check, broken)
+  const switchedOn = onWithoutLiteralOn(s, st, after)
+  if (switchedOn !== null) {
+    return refuse(check, `line ${switchedOn}: after the repair this entry would have memory on, but it has no \`plur: on\` line of its own; fix it by hand`)
+  }
   return finish(text, after, fixes, opts)
+}
+
+/**
+ * A line that uses YAML beyond what a folder map needs — a tag (`!x`, `!!str`),
+ * an anchor (`&a`), an alias (`*a`) or a block scalar (`|`, `>`) — anywhere
+ * outside quotes and comments, or null. One plain check over the whole file
+ * (#1530 re-review R1): such a file is never repaired.
+ */
+function yamlFeatureLine(s: Scan): Line | null {
+  for (const l of s.lines) {
+    if (l.kind === 'blank' || l.kind === 'comment') continue
+    const bare = l.body
+      .replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, '""')
+      .replace(/(^|[ \t])#.*$/, '$1')
+    if (/(^|[\s\-:[{,?])[!&*]\S/.test(bare)) return l
+    if (/(^|[\s:\-])[|>][-+0-9]*[ \t]*$/.test(bare)) return l
+  }
+  return null
+}
+
+/**
+ * The first line of an entry that would resolve to `on` after the repair
+ * although none of its own lines is literally `plur: on` (any case), or null.
+ * `on` means `plur: on`, or no `plur` with a `scope` or `trusted: true` —
+ * the resolver's rule. This is the promise itself, checked on the result: a
+ * repair never switches memory on (#1530 re-review).
+ */
+function onWithoutLiteralOn(s: Scan, st: Structure, after: string): number | null {
+  let parsed: unknown
+  try { parsed = yaml.load(after.replace(/^\uFEFF/, '')) } catch { return st.entries[0]?.line.n ?? 1 }
+  const folders = (parsed as { folders?: unknown })?.folders
+  if (!Array.isArray(folders)) return null
+  const literalOn = st.entries.map(() => false)
+  s.lines.forEach((l, i) => {
+    const r = st.roles[i]
+    if ((r.role !== 'item' && r.role !== 'entry-key') || l.key !== 'plur') return
+    const v = lineValue(l)
+    if (v.ok && typeof v.value === 'string' && v.value.toLowerCase() === 'on') literalOn[r.entry] = true
+  })
+  for (let i = 0; i < folders.length; i++) {
+    const e = folders[i] as Record<string, unknown> | null
+    if (!e || typeof e !== 'object') continue
+    const on = e.plur === 'on' || (e.plur === undefined && (e.scope !== undefined || e.trusted === true))
+    if (on && !literalOn[i]) return st.entries[i]?.line.n ?? 1
+  }
+  return null
 }
 
 function renameKey(l: Line, from: string, to: string): string {

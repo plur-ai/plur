@@ -287,13 +287,13 @@ function parseMapText(text: string): { map: FolderMap } | { issues: FolderMapIss
  */
 const mapErrorCache = new Map<string, { text: string; error: Omit<FolderMapFault, 'file'> }>()
 
-function mapErrorOf(file: string, text: string, issues: FolderMapIssue[]): Omit<FolderMapFault, 'file'> {
+function mapErrorOf(file: string, text: string, issues: FolderMapIssue[], utf8 = true): Omit<FolderMapFault, 'file'> {
   const hit = mapErrorCache.get(file)
-  if (hit && hit.text === text) return hit.error
+  if (hit && hit.text === text && utf8) return hit.error
   const first = issues[0]
   let fixable = false
   let summary: string | undefined
-  try {
+  if (utf8) try {
     // No diff: only `plur folders repair` shows one.
     const plan = planFolderMapRepair(text, { diff: false })
     if (plan.status === 'fixable') { fixable = true; summary = plan.summary }
@@ -305,7 +305,7 @@ function mapErrorOf(file: string, text: string, issues: FolderMapIssue[]): Omit<
     fixable,
     ...(summary ? { repair_summary: summary } : {}),
   }
-  mapErrorCache.set(file, { text, error })
+  if (utf8) mapErrorCache.set(file, { text, error })
   return error
 }
 
@@ -320,7 +320,7 @@ function problemPhrase(message: string): string {
  * answers false for a dangling symlink, a symlink loop or a parent that
  * cannot be searched — each of those is a map that cannot be read.
  */
-function readMapText(file: string): null | { text: string } | { unreadable: string } {
+function readMapText(file: string): null | { text: string; utf8: boolean } | { unreadable: string } {
   try {
     lstatSync(file)
   } catch (err) {
@@ -329,7 +329,10 @@ function readMapText(file: string): null | { text: string } | { unreadable: stri
     return { unreadable: `cannot be read (${code ?? (err as Error).message})` }
   }
   try {
-    return { text: readFileSync(file, 'utf8') }
+    const bytes = readFileSync(file)
+    const text = bytes.toString('utf8')
+    // Bytes that do not round-trip are not UTF-8: reported, never repaired (#1530 re-review R5).
+    return { text, utf8: Buffer.from(text, 'utf8').equals(bytes) }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     const link = (() => { try { return lstatSync(file).isSymbolicLink() } catch { return false } })()
@@ -349,7 +352,7 @@ function readMapFile(root: string): LoadResult | null {
   if ('map' in parsed) return { map: parsed.map, malformed: false }
   // The same cases the MCP gate refuses (#1519): an empty file and an unknown
   // top-level key count too, so the hooks and plugins agree with it (#1526).
-  const error = mapErrorOf(file, r.text, parsed.issues)
+  const error = mapErrorOf(file, r.text, parsed.issues, r.utf8)
   warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${problemPhrase(error.problem!)} — treating it as empty (folders fall back to ask)`)
   return { map: { version: 1, folders: [] }, malformed: true, error }
 }
@@ -378,7 +381,7 @@ export function folderMapProblem(root: string): FolderMapProblem | null {
   if ('unreadable' in r) return { file, problem: r.unreadable, fixable: false }
   const parsed = parseMapText(r.text)
   if ('map' in parsed) return null
-  const error = mapErrorOf(file, r.text, parsed.issues)
+  const error = mapErrorOf(file, r.text, parsed.issues, r.utf8)
   return { file, ...error, problem: problemPhrase(error.problem!), fixable: error.fixable === true }
 }
 

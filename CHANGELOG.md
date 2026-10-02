@@ -20,27 +20,31 @@ line 5: `plur:` in entry 2 must be on, off or ask — it looks like `off` with t
 
 A message quotes at most the key on that line. It never shows a path, a
 scope or any other value from the file, nor a YAML alias or tag name. A
-misspelled entry key (`plru: off`) is now reported like a misspelled
-top-level key, because it, too, silently dropped that decision. Each place also offers the fix:
+misspelled `plur:` or `path:` key (`plru: off`) is now reported like a
+misspelled top-level key, because it, too, silently dropped that decision. Each place also offers the fix:
 
 - **`plur folders repair`** fixes what is unambiguous, which covers:
   - list items and keys indented unevenly, and tabs in the indentation;
   - a misspelled top-level key (`folder` → `folders`, `verison` → `version`);
-  - a `plur:` mode with the wrong case or one wrong letter, when exactly one
-    of on, off and ask matches (`of` is one letter from both `on` and `off`,
-    so it is left to you);
+  - a `plur:` mode in the wrong case (`ON` → `on`), or one wrong letter of
+    `off` or `ask` (`oof` → `off`). A typo never becomes `on`: `ok`, `in`,
+    `onn` and `of` are left to you;
   - an empty or comments-only file, which becomes a minimal valid map.
 
-  It also fixes a misspelled entry key (`plru:` → `plur:`, `pth:` → `path:`)
-  when exactly one key is meant and the right one is not already there.
+  It also fixes a misspelled `plur:` or `path:` key (`plru:` → `plur:`,
+  `pth:` → `path:`: swapped or missing letters) when the entry lacks the right
+  key. Other hand-added keys (`paths:`, `score:`, `trust:`, `note:`, …) stay
+  as they are and are not a problem.
 
-  **A repair never switches memory on.** After a repair, every entry, key and
-  value is the one written on that entry's own line before it. The only value
-  it may change is a `plur:` mode that is really there, and only by its case
-  or one letter. A commented-out mode (`plur: #on`) stays a comment. A file
-  holding a block of text (`note: |`) or a value nested under another key is
-  never repaired, because those lines could be read as entries. PLUR names the
-  line and leaves the file alone.
+  **A repair never switches memory on.** After a repair, a folder resolves
+  to `on` only if its entry had a literal `plur: on` line of its own (any
+  case). So an entry that would be on only through `scope:` or `trusted:` is
+  not repaired either. Every entry, key and value stays the one written on
+  its own line, and a commented-out mode (`plur: #on`) stays a comment. A file
+  that uses any YAML beyond a plain map (a tag `!`, anchor `&`, alias `*` or
+  block of text `|`/`>`), a key whose value may continue on the next lines,
+  an old-Mac line break (a lone CR) or more than 2,000 lines is never
+  repaired. PLUR names the line and leaves the file alone.
 
   It shows a unified diff and asks before writing. `--yes` skips the
   question. Without `--yes`, a run that is not in an interactive terminal is

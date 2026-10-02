@@ -63,6 +63,9 @@ describe('R1: a tag, anchor, alias or block scalar anywhere means no repair', ()
     customTag: L('version: 1', 'folder:', '  - path: /a', '    note: !custom x'),
     aliasAnywhere: L('version: 1', 'folder:', '  - path: &p /a', '  - path: *p'),
     plainBlockElsewhere: L('version: 1', 'folder:', '  - path: /a', '    note: >-', '      text'),
+    // re-audit fuzz: an empty value whose list sits at the key's own indent, or behind a tab
+    emptyValueSameIndentList: L('version: 1', 'folders:', '  - path: /e0', '    note:', '    - path: /hidden0', '        plur: on'),
+    emptyValueTabList: L('version: 1', 'folders:', '  - path: /e0', '    plur: off', '    note:', '\t- path: /hidden0', '        plur: on'),
   })) it(name, () => notFixable(t))
 
   it('R4: text inside a value never reaches the summary (it is refused instead)', () => {
@@ -185,18 +188,24 @@ function onPaths(m: unknown): string[] {
  * one or at a line at column 0.
  */
 function literalOnPaths(text: string): Set<string> {
+  // Every scalar written on a line of an entry that has a literal active
+  // `plur: on`: the repair keeps values as written, so the entry's path after
+  // the repair is one of them (its key may have been a misspelled `path`).
   const out = new Set<string>()
-  let path: string | null = null
+  let values: string[] = []
   let on = false
-  const flush = () => { if (path !== null && on) out.add(path); path = null; on = false }
-  for (const raw of text.replace(/^﻿/, '').split(/\r\n|\r|\n/)) {
+  let inEntry = false
+  const flush = () => { if (inEntry && on) for (const v of values) out.add(v); values = []; on = false; inEntry = false }
+  for (const raw of text.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)) {
     const t = raw.replace(/^[ \t]+/, '')
     if (raw !== '' && !/^[ \t]/.test(raw) && !t.startsWith('-')) { flush(); continue }
     let body = t
-    if (t.startsWith('-')) { flush(); body = t.replace(/^-[ \t]*/, '') }
+    if (t.startsWith('-')) { flush(); inEntry = true; body = t.replace(/^-[ \t]*/, '') }
     if (/^plur[ \t]*:[ \t]*(['"]?)on\1[ \t]*(#.*)?$/i.test(body)) on = true
-    const m = /^path[ \t]*:/.exec(body)
-    if (m) { try { const v = (yaml.load(body) as { path?: unknown })?.path; if (typeof v === 'string') path = v } catch { /* not a literal path */ } }
+    try {
+      const v = yaml.load(body)
+      if (v && typeof v === 'object' && !Array.isArray(v)) for (const x of Object.values(v)) if (typeof x === 'string') values.push(x)
+    } catch { /* not a single key: value line */ }
   }
   flush()
   return out
@@ -223,10 +232,11 @@ describe('invariant fuzz: repaired on ⊆ literal plur: on in the original', () 
       const roll = rnd()
       if (roll < 0.5) lines.push(`    plur: ${pick(['on', 'off', 'ask', 'On', 'OFF', 'oof', 'ok', 'in', 'onn', '#on'])}`)
       if (rnd() < 0.3) lines.push(`    ${pick(['scope: group:a/b', 'trusted: true', 'trusted: false'])}`)
-      const extra = pick(['block', 'nested', 'nestedMap', 'custom', 'custom', 'none', 'none'])
+      const extra = pick(['block', 'nested', 'nestedMap', 'sameIndent', 'custom', 'custom', 'none', 'none'])
       if (extra === 'block') lines.push(`    note: ${pick(PREFIX)}${pick(['|', '>', '|-', '>+'])}`, `      - path: /w/hidden${i}`, '        plur: on')
       else if (extra === 'nested') lines.push(`    note: ${pick(['', '&a', '!!seq'])}`.trimEnd(), `      - path: /w/hidden${i}`, '        plur: on')
       else if (extra === 'nestedMap') lines.push(`    meta: ${pick(['', '&a', '!!map', '&n !!map'])}`.trimEnd(), '      plur: on', '      trusted: true')
+      else if (extra === 'sameIndent') lines.push('    note:', `    - path: /w/hidden${i}`, '      plur: on')
       else if (extra === 'custom') lines.push(`    ${pick(CUSTOM)}`)
     }
     return (rnd() < 0.05 ? '﻿' : '') + lines.join(eol) + eol

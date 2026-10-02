@@ -102,7 +102,9 @@ describe('checkFolderMapText pinpoints the problem in plain words', () => {
     expect(i.message).toMatch(/^line 4: `plur:` in entry 1 must be on, off or ask/)
     expect(i.message).not.toContain('Off')
     expect(i.fixable).toBe(true)
-    expect(first('version: 1\nfolders:\n  - path: /a\n    plur: onn\n').fixable).toBe(true)
+    // Round 3 (#1530 re-review R3): a typo never becomes `on`; `offf` → off does.
+    expect(first('version: 1\nfolders:\n  - path: /a\n    plur: offf\n').fixable).toBe(true)
+    expect(first('version: 1\nfolders:\n  - path: /a\n    plur: onn\n').fixable).toBe(false)
     expect(first('version: 1\nfolders:\n  - path: /a\n    plur: aks\n').fixable).toBe(true)
   })
 
@@ -169,8 +171,9 @@ describe('planFolderMapRepair', () => {
   })
 
   it('re-indents keys and items and keeps every comment', () => {
-    const before = '# my folders\nversion: 1\nfolders:\n  # work\n  - path: /a   # the work tree\n     plur: off\n - path: /b\n   scope: group:x/y\n'
-    expect(fixed(before)).toBe('# my folders\nversion: 1\nfolders:\n  # work\n  - path: /a   # the work tree\n    plur: off\n  - path: /b\n    scope: group:x/y\n')
+    // /b has a literal plur: (round 3: a scope-only entry would resolve on, so it is never repaired).
+    const before = '# my folders\nversion: 1\nfolders:\n  # work\n  - path: /a   # the work tree\n     plur: off\n - path: /b\n   scope: group:x/y\n   plur: ask\n'
+    expect(fixed(before)).toBe('# my folders\nversion: 1\nfolders:\n  # work\n  - path: /a   # the work tree\n    plur: off\n  - path: /b\n    scope: group:x/y\n    plur: ask\n')
   })
 
   it('replaces tabs in the indentation', () => {
