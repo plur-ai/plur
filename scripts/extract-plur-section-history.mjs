@@ -47,6 +47,27 @@ const SOURCES = [
 
 const found = { section: new Map(), cursor: new Map(), claw: new Map() }
 const errors = []
+// A text once recorded is never forgotten: history rewritten by a squash merge
+// (or read from a shallow clone) must not drop a text PLUR may have installed.
+const HISTORY_FILE = join(root, 'packages/core/src/instruction-history.ts')
+const EXPORT_KIND = { SHIPPED_PLUR_SECTIONS: 'section', SHIPPED_CURSOR_RULES: 'cursor', SHIPPED_CLAW_SECTIONS: 'claw' }
+if (existsSync(HISTORY_FILE)) {
+  let kind = null
+  let label = null
+  for (const line of readFileSync(HISTORY_FILE, 'utf8').split('\n')) {
+    const head = /^export const (\w+): readonly string\[\] = \[$/.exec(line)
+    if (head) { kind = EXPORT_KIND[head[1]] ?? null; continue }
+    if (line === ']') { kind = null; continue }
+    if (!kind) continue
+    const comment = /^ {2}\/\/ (.*)$/.exec(line)
+    if (comment) { label = comment[1]; continue }
+    if (/^ {2}".*",$/.test(line)) {
+      const text = JSON.parse(line.trim().slice(0, -1))
+      if (!found[kind].has(text)) found[kind].set(text, label ?? 'earlier list')
+      label = null
+    }
+  }
+}
 function collect(src, label, consts) {
   for (const [name, kind] of Object.entries(consts)) {
     const r = evaluateConst(src, name)
@@ -59,7 +80,14 @@ for (const { path, consts } of SOURCES) {
   const commits = git('log', '--format=%h', ref, '--', path).split('\n').filter(Boolean)
   for (const commit of commits.reverse()) {
     let src
-    try { src = git('show', `${commit}:${path}`) } catch { continue }
+    // A commit that touched the file but cannot be read is an error, not a gap:
+    // a missing text would make the next upgrade treat installs as user text.
+    try { src = git('show', `${commit}:${path}`) } catch (err) {
+      const deleted = !git('ls-tree', '--name-only', commit, '--', path).trim()
+      if (deleted) continue
+      errors.push(`${commit} ${path}: cannot read (${String(err.message ?? err).split('\n')[0]})`)
+      continue
+    }
     collect(src, `${commit} ${path}`, consts)
   }
   if (existsSync(join(root, path))) collect(readFileSync(join(root, path), 'utf8'), `worktree ${path}`, consts)
