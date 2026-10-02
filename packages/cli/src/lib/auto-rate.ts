@@ -85,6 +85,13 @@ export function autoCaptureEnabled(env: NodeJS.ProcessEnv = process.env): boolea
  */
 export const AUTO_RATE_MAX_TURNS = 3
 
+/**
+ * Deadline for an auto-captured team save's server request (#1532 review F3).
+ * Well inside the inline watchdog (hook-auto-rate, 9 s): the save must have
+ * fallen through to the outbox before the watchdog can exit.
+ */
+export const AUTO_CAPTURE_REMOTE_TIMEOUT_MS = 3_000
+
 function fileFor(editor: AutoRateEditor, sessionId: string, kind: 'injected' | 'rated' | 'tries' | 'queue' | 'worker'): string {
   return join(DIR, `${editor}-${safeSessionKey(sessionId)}.${kind}`)
 }
@@ -444,7 +451,15 @@ export async function autoRateTurn(opts: {
         for (const statement of statements) {
           try {
             if (project.scope) {
-              await plur.learnRouted(statement, { ...base, scope: project.scope, ...(project.domain ? { domain: project.domain } : {}) })
+              // Bounded below the inline watchdog (#1532 review F3): the POST runs
+              // outside the store lock, so to the watchdog the store looks idle
+              // mid-request, and an exit there lost the statement. Past this
+              // deadline it is saved here and queued in the outbox.
+              await plur.learnRouted(
+                statement,
+                { ...base, scope: project.scope, ...(project.domain ? { domain: project.domain } : {}) },
+                { remoteTimeoutMs: AUTO_CAPTURE_REMOTE_TIMEOUT_MS },
+              )
             } else {
               await plur.learn(statement, base)
             }
