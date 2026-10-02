@@ -31,16 +31,26 @@ own scope matches it, asking that host for that one scope.
   scope matches exactly are preferred; only when none does are case-insensitive
   matches considered. Among those candidates the choice is fail-safe: a local
   store first, then a writable remote store, then a readonly one, with config
-  order breaking ties. So a write never leaves the machine on an exact or
-  ambiguous match when a local store also matches.
-- That one choice decides the read, the write target and the "is this my own
-  remote namespace" check alike. `learn`, `learnAsync` and `learnBatch` (before
-  their duplicate check) all make it, and they read the current config first,
-  so a store another process just added already counts. A write and a read
-  with the same string therefore pick the same store, and a write naming a
-  local store's scope stays local. This holds even when a remote store has the
-  identical scope. One exception, as before: a readonly remote store is read
-  but never written, so when it is the chosen store the write stays local.
+  order breaking ties. An exact remote match still beats a case-insensitive
+  local match: `USER:ACME:ME` goes to a remote store configured as exactly
+  `USER:ACME:ME` even when a local store is configured as `user:acme:me`. A
+  write leaves the machine only when no local store matches the same way
+  (exactly, or, with no exact match, case-insensitively).
+- That one choice decides the recall dial, where `learn`, `learnRouted`,
+  `learnAsync` and `learnBatch` write, the "is this my own remote namespace"
+  check, whether an existing remote copy counts as a duplicate of the write,
+  and where an update that moves a queued engram into the scope sends it (a
+  local choice cancels the queued delivery). The writes make it before their
+  duplicate check and read the current config first, so a store another
+  process just added already counts. A write and a read with the same string
+  therefore pick the same store, even when a remote store has the identical
+  scope. One exception, as before: a readonly remote store is read but never
+  written, so when it is the chosen store the write stays local.
+- The secret check does not use the choice. Content headed for a scope that
+  any remote store holds exactly is checked for secrets, whichever store is
+  chosen, and so is an update to an engram already on the server and an
+  outbox delivery. With a local store and a remote store on the identical
+  scope, a sensitive write is kept local and private, as before this change.
 - When the chosen store is local, or is set to `dial: never`, the
   personal-scope rule dials nothing. It never uses a remote store whose scope
   differs only in case instead.
