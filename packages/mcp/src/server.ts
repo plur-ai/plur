@@ -60,6 +60,8 @@ DURING the session:
 - When user states a preference ("always X", "never Y") → call plur_learn immediately
 - When you discover a codebase convention or pattern → call plur_learn
 
+EVERY REPLY: End every reply with one short line: \`Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…\` (recalled as a count; used and written as ids only, no statements), or \`Memory — none\`. Only count/list ids you actually saw this turn; never invent an id. Give details only if the user asks.
+
 SCOPE SELECTION (set scope PER engram, by content — not once per session):
 A single session produces engrams that belong in different stores. Choose the
 "scope" on EACH plur_learn call from what the engram is about:

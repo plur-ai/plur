@@ -46,7 +46,7 @@ import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } 
 import { rankScopes, decideAutoRoute, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate, type AutoRouteDecision, type ScopeSource } from './scope-routing.js'
 import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
-import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
+import { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
 import { loadTensions, loadTensionsWithQuarantine, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
@@ -201,6 +201,11 @@ export { generateGuardrails } from './guardrails.js'
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
 // memory block byte-identically instead of each vendoring a copy.
 export { renderMemoryBlock, PLUR_MEMORY_INSTRUCTIONS } from './memory-block.js'
+export {
+  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile,
+  type InstructionSectionOptions, type InstructionSectionResult,
+} from './instruction-section.js'
+export { SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES, SHIPPED_CLAW_SECTIONS } from './instruction-history.js'
 // Shared learning-extraction heuristics (opencode plugin's task 6a): one
 // implementation so @plur-ai/claw and @plur-ai/opencode derive learning
 // candidates identically instead of each vendoring a copy.
@@ -241,7 +246,7 @@ export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
 import type { Receipt } from './receipt.js'
 import { gatherReceipt } from './receipt-io.js'
 export { computeContentHash, normalizeStatement, isHashable } from './content-hash.js'
-export { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
+export { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
 export { orderBySupersedes } from './outbox-order.js'
 export {
   classifyOutboxFailure, summarizeOutbox, describeNeedsAction, statusFromErrorText,
@@ -2043,6 +2048,14 @@ export class Plur {
    * scope. Keeps routing predictable and prevents accidental cross-team writes.
    */
   private _resolveRemoteStoreForScope(scope: string): RemoteStore | null {
+    // A personal scope routes through the ONE selected entry (#1515 L1): when
+    // a local path store shares the exact scope, the write stays local.
+    const personal = this._exactPersonalStore(scope)
+    if (personal !== undefined) {
+      return personal?.url && personal.readonly !== true
+        ? this._getRemoteDriver({ url: personal.url, token: personal.token, scope: personal.scope })
+        : null
+    }
     const stores = this.config.stores ?? []
     for (const entry of stores) {
       if (!entry.url) continue
@@ -2055,10 +2068,11 @@ export class Plur {
 
   /**
    * True when `scope` is backed by a REMOTE store — i.e. a `stores` entry with a
-   * `url` (data leaves this machine) whose scope exactly matches. The leak guard
-   * uses this alongside `isSharedScope`: a scope like `user:plur:gregor` is NOT
-   * `isSharedScope` (personal prefix) yet routes to plur.datafund.io, so sensitive
-   * content written there would cross the machine boundary unguarded.
+   * `url` (data leaves this machine) whose scope exactly matches; for a personal
+   * scope, when the ONE selected store is a url store. Used for routing
+   * decisions (auto-route refusal, `readIdFor`). The secret scan does NOT use
+   * it: it uses {@link _hasUrlStoreForScope}, which ignores the selection
+   * (#1515 re-audit 3, M2).
    *
    * Pure CONFIG lookup — NO driver instantiation, NO network, NO side effects —
    * because this runs on every learn(). It uses `_resolveRemoteStoreForScope`'s
@@ -2070,13 +2084,45 @@ export class Plur {
    * {@link _isRemoteWriteScope}.
    */
   private _isRemoteBackedScope(scope: string): boolean {
+    const personal = this._exactPersonalStore(scope)
+    if (personal !== undefined) return !!personal?.url
+    return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
+  }
+
+  /**
+   * The SECRET-SCAN predicate (#1515 re-audit 3, M2): any url store whose
+   * scope is exactly `scope`, readonly or not, whatever the personal-store
+   * selection says. The selection decides ROUTING only. Callers of the scan
+   * also act on a concrete url entry — the remote update walk, the outbox
+   * flush, a queued-row retarget — and that entry is not the selected one
+   * when a local store shares the identical scope. Scanning there too can
+   * only demote a write that would have stayed local; it never lets one out.
+   */
+  private _hasUrlStoreForScope(scope: string): boolean {
     return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
   }
 
   /** Exactly the router's rule (`_resolveRemoteStoreForScope`): a writable URL
    *  store for exactly this scope, so a write to it leaves the machine. */
   private _isRemoteWriteScope(scope: string): boolean {
+    const personal = this._exactPersonalStore(scope)
+    if (personal !== undefined) return !!personal?.url && personal.readonly !== true
     return (this.config.stores ?? []).some(s => !!s.url && s.readonly !== true && s.scope === scope)
+  }
+
+  /**
+   * For a personal `user:` scope that exactly names a configured store: the
+   * ONE selected entry (`personalStoreEntry` — local first, then writable url,
+   * then readonly url). `undefined` when the scope is not personal or names
+   * no store exactly, so callers keep their previous exact-match rule. Pure
+   * config lookup (no reload): it runs per engram on some paths, after the
+   * caller's own reload.
+   */
+  private _exactPersonalStore(scope: string): StoreEntry | null | undefined {
+    if (!scope.toLowerCase().startsWith('user:')) return undefined
+    const stores = this.config.stores ?? []
+    if (!stores.some(s => s.scope === scope)) return undefined
+    return personalStoreEntry(scope, stores.filter(s => typeof s.scope === 'string'))
   }
 
   /**
@@ -2109,7 +2155,11 @@ export class Plur {
    * the user's own. Unknown identity → false (fail closed).
    */
   private _isOwnRemoteNamespace(scope: string): boolean {
-    const entry = (this.config.stores ?? []).find(s => !!s.url && s.scope === scope)
+    // The entry the write lands on (#1515: one selection for a personal scope).
+    const personal = this._exactPersonalStore(scope)
+    const entry = personal !== undefined
+      ? personal
+      : (this.config.stores ?? []).find(s => !!s.url && s.scope === scope)
     if (!entry?.url) return false
     const id = this._meIdentities.get(this._meKey(entry.url, entry.token))
     if (!id) return false
@@ -2117,6 +2167,25 @@ export class Plur {
     const user = id.username.toLowerCase()
     const own = [`user:${user}`, ...(id.org_id ? [`user:${id.org_id.toLowerCase()}:${user}`] : [])]
     return own.some(o => isScopeWithin(s, o))
+  }
+
+  /**
+   * The configured scope a personal `user:` scope resolves to (#1515):
+   * `personalStoreEntry` over EVERY configured store, path-backed and url —
+   * exact case first, else case-folded; local before remote within each.
+   * Returns `scope` unchanged when it is not personal, names no store, or
+   * already names one exactly. One rule for writes (learn, learnAsync,
+   * learnBatch) and for the read dial, so the same string reaches the same
+   * store (re-audit N1/N3/N5).
+   */
+  private _canonicalPersonalScope(scope: string): string {
+    // Read the CURRENT config (re-audit M1): learnAsync/learnBatch fold here
+    // before the guard's own reload, and a store another process just added
+    // must already count — a stale list would send a write meant for a new
+    // local store to a remote case twin.
+    this.reloadConfigIfChanged()
+    const entry = personalStoreEntry(scope, (this.config.stores ?? []).filter(s => typeof s.scope === 'string'))
+    return entry ? entry.scope : scope
   }
 
   /**
@@ -3165,7 +3234,7 @@ export class Plur {
   /**
    * Write-time leak guard. If the target scope can let data leave the machine —
    * either SHARED (`isSharedScope`: group:/project:/space:/team:/org:/public, so
-   * others can read it) OR REMOTE-backed (`_isRemoteBackedScope`: routes to a
+   * others can read it) OR REMOTE-backed (`_hasUrlStoreForScope`: routes to a
    * remote store, e.g. a personal `user:` scope on plur.datafund.io) — AND the
    * statement trips `detectSensitive` (IPs, internal hosts, basic-auth, host:port,
    * secrets), DEMOTE to a private local scope — the engram is kept but never
@@ -3191,7 +3260,7 @@ export class Plur {
    * when there are none.
    *
    * Scope discipline: data can leak when the scope is SHARED (`isSharedScope`,
-   * others can read it) OR REMOTE-backed (`_isRemoteBackedScope`, it routes off
+   * others can read it) OR REMOTE-backed (`_hasUrlStoreForScope`, it routes off
    * this machine — e.g. a `user:` scope on plur.datafund.io). For a scope that is
    * neither — `global`/`local`/a local-file store — this returns `[]`
    * unconditionally: infra notes legitimately live in local storage, the content
@@ -3214,7 +3283,10 @@ export class Plur {
     // OR a REMOTE-backed scope (routes to a remote store). A scope that is neither
     // — `global`/`local`/a local-file store — stays on this machine, so there is
     // nothing to leak and the demotion target (local) is where it lives anyway.
-    if (!isSharedScope(scope) && !this._isRemoteBackedScope(scope)) return []
+    // "Remote-backed" here is ANY url store with this exact scope, not the
+    // personal-store selection: callers that PATCH or push to a concrete url
+    // entry rely on this scan (#1515 re-audit 3, M2).
+    if (!isSharedScope(scope) && !this._hasUrlStoreForScope(scope)) return []
     const hits = detectSensitive(statement)
     if (hits.length === 0) return []
     const policy = this.getScopeMetadata(scope)?.sensitivity
@@ -3467,12 +3539,33 @@ export class Plur {
       // a server reviewing writes may reasonably care about.
       scopeSource = context?.scope != null ? 'explicit' : 'session'
     }
+    // A personal `user:` scope that names a configured store under a
+    // different case writes to that store under ITS configured scope — the
+    // same case-folded, exact-first, single-entry match the recall dial uses
+    // (`_canonicalPersonalScope`, #1515 audit F5). Every configured store
+    // counts, path-backed ones included, so a scope that exactly names a
+    // LOCAL store is never redirected to a remote case twin (re-audit N1).
+    const canonical = this._canonicalPersonalScope(scope)
+    if (canonical !== scope) {
+      // On the auto-routing path the router already judged `scope` with the
+      // "me-only" ownership check (Decision E1). The rewrite must not carry
+      // the write past that check to a different destination: judge the
+      // rewritten scope again and keep the original when it is refused.
+      if (scopeSource === 'routed' && this._refuseRemotePersonalAutoRoute(canonical)) {
+        logger.warning(`[plur:learn] auto-routed scope=${scope} not rewritten to ${canonical}: not your own remote namespace`)
+      } else {
+        scope = canonical
+        if (context?.scope != null) context = { ...context, scope }
+      }
+    }
     // Guard fires when the write can leave the machine: shared scope (others can
     // read it) OR remote-backed scope (routes to a remote store, e.g. a personal
     // `user:` scope on plur.datafund.io). Purely-local scopes (`global`/`local`/
     // local-file stores) stay on this machine and are exempt — same gate as
     // _offendingHitsForScope, kept in sync because this short-circuits before it.
-    if (!isSharedScope(scope) && !this._isRemoteBackedScope(scope)) {
+    // The scan gate is "a url store has this exact scope" (`_hasUrlStoreForScope`),
+    // not the personal-store selection (#1515 re-audit 3, M2).
+    if (!isSharedScope(scope) && !this._hasUrlStoreForScope(scope)) {
       return { scope, context, demotion: null, routed, refusedShared, scopeSource }
     }
     // Scan the FULL content the engram will carry — the statement AND the
@@ -3682,7 +3775,10 @@ export class Plur {
     // writable URL entry matches either, and it is treated as not persistable).
     const urlEntries = (this.config.stores ?? []).filter(s => !!s.url && s.scope === storeScope)
     if (!urlEntries.some(s => s.readonly !== true)) return 'readonly'
-    return storeScope === scope ? 'own-remote' : 'remote-cache'
+    // Own only when a write to `scope` actually goes to that url store: with a
+    // local store selected for the identical personal scope (#1515 re-audit 3,
+    // L2) the write stays local, so the cached row must not absorb it.
+    return storeScope === scope && this._isRemoteWriteScope(scope) ? 'own-remote' : 'remote-cache'
   }
 
   /** The first candidate matching `pred` that the writer can persist (`hit`),
@@ -4800,7 +4896,18 @@ export class Plur {
   async learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
     this._assertWritable()
     const { learnAsync: learnAsyncImpl } = await import('./learn-async.js')
-    return learnAsyncImpl(await this._learnAsyncDeps(), statement, context)
+    return learnAsyncImpl(await this._learnAsyncDeps(), statement, this._canonicalLearnContext(context))
+  }
+
+  /**
+   * Fold a personal `user:` scope to its configured store's scope BEFORE the
+   * async/batch hash dedup runs, so dedup looks in the namespace the write
+   * will land in (re-audit N5). Same rule as `_guardSensitiveScope`.
+   */
+  private _canonicalLearnContext<C extends { scope?: string } | undefined>(context: C): C {
+    if (!context?.scope) return context
+    const scope = this._canonicalPersonalScope(context.scope)
+    return scope === context.scope ? context : { ...context, scope } as C
   }
 
   /** Batch learn with LLM dedup. LLM calls are capped (default 50) to bound bulk-import cost. */
@@ -4811,7 +4918,12 @@ export class Plur {
   ): Promise<LearnBatchResult> {
     this._assertWritable()
     const { learnBatch: learnBatchImpl } = await import('./learn-async.js')
-    return learnBatchImpl(await this._learnAsyncDeps(), statements, llm, opts)
+    return learnBatchImpl(
+      await this._learnAsyncDeps(),
+      statements.map(s => ({ ...s, context: this._canonicalLearnContext(s.context) })),
+      llm,
+      opts,
+    )
   }
 
   /**
@@ -5941,6 +6053,13 @@ export class Plur {
    *       host is relevant;
    *   (b) the host's personal-family (`user:*`, …) scopes ONLY when an org
    *       context exists implicating that host.
+   *   (c) a personal `user:` scope the caller passed (or the session's own
+   *       registration — not the inherited process default) adds the ONE
+   *       entry whose scope matches it, case-folded, exact-case preferred.
+   *       It adds no other entry; `dial: always` and a `.plur.yaml` remote
+   *       project can still add theirs.
+   * When `options.scopes` is given, nothing outside it is dialed (`[]` →
+   * nothing), whichever rule selected the entry.
    * No project/work context implicating a remote store → ZERO remote calls.
    * A host whose relevant subset is empty is NOT dialed — a datafund-org host
    * is never dialed from plur-org work (cross-org exfiltration solved by
@@ -5959,7 +6078,7 @@ export class Plur {
    * tokens per host mean one POST per token. `remoteEndpointTokenConflicts`
    * feeds the doctor warning for that misconfiguration.
    */
-  private _remoteRecallHosts(options?: { scope?: string; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
+  private _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
     // Pick up out-of-process config edits (#307) before reading tokens: a
     // rotated credential must reach the very next dial, not the next restart.
     // The constructor's only re-read compares `stores.length`, so a rotation
@@ -5978,6 +6097,32 @@ export class Plur {
     // (the pre-#243 state) leaves dialing exactly as before.
     const dialScope = options?.scope ?? this._sessionScopes.get(options?.session) ?? undefined
     const sessionOrg = scopeOrg(dialScope)
+    // A personal `user:` scope names its own store (#1515): a recall scoped to
+    // `user:acme:me` dials the ONE store entry whose scope matches it (case
+    // folded, exact-case preferred — `personalStoreEntry`), with that entry
+    // alone. Only a scope the caller passed, or the session's OWN
+    // registration, counts — never the process default an unregistered
+    // session inherits (audit F2): that default is another caller's choice.
+    // Without this a personal scope gave no dialing context, so `learn` to a
+    // personal remote store landed on the server but `recall` with the same
+    // scope never read it back.
+    const personalScope = options?.scope ?? this._sessionScopes.own(options?.session) ?? undefined
+    // Selected over EVERY configured store, exactly as a write selects
+    // (`_canonicalPersonalScope`); a selected path-backed or `dial: never`
+    // store means no personal dial — never a fall-through to a case twin
+    // (re-audit N3).
+    const selectedPersonal = personalStoreEntry(personalScope, (this.config.stores ?? []).filter(e => typeof e.scope === 'string'))
+    const personalEntry = selectedPersonal?.url && selectedPersonal.dial !== 'never' ? selectedPersonal : null
+    // The caller's authorization allow-list bounds what is DIALED, not only
+    // what is kept afterwards: a query sent to a scope the caller may not
+    // read has already left the machine (audit F2). `[]` dials nothing. A
+    // store is dialable when it can hold rows the allow-list admits: its
+    // scope equals, or is a parent of, an allowed scope (`isScopeWithin`,
+    // the nesting every read filter uses — re-audit N4). The rows themselves
+    // are still filtered by exact membership afterwards (`_filterRemoteRows`).
+    const allowList = options?.scopes
+    const allowed = (storeScope: string): boolean =>
+      allowList === undefined || allowList.some(a => isScopeWithin(a, storeScope))
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
     for (const s of stores) {
@@ -6001,14 +6146,16 @@ export class Plur {
       const personal = dialable.filter(e => !isSharedScope(e.scope))
       const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
       const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
+      const personalExact = personalEntry && dialable.includes(personalEntry) ? [personalEntry] : []
       const orgContext = orgAffine.length > 0 || projectImplicated
-      if (!orgContext && always.length === 0) continue
+      if (!orgContext && always.length === 0 && personalExact.length === 0) continue
       const selected = new Set<StoreEntry>(orgAffine)
+      for (const e of personalExact) selected.add(e)
       if (projectImplicated) for (const e of shared) selected.add(e)
       for (const e of always) selected.add(e)
       if (orgContext) for (const e of personal) selected.add(e)
       // Config order preserved — row→entry mapping must be deterministic.
-      const dialEntries = dialable.filter(e => selected.has(e))
+      const dialEntries = dialable.filter(e => selected.has(e) && allowed(e.scope))
       if (dialEntries.length === 0) continue
       hosts.push({
         url: g.url,
@@ -6022,7 +6169,7 @@ export class Plur {
     // with the project's own remote_scopes (the scope guard needs a scope set
     // to admit rows against; without one there is nothing safe to accept).
     if (rp?.token && rpKey && !stores.some(s => normalizeEndpointUrl(s.url!) === rpKey)) {
-      const scopes = [...new Set(rp.scopes ?? [])]
+      const scopes = [...new Set(rp.scopes ?? [])].filter(allowed)
       if (scopes.length > 0) {
         hosts.push({ url: rp.url, token: rp.token, scopes, entries: scopes.map(scope => ({ scope })) })
       }
@@ -6040,7 +6187,7 @@ export class Plur {
    */
   private _startRemoteRecall(
     query: string,
-    options?: { scope?: string; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
+    options?: { scope?: string; scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
   ): Promise<RemoteRecallResult> | null {
     if (options?.remote === false) return null
     if (isRemoteRecallDisabled()) return null
@@ -6546,6 +6693,8 @@ export class Plur {
     // call per host.
     const remotePromise = this._startRemoteRecall(task, {
       scope: options?.scope,
+      // The authorization allow-list bounds dialing too (#1515 audit F2).
+      scopes: options?.scopes,
       // #243: the inject's session (same id plur_session_start minted for
       // co_injection provenance) doubles as the dialing-context key — the
       // session default scope drives org-affinity when no explicit scope is
@@ -7670,8 +7819,20 @@ export class Plur {
       changed = true
       const stores = this.config.stores ?? []
       const newScope = toWrite.scope
-      const writable = stores.find(st => !!st.url && st.scope === newScope && st.readonly !== true)
-      if (isLocalOnlyScope(newScope, stores)) {
+      // A personal scope goes where the ONE selected store is (#1515 re-audit
+      // 3): a local store sharing the identical scope keeps the row local, so
+      // its pending delivery is cancelled rather than retargeted to the url.
+      const personal = this._exactPersonalStore(newScope)
+      const writable = personal !== undefined
+        ? (personal?.url && personal.readonly !== true ? personal : undefined)
+        : stores.find(st => !!st.url && st.scope === newScope && st.readonly !== true)
+      if (personal && !personal.url) {
+        delete sd._outbox
+        logger.warning(
+          `[plur] update of ${stored.id} moved it to "${newScope}", which a local store holds, and cancelled its `
+          + `pending delivery to ${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}").`,
+        )
+      } else if (isLocalOnlyScope(newScope, stores)) {
         delete sd._outbox
         logger.warning(
           `[plur] update of ${stored.id} moved it to "${newScope}" and cancelled its pending delivery to `
