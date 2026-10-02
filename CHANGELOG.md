@@ -11,9 +11,10 @@ at the agent ("no, use pnpm", "that's wrong", "you edited the wrong file"), a
 preference ("I prefer …", "I'd rather …") or a standing rule ("from now on
 …", "never …", "remember that …"), or a decision-board answer. Slovenian and
 German count in the same shapes ("ne, uporabi …", "to je narobe", "narobe si
-…", "vedno uporabi …", "od zdaj naprej"; "nein, nimm …", "das ist falsch",
-"immer pnpm verwenden", "ab jetzt"), and curly apostrophes match like
-straight ones. Ordinary requests, bug reports and answers do not ("It should
+…", "vedno uporabi …", "prosim, ne …", "pri nas …", "od zdaj naprej";
+"nein, nimm …", "das ist falsch", "Füge niemals …", "bei uns gilt", "ab
+jetzt"), with or without č/š/ž, and curly apostrophes match like straight
+ones. Decisions count too ("we decided …", "odločili smo …", "Q1: yes"). Ordinary requests, bug reports and answers do not ("It should
 return 200", "Nekaj je narobe s prijavo", "Immer wenn ich …", "No, keep
 going"), nor do pasted logs, code blocks, quoted text, compaction summaries,
 command output or task notifications. At most one nudge per message, and none
