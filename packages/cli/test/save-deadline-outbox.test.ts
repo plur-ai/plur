@@ -367,6 +367,21 @@ describe('save deadline, outbox fallback and remote probes (0.21.1)', () => {
     expect(stub.feedbackBodies.length).toBe(0)
   }, TEST_TIMEOUT_MS)
 
+  it('R2: plur recall shows a team engram X; after a 401, plur forget X refuses and names --scope primary', async () => {
+    writeConfig([])
+    const id = await learnLocal('Local engram sharing its id with a team engram')
+    stub.recallRows = [{ id, scope: TEAM, status: 'active', statement: 'Unrelated team engram about canaries', score: 1 }]
+    writeConfig([{ url: stubUrl, scope: TEAM }])
+    const rec = await cli(['recall', 'canaries', '--scope', TEAM, '--json'])
+    expect(rec.status, `${rec.stdout} ${rec.stderr}`).toBe(0)
+    expect(JSON.parse(rec.stdout).results.some((r: { id: string; scope: string }) => r.id === id && r.scope === TEAM)).toBe(true)
+    writeConfig([{ url: unauth.url, scope: TEAM }])
+    const f = await cli(['forget', id, '--json'])
+    expect(f.status).toBe(1)
+    expect(JSON.parse(f.stdout).error).toContain('--scope primary')
+    expect(yamlText()).not.toMatch(/status: retired/)
+  }, TEST_TIMEOUT_MS)
+
   it('6: feedback refuses an unknown flag and a stray extra argument', async () => {
     writeConfig([])
     const id = await learnLocal('Local engram for argument checks')

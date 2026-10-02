@@ -62,6 +62,32 @@ describe('auto-capture team save is bounded below the inline watchdog (#1532 F3)
     rmSync(root, { recursive: true, force: true })
   })
 
+  it('several captured statements share ONE server budget that fits inside the watchdog (re-audit R4)', async () => {
+    const plurPath = join(root, '.plur')
+    writeFileSync(join(plurPath, 'engrams.yaml'), 'engrams: []\n')
+    writeFileSync(join(plurPath, 'config.yaml'), JSON.stringify({
+      embeddings: { enabled: false }, index: false,
+      stores: [{ url, token: 't', scope: TEAM, readonly: false }],
+    }))
+    const project = join(root, 'project')
+    writeFileSync(join(project, '.plur.yaml'), `scope: ${TEAM}\n`)
+    trustDirectory(project, plurPath)
+    const plur = new Plur({ path: plurPath })
+    await plur.ready()
+    const reply = 'Done.\n\n---\n🧠 I learned:\n'
+      + '- Release candidates are tagged with the sprint number before the demo\n'
+      + '- Database migrations run in a separate deploy step from the code change\n'
+      + '- Feature flags are removed within two sprints of full rollout\n'
+      + '- The staging cluster is rebuilt from scratch every Monday morning\n---\n'
+    const t0 = Date.now()
+    const outcome = await autoRateTurn({ editor: 'claude', sessionId: 'cap-multi', reply, flags: { path: plurPath }, cwd: project, plur })
+    const ms = Date.now() - t0
+    expect(outcome.captured).toBe(4)
+    expect(ms).toBeLessThan(INLINE_WATCHDOG_MS - 2_000)
+    const yaml = readFileSync(join(plurPath, 'engrams.yaml'), 'utf8')
+    expect((yaml.match(/_outbox:/g) ?? []).length).toBe(4)
+  }, 60_000)
+
   it('the deadline is shorter than the watchdog', () => {
     expect(AUTO_CAPTURE_REMOTE_TIMEOUT_MS).toBeLessThan(INLINE_WATCHDOG_MS - 3_000)
   })
