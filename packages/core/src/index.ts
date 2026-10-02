@@ -1066,6 +1066,43 @@ function rrfScoreOf(id: string, lists: ReadonlyArray<ReadonlyArray<{ id: string 
  */
 export type LearnDelivery = 'remote' | 'outbox' | 'local'
 
+/**
+ * Why an engram went to the outbox instead of the server (0.21.1).
+ * `auth_rejected`: the store answered 401/403 — the token is expired, revoked
+ * or lacks rights, and retrying will not help until a person fixes it.
+ * `unreachable`: no answer (network error or the caller's deadline passed).
+ * `server_error`: the store answered with another error status.
+ * `no_store`: no writable url store is registered for the scope.
+ */
+export type OutboxReasonCode = 'auth_rejected' | 'unreachable' | 'server_error' | 'no_store'
+
+/** Options for {@link Plur.learnRouted} (0.21.1). */
+export interface LearnRoutedOptions {
+  /**
+   * Deadline for the server request, in ms. When it passes, the engram is
+   * saved locally and queued in the outbox — the save never fails because a
+   * server is slow. Local work is never raced. Unset: the driver's own 30 s.
+   */
+  remoteTimeoutMs?: number
+}
+
+/** What {@link Plur.forget} and {@link Plur.feedback} did not refuse but want said (0.21.1). */
+export interface MutationOutcome {
+  /** Plain-language warnings, e.g. a remote whose token was rejected during the collision probe. */
+  warnings: string[]
+}
+
+/** Per-store answer of the id-collision probe run by forget, feedback and setPinned. */
+interface CollisionProbe {
+  scope: string
+  url: string
+  outcome: 'present' | 'absent' | 'auth_rejected' | 'unreachable'
+  detail?: string
+}
+
+/** Budget for ONE live collision probe (0.21.1). Was the 30 s request deadline. */
+const REMOTE_PROBE_TIMEOUT_MS = 5_000
+
 /** Refusal from {@link Plur.addRemoteStore} (#1265). `code` is stable for
  *  callers; `message` never contains the token. */
 export class AddRemoteStoreError extends Error {
@@ -1709,6 +1746,124 @@ export class Plur {
     const ttl = typeof view.ttlMs === 'number' ? view.ttlMs : 60_000
     const age = Date.now() - cache.ts
     return cache.ts > 0 && age >= 0 && age < ttl ? 'absent' : 'unknown'
+  }
+
+  /**
+   * Does a bare id ALSO name an engram in a configured url store? (0.21.1)
+   *
+   * One answer per url store, for the operations that act on a local row by
+   * a bare id — forget, feedback, setPinned — since ids are minted per store
+   * and two stores mint the same id on the same day (#831).
+   *
+   * Run WITHOUT the store lock. It used to run inside it, so a hanging server
+   * held the lock every other writer needs for the full 30 s request budget.
+   * Each live probe is bounded by REMOTE_PROBE_TIMEOUT_MS, and the walk by
+   * REMOTE_GUARD_BUDGET_MS. A warmed cache answers for free.
+   *
+   * Outcomes are reported, not acted on; each caller decides:
+   *   - `present`: ambiguous — every caller refuses and says how to choose.
+   *   - `auth_rejected` (401/403): this caller cannot read OR change anything
+   *     in that store, so the bare id can only mean the local row it holds.
+   *   - `unreachable`: cannot tell. forget refuses (irreversible); feedback
+   *     and pin go ahead with a warning (recoverable).
+   */
+  private _hasUrlStore(): boolean {
+    return (this.config.stores ?? []).some(s => !!s.url)
+  }
+
+  private async _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<CollisionProbe[]> {
+    const out: CollisionProbe[] = []
+    const deadline = Date.now() + REMOTE_GUARD_BUDGET_MS
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url) continue
+      const scope = entry.scope ?? entry.url
+      const serverId = this._stripRemotePrefix(id, entry.scope)
+      const peek = this._remoteCacheAnswer(entry, serverId)
+      if (peek !== 'unknown') { out.push({ scope, url: entry.url, outcome: peek }); continue }
+      if (opts?.skipLive) { out.push({ scope, url: entry.url, outcome: 'absent' }); continue }
+      const left = deadline - Date.now()
+      if (left <= 0) {
+        out.push({ scope, url: entry.url, outcome: 'unreachable', detail: `the ${REMOTE_GUARD_BUDGET_MS}ms probe budget was spent before reaching it` })
+        continue
+      }
+      try {
+        const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+        // existsById, NOT getById: getById returns null for a dead network
+        // exactly as for a genuine 404 — the silent "no" this must refuse.
+        const exists = await driver.existsById(serverId, { signal: AbortSignal.timeout(Math.min(REMOTE_PROBE_TIMEOUT_MS, left)) })
+        out.push({ scope, url: entry.url, outcome: exists ? 'present' : 'absent' })
+      } catch (err) {
+        const status = err instanceof RemoteHttpError ? err.status : undefined
+        out.push({
+          scope, url: entry.url,
+          outcome: status === 401 || status === 403 ? 'auth_rejected' : 'unreachable',
+          detail: (err as Error).message,
+        })
+      }
+    }
+    return out
+  }
+
+  /** The warning for a store whose token was rejected during a collision probe. */
+  private _rejectedTokenWarning(p: CollisionProbe, id: string, acted: string): string {
+    return `Remote scope "${p.scope}" rejected this machine's token (${p.detail ?? 'HTTP 401/403'}), so it could not ` +
+      `be checked for another engram with id ${id}; ${acted} the LOCAL engram. The token for ${p.scope} is expired, ` +
+      `revoked or lacks access — check it with \`plur login --status\` and refresh it in config.yaml.`
+  }
+
+  /**
+   * forget()'s reading of the collision probe (#831, 0.21.1). Retiring is
+   * irreversible, so "cannot tell" refuses; a rejected token does not, since
+   * this caller cannot retire anything in that store either.
+   */
+  private _decideForgetProbes(id: string, probes: CollisionProbe[], warnings: string[]): void {
+    for (const p of probes) {
+      if (p.outcome === 'present') {
+        throw new Error(
+          `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${p.scope}". `
+          + `Retiring is destructive and irreversible from here, so it will not guess. `
+          + `To retire the local engram: \`plur forget ${id} --scope primary\` (MCP: scope: "primary"). `
+          + `To retire the remote one: --scope ${p.scope} (MCP: scope: "${p.scope}").`,
+        )
+      }
+      if (p.outcome === 'unreachable') {
+        throw new Error(
+          `Cannot safely retire "${id}": remote scope "${p.scope}" could not be reached to rule out an id `
+          + `collision (${p.detail ?? 'no answer'}). Retiring is destructive and irreversible from here, so it will `
+          + `not guess. To retire the local engram without consulting the remote: `
+          + `\`plur forget ${id} --scope primary\` (MCP: scope: "primary").`,
+        )
+      }
+      if (p.outcome === 'auth_rejected') warnings.push(this._rejectedTokenWarning(p, id, 'retired'))
+    }
+  }
+
+  /**
+   * feedback()'s reading of the collision probe (#850, 0.21.1). Same as
+   * forget() except that "cannot tell" rates the local engram with a warning.
+   */
+  private _decideFeedbackProbes(id: string, probes: CollisionProbe[], warnings: string[]): void {
+    for (const p of probes) {
+      if (p.outcome === 'present') {
+        throw new Error(
+          `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${p.scope}". `
+          + `To rate the local engram: \`plur feedback ${id} <signal> --scope primary\` (MCP: scope: "primary"). `
+          + `To rate the remote one: --scope ${p.scope} (MCP: scope: "${p.scope}").`,
+        )
+      }
+      if (p.outcome === 'auth_rejected') {
+        const w = this._rejectedTokenWarning(p, id, 'rated')
+        warnings.push(w)
+        logger.warning(`[plur] ${w}`)
+      }
+      if (p.outcome === 'unreachable') {
+        const w = `Remote scope "${p.scope}" could not be reached to rule out another engram with id ${id} `
+          + `(${p.detail ?? 'no answer'}) — rated the LOCAL engram unverified. Pass --scope primary (MCP: scope: "primary") `
+          + `to skip this check, or --scope ${p.scope} if you meant the remote one.`
+        warnings.push(w)
+        logger.warning(`[plur] ${w}`)
+      }
+    }
   }
 
   private _loadRemoteCached(store: StoreEntry): Engram[] {
@@ -4377,7 +4532,17 @@ export class Plur {
     }
   }
 
-  async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
+  async learnRouted(statement: string, context?: LearnContext, options?: LearnRoutedOptions): Promise<Engram> {
+    // 0.21.1: the caller's deadline for the server leg ONLY. Local work (load,
+    // dedup, write, index) is never raced: a slow local save is a success. A
+    // server that does not answer inside the deadline takes the existing
+    // outbox fallback, so the engram is always stored somewhere. Before, the
+    // CLI raced the WHOLE call against 5 s and exited while core was still
+    // waiting on its 30 s request, so a hanging team server lost the save.
+    const remoteTimeoutMs = options?.remoteTimeoutMs
+    if (remoteTimeoutMs !== undefined && !(Number.isFinite(remoteTimeoutMs) && remoteTimeoutMs > 0)) {
+      throw new TypeError('plur.learnRouted: remoteTimeoutMs must be a positive number of milliseconds')
+    }
     this._assertWritable()
     statement = this._validateLearnInput('learnRouted', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
@@ -4484,10 +4649,10 @@ export class Plur {
     if (isHardPinned(localPlaceholder as never)) {
       return await this._withStoreLock(this.paths.engrams, async () => {
         await this._assertHardTierFits({ ...localPlaceholder, id: 'ENG-XXXXXX-0000-00-00-000' })
-        return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, true)
+        return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, true, remoteTimeoutMs)
       })
     }
-    return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, false)
+    return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, false, remoteTimeoutMs)
   }
 
   /**
@@ -4506,6 +4671,8 @@ export class Plur {
     /** Decision A: a same-scope match held only in a pack or readonly store, noted in history. */
     unpersistableHit: Engram | null,
     lockHeld: boolean,
+    /** The caller's deadline for the POST (0.21.1). Unset: the driver's own 30 s. */
+    remoteTimeoutMs?: number,
   ): Promise<Engram> {
     let serverEngram: Engram
     // Idempotency key for this write (2026-09-29 audits). The placeholder's id
@@ -4513,8 +4680,19 @@ export class Plur {
     // server honouring the contract would collapse them all into the first.
     const writeKey = randomUUID()
     try {
-      const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder, { idempotencyKey: writeKey })
-      serverEngram = { ...localPlaceholder, id: serverId }
+      // AbortSignal.timeout is unref'd: it never keeps a one-shot CLI alive.
+      const signal = remoteTimeoutMs !== undefined ? AbortSignal.timeout(remoteTimeoutMs) : undefined
+      try {
+        const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder, { idempotencyKey: writeKey, signal })
+        serverEngram = { ...localPlaceholder, id: serverId }
+      } catch (inner) {
+        // Say what happened in words a person can act on: the caller's
+        // deadline passed with no answer. Recorded as the outbox's last_error.
+        if (inner instanceof RemoteAbortedError && remoteTimeoutMs !== undefined) {
+          throw new Error(`the server did not answer within ${remoteTimeoutMs}ms (unreachable or not responding)`)
+        }
+        throw inner
+      }
     } catch (err) {
       // Remote failed — save locally with outbox metadata for retry.
       // Audit iter-1 fix (Dijkstra): defensive lookup; the catch is the
@@ -4617,7 +4795,13 @@ export class Plur {
    * warning names the requested scope, not the one it landed in. A sensitive-
    * content demotion is excluded: it already carries its own warning.
    */
-  deliveryOf(engram: Engram, requestedScope?: string): { delivery: LearnDelivery; warning?: string } {
+  deliveryOf(engram: Engram, requestedScope?: string): {
+    delivery: LearnDelivery
+    warning?: string
+    /** Only for `outbox`: why it was queued, in plain words, with what to do. */
+    reason?: string
+    reason_code?: OutboxReasonCode
+  } {
     const e = engram as any
     const stores = this.config.stores ?? []
     if (requestedScope && requestedScope !== engram.scope && isSharedScope(requestedScope)
@@ -4639,6 +4823,7 @@ export class Plur {
       // url store and a path store can share one scope (formal replay, cluster 1).
       delivery = e._fromRemoteStore === true ? 'remote' : 'local'
     } else delivery = 'local'
+    if (delivery === 'outbox') return { delivery, ...this._outboxReason(engram) }
     if (delivery !== 'local' || !isSharedScope(engram.scope)) return { delivery }
 
     const scope = engram.scope
@@ -4680,6 +4865,44 @@ export class Plur {
    * back as it is. This mirrors `_isRemoteBackedScope`'s exact-scope rule, so
    * the two agree on which writes leave the machine.
    */
+  /**
+   * Why an outbox engram was queued (0.21.1), from the failure recorded on it.
+   * Pure: reads `_outbox`, never the network. Uses the outbox classifier so
+   * this line, `plur outbox` and `plur doctor` agree on the cause.
+   */
+  private _outboxReason(engram: Engram): { reason: string; reason_code: OutboxReasonCode } {
+    const ob = (engram as any).structured_data?._outbox as
+      { target_scope?: string; last_status?: number; last_error?: string; auth_failed?: boolean } | undefined
+    const scope = ob?.target_scope ?? engram.scope
+    const v = classifyOutboxFailure({
+      last_status: ob?.last_status, last_error: ob?.last_error, scope,
+      has_store: (this.config.stores ?? []).some(s => !!s.url && s.scope === scope && s.readonly !== true),
+    })
+    const status = ob?.last_status
+    const queued = `Saved on this machine and queued for ${scope}`
+    if (v.state === 'needs_action' && (status === 401 || status === 403 || ob?.auth_failed === true)) {
+      return {
+        reason_code: 'auth_rejected',
+        reason: `${queued}: the store rejected the token${status ? ` (HTTP ${status})` : ''} — it is expired, revoked or lacks write access. ` +
+          `Check it with \`plur login --status\`, refresh the token for ${scope} in config.yaml, then run \`plur outbox --flush\`.`,
+      }
+    }
+    if (v.state === 'needs_action' && v.reason?.startsWith('no writable store')) {
+      return { reason_code: 'no_store', reason: `${queued}: ${v.reason}. ${v.next_step ?? ''}`.trim() }
+    }
+    if (v.state === 'needs_action' || (typeof status === 'number' && status >= 400)) {
+      return {
+        reason_code: 'server_error',
+        reason: `${queued}: ${v.reason ?? `the store answered HTTP ${status}`}.${v.next_step ? ` Next: ${v.next_step}.` : ' It is retried on the next session start or `plur outbox --flush`.'}`,
+      }
+    }
+    return {
+      reason_code: 'unreachable',
+      reason: `${queued}: the server is unreachable (${ob?.last_error ?? 'no answer'}). ` +
+        `It is retried on the next session start or \`plur outbox --flush\`.`,
+    }
+  }
+
   readIdFor(engram: { id: string; scope: string }): string {
     if (!this._isRemoteBackedScope(engram.scope)) return engram.id
     return namespaceEngramId(engram.id, engram.scope)
@@ -7220,8 +7443,9 @@ export class Plur {
     signal: 'positive' | 'negative' | 'neutral',
     scope?: string,
     options?: { source?: FeedbackSource },
-  ): Promise<void> {
+  ): Promise<MutationOutcome> {
     this._assertWritable()
+    const warnings: string[] = []
     const auto = options?.source === 'auto'
     const applyOpts = auto ? { source: 'auto' as const } : {}
     const sourceData = auto ? { source: 'auto' as const } : {}
@@ -7270,7 +7494,7 @@ export class Plur {
           )
         }
         this._logInjectionOutcome(id, signal, options?.source)
-        return
+        return { warnings }
       }
       // No URL-backed store carries this scope. Falling through blindly was a
       // hole (#851 audit): because `scope` is truthy, the `if (!scope)`
@@ -7283,6 +7507,19 @@ export class Plur {
     }
 
     // Try primary engrams first
+    // Collision probe OUTSIDE the store lock (0.21.1), bounded per store —
+    // the same walk forget() runs, read the same way except that "cannot
+    // tell" goes ahead with a warning: a mis-targeted rating is recoverable.
+    // An automatic signal never waits on the network (a cold cache reads as
+    // no collision; it moves strength one step and never commitment).
+    let probedOutsideLock = false
+    if (!scope && this._hasUrlStore()) {
+      const pre = (await this._loadTargeted([id])).find(e => e.id === id)
+      if (pre) {
+        this._decideFeedbackProbes(id, await this._probeIdCollisions(id, { skipLive: auto }), warnings)
+        probedOutsideLock = true
+      }
+    }
     const found = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): rating one engram is a lookup by primary key,
       // not a reason to materialise the corpus. A miss still means "not in the
@@ -7305,53 +7542,10 @@ export class Plur {
       // mis-targeted feedback signal is recoverable and rating is a hot path;
       // refusing here would trade a real cost for a reversible risk. Warn
       // instead, so the unverified case is visible rather than silent.
-      if (!scope) {
-        const guardDeadline = Date.now() + REMOTE_GUARD_BUDGET_MS
-        for (const entry of (this.config.stores ?? [])) {
-          if (!entry.url) continue
-          const serverId = this._stripRemotePrefix(id, entry.scope)
-          const peek = this._remoteCacheAnswer(entry, serverId)
-          let existsRemotely: boolean
-          if (peek !== 'unknown') {
-            existsRemotely = peek === 'present'
-          } else if (auto) {
-            // A hook must not wait on the network for a ranking nudge. A cold
-            // cache reads as "no collision"; a mis-targeted auto signal moves
-            // strength by one step and never commitment, so it is recoverable.
-            existsRemotely = false
-          } else if (Date.now() >= guardDeadline) {
-            // Budget spent on earlier stores. Same branch an unreachable store
-            // takes — "cannot tell" — so feedback proceeds with a warning
-            // rather than refusing a recoverable operation.
-            existsRemotely = false
-            logger.warning(
-              `[plur] ran out of time probing remotes for an id collision on ${id} `
-              + `(${REMOTE_GUARD_BUDGET_MS}ms budget spent before reaching "${entry.scope}") — `
-              + `rating the LOCAL engram unverified. Pass scope explicitly to skip this walk.`,
-            )
-          } else {
-            try {
-              const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
-              // existsById, NOT getById: getById returns null for a dead
-              // network exactly as for a genuine 404, so it would report
-              // "no collision" for a store it never reached.
-              existsRemotely = await driver.existsById(serverId)
-            } catch (err) {
-              existsRemotely = false
-              logger.warning(
-                `[plur] could not reach remote scope "${entry.scope}" to rule out an id collision on ${id} `
-                + `(${(err as Error).message}) — rating the LOCAL engram unverified. `
-                + `Pass scope explicitly if this id also exists remotely.`,
-              )
-            }
-          }
-          if (existsRemotely) {
-            throw new Error(
-              `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${entry.scope}". ` +
-              `Pass scope: "primary" to rate the local engram, or scope: "${entry.scope}" to rate the remote one.`,
-            )
-          }
-        }
+      // The collision probe (#850) runs BEFORE this lock (0.21.1); only a row
+      // that appeared in between is probed here.
+      if (!scope && !probedOutsideLock) {
+        this._decideFeedbackProbes(id, await this._probeIdCollisions(id, { skipLive: auto }), warnings)
       }
 
       applyFeedbackSignal(engram, signal, undefined, applyOpts)
@@ -7380,7 +7574,7 @@ export class Plur {
 
     if (found) {
       this._logInjectionOutcome(id, signal, options?.source)
-      return
+      return { warnings }
     }
 
     // scope: "primary" means local-only — do not try secondary or remote stores
@@ -7414,7 +7608,7 @@ export class Plur {
       }
       return false
       })
-      if (handled) return
+      if (handled) return { warnings }
     }
 
     // Check remote stores — the engram may live on an enterprise server.
@@ -7493,13 +7687,14 @@ export class Plur {
           )
         }
         this._logInjectionOutcome(id, signal, options?.source)
-        return
+        return { warnings }
       }
     }
 
     // Search pack engrams by scanning pack directories
     await this._feedbackPack(id, signal, unverifiedStores, applyOpts)
     this._logInjectionOutcome(id, signal, options?.source)
+    return { warnings }
   }
 
   /**
@@ -7646,6 +7841,20 @@ export class Plur {
       const engrams = await this._loadTargeted([updated.id])
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
+      // Ambiguity guard (0.21.1). Ids are minted per store, so a team row the
+      // server returned with a bare id (learnRouted's result, say) can share
+      // that id with an unrelated local row. Local-first matching then wrote
+      // the team content over the local engram. A row whose scope is backed
+      // by a url store, unlike the local row's, is not this row: refuse.
+      const localScope = engrams[idx].scope
+      if (updated.scope !== localScope && this._isRemoteBackedScope(updated.scope)
+          && !this._isRemoteBackedScope(localScope)) {
+        throw new Error(
+          `Ambiguous engram ID "${updated.id}": the local engram with this id is in "${localScope}", but the row passed `
+          + `is in "${updated.scope}", which a remote store holds. Nothing was written. To update the remote engram, `
+          + `pass its namespaced id (${namespaceEngramId(updated.id, updated.scope)}); to move the local one, use rescope.`,
+        )
+      }
       // Leak guard (#353): local-resident → demote a sensitive update in place.
       // LOW-2: scan context fields too, not just the statement.
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
@@ -7845,10 +8054,45 @@ export class Plur {
    * is awaited and its result returned, so the value is the real engram rather
    * than a placeholder — {@link setPinnedAsync} is the same call.
    */
-  async setPinned(id: string, pinned: boolean): Promise<Engram | null> {
+  async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
     this._assertWritable()
-    // Local primary first.
-    const localResult = await this._withStoreLock(this.paths.engrams, async () => {
+    // Which store holds it (0.21.1). Ids are minted per store, so a bare id
+    // can name a local engram AND an unrelated remote one; pinning went
+    // local-first with no check and changed the wrong engram silently.
+    // `scope: "primary"` = the local row only; a url store's scope = that
+    // store only; omitted = local first, refused when the id is ambiguous.
+    const targetScope = options?.scope
+    if (targetScope !== undefined && (typeof targetScope !== 'string' || targetScope.trim() === '')) {
+      throw new TypeError('plur.setPinned: scope must be a non-empty string')
+    }
+    if (targetScope) this.reloadConfigIfChanged()
+    const scopedEntry = targetScope && targetScope !== 'primary'
+      ? (this.config.stores ?? []).find(s => s.url && s.scope === targetScope && s.readonly !== true)
+      : undefined
+    if (targetScope && targetScope !== 'primary' && !scopedEntry) {
+      throw new Error(`Cannot pin in scope "${targetScope}": no writable url store is registered for it. Use scope "primary" for the local engram.`)
+    }
+    if (!targetScope && this._hasUrlStore()) {
+      const pre = (await this._loadTargeted([id])).find(e => e.id === id)
+      if (pre) {
+        for (const p of await this._probeIdCollisions(id)) {
+          if (p.outcome === 'present') {
+            throw new Error(
+              `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${p.scope}", so it was `
+              + `not ${pinned ? 'pinned' : 'unpinned'}. Pass scope: "primary" for the local engram, or the namespaced id `
+              + `${namespaceEngramId(this._stripRemotePrefix(id, p.scope), p.scope)} (or scope: "${p.scope}") for the remote one.`,
+            )
+          }
+          if (p.outcome === 'auth_rejected') logger.warning(`[plur] ${this._rejectedTokenWarning(p, id, pinned ? 'pinned' : 'unpinned')}`)
+          if (p.outcome === 'unreachable') {
+            logger.warning(`[plur] remote scope "${p.scope}" could not be reached to rule out another engram with id ${id} `
+              + `(${p.detail ?? 'no answer'}) — ${pinned ? 'pinning' : 'unpinning'} the LOCAL engram unverified.`)
+          }
+        }
+      }
+    }
+    // Local primary first (skipped when a remote scope was named).
+    const localResult = scopedEntry ? null : await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.
       const engrams = await this._loadTargeted([id])
       const idx = engrams.findIndex(e => e.id === id)
@@ -7878,6 +8122,7 @@ export class Plur {
       return updated
     })
     if (localResult) return localResult
+    if (targetScope === 'primary') return null
 
     let remotePatched: {
       patched: Engram; driver: RemoteStore; serverId: string; scope: string
@@ -7889,7 +8134,7 @@ export class Plur {
     // refusal rule as `_updateEngramReturning`: a namespaced id names ONE
     // store, so its refusal is thrown; a bare id keeps walking and reports
     // null rather than a success that did not happen.
-    for (const entry of (this.config.stores ?? [])) {
+    for (const entry of (scopedEntry ? [scopedEntry] : (this.config.stores ?? []))) {
       if (!entry.url || entry.readonly === true) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
@@ -7939,7 +8184,7 @@ export class Plur {
         remotePatched = { patched, driver, serverId, scope: entry.scope, priorPinned }
         break
       } catch (err) {
-        if (serverId !== id) throw err
+        if (serverId !== id || scopedEntry) throw err
         continue
       }
     }
@@ -7988,8 +8233,8 @@ export class Plur {
    * awaits the remote PATCH too. Kept so existing callers keep compiling; it
    * IS setPinned (2026-09 audit), so the two cannot drift apart.
    */
-  async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
-    return await this.setPinned(id, pinned)
+  async setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
+    return await this.setPinned(id, pinned, options)
   }
 
   /** List engrams that have pinned: true. */
@@ -8246,8 +8491,9 @@ export class Plur {
    * retirement. The default decrement-until-zero behavior is for internal
    * dedup tracking (two agents learned the same fact; one forgets — the
    * other's reference should remain). */
-  async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<void> {
+  async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
     this._assertWritable()
+    const warnings: string[] = []
 
     // Scope-targeted routing (#831). Ids are minted PER STORE, so one bare id
     // can name several unrelated engrams. Resolving primary-first and retiring
@@ -8290,7 +8536,7 @@ export class Plur {
           timestamp: new Date().toISOString(),
           data: { reason: reason ?? null, routed_to: 'remote', scope: targetScope },
         })
-        return
+        return { warnings }
       }
       // No URL-backed store carries this scope. Falling through blindly here
       // was a hole on the destructive path (#855 audit): because `targetScope`
@@ -8318,6 +8564,19 @@ export class Plur {
     // engram with write_count=N retires it; called fewer times, the
     // engram stays active with a lower count.
     // options.force=true overrides this: retires immediately (#766).
+    // Collision probe OUTSIDE the store lock (0.21.1). Inside it, a hanging
+    // remote held the lock every other writer needs for 30 s; now each probe
+    // is bounded and no lock is held while it waits. Only for a bare id with
+    // no scope that names a live local row — the case #831 guards.
+    let probedOutsideLock = false
+    // No url store, nothing to probe — and no extra read (#827 costs).
+    if (!targetScope && this._hasUrlStore()) {
+      const pre = (await this._loadTargeted([id])).find(e => e.id === id)
+      if (pre && pre.status !== 'retired') {
+        this._decideForgetProbes(id, await this._probeIdCollisions(id), warnings)
+        probedOutsideLock = true
+      }
+    }
     const foundInPrimary = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): a miss still means "not in the primary store"
       // and still falls through to the secondary stores below.
@@ -8345,53 +8604,11 @@ export class Plur {
       // cold. If the lookup cannot complete, refuse rather than guess; the
       // caller has an explicit escape hatch in scope: "primary", which skips
       // this block entirely and needs no network.
-      if (!targetScope) {
-        const guardDeadline = Date.now() + REMOTE_GUARD_BUDGET_MS
-        for (const entry of (this.config.stores ?? [])) {
-          if (!entry.url) continue
-          const serverId = this._stripRemotePrefix(id, entry.scope)
-          const peek = this._remoteCacheAnswer(entry, serverId)
-          let existsRemotely: boolean
-          if (peek !== 'unknown') {
-            existsRemotely = peek === 'present'
-          } else if (Date.now() >= guardDeadline) {
-            // Budget spent on earlier stores. Same branch an unreachable store
-            // takes here — and on THIS path that branch REFUSES, because a
-            // retire is irreversible and "I ran out of time looking" is not
-            // evidence of absence. `scope: "primary"` remains the escape
-            // hatch, and it needs no network at all.
-            throw new Error(
-              `Cannot verify that "${id}" is unambiguous: spent the ${REMOTE_GUARD_BUDGET_MS}ms `
-              + `remote budget before reaching scope "${entry.scope}".\n`
-              + `Retiring now could destroy the wrong engram (#831), so this refuses rather than guessing.\n`
-              + `Pass scope: "primary" to retire the local engram without probing remotes, or pass the `
-              + `remote scope to target it directly.`,
-            )
-          } else {
-            try {
-              const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
-              // existsById, NOT getById: the latter returns null for a dead
-              // network exactly as it does for a genuine 404, so it would
-              // report "no collision" for a store it never reached — the
-              // silent-no this guard exists to refuse.
-              existsRemotely = await driver.existsById(serverId)
-            } catch (e) {
-              throw new Error(
-                `Cannot safely retire "${id}": remote scope "${entry.scope}" is configured but could not be `
-                + `reached to rule out an id collision (${e instanceof Error ? e.message : String(e)}). `
-                + `Retiring is destructive and irreversible from here, so it will not guess. `
-                + `Pass scope: "primary" to retire the local engram without consulting the remote.`,
-              )
-            }
-          }
-          if (existsRemotely) {
-            throw new Error(
-              `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${entry.scope}". `
-              + `Retiring is destructive and irreversible from here, so it will not guess. `
-              + `Pass scope: "primary" to retire the local engram, or scope: "${entry.scope}" to retire the remote one.`,
-            )
-          }
-        }
+      // The collision probe (#831) now runs BEFORE this lock (0.21.1, below
+      // `probedOutsideLock`). Only a row that appeared between that unlocked
+      // check and this lock is probed here — bounded the same way.
+      if (!targetScope && !probedOutsideLock && engram.status !== 'retired') {
+        this._decideForgetProbes(id, await this._probeIdCollisions(id), warnings)
       }
 
       // Already retired — nothing to do (#855 audit). The MCP layer has an
@@ -8458,7 +8675,7 @@ export class Plur {
       return true
     })
 
-    if (foundInPrimary) return
+    if (foundInPrimary) return { warnings }
 
     // Check stores for namespaced IDs.
     // Audit iter-1 fix (Taleb): apply same write-count decrement as
@@ -8521,7 +8738,7 @@ export class Plur {
         return true
       })
       // Not found in the secondary store — fall through to the remote search.
-      if (handled) return
+      if (handled) return { warnings }
     }
 
     // Check remote stores — the engram may live on an enterprise server.
@@ -8630,7 +8847,7 @@ export class Plur {
             timestamp: new Date().toISOString(),
             data: { reason: reason ?? null, routed_to: 'remote' },
           })
-          return
+          return { warnings }
         }
         // Found it, and the server declined to remove it. Remember where, so
         // the error below can say what actually happened.

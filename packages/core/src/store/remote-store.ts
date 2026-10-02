@@ -919,7 +919,7 @@ export class RemoteStore {
    * "Failed to acquire lock" and the engram is silently never stored. The
    * budget is the same one `load()` uses, for the same reason.
    */
-  async existsById(id: string): Promise<boolean> {
+  async existsById(id: string, opts?: { signal?: AbortSignal }): Promise<boolean> {
     // Uses the shared helper (#1155). It carried its OWN AbortController with
     // `clearTimeout` in a `finally` around only the `fetch`, so `await
     // r.json()` ran after the deadline was gone — the exact defect #1152 fixed
@@ -937,19 +937,25 @@ export class RemoteStore {
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      }, RemoteStore.readBounded)
+      }, RemoteStore.readBounded, opts?.signal)
     } catch (err) {
       // An abort is "cannot tell", not "absent" — the whole point of this
       // method — so it must surface as a throw like any other transport
-      // failure, with a message that says which it was.
+      // failure, with a message that says which it was. A cut at the
+      // CALLER's budget (0.21.1: the collision probe is bounded well below
+      // the 30 s request deadline) is a timeout too.
       throw new Error(
         err instanceof RemoteTimeoutError
           ? `existence probe for ${id} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms against ${this.apiBase}`
-          : `existence probe for ${id} failed against ${this.apiBase}: ${(err as Error).message}`,
+          : err instanceof RemoteAbortedError
+            ? `existence probe for ${id} timed out (no answer within the probe budget) against ${this.apiBase}`
+            : `existence probe for ${id} failed against ${this.apiBase}: ${(err as Error).message}`,
       )
     }
     if (r.status === 404) return false
-    if (!r.ok) throw new Error(`HTTP ${r.status} from ${this.apiBase}`)
+    // Same message as before; the status rides along so a caller can tell a
+    // rejected token (401/403) from a server it could not reach (0.21.1).
+    if (!r.ok) throw new RemoteHttpError(r.status, `HTTP ${r.status} from ${this.apiBase}`)
     // A 200 is not on its own proof of existence — confirm the body actually
     // describes THIS engram. Servers and proxies return 200 with collection or
     // envelope payloads on routes they do not recognise, and inferring
