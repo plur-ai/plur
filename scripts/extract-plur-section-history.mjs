@@ -9,8 +9,8 @@
  * Before v4 the sections carried no version marker, so text match is the only
  * proof of ownership. This walks every commit on `ref` that touched a file
  * defining one of the instruction constants, plus the files as they are in the
- * working tree, renders each constant as the code renders it (template
- * literals with `${NAME}` resolved from string constants in the same file),
+ * working tree, renders each constant as the code renders it (see
+ * render-instruction-const.mjs for what it can render),
  * and writes the distinct texts to packages/core/src/instruction-history.ts,
  * which the cli, mcp and claw installers all read.
  *
@@ -32,6 +32,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { evaluateConst } from './render-instruction-const.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const ref = process.argv[2] ?? 'HEAD'
@@ -44,66 +45,11 @@ const SOURCES = [
   { path: 'packages/claw/src/index.ts', consts: { PLUR_SYSTEM_SECTION: 'claw' } },
 ]
 
-const cook = (raw, quote) => new Function(`return ${quote}${raw}${quote}`)()
-
-/**
- * The value the code gives the constant `name` in `source`: a template
- * literal whose `${X}` parts name other constants in the same file, or a
- * `+` concatenation of string literals. Returns { text }, { missing: true }
- * when the file has no such constant, or { error } when it cannot be rendered.
- */
-function evaluate(source, name, depth = 0) {
-  if (depth > 8) return { error: 'interpolation too deep' }
-  const m = new RegExp(`(?:export\\s+)?const\\s+${name}(?:\\s*:\\s*[\\w.<>\\[\\] |]+)?\\s*=\\s*`).exec(source)
-  if (!m) return { missing: true }
-  let i = m.index + m[0].length
-  let out = ''
-  for (;;) {
-    while (/\s/.test(source[i] ?? '')) i++
-    const q = source[i]
-    if (q === "'" || q === '"') {
-      let j = i + 1
-      while (source[j] !== q) { if (source[j] === '\\') j++; j++; if (j >= source.length) return { error: 'unterminated string' } }
-      out += cook(source.slice(i + 1, j), q)
-      i = j + 1
-    } else if (q === '`') {
-      let j = i + 1
-      let chunk = ''
-      for (;;) {
-        const c = source[j]
-        if (c === undefined) return { error: 'unterminated template' }
-        if (c === '\\') { chunk += c + source[j + 1]; j += 2; continue }
-        if (c === '`') break
-        if (c === '$' && source[j + 1] === '{') {
-          const end = source.indexOf('}', j)
-          const ref = source.slice(j + 2, end).trim()
-          if (!/^[A-Za-z_$][\w$]*$/.test(ref)) return { error: `interpolates an expression: ${ref}` }
-          const inner = evaluate(source, ref, depth + 1)
-          if (inner.text === undefined) return { error: `cannot resolve \${${ref}}` }
-          out += cook(chunk, '`') + inner.text
-          chunk = ''
-          j = end + 1
-          continue
-        }
-        chunk += c
-        j++
-      }
-      out += cook(chunk, '`')
-      i = j + 1
-    } else {
-      return out === '' ? { error: 'not a string expression' } : { error: 'unexpected token after string' }
-    }
-    while (/\s/.test(source[i] ?? '')) i++
-    if (source[i] === '+') { i++; continue }
-    return { text: out }
-  }
-}
-
 const found = { section: new Map(), cursor: new Map(), claw: new Map() }
 const errors = []
 function collect(src, label, consts) {
   for (const [name, kind] of Object.entries(consts)) {
-    const r = evaluate(src, name)
+    const r = evaluateConst(src, name)
     if (r.missing) continue
     if (r.error) { errors.push(`${label} ${name}: ${r.error}`); continue }
     if (!found[kind].has(r.text)) found[kind].set(r.text, `${label} ${name}`)
