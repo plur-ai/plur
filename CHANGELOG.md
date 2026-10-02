@@ -2,12 +2,12 @@
 
 ## 0.21.1
 
-Folder control everywhere. No lost saves.
+You decide where your agents remember.
 
-- MCP and opencode follow folders
+- Folder map in MCP and opencode
+- New folders ask first
 - plur folders repair
-- No lost saves on a slow server
-- Replies show memories used
+- See which memories a reply used
 
 ### Instruction upgrades respect lists, links, edits and look-alike learnings (#1557)
 
