@@ -1,4 +1,4 @@
-import { readSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs'
+import { readSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs'
 import { createHash } from 'crypto'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -16,8 +16,10 @@ import { claimNudge, hasLearnSignal, lastUserMessage, learnFallbackInterval } fr
  * Runs at the end of every response:
  * - Nudges when the user's last message (read from the payload's
  *   `transcript_path`) carries a correction / preference / decision signal
- *   (lib/learn-signal.ts) — once per message — and otherwise only on every
- *   PLUR_LEARN_FALLBACK_INTERVAL-th Stop (default 10; 0 = off). It used to
+ *   (lib/learn-signal.ts), and otherwise only on every
+ *   PLUR_LEARN_FALLBACK_INTERVAL-th Stop (default 10; 0 = off) — at most
+ *   once per user message either way, and never after the agent already
+ *   called plur_learn in that reply. It used to
  *   nudge every 3rd Stop, and the forced turn mostly ended in a bare "ok".
  *   A missing or unreadable transcript leaves only the fallback.
  * - Every 10th Stop: writes a session checkpoint to ~/.plur/sessions/
@@ -77,7 +79,7 @@ function counterPath(key: string): string | null {
   return dir ? join(dir, `${key}.stop-count`) : null
 }
 
-// One marker per (session, message) a signal nudge fired for, next to the
+// One marker per (session, message) a nudge (signal or fallback) fired for, next to the
 // counter: a later Stop with no new human message (a background task ending)
 // still sees the same message and must not nudge for it again. Claimed with an
 // exclusive, no-follow create (claimNudge), so two racing Stops cannot both
@@ -120,6 +122,22 @@ function checkpointDir(flags: GlobalFlags): string | null {
   return ensureSessionDir(dir) ? dir : null
 }
 
+/**
+ * Read a file only if it is a regular file: a FIFO or device planted at the
+ * path would block a plain readFileSync and hang the Stop (re-audit R5, the
+ * same hardening as the transcript read). Throws on anything else.
+ */
+function readRegularFile(path: string): string {
+  if (!statSync(path).isFile()) throw new Error('not a regular file')
+  const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0))
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error('not a regular file')
+    return readFileSync(fd, 'utf8')
+  } finally {
+    closeSync(fd)
+  }
+}
+
 function writeCheckpoint(id: string, count: number, cwd: string, flags: GlobalFlags): void {
   // id: hookSessionKey of this Stop payload (H1)
   const dir = checkpointDir(flags)
@@ -132,9 +150,9 @@ function writeCheckpoint(id: string, count: number, cwd: string, flags: GlobalFl
   // Read existing checkpoint to preserve started_at
   let startedAt = now
   try {
-    const existing = JSON.parse(readFileSync(path, 'utf8'))
+    const existing = JSON.parse(readRegularFile(path))
     if (existing.started_at) startedAt = existing.started_at
-  } catch { /* first checkpoint */ }
+  } catch { /* first checkpoint, or not a regular file */ }
 
   const checkpoint = {
     session_id: id,
@@ -239,16 +257,26 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // never throws; an unclaimable marker is "no nudge".
   // No nudge at all when the agent already called plur_learn in that reply:
   // the memory was saved, a forced turn would only repeat it.
+  //
+  // The fallback (every PLUR_LEARN_FALLBACK_INTERVAL-th Stop) gives a session
+  // with no explicit signal an occasional check. Both paths claim the same
+  // per-message marker, so one user message gets at most one nudge: a
+  // background task ending the turn again at the fallback count does not
+  // nudge a second time for a message already nudged (re-audit R3). Without
+  // a readable transcript there is no message, and only the count decides.
   let prompt: string | null = null
   const msg = lastUserMessage(data.transcript_path)
   if (msg?.learned) return
-  if (msg && hasLearnSignal(msg.text) && claimNudge(nudgeMarkerPath(counter, msg.id))) {
-    prompt = SIGNAL_PROMPT
-  }
-
-  // Rare fallback, so a session with no explicit signal still gets a check.
   const fallback = learnFallbackInterval()
-  if (!prompt && fallback > 0 && count % fallback === 0) prompt = LEARN_PROMPT
+  const fallbackDue = fallback > 0 && count % fallback === 0
+  if (msg) {
+    const signal = hasLearnSignal(msg.text)
+    if ((signal || fallbackDue) && claimNudge(nudgeMarkerPath(counter, msg.id))) {
+      prompt = signal ? SIGNAL_PROMPT : LEARN_PROMPT
+    }
+  } else if (fallbackDue) {
+    prompt = LEARN_PROMPT
+  }
   if (!prompt) return
 
   const output = { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: prompt } }

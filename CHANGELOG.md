@@ -6,17 +6,20 @@
 
 The Stop-hook memory check used to fire after every third response, forcing an
 extra turn that usually ended in a bare "ok". It now reads the last message you
-typed from the transcript and nudges only when it reads as a correction ("no,
-use pnpm", "that's wrong", "wrong file"), a preference ("I prefer …", "I'd
-rather …") or a standing rule ("from now on …", "never …", "remember that …"),
-or a decision-board answer — once per message. Slovenian and German core forms
-count too ("ne, …", "narobe", "od zdaj naprej", "nein, …", "falsch", "ab
-jetzt"), and curly apostrophes match like straight ones. Ordinary requests do
-not ("It should return 200", "call it from the parser instead", a bare "no"),
-nor do pasted logs, code blocks or quoted text, compaction summaries, command
-output or task notifications. No nudge when the agent already called
-`plur_learn` in that reply. When nothing is worth keeping, the forced turn
-asks for no "ok": the memory line the agent ends every reply with is enough.
+typed from the transcript and nudges only when it reads as a correction aimed
+at the agent ("no, use pnpm", "that's wrong", "you edited the wrong file"), a
+preference ("I prefer …", "I'd rather …") or a standing rule ("from now on
+…", "never …", "remember that …"), or a decision-board answer. Slovenian and
+German count in the same shapes ("ne, uporabi …", "to je narobe", "narobe si
+…", "vedno uporabi …", "od zdaj naprej"; "nein, nimm …", "das ist falsch",
+"immer pnpm verwenden", "ab jetzt"), and curly apostrophes match like
+straight ones. Ordinary requests, bug reports and answers do not ("It should
+return 200", "Nekaj je narobe s prijavo", "Immer wenn ich …", "No, keep
+going"), nor do pasted logs, code blocks, quoted text, compaction summaries,
+command output or task notifications. At most one nudge per message, and none
+when the agent already called `plur_learn` in that reply. When nothing is
+worth keeping, the forced turn asks for no "ok": the memory line the agent
+ends every reply with is enough.
 A fallback still checks every 10th response; set
 `PLUR_LEARN_FALLBACK_INTERVAL` to change it, or `0` to turn it off.
 
