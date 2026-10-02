@@ -1862,9 +1862,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // shared one — reached the caller with no signal of either.
             const routed = (r.engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
             const routeRefused = (r.engram as any).structured_data?._routeRefused as { scope: string; confidence: number; reason: string } | undefined
+            // Where each item landed (#1532 re-audit R6), as plur_learn says it:
+            // the default server deadline sends more team items to the outbox.
+            const requested = r.input_index !== undefined ? (raw[r.input_index] as { scope?: unknown } | undefined)?.scope : undefined
+            const delivered = plur.deliveryOf(r.engram, typeof requested === 'string' ? requested : undefined)
             return {
             input_index: r.input_index,
             id: isOutbox ? r.engram.id : plur.readIdFor(r.engram),
+            delivery: delivered.delivery,
+            ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
+            ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             statement: r.engram.statement,
             scope: r.engram.scope,
             type: r.engram.type,

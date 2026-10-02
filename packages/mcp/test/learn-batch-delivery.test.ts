@@ -13,6 +13,7 @@ import { createServer, type Server } from 'http'
 import type { Socket } from 'net'
 import { Plur } from '@plur-ai/core'
 import { getToolDefinitions } from '../src/tools.js'
+import { StubServer } from '../../core/test/helpers/stub-server.js'
 
 const TEAM = 'group:test'
 const batch = getToolDefinitions('full').find(t => t.name === 'plur_learn_batch')!
@@ -49,5 +50,18 @@ describe('plur_learn_batch reports per-item delivery (#1532 re-audit R6)', () =>
     expect(byStatement['Team note the server refuses'].delivery).toBe('outbox')
     expect(byStatement['Team note the server refuses'].delivery_reason_code).toBe('auth_rejected')
     expect(byStatement['Personal note that stays here'].delivery).toBe('local')
+  }, 60_000)
+
+  it('a team item the server accepts is reported as remote', async () => {
+    const stub = new StubServer('t')
+    const { url: okUrl } = await stub.start()
+    try {
+      writeFileSync(join(dir, 'config.yaml'), `embeddings:\n  enabled: false\nstores:\n  - url: "${okUrl}"\n    token: "t"\n    scope: "${TEAM}"\n`)
+      const plur = new Plur({ path: dir })
+      await plur.ready()
+      const res = await batch.handler({ engrams: [{ statement: 'Team note the server accepts', scope: TEAM, domain: 'test.team' }] }, plur) as any
+      expect(res.results[0].delivery).toBe('remote')
+      expect(stub.appendCalls).toBe(1)
+    } finally { await stub.stop() }
   }, 60_000)
 })
