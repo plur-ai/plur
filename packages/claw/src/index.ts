@@ -65,7 +65,7 @@ const plugin = {
       else if (result.updated) api.logger.info(`PLUR: updated memory instructions in ${result.path}${backup}`)
       else api.logger.info(`PLUR: memory instructions up to date`)
       if (result.closedOpenBlock) {
-        api.logger.info(`PLUR: closed the ${result.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of ${result.path} so the memory instructions are not inside it`)
+        api.logger.info(`PLUR: closed the ${result.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of ${result.path} before adding the memory instructions`)
       }
       if (result.keptSections > 0) {
         api.logger.warn(`PLUR: left ${result.keptSections} older "## PLUR Memory System" section(s) in ${result.path} untouched because they have text PLUR did not write — remove them yourself once you have kept what you need`)

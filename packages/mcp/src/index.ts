@@ -269,7 +269,7 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
     )
   }
   if (r.closedOpenBlock) {
-    notes.push(`closed the ${r.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of the file, so the new section is not inside it`)
+    notes.push(`closed the ${r.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of the file before adding the section`)
   }
   return notes.length ? `${head} (${notes.join('; ')})` : head
 }
