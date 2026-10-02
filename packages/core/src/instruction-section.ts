@@ -1,6 +1,7 @@
 import {
-  accessSync, chmodSync, constants, copyFileSync, existsSync, readFileSync, readdirSync, realpathSync,
-  renameSync, statSync, unlinkSync, writeFileSync,
+  accessSync, chmodSync, chownSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync,
+  openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync,
+  writeFileSync,
 } from 'fs'
 import { randomBytes } from 'crypto'
 import { basename, dirname, join } from 'path'
@@ -49,11 +50,13 @@ export interface InstructionSectionResult {
    * upgraded: a shipped section was replaced (and any other shipped copies
    * removed). already: a current section is present and nothing else changed.
    */
-  status: 'created' | 'added' | 'upgraded' | 'already'
+  status: 'created' | 'added' | 'upgraded' | 'already' | 'skipped'
   /** Sections under the PLUR heading that PLUR did not write, left untouched. */
   keptSections: number
   /** The file ended inside a code fence or HTML comment, which was closed before the section was appended. */
   closedOpenBlock?: 'fence' | 'comment'
+  /** With status `skipped`: why nothing was written. */
+  skipReason?: string
 }
 
 const BOM = '﻿'
@@ -61,52 +64,211 @@ const BOM = '﻿'
 /** The text a line holds, without a trailing CR. */
 const bare = (line: string) => line.endsWith('\r') ? line.slice(0, -1) : line
 
-/** What a file still has open at its end, if anything. */
-type OpenBlock = { kind: 'fence'; close: string } | { kind: 'comment'; close: string } | null
+/**
+ * What a file still has open at its end, if anything. `unsure`: a code block
+ * may or may not still be open, depending on Markdown structure PLUR cannot
+ * see, so nothing is appended (#1520 third re-audit N1).
+ */
+type OpenBlock =
+  | { kind: 'fence'; close: string }
+  | { kind: 'comment'; close: string }
+  | { kind: 'unsure' }
+  | null
+
+const indentOf = (line: string) => /^ */.exec(line)![0].length
+const LIST_MARKER = /^( *)([-*+]|\d{1,9}[.)])( {1,4})\S/
+/** A fence opened on a list item's marker line: `- ```lang`. */
+const MARKER_FENCE = /^( *)([-*+]|\d{1,9}[.)])( {1,4})(`{3,}|~{3,})(.*)$/
+/** CommonMark HTML block type 1: raw text up to the matching end tag. */
+const RAW_HTML_START = /^ {0,3}<(pre|script|style|textarea)(?:\s|>|$)/i
+const RAW_HTML_END = /<\/(?:pre|script|style|textarea)>/i
+/** CommonMark HTML blocks 6/7 (approximately): a line starting with a tag, up to a blank line. */
+const HTML_TAG_START = /^ {0,3}<\/?[A-Za-z][\w-]*(?:\s|\/?>|$)/
 
 /**
- * Lines that are not markdown structure: lines of a fenced code block (fence
- * lines included, CommonMark ``` and ~~~) and lines of an HTML comment block
- * (a line starting with `<!--`, through the line holding `-->`). A heading
- * or marker on such a line is example or hidden text, never a section
- * (#1520 audit S1, re-audit low b). Also reports a block still open at the
- * end of the file (re-audit R1).
+ * The list item a block at `indent` (line `at`) sits in: its content column
+ * and its marker line's indentation, or null when it is not inside one. Walks
+ * back over the item's earlier lines (blank, or indented at least as far as
+ * the block) to its marker line; the block belongs to that item when it
+ * starts within the item's content (column c to c+3).
+ */
+function listContainer(lines: string[], hidden: boolean[], at: number, indent: number): { content: number; markerIndent: number } | null {
+  for (let j = at - 1; j >= 0; j--) {
+    const line = bare(lines[j])
+    if (line.trim() === '') continue
+    if (hidden[j]) return null
+    const m = LIST_MARKER.exec(line)
+    if (m) {
+      const c = m[1].length + m[2].length + m[3].length
+      if (indent >= c && indent <= c + 3) return { content: c, markerIndent: m[1].length }
+      if (indentOf(line) < indent) return null
+      continue
+    }
+    if (indentOf(line) < indent) return null
+  }
+  return null
+}
+
+/** A marker line indented 4+ is a list item only inside another list item; otherwise it is indented code. */
+function markerIsReal(lines: string[], hidden: boolean[], at: number, markerIndent: number): boolean {
+  if (markerIndent <= 3) return true
+  for (let j = at - 1; j >= 0; j--) {
+    const line = bare(lines[j])
+    if (line.trim() === '') continue
+    if (hidden[j]) return false
+    const m = LIST_MARKER.exec(line)
+    if (m && m[1].length < markerIndent) {
+      const c = m[1].length + m[2].length + m[3].length
+      return markerIndent >= c && markerIndent <= c + 3 && markerIsReal(lines, hidden, j, m[1].length)
+    }
+    if (indentOf(line) < markerIndent) return false
+  }
+  return false
+}
+
+/** The line index of the marker line for the container found by listContainer. */
+function markerLine(lines: string[], at: number, content: number): number {
+  for (let j = at - 1; j >= 0; j--) {
+    const m = LIST_MARKER.exec(bare(lines[j]))
+    if (m && m[1].length + m[2].length + m[3].length === content) return j
+  }
+  return -1
+}
+
+/**
+ * Lines that are not markdown structure, and so never hold a section heading
+ * or marker (#1520 audit S1, re-audit low b): fenced code (``` and ~~~),
+ * HTML comment blocks, raw HTML blocks (`<pre>`, `<script>`, `<style>`,
+ * `<textarea>`, up to the end tag) and other HTML blocks (a line starting with
+ * a tag, up to a blank line). Also reports a block still open at the end of
+ * the file (re-audit R1).
+ *
+ * A fence or comment inside a list item ends where the item ends — at the
+ * first non-blank line indented less than the item's content — as CommonMark
+ * has it, so a later paragraph or list item is never taken for code or
+ * hidden text, and closing the block at the end of the file never opens a new
+ * one (third re-audit N1, #1557 review L1). A fence opened on the marker line
+ * itself (`- ```) is tracked the same way (L7).
+ *
+ * `unsure` — nothing will be appended — when a block open at the end of the
+ * file cannot be placed for certain: a fence indented with tabs (L2), a fence
+ * under what is really an indented code block (L7), an unclosed raw HTML block
+ * (L7), or an indented fence outside any visible list item followed by a
+ * less-indented line.
  */
 function hiddenLines(lines: string[]): { hidden: boolean[]; openAtEnd: OpenBlock } {
+  type Block =
+    | { kind: 'fence'; char: string; len: number; indent: number; container: number | null; doubtful: boolean }
+    | { kind: 'comment'; indent: number; container: number | null }
+    | { kind: 'raw-html' }
+    | { kind: 'html' }
   const hidden: boolean[] = new Array(lines.length).fill(false)
-  let fence: { char: string; len: number; indent: string } | null = null
-  let comment = false
+  let open: Block | null = null
+  const containerAt = (at: number, indent: number) => {
+    const c = listContainer(lines, hidden, at, indent)
+    if (!c) return { container: null, real: true }
+    const mline = markerLine(lines, at, c.content)
+    return { container: c.content, real: markerIsReal(lines, hidden, mline, c.markerIndent) }
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = bare(lines[i])
-    if (fence) {
+    const blank = line.trim() === ''
+
+    if (open) {
+      const ended =
+        (open.kind === 'fence' || open.kind === 'comment') && open.container !== null && !blank && indentOf(line) < open.container
+      if (ended) {
+        open = null // the list item ended, and its block with it
+      } else {
+        hidden[i] = true
+        if (open.kind === 'fence') {
+          const base = open.container ?? 0
+          const close = open.doubtful
+            ? /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(line)
+            : /^( *)(`{3,}|~{3,})[ \t]*$/.exec(line)
+          const closeIndent = open.doubtful ? 0 : (close?.[1]?.length ?? 0)
+          const chars = open.doubtful ? close?.[1] : close?.[2]
+          if (close && chars && chars[0] === open.char && chars.length >= open.len && closeIndent - base >= 0 && closeIndent - base <= 3) {
+            open = null
+          } else if (open.container === null && open.indent > 0 && !blank && indentOf(line) < open.indent) {
+            open.doubtful = true
+          }
+        } else if (open.kind === 'comment') {
+          if (line.includes('-->')) open = null
+        } else if (open.kind === 'raw-html') {
+          if (RAW_HTML_END.test(line)) open = null
+        } else if (blank) {
+          open = null
+        }
+        continue
+      }
+    }
+    if (blank) continue
+
+    // A fence indented with tabs: columns cannot be placed for certain.
+    const tabbed = /^([ \t]*\t[ \t]*)(`{3,}|~{3,})(.*)$/.exec(line)
+    if (tabbed && !(tabbed[2][0] === '`' && tabbed[3].includes('`'))) {
       hidden[i] = true
-      const m = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
-      if (m && m[1][0] === fence.char && m[1].length >= fence.len) fence = null
+      open = { kind: 'fence', char: tabbed[2][0], len: tabbed[2].length, indent: 0, container: null, doubtful: true }
       continue
     }
+    const onMarker = MARKER_FENCE.exec(line)
+    if (onMarker && !(onMarker[4][0] === '`' && onMarker[5].includes('`'))) {
+      const c = onMarker[1].length + onMarker[2].length + onMarker[3].length
+      hidden[i] = true
+      open = {
+        kind: 'fence', char: onMarker[4][0], len: onMarker[4].length, indent: c, container: c,
+        doubtful: !markerIsReal(lines, hidden, i, onMarker[1].length),
+      }
+      continue
+    }
+    const fence = /^( *)(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence && !(fence[2][0] === '`' && fence[3].includes('`'))) {
+      const indent = fence[1].length
+      const { container, real } = containerAt(i, indent)
+      if (indent <= 3 || container !== null) {
+        hidden[i] = true
+        open = { kind: 'fence', char: fence[2][0], len: fence[2].length, indent, container, doubtful: !real }
+        continue
+      }
+    }
+    const comment = /^( *)<!--/.exec(line)
     if (comment) {
+      const indent = comment[1].length
+      const { container, real } = containerAt(i, indent)
+      if ((indent <= 3 || container !== null) && real) {
+        if (!line.slice(comment[0].length).includes('-->')) {
+          hidden[i] = true
+          open = { kind: 'comment', indent, container }
+        }
+        continue
+      }
+    }
+    if (RAW_HTML_START.test(line)) {
       hidden[i] = true
-      if (line.includes('-->')) comment = false
+      if (!RAW_HTML_END.test(line)) open = { kind: 'raw-html' }
       continue
     }
-    const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line)
-    if (m && !(m[2][0] === '`' && m[3].includes('`'))) {
+    const prevBlank = i === 0 || bare(lines[i - 1]).trim() === ''
+    if (prevBlank && HTML_TAG_START.test(line)) {
       hidden[i] = true
-      fence = { char: m[2][0], len: m[2].length, indent: m[1] }
-      continue
-    }
-    const c = /^ {0,3}<!--/.exec(line)
-    if (c && !line.slice(c[0].length).includes('-->')) {
-      hidden[i] = true
-      comment = true
+      open = { kind: 'html' }
     }
   }
-  const openAtEnd: OpenBlock = fence
-    // The close carries the opening fence's indentation: a fence opened inside
-    // a list item is closed inside that item, not by a column-0 fence that
-    // would open a new block around the section (#1520 second re-audit L1).
-    ? { kind: 'fence', close: fence.indent + fence.char.repeat(fence.len) }
-    : comment ? { kind: 'comment', close: '-->' } : null
+
+  let openAtEnd: OpenBlock = null
+  if (open?.kind === 'fence') {
+    // The close carries the opening fence's indentation, so a fence in a list
+    // item is closed inside that item (#1520 second re-audit L1).
+    openAtEnd = open.doubtful
+      ? { kind: 'unsure' }
+      : { kind: 'fence', close: ' '.repeat(open.indent) + open.char.repeat(open.len) }
+  } else if (open?.kind === 'comment') {
+    openAtEnd = { kind: 'comment', close: ' '.repeat(open.container ?? 0) + '-->' }
+  } else if (open?.kind === 'raw-html') {
+    openAtEnd = { kind: 'unsure' }
+  }
   return { hidden, openAtEnd }
 }
 
@@ -196,6 +358,12 @@ export function upsertInstructionSection(
     // run would append another (re-audit R1). Closing a block at the end of the
     // file does not change how anything before it renders: an unclosed block
     // already runs to the end of the document.
+    if (openAtEnd?.kind === 'unsure') {
+      return {
+        content, status: 'skipped', keptSections,
+        skipReason: 'the file ends inside a code block or HTML block that PLUR cannot tell is closed — close it and run again',
+      }
+    }
     let out = body
     if (out !== '' && !out.endsWith('\n')) out += eol
     if (openAtEnd) out += openAtEnd.close + eol
@@ -259,10 +427,24 @@ export function backupPath(path: string, now: Date = new Date()): string {
   return candidate
 }
 
+/** Best-effort fsync of a file or directory; some platforms cannot fsync a directory. */
+function syncPath(path: string, flags: string): void {
+  let fd: number | undefined
+  try {
+    fd = openSync(path, flags)
+    fsyncSync(fd)
+  } catch { /* not supported here (e.g. a directory on Windows) */ } finally {
+    if (fd !== undefined) try { closeSync(fd) } catch { /* ignore */ }
+  }
+}
+
 /**
  * Copy an existing file to a timestamped backup beside it; returns the backup
  * path. With `once`, an existing backup holding the same content is reused,
  * so re-running on an unchanged file does not pile up copies (re-audit low c).
+ * The copy is created exclusively (COPYFILE_EXCL, retrying with a new name),
+ * so two writers can never share or overwrite one backup (third re-audit N2),
+ * and it is flushed to disk.
  */
 export function backupFile(path: string, opts: { once?: boolean } = {}): string | null {
   if (!existsSync(path)) return null
@@ -274,49 +456,125 @@ export function backupFile(path: string, opts: { once?: boolean } = {}): string 
       try { if (readFileSync(join(dir, f)).equals(current)) return join(dir, f) } catch { /* unreadable: ignore */ }
     }
   }
-  const dest = backupPath(path)
-  copyFileSync(path, dest)
-  return dest
+  for (let attempt = 0; ; attempt++) {
+    const dest = backupPath(path)
+    try {
+      copyFileSync(path, dest, constants.COPYFILE_EXCL)
+      syncPath(dest, 'r')
+      return dest
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 20) throw err
+    }
+  }
+}
+
+/** A write PLUR declined to make; the message says why. Callers report it and carry on. */
+export class InstructionWriteRefused extends Error {
+  readonly code = 'PLUR_REFUSED'
+  constructor(message: string) {
+    super(message)
+    this.name = 'InstructionWriteRefused'
+  }
 }
 
 /**
  * Write `content` to `path`, first copying any existing file to a timestamped
  * backup beside it. Returns the backup path, or null when the file is new.
  *
- * The new content goes to a temporary file in the same directory, which is
- * then renamed over the target, so the target is never truncated or half
- * written: a failure partway (a full disk, an I/O error) leaves the user's
- * file exactly as it was (#1520 second re-audit H1). The temporary file is
- * removed on failure, and so is the backup, but only after checking that the
- * target still holds the original bytes. The file's permission bits are
- * kept, and a symlink is written through to its target rather than replaced.
- * A file that is not writable is refused before anything is copied
- * (re-audit low d).
+ * `expected` is the text the caller read and built `content` from: null when
+ * the caller saw no file (then an existing file is refused), undefined to skip
+ * the check. If the file no longer holds it — the user saved
+ * in between — nothing is written and InstructionWriteRefused is thrown, so
+ * the user's edit is never overwritten (third re-audit N2). The same check
+ * runs again just before the new content is swapped in.
+ *
+ * The new content goes to a temporary file in the same directory, flushed to
+ * disk, then renamed over the target, so the target is never truncated or half
+ * written: a failure partway leaves the user's file exactly as it was (second
+ * re-audit H1). The temporary file is removed on failure, and so is the
+ * backup, but only when the target still holds the original bytes. Permission
+ * bits are kept, and owner and group too where the process may set them.
+ *
+ * What the file is, is kept (third re-audit N2): a symlink is written through
+ * to its target; a symlink to a missing file is refused rather than replaced
+ * by a regular file; a file with several hard links is refused — rewriting it
+ * in place risks emptying every name on a full disk (#1557 review M1). A file
+ * that is not valid UTF-8, or one that appeared after the caller saw none, is
+ * refused too. A file that is not writable is refused before anything is
+ * copied (re-audit low d).
  */
-export function writeWithBackup(path: string, content: string): string | null {
+export function writeWithBackup(path: string, content: string, expected?: string | Buffer | null): string | null {
+  const asBuffer = (v: string | Buffer) => (typeof v === 'string' ? Buffer.from(v) : v)
+  let link: ReturnType<typeof lstatSync> | null = null
+  try { link = lstatSync(path) } catch { link = null }
   const exists = existsSync(path)
-  const target = exists ? realpathSync(path) : path
-  let original: Buffer | null = null
-  let mode: number | undefined
-  if (exists) {
-    accessSync(target, constants.W_OK)
-    original = readFileSync(target)
-    mode = statSync(target).mode & 0o7777
+
+  if (link?.isSymbolicLink() && !exists) {
+    throw new InstructionWriteRefused(`it is a symlink to ${readlinkSync(path)}, which is missing — PLUR will not replace the link`)
   }
-  const backup = exists ? backupFile(path) : null
+  if (!exists) {
+    if (expected != null) throw new InstructionWriteRefused('it was removed while PLUR was updating it — run again')
+    try {
+      writeFileSync(path, content, { flag: 'wx' })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new InstructionWriteRefused('it was created while PLUR was updating it — run again')
+      }
+      throw err
+    }
+    return null
+  }
+
+  const target = realpathSync(path)
+  accessSync(target, constants.W_OK)
+  const original = readFileSync(target)
+  const st = statSync(target)
+  if (!Buffer.from(original.toString('utf8'), 'utf8').equals(original)) {
+    // The caller worked on a decoded copy; writing it back would replace the
+    // bytes that are not UTF-8 (#1557 review L3).
+    throw new InstructionWriteRefused('PLUR cannot read it as UTF-8 text, so nothing was changed — add the section by hand or save the file as UTF-8')
+  }
+  if (expected === null) {
+    // The caller saw no file and built a whole new one (#1557 review L6).
+    throw new InstructionWriteRefused('it was created while PLUR was updating it — run again')
+  }
+  if (expected !== undefined && !original.equals(asBuffer(expected))) {
+    throw new InstructionWriteRefused('it changed after PLUR read it — run again')
+  }
+  if (st.nlink > 1) {
+    // Another name shares this file. Writing it in place truncates it first,
+    // so a full disk would empty every name; renaming would split the names
+    // apart. PLUR leaves it to the user (#1557 review M1).
+    throw new InstructionWriteRefused(
+      `it shares its contents with ${st.nlink - 1} other name${st.nlink === 2 ? '' : 's'} (a hard link), ` +
+      'and PLUR does not rewrite shared files — break the link (copy the file and replace it with the copy) ' +
+      'and run again, or add the section by hand',
+    )
+  }
+  const backup = backupFile(target)
+  const dropBackupIfUnchanged = () => {
+    if (!backup) return
+    let unchanged = false
+    try { unchanged = readFileSync(target).equals(original) } catch { /* unreadable: keep the backup */ }
+    if (unchanged) { try { unlinkSync(backup) } catch { /* report the original error, not this */ } }
+  }
+
   const tmp = join(dirname(target), `.${basename(target)}.plur-tmp-${process.pid}-${randomBytes(4).toString('hex')}`)
   try {
-    writeFileSync(tmp, content, mode === undefined ? undefined : { mode })
-    if (mode !== undefined) chmodSync(tmp, mode)
+    writeFileSync(tmp, content, { flag: 'wx', mode: st.mode & 0o7777 })
+    chmodSync(tmp, st.mode & 0o7777)
+    try { chownSync(tmp, st.uid, st.gid) } catch { /* not permitted for this process: keep ours */ }
+    syncPath(tmp, 'r+')
+    if (!readFileSync(target).equals(original)) {
+      throw new InstructionWriteRefused('it changed while PLUR was updating it — run again')
+    }
     renameSync(tmp, target)
   } catch (err) {
     try { unlinkSync(tmp) } catch { /* never created, or already gone */ }
-    if (backup && original) {
-      let unchanged = false
-      try { unchanged = readFileSync(target).equals(original) } catch { /* unreadable: keep the backup */ }
-      if (unchanged) { try { unlinkSync(backup) } catch { /* report the write error, not this */ } }
-    }
+    dropBackupIfUnchanged()
+    if (err instanceof InstructionWriteRefused && backup) { try { unlinkSync(backup) } catch { /* ignore */ } }
     throw err
   }
+  syncPath(dirname(target), 'r')
   return backup
 }

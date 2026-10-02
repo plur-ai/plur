@@ -39,3 +39,61 @@ describe('evaluateConst — renders what it can, refuses what it cannot', () => 
     })
   }
 })
+
+describe('evaluateConst — the forms the third re-audit found (#1520 re-audit3 N4)', () => {
+  for (const [what, src] of [
+    ['a // comment line between + parts', "const S='a'\n// note\n+ 'b'\n"],
+    ['an && continuation', "const S='a'\n&& 'b'\n"],
+    ['a || continuation', "const S='a' || 'b'\n"],
+  ] as const) {
+    it(`refuses ${what}`, () => {
+      expect(evaluateConst(src, 'S').error, JSON.stringify(evaluateConst(src, 'S'))).toBeTruthy()
+    })
+  }
+
+  it('a statement ending in ; ends the value, as in JavaScript', () => {
+    const r = evaluateConst("const S='a';\n+ 'b'\n", 'S')
+    expect(r.text === 'a' || r.error !== undefined).toBe(true)
+  })
+
+  it('a "definition" inside a template string is not a definition', () => {
+    expect(evaluateConst("const DOC=`example:\nconst S='fake'\n`\n", 'S')).toEqual({ missing: true })
+  })
+
+  for (const [what, src] of [
+    ['/* inside a // comment', "// matches src/*.ts\nconst S = 'actual'\n"],
+    ['/* inside a string', "const GLOB = 'src/*'\nconst S = 'actual'\n"],
+    ['/* inside a template', "const U = `https://x.y/*`\nconst S = 'actual'\n"],
+    ['a block comment before the definition on the same line', "/* comment */ const S = 'actual'\n"],
+  ] as const) {
+    it(`still finds the definition after ${what}`, () => {
+      expect(evaluateConst(src, 'S')).toEqual({ text: 'actual' })
+    })
+  }
+})
+
+describe('evaluateConst — the #1557 review forms (L5)', () => {
+  it('a regex literal with a backtick after return does not hide a later definition', () => {
+    const src = "function f(x) {\n  return /`/.test(x)\n}\nconst S = 'actual'\n"
+    expect(evaluateConst(src, 'S')).toEqual({ text: 'actual' })
+  })
+
+  for (const [what, src] of [
+    ['an in continuation on the next line', "const S = 'a'\nin {}\n"],
+    ['an instanceof continuation on the next line', "const S = 'a'\ninstanceof Object\n"],
+    ['an in continuation on the same line', "const S = 'a' in {}\n"],
+  ] as const) {
+    it(`refuses ${what}`, () => {
+      expect(evaluateConst(src, 'S').error, JSON.stringify(evaluateConst(src, 'S'))).toBeTruthy()
+    })
+  }
+
+  it('finds a definition after another statement on the same line', () => {
+    expect(evaluateConst("let x = 1; const S = 'actual'\n", 'S')).toEqual({ text: 'actual' })
+  })
+
+  it('refuses a source whose lexing ends inside a string or template', () => {
+    const r = evaluateConst("const S = 'actual'\nconst T = `never closed\n", 'S')
+    expect(r.error).toBeTruthy()
+  })
+})

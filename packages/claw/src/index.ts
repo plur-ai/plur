@@ -63,6 +63,7 @@ const plugin = {
       const backup = result.backup ? ` (backup: ${result.backup})` : ''
       if (result.appended) api.logger.info(`PLUR: appended memory instructions to ${result.path}${backup}`)
       else if (result.updated) api.logger.info(`PLUR: updated memory instructions in ${result.path}${backup}`)
+      else if (result.notWritten) api.logger.warn(`PLUR: memory instructions not written to ${result.path}: ${result.notWritten}`)
       else api.logger.info(`PLUR: memory instructions up to date`)
       if (result.closedOpenBlock) {
         api.logger.info(`PLUR: closed the ${result.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of ${result.path} before adding the memory instructions`)

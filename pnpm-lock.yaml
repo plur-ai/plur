@@ -122,6 +122,9 @@ importers:
       '@types/pg':
         specifier: ^8.15.6
         version: 8.20.0
+      marked:
+        specifier: 18.0.5
+        version: 18.0.5
       tsx:
         specifier: ^4.22.4
         version: 4.22.4

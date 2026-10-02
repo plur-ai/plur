@@ -124,6 +124,8 @@ export interface EnsureSystemPromptResult {
   keptSections: number
   /** SYSTEM.md ended inside a code fence or HTML comment, closed before the section was appended. */
   closedOpenBlock?: 'fence' | 'comment'
+  /** Why SYSTEM.md was left unchanged although it needed the section (an unclosed code block, a dangling symlink, an edit made meanwhile). */
+  notWritten?: string
 }
 
 /**
@@ -153,7 +155,16 @@ export function ensureSystemPrompt(workspacePath: string): EnsureSystemPromptRes
   if (r.status === 'already') {
     return { appended: false, updated: false, path: systemMdPath, keptSections: r.keptSections }
   }
-  const backup = writeWithBackup(systemMdPath, r.content) ?? undefined
+  if (r.status === 'skipped') {
+    return { appended: false, updated: false, path: systemMdPath, keptSections: r.keptSections, notWritten: r.skipReason }
+  }
+  let backup: string | undefined
+  try {
+    backup = writeWithBackup(systemMdPath, r.content, existing) ?? undefined
+  } catch (err) {
+    if ((err as { code?: string }).code !== 'PLUR_REFUSED') throw err
+    return { appended: false, updated: false, path: systemMdPath, keptSections: r.keptSections, notWritten: (err as Error).message }
+  }
   return {
     appended: r.status === 'created' || r.status === 'added',
     updated: r.status === 'upgraded',
