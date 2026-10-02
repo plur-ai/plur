@@ -56,6 +56,7 @@ import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity
 import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY } from './store/remote-store.js'
+import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
 import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
 import {
@@ -1829,9 +1830,17 @@ export class Plur {
    * Returns a plain description of the first piece found, or null. No network.
    */
   private _idSeenRemotely(id: string): string | null {
+    const seen = seenOnServer(this.paths.root, id)
+    if (seen) return `this machine has seen ${id} on the server for "${seen.scope}" (${new Date(seen.at).toISOString().slice(0, 10)})`
     try {
       for (const ev of readHistoryForEngram(this.paths.root, id)) {
-        const d = (ev as { data?: { routed_to?: string; outbox?: boolean } }).data
+        const d = (ev as { data?: { routed_to?: string; outbox?: boolean; outbox_flush?: boolean } }).data
+        // Events keyed by the LOCAL id are not evidence that the local id
+        // names a server engram (#1532 re-audit R3): a rescope logs the local
+        // source (its server copy is `new_id`), and an outbox flush logs the
+        // local row it delivered (the server id is in the seen record).
+        const ev_ = (ev as { event?: string }).event
+        if (ev_ === 'engram_rescoped' || d?.outbox_flush === true) continue
         if (d?.routed_to === 'remote' && d.outbox !== true) {
           return `this machine's history records ${id} as an engram on a server (${(ev as { event?: string }).event ?? 'event'})`
         }
@@ -1861,6 +1870,26 @@ export class Plur {
       + `If you mean the LOCAL engram: ${localHint}. `
       + `To reach the remote one, refresh the token for ${p.scope} (check it with \`plur login --status\`).`,
     )
+  }
+
+  /** Remember server ids (best effort, never throws). */
+  private _noteSeenOnServer(entries: Array<{ id: string; scope: string }>): void {
+    recordSeenOnServer(this.paths.root, entries)
+  }
+
+  /** Remember the server ids of team rows among recall/inject results (#1532 re-audit R2). */
+  private _noteSeenRows(rows: readonly Engram[], allRemote = false): void {
+    const out: Array<{ id: string; scope: string }> = []
+    for (const r of rows) {
+      const x = r as { _originalId?: unknown; _storeScope?: unknown; _fromRemoteStore?: unknown; scope: string }
+      if (typeof x._originalId !== 'string') continue
+      // Live remote-recall rows are remote by construction; among loaded rows
+      // only the loader's `_fromRemoteStore` marker says so (a path store can
+      // share a scope with a url store).
+      if (!allRemote && x._fromRemoteStore !== true) continue
+      out.push({ id: x._originalId, scope: typeof x._storeScope === 'string' ? x._storeScope : x.scope })
+    }
+    if (out.length > 0) this._noteSeenOnServer(out)
   }
 
   /** A local row being rewritten into a url-backed scope it was not in. */
@@ -4381,6 +4410,7 @@ export class Plur {
             let serverId: string | undefined
             try {
               ;({ id: serverId } = await remoteDriver.appendAndGetServerId(engram, { idempotencyKey: pushKey }))
+              this._noteSeenOnServer([{ id: serverId, scope: engram.scope }])
               pushed = true
             } catch (err) {
               // The POST did not land. The in-flight claim is still held, and is
@@ -4774,6 +4804,7 @@ export class Plur {
       try {
         const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder, { idempotencyKey: writeKey, signal })
         serverEngram = { ...localPlaceholder, id: serverId }
+        this._noteSeenOnServer([{ id: serverId, scope }])
       } catch (inner) {
         // Say what happened in words a person can act on: the caller's
         // deadline passed with no answer. Recorded as the outbox's last_error.
@@ -6538,11 +6569,16 @@ export class Plur {
     options: (RecallOptions & { include_expired?: boolean }) | undefined,
     limit: number,
   ): Promise<Engram[]> {
+    // Team rows from a warm cache sit among the local results (#1532 re-audit R2).
+    this._noteSeenRows(local)
     if (!remotePromise) return local
     const remote = await remotePromise
     const rows = this._filterRemoteRows(remote.engrams, options)
     if (rows.length === 0) return local
-    return pgliteRrfMerge([rows, local]).slice(0, limit)
+    const merged = pgliteRrfMerge([rows, local]).slice(0, limit)
+    // Every live remote row returned, by the server id it carries.
+    this._noteSeenRows(merged.filter(r => rows.includes(r)), true)
+    return merged
   }
 
   /**
@@ -6576,6 +6612,7 @@ export class Plur {
       }
     }
     if (rows.length === 0) return undefined
+    this._noteSeenRows(rows, true)
     const boosts = new Map<string, number>()
     for (const e of rows) {
       const s = remote.scores.get(e.id) ?? 0
@@ -7932,9 +7969,18 @@ export class Plur {
     if (this._hasUrlStore() && typeof updated.scope === 'string' && this._isRemoteBackedScope(updated.scope)) {
       const pre = (await this._loadTargeted([updated.id])).find(e => e.id === updated.id)
       if (pre && this._isScopeMoveIntoRemote(pre.scope, updated.scope)) {
+        // Only a positive "absent" from every store clears the move (#1532
+        // re-audit R1): a hang or a rejected token is "cannot tell", and on
+        // this path a wrong guess overwrites an unrelated local engram.
         const probes = await this._probeIdCollisions(updated.id)
         const present = probes.find(p => p.outcome === 'present')
-        const twin = present ? `remote scope "${present.scope}" holds an engram with this id` : this._idSeenRemotely(updated.id)
+        const unknown = probes.find(p => p.outcome !== 'absent' && p.outcome !== 'present')
+        const twin = present
+          ? `remote scope "${present.scope}" holds an engram with this id`
+          : unknown
+            ? `remote scope "${unknown.scope}" could not be checked for an engram with this id `
+              + `(${unknown.outcome === 'auth_rejected' ? 'it rejected the token' : 'it could not be reached'}: ${unknown.detail ?? 'no answer'})`
+            : this._idSeenRemotely(updated.id)
         if (twin) throw this._scopeMoveRefusal(updated, pre.scope, twin)
         scopeMoveChecked = true
       }
@@ -7963,7 +8009,12 @@ export class Plur {
       // or, for a row that appeared since, here without the network. A plain
       // scope move of a local engram with no twin goes through as before.
       if (!scopeMoveChecked && this._isScopeMoveIntoRemote(engrams[idx].scope, updated.scope)) {
+        // No network under the lock: clear the move only when every store's
+        // fresh cache positively answers "absent" (#1532 re-audit R1).
+        const unchecked = (this.config.stores ?? []).find(e => !!e.url
+          && this._remoteCacheAnswer(e, this._stripRemotePrefix(updated.id, e.scope)) !== 'absent')
         const twin = this._cachedTwinEvidence(updated.id)
+          ?? (unchecked ? `remote scope "${unchecked.scope ?? unchecked.url}" could not be checked for an engram with this id` : null)
         if (twin) throw this._scopeMoveRefusal(updated, engrams[idx].scope, twin)
       }
       // Leak guard (#353): local-resident → demote a sensitive update in place.
@@ -8499,8 +8550,10 @@ export class Plur {
       // id can name a local engram and an unrelated remote one; with a scope,
       // look where that scope says, as setPinned will.
       const scope = options?.scope
+      // The store the pin WRITES to (#1532 re-audit R6): setPinned takes the
+      // first writable url store for the scope, so cost that one's row.
       const entry = scope && scope !== 'primary'
-        ? (this.config.stores ?? []).find(s => s.url && s.scope === scope)
+        ? (this.config.stores ?? []).find(s => s.url && s.scope === scope && s.readonly !== true)
         : undefined
       const e = scope === 'primary'
         ? (await this._loadTargeted([candidateId])).find(r => r.id === candidateId) ?? null
@@ -9232,6 +9285,7 @@ export class Plur {
       let serverId: string
       try {
         ;({ id: serverId } = await remoteDriver!.appendAndGetServerId(copy))
+        if (serverId) this._noteSeenOnServer([{ id: serverId, scope: target }])
       } catch (err) {
         // Atomic semantics (#676 constraint 2): the push did not land, so the
         // source stays exactly as it was. Deliberately NO outbox fallback — an
@@ -10653,6 +10707,9 @@ export class Plur {
         if (pushed?.id) {
           localToServer.set(engram.id, pushed.id)
           persistedIdMap[engram.id] = { server_id: pushed.id, url: storeEntry.url!, at: Date.now() }
+          // Also in the seen-on-server record (#1532 re-audit R2): the id map
+          // is capped and lives under cache/, so it can drop this evidence.
+          this._noteSeenOnServer([{ id: pushed.id, scope: outbox.target_scope }])
           idMapDirty = true
         }
         // #785: a write success clears the host's failure count for BOTH legs.
