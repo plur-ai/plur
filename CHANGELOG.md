@@ -10,6 +10,15 @@ A team store added with `--token-env` takes its token from an environment variab
 - The fix says to set the variable where PLUR runs, then restart the editor or its MCP server so it picks the variable up (a running server keeps the environment it started with), and that queued engrams flush on the next session start or with `plur outbox --flush`.
 - `plur doctor --json` lists the stores as `tokenEnvUnset` (scope, url, variable, detail, fix). No token is ever printed.
 
+### `plur folders repair` works on a map with a team-scoped folder (#1567)
+
+Found by the second 0.21.1 pre-release check. A broken `folders.yaml` that held one folder answered "Yes, with the team scope" could not be repaired, even for a one-character slip somewhere else in the file. The repair blamed that folder's line, which had no problem.
+
+- The answer "Yes, with the team scope" and `plur folders set <folder> --scope <s>` now write `plur: on` next to the scope. The folder resolves exactly as before. Because its own lines now say `on`, a repair of the file may keep it on.
+- A folder that an earlier version wrote with `scope:` (or `trusted: true`) and no `plur:` line is repaired too, when the repair leaves that folder's own lines exactly as written. The repair then writes `plur: on` beside them, so the folder is on, with the same scope, exactly as it was before the map broke. If a slip is on one of that folder's own lines, the repair still refuses and names the line to fix by hand. A repair still never switches memory on for any other folder.
+- A folder with a scope (or `trusted:`) and its own `plur: on`, `off` or `ask` line never stopped a repair, and still does not. This is now tested, and the repair's fuzz test also runs over team-style maps.
+- When the map cannot be repaired automatically, the warning on stderr says to fix the named line by hand, and that `plur folders repair` re-checks the file. It used to say to run `plur folders repair` to repair it.
+
 ### A folder's team scope reaches unscoped recalls over MCP without plur_session_start (#1566)
 
 Found by the second 0.21.1 pre-release check. It is the read-side twin of the save fix below (#1562). In a folder mapped to a team scope (or answered "yes" with one), an unscoped save reached the team store without `plur_session_start`, but an unscoped recall searched only this machine. An agent could not find what it had just saved to the team unless it passed `scope` or started a session first.
