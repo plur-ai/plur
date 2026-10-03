@@ -283,13 +283,6 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
   return notes.length ? `${head} (${notes.join('; ')})` : head
 }
 
-function findMcpConfig(): string {
-  const projectMcp = join(process.cwd(), '.mcp.json')
-  if (existsSync(projectMcp)) return projectMcp
-  const globalMcp = join(homedir(), '.claude', 'mcp.json')
-  if (existsSync(globalMcp)) return globalMcp
-  return projectMcp
-}
 
 /**
  * Read a config file this function intends to WRITE BACK. The #1059 rule,
@@ -310,39 +303,69 @@ function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; 
   return { data: {}, ok: false }
 }
 
-function writeMcpConfig(configPath: string): string {
-  const { data, ok } = readJsonObjectForWrite(configPath)
-  if (!ok) {
-    return `skipped — ${configPath} exists but is not a JSON object; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur-mcp init\``
-  }
-  const config = data as McpConfig
-
-  const servers = (config.mcpServers ?? {}) as Record<string, unknown>
+/**
+ * Heal the @latest entries THIS command's older releases wrote — the #1069
+ * npx cache-rewrite race. Only the exact racey shape is touched; a custom or
+ * version-pinned entry is the user's decision. Returns true when it changed.
+ */
+function healRaceyEntry(servers: Record<string, unknown>): boolean {
   const existing = servers.plur as { command?: string; args?: string[] } | undefined
-  if (existing) {
-    // Heal the @latest entries THIS command's older releases wrote — the
-    // #1069 npx cache-rewrite race. Only the exact racey shape is touched;
-    // a custom or version-pinned entry is the user's decision.
-    const args = existing.args ?? []
-    const spec = args.filter(a => a !== '-y' && !a.startsWith('-'))[0] ?? ''
-    if (existing.command === 'npx' && /^@plur-ai\/mcp(@latest)?$/.test(spec)) {
-      const healed = { ...existing, ...MCP_SERVER_CONFIG }
-      if (JSON.stringify(healed) !== JSON.stringify(existing)) {
-        servers.plur = healed
-        config.mcpServers = servers
-        writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-        return `upgraded stale npx entry in ${configPath}`
-      }
-    }
-    return `already configured in ${configPath}`
-  }
+  if (!existing || typeof existing !== 'object') return false
+  const args = existing.args ?? []
+  const spec = args.filter(a => a !== '-y' && !a.startsWith('-'))[0] ?? ''
+  if (existing.command !== 'npx' || !/^@plur-ai\/mcp(@latest)?$/.test(spec)) return false
+  const healed = { ...existing, ...MCP_SERVER_CONFIG }
+  if (JSON.stringify(healed) === JSON.stringify(existing)) return false
+  servers.plur = healed
+  return true
+}
 
-  servers.plur = MCP_SERVER_CONFIG
-  config.mcpServers = servers
-  const dir = join(configPath, '..')
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-  return `added to ${configPath}`
+/**
+ * Register the server for Claude Code at user scope, in `~/.claude.json` — the
+ * file `claude mcp add --scope user` writes and the only user-level place
+ * Claude Code reads MCP servers (#1561). This used to write `<cwd>/.mcp.json`,
+ * or `~/.claude/mcp.json` when that existed; Claude Code never reads the
+ * latter. Same rules as `plur init`: an old `~/.claude/mcp.json` entry is
+ * moved (env and extra keys kept) unless `~/.claude.json` already has one,
+ * which wins; every change to an existing file is preceded by a backup
+ * (writeWithBackup, which also refuses a file edited meanwhile); a run with
+ * nothing to change writes nothing; an unparseable `~/.claude.json` is
+ * refused and neither file is touched.
+ */
+async function installClaudeUserMcp(): Promise<{ ok: boolean; status: string }> {
+  const { writeWithBackup, registerClaudeUserMcp } = await import('@plur-ai/core')
+  const legacyPath = join(homedir(), '.claude', 'mcp.json')
+  const legacyRaw = existsSync(legacyPath) ? readFileSync(legacyPath, 'utf8') : null
+  const legacy = readJsonObjectForWrite(legacyPath)
+  const oldServers = legacy.ok ? legacy.data.mcpServers : undefined
+  const oldEntry = oldServers && typeof oldServers === 'object' && !Array.isArray(oldServers)
+    ? (oldServers as Record<string, unknown>).plur
+    : undefined
+
+  // The same implementation `plur init` uses (#1564 review).
+  const r = registerClaudeUserMcp({
+    userPath: join(homedir(), '.claude.json'),
+    entry: () => ({ ...MCP_SERVER_CONFIG }),
+    heal: (config) => healRaceyEntry(config.mcpServers as Record<string, unknown>) ? 'upgraded stale npx entry' : null,
+    legacyEntry: oldEntry,
+    legacyPath,
+    rerunCommand: 'plur-mcp init',
+  })
+  if (!r.ok || oldEntry === undefined) return { ok: r.ok, status: r.message }
+
+  let status = r.message
+  const next: Record<string, unknown> = { ...legacy.data }
+  const rest = { ...(oldServers as Record<string, unknown>) }
+  delete rest.plur
+  if (Object.keys(rest).length > 0) next.mcpServers = rest
+  else delete next.mcpServers
+  try {
+    const backup = writeWithBackup(legacyPath, JSON.stringify(next, null, 2) + '\n', legacyRaw)
+    status += `; removed the unused entry from ${legacyPath}${backup ? ` (backup: ${backup})` : ''}`
+  } catch (err) {
+    status += `; could not remove the unused entry from ${legacyPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
+  }
+  return { ok: true, status }
 }
 
 /**
@@ -518,8 +541,10 @@ async function runInit() {
   results.push(`Search:   ${searchMode}`)
 
   // Step 2: Write MCP config
-  const mcpConfigPath = findMcpConfig()
-  const mcpStatus = writeMcpConfig(mcpConfigPath)
+  const mcp = await installClaudeUserMcp()
+  const mcpStatus = mcp.status
+  // #1564 review L4: init did not do its main job; scripts must see it.
+  if (!mcp.ok) process.exitCode = 1
   results.push(`MCP:      ${mcpStatus}`)
 
   // Step 3: Install Claude Code hooks
@@ -632,7 +657,8 @@ if (arg === '--version' || arg === '-v') {
 
 if (arg === 'init') {
   await runInit()
-  process.exit(0)
+  // Non-zero when the MCP registration did not happen (#1564 review L4).
+  process.exit(process.exitCode ?? 0)
 }
 
 if (arg === 'packs') {

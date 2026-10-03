@@ -87,6 +87,17 @@ export function classifyOutboxFailure(input: OutboxFailureInput): OutboxVerdict 
     }
   }
 
+  // #1564 review M2: the token's `token_env` variable is unset — nothing was
+  // sent; only setting the variable fixes it.
+  const unsetVar = /environment variable (\S+), which is unset or empty/.exec(input.last_error ?? '')?.[1]
+  if (unsetVar) {
+    return {
+      state: 'needs_action',
+      reason: `the token for ${scope} comes from the environment variable ${unsetVar}, which is unset or empty where PLUR runs`,
+      next_step: `set ${unsetVar} where PLUR runs, ${retry}`,
+    }
+  }
+
   const status = typeof input.last_status === 'number'
     ? input.last_status
     : statusFromErrorText(input.last_error)

@@ -3276,6 +3276,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
                   : `Reachable, auth valid${expiresNote}`,
               })
               if (soon) remediation.push(`Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — mint a new token (<host>/me/api-keys), update ~/.plur/config.yaml, restart.`)
+            } else if (h.tokenEnvUnset) {
+              // #1564 review M2: nothing was sent; the token's variable is unset.
+              checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `NO TOKEN — ${h.reason ?? `${h.tokenEnvUnset} is unset`}. Team-scoped writes are queuing to the outbox.` })
+              remediation.push(`Remote ${h.url}: set the environment variable ${h.tokenEnvUnset} where the PLUR MCP server runs (its token), then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
             } else if (h.status === 'auth_expired') {
               checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `AUTH FAILED${expiresNote} — team-scoped writes are queuing to the outbox, not syncing. (${h.reason ?? ''})` })
               remediation.push(`Remote ${h.url}: re-authenticate — open <host>/auth/github (or <host>/me/api-keys) in a browser, paste the token into ~/.plur/config.yaml, then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
