@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { Engram } from '../schemas/engram.js'
+import { ActivationSchema, type Engram } from '../schemas/engram.js'
 import { logger } from '../logger.js'
 import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
@@ -539,6 +539,19 @@ export class RemoteStore {
           : new Date().toISOString(),
         ...(mapFrom  ? { valid_from: flatFrom }   : {}),
         ...(mapUntil ? { valid_until: flatUntil } : {}),
+      }
+    }
+    // Rows stored without `tags` or `activation` (#1563 review, T1) get what
+    // a local engram gets by default: inject walks `tags`, recall reads
+    // `activation`, and one such row used to fail session start, inject and
+    // recall for every user of the scope.
+    if (!Array.isArray(out.tags) || !(out.tags as unknown[]).every(t => typeof t === 'string')) out.tags = []
+    if (!ActivationSchema.safeParse(out.activation).success) {
+      out.activation = {
+        retrieval_strength: 0.7,
+        storage_strength: 1.0,
+        frequency: 0,
+        last_accessed: (typeof raw.created_at === 'string' ? raw.created_at : new Date().toISOString()).slice(0, 10),
       }
     }
     return out as unknown as Engram

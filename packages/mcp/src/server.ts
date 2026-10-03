@@ -4,9 +4,9 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
-import { FOLDER_SCOPE, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
+import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
-import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
+import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -317,7 +317,6 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     // through plur_admin, touches no store in an `off` folder and says so, and
     // in an undecided (`ask`) folder answers with the folder question (#1525).
     // Before the canary tick: a refused call is not a turn of memory use.
-    let folderScope: string | undefined
     const gated = tool.name === 'plur_admin'
       ? (request.params.arguments as Record<string, unknown> | undefined)?.action
       : tool.name
@@ -325,7 +324,6 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       const ws = await workspace.workspace()
       const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
       if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
-      folderScope = decision.scope
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -376,9 +374,17 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         }
       }
       args = validated.data
-      // The folder map's scope for this workspace (#1525), for
-      // plur_session_start's default; under a Symbol key no client can set.
-      if (folderScope !== undefined) args = { ...args, [FOLDER_SCOPE]: folderScope }
+      // The workspace's default write scope (#1525, #1563 review round 2),
+      // resolved when a tool asks for it — at the moment a write is
+      // admitted — from the CURRENT roots, by the one resolver. Under a
+      // Symbol key no client can set.
+      const folderContext: FolderScopeContext = {
+        resolve: async () => {
+          const ws = await workspace.workspace()
+          return ws === null ? null : { scope: workspaceWriteScope(instance, ws), key: workspaceKey(ws) }
+        },
+      }
+      args = { ...args, [FOLDER_SCOPE]: folderContext }
       const result = await tool.handler(args, instance)
 
       // Generic _isError propagation (audit fix): a tool handler — currently

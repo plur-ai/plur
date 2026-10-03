@@ -160,6 +160,9 @@ export {
   verifyFolderNonce,
   endFolderNonceSession,
   folderNonceOutstanding,
+  hostFolderNonces,
+  FOLDER_HOST_START_TOLERANCE_MS,
+  type FolderAskHost,
   answerFolderNotNow,
   sweepFolderNonces,
   removeLegacyTrustEntry,
@@ -193,6 +196,7 @@ export {
 export {
   folderAskOnce,
   folderAsk,
+  hostFolderAsk,
   sessionSettings,
   clearFolderAsk,
   quoted as folderQuoted,

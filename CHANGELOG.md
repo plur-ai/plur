@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562)
+
+Found by the 0.21.1 pre-release check. The promise above (after a yes with a team scope, or in a folder mapped to a scope, an unscoped save goes to that scope) held over MCP only after `plur_session_start`. Without it, `plur_learn` with no scope was saved in `global` on this machine and never reached the team store.
+
+- `plur_learn` and `plur_learn_batch` with no scope now use the workspace folder's scope (the folder map's, the one the yes answer recorded, else a trusted `.plur.yaml`'s) whenever the session has no default of its own. An explicit scope still wins, and so does a session's own default. `off` and undecided folders are unchanged.
+- One rule decides the default scope of an unscoped save over MCP, for `plur_learn`, `plur_learn_batch`, `plur_episode_to_engram`, the learns of `plur_session_end`, `plur_session_start`'s default and `plur_session_scope clear`. (`plur_ingest` with no scope saves to `global`, as before.) The server no longer sets or reads a process-wide default scope, which used to outlive the session that set it. The inputs are every workspace folder (root) the editor sends, none left out, or the server's start folder when it sends none. Each is resolved through its real path (a link counts as the folder it points at) to its folder-map scope, else a trusted `.plur.yaml`'s for that folder. Only when every input gives the same scope is it used. Otherwise no scope is used and nothing falls back after that: not the start folder's `.plur.yaml`, and not a session slot. That covers one folder with no scope, two different teams, the home folder, a folder above it or `/`, and anything that cannot be resolved.
+- The scope is resolved when the save is made, from the current roots. A default that `plur_session_start` gave is used only while the workspace is the one the session started in: the same roots, and the same answer from the rule above. After the roots change, or the folder map or a `.plur.yaml` changes that answer, saves follow the rule above until the workspace is as it was. A scope set with `plur_session_scope set` stays (the user's explicit choice), and an explicit scope on the call still wins. A `session_id` this server never started has no default.
+- With several sessions open and none named, no session default applies (E7). The rule above then decides, so such a save goes to the workspace's scope when there is one.
+- The broken-map warning on stderr said "treating it as empty (folders fall back to ask)". It now says that PLUR memory is paused in every folder until the map is fixed, and names `plur folders repair`.
+- `plur folders set`, `plur folders rm` (every answer to the folder question) and `plur untrust` keep the comments, blank lines and untouched entries of `folders.yaml`, editing only the entry's own lines, as `plur folders repair` does. When the file cannot be edited that way safely, the whole map is written as before.
+- For a repo whose `.plur.yaml` is not trusted, "Yes, without its settings" is now always `--on`. It used to carry the one other configured team scope, which the label did not say. Configured team scopes are listed below the answers instead, without the "use one with --scope" hint, which no answer's code would accept.
+- In opencode, the PLUR MCP server shows the folder question the plugin already asked, with the same codes, instead of a second set. It adds a "not now" bound to the plugin's chat session, so it works in opencode's shell; after "not now" it stops asking for the rest of the session. It finds the plugin among its own parent processes by process id and start time, so a reused process id never matches. When it cannot tell (another host, Windows), it asks its own question, as before. Two chats in one opencode process share one MCP server: it shows the newest chat's codes, and an answer from the other chat's shell is refused and changes nothing.
+
+### Team-store rows without tags or activation no longer break session start, inject and recall
+
+A row a team store returned without `tags` made `plur_session_start`, `plur_inject` and `plur_inject_hybrid` fail with "engram.tags is not iterable" for everyone using that scope; one without `activation` made hybrid recall fail. Such rows now load with `tags: []` and a fresh activation record, as a local engram gets.
+
 ### `plur init` registers the MCP server where Claude Code reads it; `--token-env` stores only the variable name (#1561)
 
 **Claude Code got PLUR's hooks but none of its tools.** `plur init` wrote the
