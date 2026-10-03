@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
@@ -142,7 +142,11 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
               .join(', ') + ']'
           : ''
         return {
-          id: (raw._originalId as string | undefined) ?? bareEngramId(e.id),
+          // The id plur_learn returned for this engram (F3): a team row keeps
+          // its store prefix (`ENG-<PREFIX>-…`), so it never shares an id with
+          // a local engram minted the same day, and forget/feedback/pin route
+          // it to its store. A local engram's id has no prefix.
+          id: e.id,
           statement: e.statement + annotation + measuredAnnotation,
           type: e.type,
           scope: e.scope,
@@ -220,7 +224,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
             .join(', ') + ']'
         : ''
       const base: Record<string, unknown> = {
-        id: (raw._originalId as string | undefined) ?? bareEngramId(e.id),
+        id: e.id, // same id plur_learn returned — see the keyword branch (F3)
         statement: e.statement + annotation + measuredAnnotation,
         type: e.type,
         scope: e.scope,
@@ -1671,7 +1675,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // after it so a reporting failure cannot cost a memory.
           const dedup = isOutbox
             ? undefined
-            : await plur.nearDuplicates(statement, context, engram.id)
+            // Excluded by the id recall gives the saved row (L1): a team row
+            // comes back namespaced, so its bare id would neither exclude it
+            // nor — when a local engram shares that bare id — spare the twin.
+            : await plur.nearDuplicates(statement, context, plur.readIdFor(engram))
 
           // Redraft detection (2026-09-07). Superseding an engram written only
           // minutes ago is not a correction — it is a redraft, and it leaves a

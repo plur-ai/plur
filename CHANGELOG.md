@@ -10,6 +10,15 @@ Found by the second 0.21.1 pre-release check. It is the read-side twin of the sa
 - An explicit scope still wins, and so does a session's own default. `off` and undecided folders are unchanged. (`plur_inject`, the keyword-only injection, never dials a team store.)
 - An injection made with no session is still recorded with no session id.
 
+### A team engram keeps the id its save returned, in recall too (#1568)
+
+Found by the 0.21.1 pre-release check (finding F3, and low L1).
+
+- Saving into a team store returns the engram's namespaced id, `ENG-<PREFIX>-YYYY-MM-DD-NNN`. `plur_recall`, `plur_recall_hybrid` and `plur recall` (json and text) returned the same engram under its bare server id, `ENG-YYYY-MM-DD-NNN`, so one engram had two ids. They now return the id the save returned, as `plur_inject` already did.
+- The bare id was also the id of any local engram minted the same day, so acting on a recalled id could need a `scope` to say which one was meant. `plur forget`, `plur_forget`, `plur_feedback` and `plur_pin` take the recalled id and act on the team engram only. A bare id still works where it names one engram, and is still refused, changing nothing, where it names two.
+- This reverses the id form of #1119, which showed the bare id because, at the time, forget refused the namespaced one. Forget, feedback and pin route a namespaced id to its store, so that reason is gone.
+- The near-duplicate report of a team save no longer lists the engram just saved (similarity 1.0). With a local engram of the same bare id, it no longer leaves that engram out instead.
+
 ### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562)
 
 Found by the 0.21.1 pre-release check. The promise above (after a yes with a team scope, or in a folder mapped to a scope, an unscoped save goes to that scope) held over MCP only after `plur_session_start`. Without it, `plur_learn` with no scope was saved in `global` on this machine and never reached the team store.
