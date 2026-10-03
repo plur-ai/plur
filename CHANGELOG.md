@@ -9,7 +9,7 @@ You decide where your agents remember.
 - plur folders repair
 - See which memories a reply used
 
-### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562)
+### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562, #1563)
 
 Found by the 0.21.1 pre-release check. The promise above (after a yes with a team scope, or in a folder mapped to a scope, an unscoped save goes to that scope) held over MCP only after `plur_session_start`. Without it, `plur_learn` with no scope was saved in `global` on this machine and never reached the team store.
 
@@ -26,7 +26,7 @@ Found by the 0.21.1 pre-release check. The promise above (after a yes with a tea
 
 A row a team store returned without `tags` made `plur_session_start`, `plur_inject` and `plur_inject_hybrid` fail with "engram.tags is not iterable" for everyone using that scope; one without `activation` made hybrid recall fail. Such rows now load with `tags: []` and a fresh activation record, as a local engram gets.
 
-### `plur init` registers the MCP server where Claude Code reads it; `--token-env` stores only the variable name (#1561)
+### `plur init` registers the MCP server where Claude Code reads it; `--token-env` stores only the variable name (#1561, #1564)
 
 **Claude Code got PLUR's hooks but none of its tools.** `plur init` wrote the
 MCP server into `~/.claude/settings.json`, and Claude Code does not read MCP
