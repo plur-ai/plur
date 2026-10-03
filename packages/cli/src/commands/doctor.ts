@@ -1,6 +1,6 @@
 import { spawn } from 'child_process'
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
-import { join, extname } from 'path'
+import { join, extname, dirname } from 'path'
 import { homedir, platform } from 'os'
 import { createRequire } from 'module'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -615,12 +615,9 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
   // this folder's local scope), then the other harnesses' files; a
   // settings.json entry, which nothing launches, only as a last resort.
   const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks')
-  const userCfg = files.find(cf => cf.kind === 'claude-user')
-  if (userCfg) {
-    const parsed = readConfig(userCfg.path)
-    const declared = readPlurMcpEntry(parsed) ?? readPlurMcpEntry(localScopePlur(parsed, process.cwd()) ?? {})
-    if (declared) return { entry: declared, source: userCfg.label }
-  }
+  const cc = claudeCodePlurEntry(process.cwd())
+  const ccEntry = cc ? readPlurMcpEntry(cc.config) : null
+  if (cc && ccEntry) return { entry: ccEntry, source: `Claude Code (${cc.scope} scope, ${cc.path})` }
   const ordered = [
     ...files.filter(cf => cf.kind !== 'claude-user' && !isClaudeSettingsFile(cf.path)),
     ...files.filter(cf => isClaudeSettingsFile(cf.path)),
@@ -1039,33 +1036,74 @@ function isClaudeSettingsFile(path: string): boolean {
   return path === claudeCodeGlobalSettingsPath() || path === join(process.cwd(), '.claude', 'settings.json')
 }
 
+/** The folder Claude Code keys local scope by: the git root above `dir`, else `dir` itself. */
+function claudeProjectRoot(dir: string): string {
+  let cur = dir
+  for (;;) {
+    if (existsSync(join(cur, '.git'))) return cur
+    const parent = dirname(cur)
+    if (parent === cur) return dir
+    cur = parent
+  }
+}
+
 /** The local-scope `plur` entry for `cwd` in a parsed ~/.claude.json, if any. */
 function localScopePlur(config: Record<string, unknown>, cwd: string): Record<string, unknown> | null {
   const projects = config.projects
   if (!projects || typeof projects !== 'object') return null
-  const keys = new Set([cwd])
-  try { keys.add(realpathSync(cwd)) } catch { /* keep cwd */ }
+  // Claude Code keys local scope by the git root, not the folder it runs in
+  // (#1564 review M1); either spelling of the path may be the key.
+  const keys = new Set<string>([claudeProjectRoot(cwd), cwd])
+  try {
+    const real = realpathSync(cwd)
+    keys.add(claudeProjectRoot(real))
+    keys.add(real)
+  } catch { /* keep cwd */ }
   for (const key of keys) {
     const p = (projects as Record<string, unknown>)[key] as { mcpServers?: unknown } | undefined
     const servers = p?.mcpServers
-    if (servers && typeof servers === 'object' && 'plur' in (servers as object)) {
+    if (servers && typeof servers === 'object' && !Array.isArray(servers) && 'plur' in (servers as object)) {
       return { mcpServers: { plur: (servers as Record<string, unknown>).plur } }
     }
   }
   return null
 }
 
-export function inspectClaudeCodeMcp(cwd: string = process.cwd()): ClaudeCodeMcpReport {
+/** The nearest `.mcp.json` with a plur entry, walking up from `cwd` as Claude Code does (#1564 review M1). */
+function projectMcpJson(cwd: string): string | null {
+  let cur = cwd
+  for (;;) {
+    const p = join(cur, '.mcp.json')
+    if (existsSync(p) && hasPlurMcp(readConfig(p))) return p
+    const parent = dirname(cur)
+    if (parent === cur) return null
+    cur = parent
+  }
+}
+
+/**
+ * The plur entry Claude Code would launch from `cwd`, in its own precedence
+ * order — local scope, then project `.mcp.json`, then user scope
+ * (#1564 review L3) — with where it came from.
+ */
+function claudeCodePlurEntry(cwd: string): { scope: 'local' | 'project' | 'user'; path: string; config: Record<string, unknown> } | null {
   const userPath = claudeCodeUserConfigPath()
   const user = readConfig(userPath)
+  const local = localScopePlur(user, cwd)
+  if (local) return { scope: 'local', path: userPath, config: local }
+  const project = projectMcpJson(cwd)
+  if (project) return { scope: 'project', path: project, config: readConfig(project) }
+  if (hasPlurMcp(user)) return { scope: 'user', path: userPath, config: user }
+  return null
+}
+
+export function inspectClaudeCodeMcp(cwd: string = process.cwd()): ClaudeCodeMcpReport {
+  const userPath = claudeCodeUserConfigPath()
   const legacySettingsEntry = hasPlurMcp(readConfig(claudeCodeGlobalSettingsPath()))
-  const base = { legacySettingsEntry }
-  if (hasPlurMcp(user)) return { registered: true, scope: 'user', path: userPath, ...base }
-  if (localScopePlur(user, cwd)) return { registered: true, scope: 'local', path: userPath, ...base }
-  const projectMcp = join(cwd, '.mcp.json')
-  if (hasPlurMcp(readConfig(projectMcp))) return { registered: true, scope: 'project', path: projectMcp, ...base }
+  const found = claudeCodePlurEntry(cwd)
+  if (found) return { registered: true, scope: found.scope, path: found.path, legacySettingsEntry }
   return {
-    registered: false, scope: null, path: null, ...base,
+    registered: false, scope: null, path: null, legacySettingsEntry,
     fix: legacySettingsEntry
       ? `run \`plur init\` — it moves the plur entry from ${claudeCodeGlobalSettingsPath()} (which Claude Code does not read for MCP servers) to ${userPath}`
       : `run \`plur init\` — it registers the plur MCP server in ${userPath}, where Claude Code reads it`,

@@ -240,6 +240,14 @@ describe('plur remote (#1413)', () => {
     expect(JSON.parse(set.stdout).stores).toEqual([expect.objectContaining({ url: baseUrl, scope: SCOPE, ok: true })])
     const unset = await cli(['remote', '--json'], { env: { [VAR]: '' } })
     expect(unset.status).not.toBe(0)
+    // #1564 review M2: the result names the variable, and nothing was sent.
+    const meBefore = server.meCalls
+    const unset2 = await cli(['remote', '--json'], { env: { [VAR]: '' } })
+    expect(server.meCalls).toBe(meBefore)
+    const store = JSON.parse(unset2.stdout).stores[0]
+    expect(store.token_env_unset).toBe(VAR)
+    expect(store.reason).toContain(VAR)
+    expect(store.reason).not.toMatch(/config\.yaml/)
 
     // Appending a second scope rewrites the whole stores list.
     const second = await cli(['remote', '--url', baseUrl, '--token-env', VAR, '--scopes', `${SCOPE},${SCOPE2}`, '--json'], { env: { [VAR]: TOKEN } })

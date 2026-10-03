@@ -241,6 +241,30 @@ export class RemoteHttpError extends Error {
 }
 
 /**
+ * A remote store whose token comes from an environment variable (`token_env`,
+ * #1561) that is unset or empty where PLUR runs. Thrown before any request is
+ * made, so no unauthenticated call reaches the server (#1564 review M2). The
+ * message names the variable to set and never suggests writing the token into
+ * config.yaml — that would undo the reference.
+ */
+export class TokenEnvUnsetError extends Error {
+  readonly code = 'token_env_unset'
+  constructor(readonly variable: string, readonly scope: string) {
+    super(tokenEnvUnsetMessage(variable, scope))
+    this.name = 'TokenEnvUnsetError'
+  }
+}
+
+/** The one wording for an unset `token_env` variable, on every surface. */
+export function tokenEnvUnsetMessage(variable: string, scope: string): string {
+  return `the token for ${scope} comes from the environment variable ${variable}, which is unset or empty where PLUR runs — ` +
+    `set ${variable} there and run again (PLUR stores only the variable's name, never the token)`
+}
+
+/** Finds the variable named by {@link tokenEnvUnsetMessage} in recorded error text. */
+export const TOKEN_ENV_UNSET_RE = /environment variable (\S+), which is unset or empty/
+
+/**
  * A response whose body has already been read, inside the request deadline.
  *
  * `json` is present only for a 2xx (and is `undefined` when the payload would
@@ -330,8 +354,13 @@ export class RemoteStore {
     private readonly url: string,    // e.g. https://plur.datafund.io/sse — but we hit /api/v1
     private readonly token: string,
     private readonly scope: string,  // narrow listing on the server side
-    private readonly opts: { ttlMs?: number } = {},
+    private readonly opts: { ttlMs?: number; tokenEnv?: string } = {},
   ) {}
+
+  /** #1564 review M2: never send a request without the token a `token_env` names. */
+  private assertToken(): void {
+    if (!this.token && this.opts.tokenEnv) throw new TokenEnvUnsetError(this.opts.tokenEnv, this.scope)
+  }
 
   private get apiBase(): string {
     // The user configures the SSE URL (consistent with mcp.json shape);
@@ -516,6 +545,7 @@ export class RemoteStore {
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
+    this.assertToken()
     return {
       Authorization: `Bearer ${this.token}`,
       Accept: 'application/json',
@@ -609,6 +639,8 @@ export class RemoteStore {
    * the remote when 5 things ask for engrams at once.
    */
   async load(): Promise<Engram[]> {
+    // Before the page loop, whose catch would read a missing token as a dead host.
+    this.assertToken()
     const now = Date.now()
     if (this.cache && now - this.cache.ts < this.ttlMs) return this.cache.engrams
     if (this.inFlight) return this.inFlight

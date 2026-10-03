@@ -89,6 +89,8 @@ export function tokenFromEnv(name: string | undefined, env: NodeJS.ProcessEnv = 
  * file names one and carries no token of its own (#1561). In memory only:
  * {@link storeEntryForDisk} keeps the resolved value out of every write-back.
  */
+const warnedUnsetTokenEnv = new Set<string>()
+
 function resolveStoreTokens(config: PlurConfig): PlurConfig {
   if (!config.stores?.some(s => s.token_env && !s.token)) return config
   return {
@@ -97,6 +99,10 @@ function resolveStoreTokens(config: PlurConfig): PlurConfig {
       if (!s.token_env || s.token) return s
       const token = tokenFromEnv(s.token_env)
       if (!token) {
+        // Once per process and store: every config reload used to repeat it.
+        const once = `${s.scope}\0${s.token_env}`
+        if (warnedUnsetTokenEnv.has(once)) return s
+        warnedUnsetTokenEnv.add(once)
         logger.warning(`[plur:config] store "${s.scope}" (${s.url ?? s.path}): token_env ${s.token_env} is unset or empty — the store has no token`)
         return s
       }

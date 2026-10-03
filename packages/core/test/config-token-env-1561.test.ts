@@ -130,3 +130,60 @@ describe('scopes registered from a token_env store keep the reference (#1561)', 
     expect(stores.every(s => !('token' in s))).toBe(true)
   })
 })
+
+// #1564 review M2: a token_env store whose variable is unset must not send an
+// unauthenticated request, and every reason the user sees names the variable
+// to set — never "put the token in config.yaml".
+describe('a token_env store with the variable unset (#1564 review M2)', () => {
+  let server: StubServer
+  let baseUrl: string
+  let dir: string
+  let saved: string | undefined
+
+  beforeAll(async () => {
+    server = new StubServer(SECRET)
+    baseUrl = (await server.start()).url
+  })
+  afterAll(async () => { await server.stop() })
+  beforeEach(() => {
+    server.reset()
+    server.setMe({ username: 'm', org_id: 'o', role: 'developer', scopes: ['group:o/eng'] })
+    dir = mkdtempSync(join(tmpdir(), 'plur-token-env-unset-'))
+    saved = process.env[VAR]
+    delete process.env[VAR]
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+      embeddings: { enabled: false },
+      stores: [{ url: baseUrl, token_env: VAR, scope: 'group:o/eng', shared: true, dial: 'always' }],
+    }))
+  })
+  afterEach(() => {
+    if (saved === undefined) delete process.env[VAR]
+    else process.env[VAR] = saved
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('a team save sends nothing and queues with a reason that names the variable', async () => {
+    const plur = new Plur({ path: dir })
+    const e = await plur.learnRouted('deploys go through the blue lane', { scope: 'group:o/eng' })
+    expect(server.appendCalls).toBe(0)
+    const d = plur.deliveryOf(e, 'group:o/eng')
+    expect(d.delivery).toBe('outbox')
+    expect(d.reason_code).toBe('token_env_unset')
+    expect(d.reason).toContain(VAR)
+    expect(d.reason).not.toMatch(/config\.yaml/)
+  })
+
+  it('the remote health check sends no /me and names the variable', async () => {
+    const plur = new Plur({ path: dir })
+    const [h] = await plur.checkRemoteHealth()
+    expect(server.meCalls).toBe(0)
+    expect(h.ok).toBe(false)
+    expect(h.tokenEnvUnset).toBe(VAR)
+    expect(h.reason).toContain(VAR)
+  })
+
+  it('remote recall does not dial that host', () => {
+    const plur = new Plur({ path: dir })
+    expect((plur as any)._remoteRecallHosts({ scope: 'group:o/eng' })).toEqual([])
+  })
+})

@@ -24,7 +24,7 @@
  * the temp HOME.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, realpathSync, statSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, realpathSync, statSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawnSync } from 'child_process'
@@ -45,12 +45,17 @@ const settingsFile = () => join(home, '.claude', 'settings.json')
 const read = (p: string): Json => JSON.parse(readFileSync(p, 'utf8'))
 const backups = (dir: string, base: string) => readdirSync(dir).filter(n => n.startsWith(`${base}.plur-backup-`))
 
-function init(...args: string[]): string {
+function initRaw(...args: string[]): { status: number; out: string } {
   const r = runCli('node', [CLI, 'init', '--no-desktop', '--no-prompt', '--no-codex', '--no-cursor', '--no-antigravity', '--no-opencode', ...args], {
     encoding: 'utf-8', env, cwd: work, input: '',
   })
-  expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0)
-  return r.stdout ?? ''
+  return { status: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
+}
+
+function init(...args: string[]): string {
+  const r = initRaw(...args)
+  expect(r.status, r.out).toBe(0)
+  return r.out
 }
 
 function doctor(): { report: Json; status: number } {
@@ -166,11 +171,32 @@ describe('plur init registers the PLUR MCP server where Claude Code reads it (#1
     const broken = '{ "mcpServers": { "a": {}, }'
     writeFileSync(userConfig(), broken)
     writeFileSync(settingsFile(), JSON.stringify({ mcpServers: { plur: { command: '/opt/plur-mcp', args: [] } } }))
-    const out = init()
+    const { status, out } = initRaw()
+    // #1564 review L4: the registration did not happen, so init fails.
+    expect(status).not.toBe(0)
     expect(readFileSync(userConfig(), 'utf8')).toBe(broken)
     expect(read(settingsFile()).mcpServers?.plur).toEqual({ command: '/opt/plur-mcp', args: [] })
-    expect(out).toMatch(/MCP server \(plur\): skipped/)
+    expect(out).toMatch(/MCP server \(plur\): not registered/)
     expect(out).toContain(userConfig())
+  })
+
+  it('an mcpServers that is not an object is refused: init fails, no backup, never "registered" (#1564 review L5)', () => {
+    const text = JSON.stringify({ mcpServers: [] })
+    writeFileSync(userConfig(), text)
+    const { status, out } = initRaw()
+    expect(status).not.toBe(0)
+    expect(readFileSync(userConfig(), 'utf8')).toBe(text)
+    expect(backups(home, '.claude.json')).toEqual([])
+    expect(out).toMatch(/mcpServers/)
+    expect(out).not.toMatch(/MCP server \(plur\): registered/)
+  })
+
+  it.skipIf(process.platform === 'win32')('a dangling ~/.claude.json symlink is named, and init fails (#1564 review L4)', () => {
+    symlinkSync(join(home, 'gone.json'), userConfig())
+    const { status, out } = initRaw()
+    expect(status).not.toBe(0)
+    expect(out).toMatch(/symlink/)
+    expect(out).not.toMatch(/run again/)
   })
 
   it('--project also registers the server in ~/.claude.json', () => {
@@ -233,6 +259,50 @@ describe('plur doctor checks where Claude Code reads MCP servers (#1561)', () =>
     const { report } = doctor()
     expect(report.mcpRegistered).toBe(true)
     expect(report.claudeCodeMcp).toMatchObject({ registered: true, scope: 'project' })
+  })
+
+  // #1564 review M1/L3: Claude Code keys local scope by the git root, finds
+  // .mcp.json in parent folders, and prefers local over project over user.
+  function doctorIn(cwd: string): Json {
+    const r = runCli('node', [CLI, 'doctor', '--no-handshake', '--json'], {
+      encoding: 'utf-8', env: { ...env, PLUR_DISABLE_EMBEDDINGS: '1' }, cwd,
+    })
+    return JSON.parse(r.stdout ?? '{}')
+  }
+  function repoWithSub(): { repo: string; sub: string } {
+    const repo = join(work, 'repo')
+    const sub = join(repo, 'sub', 'deeper')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(sub, { recursive: true })
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(settingsFile(), JSON.stringify({ hooks }))
+    return { repo, sub }
+  }
+  const entry = { command: '/opt/plur-mcp', args: [] }
+
+  it('local scope keyed by the git root counts from a subfolder of the repo, with no `plur init` advice', () => {
+    const { repo, sub } = repoWithSub()
+    writeFileSync(userConfig(), JSON.stringify({ projects: { [repo]: { mcpServers: { plur: entry } } } }))
+    const report = doctorIn(sub)
+    expect(report.claudeCodeMcp).toMatchObject({ registered: true, scope: 'local' })
+    expect(report.claudeCodeMcp.fix).toBeUndefined()
+    expect(report.mcpRegistered).toBe(true)
+  })
+
+  it('a .mcp.json in a parent folder counts from a subfolder', () => {
+    const { repo, sub } = repoWithSub()
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { plur: entry } }))
+    const report = doctorIn(sub)
+    expect(report.claudeCodeMcp).toMatchObject({ registered: true, scope: 'project', path: join(repo, '.mcp.json') })
+  })
+
+  it('reports Claude Code\'s precedence: local over project over user', () => {
+    const { repo, sub } = repoWithSub()
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { plur: entry } }))
+    writeFileSync(userConfig(), JSON.stringify({ mcpServers: { plur: entry } }))
+    expect(doctorIn(sub).claudeCodeMcp.scope).toBe('project')
+    writeFileSync(userConfig(), JSON.stringify({ mcpServers: { plur: entry }, projects: { [repo]: { mcpServers: { plur: entry } } } }))
+    expect(doctorIn(sub).claudeCodeMcp.scope).toBe('local')
   })
 
   it('after `plur init`, doctor sees the server in ~/.claude.json', () => {

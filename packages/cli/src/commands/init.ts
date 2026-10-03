@@ -5,13 +5,13 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { outputInfo } from '../output.js'
+import { outputInfo, outputText } from '../output.js'
 import { CLI_VERSION } from '../version.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import { plurRoot } from '../lib/folder-gate.js'
 import {
   resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize,
-  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile,
+  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile, registerClaudeUserMcp,
   SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES,
 } from '@plur-ai/core'
 import {
@@ -983,74 +983,39 @@ function mergeHooks(settings: Settings, hooksMap: Record<string, HookEntry[]>): 
  * unparseable `~/.claude.json` is refused and neither file is touched. A run
  * with nothing to change writes nothing.
  */
-function installClaudeCodeMcp(settingsPath: string): string {
-  const userPath = claudeCodeUserConfigPath()
-  const userRaw = existsSync(userPath) ? readFileSync(userPath, 'utf8') : null
-  const { config, ok } = readConfigForWrite(userPath)
-  if (!ok) {
-    return `skipped — ${userPath} exists but is not valid JSON; writing would discard Claude Code's other settings and servers. ` +
-      'Fix it by hand, then re-run `plur init`'
-  }
-
+function installClaudeCodeMcp(settingsPath: string): { ok: boolean; status: string } {
   const settingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : null
   const settingsRead = readConfigForWrite(settingsPath)
   const oldServers = settingsRead.ok ? settingsRead.config.mcpServers : undefined
   const oldEntry = oldServers && typeof oldServers === 'object' && !Array.isArray(oldServers)
     ? (oldServers as Record<string, unknown>).plur
     : undefined
-  const hasOld = oldEntry !== undefined
 
-  let status: string
-  let changed: boolean
-  if (hasPlurMcp(config)) {
-    const healed = healPlurMcpEntry(config)
-    changed = healed !== null
-    status = healed ? `${healed} in ${userPath}` : `already registered in ${userPath}`
-  } else if (hasOld && oldEntry && typeof oldEntry === 'object') {
-    const servers = (config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {}) as Record<string, unknown>
-    servers.plur = JSON.parse(JSON.stringify(oldEntry))
-    config.mcpServers = servers
-    const healed = healPlurMcpEntry(config)
-    changed = true
-    status = `moved from ${settingsPath} to ${userPath}, where Claude Code reads MCP servers${healed ? ` (${healed})` : ''}`
-  } else {
-    mergePlurMcp(config)
-    changed = true
-    status = `registered in ${userPath}`
-  }
+  // One implementation with `plur-mcp init` (#1564 review): concurrent-save
+  // re-apply, BOM, symlink, non-object mcpServers, backup pruning.
+  const r = registerClaudeUserMcp({
+    userPath: claudeCodeUserConfigPath(),
+    entry: () => buildMcpServerEntry() as unknown as Record<string, unknown>,
+    heal: (config) => healPlurMcpEntry(config),
+    legacyEntry: oldEntry,
+    legacyPath: settingsPath,
+  })
+  // The old entry stays until the new one is in place.
+  if (!r.ok || oldEntry === undefined) return { ok: r.ok, status: r.message }
 
-  if (changed) {
-    const content = JSON.stringify(config, null, 2) + '\n'
-    try {
-      if (userRaw === null) {
-        // Claude Code keeps its own state in this file and creates it private.
-        writeFileSync(userPath, content, { flag: 'wx', mode: 0o600 })
-      } else {
-        const backup = writeWithBackup(userPath, content, userRaw)
-        if (backup) status += ` (backup: ${backup})`
-      }
-    } catch (err) {
-      const code = (err as { code?: string }).code
-      const why = code === 'EEXIST' ? 'it was created while PLUR was updating it — run again' : (err as Error).message
-      // The old entry stays where it was: nothing has replaced it yet.
-      return `not written to ${userPath}: ${why}`
-    }
+  let status = r.message
+  const next: Record<string, unknown> = { ...settingsRead.config }
+  const servers = { ...(oldServers as Record<string, unknown>) }
+  delete servers.plur
+  if (Object.keys(servers).length > 0) next.mcpServers = servers
+  else delete next.mcpServers
+  try {
+    const backup = writeWithBackup(settingsPath, JSON.stringify(next, null, 2) + '\n', settingsRaw)
+    status += `; removed the unused entry from ${settingsPath}${backup ? ` (backup: ${backup})` : ''}`
+  } catch (err) {
+    status += `; could not remove the unused entry from ${settingsPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
   }
-
-  if (hasOld) {
-    const next: Record<string, unknown> = { ...settingsRead.config }
-    const servers = { ...(oldServers as Record<string, unknown>) }
-    delete servers.plur
-    if (Object.keys(servers).length > 0) next.mcpServers = servers
-    else delete next.mcpServers
-    try {
-      const backup = writeWithBackup(settingsPath, JSON.stringify(next, null, 2) + '\n', settingsRaw)
-      status += `; removed the unused entry from ${settingsPath}${backup ? ` (backup: ${backup})` : ''}`
-    } catch (err) {
-      status += `; could not remove the unused entry from ${settingsPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
-    }
-  }
-  return status
+  return { ok: true, status }
 }
 
 /**
@@ -1841,10 +1806,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Register the MCP server where Claude Code reads it (#1561). Contained:
   // a refused ~/.claude.json must not abort the rest of the install.
   let mcpStatus: string
+  let mcpOk: boolean
   try {
-    mcpStatus = installClaudeCodeMcp(enforcementPath)
+    const r = installClaudeCodeMcp(enforcementPath)
+    mcpStatus = r.status
+    mcpOk = r.ok
   } catch (err: unknown) {
     mcpStatus = `FAILED (${(err as Error)?.message ?? 'unknown error'}) — Claude Code will not see PLUR's tools; fix it and re-run \`plur init\``
+    mcpOk = false
   }
 
   // Install CLAUDE.md section
@@ -1902,7 +1871,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo('', flags)
   outputInfo(samePath
     ? 'Architecture: One global engram store (~/.plur/); all hooks in user settings, gated per folder by the folder map.'
-    : 'Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped (--project).', flags)
+    : 'Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped (--project). ' +
+      'The MCP server is registered at user scope (~/.claude.json), so PLUR\'s tools appear in every project.', flags)
   outputInfo('Multi-project scoping via domain/scope fields on engrams, not separate installs.', flags)
   outputInfo('', flags)
   outputInfo(skillsStatus, flags)
@@ -1980,6 +1950,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputInfo('', flags)
   }
   outputInfo('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.', flags)
+  if (!mcpOk) {
+    // #1564 review L4: the point of init did not happen; scripts must see it.
+    process.exitCode = 1
+    outputText(`Not finished: Claude Code will not see PLUR's tools — the MCP server was ${mcpStatus}`)
+  }
 
   // Telemetry opt-in — ask once, never nag. Runs last so it doesn't interrupt the
   // settings-installation summary above. Non-interactive installs silently write

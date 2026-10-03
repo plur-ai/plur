@@ -28,7 +28,7 @@ const legacyFile = () => join(home, '.claude', 'mcp.json')
 const read = (p: string): Json => JSON.parse(readFileSync(p, 'utf8'))
 const backups = (dir: string, base: string) => existsSync(dir) ? readdirSync(dir).filter(n => n.startsWith(`${base}.plur-backup-`)) : []
 
-function init(): string {
+function init(expectOk = true): string {
   const r = spawnSync('node', [MCP, 'init'], {
     encoding: 'utf-8', cwd: work, timeout: 120_000, input: '',
     env: {
@@ -37,7 +37,8 @@ function init(): string {
       PLUR_DISABLE_EMBEDDINGS: '1', PLUR_TELEMETRY: '', PLUR_BACKEND: '',
     },
   })
-  expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0)
+  if (expectOk) expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0)
+  else expect(r.status, `${r.stdout}\n${r.stderr}`).not.toBe(0)
   return r.stdout ?? ''
 }
 
@@ -100,7 +101,7 @@ describe('plur-mcp init registers in ~/.claude.json (#1561)', { timeout: 300_000
     expect(readFileSync(userConfig(), 'utf8')).toBe(u1)
     expect(readFileSync(legacyFile(), 'utf8')).toBe(l1)
     expect([...backups(home, '.claude.json'), ...backups(join(home, '.claude'), 'mcp.json')]).toEqual(b1)
-    expect(out).toMatch(/MCP:\s+already configured/)
+    expect(out).toMatch(/MCP:\s+already registered/)
   })
 
   it('an unparseable ~/.claude.json is refused; neither file is touched', () => {
@@ -108,9 +109,10 @@ describe('plur-mcp init registers in ~/.claude.json (#1561)', { timeout: 300_000
     const broken = '{ "mcpServers": { "a": {}, }'
     writeFileSync(userConfig(), broken)
     writeFileSync(legacyFile(), JSON.stringify({ mcpServers: { plur: { command: '/opt/plur-mcp', args: [] } } }))
-    const out = init()
+    // #1564 review L4: the registration did not happen, so init fails.
+    const out = init(false)
     expect(readFileSync(userConfig(), 'utf8')).toBe(broken)
     expect(read(legacyFile()).mcpServers.plur).toEqual({ command: '/opt/plur-mcp', args: [] })
-    expect(out).toMatch(/MCP:\s+skipped/)
+    expect(out).toMatch(/MCP:\s+not registered/)
   })
 })

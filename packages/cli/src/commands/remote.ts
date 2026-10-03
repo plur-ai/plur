@@ -336,6 +336,8 @@ interface ServedStore {
   status: 'ok' | 'auth_expired' | 'unreachable'
   username?: string
   reason?: string
+  /** #1564 review M2: the variable holding the token is unset; nothing was sent. */
+  token_env_unset?: string
 }
 
 /** GET <origin>/api/v1/me for a `.plur.yaml` remote (its token is not in config.yaml). */
@@ -387,6 +389,7 @@ async function show(flags: GlobalFlags): Promise<void> {
           url: h.url, scope: policy.scope, source: 'config', ok: h.ok, status: h.status,
           ...(safeUsername(h.username) ? { username: safeUsername(h.username) } : {}),
           ...(h.reason ? { reason: h.reason } : {}),
+          ...(h.tokenEnvUnset ? { token_env_unset: h.tokenEnvUnset } : {}),
         })
       }
     }
@@ -433,6 +436,7 @@ async function show(flags: GlobalFlags): Promise<void> {
     for (const s of served) {
       const where = `${s.url}${s.scope ? ` [${s.scope}]` : ''}${s.source === 'plur-yaml' ? ' (from .plur.yaml)' : ''}`
       if (s.ok) lines.push(`  ✓ ${where} — reachable${s.username ? ` as ${s.username}` : ''}`)
+      else if (s.token_env_unset) lines.push(`  ✗ ${where} — no token: ${s.reason ?? `set ${s.token_env_unset} where PLUR runs`}`)
       else if (s.status === 'auth_expired') lines.push(`  ✗ ${where} — token rejected${s.reason ? `: ${s.reason}` : ''}`)
       else lines.push(`  ✗ ${where} — unreachable${s.reason ? `: ${s.reason}` : ''}`)
     }

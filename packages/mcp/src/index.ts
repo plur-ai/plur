@@ -332,16 +332,9 @@ function healRaceyEntry(servers: Record<string, unknown>): boolean {
  * nothing to change writes nothing; an unparseable `~/.claude.json` is
  * refused and neither file is touched.
  */
-async function installClaudeUserMcp(): Promise<string> {
-  const { writeWithBackup } = await import('@plur-ai/core')
-  const userPath = join(homedir(), '.claude.json')
+async function installClaudeUserMcp(): Promise<{ ok: boolean; status: string }> {
+  const { writeWithBackup, registerClaudeUserMcp } = await import('@plur-ai/core')
   const legacyPath = join(homedir(), '.claude', 'mcp.json')
-  const userRaw = existsSync(userPath) ? readFileSync(userPath, 'utf8') : null
-  const { data, ok } = readJsonObjectForWrite(userPath)
-  if (!ok) {
-    return `skipped — ${userPath} exists but is not valid JSON; writing would discard Claude Code's other settings and servers. Fix it by hand, then re-run \`plur-mcp init\``
-  }
-  const config = data as McpConfig
   const legacyRaw = existsSync(legacyPath) ? readFileSync(legacyPath, 'utf8') : null
   const legacy = readJsonObjectForWrite(legacyPath)
   const oldServers = legacy.ok ? legacy.data.mcpServers : undefined
@@ -349,54 +342,29 @@ async function installClaudeUserMcp(): Promise<string> {
     ? (oldServers as Record<string, unknown>).plur
     : undefined
 
-  const servers = (config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {}) as Record<string, unknown>
-  let status: string
-  let changed: boolean
-  if ('plur' in servers) {
-    changed = healRaceyEntry(servers)
-    status = changed ? `upgraded stale npx entry in ${userPath}` : `already configured in ${userPath}`
-  } else if (oldEntry && typeof oldEntry === 'object') {
-    servers.plur = JSON.parse(JSON.stringify(oldEntry))
-    healRaceyEntry(servers)
-    changed = true
-    status = `moved from ${legacyPath} to ${userPath}, where Claude Code reads MCP servers`
-  } else {
-    servers.plur = MCP_SERVER_CONFIG
-    changed = true
-    status = `added to ${userPath}`
-  }
+  // The same implementation `plur init` uses (#1564 review).
+  const r = registerClaudeUserMcp({
+    userPath: join(homedir(), '.claude.json'),
+    entry: () => ({ ...MCP_SERVER_CONFIG }),
+    heal: (config) => healRaceyEntry(config.mcpServers as Record<string, unknown>) ? 'upgraded stale npx entry' : null,
+    legacyEntry: oldEntry,
+    legacyPath,
+  })
+  if (!r.ok || oldEntry === undefined) return { ok: r.ok, status: r.message }
 
-  if (changed) {
-    config.mcpServers = servers
-    const content = JSON.stringify(config, null, 2) + '\n'
-    try {
-      if (userRaw === null) {
-        // Claude Code keeps its own state in this file and creates it private.
-        writeFileSync(userPath, content, { flag: 'wx', mode: 0o600 })
-      } else {
-        const backup = writeWithBackup(userPath, content, userRaw)
-        if (backup) status += ` (backup: ${backup})`
-      }
-    } catch (err) {
-      const why = (err as { code?: string }).code === 'EEXIST' ? 'it was created while PLUR was updating it — run again' : (err as Error).message
-      return `not written to ${userPath}: ${why}`
-    }
+  let status = r.message
+  const next: Record<string, unknown> = { ...legacy.data }
+  const rest = { ...(oldServers as Record<string, unknown>) }
+  delete rest.plur
+  if (Object.keys(rest).length > 0) next.mcpServers = rest
+  else delete next.mcpServers
+  try {
+    const backup = writeWithBackup(legacyPath, JSON.stringify(next, null, 2) + '\n', legacyRaw)
+    status += `; removed the unused entry from ${legacyPath}${backup ? ` (backup: ${backup})` : ''}`
+  } catch (err) {
+    status += `; could not remove the unused entry from ${legacyPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
   }
-
-  if (oldEntry !== undefined) {
-    const next: Record<string, unknown> = { ...legacy.data }
-    const rest = { ...(oldServers as Record<string, unknown>) }
-    delete rest.plur
-    if (Object.keys(rest).length > 0) next.mcpServers = rest
-    else delete next.mcpServers
-    try {
-      const backup = writeWithBackup(legacyPath, JSON.stringify(next, null, 2) + '\n', legacyRaw)
-      status += `; removed the unused entry from ${legacyPath}${backup ? ` (backup: ${backup})` : ''}`
-    } catch (err) {
-      status += `; could not remove the unused entry from ${legacyPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
-    }
-  }
-  return status
+  return { ok: true, status }
 }
 
 /**
@@ -572,7 +540,10 @@ async function runInit() {
   results.push(`Search:   ${searchMode}`)
 
   // Step 2: Write MCP config
-  const mcpStatus = await installClaudeUserMcp()
+  const mcp = await installClaudeUserMcp()
+  const mcpStatus = mcp.status
+  // #1564 review L4: init did not do its main job; scripts must see it.
+  if (!mcp.ok) process.exitCode = 1
   results.push(`MCP:      ${mcpStatus}`)
 
   // Step 3: Install Claude Code hooks
@@ -685,7 +656,8 @@ if (arg === '--version' || arg === '-v') {
 
 if (arg === 'init') {
   await runInit()
-  process.exit(0)
+  // Non-zero when the MCP registration did not happen (#1564 review L4).
+  process.exit(process.exitCode ?? 0)
 }
 
 if (arg === 'packs') {

@@ -18,14 +18,25 @@ while `plur doctor` said it was registered. This was also the case in 0.21.0.
   backed up before they change. Other servers and settings stay as they are.
   A second run writes nothing. An unreadable `~/.claude.json` is left alone,
   and init says so.
-- `plur init --project` also registers the server in `~/.claude.json`. Its
-  repo entry stays as the folder's PLUR marker.
+- `plur init --project` now also registers the server at user scope in
+  `~/.claude.json`, so PLUR's tools appear in every project, not only this
+  one. Its repo entry stays as the folder's PLUR marker. (Before, the server
+  went only into the repo's settings.json, where Claude Code never read it.)
+- `plur init` exits non-zero when the MCP server could not be registered, and
+  says why: an unreadable or non-object `~/.claude.json`, an `mcpServers`
+  that is not an object, a symlink to a missing file, or a file that kept
+  changing (Claude Code saving it) through three tries. A change made while
+  init is writing is never overwritten; the edit is re-applied to the new
+  content. A byte-order mark is accepted. At most the last three PLUR backups
+  of `~/.claude.json` are kept, each readable only by you.
 - `plur-mcp init` follows the same rules. It used to write `<cwd>/.mcp.json`,
   or `~/.claude/mcp.json` when that file existed, and Claude Code never reads
   `~/.claude/mcp.json`. An old entry there is moved to `~/.claude.json`.
-- `plur doctor` now checks where Claude Code actually looks: user scope in
-  `~/.claude.json`, this folder's local scope there, or a project `.mcp.json`.
-  An entry in settings.json no longer counts. Doctor fails when Claude Code's
+- `plur doctor` now checks where Claude Code actually looks, in Claude Code's
+  own order: the local scope of this folder's git repository in
+  `~/.claude.json`, then a `.mcp.json` in this folder or a parent folder, then
+  user scope. It works from any subfolder of the repository. An entry in
+  settings.json no longer counts. Doctor fails when Claude Code's
   hooks are installed but the server is not there, and names the fix.
 - Cursor, Codex, Antigravity and Claude Desktop were checked the same way.
   Each already reads the server where init registers it.
@@ -35,7 +46,10 @@ token itself into `config.yaml`.** They now write `token_env: VAR`. The token
 is read from the variable when the config loads, so the variable must be set
 wherever PLUR runs. No later rewrite of the stores list writes the value back.
 That includes scopes registered from the same server, which now carry the
-same reference. Running `--token-env` against a store saved with a literal
+same reference. When the variable is unset, PLUR sends nothing to that store
+(no request without a token): a team save is kept locally and queued, and
+`plur learn`, `plur_learn`, `plur remote`, `plur login --status` and
+`plur_doctor` name the variable to set. Running `--token-env` against a store saved with a literal
 token replaces the literal with the reference.
 
 ### CLI tests never touch the real home or PLUR store (tests only)

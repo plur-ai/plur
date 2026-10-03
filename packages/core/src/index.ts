@@ -55,7 +55,7 @@ import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity } from './expiry.js'
 import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
-import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY } from './store/remote-store.js'
+import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
 import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
@@ -261,7 +261,7 @@ export {
   NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES,
   type OutboxState, type OutboxVerdict, type OutboxSummary, type OutboxFailureInput,
 } from './outbox-health.js'
-export { RemoteHttpError } from './store/remote-store.js'
+export { RemoteHttpError, TokenEnvUnsetError, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets, detectSensitive, detectPromptInjection, sensitivityCategory } from './secrets.js'
@@ -281,6 +281,7 @@ export { detectPlurStorage, type PlurPaths } from './storage.js'
 // `plur reindex-tokens` came to report a false all-clear on a store whose
 // connection lived in config.yaml rather than the environment.
 export { loadConfig, tokenFromEnv, storeEntryForDisk } from './config.js'
+export { registerClaudeUserMcp, pruneBackups, type RegisterClaudeUserMcpOptions, type RegisterClaudeUserMcpResult } from './claude-user-config.js'
 export { classifyStoreDuplicates, removePrimaryStoreEntries, type IgnoredStoreEntry, type StoreDuplicateReport } from './store-duplicates.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
@@ -615,6 +616,12 @@ export interface RemoteHealth {
   status: 'ok' | 'auth_expired' | 'unreachable'
   /** True only for status 'ok'. */
   ok: boolean
+  /**
+   * Set when the token comes from a `token_env` variable that is unset where
+   * PLUR runs (#1564 review M2): the variable's name. No request was sent;
+   * the fix is to set the variable, not to re-authenticate.
+   */
+  tokenEnvUnset?: string
   /** Human-readable reason when not ok. */
   reason?: string
   /** From the token's JWT `exp` claim, if decodable (opaque keys → null). */
@@ -1097,7 +1104,7 @@ export type LearnDelivery = 'remote' | 'outbox' | 'local'
  * `server_error`: the store answered with another error status.
  * `no_store`: no writable url store is registered for the scope.
  */
-export type OutboxReasonCode = 'auth_rejected' | 'unreachable' | 'server_error' | 'no_store'
+export type OutboxReasonCode = 'auth_rejected' | 'unreachable' | 'server_error' | 'no_store' | 'token_env_unset'
 
 /** Options for {@link Plur.learnRouted} (0.21.1). */
 export interface LearnRoutedOptions {
@@ -2299,6 +2306,13 @@ export class Plur {
     return this._primaryStore
   }
 
+  /** The `token_env` variable configured for this url (+scope), if any (#1561). */
+  private _tokenEnvFor(url: string, scope?: string): string | undefined {
+    const key = normalizeEndpointUrl(url)
+    const stores = (this.config.stores ?? []).filter(s => s.url && normalizeEndpointUrl(s.url) === key && s.token_env)
+    return (stores.find(s => s.scope === scope) ?? stores[0])?.token_env
+  }
+
   /** Get or create a RemoteStore driver for a store config entry. */
   private _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteStore {
     // #394: include the token in the cache key so a ROTATED token produces a FRESH
@@ -2312,7 +2326,10 @@ export class Plur {
       for (const k of this._remoteStores.keys()) {
         if (k !== key && k.startsWith(baseKey + '::')) this._remoteStores.delete(k)
       }
-      driver = new RemoteStore(entry.url, entry.token ?? '', entry.scope)
+      // A `token_env` store whose variable is unset gets a driver that refuses
+      // every request, naming the variable (#1564 review M2).
+      const tokenEnv = entry.token ? undefined : this._tokenEnvFor(entry.url, entry.scope)
+      driver = new RemoteStore(entry.url, entry.token ?? '', entry.scope, tokenEnv ? { tokenEnv } : {})
       this._remoteStores.set(key, driver)
     }
     return driver
@@ -5022,6 +5039,13 @@ export class Plur {
     })
     const status = ob?.last_status
     const queued = `Saved on this machine and queued for ${scope}`
+    const unsetVar = TOKEN_ENV_UNSET_RE.exec(ob?.last_error ?? '')?.[1]
+    if (unsetVar) {
+      return {
+        reason_code: 'token_env_unset',
+        reason: `${queued}: ${tokenEnvUnsetMessage(unsetVar, scope)}; then run \`plur outbox --flush\`.`,
+      }
+    }
     if (v.state === 'needs_action' && (status === 401 || status === 403 || ob?.auth_failed === true)) {
       return {
         reason_code: 'auth_rejected',
@@ -6507,6 +6531,9 @@ export class Plur {
       // Config order preserved — row→entry mapping must be deterministic.
       const dialEntries = dialable.filter(e => selected.has(e) && allowed(e.scope))
       if (dialEntries.length === 0) continue
+      // #1564 review M2: no token because its `token_env` variable is unset —
+      // never dial with an empty Bearer.
+      if (!g.token && !(projectImplicated && rp?.token) && dialEntries.some(e => e.token_env)) continue
       hosts.push({
         url: g.url,
         token: (projectImplicated && rp?.token) ? rp.token : (g.token ?? ''),
@@ -12756,13 +12783,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    * normalized ({@link normalizeEndpointUrl}); the first-configured spelling
    * is reported. `scopes` lists the group's registered scopes in config order.
    */
-  remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[] }> {
-    const groups = new Map<string, { url: string; token?: string; scopes: string[] }>()
+  remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[]; tokenEnv?: string }> {
+    const groups = new Map<string, { url: string; token?: string; scopes: string[]; tokenEnv?: string }>()
     for (const s of this.config.stores ?? []) {
       if (!s.url) continue
       const key = `${normalizeEndpointUrl(s.url)}::${s.token ?? ''}`
       let g = groups.get(key)
       if (!g) { g = { url: s.url, token: s.token, scopes: [] }; groups.set(key, g) }
+      if (!s.token && s.token_env && !g.tokenEnv) g.tokenEnv = s.token_env
       if (!g.scopes.includes(s.scope)) g.scopes.push(s.scope)
     }
     return [...groups.values()]
@@ -12875,7 +12903,12 @@ Generate an improved version of the procedure that prevents this failure. Return
     // of a credential the user rotated hours ago sends them to fix the server.
     this.reloadConfigIfChanged()
     const groups = this.remoteEndpointTokenGroups()
-    return Promise.all(groups.map(async ({ url, token, scopes }) => {
+    return Promise.all(groups.map(async ({ url, token, scopes, tokenEnv }) => {
+      // #1564 review M2: the token's variable is unset — say so, send nothing.
+      if (!token && tokenEnv) {
+        return { url, scopes, status: 'auth_expired' as const, ok: false, tokenEnvUnset: tokenEnv,
+          reason: tokenEnvUnsetMessage(tokenEnv, scopes[0] ?? url) }
+      }
       const exp = decodeJwtExpiry(token)
       const payload = decodeJwtPayload(token)
       const subject = typeof payload?.sub === 'string' ? payload.sub : undefined
