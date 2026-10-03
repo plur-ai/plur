@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### A push claim that cannot be recorded no longer lets two processes push one engram (#1580)
+
+Found by the 0.21.1 Windows pre-release check (finding B1).
+
+- Before an engram queued for a team store is pushed, the process that pushes it records a claim, so only one process pushes it. To take over a claim left by a process that died, PLUR renames a new claim file over the old one. On Windows that rename can fail while another process has the file open. PLUR then pushed anyway without a recorded claim, so a second process could push the same engram too, and the team store could end up with it twice.
+- Now, when a claim cannot be recorded for any reason, the engram is not pushed this time. It stays queued with its idempotency key and is tried again on a later flush. If the takeover fails, or the temporary file is only partly written (a full disk), its temporary file is removed.
+- Once a claim is on disk it counts, even if tidying up afterwards fails (removing a temporary file or a takeover marker, which Windows can refuse while another process has the file open). Before, such a claim could be reported as not taken and then block the engram for up to 15 minutes.
+- You can see why an engram is held. `plur outbox` shows "held: its push claim could not be recorded on this machine (…)" and what to check, and so do `plur status` and the session hooks. `plur outbox --flush` says the claim could not be recorded, rather than "another writer is pushing it". With writes queued, `plur doctor` checks that the claims folder (`cache/outbox-claims` in the PLUR store) can be written, and fails when it cannot.
+- On a drive without hard links (FAT, exFAT, some network shares), a claim is created and then written in two steps. A second process could read it in between and take it for an abandoned claim. An empty or half-written claim younger than a minute now counts as taken.
+- One trade-off: a cache folder that cannot be written now holds queued engrams back until it can be, where before they were pushed without a claim. Doctor and `plur outbox` say so.
+
 ### A team save no longer tells the agent to save it again; unscoped CLI recall and inject search the folder's team store (#1578)
 
 Found by the third 0.21.1 pre-release check (findings L9 and L10).
