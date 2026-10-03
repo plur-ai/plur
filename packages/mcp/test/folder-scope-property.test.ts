@@ -155,6 +155,10 @@ describe('a team delivery happens only when every workspace input agrees on that
     for (const kinds of combos) {
       const roots = kinds.map(k => w.path[k])
       const want = agreed(kinds)
+      // A fresh team store per combination: the stub keeps what it was sent,
+      // and its stored rows (no tags) are not what this test is about.
+      stub.reset()
+      stub.setMe({ username: 'tester', org_id: 'test', role: 'developer', scopes: [A, B] })
       // 1. No session.
       _resetSessionTelemetry()
       const c1 = await connect(w, roots)
