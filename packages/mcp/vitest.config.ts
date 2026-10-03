@@ -10,6 +10,16 @@ export default defineConfig({
     // e2e-remote drives MCP → core → RemoteStore in-process, so the #1069
     // host breaker's process-global state leaks across tests here exactly as
     // it did in core (evaluator audit finding 6). Same per-test reset.
-    setupFiles: ['test/helpers/reset-remote-breaker-setup.ts', 'test/helpers/folder-on-cwd-setup.ts'],
+    //
+    // isolate-home (shared with packages/cli): a temp HOME and no inherited
+    // PLUR_PATH for every file. Suites that import the bin entry
+    // (src/index.ts) start a stdio server in the worker, which opened the
+    // default store and wrote server.pid into the real ~/.plur; the CLI
+    // suite's real-home guard caught it in CI.
+    setupFiles: [
+      '../cli/test/setup/isolate-home.ts',
+      'test/helpers/reset-remote-breaker-setup.ts',
+      'test/helpers/folder-on-cwd-setup.ts',
+    ],
   },
 })

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### CLI tests never touch the real home or PLUR store (tests only)
+
+Every CLI, mcp and dsh test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH. The run checks whether the real `~/.plur` changed while it ran: in CI (`CI=true`) a change fails the run, locally it is reported as a warning (`PLUR_TEST_HOME_GUARD=fail|warn|off` overrides). In CI this check found mcp and dsh tests writing `server.pid`, `packs/` and `.tensions-purged` into the real home.
+
 ### Instruction upgrades respect lists, links, edits and look-alike learnings
 
 These follow up #1520 from its third audit.
