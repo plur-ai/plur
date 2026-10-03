@@ -265,7 +265,7 @@ export {
   NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES,
   type OutboxState, type OutboxVerdict, type OutboxSummary, type OutboxFailureInput,
 } from './outbox-health.js'
-export { RemoteHttpError, TokenEnvUnsetError, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
+export { RemoteHttpError, TokenEnvUnsetError, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage, tokenEnvUnsetDetail, tokenEnvUnsetFix } from './store/remote-store.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets, detectSensitive, detectPromptInjection, sensitivityCategory } from './secrets.js'

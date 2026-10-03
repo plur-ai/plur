@@ -24,7 +24,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates, folderMapProblem } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { repairAdvice, repairCommandFor } from './folders.js'
 
@@ -205,6 +205,22 @@ interface DoctorReport {
    * the overall check.
    */
   ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
+  /**
+   * Remote stores whose token comes from an environment variable
+   * (`token_env`, #1561) that is unset or empty where doctor runs (#1572).
+   * Saves to such a store wait in the outbox and recalls skip it. Names the
+   * variable, never a value. It fails the overall check, as the MCP
+   * `plur_doctor` does, with the same `detail` and `fix` (#1572 review M1/M2).
+   */
+  tokenEnvUnset: Array<{ scope: string; url: string; variable: string; detail: string; fix: string }>
+  /**
+   * The `token_env` stores whose variable IS set, and where (#1572 re-review
+   * M3): this shell (`inShell`), and/or the `env` of a PLUR MCP entry an
+   * editor launches the server with (`sources`). A variable set only in an
+   * entry works for that editor's server, so it is not a failure; `plur`
+   * commands run from this shell still lack it. Never holds a value.
+   */
+  tokenEnvFound: Array<{ scope: string; url: string; variable: string; inShell: boolean; sources: string[] }>
   /**
    * opencode leg. Owner-approved pre-publish requirement (2026-09-16): until
    * `@plur-ai/opencode` is published, opencode's `plugin: ["@plur-ai/opencode"]`
@@ -493,6 +509,60 @@ function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDu
   } catch {
     return []
   }
+}
+
+/**
+ * The `env` of every PLUR MCP entry an editor launches (#1572 re-review M3):
+ * Claude Code's (~/.claude.json, or this folder's local / project scope),
+ * then the other harnesses' files. A settings.json entry, which nothing
+ * launches, is left out. The same files the handshake probes.
+ */
+function declaredPlurMcpEnvs(): Array<{ source: string; env: Record<string, string> }> {
+  const out: Array<{ source: string; env: Record<string, string> }> = []
+  try {
+    const cc = claudeCodePlurEntry(process.cwd())
+    const ccEntry = cc ? readPlurMcpEntry(cc.config) : null
+    if (cc && ccEntry) out.push({ source: `Claude Code MCP entry (${cc.path})`, env: ccEntry.env ?? {} })
+    for (const cf of knownConfigFiles()) {
+      if (!cf.exists || cf.kind === 'cursor-hooks' || cf.kind === 'claude-user' || isClaudeSettingsFile(cf.path)) continue
+      const e = readPlurMcpEntry(readConfig(cf.path))
+      if (e && !out.some(o => o.source.endsWith(`(${cf.path})`))) out.push({ source: `${cf.label} MCP entry (${cf.path})`, env: e.env ?? {} })
+    }
+  } catch { /* an unreadable config file names no source */ }
+  return out
+}
+
+/**
+ * #1572: the remote stores in config.yaml that take their token from an
+ * environment variable, split by whether the PLUR MCP server will see it —
+ * set in this shell, or in the `env` of an MCP entry an editor launches it
+ * with (re-review M3: the MCP plur_doctor runs with that env and says ok).
+ * Reads config files only; no store is opened, no value is kept.
+ */
+function findTokenEnv(flags: GlobalFlags): { unset: DoctorReport['tokenEnvUnset']; found: DoctorReport['tokenEnvFound'] } {
+  const unset: DoctorReport['tokenEnvUnset'] = []
+  const found: DoctorReport['tokenEnvFound'] = []
+  try {
+    const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+    const stores = loadConfig(join(root, 'config.yaml')).stores ?? []
+    const entries = declaredPlurMcpEnvs()
+    for (const s of stores) {
+      if (!s.url || !s.token_env) continue
+      const inShell = tokenFromEnv(s.token_env) !== undefined
+      // An inline token in the file wins over the variable (core's rule).
+      if (!inShell && s.token) continue
+      const sources = entries.filter(e => tokenFromEnv(s.token_env, e.env) !== undefined).map(e => e.source)
+      if (inShell || sources.length > 0) {
+        found.push({ scope: s.scope, url: s.url, variable: s.token_env, inShell, sources: inShell ? ['this shell', ...sources] : sources })
+      } else {
+        unset.push({
+          scope: s.scope, url: s.url, variable: s.token_env,
+          detail: tokenEnvUnsetDetail(s.token_env, s.scope), fix: tokenEnvUnsetFix(s.url, s.token_env),
+        })
+      }
+    }
+  } catch { /* no config: nothing to report */ }
+  return { unset, found }
 }
 
 function inspectConfigs(): ConfigFileReport[] {
@@ -1274,6 +1344,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
         }
       }
     } catch { /* doctor never fails on its own probe */ }
+    const { unset: tokenEnvUnset, found: tokenEnvFound } = findTokenEnv(flags)
     const overall: 'ok' | 'fail' =
       folderMap === null &&
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
@@ -1281,7 +1352,9 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       brokenNodeMcp.length === 0 &&
       (!cursorProjectDetected || cursorWired) &&
       // #1299: a queued write no retry will deliver is a real failure.
-      (outbox?.ok ?? true)
+      (outbox?.ok ?? true) &&
+      // #1572: a team store with no token cannot work; MCP plur_doctor says not ok too.
+      tokenEnvUnset.length === 0
         ? 'ok' : 'fail'
     // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
     // The two detections are not the same kind of signal. A `.cursor/`
@@ -1339,7 +1412,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, opencode, outbox, folderMap, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall,
     }
   })
 }
@@ -1592,6 +1665,23 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     }
   }
 
+  if (report.tokenEnvUnset.length > 0) {
+    outputText('')
+    // The same detail and fix plur_doctor gives over MCP (#1572 review M2).
+    for (const t of report.tokenEnvUnset) {
+      outputText(`✗ remote store: ${t.url} — ${t.detail}`)
+      outputText(`   Fix: ${t.fix}`)
+    }
+  }
+  const entryOnly = (report.tokenEnvFound ?? []).filter(t => !t.inShell)
+  if (entryOnly.length > 0) {
+    outputText('')
+    for (const t of entryOnly) {
+      outputText(`✓ remote store: ${t.url} — its token comes from ${t.variable}, set in the env of: ${t.sources.join('; ')}.`)
+      outputText(`   ${t.variable} is not set in this shell, so \`plur\` commands run here queue that store's saves in the outbox.`)
+    }
+  }
+
   outputText('')
   if (report.handshake.ok) {
     outputText(`✓ MCP handshake: ${report.handshake.serverName} v${report.handshake.serverVersion}`)
@@ -1667,6 +1757,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (report.outbox && !report.outbox.ok) {
       outputText('  Fix: see the Outbox line above — queued team writes need a person to act.')
     }
+    for (const t of report.tokenEnvUnset ?? []) outputText(`  Fix: ${t.fix}`)
     if (report.folderMap) {
       outputText(`  Fix: ${report.folderMap.fixable ? `run \`${report.folderMap.repair}\`` : 'edit the folder map by hand'} — see the Folder map line above.`)
     }

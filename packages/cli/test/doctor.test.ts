@@ -158,6 +158,90 @@ describe('plur doctor', () => {
     }
   }, 60000)
 
+  it('reports a store whose token_env variable is unset, without a value (#1572)', () => {
+    const store = mkdtempSync(join(tmpdir(), 'plur-1572-store-'))
+    const VAR = 'PLUR_TEST_1572_TOKEN'
+    try {
+      writeFileSync(join(store, 'engrams.yaml'), 'engrams: []\n')
+      writeFileSync(join(store, 'config.yaml'),
+        `stores:\n  - url: http://127.0.0.1:9/\n    scope: group:acme/eng\n    token_env: ${VAR}\n` +
+        `  - path: ${join(store, 'other.yaml')}\n    scope: project:o\n`)
+      writeFileSync(join(store, 'other.yaml'), 'engrams: []\n')
+      // The text report is covered by quiet.test.ts (printText); off a TTY the CLI prints JSON.
+      const run = (extra: Record<string, string>, json: boolean) => {
+        const env: Record<string, string | undefined> = { ...isolatedHomeEnv(home), PLUR_PATH: store, PLUR_DISABLE_EMBEDDINGS: '1', ...extra }
+        if (!(VAR in extra)) delete env[VAR]
+        try {
+          return execSync(`node ${CLI} doctor --no-handshake${json ? ' --json' : ''}`, { encoding: 'utf-8', timeout: 15000, cwd: home, env, stdio: ['ignore', 'pipe', 'ignore'] })
+        } catch (err: any) { return err.stdout?.toString() ?? '' }
+      }
+      const unset = JSON.parse(run({}, true))
+      expect(unset.tokenEnvUnset).toEqual([expect.objectContaining({ scope: 'group:acme/eng', url: 'http://127.0.0.1:9/', variable: VAR })])
+      // The same wording plur_doctor uses over MCP (review M2), and the fix says to restart (review L1).
+      expect(unset.tokenEnvUnset[0].detail).toMatch(/^NO TOKEN — .*PLUR_TEST_1572_TOKEN, which is unset or empty/)
+      expect(unset.tokenEnvUnset[0].fix).toMatch(/restart/i)
+      expect(unset.tokenEnvUnset[0].fix).toContain(VAR)
+
+      const SECRET = 'tok-1572-should-never-print'
+      const set = JSON.parse(run({ [VAR]: SECRET }, true))
+      expect(set.tokenEnvUnset).toEqual([])
+      expect(run({ [VAR]: SECRET }, true)).not.toContain(SECRET)
+      // Blank counts as unset, as it does for a save.
+      expect(JSON.parse(run({ [VAR]: '   ' }, true)).tokenEnvUnset).toHaveLength(1)
+    } finally {
+      rmSync(store, { recursive: true, force: true })
+    }
+  }, 90000)
+
+  it('an unset token_env variable fails the overall verdict and the exit code, in an otherwise healthy install (#1572 review M1)', () => {
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] } },
+    })
+    const store = join(home, '.plur')
+    mkdirSync(store, { recursive: true })
+    const VAR = 'PLUR_TEST_1572_VERDICT'
+    writeFileSync(join(store, 'config.yaml'), `stores:\n  - url: http://127.0.0.1:9/\n    scope: group:acme/eng\n    token_env: ${VAR}\n`)
+    const run = (extra: Record<string, string>) => {
+      const env: Record<string, string | undefined> = { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1', ...extra }
+      if (!(VAR in extra)) delete env[VAR]
+      try {
+        return { stdout: execSync(`node ${CLI} doctor --no-handshake --json`, { encoding: 'utf-8', timeout: 15000, cwd: home, env, stdio: ['ignore', 'pipe', 'ignore'] }), status: 0 }
+      } catch (err: any) { return { stdout: err.stdout?.toString() ?? '', status: err.status ?? 1 } }
+    }
+    const set = run({ [VAR]: 'tok-verdict' })
+    expect(JSON.parse(set.stdout).overall).toBe('ok')
+    expect(set.status).toBe(0)
+    const unset = run({})
+    expect(JSON.parse(unset.stdout).overall).toBe('fail')
+    expect(unset.status).not.toBe(0)
+  }, 60000)
+
+  it('a token_env variable set only in the PLUR MCP entry env passes, and says where it was found (#1572 re-review M3)', () => {
+    const VAR = 'PLUR_TEST_1572_ENTRYONLY'
+    const SECRET = 'tok-entry-only-never-print'
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'], env: { [VAR]: SECRET } } },
+    })
+    const store = join(home, '.plur')
+    mkdirSync(store, { recursive: true })
+    writeFileSync(join(store, 'config.yaml'), `stores:\n  - url: http://127.0.0.1:9/\n    scope: group:acme/eng\n    token_env: ${VAR}\n`)
+    const env: Record<string, string | undefined> = { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' }
+    delete env[VAR]
+    let stdout = ''
+    let status = 0
+    try { stdout = execSync(`node ${CLI} doctor --no-handshake --json`, { encoding: 'utf-8', timeout: 15000, cwd: home, env, stdio: ['ignore', 'pipe', 'ignore'] }) }
+    catch (err: any) { stdout = err.stdout?.toString() ?? ''; status = err.status ?? 1 }
+    const report = JSON.parse(stdout)
+    expect(report.tokenEnvUnset).toEqual([])
+    expect(report.tokenEnvFound).toEqual([expect.objectContaining({ scope: 'group:acme/eng', variable: VAR, inShell: false })])
+    expect(report.tokenEnvFound[0].sources.join(' ')).toMatch(/Claude Code/)
+    expect(report.overall).toBe('ok')
+    expect(status).toBe(0)
+    expect(stdout).not.toContain(SECRET)
+  }, 60000)
+
   it('reports ok when both hooks and plur MCP are present', () => {
     writeGlobalSettings({
       hooks: {

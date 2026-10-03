@@ -13,6 +13,16 @@ Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0
 - Engram history, tensions and injection records written under the old form still match the engram under its new id. The local search index rebuilds itself once to pick up the new ids.
 - Checked against the enterprise server's code and data: one server never gives two scopes the same id, so the duplicate ids need two servers. Acting through the wrong store entry could happen on one server.
 
+### `plur doctor` fails when a team store's token variable is unset (#1572)
+
+A team store added with `--token-env` takes its token from an environment variable. When that variable was unset or empty, `plur doctor` still said "Healthy", reported `overall: ok` and exited 0, and the only sign was one line on stderr. Saves to that store waited in the outbox and recalls skipped it. The MCP `plur_doctor` already said not ok for the same setup.
+
+- `plur doctor` now reports such a store as a failed check, sets `overall: fail` and exits non-zero, as `plur_doctor` does. Both doctors give the same detail ("NO TOKEN — …") and the same fix.
+- The fix says to set the variable where PLUR runs, then restart the editor or its MCP server so it picks the variable up (a running server keeps the environment it started with), and that queued engrams flush on the next session start or with `plur outbox --flush`.
+- `plur doctor --json` lists the stores as `tokenEnvUnset` (scope, url, variable, detail, fix). No token is ever printed.
+- The variable counts as set when it is in this shell or in the `env` of a PLUR MCP entry an editor launches the server with (Claude Code's `~/.claude.json` or project/local scope, Cursor, Codex and the others), since that is the environment the server runs in. `plur doctor` says where it found it (`tokenEnvFound` in `--json`), and notes when it is not in this shell, so `plur` commands run there queue that store's saves.
+- The closing list of fixes repeats the token fix.
+
 ### `plur folders repair` works on a map with a team-scoped folder (#1567)
 
 Found by the second 0.21.1 pre-release check. A broken `folders.yaml` that held one folder answered "Yes, with the team scope" could not be repaired, even for a one-character slip somewhere else in the file. The repair blamed that folder's line, which had no problem.

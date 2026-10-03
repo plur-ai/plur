@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
@@ -3404,8 +3404,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
               if (soon) remediation.push(`Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — mint a new token (<host>/me/api-keys), update ~/.plur/config.yaml, restart.`)
             } else if (h.tokenEnvUnset) {
               // #1564 review M2: nothing was sent; the token's variable is unset.
-              checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `NO TOKEN — ${h.reason ?? `${h.tokenEnvUnset} is unset`}. Team-scoped writes are queuing to the outbox.` })
-              remediation.push(`Remote ${h.url}: set the environment variable ${h.tokenEnvUnset} where the PLUR MCP server runs (its token), then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
+              // One wording with the CLI's `plur doctor` (#1572 review M2).
+              checks.push({ check: `remote store: ${h.url}`, ok: false, detail: tokenEnvUnsetDetail(h.tokenEnvUnset, h.scopes?.[0] ?? h.url) })
+              remediation.push(tokenEnvUnsetFix(h.url, h.tokenEnvUnset))
             } else if (h.status === 'auth_expired') {
               checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `AUTH FAILED${expiresNote} — team-scoped writes are queuing to the outbox, not syncing. (${h.reason ?? ''})` })
               remediation.push(`Remote ${h.url}: re-authenticate — open <host>/auth/github (or <host>/me/api-keys) in a browser, paste the token into ~/.plur/config.yaml, then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
