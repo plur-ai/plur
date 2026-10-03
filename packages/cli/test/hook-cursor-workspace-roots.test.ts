@@ -18,7 +18,7 @@
  * decides for its own working folder fails.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawnSync } from 'child_process'
@@ -67,15 +67,31 @@ function payload(event: string, roots: string[], extra: Record<string, unknown> 
   return { conversation_id: conv, hook_event_name: event, workspace_roots: roots, transcript_path: null, ...extra }
 }
 
-function hook(name: string, input: Record<string, unknown>, cwd = plugin): string {
-  const r = spawnSync(process.execPath, [CLI, name], {
+function hook(name: string | string[], input: Record<string, unknown>, cwd = plugin, extraEnv: Record<string, string> = {}): string {
+  const r = spawnSync(process.execPath, [CLI, ...(Array.isArray(name) ? name : [name])], {
     cwd,
     input: JSON.stringify(input),
     encoding: 'utf-8',
-    env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: store, PLUR_DISABLE_EMBEDDINGS: '1' },
+    env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: store, PLUR_DISABLE_EMBEDDINGS: '1', ...extraEnv },
     timeout: 30_000,
   })
   return r.stdout ?? ''
+}
+
+/** afterAgentResponse with auto-capture on; true when the learned line reached the store. */
+function captured(statement: string): boolean {
+  const tmp = join(base, 'tmp')
+  mkdirSync(tmp, { recursive: true })
+  const reply = `Done.\n\n---\n🧠 I learned:\n- ${statement}\n---\n`
+  hook(['hook-auto-rate', 'cursor'], payload('afterAgentResponse', [ws], { text: reply }), plugin,
+    { TMPDIR: tmp, PLUR_AUTO_CAPTURE: '1', PLUR_HOOK_HYBRID_DEADLINE_MS: '1' })
+  const queue = join(tmp, 'plur-auto-rate')
+  const t0 = Date.now()
+  while (existsSync(queue) && readdirSync(queue).some(f => /\.(queue|worker)/.test(f)) && Date.now() - t0 < 60_000) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+  }
+  const file = join(store, 'engrams.yaml')
+  return existsSync(file) && readFileSync(file, 'utf8').includes(statement)
 }
 
 const rule = (dir: string) => join(dir, '.cursor', 'rules', 'plur-context.mdc')
@@ -123,6 +139,16 @@ describe('Cursor hooks use workspace_roots, not the hook process folder (G1)', (
     hook('hook-cursor-post-tool', payload('postToolUse', [ws], { tool_name: 'Shell' }))
     expect(existsSync(join(plugin, '.cursor')), 'wrote into the plugin folder').toBe(false)
     expect(existsSync(join(ws, '.cursor', 'rules'))).toBe(true)
+  })
+
+  it('afterAgentResponse (auto-rate/capture): workspace off, plugin folder on → nothing captured', () => {
+    map([[ws, '    plur: off\n'], [plugin, '    plur: on\n']])
+    expect(captured('Release candidates in the off workspace are tagged by sprint')).toBe(false)
+  })
+
+  it('afterAgentResponse (auto-rate/capture): workspace on, plugin folder off → captured', () => {
+    map([[ws, '    plur: on\n'], [plugin, '    plur: off\n']])
+    expect(captured('Release candidates in the on workspace are tagged by sprint')).toBe(true)
   })
 
   it('two roots: one off → off, even when the other is on', () => {
