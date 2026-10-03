@@ -6409,13 +6409,18 @@ export class Plur {
    *   O_EXCL. A dead marker is removed only once the stale claim it guards
    *   has changed hands, so two racers can never win at two levels at once.
    *
-   * Never throws: if the claim cannot be recorded at all, the push goes ahead
-   * unclaimed rather than never.
+   * Never throws, and fails CLOSED (B1, 0.21.1 Windows pre-release check):
+   * if the claim cannot be recorded — a takeover rename refused with
+   * EPERM/EBUSY because another process has the claim open, a full or
+   * read-only cache folder, any error — the answer is `busy` with the error,
+   * never an unrecorded `claimed`. Another process may own the entry; it
+   * stays queued with the key already on its row, and the next flush tries
+   * again. An unrecorded claim let two processes push the same engram.
    */
   private _claimOutboxEntry(
     id: string,
     keyFor: () => string,
-  ): { status: 'busy' } | { status: 'claimed'; key: string } {
+  ): { status: 'busy'; error?: string } | { status: 'claimed'; key: string } {
     const path = this._outboxClaimPath(id)
     const readRaw = (at: string): string | undefined => {
       try { return fs.readFileSync(at, 'utf8') } catch (err) {
@@ -6483,8 +6488,14 @@ export class Plur {
         // Under the marker: is it still the claim we judged stale?
         if (readRaw(path) !== stale) { changedHands = true; return { status: 'busy' } }
         const tmp = `${path}.${process.pid}.${token}.tmp`
-        fs.writeFileSync(tmp, body)
-        fs.renameSync(tmp, path)
+        try {
+          fs.writeFileSync(tmp, body)
+          fs.renameSync(tmp, path)
+        } catch (err) {
+          // Not renamed: the stale claim is still in place. Leave no temp file.
+          try { fs.rmSync(tmp, { force: true }) } catch { /* best effort */ }
+          throw err
+        }
         changedHands = true
         this._outboxClaimTokens.set(id, token)
         return { status: 'claimed', key }
@@ -6496,8 +6507,9 @@ export class Plur {
         if (changedHands) for (const p of passed) fs.rmSync(p, { force: true })
       }
     } catch (err) {
-      logger.warning(`[plur:outbox] could not record a push claim for ${id}: ${(err as Error).message}`)
-      return { status: 'claimed', key: keyFor() }
+      const error = (err as Error).message
+      logger.warning(`[plur:outbox] could not record a push claim for ${id}: ${error}. Not pushed now; it stays queued for the next flush.`)
+      return { status: 'busy', error }
     }
   }
 
@@ -10862,7 +10874,9 @@ export class Plur {
       // time (another flush in any process, or learn()'s own background push).
       const claim = this._claimOutboxEntry(engram.id, () => outbox.idempotency_key!)
       if (claim.status === 'busy') {
-        expired_warnings.push(`${engram.id}: another writer is pushing it right now — left to that writer`)
+        expired_warnings.push(claim.error
+          ? `${engram.id}: its push claim could not be recorded (${claim.error}) — left queued for the next flush`
+          : `${engram.id}: another writer is pushing it right now — left to that writer`)
         deferred++
         continue
       }

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A push claim that cannot be recorded no longer lets two processes push one engram (#1580)
+
+Found by the 0.21.1 Windows pre-release check (finding B1).
+
+- Before an engram queued for a team store is pushed, the process that pushes it records a claim, so only one process pushes it. To take over a claim left by a process that died, PLUR renames a new claim file over the old one. On Windows that rename can fail while another process has the file open. PLUR then pushed anyway without a recorded claim, so a second process could push the same engram too, and the team store could end up with it twice.
+- Now, when a claim cannot be recorded for any reason, the engram is not pushed this time. It stays queued with its idempotency key and goes out on the next flush. `plur outbox --flush` says the claim could not be recorded, rather than "another writer is pushing it". No temporary claim file is left behind.
+- One trade-off: a cache folder that cannot be written now holds queued engrams back until it can be, where before they were pushed without a claim.
+
 ### Each team store gets its own id prefix, so an engram id names one store (#1575)
 
 Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0.21.1; not caused by #1570.
