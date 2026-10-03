@@ -320,10 +320,15 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     const gated = tool.name === 'plur_admin'
       ? (request.params.arguments as Record<string, unknown> | undefined)?.action
       : tool.name
+    // The workspace the gate admitted this call in (#1566): a read's default
+    // scope comes from it, so a read costs no second roots request and is
+    // answered in the workspace it was admitted in.
+    let admittedWs: Awaited<ReturnType<typeof workspace.workspace>> = null
     if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
       const ws = await workspace.workspace()
       const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
       if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
+      admittedWs = ws
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -383,6 +388,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
           const ws = await workspace.workspace()
           return ws === null ? null : { scope: workspaceWriteScope(instance, ws), key: workspaceKey(ws) }
         },
+        ...(admittedWs !== null
+          ? { admitted: () => ({ scope: workspaceWriteScope(instance, admittedWs!), key: workspaceKey(admittedWs!) }) }
+          : {}),
       }
       args = { ...args, [FOLDER_SCOPE]: folderContext }
       const result = await tool.handler(args, instance)

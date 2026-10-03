@@ -9,6 +9,53 @@ You decide where your agents remember.
 - plur folders repair
 - See which memories a reply used
 
+### Each team store gets its own id prefix, so an engram id names one store (#1575)
+
+Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0.21.1; not caused by #1570.
+
+- A store's engram ids are shown as `ENG-<PREFIX>-…`. The prefix was three letters from the scope, so every team store of one org had the same one (`group:plur/eng` and `group:plur/ops` were both `GPL`). Two servers numbering engrams on the same day then gave two different engrams one id: recall for one team could show the other team's engram, and forgetting one team's engram by its id retired the other team's, reporting success.
+- The prefix is now the same three letters plus eight letters derived from the whole scope (`group:plur/eng` is now `GPLTBNXSCAW`). Save, recall and inject all give the new form. Different scopes get different prefixes; in the rare case two configured scopes still share one, PLUR says so when it loads its config, and refuses to forget, rate, pin or update by an id with that prefix (pass the store's scope instead).
+- Forget, feedback, pin, update and promote by a namespaced id act only on the store that id names. A row in a readonly store is refused; it is no longer reached through a writable store of the same server, by its namespaced id or by its bare server id. A store that answers "I have it" and then fails to hand the row over counts as unreachable, so the action is refused rather than sent elsewhere.
+- Ids in the old three-letter form (`ENG-GPL-2026-10-03-001`) still work where a store holds exactly one engram with that id. Only dated ids count: a pack engram such as `ENG-PFR-001` is never mistaken for one. Where they name engrams in two stores, the action is refused and nothing changes; the message gives each engram's new id. One scope configured on two stores (two servers, or a file store and a server store) is resolved the same way.
+- Engram history, tensions and injection records written under the old form still match the engram under its new id. The local search index rebuilds itself once to pick up the new ids.
+- Checked against the enterprise server's code and data: one server never gives two scopes the same id, so the duplicate ids need two servers. Acting through the wrong store entry could happen on one server.
+
+### `plur doctor` fails when a team store's token variable is unset (#1572)
+
+A team store added with `--token-env` takes its token from an environment variable. When that variable was unset or empty, `plur doctor` still said "Healthy", reported `overall: ok` and exited 0, and the only sign was one line on stderr. Saves to that store waited in the outbox and recalls skipped it. The MCP `plur_doctor` already said not ok for the same setup.
+
+- `plur doctor` now reports such a store as a failed check, sets `overall: fail` and exits non-zero, as `plur_doctor` does. Both doctors give the same detail ("NO TOKEN — …") and the same fix.
+- The fix says to set the variable where PLUR runs, then restart the editor or its MCP server so it picks the variable up (a running server keeps the environment it started with), and that queued engrams flush on the next session start or with `plur outbox --flush`.
+- `plur doctor --json` lists the stores as `tokenEnvUnset` (scope, url, variable, detail, fix). No token is ever printed.
+- The variable counts as set when it is in this shell or in the `env` of a PLUR MCP entry an editor launches the server with (Claude Code's `~/.claude.json` or project/local scope, Cursor, Codex and the others), since that is the environment the server runs in. `plur doctor` says where it found it (`tokenEnvFound` in `--json`), and notes when it is not in this shell, so `plur` commands run there queue that store's saves.
+- The closing list of fixes repeats the token fix.
+
+### `plur folders repair` works on a map with a team-scoped folder (#1567)
+
+Found by the second 0.21.1 pre-release check. A broken `folders.yaml` that held one folder answered "Yes, with the team scope" could not be repaired, even for a one-character slip somewhere else in the file. The repair blamed that folder's line, which had no problem.
+
+- The answer "Yes, with the team scope" and `plur folders set <folder> --scope <s>` now write `plur: on` next to the scope. The folder resolves exactly as before. Because its own lines now say `on`, a repair of the file may keep it on.
+- A folder that an earlier version wrote with `scope:` (or `trusted: true`) and no `plur:` line is repaired too, when the repair leaves that folder's own lines exactly as written. The repair then writes `plur: on` beside them, so the folder is on, with the same scope, exactly as it was before the map broke. If a slip is on one of that folder's own lines, the repair still refuses and names the line to fix by hand. A repair still never switches memory on for any other folder.
+- A folder with a scope (or `trusted:`) and its own `plur: on`, `off` or `ask` line never stopped a repair, and still does not. This is now tested, and the repair's fuzz test also runs over team-style maps.
+- When the map cannot be repaired automatically, the warning on stderr says to fix the named line by hand, and that `plur folders repair` re-checks the file. It used to say to run `plur folders repair` to repair it.
+
+### A folder's team scope reaches unscoped recalls over MCP without plur_session_start (#1566)
+
+Found by the second 0.21.1 pre-release check. It is the read-side twin of the save fix below (#1562). In a folder mapped to a team scope (or answered "yes" with one), an unscoped save reached the team store without `plur_session_start`, but an unscoped recall searched only this machine. An agent could not find what it had just saved to the team unless it passed `scope` or started a session first.
+
+- `plur_recall` (hybrid and keyword), `plur_recall_hybrid` and `plur_inject_hybrid` with no scope now search the workspace folder's team store whenever the session has no default of its own, exactly as a session started there would. They use the same rule as unscoped saves: only when every workspace folder gives the same scope. With folders that disagree, or a folder with no scope, nothing changes: no team store is dialed by default.
+- An explicit scope still wins, and so does a session's own default. `off` and undecided folders are unchanged. (`plur_inject`, the keyword-only injection, never dials a team store.)
+- An injection made with no session is still recorded with no session id.
+
+### A team engram keeps the id its save returned, in recall too (#1568)
+
+Found by the 0.21.1 pre-release check (finding F3, and low L1).
+
+- Saving into a team store returns the engram's namespaced id, `ENG-<PREFIX>-YYYY-MM-DD-NNN`. `plur_recall`, `plur_recall_hybrid` and `plur recall` (json and text) returned the same engram under its bare server id, `ENG-YYYY-MM-DD-NNN`, so one engram had two ids. They now return the id the save returned, as `plur_inject` already did.
+- The bare id was also the id of any local engram minted the same day, so acting on a recalled id could need a `scope` to say which one was meant. `plur forget`, `plur_forget`, `plur_feedback` and `plur_pin` take the recalled id and act on the team engram only. A bare id still works where it names one engram, and is still refused, changing nothing, where it names two.
+- This reverses the id form of #1119, which showed the bare id because, at the time, forget refused the namespaced one. Forget, feedback and pin route a namespaced id to its store, so that reason is gone.
+- The near-duplicate report of a team save no longer lists the engram just saved (similarity 1.0). With a local engram of the same bare id, it no longer leaves that engram out instead.
+
 ### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562, #1563)
 
 Found by the 0.21.1 pre-release check. The promise above (after a yes with a team scope, or in a folder mapped to a scope, an unscoped save goes to that scope) held over MCP only after `plur_session_start`. Without it, `plur_learn` with no scope was saved in `global` on this machine and never reached the team store.

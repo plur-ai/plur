@@ -261,6 +261,24 @@ export function tokenEnvUnsetMessage(variable: string, scope: string): string {
     `set ${variable} there and run again (PLUR stores only the variable's name, never the token)`
 }
 
+/**
+ * The doctor's check detail for a store whose `token_env` variable is unset —
+ * one wording for `plur doctor` and `plur_doctor` (#1572 review M2).
+ */
+export function tokenEnvUnsetDetail(variable: string, scope: string): string {
+  return `NO TOKEN — ${tokenEnvUnsetMessage(variable, scope)}. Team-scoped writes are queuing to the outbox.`
+}
+
+/**
+ * The doctor's fix for that store, on both doctors. A running editor or MCP
+ * server keeps the environment it started with, so it must be restarted to
+ * see the variable (#1572 review L1).
+ */
+export function tokenEnvUnsetFix(url: string, variable: string): string {
+  return `Remote ${url}: set the environment variable ${variable} where PLUR runs (your shell profile, or the env of the editor's MCP server), ` +
+    'then restart the editor or its MCP server so it picks the variable up. Queued engrams flush on the next session start, or run `plur outbox --flush`.'
+}
+
 /** Finds the variable named by {@link tokenEnvUnsetMessage} in recorded error text. */
 export const TOKEN_ENV_UNSET_RE = /environment variable (\S+), which is unset or empty/
 
