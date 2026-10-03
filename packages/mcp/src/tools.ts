@@ -615,10 +615,12 @@ interface SessionTelemetry {
   /** True while a mid-session plur_session_scope op:"set" is in effect (#243). */
   scope_adjusted?: boolean
   /**
-   * The workspace (its roots) the session started in (#1563 review round 2):
-   * the start default holds only while the roots are these.
+   * The workspace (its roots) the session started in, and the resolver's
+   * answer for it then (#1563 review rounds 2 and 3): the start default holds
+   * only while both are unchanged.
    */
   workspace_key?: string
+  workspace_scope?: string | null
 }
 const _sessionTelemetry = new Map<string, SessionTelemetry>()
 
@@ -944,9 +946,17 @@ function _resolveWriteSession(args: Record<string, unknown>): string {
 /** Registry keys holding a workspace's scope (#1562); no real session id starts with NUL. */
 const FOLDER_SCOPE_SESSION_PREFIX = '\u0000plur:folder-scope:'
 
-/** True when `id` names a session this process knows: started here, or registered in core. */
-function _knownSession(id: string, plur: Plur): boolean {
+/**
+ * True when `id` names a session this process knows. Through the server
+ * (`viaServer`) only a session started here counts (#1563 review round 3): a
+ * scope registered under an arbitrary id, or an id shaped like the
+ * resolver's own registry keys, is no session. Outside the server, a session
+ * registered in core counts too, as before.
+ */
+function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
+  if (id.startsWith('\u0000')) return false
   if (_sessionTelemetry.has(id)) return true
+  if (viaServer) return false
   try { return plur.trackedSessionScopes().includes(id) } catch { return false }
 }
 
@@ -976,15 +986,17 @@ async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: s
   const ctx = _folderContext(args)
   if (!ctx) return chosen ?? NO_SESSION
   // An id this process never registered has no default (Codex path 6).
-  const session = chosen !== undefined && _knownSession(chosen, plur) ? chosen : NO_SESSION
+  const session = chosen !== undefined && _knownSession(chosen, plur, true) ? chosen : NO_SESSION
   let ws: { scope: string | null; key: string } | null = null
   try { ws = await ctx.resolve() } catch { ws = null }
   if (session !== NO_SESSION) {
     const record = _sessionTelemetry.get(session)
     const own = plur.getSessionScope({ session })
     if (record?.scope_adjusted) return session
-    if (record === undefined && own != null) return session
-    if (record && own != null && ws !== null && (record.workspace_key === undefined || record.workspace_key === ws.key)) return session
+    // A start default holds while the workspace is the one the session
+    // started in: the same roots AND the same answer from the resolver, so an
+    // edit of the folder map or a .plur.yaml drops it too (L8).
+    if (record && own != null && ws !== null && record.workspace_key === ws.key && record.workspace_scope === ws.scope) return session
   }
   const scope = ws?.scope ?? null
   if (scope === null) return NO_SESSION
@@ -3578,7 +3590,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // is one long-lived process serving many sequential session_start calls;
         // without this reset, a default_scope set in session A leaks into every
         // subsequent session that didn't pass its own default_scope.
-        plur.setSessionScope(default_scope)
+        // Through the server, the process-wide slot is never set (#1563 review
+        // round 3, N1): a write that names no session must not inherit the
+        // default of whichever session started last, nor outlive it. Outside
+        // the server it is reset/set as before.
+        if (!folderCtx) plur.setSessionScope(default_scope)
         // #243: ALSO register the default under this session's own key, so a
         // caller that threads session_id through plur_learn / plur_recall /
         // plur_session_scope keeps its scope even when another session starts
@@ -3594,7 +3610,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             t.default_scope = default_scope
             t.default_scope_source = scope_source as 'caller' | 'folder-map' | 'project-config' | 'none'
             // The workspace this default belongs to (#1563 review round 2).
-            if (workspace) t.workspace_key = workspace.key
+            if (workspace) { t.workspace_key = workspace.key; t.workspace_scope = workspace.scope }
           }
         }
 
@@ -4041,22 +4057,18 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // session record that is the recorded default (robust even if another
         // session_start reset the process slot since); otherwise fall back to
         // the project config, the same source session_start derives from.
-        // With no session record: through the server, the workspace
-        // resolver's answer (its "no scope" is final, #1563 review round 2);
-        // outside it, the project config as before.
+        // With no session record: through the server, nothing to restore —
+        // never the workspace's scope registered under an id this server did
+        // not start, nor the process slot (#1563 review round 3); writes take
+        // the workspace's answer anyway. Outside the server, the project
+        // config as before.
         const clearCtx = _folderContext(args)
-        let fallback: string | null
-        if (clearCtx) {
-          let w: { scope: string | null; key: string } | null = null
-          try { w = await clearCtx.resolve() } catch { w = null }
-          fallback = w?.scope ?? null
-        } else {
-          fallback = readTrustedProjectConfig(plur).scope ?? null
-        }
-        const restored = record !== undefined ? (record.default_scope ?? null) : fallback
+        const restored = record !== undefined
+          ? (record.default_scope ?? null)
+          : (clearCtx ? null : (readTrustedProjectConfig(plur).scope ?? null))
         const restored_source = record !== undefined
           ? (record.default_scope_source === 'caller' ? 'session-start' : record.default_scope_source ?? 'none')
-          : (restored != null ? (clearCtx ? 'folder-map' : 'project-config') : 'none')
+          : (restored != null ? 'project-config' : 'none')
         const { previous, next } = plur.adjustSessionScope(restored, { session, reason, trigger: 'clear' })
         if (record) record.scope_adjusted = false
         return withCommon({
@@ -4712,6 +4724,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       handler: async (args, plur) => {
         const engram = await plur.episodeToEngram(args.episode_id as string, {
           scope: args.scope as string | undefined,
+          // The same default as every other new write (#1563 review round 3,
+          // N1): never the process-wide slot.
+          session: await _writeSession(args, plur),
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
         })

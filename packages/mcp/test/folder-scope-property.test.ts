@@ -16,7 +16,7 @@
  * stub team store with both team scopes.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync, symlinkSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, realpathSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { pathToFileURL } from 'url'
@@ -122,6 +122,40 @@ async function save(c: Conn): Promise<{ statement: string; r: any; team: string 
   return { statement, r, team }
 }
 
+/**
+ * Every MCP tool that writes a NEW engram with no scope given (#1563 review
+ * round 3, N1): each must reach a team only when the workspace agrees. Returns
+ * the team each delivered to (null: none). plur_session_end goes last: it ends
+ * the session.
+ */
+async function saveAll(c: Conn): Promise<Record<string, string | null>> {
+  const out: Record<string, string | null> = {}
+  const delivered = (needle: string) => stub.appendStatements.some(x => x.includes(needle))
+  const n = ++seq
+  const l = await call(c.client, 'plur_learn', { statement: `zebra-all-${n} learn note` })
+  out.plur_learn = delivered(`zebra-all-${n} learn note`) ? l.scope : null
+  await call(c.client, 'plur_learn_batch', { engrams: [{ statement: `zebra-all-${n} batch note` }] })
+  out.plur_learn_batch = delivered(`zebra-all-${n} batch note`) ? 'team' : null
+  const ep = await call(c.client, 'plur_capture', { summary: `zebra-all-${n} episode note about the deploy` })
+  const e2e = await call(c.client, 'plur_episode_to_engram', { episode_id: ep.id })
+  out.plur_episode_to_engram = delivered(`zebra-all-${n} episode note`) ? (e2e.scope ?? 'team') : null
+  await call(c.client, 'plur_ingest', { content: `Always run zebra-all-${n} ingest checks before every deploy.` })
+  out.plur_ingest = delivered(`zebra-all-${n} ingest`) ? 'team' : null
+  await call(c.client, 'plur_session_end', { summary: 'zebra property end', engram_suggestions: [{ statement: `zebra-all-${n} end note` }] })
+  out.plur_session_end = delivered(`zebra-all-${n} end note`) ? 'team' : null
+  return out
+}
+
+/** The failures of saveAll's result against the team every input agrees on. ingest always saves to `global`. */
+function judge(label: string, got: Record<string, string | null>, want: string | null): string[] {
+  const f: string[] = []
+  for (const [tool, team] of Object.entries(got)) {
+    const w = tool === 'plur_ingest' ? null : want
+    if ((team !== null) !== (w !== null) || (team !== null && team !== 'team' && team !== w)) f.push(`${label}: ${tool} reached ${team}, want ${w}`)
+  }
+  return f
+}
+
 beforeAll(async () => {
   stub = new StubServer(TOKEN)
   baseUrl = (await stub.start()).url
@@ -162,23 +196,19 @@ describe('a team delivery happens only when every workspace input agrees on that
       // 1. No session.
       _resetSessionTelemetry()
       const c1 = await connect(w, roots)
-      const s1 = await save(c1)
-      if (s1.r.plur) failures.push(`${kinds}: no session: gate said ${s1.r.plur}`)
-      else if (s1.team !== want) failures.push(`${kinds}: no session: team ${s1.team}, want ${want}`)
+      failures.push(...judge(`${kinds}: no session`, await saveAll(c1), want))
       // 2. plur_session_start, then save.
       _resetSessionTelemetry()
       const c2 = await connect(w, roots)
       const st = await call(c2.client, 'plur_session_start', { task: 'zebra property' })
       if ((st.default_scope ?? null) !== want) failures.push(`${kinds}: session_start default ${st.default_scope}, want ${want} (${JSON.stringify(st).slice(0, 200)})`)
-      const s2 = await save(c2)
-      if (s2.team !== want) failures.push(`${kinds}: after session_start: team ${s2.team}, want ${want}`)
+      failures.push(...judge(`${kinds}: after session_start`, await saveAll(c2), want))
       // 3. A session started in team A; the roots then change to these.
       _resetSessionTelemetry()
       const c3 = await connect(w, [w.path.teamA])
       await call(c3.client, 'plur_session_start', { task: 'zebra property start in A' })
       await c3.setRoots(roots)
-      const s3 = await save(c3)
-      if (s3.team !== want) failures.push(`${kinds}: started in A, roots changed: team ${s3.team}, want ${want}`)
+      failures.push(...judge(`${kinds}: started in A, roots changed`, await saveAll(c3), want))
       for (const c of clients.splice(0)) await c.close().catch(() => {})
     }
     expect(failures).toEqual([])
@@ -232,5 +262,33 @@ describe('a team delivery happens only when every workspace input agrees on that
     const r = await call(c.client, 'plur_learn', { statement: 'zebra-prop-unregistered', session_id: 'never-started' })
     expect(r.scope).not.toBe(A)
     expect(stub.appendStatements).not.toContain('zebra-prop-unregistered')
+  }, 60_000)
+
+  // N1: the process-wide default scope (set by plur_session_start and the
+  // folder question's "yes" on main) outlived the session and the roots.
+  it('after a session in team A ends and the roots change, an episode promoted with no scope reaches no team', async () => {
+    const w = world()
+    vi.spyOn(process, 'cwd').mockReturnValue(w.path.yamlA)
+    const c = await connect(w, [w.path.teamA])
+    await call(c.client, 'plur_session_start', { task: 'zebra n1' })
+    const ep = await call(c.client, 'plur_capture', { summary: 'zebra-n1 episode about the release' })
+    await call(c.client, 'plur_session_end', { summary: 'done', engram_suggestions: [] })
+    await c.setRoots([w.path.personal])
+    await call(c.client, 'plur_episode_to_engram', { episode_id: ep.id })
+    expect(stub.appendStatements.some(x => x.includes('zebra-n1'))).toBe(false)
+    expect(w.plur.getSessionScope()).toBeNull()
+  }, 60_000)
+
+  // L8: a start default is re-checked against the workspace's current answer,
+  // not only its roots: a map edit with the same roots drops it.
+  it('a session started in team A whose map entry loses its scope (same roots) reaches no team', async () => {
+    const w = world()
+    vi.spyOn(process, 'cwd').mockReturnValue(w.path.yamlA)
+    const c = await connect(w, [w.path.teamA])
+    const st = await call(c.client, 'plur_session_start', { task: 'zebra l8' })
+    expect(st.default_scope).toBe(A)
+    writeFileSync(join(w.home, 'folders.yaml'), readFileSync(join(w.home, 'folders.yaml'), 'utf8').replace(`  - path: "${w.path.teamA}"\n    scope: ${A}`, `  - path: "${w.path.teamA}"\n    plur: on`))
+    const s = await save(c)
+    expect(s.team).toBeNull()
   }, 60_000)
 })

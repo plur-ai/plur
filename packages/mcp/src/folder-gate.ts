@@ -664,23 +664,15 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
       // default uses (#1563 review round 2). Only when every input — every
       // root, none left out — agrees on one scope; otherwise none.
       const scope = workspaceWriteScope(plur, workspace) ?? undefined
-      // Every folder is decided. A folder this session asked about and the
-      // user answered "yes" for: the workspace scope becomes the session's
-      // default write scope, unless something already set one. That is the
-      // process slot, which an id-less write with no open session does not
-      // read (E7): plur_session_start and the unscoped writes get the
-      // workspace scope through FOLDER_SCOPE instead (#1562,
-      // _resolveWriteSessionWithFolder).
+      // Every folder is decided: a question this session asked about one of
+      // them is answered. Its scope reaches writes through the workspace
+      // resolver (FOLDER_SCOPE); the process-wide slot is never set (#1563
+      // review round 3, N1).
       for (const { dir } of on) {
         hosted.delete(dir)
         if (!asked.has(dir)) continue
         asked.delete(dir)
         notNow.delete(dir)
-        if (scope) {
-          try {
-            if (plur.getSessionScope() == null) plur.setSessionScope(scope)
-          } catch { /* the scope is a default, never a reason to fail the call */ }
-        }
       }
       return { plur: 'on', ...(scope ? { scope } : {}) }
     },

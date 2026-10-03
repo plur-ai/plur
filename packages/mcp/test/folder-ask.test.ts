@@ -249,7 +249,11 @@ describe('MCP memory tools in an undecided (`ask`) folder', () => {
     const r = await call(client, 'plur_recall', { query: 'zebra deploy target', scope: 'global' })
     expect(r.json?.plur, r.text).toBeUndefined()
     expect(r.text).toContain('zebra-local-fact')
-    expect(s.plur.getSessionScope()).toBe(SCOPE)
+    // The answer's scope is the default of the next unscoped save, through the
+    // workspace resolver; the process-wide slot is not used (#1563 review round 3).
+    const l = await call(client, 'plur_learn', { statement: 'zebra-after-yes unscoped save' })
+    expect(l.json?.scope, l.text).toBe(SCOPE)
+    expect(s.plur.getSessionScope()).toBeNull()
   })
 
   it('yes with a scope: a plur_session_start after the answer keeps that scope as the session default', async () => {
