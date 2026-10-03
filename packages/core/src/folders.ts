@@ -347,10 +347,15 @@ function readMapText(file: string): null | { text: string; utf8: boolean } | { u
  * It said "treating it as empty (folders fall back to ask)", which read as if
  * memory carried on.
  */
-function pausedUntilFixed(root: string): string {
+function pausedUntilFixed(root: string, fault: { fixable?: boolean; line?: number }): string {
   const store = resolve(root)
   const cmd = store === resolve(join(homedir(), '.plur')) ? 'plur folders repair' : `plur --path ${JSON.stringify(store)} folders repair`
-  return `PLUR memory is paused in every folder until the map is fixed. Run \`${cmd}\` to see the problem and repair it (it asks first).`
+  const paused = 'PLUR memory is paused in every folder until the map is fixed.'
+  if (fault.fixable === true) return `${paused} Run \`${cmd}\` to see the problem and repair it (it asks first).`
+  // Repair cannot fix this file (#1567): say what to do instead of sending the
+  // user to a command that will refuse.
+  const where = fault.line !== undefined ? `line ${fault.line}` : 'it'
+  return `${paused} \`${cmd}\` cannot fix it automatically: fix ${where} by hand (\`${cmd}\` re-checks the file).`
 }
 
 function readMapFile(root: string): LoadResult | null {
@@ -358,7 +363,7 @@ function readMapFile(root: string): LoadResult | null {
   const r = readMapText(file)
   if (r === null) return null
   if ('unreadable' in r) {
-    warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.unreadable} — ${pausedUntilFixed(root)}`)
+    warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.unreadable} — ${pausedUntilFixed(root, { fixable: false })}`)
     return { map: { version: 1, folders: [] }, malformed: true, error: { problem: r.unreadable, fixable: false } }
   }
   const parsed = parseMapText(r.text)
@@ -366,7 +371,7 @@ function readMapFile(root: string): LoadResult | null {
   // The same cases the MCP gate refuses (#1519): an empty file and an unknown
   // top-level key count too, so the hooks and plugins agree with it (#1526).
   const error = mapErrorOf(file, r.text, parsed.issues, r.utf8)
-  warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${problemPhrase(error.problem!)} — ${pausedUntilFixed(root)}`)
+  warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${problemPhrase(error.problem!)} — ${pausedUntilFixed(root, error)}`)
   return { map: { version: 1, folders: [] }, malformed: true, error }
 }
 
@@ -981,7 +986,7 @@ export function setFolderEntry(root: string, folder: string, change: FolderChang
 
 /**
  * Create or update the entry for `folder`. `mode`/`scope` set the decision;
- * `--scope` alone means on (the `plur` field is dropped so it defaults to on).
+ * `--scope` alone means on, and is written as `plur: on` next to the scope.
  * Returns the entry as written.
  */
 function setFolderEntryUnlocked(root: string, folder: string, change: FolderChange, opts: SetFolderOptions): FolderEntry {
@@ -1049,11 +1054,19 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   if (mode !== undefined) entry.plur = mode
   if (change.scope !== undefined) {
     entry.scope = change.scope
-    if (change.mode === undefined) delete entry.plur
+    // `--scope` alone means on, written as a literal `plur: on` (#1567): the
+    // folder resolves exactly as with no `plur:` line, but `plur folders
+    // repair` only repairs a file whose `on` entries say so in their own lines.
+    if (change.mode === undefined) entry.plur = 'on'
   }
   if (change.mode !== undefined) entry.plur = change.mode
   if (change.trusted === true) entry.trusted = true
   if (change.trusted === false) delete entry.trusted
+  // Keys in the order the in-place editor writes them (path, plur, scope,
+  // trusted, literal), so a first write and a repeated one give the same text.
+  for (const k of ['plur', 'scope', 'trusted', 'literal'] as const) {
+    if (k in entry) { const v = entry[k]; delete entry[k]; (entry as unknown as Record<string, unknown>)[k] = v }
+  }
   const matched = [...applied, ...nameOnly]
   // What changed, so the file's other lines stay as the user wrote them (#1562).
   const edit: FolderMapEdit = { count: map.folders.length, replace: new Map(), append: [] }

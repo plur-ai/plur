@@ -110,7 +110,7 @@ describe('(b) plur folders set / rm keep comments and blank lines', () => {
     const text = readFileSync(folderMapPath(root), 'utf8')
     for (const keep of ['# My folder map. PLUR: please keep this comment.', '  # work projects', '    plur: on   # always on',
       '  # side project, keep quiet', '# end of file']) expect(text, text).toContain(keep)
-    expect(loadFolderMap(root).folders).toEqual([{ path: a, plur: 'on' }, { path: b, scope: TEAM }])
+    expect(loadFolderMap(root).folders).toEqual([{ path: a, plur: 'on' }, { path: b, plur: 'on', scope: TEAM }])
   })
 
   it('removing a folder drops only its lines', () => {
