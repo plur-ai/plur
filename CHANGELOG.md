@@ -13,6 +13,14 @@ Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0
 - Engram history recorded under the old form is still returned when you look the engram up by its new id. The local search index rebuilds itself once to pick up the new ids.
 - Checked against the enterprise server's code and data: one server never gives two scopes the same id, so the duplicate ids need two servers. Acting through the wrong store entry could happen on one server.
 
+### A folder's team scope reaches unscoped recalls over MCP without plur_session_start (#1566)
+
+Found by the second 0.21.1 pre-release check. It is the read-side twin of the save fix below (#1562). In a folder mapped to a team scope (or answered "yes" with one), an unscoped save reached the team store without `plur_session_start`, but an unscoped recall searched only this machine. An agent could not find what it had just saved to the team unless it passed `scope` or started a session first.
+
+- `plur_recall` (hybrid and keyword), `plur_recall_hybrid` and `plur_inject_hybrid` with no scope now search the workspace folder's team store whenever the session has no default of its own, exactly as a session started there would. They use the same rule as unscoped saves: only when every workspace folder gives the same scope. With folders that disagree, or a folder with no scope, nothing changes: no team store is dialed by default.
+- An explicit scope still wins, and so does a session's own default. `off` and undecided folders are unchanged. (`plur_inject`, the keyword-only injection, never dials a team store.)
+- An injection made with no session is still recorded with no session id.
+
 ### A team engram keeps the id its save returned, in recall too (#1568)
 
 Found by the 0.21.1 pre-release check (finding F3, and low L1).
