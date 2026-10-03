@@ -917,6 +917,33 @@ function _resolveWriteSession(args: Record<string, unknown>): string {
   return _resolveInjectionSession(args) ?? NO_SESSION
 }
 
+/** Registry keys holding a workspace folder's scope (#1562); no real session id starts with NUL. */
+const FOLDER_SCOPE_SESSION_PREFIX = '\u0000plur:folder-scope:'
+
+/**
+ * The session a WRITE passes to core, with the workspace folder's scope as
+ * the default when nothing else gives one (#1562).
+ *
+ * The folder gate attaches the folder's scope (a map entry's, or the scope
+ * the user's "yes" recorded, else a trusted `.plur.yaml`'s) to every gated
+ * call under FOLDER_SCOPE. plur_session_start used it; a write did not, so an
+ * unscoped plur_learn with no open session (NO_SESSION) landed in `global`
+ * even in a folder mapped to a team scope. Now, when the resolved session has
+ * no default of its own, the write runs under a registry key that holds the
+ * folder's scope. The folder's scope is the same for every session of this
+ * workspace, so this never hands one session another's choice (E7). An
+ * explicit `scope` still wins in core, and so does a session's own default.
+ */
+function _resolveWriteSessionWithFolder(args: Record<string, unknown>, plur: Plur): string {
+  const session = _resolveWriteSession(args)
+  const carried = (args as Record<PropertyKey, unknown>)[FOLDER_SCOPE]
+  if (typeof carried !== 'string' || carried.length === 0) return session
+  if (plur.getSessionScope({ session }) != null) return session
+  const key = FOLDER_SCOPE_SESSION_PREFIX + carried
+  plur.setSessionScope(carried, { session: key })
+  return key
+}
+
 /**
  * Resolve the session a `plur_session_scope` operation targets (#243).
  *
@@ -1429,8 +1456,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // #243: resolve which session's default scope governs this write —
           // explicit session_id first, else the lone open session. Never
           // persisted on the engram (LearnContext.session selects a scope, it
-          // is not part of one).
-          session: _resolveWriteSession(args),
+          // is not part of one). With neither giving a default, the workspace
+          // folder's scope (#1562).
+          session: _resolveWriteSessionWithFolder(args, plur),
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -1734,7 +1762,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Same context derivation as plur_learn (formal Adapters #1): the
         // session is resolved once for the whole call, the .plur.yaml domain
         // is the default when an item names none, and an explicit value wins.
-        const batchSession = _resolveWriteSession(args)
+        const batchSession = _resolveWriteSessionWithFolder(args, plur)
         const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
         const items = raw.map((e) => ({
           statement: sanitizeStatement(e.statement as string),

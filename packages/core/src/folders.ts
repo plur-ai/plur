@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'pat
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
 import yaml from 'js-yaml'
-import { checkFolderMapText, describeFolderMapIssues, planFolderMapRepair, type FolderMapIssue } from './folder-map-check.js'
+import { checkFolderMapText, describeFolderMapIssues, editFolderMapText, planFolderMapRepair, type FolderMapIssue } from './folder-map-check.js'
 import { logger } from './logger.js'
 import { atomicWrite, withLock } from './sync.js'
 import { canonicalize, canonicalSpellings, findProjectConfigPath, readProjectConfigFromPath } from './project-config.js'
@@ -340,12 +340,25 @@ function readMapText(file: string): null | { text: string; utf8: boolean } | { u
   }
 }
 
+/**
+ * What a broken map means, for the stderr warning (#1562): memory is paused
+ * in every folder (the hooks, the plugins and the MCP server all treat the
+ * folder as undecided and touch no memory), and the command that fixes it.
+ * It said "treating it as empty (folders fall back to ask)", which read as if
+ * memory carried on.
+ */
+function pausedUntilFixed(root: string): string {
+  const store = resolve(root)
+  const cmd = store === resolve(join(homedir(), '.plur')) ? 'plur folders repair' : `plur --path ${JSON.stringify(store)} folders repair`
+  return `PLUR memory is paused in every folder until the map is fixed. Run \`${cmd}\` to see the problem and repair it (it asks first).`
+}
+
 function readMapFile(root: string): LoadResult | null {
   const file = folderMapPath(root)
   const r = readMapText(file)
   if (r === null) return null
   if ('unreadable' in r) {
-    warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.unreadable} — treating it as empty (folders fall back to ask)`)
+    warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.unreadable} — ${pausedUntilFixed(root)}`)
     return { map: { version: 1, folders: [] }, malformed: true, error: { problem: r.unreadable, fixable: false } }
   }
   const parsed = parseMapText(r.text)
@@ -353,7 +366,7 @@ function readMapFile(root: string): LoadResult | null {
   // The same cases the MCP gate refuses (#1519): an empty file and an unknown
   // top-level key count too, so the hooks and plugins agree with it (#1526).
   const error = mapErrorOf(file, r.text, parsed.issues, r.utf8)
-  warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${problemPhrase(error.problem!)} — treating it as empty (folders fall back to ask)`)
+  warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${problemPhrase(error.problem!)} — ${pausedUntilFixed(root)}`)
   return { map: { version: 1, folders: [] }, malformed: true, error }
 }
 
@@ -453,9 +466,52 @@ export function loadFolderMap(root: string): FolderMap {
   return load(root).map
 }
 
-/** Write the folder map. Throws on I/O errors — only CLI writes call this. */
-export function saveFolderMap(root: string, map: FolderMap): void {
-  const body = yaml.dump({ version: 1, folders: map.folders.map(cleanEntry) }, { lineWidth: 120, noRefs: true })
+/**
+ * Which entries a write changed (#1562), by their index in the map as it was
+ * read: the new entry, or null for a removed one; and the entries added at the
+ * end. `count` is how many entries the map had.
+ */
+export interface FolderMapEdit {
+  count: number
+  replace: Map<number, FolderEntry | null>
+  append: FolderEntry[]
+}
+
+/** Keys sorted at every level, so two maps compare by content, not key order. */
+function sortedJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x)
+    ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    : x))
+}
+
+/**
+ * The current file with only `edit`'s entries rewritten (#1562), or null when
+ * that cannot be done safely: no file, a file that is not valid UTF-8 or not
+ * a map this edit matches, or a result that does not read back as exactly
+ * `map`. Then the whole map is written as before.
+ */
+function editedMapText(root: string, map: FolderMap, edit: FolderMapEdit): string | null {
+  const r = readMapText(folderMapPath(root))
+  if (r === null || 'unreadable' in r || !r.utf8) return null
+  const replace = new Map<number, Record<string, unknown> | null>()
+  for (const [i, e] of edit.replace) replace.set(i, e ? { ...cleanEntry(e) } : null)
+  const text = editFolderMapText(r.text, { count: edit.count, replace, append: edit.append.map(e => ({ ...cleanEntry(e) })) })
+  if (text === null) return null
+  const back = parseMapText(text)
+  if (!('map' in back)) return null
+  if (sortedJson(back.map.folders.map(cleanEntry)) !== sortedJson(map.folders.map(cleanEntry))) return null
+  return text
+}
+
+/**
+ * Write the folder map. Throws on I/O errors — only CLI writes call this.
+ * With `edit` (the entries this write changed), the file's other lines —
+ * comments, blank lines, untouched entries — are kept as written (#1562);
+ * without it, or when that is not safe, the whole map is written.
+ */
+export function saveFolderMap(root: string, map: FolderMap, edit?: FolderMapEdit): void {
+  const body = (edit ? editedMapText(root, map, edit) : null)
+    ?? yaml.dump({ version: 1, folders: map.folders.map(cleanEntry) }, { lineWidth: 120, noRefs: true })
   atomicWrite(folderMapPath(root), body, { mode: 0o600 })
 }
 
@@ -999,11 +1055,17 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   if (change.trusted === true) entry.trusted = true
   if (change.trusted === false) delete entry.trusted
   const matched = [...applied, ...nameOnly]
+  // What changed, so the file's other lines stay as the user wrote them (#1562).
+  const edit: FolderMapEdit = { count: map.folders.length, replace: new Map(), append: [] }
   if (matched.length) {
     const at = Math.min(...matched)
+    for (const i of matched) edit.replace.set(i, i === at ? entry : null)
     map.folders = map.folders.flatMap((e, i) => (i === at ? [entry] : matched.includes(i) ? [] : [e]))
-  } else map.folders.push(entry)
-  saveFolderMap(root, map)
+  } else {
+    map.folders.push(entry)
+    edit.append.push(entry)
+  }
+  saveFolderMap(root, map, edit)
   // Decision F3: the nonce is used up as soon as the map is saved — the
   // decision it authorised is now recorded — and BEFORE the trust.yaml write.
   // If that write then fails, the caller sees the error and a retry needs a
@@ -1041,8 +1103,9 @@ function removeFolderEntryUnlocked(
   const matched = [...applied, ...nameOnly]
   if (matched.length === 0) return false
   const removed = map.folders.filter((_, i) => matched.includes(i))
+  const edit: FolderMapEdit = { count: map.folders.length, replace: new Map(matched.map(i => [i, null])), append: [] }
   map.folders = map.folders.filter((_, i) => !matched.includes(i))
-  saveFolderMap(root, map)
+  saveFolderMap(root, map, edit)
   consume?.()   // F3: consumed once the map is saved, before trust.yaml
   // Decision F2: removing a trusted entry is a revocation, so it is completed
   // in trust.yaml too (never an addition) — for EVERY removed entry that held
@@ -1179,7 +1242,13 @@ export function safeSessionKey(sessionId: string): string {
  * unbound and work from any shell, as before.
  */
 interface NonceRecord { nonce: string; folder: string; answer?: FolderAnswer; issued_at: number; session_bound?: boolean }
-interface NonceFile { session: string; nonces: NonceRecord[] }
+/**
+ * `host_pid`: the process that asked (#1562), recorded by an issuer that lives
+ * in the editor's own process (the opencode plugin), so the PLUR MCP server
+ * that editor started can show that same question instead of a second one
+ * (hostFolderNonces).
+ */
+interface NonceFile { session: string; nonces: NonceRecord[]; host_pid?: number }
 
 function nonceDir(root: string): string {
   return join(root, 'folder-nonces')
@@ -1201,7 +1270,12 @@ function readNonceFile(file: string): NonceFile | null {
       typeof (r as NonceRecord).nonce === 'string' &&
       typeof (r as NonceRecord).folder === 'string' &&
       typeof (r as NonceRecord).issued_at === 'number')
-    return { session: typeof raw.session === 'string' ? raw.session : '', nonces }
+    const host = (raw as { host_pid?: unknown }).host_pid
+    return {
+      session: typeof raw.session === 'string' ? raw.session : '',
+      nonces,
+      ...(typeof host === 'number' && Number.isInteger(host) && host > 0 ? { host_pid: host } : {}),
+    }
   } catch {
     return null
   }
@@ -1227,14 +1301,14 @@ function writeNonceFile(file: string, data: NonceFile): void {
  */
 export function issueFolderNonce(
   root: string, sessionId: string, folder: string, answer: FolderAnswer, now: number = Date.now(),
-  options: { home?: string; literal?: boolean; bindSession?: boolean } = {},
+  options: { home?: string; literal?: boolean; bindSession?: boolean; hostPid?: number } = {},
 ): string {
   if (answerKey(answer) === null) throw new FolderMapError('invalid', 'A folder nonce needs the answer it authorises.')
   const key = folderEntryKey(folder, options.home ?? homedir(), options.literal === true)
-  return locked(root, () => issueFolderNonceUnlocked(root, sessionId, key, answer, now, options.bindSession === true))
+  return locked(root, () => issueFolderNonceUnlocked(root, sessionId, key, answer, now, options.bindSession === true, options.hostPid))
 }
 
-function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number, bound: boolean): string {
+function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number, bound: boolean, hostPid?: number): string {
   mkdirSync(nonceDir(root), { recursive: true, mode: 0o700 })
   // Orphans of sessions whose end was never reported go first (audit F1 of #1529).
   sweepFolderNoncesUnlocked(root, now)
@@ -1243,6 +1317,7 @@ function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, 
   // The file is this session's by its name; a wrong `session:` field (hand
   // edited) would make every nonce issued into it refused (N12).
   data.session = safeSessionKey(sessionId)
+  if (hostPid !== undefined && Number.isInteger(hostPid) && hostPid > 0) data.host_pid = hostPid
   const nonce = randomBytes(16).toString('hex')
   // The same key a write of this folder records (#1477 review): `~` expands
   // to the home, a literal folder is canonicalised, a glob is kept as typed.
@@ -1315,6 +1390,36 @@ function sweepFolderNoncesUnlocked(root: string, now: number): void {
       if (now - newest > FOLDER_NONCE_TTL_MS) rmSync(file, { force: true })
     } catch { /* best-effort: a file that vanished or cannot be removed is left */ }
   }
+}
+
+/**
+ * The outstanding nonces a host process issued for `folder` (#1562): from the
+ * newest session file whose `host_pid` is one of `hostPids` and that still
+ * holds unexpired nonces for exactly that folder (the key a write of it
+ * records). Null when there is none. Read-only; consumes nothing.
+ */
+export function hostFolderNonces(
+  root: string, hostPids: number[], folder: string, now: number = Date.now(), home: string = homedir(),
+): { session: string; nonces: Array<{ nonce: string; answer: FolderAnswer }> } | null {
+  if (hostPids.length === 0) return null
+  const key = folderEntryKey(folder, home, false)
+  let names: string[] = []
+  try { names = readdirSync(nonceDir(root)).filter(f => f.endsWith('.yaml')) } catch { return null }
+  let best: { session: string; newest: number; nonces: Array<{ nonce: string; answer: FolderAnswer }> } | null = null
+  for (const name of names) {
+    const data = readNonceFile(join(nonceDir(root), name))
+    if (!data || data.host_pid === undefined || !hostPids.includes(data.host_pid) || !data.session) continue
+    const live = data.nonces.filter(r => r.folder === key && r.answer && now - r.issued_at <= FOLDER_NONCE_TTL_MS)
+    if (live.length === 0) continue
+    const newest = Math.max(...live.map(r => r.issued_at))
+    if (!best || newest > best.newest) best = { session: data.session, newest, nonces: live.map(r => ({ nonce: r.nonce, answer: r.answer! })) }
+  }
+  return best ? { session: best.session, nonces: best.nonces } : null
+}
+
+/** The comparable form of a folder answer (#1378): the same for every way of writing the same answer. */
+export function folderAnswerKey(a: FolderAnswer): string | null {
+  return answerKey(a)
 }
 
 /** Drop every nonce of `sessionId` — called when the session ends. */

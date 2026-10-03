@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562)
+
+Found by the 0.21.1 pre-release check. The promise above (after a yes with a team scope, or in a folder mapped to a scope, an unscoped save goes to that scope) held over MCP only after `plur_session_start`. Without it, `plur_learn` with no scope was saved in `global` on this machine and never reached the team store.
+
+- `plur_learn` and `plur_learn_batch` with no scope now use the workspace folder's scope (the folder map's, the one the yes answer recorded, else a trusted `.plur.yaml`'s) whenever the session has no default of its own. An explicit scope still wins, and so does a session's own default. `off` and undecided folders are unchanged.
+- The broken-map warning on stderr said "treating it as empty (folders fall back to ask)". It now says that PLUR memory is paused in every folder until the map is fixed, and names `plur folders repair`.
+- `plur folders set` and `plur folders rm` (every answer to the folder question) keep the comments, blank lines and untouched entries of `folders.yaml`, editing only the entry's own lines, as `plur folders repair` does. When the file cannot be edited that way safely, the whole map is written as before.
+- For a repo whose `.plur.yaml` is not trusted, "Yes, without its settings" is now always `--on`. It used to carry the one other configured team scope, which the label did not say. Configured team scopes are listed below the answers instead.
+- In opencode, the PLUR MCP server shows the folder question the plugin already asked, with the same codes, instead of a second set. It finds the plugin through its own parent processes; when it cannot (another host, Windows), it asks its own question, as before.
+
 ### CLI tests never touch the real home or PLUR store (tests only)
 
 Every CLI, mcp and dsh test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH. The run checks whether the real `~/.plur` changed while it ran: in CI (`CI=true`) a change fails the run, locally it is reported as a warning (`PLUR_TEST_HOME_GUARD=fail|warn|off` overrides). In CI this check found mcp and dsh tests writing `server.pid`, `packs/` and `.tensions-purged` into the real home.
