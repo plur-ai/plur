@@ -190,6 +190,7 @@ describe('doctor --quiet (#730)', () => {
       staleContentHashes: 0,
       ignoredDuplicateStores: [],
       tokenEnvUnset: [],
+      tokenEnvFound: [],
       opencode: null,
       overall: 'fail',
     }
@@ -239,6 +240,21 @@ describe('doctor --quiet (#730)', () => {
     expect(text).toContain('remote store: https://team.example/sse — NO TOKEN — the detail')
     expect(text).toContain('Remote https://team.example/sse: the fix, then restart')
     expect(text).not.toContain('✓ Healthy')
+    // The closing list repeats the token fix (#1572 re-review L2).
+    const closing = text.slice(text.indexOf('✗ Issues detected.'))
+    expect(closing).toContain('Fix: Remote https://team.example/sse: the fix, then restart')
+  })
+
+  it('names where a token_env variable was found when it is only in an MCP entry (#1572 re-review M3)', async () => {
+    const { printText } = await import('../src/commands/doctor.js')
+    printText({
+      ...(await report()),
+      tokenEnvFound: [{ scope: 'group:acme/eng', url: 'https://team.example/sse', variable: 'ACME_PLUR_TOKEN', inShell: false, sources: ['Claude Code MCP entry (/h/.claude.json)'] }],
+    }, { quiet: true })
+    const text = out.join('')
+    expect(text).toContain('ACME_PLUR_TOKEN')
+    expect(text).toContain('Claude Code MCP entry (/h/.claude.json)')
+    expect(text).toMatch(/not set in this shell/)
   })
 
   it('prints nothing about token_env when every variable is set (#1572)', async () => {

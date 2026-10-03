@@ -217,6 +217,31 @@ describe('plur doctor', () => {
     expect(unset.status).not.toBe(0)
   }, 60000)
 
+  it('a token_env variable set only in the PLUR MCP entry env passes, and says where it was found (#1572 re-review M3)', () => {
+    const VAR = 'PLUR_TEST_1572_ENTRYONLY'
+    const SECRET = 'tok-entry-only-never-print'
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'], env: { [VAR]: SECRET } } },
+    })
+    const store = join(home, '.plur')
+    mkdirSync(store, { recursive: true })
+    writeFileSync(join(store, 'config.yaml'), `stores:\n  - url: http://127.0.0.1:9/\n    scope: group:acme/eng\n    token_env: ${VAR}\n`)
+    const env: Record<string, string | undefined> = { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' }
+    delete env[VAR]
+    let stdout = ''
+    let status = 0
+    try { stdout = execSync(`node ${CLI} doctor --no-handshake --json`, { encoding: 'utf-8', timeout: 15000, cwd: home, env, stdio: ['ignore', 'pipe', 'ignore'] }) }
+    catch (err: any) { stdout = err.stdout?.toString() ?? ''; status = err.status ?? 1 }
+    const report = JSON.parse(stdout)
+    expect(report.tokenEnvUnset).toEqual([])
+    expect(report.tokenEnvFound).toEqual([expect.objectContaining({ scope: 'group:acme/eng', variable: VAR, inShell: false })])
+    expect(report.tokenEnvFound[0].sources.join(' ')).toMatch(/Claude Code/)
+    expect(report.overall).toBe('ok')
+    expect(status).toBe(0)
+    expect(stdout).not.toContain(SECRET)
+  }, 60000)
+
   it('reports ok when both hooks and plur MCP are present', () => {
     writeGlobalSettings({
       hooks: {
