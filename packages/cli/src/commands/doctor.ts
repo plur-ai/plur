@@ -15,6 +15,8 @@ import {
   hasPlurMcp,
   knownConfigFiles,
   readConfig,
+  claudeCodeUserConfigPath,
+  claudeCodeGlobalSettingsPath,
 } from '../mcp-config.js'
 import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { isPlurHookCommand, isPlurHookSpec } from '../lib/hook-command.js'
@@ -59,10 +61,28 @@ interface HookShimReport {
   error?: string
 }
 
+/**
+ * Where Claude Code itself would find the `plur` MCP server (#1561): user scope
+ * (`mcpServers` in ~/.claude.json), local scope for this folder
+ * (`projects[<folder>].mcpServers` there), or a project `.mcp.json`. Never
+ * ~/.claude/settings.json — Claude Code does not read MCP servers from it,
+ * and an entry there (`legacySettingsEntry`) is what earlier inits wrote.
+ */
+export interface ClaudeCodeMcpReport {
+  registered: boolean
+  scope: 'user' | 'local' | 'project' | null
+  path: string | null
+  legacySettingsEntry: boolean
+  /** Set when not registered: the command that fixes it. */
+  fix?: string
+}
+
 interface DoctorReport {
   configs: ConfigFileReport[]
   hooksInstalled: boolean
+  /** A plur MCP server is registered somewhere a harness reads it (settings.json never counts, #1561). */
   mcpRegistered: boolean
+  claudeCodeMcp: ClaudeCodeMcpReport
   datacoreCollision: boolean
   staleNpxHooks: boolean
   staleNpxMcp: boolean
@@ -591,10 +611,23 @@ function inspectConfigs(): ConfigFileReport[] {
  * migration) is invisible to the old probe by construction.
  */
 function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
-  for (const cf of knownConfigFiles()) {
-    if (!cf.exists || cf.kind === 'cursor-hooks') continue
+  // Probe what Claude Code launches first (#1561): ~/.claude.json (user, then
+  // this folder's local scope), then the other harnesses' files; a
+  // settings.json entry, which nothing launches, only as a last resort.
+  const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks')
+  const userCfg = files.find(cf => cf.kind === 'claude-user')
+  if (userCfg) {
+    const parsed = readConfig(userCfg.path)
+    const declared = readPlurMcpEntry(parsed) ?? readPlurMcpEntry(localScopePlur(parsed, process.cwd()) ?? {})
+    if (declared) return { entry: declared, source: userCfg.label }
+  }
+  const ordered = [
+    ...files.filter(cf => cf.kind !== 'claude-user' && !isClaudeSettingsFile(cf.path)),
+    ...files.filter(cf => isClaudeSettingsFile(cf.path)),
+  ]
+  for (const cf of ordered) {
     const declared = readPlurMcpEntry(readConfig(cf.path))
-    if (declared) return { entry: declared, source: cf.label }
+    if (declared) return { entry: declared, source: isClaudeSettingsFile(cf.path) ? `${cf.label} — not read by Claude Code` : cf.label }
   }
   return { entry: buildMcpServerEntry(), source: 'recommended default (no config declares a plur server)' }
 }
@@ -1001,10 +1034,53 @@ export function readyLine(harnesses: string[]): string {
   return `✓ Healthy. plur is ready to use in ${where}. Claude Code has no plur hooks — run \`plur init\` to add them.`
 }
 
+/** Config files Claude Code reads hooks and settings from, but never MCP servers (#1561). */
+function isClaudeSettingsFile(path: string): boolean {
+  return path === claudeCodeGlobalSettingsPath() || path === join(process.cwd(), '.claude', 'settings.json')
+}
+
+/** The local-scope `plur` entry for `cwd` in a parsed ~/.claude.json, if any. */
+function localScopePlur(config: Record<string, unknown>, cwd: string): Record<string, unknown> | null {
+  const projects = config.projects
+  if (!projects || typeof projects !== 'object') return null
+  const keys = new Set([cwd])
+  try { keys.add(realpathSync(cwd)) } catch { /* keep cwd */ }
+  for (const key of keys) {
+    const p = (projects as Record<string, unknown>)[key] as { mcpServers?: unknown } | undefined
+    const servers = p?.mcpServers
+    if (servers && typeof servers === 'object' && 'plur' in (servers as object)) {
+      return { mcpServers: { plur: (servers as Record<string, unknown>).plur } }
+    }
+  }
+  return null
+}
+
+export function inspectClaudeCodeMcp(cwd: string = process.cwd()): ClaudeCodeMcpReport {
+  const userPath = claudeCodeUserConfigPath()
+  const user = readConfig(userPath)
+  const legacySettingsEntry = hasPlurMcp(readConfig(claudeCodeGlobalSettingsPath()))
+  const base = { legacySettingsEntry }
+  if (hasPlurMcp(user)) return { registered: true, scope: 'user', path: userPath, ...base }
+  if (localScopePlur(user, cwd)) return { registered: true, scope: 'local', path: userPath, ...base }
+  const projectMcp = join(cwd, '.mcp.json')
+  if (hasPlurMcp(readConfig(projectMcp))) return { registered: true, scope: 'project', path: projectMcp, ...base }
+  return {
+    registered: false, scope: null, path: null, ...base,
+    fix: legacySettingsEntry
+      ? `run \`plur init\` — it moves the plur entry from ${claudeCodeGlobalSettingsPath()} (which Claude Code does not read for MCP servers) to ${userPath}`
+      : `run \`plur init\` — it registers the plur MCP server in ${userPath}, where Claude Code reads it`,
+  }
+}
+
 function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<DoctorReport> {
   const configs = inspectConfigs()
   const hooksInstalled = configs.some((c) => c.hasPlurHooks)
-  const mcpRegistered = configs.some((c) => c.hasPlurMcp)
+  const claudeCodeMcp = inspectClaudeCodeMcp()
+  // A settings.json entry is not a registration: no harness launches it (#1561).
+  const mcpRegistered = claudeCodeMcp.registered || configs.some((c) => c.hasPlurMcp && !isClaudeSettingsFile(c.path))
+  // Claude Code's hooks without its MCP server is the broken half-install
+  // #1561 left on every fresh machine: hooks ran, the plur_* tools never appeared.
+  const claudeCodeHooks = hookHarnesses(configs).includes('Claude Code')
   const datacoreCollision = configs.some((c) => c.hasDatacoreMcp)
 
   // Check for stale npx hooks across all existing configs (#178)
@@ -1163,6 +1239,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const overall: 'ok' | 'fail' =
       folderMap === null &&
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
+      (!claudeCodeHooks || claudeCodeMcp.registered) &&
       brokenNodeMcp.length === 0 &&
       (!cursorProjectDetected || cursorWired) &&
       // #1299: a queued write no retry will deliver is a real failure.
@@ -1221,7 +1298,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
 
     return {
-      configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
+      configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
       pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, opencode, outbox, folderMap, overall,
@@ -1277,6 +1354,16 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     }
   }
   outputText(`${tick(report.mcpRegistered)} plur MCP server registered`)
+  const cc = report.claudeCodeMcp
+  if (cc) {
+    if (cc.registered) {
+      outputText(`${tick(true)} Claude Code sees the plur MCP server (${cc.scope} scope, ${cc.path})`)
+    } else if (cc.legacySettingsEntry || hookHarnesses(report.configs).includes('Claude Code')) {
+      outputText(`${tick(false)} Claude Code does not see the plur MCP server — the plur_* tools will be missing`)
+      if (cc.legacySettingsEntry) outputText('  Its entry is in ~/.claude/settings.json, which Claude Code does not read for MCP servers.')
+      if (cc.fix) outputText(`  Fix: ${cc.fix}`)
+    }
+  }
 
   if (report.cursorProjectDetected) {
     outputText(`${tick(report.cursorWired)} Cursor: this project's .cursor/mcp.json + .cursor/hooks.json wired to plur`)
@@ -1531,6 +1618,8 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('✗ Issues detected.')
     if (!report.hooksInstalled || !report.mcpRegistered) {
       outputText('  Fix: run `npx @plur-ai/cli init`')
+    } else if (report.claudeCodeMcp && !report.claudeCodeMcp.registered && hookHarnesses(report.configs).includes('Claude Code')) {
+      outputText(`  Fix: ${report.claudeCodeMcp.fix ?? 'run `plur init`'}`)
     }
     if (report.hooksInstalled && report.mcpRegistered && !report.handshake.ok) {
       outputText('  Fix: ensure `npx` is reachable from Claude Desktop')

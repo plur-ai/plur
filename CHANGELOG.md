@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### `plur init` registers the MCP server where Claude Code reads it; `--token-env` stores only the variable name (#1561)
+
+**Claude Code got PLUR's hooks but none of its tools.** `plur init` wrote the
+MCP server into `~/.claude/settings.json`, and Claude Code does not read MCP
+servers from that file. On a fresh machine `claude mcp list` showed no server,
+while `plur doctor` said it was registered. This was also the case in 0.21.0.
+
+- `plur init` now registers the server in `~/.claude.json`, at user scope. This
+  is the file `claude mcp add --scope user` writes. It does not need the
+  `claude` CLI, and it keeps everything else in that file.
+- An entry an earlier init left in `~/.claude/settings.json` is moved over,
+  with its env and any extra keys. If `~/.claude.json` already has a plur
+  entry, that entry is kept and the old one is only removed. Both files are
+  backed up before they change. Other servers and settings stay as they are.
+  A second run writes nothing. An unreadable `~/.claude.json` is left alone,
+  and init says so.
+- `plur init --project` also registers the server in `~/.claude.json`. Its
+  repo entry stays as the folder's PLUR marker.
+- `plur doctor` now checks where Claude Code actually looks: user scope in
+  `~/.claude.json`, this folder's local scope there, or a project `.mcp.json`.
+  An entry in settings.json no longer counts. Doctor fails when Claude Code's
+  hooks are installed but the server is not there, and names the fix.
+- Cursor, Codex, Antigravity and Claude Desktop were checked the same way.
+  Each already reads the server where init registers it.
+
+**`plur stores add --token-env VAR` and `plur remote --token-env VAR` wrote the
+token itself into `config.yaml`.** They now write `token_env: VAR`. The token
+is read from the variable when the config loads, so the variable must be set
+wherever PLUR runs. No later rewrite of the stores list writes the value back.
+That includes scopes registered from the same server, which now carry the
+same reference. Running `--token-env` against a store saved with a literal
+token replaces the literal with the reference.
+
 ### CLI tests never touch the real home or PLUR store (tests only)
 
 Every CLI, mcp and dsh test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH. The run checks whether the real `~/.plur` changed while it ran: in CI (`CI=true`) a change fails the run, locally it is reported as a warning (`PLUR_TEST_HOME_GUARD=fail|warn|off` overrides). In CI this check found mcp and dsh tests writing `server.pid`, `packs/` and `.tensions-purged` into the real home.

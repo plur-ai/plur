@@ -50,8 +50,10 @@ OPTIONS
 WHAT THIS DOES
   Checks the token against the server first and writes nothing if it is
   rejected or a scope is not authorised. Then it registers each scope as a
-  store in your config.yaml (the token is kept there) and records this folder
-  in your folders.yaml with the scope. Nothing is written to this folder.
+  store in your config.yaml (the token is kept there; with --token-env only
+  the variable's name is, and it must be set wherever PLUR runs) and records
+  this folder in your folders.yaml with the scope. Nothing is written to this
+  folder.
 `
 
 interface Parsed {
@@ -276,7 +278,8 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
   const stores: Array<{ scope: string; status: string }> = []
   for (const scope of scopes) {
     try {
-      const r = await plur.addRemoteStore({ url, token: tok, scope })
+      // #1561: with --token-env only the variable's name goes into config.yaml.
+      const r = await plur.addRemoteStore({ url, token: tok, scope, ...(parsed.tokenEnv ? { tokenEnv: parsed.tokenEnv } : {}) })
       stores.push({ scope, status: r.status })
     } catch (err) {
       const done = stores.length ? ` Registered before this: ${stores.map(s => s.scope).join(', ')}.` : ''
@@ -317,7 +320,9 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
   lines.push(`Connected to ${url}${username ? ` as ${username}` : ''}.`)
   for (const s of stores) lines.push(`  store ${s.scope}: ${label[s.status] ?? s.status}`)
   lines.push(`Mapped ${mapped} to scope ${scopes[0]} in ${join(root, 'folders.yaml')}.`)
-  lines.push(`The token is kept in ${join(root, 'config.yaml')}; nothing was written to this folder.`)
+  lines.push(parsed.tokenEnv
+    ? `${join(root, 'config.yaml')} records only the variable name (${parsed.tokenEnv}), not the token; it must be set wherever PLUR runs. Nothing was written to this folder.`
+    : `The token is kept in ${join(root, 'config.yaml')}; nothing was written to this folder.`)
   for (const l of lines) outputInfo(scrubAll(l, [tok, legacy?.remote_token]), flags)
   // Not suppressed by --quiet: it says a file of yours still holds a token.
   if (legacy) outputText(scrubAll(legacyMovedMessage(legacy.path), [tok, legacy.remote_token]))

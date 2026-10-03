@@ -28,6 +28,7 @@ import {
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
+  claudeCodeUserConfigPath,
   hasPlurMcp,
   mergePlurMcp,
   healPlurMcpEntry,
@@ -87,14 +88,19 @@ import {
  * Two things must be in place for plur to work in Claude Code:
  *
  *   1. The `plur` MCP server must be registered, so the `plur_*` tools exist.
+ *      Claude Code reads user-scoped MCP servers from ~/.claude.json only
+ *      (what `claude mcp add --scope user` writes), never from
+ *      ~/.claude/settings.json (#1561).
  *   2. The lifecycle hooks must call the plur CLI to inject relevant engrams
  *      into the conversation. A local shim at ~/.plur/bin/plur-hook is
  *      created to avoid npx overhead and race conditions (#178).
  *
  * Usage:
- *   plur init                 # default: user settings ~/.claude/settings.json, from any folder (#1467)
+ *   plur init                 # default: hooks in user settings ~/.claude/settings.json, from any folder (#1467);
+ *                             #   MCP server in ~/.claude.json at user scope (#1561)
  *   plur init --global        # same as the default
- *   plur init --project       # prompt hooks + MCP in ./.claude/settings.json (the pre-#1467 placement)
+ *   plur init --project       # prompt hooks in ./.claude/settings.json (the pre-#1467 placement), plus
+ *                             #   the project marker entry there; the MCP server still goes to ~/.claude.json
  *   plur init --desktop / --no-desktop        # force / skip Claude Desktop registration
  *   plur init --cursor / --no-cursor          # force / skip Cursor (auto: .cursor/ exists)
  *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
@@ -109,8 +115,8 @@ import {
  *   cd ~/projects/my-app
  *   plur init --domain myapp.core --scope project:my-app
  *
- * This writes the hooks + MCP to user settings and .plur.yaml (scoping) in
- * the folder. Run inside a repo an older init set up, it moves PLUR's hooks
+ * This writes the hooks to user settings, the MCP server to ~/.claude.json and
+ * .plur.yaml (scoping) in the folder. Run inside a repo an older init set up, it moves PLUR's hooks
  * out of the repo's .claude/settings.json and records the repo as `on` in the
  * folder map (#1467).
  */
@@ -961,6 +967,93 @@ function mergeHooks(settings: Settings, hooksMap: Record<string, HookEntry[]>): 
 }
 
 /**
+ * Register the plur MCP server for Claude Code at user scope, in
+ * `~/.claude.json` — the file `claude mcp add --scope user` writes and the only
+ * user-level place Claude Code reads MCP servers (#1561). Written directly, so
+ * it works without the `claude` CLI; every other key in that file (Claude
+ * Code's own state, other servers, per-folder settings) is kept.
+ *
+ * Earlier inits wrote the entry into `~/.claude/settings.json`, which Claude
+ * Code never reads for MCP servers: hooks ran, tools never appeared. An old
+ * entry there is moved here — env and extra keys kept, healed like any other
+ * — unless `~/.claude.json` already has one, which wins; then the old entry is
+ * removed from settings.json, leaving its other servers and keys. Every change
+ * to an existing file is preceded by a timestamped backup beside it, and a
+ * file edited while PLUR was working is left alone (writeWithBackup). An
+ * unparseable `~/.claude.json` is refused and neither file is touched. A run
+ * with nothing to change writes nothing.
+ */
+function installClaudeCodeMcp(settingsPath: string): string {
+  const userPath = claudeCodeUserConfigPath()
+  const userRaw = existsSync(userPath) ? readFileSync(userPath, 'utf8') : null
+  const { config, ok } = readConfigForWrite(userPath)
+  if (!ok) {
+    return `skipped — ${userPath} exists but is not valid JSON; writing would discard Claude Code's other settings and servers. ` +
+      'Fix it by hand, then re-run `plur init`'
+  }
+
+  const settingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : null
+  const settingsRead = readConfigForWrite(settingsPath)
+  const oldServers = settingsRead.ok ? settingsRead.config.mcpServers : undefined
+  const oldEntry = oldServers && typeof oldServers === 'object' && !Array.isArray(oldServers)
+    ? (oldServers as Record<string, unknown>).plur
+    : undefined
+  const hasOld = oldEntry !== undefined
+
+  let status: string
+  let changed: boolean
+  if (hasPlurMcp(config)) {
+    const healed = healPlurMcpEntry(config)
+    changed = healed !== null
+    status = healed ? `${healed} in ${userPath}` : `already registered in ${userPath}`
+  } else if (hasOld && oldEntry && typeof oldEntry === 'object') {
+    const servers = (config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {}) as Record<string, unknown>
+    servers.plur = JSON.parse(JSON.stringify(oldEntry))
+    config.mcpServers = servers
+    const healed = healPlurMcpEntry(config)
+    changed = true
+    status = `moved from ${settingsPath} to ${userPath}, where Claude Code reads MCP servers${healed ? ` (${healed})` : ''}`
+  } else {
+    mergePlurMcp(config)
+    changed = true
+    status = `registered in ${userPath}`
+  }
+
+  if (changed) {
+    const content = JSON.stringify(config, null, 2) + '\n'
+    try {
+      if (userRaw === null) {
+        // Claude Code keeps its own state in this file and creates it private.
+        writeFileSync(userPath, content, { flag: 'wx', mode: 0o600 })
+      } else {
+        const backup = writeWithBackup(userPath, content, userRaw)
+        if (backup) status += ` (backup: ${backup})`
+      }
+    } catch (err) {
+      const code = (err as { code?: string }).code
+      const why = code === 'EEXIST' ? 'it was created while PLUR was updating it — run again' : (err as Error).message
+      // The old entry stays where it was: nothing has replaced it yet.
+      return `not written to ${userPath}: ${why}`
+    }
+  }
+
+  if (hasOld) {
+    const next: Record<string, unknown> = { ...settingsRead.config }
+    const servers = { ...(oldServers as Record<string, unknown>) }
+    delete servers.plur
+    if (Object.keys(servers).length > 0) next.mcpServers = servers
+    else delete next.mcpServers
+    try {
+      const backup = writeWithBackup(settingsPath, JSON.stringify(next, null, 2) + '\n', settingsRaw)
+      status += `; removed the unused entry from ${settingsPath}${backup ? ` (backup: ${backup})` : ''}`
+    } catch (err) {
+      status += `; could not remove the unused entry from ${settingsPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
+    }
+  }
+  return status
+}
+
+/**
  * Register the plur MCP server in Claude Desktop's config file (if present
  * or if --desktop is forced). Returns a status string for the report.
  */
@@ -1667,7 +1760,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   let injectionHooksStatus: string
   let enforcementHooksStatus: string
-  let mcpStatus: string
   let repoMigration: string | null = null
 
   if (samePath) {
@@ -1679,23 +1771,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       const refusal = settingsRefusal(enforcementPath)
       injectionHooksStatus = refusal
       enforcementHooksStatus = refusal
-      mcpStatus = refusal
     } else {
       let settings = loaded
       const hadHooks = hasPlurHooks(settings)
-      const mcpAlready = hasPlurMcp(settings)
       const before = JSON.stringify(settings.hooks ?? {})
 
       settings = mergeHooks(settings, mergeHookMaps(PLUR_HOOKS_ENFORCEMENT, PLUR_HOOKS_INJECTION))
       const after = JSON.stringify(settings.hooks ?? {})
 
-      if (!mcpAlready) {
-        mergePlurMcp(settings as Record<string, unknown>)
-        mcpStatus = 'registered'
-      } else {
-        mcpStatus = healPlurMcpEntry(settings as Record<string, unknown>) ?? 'already registered'
-      }
-
+      // The MCP server is NOT registered here: Claude Code does not read MCP
+      // servers from settings.json (#1561). installClaudeCodeMcp below writes
+      // it to ~/.claude.json and moves an old entry out of this file.
       writeSettings(enforcementPath, settings)
       // Only once user settings carry the hooks: a repo an older init set up
       // hands its PLUR hooks over, so none runs twice (#1467).
@@ -1729,7 +1815,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const projectRead = loadSettingsForWrite(injectionPath)
     if (!projectRead.ok) {
       injectionHooksStatus = settingsRefusal(injectionPath)
-      mcpStatus = settingsRefusal(injectionPath)
     } else {
       let projectSettings = projectRead.settings
       const projectHadHooks = hasPlurHooks(projectSettings)
@@ -1738,16 +1823,28 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       projectSettings = mergeHooks(projectSettings, PLUR_HOOKS_INJECTION)
       const projectAfter = JSON.stringify(projectSettings.hooks ?? {})
 
+      // Claude Code does not launch an MCP server from settings.json (#1561);
+      // the entry here is kept because it is this repo's PLUR project marker
+      // (resolveFolderPolicy / isPlurConfigured), which --project has always
+      // written. The server Claude Code launches is the ~/.claude.json one.
       if (!projectMcpAlready) {
         mergePlurMcp(projectSettings as Record<string, unknown>)
-        mcpStatus = 'registered'
       } else {
-        mcpStatus = healPlurMcpEntry(projectSettings as Record<string, unknown>) ?? 'already registered'
+        healPlurMcpEntry(projectSettings as Record<string, unknown>)
       }
 
       writeSettings(injectionPath, projectSettings)
       injectionHooksStatus = hooksStatusFor(projectBefore, projectAfter, projectHadHooks)
     }
+  }
+
+  // Register the MCP server where Claude Code reads it (#1561). Contained:
+  // a refused ~/.claude.json must not abort the rest of the install.
+  let mcpStatus: string
+  try {
+    mcpStatus = installClaudeCodeMcp(enforcementPath)
+  } catch (err: unknown) {
+    mcpStatus = `FAILED (${(err as Error)?.message ?? 'unknown error'}) — Claude Code will not see PLUR's tools; fix it and re-run \`plur init\``
   }
 
   // Install CLAUDE.md section

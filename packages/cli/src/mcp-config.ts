@@ -34,8 +34,11 @@ export interface ConfigFile {
    *   only greps it for an `[mcp_servers.plur]` table.
    * 'agy-hooks': Antigravity's hooks.json — a map of NAMED hook sets; PLUR
    *   owns the 'plur-memory' key and nothing else.
+   * 'claude-user': Claude Code's ~/.claude.json — MCP servers at user scope
+   *   (top-level `mcpServers`) and local scope (`projects[folder].mcpServers`);
+   *   no hooks. The only user-level place Claude Code reads MCP servers (#1561).
    */
-  kind: 'claude-code' | 'claude-desktop' | 'cursor-hooks' | 'codex-hooks' | 'codex-toml' | 'agy-hooks'
+  kind: 'claude-code' | 'claude-desktop' | 'cursor-hooks' | 'codex-hooks' | 'codex-toml' | 'agy-hooks' | 'claude-user'
 }
 
 /**
@@ -161,6 +164,18 @@ export function claudeCodeGlobalSettingsPath(): string {
   return join(homedir(), '.claude', 'settings.json')
 }
 
+/**
+ * Claude Code's user config, `~/.claude.json` — where Claude Code reads
+ * user-scoped MCP servers (`mcpServers`) and local-scoped ones
+ * (`projects[<folder>].mcpServers`). It is what `claude mcp add --scope user`
+ * writes. Claude Code does NOT read MCP servers from `~/.claude/settings.json`;
+ * `plur init` used to register there and Claude Code never saw the server
+ * (#1561).
+ */
+export function claudeCodeUserConfigPath(): string {
+  return join(homedir(), '.claude.json')
+}
+
 /** Locate the project-level Cursor MCP config file. */
 export function cursorProjectMcpConfigPath(cwd: string = process.cwd()): string {
   return join(cwd, '.cursor', 'mcp.json')
@@ -264,6 +279,7 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
   const projectSettings = join(cwd, '.claude', 'settings.json')
   const projectMcp = join(cwd, '.mcp.json')
   const globalSettings = claudeCodeGlobalSettingsPath()
+  const userConfig = claudeCodeUserConfigPath()
   const desktop = claudeDesktopConfigPath()
   const cursorMcp = cursorProjectMcpConfigPath(cwd)
   const cursorHooks = cursorProjectHooksConfigPath(cwd)
@@ -276,6 +292,7 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
     { label: 'Claude Code (project)', path: projectSettings, exists: existsSync(projectSettings), kind: 'claude-code' },
     { label: 'Claude Code (.mcp.json)', path: projectMcp, exists: existsSync(projectMcp), kind: 'claude-desktop' },
     { label: 'Claude Code (global)', path: globalSettings, exists: existsSync(globalSettings), kind: 'claude-code' },
+    { label: 'Claude Code (~/.claude.json)', path: userConfig, exists: existsSync(userConfig), kind: 'claude-user' },
     { label: 'Claude Desktop', path: desktop, exists: existsSync(desktop), kind: 'claude-desktop' },
     { label: 'Cursor (.cursor/mcp.json)', path: cursorMcp, exists: existsSync(cursorMcp), kind: 'claude-desktop' },
     { label: 'Cursor (.cursor/hooks.json)', path: cursorHooks, exists: existsSync(cursorHooks), kind: 'cursor-hooks' },
