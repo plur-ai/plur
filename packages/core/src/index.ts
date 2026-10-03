@@ -57,7 +57,7 @@ import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
-import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
+import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
@@ -261,7 +261,7 @@ export { computeContentHash, normalizeStatement, isHashable } from './content-ha
 export { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
 export { orderBySupersedes } from './outbox-order.js'
 export {
-  classifyOutboxFailure, summarizeOutbox, describeNeedsAction, statusFromErrorText,
+  classifyOutboxFailure, summarizeOutbox, describeNeedsAction, describeHeld, statusFromErrorText, OUTBOX_CLAIM_ERROR_PREFIX,
   NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES,
   type OutboxState, type OutboxVerdict, type OutboxSummary, type OutboxFailureInput,
 } from './outbox-health.js'
@@ -521,6 +521,9 @@ export interface StatusResult {
   outbox_needs_action?: number
   /** Present when `outbox_needs_action` > 0: one row per scope and reason, with its next step. */
   outbox_attention?: OutboxSummary['scopes']
+  /** Queued writes held on this machine for a stated reason, e.g. a push claim
+   *  that could not be recorded (#1581 audit L1). Present only when there are some. */
+  outbox_held?: OutboxSummary['held']
   /** Present when the most recent background index pass failed (#272). */
   index_error?: IndexSyncError
   /** Injection-provenance event/label counts (#452) — feeds #202's volume gate. */
@@ -6414,8 +6417,11 @@ export class Plur {
    * EPERM/EBUSY because another process has the claim open, a full or
    * read-only cache folder, any error — the answer is `busy` with the error,
    * never an unrecorded `claimed`. Another process may own the entry; it
-   * stays queued with the key already on its row, and the next flush tries
-   * again. An unrecorded claim let two processes push the same engram.
+   * stays queued with the key already on its row, and a later flush tries
+   * again (the flush writes the error to the row's `last_error`, so
+   * `plur outbox` and doctor say why). An unrecorded claim let two processes
+   * push the same engram. Cleanup after the claim is decided (temp files,
+   * takeover markers) is best effort and never changes the answer.
    */
   private _claimOutboxEntry(
     id: string,
@@ -6428,16 +6434,30 @@ export class Plur {
         throw err
       }
     }
-    const heldBy = (raw: string): boolean => {
-      let held: { pid?: number; host?: string; until?: number; at?: number } = {}
-      try { held = JSON.parse(raw) } catch { /* unreadable: lapsed */ }
-      return this._outboxClaimHeld(held, Date.now())
+    /** Cleanup after the outcome is decided: it never changes the outcome (#1581 audit M1). */
+    const removeQuietly = (at: string): void => {
+      try { fs.rmSync(at, { force: true }) } catch (err) {
+        logger.warning(`[plur:outbox] could not remove ${at}: ${(err as Error).message}`)
+      }
+    }
+    const heldBy = (raw: string, file: string): boolean => {
+      let held: { pid?: number; host?: string; until?: number; at?: number }
+      try { held = JSON.parse(raw) } catch {
+        // Empty or half-written (#1581 audit L3): without hard links a claim
+        // is created and then written, two steps, so a racer can read it in
+        // between. Unreadable counts as live while it is younger than the
+        // lease, and as lapsed after (its writer died mid-write).
+        try { return Date.now() - fs.statSync(file).mtimeMs < OUTBOX_CLAIM_LEASE_MS } catch { return false }
+      }
+      return this._outboxClaimHeld(held ?? {}, Date.now())
     }
     /** Create `target` holding `body` only if nothing is there (O_EXCL). */
     const publishExclusive = (target: string, body: string): boolean => {
       const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`
-      fs.writeFileSync(tmp, body)
       try {
+        // Inside the try: a temp file written part-way (disk full) is
+        // removed too (#1581 audit L2).
+        fs.writeFileSync(tmp, body)
         fs.linkSync(tmp, target)
         return true
       } catch (err) {
@@ -6452,13 +6472,13 @@ export class Plur {
         }
         throw err
       } finally {
-        fs.rmSync(tmp, { force: true })
+        removeQuietly(tmp)
       }
     }
     try {
       fs.mkdirSync(this.outboxClaimsDir(), { recursive: true })
       const stale = readRaw(path)
-      if (stale !== undefined && heldBy(stale)) return { status: 'busy' }
+      if (stale !== undefined && heldBy(stale, path)) return { status: 'busy' }
       const key = keyFor()
       const token = randomUUID()
       const at = Date.now()
@@ -6478,7 +6498,7 @@ export class Plur {
         if (publishExclusive(marker, JSON.stringify(owner))) { won = true; break }
         const m = readRaw(marker)
         // Gone means its holder finished: the claim has changed hands.
-        if (m === undefined || heldBy(m)) return { status: 'busy' }
+        if (m === undefined || heldBy(m, marker)) return { status: 'busy' }
         passed.push(marker)
         marker = `${marker}-${outboxClaimTag(m)}`
       }
@@ -6492,19 +6512,22 @@ export class Plur {
           fs.writeFileSync(tmp, body)
           fs.renameSync(tmp, path)
         } catch (err) {
-          // Not renamed: the stale claim is still in place. Leave no temp file.
-          try { fs.rmSync(tmp, { force: true }) } catch { /* best effort */ }
+          // Not renamed: the stale claim is still in place. Remove the temp file.
+          removeQuietly(tmp)
           throw err
         }
         changedHands = true
         this._outboxClaimTokens.set(id, token)
         return { status: 'claimed', key }
       } finally {
-        fs.rmSync(marker, { force: true })
+        // Best effort (#1581 audit M1): the claim is already decided. A marker
+        // that cannot be removed now is dead once we exit, and is judged and
+        // replaced by the same liveness rule as any dead marker.
+        removeQuietly(marker)
         // The dead markers we walked past are cleared only once the stale
         // claim they guard is gone. Before that, clearing one would let a
         // second racer win a level we already passed.
-        if (changedHands) for (const p of passed) fs.rmSync(p, { force: true })
+        if (changedHands) for (const p of passed) removeQuietly(p)
       }
     } catch (err) {
       const error = (err as Error).message
@@ -10414,6 +10437,22 @@ export class Plur {
     return out
   }
 
+  /**
+   * Why the push-claims folder cannot be written, or undefined when it can
+   * (#1581 audit L1). A claim that cannot be recorded holds every queued
+   * write on this machine, so doctor reports it. Creates the folder when
+   * missing (it is PLUR's own cache), and writes nothing else.
+   */
+  outboxClaimsProblem(): string | undefined {
+    try {
+      fs.mkdirSync(this.outboxClaimsDir(), { recursive: true })
+      fs.accessSync(this.outboxClaimsDir(), fs.constants.W_OK)
+      return undefined
+    } catch (err) {
+      return (err as Error).message
+    }
+  }
+
   /** Counts by state plus one line per needs_action scope (#1299). */
   async outboxSummary(): Promise<OutboxSummary> {
     return summarizeOutbox(await this.listOutbox())
@@ -10874,8 +10913,15 @@ export class Plur {
       // time (another flush in any process, or learn()'s own background push).
       const claim = this._claimOutboxEntry(engram.id, () => outbox.idempotency_key!)
       if (claim.status === 'busy') {
+        if (claim.error) {
+          // #1581 audit L1: say on the row why it is held, so `plur outbox`,
+          // doctor and status show it. Not a push attempt: attempt_count and
+          // last_attempt are untouched. Written back by the merge below.
+          outbox.last_error = `${OUTBOX_CLAIM_ERROR_PREFIX}${claim.error}`
+          metadataDirty = true
+        }
         expired_warnings.push(claim.error
-          ? `${engram.id}: its push claim could not be recorded (${claim.error}) — left queued for the next flush`
+          ? `${engram.id}: its push claim could not be recorded (${claim.error}) — left queued for a later flush`
           : `${engram.id}: another writer is pushing it right now — left to that writer`)
         deferred++
         continue
@@ -11641,6 +11687,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         return {
           outbox_needs_action: summary.needs_action,
           ...(summary.needs_action > 0 ? { outbox_attention: summary.scopes } : {}),
+          ...(summary.held?.length ? { outbox_held: summary.held } : {}),
         }
       })()),
       history_events: readOr('history', () => countInjectionEvents(this.paths.root), undefined as any),

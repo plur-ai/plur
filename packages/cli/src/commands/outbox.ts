@@ -14,7 +14,7 @@
  * one field here that names a credentialed endpoint, and `target_scope`
  * already answers "which store is behind?", which is the question being asked.
  */
-import { summarizeOutbox, describeNeedsAction } from '@plur-ai/core'
+import { summarizeOutbox, describeNeedsAction, describeHeld } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
@@ -54,6 +54,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         retrying: summary.retrying,
         needs_action: summary.needs_action,
         ...(summary.needs_action > 0 ? { needs_action_scopes: summary.scopes } : {}),
+        ...(summary.held?.length ? { held: summary.held } : {}),
         entries,
       })
       return
@@ -116,9 +117,12 @@ export function formatOutboxText(entries: OutboxEntry[]): string {
     if (e.state === 'needs_action') {
       lines.push(`      will not deliver: ${e.reason}`)
       if (e.next_retry_at) lines.push(`      next automatic retry after ${e.next_retry_at}`)
+    } else if (e.reason) {
+      lines.push(`      held: ${e.reason}`)
     }
   }
   lines.push('')
+  for (const l of describeHeld(summary)) lines.push(l)
   if (summary.needs_action > 0) {
     for (const l of describeNeedsAction(summary)) lines.push(l)
     lines.push('Nothing is dropped automatically.')
