@@ -207,10 +207,10 @@ describe('resolveFolderPolicy', () => {
     writeMap([{ path: other, plur: 'off', trusted: true }])
 
     expect(setFolderEntry(root, proj, { scope: 'project:x' }, { configuredScopes: [], home }))
-      .toEqual({ path: proj, scope: 'project:x' })
+      .toEqual({ path: proj, plur: 'on', scope: 'project:x' })
     expect(loadFolderMap(root).folders).toEqual([
       { path: other, plur: 'off', trusted: true },
-      { path: proj, scope: 'project:x' },
+      { path: proj, plur: 'on', scope: 'project:x' },
     ])
     expect(policy(other).mode).toBe('off')
     expect(isTrustedInMap(loadFolderMap(root).folders, proj, home)).toBe(false)
