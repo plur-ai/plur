@@ -3,6 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import {
   resolveFolderPolicy,
+  workspaceFolderScope,
   folderAskOnce as coreFolderAskOnce,
   type FolderAskOptions as CoreFolderAskOptions,
   type FolderPolicy,
@@ -75,6 +76,29 @@ export function hookFolderOn(dir: string, flags?: { path?: string }): boolean {
   return hookFolderPolicy(dir, flags).mode === 'on'
 }
 
+
+/** Registry key for the folder's scope on a CLI read; no real session id starts with NUL. */
+const CLI_FOLDER_SESSION = '\u0000plur:cli-folder-scope'
+
+/**
+ * The session an unscoped `plur recall` / `plur inject` passes to core as its
+ * remote dialing context (L10 of the third 0.21.1 pre-release check): the
+ * MCP rule for an unscoped read (#1566), with the one input the CLI has — the
+ * folder it runs in. When that folder resolves to `on` with a scope (the
+ * same resolver as the MCP server, core's workspaceFolderScope), the scope is
+ * registered under an internal key and the key is returned, so the read
+ * dials that scope's store exactly as a session started there would. It is a
+ * dialing context, not a filter: local results are unchanged. Undefined when
+ * an explicit `--scope` was given (it wins in core), and in an `off`,
+ * undecided, home or unscoped folder: no team default, as before.
+ */
+export function folderReadSession(plur: Plur, explicitScope: string | undefined, cwd: string = process.cwd()): string | undefined {
+  if (explicitScope) return undefined
+  const scope = workspaceFolderScope([cwd], dir => plur.resolveFolderPolicy(dir))
+  if (scope === null) return undefined
+  plur.setSessionScope(scope, { session: CLI_FOLDER_SESSION })
+  return CLI_FOLDER_SESSION
+}
 
 /** True when a SessionStart payload says the session was resumed. */
 export function isResumeStart(input: Record<string, unknown> | null | undefined): boolean {

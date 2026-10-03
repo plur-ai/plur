@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { folderReadSession } from '../lib/folder-gate.js'
 
 // Note: the supersedes rule assumes the consumer has PLUR MCP tools available
 // (plur_learn). Consumers without MCP tooling can opt out via
@@ -53,9 +54,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Same semantics as MCP plur_inject / plur_inject_hybrid: `scope` filters
   // engram selection, and on the hybrid path it is the remote leg's dialing
   // context (#243/#776).
+  // Without --scope, the folder's scope is the dialing context (L10), by the
+  // same rule as MCP plur_inject_hybrid (#1566). `dial_session`, not
+  // `session_id`: the internal key is never recorded as a session. The
+  // keyword path (--fast) never dials, as before.
+  const dial_session = folderReadSession(plur, scope)
   const result = flags.fast
     ? await plur.inject(task, { budget, scope })
-    : await plur.injectHybrid(task, { budget, scope })
+    : await plur.injectHybrid(task, { budget, scope, dial_session })
 
   // Append default learning protocol to directives (opt-out via --no-with-default-protocol)
   let directives = result.directives || ''

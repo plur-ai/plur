@@ -1,6 +1,6 @@
 import {
   folderOffEntries, folderMapProblem, folderAsk, hostFolderAsk, folderNonceOutstanding, endFolderNonceSession,
-  sweepFolderNonces, coversHomeOrRoot, FOLDER_NONCE_TTL_MS, type FolderMapProblem, type Plur, type FolderAsk, type FolderAskAnswer,
+  sweepFolderNonces, coversHomeOrRoot, workspaceFolderScope, FOLDER_NONCE_TTL_MS, type FolderMapProblem, type Plur, type FolderAsk, type FolderAskAnswer,
   type FolderAskHost,
 } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
@@ -392,19 +392,9 @@ export function ancestorHosts(now: number = Date.now()): FolderAskHost[] {
  *  - an input that cannot be resolved, or any error.
  */
 export function workspaceWriteScope(plur: Plur, ws: Workspace): string | null {
-  const inputs = ws.roots.length > 0 ? ws.roots : [ws.cwd]
-  let agreed: string | null = null
-  for (const input of inputs) {
-    let dir: string
-    try { dir = realpathSync.native(input) } catch { return null }
-    if (isHomeOrAbove(dir) || isFilesystemRoot(dir)) return null
-    let policy: ReturnType<Plur['resolveFolderPolicy']>
-    try { policy = plur.resolveFolderPolicy(dir) } catch { return null }
-    if (policy.mode !== 'on' || !policy.scope) return null
-    if (agreed === null) agreed = policy.scope
-    else if (agreed !== policy.scope) return null
-  }
-  return agreed
+  // The rule lives in core (workspaceFolderScope) so the CLI, whose one input
+  // is the folder it runs in, resolves exactly as this server does (L10).
+  return workspaceFolderScope(ws.roots.length > 0 ? ws.roots : [ws.cwd], dir => plur.resolveFolderPolicy(dir))
 }
 
 /** The workspace's identity for a session default (#1563 review round 2): its roots, or its start folder. */
