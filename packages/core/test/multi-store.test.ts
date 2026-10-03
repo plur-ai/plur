@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
-import { storePrefix, loadEngrams } from '../src/engrams.js'
+import { storePrefix, legacyStorePrefix, loadEngrams } from '../src/engrams.js'
 
 /** Minimal valid engram for store YAML files */
 function makeEngram(overrides: Record<string, unknown> = {}) {
@@ -36,7 +36,8 @@ function makeEngram(overrides: Record<string, unknown> = {}) {
 }
 
 // storePrefix('datafund') → 'DA' (first 2 chars of single-word scope)
-const NS_ID = 'ENG-DFD-2026-0401-001'
+// The store's namespaced id (0.21.1: the prefix is DFD plus four digest letters).
+const NS_ID = `ENG-${storePrefix('datafund')}-2026-0401-001`
 
 describe('Multi-store', () => {
   let primaryDir: string
@@ -248,10 +249,10 @@ describe('Multi-store', () => {
     // Recall through indexed path should find both
     const results = await plur.recall('SQLite database queries indexing')
     const ids = results.map(e => e.id)
-    expect(ids.some(id => id.startsWith('ENG-DFD-'))).toBe(true)
+    expect(ids.some(id => id.startsWith(`ENG-${storePrefix('datafund')}-`))).toBe(true)
 
     // Feedback on the indexed store engram should persist
-    const storeResult = results.find(e => e.id.startsWith('ENG-DFD-'))
+    const storeResult = results.find(e => e.id.startsWith(`ENG-${storePrefix('datafund')}-`))
     if (storeResult) {
       await plur.feedback(storeResult.id, 'positive')
       const storeRaw = yaml.load(readFileSync(storePath, 'utf8')) as any
@@ -292,27 +293,27 @@ describe('Multi-store', () => {
     // returns []; accept that. When results exist, at least one must be a store
     // engram (id prefixed with ENG-DFD-) — proves the cross-store path is wired.
     if (results.length > 0) {
-      const hasStoreEngram = results.some(r => r.engram.id.startsWith('ENG-DFD-'))
+      const hasStoreEngram = results.some(r => r.engram.id.startsWith(`ENG-${storePrefix('datafund')}-`))
       expect(hasStoreEngram).toBe(true)
     }
   })
 
-  it('storePrefix handles potential collisions deterministically', () => {
+  it('legacyStorePrefix (the old three-letter form) stays deterministic', () => {
     // Two scopes that could collide: both start with 'data'
     // Single words: first + middle + last char (differentiates similar prefixes)
-    expect(storePrefix('datafund')).toBe('DFD')
-    expect(storePrefix('datacore')).toBe('DCE')
-    expect(storePrefix('personal')).toBe('POL')
+    expect(legacyStorePrefix('datafund')).toBe('DFD')
+    expect(legacyStorePrefix('datacore')).toBe('DCE')
+    expect(legacyStorePrefix('personal')).toBe('POL')
     // With separators: first char of part1 + first 2 chars of part2
-    expect(storePrefix('data-fund')).toBe('DFU')
-    expect(storePrefix('data-core')).toBe('DCO')
-    expect(storePrefix('project:myapp')).toBe('PMY')
-    expect(storePrefix('space:fds')).toBe('SFD')
+    expect(legacyStorePrefix('data-fund')).toBe('DFU')
+    expect(legacyStorePrefix('data-core')).toBe('DCO')
+    expect(legacyStorePrefix('project:myapp')).toBe('PMY')
+    expect(legacyStorePrefix('space:fds')).toBe('SFD')
     // Short words: first + middle + last
-    expect(storePrefix('fds')).toBe('FDS')
-    expect(storePrefix('ab')).toBe('ABA')
+    expect(legacyStorePrefix('fds')).toBe('FDS')
+    expect(legacyStorePrefix('ab')).toBe('ABA')
     // Edge: single char scope
-    expect(storePrefix('x')).toBe('XXX')
+    expect(legacyStorePrefix('x')).toBe('XXX')
   })
 
   it('addStore creates the filesystem file when path does not exist (#766)', async () => {

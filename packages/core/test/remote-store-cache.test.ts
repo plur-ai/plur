@@ -479,14 +479,14 @@ describe.skip('updateEngram remote routing (blocked on enterprise#110)', () => {
     await new Promise(r => setTimeout(r, 2000))
 
     const loaded = await plur.list({ scope: 'group:test' })
-    const remote = loaded.find(e => e.id.includes('-GTE-'))
+    const remote = loaded.find(e => /-GTE[A-Z]{4}-/.test(e.id))
     expect(remote).toBeTruthy()
 
     remote!.pinned = true
     await plur.updateEngram(remote!)
 
     // Verify server received the pin update
-    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE-/, 'ENG-'))
+    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE[A-Z]{4}-/, 'ENG-'))
     expect((serverEngram?.data as any)?.pinned).toBe(true)
   })
 
@@ -496,14 +496,14 @@ describe.skip('updateEngram remote routing (blocked on enterprise#110)', () => {
     await new Promise(r => setTimeout(r, 2000))
 
     const loaded = await plur.list({ scope: 'group:test' })
-    const remote = loaded.find(e => e.id.includes('-GTE-'))
+    const remote = loaded.find(e => /-GTE[A-Z]{4}-/.test(e.id))
     expect(remote).toBeTruthy()
 
     remote!.status = 'active'
     remote!.activation.retrieval_strength = 0.7
     await plur.updateEngram(remote!)
 
-    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE-/, 'ENG-'))
+    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE[A-Z]{4}-/, 'ENG-'))
     expect(serverEngram?.status).toBe('active')
   })
 })

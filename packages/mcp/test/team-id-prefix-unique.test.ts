@@ -114,8 +114,14 @@ describe('two team stores of one org (H1)', () => {
     const { client, eng, ops } = await twoTeams()
     const re = await call(client, 'plur_recall', { query: 'team rule', scope: ENG })
     const ro = await call(client, 'plur_recall', { query: 'team rule', scope: OPS })
-    expect(re.results.map((r: any) => [r.id, r.scope])).toEqual([[eng, ENG]])
-    expect(ro.results.map((r: any) => [r.id, r.scope])).toEqual([[ops, OPS]])
+    // Each team's row is present under its own id. (A mounted store's scope
+    // passes another scope's filter by design, so the other row may appear
+    // too — but never under this row's id.)
+    expect(re.results.map((r: any) => [r.id, r.scope])).toContainEqual([eng, ENG])
+    expect(ro.results.map((r: any) => [r.id, r.scope])).toContainEqual([ops, OPS])
+    for (const r of [...re.results, ...ro.results]) {
+      expect(r.id, JSON.stringify(r)).toBe(r.scope === ENG ? eng : ops)
+    }
   })
 
   it('forget by the ops id retires the ops engram and leaves the eng engram active', async () => {

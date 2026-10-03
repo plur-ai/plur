@@ -5,7 +5,7 @@
  * See: https://github.com/plur-ai/plur/issues/86
  */
 import { describe, it, expect } from 'vitest'
-import { storePrefix, bareEngramId } from '../src/engrams.js'
+import { storePrefix, legacyStorePrefix, bareEngramId } from '../src/engrams.js'
 
 describe('bareEngramId (#1119)', () => {
   it('strips group:plur GPL prefix to bare ID', () => {
@@ -35,30 +35,38 @@ describe('bareEngramId (#1119)', () => {
   })
 })
 
-describe('storePrefix', () => {
+// The three-letter derivation is kept as legacyStorePrefix (ids in that form
+// are still read); storePrefix adds four letters of a scope digest (0.21.1, H1).
+describe('legacyStorePrefix, and storePrefix starting with it', () => {
   it('group:plur/plur-ai/engineering → GPL', () => {
-    expect(storePrefix('group:plur/plur-ai/engineering')).toBe('GPL')
+    expect(legacyStorePrefix('group:plur/plur-ai/engineering')).toBe('GPL')
+    expect(storePrefix('group:plur/plur-ai/engineering')).toMatch(new RegExp(`^${'GPL'}[A-Z]{4}$`))
   })
 
   it('project:plur → PPL', () => {
-    expect(storePrefix('project:plur')).toBe('PPL')
+    expect(legacyStorePrefix('project:plur')).toBe('PPL')
+    expect(storePrefix('project:plur')).toMatch(new RegExp(`^${'PPL'}[A-Z]{4}$`))
   })
 
   it('project:Data → PDA', () => {
-    expect(storePrefix('project:Data')).toBe('PDA')
+    expect(legacyStorePrefix('project:Data')).toBe('PDA')
+    expect(storePrefix('project:Data')).toMatch(new RegExp(`^${'PDA'}[A-Z]{4}$`))
   })
 
   it('global → GBL', () => {
-    expect(storePrefix('global')).toBe('GBL')
+    expect(legacyStorePrefix('global')).toBe('GBL')
+    expect(storePrefix('global')).toMatch(new RegExp(`^${'GBL'}[A-Z]{4}$`))
   })
 
   it('group:datafund → GDA', () => {
-    expect(storePrefix('group:datafund')).toBe('GDA')
+    expect(legacyStorePrefix('group:datafund')).toBe('GDA')
+    expect(storePrefix('group:datafund')).toMatch(new RegExp(`^${'GDA'}[A-Z]{4}$`))
   })
 
   it('single short word → padded', () => {
     // "ab" → A + B + A (padded)
-    expect(storePrefix('ab')).toBe('ABA')
+    expect(legacyStorePrefix('ab')).toBe('ABA')
+    expect(storePrefix('ab')).toMatch(new RegExp(`^${'ABA'}[A-Z]{4}$`))
   })
 })
 
@@ -83,7 +91,8 @@ describe('ID prefix round-trip', () => {
     const original = 'ENG-2026-05-19-004'
     const scope = 'group:plur/plur-ai/engineering'
     const prefixed = addPrefix(original, scope)
-    expect(prefixed).toBe('ENG-GPL-2026-05-19-004')
+    expect(prefixed).toBe(`ENG-${storePrefix(scope)}-2026-05-19-004`)
+    expect(prefixed.startsWith('ENG-GPL')).toBe(true)
     expect(stripPrefix(prefixed, scope)).toBe(original)
   })
 
@@ -91,7 +100,7 @@ describe('ID prefix round-trip', () => {
     const original = 'ABS-2026-0501-001'
     const scope = 'project:plur'
     const prefixed = addPrefix(original, scope)
-    expect(prefixed).toBe('ABS-PPL-2026-0501-001')
+    expect(prefixed).toBe(`ABS-${storePrefix(scope)}-2026-0501-001`)
     expect(stripPrefix(prefixed, scope)).toBe(original)
   })
 
@@ -99,7 +108,7 @@ describe('ID prefix round-trip', () => {
     const original = 'META-2026-0501-001'
     const scope = 'group:datafund'
     const prefixed = addPrefix(original, scope)
-    expect(prefixed).toBe('META-GDA-2026-0501-001')
+    expect(prefixed).toBe(`META-${storePrefix(scope)}-2026-0501-001`)
     expect(stripPrefix(prefixed, scope)).toBe(original)
   })
 

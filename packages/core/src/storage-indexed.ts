@@ -1,6 +1,6 @@
 import { existsSync } from 'fs'
 import { createRequire } from 'module'
-import { loadEngrams, storePrefix } from './engrams.js'
+import { loadEngrams, storePrefix, namespaceEngramId } from './engrams.js'
 import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
@@ -112,6 +112,7 @@ export class IndexedStorage {
         // re-enter this branch on every subsequent open.
         this.db.pragma(`user_version = ${PERSONAL_BACKFILL_VERSION}`)
       }
+      this.resyncStalePrefixes()
     }
     return this.db
   }
@@ -216,6 +217,25 @@ export class IndexedStorage {
     return (db.prepare('SELECT COUNT(*) as c FROM engrams').get() as any).c
   }
 
+  /**
+   * Rebuild the index once when it holds a store row under a prefix that is
+   * no longer that store's (0.21.1: the three-letter prefix became seven
+   * letters, audit H1). Without this an index written by an earlier release
+   * keeps serving the old ids until some store file happens to change.
+   * Reads only the store rows' ids; a no-op on an index that is current.
+   */
+  private resyncStalePrefixes(): void {
+    const prefixBySource = new Map<string, string>()
+    for (const store of this.stores) if (store.path) prefixBySource.set(store.path, storePrefix(store.scope))
+    if (prefixBySource.size === 0) return
+    const rows = this.db.prepare("SELECT id, source FROM engrams WHERE source != 'primary'").all() as { id: string; source: string }[]
+    const stale = rows.some(r => {
+      const want = prefixBySource.get(r.source)
+      return want !== undefined && !new RegExp(`^(ENG|ABS|META)-${want}-`).test(r.id)
+    })
+    if (stale) this.syncFromYaml()
+  }
+
   /** Sync SQLite index from YAML source of truth (primary + all stores). */
   syncFromYaml(): void {
     const db = this.getDb()
@@ -245,14 +265,14 @@ export class IndexedStorage {
         if (!store.path) continue
         validSources.add(store.path)
         const storeEngrams = loadEngrams(store.path)
-        const prefix = storePrefix(store.scope)
         for (const e of storeEngrams) {
           // Scope validation: skip mismatched scopes. Segment-aware (#383) so a
           // sibling string-prefix scope can't be indexed under this store.
           if (e.scope !== 'global' && !isScopeWithin(e.scope, store.scope)) {
             continue
           }
-          const nsId = e.id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
+          // Same rule as every other loader (idempotent, upgrades an old-form id).
+          const nsId = namespaceEngramId(e.id, store.scope)
           // Cross-store narrowing (UNCHANGED, intentional): a global-scoped
           // secondary-store engram is renamed to the store's scope on load (#353
           // documents this as preserved behavior). `personal` reflects the FINAL

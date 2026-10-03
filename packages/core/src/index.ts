@@ -10,7 +10,7 @@ import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk } from './config.js'
 import { canonicalize } from './project-config.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -236,7 +236,7 @@ export { loadEngrams, saveEngrams } from './engrams.js'
 // The id-namespacing pair (#914). `readIdFor` is the API a surface should use;
 // these are exported so a caller (and the tests) can reason about the shape
 // without re-deriving the prefix rule a fourth time.
-export { storePrefix, namespaceEngramId, bareEngramId } from './engrams.js'
+export { storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId } from './engrams.js'
 export {
   maybeDailyBackup,
   listBackups,
@@ -2541,7 +2541,9 @@ export class Plur {
         // is, when the store file already holds it namespaced.
         const stripped = id.replace(nsPattern, '$1-')
         const storeEngrams = await this._loadCached(store.path)
+        const legacyStored = stripped.replace(/^(ENG|ABS|META)-/, `$1-${legacyStorePrefix(store.scope)}-`)
         const found = storeEngrams.find(e => e.id === stripped) ?? storeEngrams.find(e => e.id === id)
+          ?? storeEngrams.find(e => e.id === legacyStored)
         if (found) {
           return { path: store.path, readonly: store.readonly ?? false, originalId: found.id }
         }
@@ -2565,6 +2567,112 @@ export class Plur {
       return id.replace(nsPattern, '$1-')
     }
     return id
+  }
+
+  /**
+   * The server id of `id` in the store for `scope`, when the caller has NAMED
+   * that store (an explicit `scope`): strips this scope's current prefix or
+   * its old three-letter one. Only for scope-targeted routes — the scope, not
+   * the prefix, says which store is meant, so the old shared prefix is safe
+   * to read here.
+   */
+  private _stripForScope(id: string, scope: string): string {
+    return this._stripRemotePrefix(namespaceEngramId(id, scope), scope)
+  }
+
+  /**
+   * Resolve a namespaced id to the ONE store it names, before any action on
+   * it (0.21.1 audit of #1570, H1). Returns the id to act with — the current
+   * prefix form for the store that holds the row — or the id unchanged when it
+   * carries no store prefix or no configured store matches it.
+   *
+   * The walks that act on a namespaced id (forget, feedback, pin, update) visit
+   * every store whose prefix the id carries and act on the first that holds the
+   * stripped id. That is only safe when the prefix names one store. Two cases
+   * name several, and both are resolved here by asking each candidate store for
+   * the row:
+   *   - an id in the OLD three-letter form ({@link legacyStorePrefix}), which
+   *     every team store of one org shared;
+   *   - one scope configured on two stores (two servers, or a path store and a
+   *     url store), which share a prefix by construction.
+   *
+   * A url store "holds" the row only when the row's scope falls within the
+   * store's scope: one server serves every scope the token can read, so a
+   * driver for scope A answers for a row in scope B, and acting through A is
+   * how a readonly B row used to be retired. When several stores hold the SAME
+   * row (one server, nested scopes), the store whose scope is the row's own —
+   * or else the most specific — is the one named. Distinct rows in different
+   * stores are ambiguous and refused; so is a candidate that could not be
+   * reached, since it might hold another row with this id. Nothing is changed
+   * before this returns.
+   */
+  private async _resolveNamespacedId(id: string, verb: string): Promise<string> {
+    const parsed = parseNamespacedId(id, true)
+    if (!parsed) return id
+    const stores = this.config.stores ?? []
+    let candidates = stores.filter(s => typeof s.scope === 'string' && storePrefix(s.scope) === parsed.prefix)
+    const legacy = candidates.length === 0
+    if (legacy) candidates = stores.filter(s => typeof s.scope === 'string' && legacyStorePrefix(s.scope) === parsed.prefix)
+    if (candidates.length === 0) return id
+    if (candidates.length === 1) return namespaceEngramId(parsed.bare, candidates[0].scope)
+
+    type Holder = { entry: StoreEntry; rowScope: string; key: string }
+    const holders: Holder[] = []
+    const unreached: string[] = []
+    const forms = new Set([parsed.bare, id])
+    for (const entry of candidates) {
+      forms.add(namespaceEngramId(parsed.bare, entry.scope))
+      forms.add(parsed.bare.replace(/^(ENG|ABS|META)-/, `$1-${legacyStorePrefix(entry.scope)}-`))
+    }
+    for (const entry of candidates) {
+      if (entry.path) {
+        const rows = await this._loadCached(entry.path)
+        const row = rows.find(e => forms.has(e.id))
+        if (row) holders.push({ entry, rowScope: row.scope ?? entry.scope, key: `path\0${entry.path}\0${row.id}` })
+        continue
+      }
+      if (!entry.url) continue
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      let row: Engram | null = null
+      try {
+        const ownership = driver.probeById
+          ? await driver.probeById(parsed.bare, { signal: AbortSignal.timeout(REMOTE_PROBE_TIMEOUT_MS) })
+          : 'owned'
+        if (ownership === 'unknown') { unreached.push(entry.scope); continue }
+        if (ownership === 'absent') continue
+        row = await driver.getById(parsed.bare)
+      } catch {
+        unreached.push(entry.scope)
+        continue
+      }
+      if (!row) continue
+      const rowScope = row.scope ?? 'global'
+      if (rowScope !== 'global' && !isScopeWithin(rowScope, entry.scope)) continue
+      holders.push({ entry, rowScope, key: `url\0${entry.url.replace(/\/+$/, '')}\0${row.id}` })
+    }
+    const rows = new Map<string, Holder[]>()
+    for (const h of holders) rows.set(h.key, [...(rows.get(h.key) ?? []), h])
+    const named = (h: Holder) => `"${h.entry.scope}" (${namespaceEngramId(parsed.bare, h.entry.scope)})`
+    if (rows.size > 1) {
+      const where = [...rows.values()].map(hs => named(hs[0]))
+      throw new Error(
+        `Ambiguous engram ID "${id}": it names an engram in ${where.join(' and in ')}. Nothing was changed. `
+        + `Pass the id for the one you mean, or its scope.`
+        + (legacy ? ` "${id}" is in the old id form, which these stores shared; recall now gives each its own id.` : ''),
+      )
+    }
+    if (unreached.length > 0) {
+      throw new Error(
+        `Cannot safely ${verb} "${id}": it may name an engram in ${unreached.map(s => `"${s}"`).join(', ')}, which could not be reached`
+        + (rows.size === 1 ? `, as well as the one in "${[...rows.values()][0][0].entry.scope}"` : '')
+        + `. Nothing was changed. Retry once the store is reachable, or pass the scope of the one you mean.`,
+      )
+    }
+    if (rows.size === 0) return id
+    const hs = [...rows.values()][0]
+    const own = hs.find(h => h.entry.scope === h.rowScope)
+      ?? [...hs].sort((a, b) => b.entry.scope.length - a.entry.scope.length)[0]
+    return namespaceEngramId(parsed.bare, own.entry.scope)
   }
 
   /** Content hash fast-path dedup. Scope-aware: same statement in a different
@@ -6005,7 +6113,22 @@ export class Plur {
   /** Get a single engram by ID, regardless of status. Searches primary + all stores. */
   async getById(id: string): Promise<Engram | null> {
     const engrams = await this._loadAllEngrams()
-    return engrams.find(e => e.id === id) ?? null
+    const exact = engrams.find(e => e.id === id)
+    if (exact) return exact
+    // An id in the old three-letter store form (releases up to 0.21.0) still
+    // finds its engram — but only when exactly one loaded row carries it. The
+    // old prefix was shared by every team store of an org, so two rows can
+    // answer to one old id; then it names neither (0.21.1 audit, H1).
+    const ns = parseNamespacedId(id, true)
+    if (!ns) return null
+    const matches = engrams.filter(e => {
+      const stored = (e as { _storeScope?: unknown })._storeScope
+      const scope = typeof stored === 'string' ? stored : e.scope
+      const row = parseNamespacedId(e.id, true)
+      return row !== null && typeof scope === 'string' && row.prefix === storePrefix(scope)
+        && legacyStorePrefix(scope) === ns.prefix && row.bare === ns.bare
+    })
+    return matches.length === 1 ? matches[0] : null
   }
 
   /**
@@ -6950,7 +7073,7 @@ export class Plur {
     // Filter out store engrams — they're managed by their source.
     // Via YAML path: store engrams have _originalId. Via SQLite path: namespaced IDs (ENG-XX-...).
     const isStoreEngram = (e: Engram) =>
-      (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{3}-/.test(e.id)
+      (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{3}(?:[A-Z]{4})?-/.test(e.id)
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
     await this._withStoreLock(this.paths.engrams, async () => {
@@ -7625,6 +7748,9 @@ export class Plur {
   ): Promise<MutationOutcome> {
     this._assertWritable()
     const warnings: string[] = []
+    // The id as the caller gave it: injection records are keyed by the form
+    // the agent was shown, which may be the old three-letter one.
+    const asGiven = id
     const auto = options?.source === 'auto'
     const applyOpts = auto ? { source: 'auto' as const } : {}
     const sourceData = auto ? { source: 'auto' as const } : {}
@@ -7653,7 +7779,7 @@ export class Plur {
       const entry = (this.config.stores ?? []).find(s => s.url && s.scope === scope)
       if (entry) {
         if (entry.readonly === true) throw new Error('Engram is in a readonly store')
-        const serverId = this._stripRemotePrefix(id, entry.scope)
+        const serverId = this._stripForScope(id, entry.scope)
         const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
         if (!(await remoteAccepts(driver))) refuseRemote(entry.scope ?? entry.url!)
         const remoteEngram = await driver.getById(serverId)
@@ -7672,7 +7798,7 @@ export class Plur {
             `${(err as Error).message}. Do not retry — the signal is already counted.`,
           )
         }
-        this._logInjectionOutcome(id, signal, options?.source)
+        this._logInjectionOutcome(asGiven, signal, options?.source)
         return { warnings }
       }
       // No URL-backed store carries this scope. Falling through blindly was a
@@ -7684,6 +7810,9 @@ export class Plur {
       // rule: validate that the scope names something, following rescope().
       assertScopeNamesATarget(scope, this.config.stores ?? [], 'rate in', 'rate the LOCAL engram')
     }
+
+    // A namespaced id acts on the one store it names (0.21.1 audit, H1).
+    if (!scope) id = await this._resolveNamespacedId(id, 'rate')
 
     // Try primary engrams first
     // Collision probe OUTSIDE the store lock (0.21.1), bounded per store —
@@ -7752,7 +7881,7 @@ export class Plur {
     })
 
     if (found) {
-      this._logInjectionOutcome(id, signal, options?.source)
+      this._logInjectionOutcome(asGiven, signal, options?.source)
       return { warnings }
     }
 
@@ -7782,7 +7911,7 @@ export class Plur {
         applyFeedbackSignal(engram, signal, undefined, applyOpts)
         await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
-        this._logInjectionOutcome(id, signal, options?.source)
+        this._logInjectionOutcome(asGiven, signal, options?.source)
         return true
       }
       return false
@@ -7867,14 +7996,14 @@ export class Plur {
             `written: ${(err as Error).message}. Do not retry — the signal is already counted.`,
           )
         }
-        this._logInjectionOutcome(id, signal, options?.source)
+        this._logInjectionOutcome(asGiven, signal, options?.source)
         return { warnings }
       }
     }
 
     // Search pack engrams by scanning pack directories
     await this._feedbackPack(id, signal, unverifiedStores, applyOpts)
-    this._logInjectionOutcome(id, signal, options?.source)
+    this._logInjectionOutcome(asGiven, signal, options?.source)
     return { warnings }
   }
 
@@ -8016,6 +8145,12 @@ export class Plur {
     this._assertWritable()
     // Guards and routing below read the current config (core-index#9).
     this.reloadConfigIfChanged()
+    // A namespaced id updates the one store it names (0.21.1 audit, H1): an
+    // old-form id shared by several stores is resolved first, or refused.
+    if (parseNamespacedId(updated.id, true)) {
+      const resolved = await this._resolveNamespacedId(updated.id, 'update')
+      if (resolved !== updated.id) updated = { ...updated, id: resolved }
+    }
     // The scope-move twin check (#1532 review F5), BEFORE the lock: a live
     // probe must never hold the store lock.
     let scopeMoveChecked = false
@@ -8150,6 +8285,15 @@ export class Plur {
       const byScope = typeof updated.scope === 'string' ? namedBy.filter(e => isScopeWithin(updated.scope, e.scope)) : []
       if (byStamp.length > 0) namedBy = byStamp
       else if (byScope.length > 0) namedBy = byScope
+    }
+    // An id namespaced to a configured store that is not among the writable
+    // url stores — a readonly store, or a path store — is not theirs to
+    // patch (0.21.1 audit, H1). Walking them all sent another store's row
+    // content to whichever writable server answered for the stripped id.
+    const ns = parseNamespacedId(updated.id, true)
+    if (namedBy.length === 0 && ns
+      && (this.config.stores ?? []).some(e => typeof e.scope === 'string' && storePrefix(e.scope) === ns.prefix)) {
+      return null
     }
     for (const entry of (namedBy.length > 0 ? namedBy : writableRemotes)) {
       // Leak guard (#353): remote-resident, explicit update → THROW on a
@@ -8287,6 +8431,9 @@ export class Plur {
     if (targetScope && targetScope !== 'primary' && !scopedEntry) {
       throw new Error(`Cannot pin in scope "${targetScope}": no writable url store is registered for it. Use scope "primary" for the local engram.`)
     }
+    // A namespaced id pins in the one store it names (0.21.1 audit, H1) —
+    // never through another writable store that shares its old prefix.
+    if (!targetScope) id = await this._resolveNamespacedId(id, pinned ? 'pin' : 'unpin')
     if (!targetScope && this._hasUrlStore()) {
       const pre = (await this._loadTargeted([id])).find(e => e.id === id)
       if (pre) {
@@ -8355,7 +8502,7 @@ export class Plur {
     // null rather than a success that did not happen.
     for (const entry of (scopedEntry ? [scopedEntry] : (this.config.stores ?? []))) {
       if (!entry.url || entry.readonly === true) continue
-      const serverId = this._stripRemotePrefix(id, entry.scope)
+      const serverId = scopedEntry ? this._stripForScope(id, entry.scope) : this._stripRemotePrefix(id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       try {
         // Awaited, and the SERVER's engram is returned.
@@ -8612,7 +8759,7 @@ export class Plur {
         ? (await this._loadTargeted([candidateId])).find(r => r.id === candidateId) ?? null
         : entry
           ? await this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
-            .getById(this._stripRemotePrefix(candidateId, entry.scope))
+            .getById(this._stripForScope(candidateId, entry.scope))
           : await this.getById(candidateId)
       // Already-pinned is a no-op re-pin, not a new commitment — it must not
       // be charged twice or it would refuse itself.
@@ -8752,7 +8899,7 @@ export class Plur {
       const entry = (this.config.stores ?? []).find(s => s.url && s.scope === targetScope)
       if (entry) {
         if (entry.readonly === true) throw new Error('Cannot retire engram from readonly store')
-        const serverId = this._stripRemotePrefix(id, entry.scope)
+        const serverId = this._stripForScope(id, entry.scope)
         const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
         const remoteEngram = await driver.getById(serverId)
         if (!remoteEngram) throw new Error(`Engram "${id}" not found in store "${targetScope}"`)
@@ -8790,6 +8937,10 @@ export class Plur {
       // is a genuine disambiguation signal and the ambiguity guard is
       // deliberately skipped: the caller has already said which side they mean.
     }
+
+    // A namespaced id retires in the one store it names (0.21.1 audit, H1):
+    // an old-form id shared by several stores is resolved, or refused.
+    if (!targetScope) id = await this._resolveNamespacedId(id, 'retire')
 
     // Check primary first.
     // Reference-counted retirement (#107): decrement write_count; only
@@ -11051,7 +11202,18 @@ export class Plur {
    * Returns all events across all months for the given engram ID.
    */
   getEngramHistory(engramId: string): import('./history.js').HistoryEvent[] {
-    return readHistoryForEngram(this.paths.root, engramId)
+    // A team engram's events written before 0.21.1 are keyed by its old
+    // three-letter id form; a lookup by its current id returns them too. Not
+    // the reverse: an old-form id was shared by every team store of an org,
+    // so it cannot say which store's new-form events are its own (H1).
+    const ns = parseNamespacedId(engramId, true)
+    if (!ns) return readHistoryForEngram(this.paths.root, engramId)
+    const ids = new Set([engramId])
+    for (const store of this.config.stores ?? []) {
+      if (typeof store.scope !== 'string' || storePrefix(store.scope) !== ns.prefix) continue
+      ids.add(ns.bare.replace(/^(ENG|ABS|META)-/, `$1-${legacyStorePrefix(store.scope)}-`))
+    }
+    return readHistoryForEngram(this.paths.root, ids)
   }
 
   /**
@@ -11066,6 +11228,8 @@ export class Plur {
     llm?: LlmFunction,
   ): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }> {
     this._assertWritable()
+    // A namespaced id evolves the engram in the one store it names (0.21.1 audit, H1).
+    engramId = await this._resolveNamespacedId(engramId, 'evolve')
     const engram = await this.getById(engramId)
     if (!engram) throw new Error(`Engram not found: ${engramId}`)
 
@@ -11420,8 +11584,10 @@ Generate an improved version of the procedure that prevents this failure. Return
     // so they read as external, not as retired.
     const externalPrefixes: string[] = []
     for (const store of this.config.stores ?? []) {
-      const p = storePrefix(store.scope)
-      externalPrefixes.push(`ENG-${p}-`, `ABS-${p}-`, `META-${p}-`)
+      // Both prefix forms: receipts recorded before 0.21.1 carry the old one.
+      for (const p of [storePrefix(store.scope), legacyStorePrefix(store.scope)]) {
+        externalPrefixes.push(`ENG-${p}-`, `ABS-${p}-`, `META-${p}-`)
+      }
     }
 
     return gatherReceipt(this.paths.root, ownIds, packIds, externalPrefixes, { ...options, statements })
@@ -11637,6 +11803,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * may find it still active").
    */
   private async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
+    id = await this._resolveNamespacedId(id, 'retire')
     const stamp = (engram: Engram): void => {
       engram.status = 'retired'
       engram.updated_at = new Date().toISOString()
