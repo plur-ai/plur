@@ -12,6 +12,16 @@ Found by the 0.21.1 Codex/Cursor pre-release check (findings G1 and G2).
 - `plur init --cursor` writes the hooks into `.cursor/hooks.json` of the folder it runs in. The folder the hook process runs in no longer matters, because the decision comes from the payload.
 - The "asked once per session" record is now kept per session and folder. A second PLUR hook asking about a different folder in the same session is no longer silenced. A session already asked before this upgrade is not asked again. A resumed session is asked again about every folder, as before.
 
+### A team save no longer tells the agent to save it again; unscoped CLI recall and inject search the folder's team store (#1578)
+
+Found by the third 0.21.1 pre-release check (findings L9 and L10).
+
+- An unscoped `plur_learn` in a folder mapped to a team scope goes to that team's store, or is queued for it. Its reply still said "Stored at … because no scope was passed … re-learn it with an explicit scope so it reaches the shared store". The engram was already there, and an agent that followed the advice saved it twice. The hint (`scope_hint`) now appears only when the engram stayed on this machine, at a scope no team store holds, while team stores are configured. `plur_learn_batch` and `plur learn` never gave this hint and still do not.
+- An unscoped `plur recall` or `plur inject` run in a folder mapped `plur: on` with a scope now searches that scope's store, as `plur_recall`, `plur_recall_hybrid` and `plur_inject_hybrid` do over MCP (#1566). The CLI uses the same rule as the MCP server, with one input: the folder it runs in. An explicit `--scope` still wins. The home folder and a folder with no scope behave as before. `plur inject --fast` never contacts a store, as before.
+- `plur recall` and `plur inject` no longer contact any remote store (team or personal), not even one set to `dial: always`, from a folder mapped `plur: off` (even with `--scope`, as over MCP) or from a folder you have not decided about yet (unless you pass `--scope`). They still show the memory on this machine.
+- With a broken `folders.yaml`, `plur recall` and `plur inject` said "PLUR memory is paused in every folder until the map is fixed" and then showed memory anyway. They now say that no team memory is used until the map is fixed and that only the memory on this machine was read, name the `plur folders repair` command, and contact no remote store.
+- The editor hooks are unchanged. They already take the folder's scope from the folder map (their own check of the folder the editor sends), not from this rule.
+
 ### Each team store gets its own id prefix, so an engram id names one store (#1575)
 
 Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0.21.1; not caused by #1570.

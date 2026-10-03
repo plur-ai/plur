@@ -1,10 +1,13 @@
 import { existsSync, readSync, realpathSync } from 'fs'
-import { join, posix, relative, sep, isAbsolute, win32 } from 'path'
+import { join, resolve, posix, relative, sep, isAbsolute, win32 } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import {
   resolveFolderPolicy,
+  workspaceFolderScope,
+  folderMapProblem,
   coversHomeOrRoot,
+  type FolderMapProblem,
   folderAskOnce as coreFolderAskOnce,
   type FolderAskOptions as CoreFolderAskOptions,
   type FolderPolicy,
@@ -200,12 +203,9 @@ export function cursorHookFolder(
     return { dir: firstDir, policy: WORKSPACE_UNKNOWN }
   }
 
-  // The scope: every root, none left out, the same rule as workspaceWriteScope.
-  const scopes = new Set(roots.map(r => {
-    const d = r.real === null ? undefined : decided.find(x => x.dir === r.real)
-    return d && !d.broad ? d.policy.scope ?? null : null
-  }))
-  const scope = scopes.size === 1 ? [...scopes][0] : null
+  // The scope: every root, none left out — core's workspaceFolderScope, the
+  // resolver the MCP server's workspaceWriteScope uses.
+  const scope = workspaceFolderScope(inputs, d => hookFolderPolicy(d, flags))
 
   // The output folder: the root the cwd is in (the deepest), else the first
   // root that is not home or above, else the first root.
@@ -214,6 +214,80 @@ export function cursorHookFolder(
   const chosen = inCwd ?? pool[0]
   const { scope: _own, ...rest } = chosen.policy
   return { dir: chosen.dir, policy: scope ? { ...rest, scope } : { ...rest, ...(chosen.policy.scope ? { remoteAllowed: false } : {}) } }
+}
+
+/** Registry key for the folder's scope on a CLI read; no real session id starts with NUL. */
+const CLI_FOLDER_SESSION = '\u0000plur:cli-folder-scope'
+
+/** What an unscoped or scoped CLI read passes to core for its remote leg. */
+export interface FolderReadContext {
+  /** The dialing context: the folder's scope, registered under an internal key. */
+  session?: string
+  /** False when the folder map says no store may be contacted from here. */
+  remote?: false
+}
+
+/**
+ * The remote side of a `plur recall` / `plur inject` run in `cwd` (L10 of the
+ * third 0.21.1 pre-release check; L1 and L2 of the PR #1579 audit). Local
+ * memory is always read and printed; this decides only what leaves the
+ * machine, by the MCP server's rule for the same folder:
+ *
+ *  - a broken folder map: no store is contacted, whatever `--scope` says
+ *    (MCP refuses every memory tool until the map is fixed). One stderr note
+ *    says so and names the repair command;
+ *  - an `off` folder: no store is contacted, whatever `--scope` says (MCP
+ *    refuses an `off` folder outright);
+ *  - an undecided folder: no store is contacted for an unscoped read. An
+ *    explicit `--scope` is the user's own choice for this one command and is
+ *    honoured. The home folder, a folder above it and a filesystem root are
+ *    never undecided here, as over MCP (an answer there would cover every
+ *    folder under it), so a read there is unchanged;
+ *  - an `on` folder: an explicit `--scope` wins in core; otherwise the
+ *    folder's scope (core's workspaceFolderScope, the MCP resolver) is the
+ *    dialing context, registered under an internal key. It is a dialing
+ *    context, not a filter: local results are unchanged.
+ */
+export function folderReadContext(plur: Plur, explicitScope: string | undefined, cwd: string = process.cwd()): FolderReadContext {
+  const root = plur.storageRoot
+  let problem: FolderMapProblem | null
+  try { problem = folderMapProblem(root) } catch (err) {
+    problem = { file: join(root, 'folders.yaml'), problem: `could not be checked (${(err as Error)?.message ?? err})`, fixable: false }
+  }
+  if (problem) return brokenMap(problem, root)
+  let dir: string
+  try { dir = realpathSync.native(cwd) } catch { dir = cwd }
+  let mode: FolderPolicy['mode']
+  try { mode = plur.resolveFolderPolicy(dir).mode } catch (err) {
+    return brokenMap({ file: join(root, 'folders.yaml'), problem: `could not be applied to ${JSON.stringify(dir)} (${(err as Error)?.message ?? err})`, fixable: false }, root)
+  }
+  if (mode === 'off') return { remote: false }
+  if (mode === 'ask') {
+    let wide = false
+    try { wide = coversHomeOrRoot(dir) } catch { wide = false }
+    if (!wide && !explicitScope) return { remote: false }
+    return {}
+  }
+  if (explicitScope) return {}
+  const scope = workspaceFolderScope([cwd], d => plur.resolveFolderPolicy(d))
+  if (scope === null) return {}
+  plur.setSessionScope(scope, { session: CLI_FOLDER_SESSION })
+  return { session: CLI_FOLDER_SESSION }
+}
+
+/** The stderr note for a broken map on a CLI read, and no remote leg. */
+function brokenMap(problem: Pick<FolderMapProblem, 'file' | 'problem' | 'fixable' | 'line'>, root: string): FolderReadContext {
+  const store = resolve(root)
+  const cmd = store === resolve(join(homedir(), '.plur')) ? 'plur folders repair' : `plur --path ${JSON.stringify(store)} folders repair`
+  const fix = problem.fixable
+    ? `Run \`${cmd}\` to see the problem and repair it (it asks first).`
+    : `\`${cmd}\` cannot fix it automatically: fix ${problem.line !== undefined ? `line ${problem.line}` : 'the file'} by hand (\`${cmd}\` re-checks it).`
+  try {
+    process.stderr.write(
+      `[plur] The folder map ${problem.file} ${problem.problem}. Until it is fixed, no team memory is used: ` +
+      `this command read only the memory on this machine. ${fix}\n`)
+  } catch { /* a note never fails the read */ }
+  return { remote: false }
 }
 
 /** True when a SessionStart payload says the session was resumed. */
