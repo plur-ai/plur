@@ -9,7 +9,7 @@
  * and folder. A resume still clears every marker of that session.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, realpathSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, realpathSync, mkdirSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
@@ -52,5 +52,18 @@ describe('the folder question marker is per session and folder (G2)', () => {
     clearFolderAsk(session)
     expect(ask(a)).not.toBeNull()
     expect(ask(b)).not.toBeNull()
+  })
+
+  it('a session asked under 0.21.0 (marker <session>.folder-asked) is not asked again after the upgrade (audit L6 of #1583)', () => {
+    const dir = join(tmpdir(), 'plur-sessions')
+    mkdirSync(dir, { recursive: true })
+    const legacy = join(dir, `${session}.folder-asked`)
+    writeFileSync(legacy, String(Date.now()))
+    expect(ask(a), 'the upgraded hook asked an already-asked session again').toBeNull()
+    expect(ask(b)).toBeNull()
+    // A resume still clears it, and the session is asked again.
+    clearFolderAsk(session)
+    expect(existsSync(legacy)).toBe(false)
+    expect(ask(a)).toContain('no decision for this folder yet')
   })
 })
