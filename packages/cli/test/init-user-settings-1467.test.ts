@@ -92,7 +92,9 @@ describe('plur init writes the prompt hooks and the MCP entry to user settings (
       const user = read(userFile())
       expect(hasPrompt(user)).toBe(true)
       expect(hasRehydrate(user)).toBe(true)
-      expect(user.mcpServers?.plur).toBeDefined()
+      // #1561: the MCP server goes to ~/.claude.json, where Claude Code reads it.
+      expect(user.mcpServers?.plur).toBeUndefined()
+      expect(read(join(home, '.claude.json')).mcpServers?.plur).toBeDefined()
       expect(existsSync(repoFile())).toBe(false)
     })
   }
@@ -103,7 +105,7 @@ describe('plur init writes the prompt hooks and the MCP entry to user settings (
     rmSync(join(home, '.claude'), { recursive: true, force: true })
     init()
     expect(plurCommands(read(userFile()))).toEqual(viaGlobal)
-    expect(read(userFile()).mcpServers?.plur).toBeDefined()
+    expect(read(join(home, '.claude.json')).mcpServers?.plur).toBeDefined()
     expect(existsSync(repoFile())).toBe(false)
   })
 

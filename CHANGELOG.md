@@ -15,6 +15,58 @@ Found by the 0.21.1 pre-release check. The promise above (after a yes with a tea
 - For a repo whose `.plur.yaml` is not trusted, "Yes, without its settings" is now always `--on`. It used to carry the one other configured team scope, which the label did not say. Configured team scopes are listed below the answers instead, without the "use one with --scope" hint, which no answer's code would accept.
 - In opencode, the PLUR MCP server shows the folder question the plugin already asked, with the same codes, instead of a second set. It adds a "not now" bound to the plugin's chat session, so it works in opencode's shell; after "not now" it stops asking for the rest of the session. It finds the plugin among its own parent processes by process id and start time, so a reused process id never matches. When it cannot tell (another host, Windows), it asks its own question, as before. Two chats in one opencode process share one MCP server: it shows the newest chat's codes, and an answer from the other chat's shell is refused and changes nothing.
 
+### `plur init` registers the MCP server where Claude Code reads it; `--token-env` stores only the variable name (#1561)
+
+**Claude Code got PLUR's hooks but none of its tools.** `plur init` wrote the
+MCP server into `~/.claude/settings.json`, and Claude Code does not read MCP
+servers from that file. On a fresh machine `claude mcp list` showed no server,
+while `plur doctor` said it was registered. This was also the case in 0.21.0.
+
+- `plur init` now registers the server in `~/.claude.json`, at user scope. This
+  is the file `claude mcp add --scope user` writes. It does not need the
+  `claude` CLI, and it keeps everything else in that file.
+- An entry an earlier init left in `~/.claude/settings.json` is moved over,
+  with its env and any extra keys. If `~/.claude.json` already has a plur
+  entry, that entry is kept and the old one is only removed. Both files are
+  backed up before they change. Other servers and settings stay as they are.
+  A second run writes nothing. An unreadable `~/.claude.json` is left alone,
+  and init says so.
+- `plur init --project` now also registers the server at user scope in
+  `~/.claude.json`, so PLUR's tools appear in every project, not only this
+  one. Its repo entry stays as the folder's PLUR marker. (Before, the server
+  went only into the repo's settings.json, where Claude Code never read it.)
+- `plur init` exits non-zero when the MCP server could not be registered, and
+  says why: an unreadable or non-object `~/.claude.json`, an `mcpServers`
+  that is not an object, a symlink to a missing file, or Claude Code writing
+  `~/.claude.json` at that moment. If the file changes while init is writing,
+  the edit is re-applied once to the new content; if it changes again, init
+  stops and asks you to run it again. This narrows the window in which an
+  update by Claude Code could be lost; it cannot close it, because Claude Code
+  takes no lock PLUR could share. A byte-order mark is accepted. At most the last three PLUR backups
+  of `~/.claude.json` are kept, each readable only by you.
+- `plur-mcp init` follows the same rules. It used to write `<cwd>/.mcp.json`,
+  or `~/.claude/mcp.json` when that file existed, and Claude Code never reads
+  `~/.claude/mcp.json`. An old entry there is moved to `~/.claude.json`.
+- `plur doctor` now checks where Claude Code actually looks, in Claude Code's
+  own order: the local scope of this folder's git repository in
+  `~/.claude.json`, then a `.mcp.json` in this folder or a parent folder, then
+  user scope. It works from any subfolder of the repository. An entry in
+  settings.json no longer counts. Doctor fails when Claude Code's
+  hooks are installed but the server is not there, and names the fix.
+- Cursor, Codex, Antigravity and Claude Desktop were checked the same way.
+  Each already reads the server where init registers it.
+
+**`plur stores add --token-env VAR` and `plur remote --token-env VAR` wrote the
+token itself into `config.yaml`.** They now write `token_env: VAR`. The token
+is read from the variable when the config loads, so the variable must be set
+wherever PLUR runs. No later rewrite of the stores list writes the value back.
+That includes scopes registered from the same server, which now carry the
+same reference. When the variable is unset, PLUR sends nothing to that store
+(no request without a token): a team save is kept locally and queued, and
+`plur learn`, `plur_learn`, `plur remote`, `plur login --status` and
+`plur_doctor` name the variable to set. Running `--token-env` against a store saved with a literal
+token replaces the literal with the reference.
+
 ### CLI tests never touch the real home or PLUR store (tests only)
 
 Every CLI, mcp and dsh test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH. The run checks whether the real `~/.plur` changed while it ran: in CI (`CI=true`) a change fails the run, locally it is reported as a warning (`PLUR_TEST_HOME_GUARD=fail|warn|off` overrides). In CI this check found mcp and dsh tests writing `server.pid`, `packs/` and `.tensions-purged` into the real home.

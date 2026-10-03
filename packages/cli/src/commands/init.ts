@@ -5,13 +5,13 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { outputInfo } from '../output.js'
+import { outputInfo, outputText } from '../output.js'
 import { CLI_VERSION } from '../version.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import { plurRoot } from '../lib/folder-gate.js'
 import {
   resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize,
-  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile,
+  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile, registerClaudeUserMcp,
   SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES,
 } from '@plur-ai/core'
 import {
@@ -28,6 +28,7 @@ import {
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
+  claudeCodeUserConfigPath,
   hasPlurMcp,
   mergePlurMcp,
   healPlurMcpEntry,
@@ -87,14 +88,19 @@ import {
  * Two things must be in place for plur to work in Claude Code:
  *
  *   1. The `plur` MCP server must be registered, so the `plur_*` tools exist.
+ *      Claude Code reads user-scoped MCP servers from ~/.claude.json only
+ *      (what `claude mcp add --scope user` writes), never from
+ *      ~/.claude/settings.json (#1561).
  *   2. The lifecycle hooks must call the plur CLI to inject relevant engrams
  *      into the conversation. A local shim at ~/.plur/bin/plur-hook is
  *      created to avoid npx overhead and race conditions (#178).
  *
  * Usage:
- *   plur init                 # default: user settings ~/.claude/settings.json, from any folder (#1467)
+ *   plur init                 # default: hooks in user settings ~/.claude/settings.json, from any folder (#1467);
+ *                             #   MCP server in ~/.claude.json at user scope (#1561)
  *   plur init --global        # same as the default
- *   plur init --project       # prompt hooks + MCP in ./.claude/settings.json (the pre-#1467 placement)
+ *   plur init --project       # prompt hooks in ./.claude/settings.json (the pre-#1467 placement), plus
+ *                             #   the project marker entry there; the MCP server still goes to ~/.claude.json
  *   plur init --desktop / --no-desktop        # force / skip Claude Desktop registration
  *   plur init --cursor / --no-cursor          # force / skip Cursor (auto: .cursor/ exists)
  *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
@@ -109,8 +115,8 @@ import {
  *   cd ~/projects/my-app
  *   plur init --domain myapp.core --scope project:my-app
  *
- * This writes the hooks + MCP to user settings and .plur.yaml (scoping) in
- * the folder. Run inside a repo an older init set up, it moves PLUR's hooks
+ * This writes the hooks to user settings, the MCP server to ~/.claude.json and
+ * .plur.yaml (scoping) in the folder. Run inside a repo an older init set up, it moves PLUR's hooks
  * out of the repo's .claude/settings.json and records the repo as `on` in the
  * folder map (#1467).
  */
@@ -961,6 +967,58 @@ function mergeHooks(settings: Settings, hooksMap: Record<string, HookEntry[]>): 
 }
 
 /**
+ * Register the plur MCP server for Claude Code at user scope, in
+ * `~/.claude.json` — the file `claude mcp add --scope user` writes and the only
+ * user-level place Claude Code reads MCP servers (#1561). Written directly, so
+ * it works without the `claude` CLI; every other key in that file (Claude
+ * Code's own state, other servers, per-folder settings) is kept.
+ *
+ * Earlier inits wrote the entry into `~/.claude/settings.json`, which Claude
+ * Code never reads for MCP servers: hooks ran, tools never appeared. An old
+ * entry there is moved here — env and extra keys kept, healed like any other
+ * — unless `~/.claude.json` already has one, which wins; then the old entry is
+ * removed from settings.json, leaving its other servers and keys. Every change
+ * to an existing file is preceded by a timestamped backup beside it, and a
+ * file edited while PLUR was working is left alone (writeWithBackup). An
+ * unparseable `~/.claude.json` is refused and neither file is touched. A run
+ * with nothing to change writes nothing.
+ */
+function installClaudeCodeMcp(settingsPath: string): { ok: boolean; status: string } {
+  const settingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : null
+  const settingsRead = readConfigForWrite(settingsPath)
+  const oldServers = settingsRead.ok ? settingsRead.config.mcpServers : undefined
+  const oldEntry = oldServers && typeof oldServers === 'object' && !Array.isArray(oldServers)
+    ? (oldServers as Record<string, unknown>).plur
+    : undefined
+
+  // One implementation with `plur-mcp init` (#1564 review): concurrent-save
+  // re-apply, BOM, symlink, non-object mcpServers, backup pruning.
+  const r = registerClaudeUserMcp({
+    userPath: claudeCodeUserConfigPath(),
+    entry: () => buildMcpServerEntry() as unknown as Record<string, unknown>,
+    heal: (config) => healPlurMcpEntry(config),
+    legacyEntry: oldEntry,
+    legacyPath: settingsPath,
+  })
+  // The old entry stays until the new one is in place.
+  if (!r.ok || oldEntry === undefined) return { ok: r.ok, status: r.message }
+
+  let status = r.message
+  const next: Record<string, unknown> = { ...settingsRead.config }
+  const servers = { ...(oldServers as Record<string, unknown>) }
+  delete servers.plur
+  if (Object.keys(servers).length > 0) next.mcpServers = servers
+  else delete next.mcpServers
+  try {
+    const backup = writeWithBackup(settingsPath, JSON.stringify(next, null, 2) + '\n', settingsRaw)
+    status += `; removed the unused entry from ${settingsPath}${backup ? ` (backup: ${backup})` : ''}`
+  } catch (err) {
+    status += `; could not remove the unused entry from ${settingsPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
+  }
+  return { ok: true, status }
+}
+
+/**
  * Register the plur MCP server in Claude Desktop's config file (if present
  * or if --desktop is forced). Returns a status string for the report.
  */
@@ -1667,7 +1725,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   let injectionHooksStatus: string
   let enforcementHooksStatus: string
-  let mcpStatus: string
   let repoMigration: string | null = null
 
   if (samePath) {
@@ -1679,23 +1736,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       const refusal = settingsRefusal(enforcementPath)
       injectionHooksStatus = refusal
       enforcementHooksStatus = refusal
-      mcpStatus = refusal
     } else {
       let settings = loaded
       const hadHooks = hasPlurHooks(settings)
-      const mcpAlready = hasPlurMcp(settings)
       const before = JSON.stringify(settings.hooks ?? {})
 
       settings = mergeHooks(settings, mergeHookMaps(PLUR_HOOKS_ENFORCEMENT, PLUR_HOOKS_INJECTION))
       const after = JSON.stringify(settings.hooks ?? {})
 
-      if (!mcpAlready) {
-        mergePlurMcp(settings as Record<string, unknown>)
-        mcpStatus = 'registered'
-      } else {
-        mcpStatus = healPlurMcpEntry(settings as Record<string, unknown>) ?? 'already registered'
-      }
-
+      // The MCP server is NOT registered here: Claude Code does not read MCP
+      // servers from settings.json (#1561). installClaudeCodeMcp below writes
+      // it to ~/.claude.json and moves an old entry out of this file.
       writeSettings(enforcementPath, settings)
       // Only once user settings carry the hooks: a repo an older init set up
       // hands its PLUR hooks over, so none runs twice (#1467).
@@ -1729,7 +1780,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const projectRead = loadSettingsForWrite(injectionPath)
     if (!projectRead.ok) {
       injectionHooksStatus = settingsRefusal(injectionPath)
-      mcpStatus = settingsRefusal(injectionPath)
     } else {
       let projectSettings = projectRead.settings
       const projectHadHooks = hasPlurHooks(projectSettings)
@@ -1738,16 +1788,32 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       projectSettings = mergeHooks(projectSettings, PLUR_HOOKS_INJECTION)
       const projectAfter = JSON.stringify(projectSettings.hooks ?? {})
 
+      // Claude Code does not launch an MCP server from settings.json (#1561);
+      // the entry here is kept because it is this repo's PLUR project marker
+      // (resolveFolderPolicy / isPlurConfigured), which --project has always
+      // written. The server Claude Code launches is the ~/.claude.json one.
       if (!projectMcpAlready) {
         mergePlurMcp(projectSettings as Record<string, unknown>)
-        mcpStatus = 'registered'
       } else {
-        mcpStatus = healPlurMcpEntry(projectSettings as Record<string, unknown>) ?? 'already registered'
+        healPlurMcpEntry(projectSettings as Record<string, unknown>)
       }
 
       writeSettings(injectionPath, projectSettings)
       injectionHooksStatus = hooksStatusFor(projectBefore, projectAfter, projectHadHooks)
     }
+  }
+
+  // Register the MCP server where Claude Code reads it (#1561). Contained:
+  // a refused ~/.claude.json must not abort the rest of the install.
+  let mcpStatus: string
+  let mcpOk: boolean
+  try {
+    const r = installClaudeCodeMcp(enforcementPath)
+    mcpStatus = r.status
+    mcpOk = r.ok
+  } catch (err: unknown) {
+    mcpStatus = `FAILED (${(err as Error)?.message ?? 'unknown error'}) — Claude Code will not see PLUR's tools; fix it and re-run \`plur init\``
+    mcpOk = false
   }
 
   // Install CLAUDE.md section
@@ -1805,7 +1871,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo('', flags)
   outputInfo(samePath
     ? 'Architecture: One global engram store (~/.plur/); all hooks in user settings, gated per folder by the folder map.'
-    : 'Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped (--project).', flags)
+    : 'Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped (--project). ' +
+      'The MCP server is registered at user scope (~/.claude.json), so PLUR\'s tools appear in every project.', flags)
   outputInfo('Multi-project scoping via domain/scope fields on engrams, not separate installs.', flags)
   outputInfo('', flags)
   outputInfo(skillsStatus, flags)
@@ -1883,6 +1950,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputInfo('', flags)
   }
   outputInfo('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.', flags)
+  if (!mcpOk) {
+    // #1564 review L4: the point of init did not happen; scripts must see it.
+    process.exitCode = 1
+    outputText(`Not finished: Claude Code will not see PLUR's tools — the MCP server was ${mcpStatus}`)
+  }
 
   // Telemetry opt-in — ask once, never nag. Runs last so it doesn't interrupt the
   // settings-installation summary above. Non-interactive installs silently write

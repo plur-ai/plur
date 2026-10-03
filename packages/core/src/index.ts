@@ -7,7 +7,7 @@ import { collapseLineTerminators } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
-import { loadConfig } from './config.js'
+import { loadConfig, storeEntryForDisk } from './config.js'
 import { canonicalize } from './project-config.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
@@ -55,7 +55,7 @@ import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity } from './expiry.js'
 import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
-import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY } from './store/remote-store.js'
+import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
 import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
@@ -265,7 +265,7 @@ export {
   NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES,
   type OutboxState, type OutboxVerdict, type OutboxSummary, type OutboxFailureInput,
 } from './outbox-health.js'
-export { RemoteHttpError } from './store/remote-store.js'
+export { RemoteHttpError, TokenEnvUnsetError, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets, detectSensitive, detectPromptInjection, sensitivityCategory } from './secrets.js'
@@ -284,7 +284,8 @@ export { detectPlurStorage, type PlurPaths } from './storage.js'
 // engine does (#840). A second, divergent resolution in the CLI is how
 // `plur reindex-tokens` came to report a false all-clear on a store whose
 // connection lived in config.yaml rather than the environment.
-export { loadConfig } from './config.js'
+export { loadConfig, tokenFromEnv, storeEntryForDisk } from './config.js'
+export { registerClaudeUserMcp, pruneBackups, type RegisterClaudeUserMcpOptions, type RegisterClaudeUserMcpResult } from './claude-user-config.js'
 export { classifyStoreDuplicates, removePrimaryStoreEntries, type IgnoredStoreEntry, type StoreDuplicateReport } from './store-duplicates.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
@@ -619,6 +620,12 @@ export interface RemoteHealth {
   status: 'ok' | 'auth_expired' | 'unreachable'
   /** True only for status 'ok'. */
   ok: boolean
+  /**
+   * Set when the token comes from a `token_env` variable that is unset where
+   * PLUR runs (#1564 review M2): the variable's name. No request was sent;
+   * the fix is to set the variable, not to re-authenticate.
+   */
+  tokenEnvUnset?: string
   /** Human-readable reason when not ok. */
   reason?: string
   /** From the token's JWT `exp` claim, if decodable (opaque keys → null). */
@@ -1101,7 +1108,7 @@ export type LearnDelivery = 'remote' | 'outbox' | 'local'
  * `server_error`: the store answered with another error status.
  * `no_store`: no writable url store is registered for the scope.
  */
-export type OutboxReasonCode = 'auth_rejected' | 'unreachable' | 'server_error' | 'no_store'
+export type OutboxReasonCode = 'auth_rejected' | 'unreachable' | 'server_error' | 'no_store' | 'token_env_unset'
 
 /** Options for {@link Plur.learnRouted} (0.21.1). */
 export interface LearnRoutedOptions {
@@ -2303,6 +2310,13 @@ export class Plur {
     return this._primaryStore
   }
 
+  /** The `token_env` variable configured for this url (+scope), if any (#1561). */
+  private _tokenEnvFor(url: string, scope?: string): string | undefined {
+    const key = normalizeEndpointUrl(url)
+    const stores = (this.config.stores ?? []).filter(s => s.url && normalizeEndpointUrl(s.url) === key && s.token_env)
+    return (stores.find(s => s.scope === scope) ?? stores[0])?.token_env
+  }
+
   /** Get or create a RemoteStore driver for a store config entry. */
   private _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteStore {
     // #394: include the token in the cache key so a ROTATED token produces a FRESH
@@ -2316,7 +2330,10 @@ export class Plur {
       for (const k of this._remoteStores.keys()) {
         if (k !== key && k.startsWith(baseKey + '::')) this._remoteStores.delete(k)
       }
-      driver = new RemoteStore(entry.url, entry.token ?? '', entry.scope)
+      // A `token_env` store whose variable is unset gets a driver that refuses
+      // every request, naming the variable (#1564 review M2).
+      const tokenEnv = entry.token ? undefined : this._tokenEnvFor(entry.url, entry.scope)
+      driver = new RemoteStore(entry.url, entry.token ?? '', entry.scope, tokenEnv ? { tokenEnv } : {})
       this._remoteStores.set(key, driver)
     }
     return driver
@@ -5026,6 +5043,13 @@ export class Plur {
     })
     const status = ob?.last_status
     const queued = `Saved on this machine and queued for ${scope}`
+    const unsetVar = TOKEN_ENV_UNSET_RE.exec(ob?.last_error ?? '')?.[1]
+    if (unsetVar) {
+      return {
+        reason_code: 'token_env_unset',
+        reason: `${queued}: ${tokenEnvUnsetMessage(unsetVar, scope)}; then run \`plur outbox --flush\`.`,
+      }
+    }
     if (v.state === 'needs_action' && (status === 401 || status === 403 || ob?.auth_failed === true)) {
       return {
         reason_code: 'auth_rejected',
@@ -6511,6 +6535,9 @@ export class Plur {
       // Config order preserved — row→entry mapping must be deterministic.
       const dialEntries = dialable.filter(e => selected.has(e) && allowed(e.scope))
       if (dialEntries.length === 0) continue
+      // #1564 review M2: no token because its `token_env` variable is unset —
+      // never dial with an empty Bearer.
+      if (!g.token && !(projectImplicated && rp?.token) && dialEntries.some(e => e.token_env)) continue
       hosts.push({
         url: g.url,
         token: (projectImplicated && rp?.token) ? rp.token : (g.token ?? ''),
@@ -11980,7 +12007,10 @@ Generate an improved version of the procedure that prevents this failure. Return
       } catch (err) {
         if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
       }
+      // A `token_env` entry keeps its reference and never the token it was
+      // resolved to at load (#1561): the typed entries carry that value.
       configData.stores = this.mergeStoresForWriteback(configData.stores, stores, opts?.serverSensitivityScopes)
+        .map(e => storeEntryForDisk(e as unknown as Record<string, unknown>) as unknown as StoreEntry)
       // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
       // truncates in place, and loadConfig turns a parse failure into DEFAULT
       // config — so a crash mid-write silently erases store registrations and
@@ -12089,7 +12119,12 @@ Generate an improved version of the procedure that prevents this failure. Return
   addStore(
     storePath: string,
     scope: string,
-    options?: { shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean },
+    options?: {
+      shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean
+      /** The environment variable `token` was read from (#1561). The entry then
+       *  stores `token_env: <name>` and never the token itself. */
+      tokenEnv?: string
+    },
   ): { status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string } {
     const isRemote = Boolean(options?.url)
 
@@ -12166,9 +12201,13 @@ Generate an improved version of the procedure that prevents this failure. Return
       // it. The old short-circuit returned 'already_registered' and silently kept
       // the stale token — the only workaround was hand-editing config.yaml. Update
       // the token in place instead.
-      if (isRemote && options?.token !== undefined && options.token !== sameEntry.token) {
+      // #1561: the same token now read from a variable (or no longer) is a
+      // change of what config.yaml holds, so it is written like a rotation.
+      const tokenEnv = options?.tokenEnv || undefined
+      const refChanged = isRemote && options?.token !== undefined && tokenEnv !== (sameEntry.token_env || undefined)
+      if (isRemote && options?.token !== undefined && (options.token !== sameEntry.token || refChanged)) {
         const rotated = (config.stores ?? []).map(s =>
-          s === sameEntry ? { ...s, token: options.token } : s,
+          s === sameEntry ? { ...s, token: options.token, token_env: tokenEnv } : s,
         )
         this.persistStores(rotated)
         logger.info(`[plur:addStore] rotated token for ${options.url} (scope "${sameEntry.scope}")`)
@@ -12204,6 +12243,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       ? {
           url:      options!.url!,
           token:    options!.token,
+          ...(options?.tokenEnv ? { token_env: options.tokenEnv } : {}),
           scope,
           shared:   options?.shared   ?? true,    // remote stores are shared by definition
           readonly: options?.readonly ?? false,
@@ -12250,6 +12290,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async addRemoteStore(opts: {
     url: string; token: string; scope: string
+    /** The environment variable `token` was read from: only its name is stored (#1561). */
+    tokenEnv?: string
     shared?: boolean; readonly?: boolean; timeoutMs?: number
     /** Replace an entry that already holds `scope` for a DIFFERENT store.
      *  Never implied: without it such a conflict is refused (code
@@ -12260,6 +12302,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     const { url, token, scope } = opts
     const { status } = this.addStore('', scope, {
       url, token, shared: opts.shared, readonly: opts.readonly,
+      ...(opts.tokenEnv ? { tokenEnv: opts.tokenEnv } : {}),
       ...(opts.overwriteScope === true ? { overwriteScope: true } : {}),
     })
     return { status, scope, ...(username ? { username } : {}), authorised }
@@ -12744,13 +12787,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    * normalized ({@link normalizeEndpointUrl}); the first-configured spelling
    * is reported. `scopes` lists the group's registered scopes in config order.
    */
-  remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[] }> {
-    const groups = new Map<string, { url: string; token?: string; scopes: string[] }>()
+  remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[]; tokenEnv?: string }> {
+    const groups = new Map<string, { url: string; token?: string; scopes: string[]; tokenEnv?: string }>()
     for (const s of this.config.stores ?? []) {
       if (!s.url) continue
       const key = `${normalizeEndpointUrl(s.url)}::${s.token ?? ''}`
       let g = groups.get(key)
       if (!g) { g = { url: s.url, token: s.token, scopes: [] }; groups.set(key, g) }
+      if (!s.token && s.token_env && !g.tokenEnv) g.tokenEnv = s.token_env
       if (!g.scopes.includes(s.scope)) g.scopes.push(s.scope)
     }
     return [...groups.values()]
@@ -12863,7 +12907,12 @@ Generate an improved version of the procedure that prevents this failure. Return
     // of a credential the user rotated hours ago sends them to fix the server.
     this.reloadConfigIfChanged()
     const groups = this.remoteEndpointTokenGroups()
-    return Promise.all(groups.map(async ({ url, token, scopes }) => {
+    return Promise.all(groups.map(async ({ url, token, scopes, tokenEnv }) => {
+      // #1564 review M2: the token's variable is unset — say so, send nothing.
+      if (!token && tokenEnv) {
+        return { url, scopes, status: 'auth_expired' as const, ok: false, tokenEnvUnset: tokenEnv,
+          reason: tokenEnvUnsetMessage(tokenEnv, scopes[0] ?? url) }
+      }
       const exp = decodeJwtExpiry(token)
       const payload = decodeJwtPayload(token)
       const subject = typeof payload?.sub === 'string' ? payload.sub : undefined
@@ -12923,7 +12972,11 @@ Generate an improved version of the procedure that prevents this failure. Return
     const discoveries = await this.discoverRemoteScopes(opts)
     const results = discoveries.map(d => {
       if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
-      const token = this._storesForEndpoint(d.url)[0]?.token
+      // The sibling's token_env travels with its token (#1561), or the new
+      // entry would store the value the reference was resolved to.
+      const sibling = this._storesForEndpoint(d.url)[0]
+      const token = sibling?.token
+      const tokenEnv = sibling?.token_env
       const added: string[] = []
       const already: string[] = []
       const skipped: string[] = []
@@ -12966,7 +13019,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           continue
         }
         try {
-          const { status } = this.addStore('', scope, { url: d.url, token })
+          const { status } = this.addStore('', scope, { url: d.url, token, ...(tokenEnv ? { tokenEnv } : {}) })
           if (status === 'added') added.push(scope)
           else already.push(scope)
         } catch (err) {
@@ -13045,8 +13098,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       const failed = discoveries.filter(d => !d.ok).map(d => d.url)
       throw new Error(`scope "${scope}" is not authorized on any configured remote${failed.length ? ` (could not reach: ${failed.join(', ')})` : ''}`)
     }
-    const token = this._storesForEndpoint(match.url)[0]?.token
-    const { status } = this.addStore('', scope, { url: match.url, token })
+    const sibling = this._storesForEndpoint(match.url)[0]
+    const token = sibling?.token
+    const { status } = this.addStore('', scope, { url: match.url, token, ...(sibling?.token_env ? { tokenEnv: sibling.token_env } : {}) })
     // Persist covers/description/sensitivity so suggestScope activates (#668).
     this.persistScopeMetadata(discoveries)
     // Registering a scope also clears any prior dismissal of it (#647) —

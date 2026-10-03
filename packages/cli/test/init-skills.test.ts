@@ -110,7 +110,8 @@ describe('plur init installs skills', () => {
     expect(out).toMatch(/^Skills: FAILED/m)
     expect(out).toContain('PLUR installed')
     const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf-8'))
-    expect(settings.mcpServers?.plur).toBeDefined()
+    // #1561: the MCP server is registered in ~/.claude.json, where Claude Code reads it.
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8')).mcpServers?.plur).toBeDefined()
     expect(settings.hooks?.UserPromptSubmit).toBeDefined()
   })
 })

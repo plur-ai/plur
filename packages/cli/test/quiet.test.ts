@@ -167,6 +167,7 @@ describe('doctor --quiet (#730)', () => {
       }],
       hooksInstalled: false,
       mcpRegistered: true,
+      claudeCodeMcp: { registered: true, scope: 'user', path: '/tmp/.claude.json', legacySettingsEntry: false },
       datacoreCollision: false,
       staleNpxHooks: false,
       staleNpxMcp: false,

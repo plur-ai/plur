@@ -33,10 +33,17 @@ describe('plur doctor', () => {
     }
   }
 
+  /**
+   * A Claude Code install as `plur init` leaves it: hooks (and everything
+   * else) in ~/.claude/settings.json, the MCP servers in ~/.claude.json —
+   * Claude Code reads user-scoped MCP servers only from there (#1561).
+   */
   function writeGlobalSettings(content: object): void {
     const dir = join(home, '.claude')
     mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'settings.json'), JSON.stringify(content, null, 2))
+    const { mcpServers, ...rest } = content as { mcpServers?: unknown }
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify(rest, null, 2))
+    if (mcpServers !== undefined) writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers }, null, 2))
   }
 
   it('reports fail and exits non-zero on a fresh empty environment', () => {
