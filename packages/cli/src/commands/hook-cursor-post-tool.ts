@@ -74,7 +74,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
   // Silent unless the folder map says on (#1347).
   const folder = cursorHookFolder(input, flags)
-  if (folder.policy.mode !== 'on') return
+  if (folder.policy.mode !== 'on' || !folder.dir) return
+  const dir = folder.dir
   const conversationId = cursorConversationId(input)
   if (!conversationId) return
 
@@ -89,6 +90,6 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   if (!isReminderDue(conversationId)) return
 
   touchReminder(conversationId)
-  writeContextRule(REMINDER_TEXT, cursorReminderRulePath(folder.dir))
+  writeContextRule(REMINDER_TEXT, cursorReminderRulePath(dir))
   process.stdout.write(JSON.stringify({ additional_context: REMINDER_TEXT }))
 }

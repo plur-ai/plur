@@ -1,5 +1,6 @@
-import { existsSync, readSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readSync, realpathSync } from 'fs'
+import { join, posix, relative, sep, isAbsolute, win32 } from 'path'
+import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import {
   resolveFolderPolicy,
@@ -78,45 +79,141 @@ export function hookFolderOn(dir: string, flags?: { path?: string }): boolean {
 
 
 /**
- * The folder a Cursor hook decides for, and its policy (G1, 0.21.1
- * Codex/Cursor pre-release check). Cursor's payload carries no `cwd`, only
- * `workspace_roots`; the hook process runs wherever Cursor starts it (a
- * plugin's folder, for hooks loaded from a plugin), so `process.cwd()` named
- * the wrong folder: PLUR asked about the plugin folder, recorded the answer
- * for it and wrote its rule file there.
+ * A Cursor workspace root (or payload `cwd`) as a local folder path, or null
+ * when it is not one (audit L2 of #1583). Cursor documents folder paths; a
+ * `file://` URI is converted with fileURLToPath (Windows drive letters
+ * included; a URI naming another host is not local and gives null). Anything
+ * that is not an absolute path is unusable: a relative path would be read
+ * against wherever the hook process happens to run.
+ */
+export function cursorRootPath(raw: unknown, windows: boolean = process.platform === 'win32'): string | null {
+  if (typeof raw !== 'string' || raw.length === 0) return null
+  if (/^file:/i.test(raw)) {
+    try {
+      // The options argument exists from Node 20.13 / 22.1; older Nodes use
+      // the running platform, which is the right answer outside tests.
+      return (fileURLToPath as (u: string, o?: { windows?: boolean }) => string)(raw.replace(/^file:/i, 'file:'), { windows })
+    } catch {
+      return null
+    }
+  }
+  if (/^[a-z][a-z0-9+.-]+:\/\//i.test(raw)) return null // another scheme: not a local folder
+  return (windows ? win32 : posix).isAbsolute(raw) && (!windows || /^([a-z]:[\\/]|[\\/]{2})/i.test(raw)) ? raw : null
+}
+
+/** What a Cursor hook decides for the workspace (see {@link cursorHookFolder}). */
+export interface CursorWorkspaceDecision {
+  /**
+   * The workspace root hook output belongs to (rule files, the question).
+   * Null only when the decision is off and there is no usable root.
+   */
+  dir: string | null
+  /** The workspace's policy. Its `scope` is set only when every root agrees on it. */
+  policy: FolderPolicy
+}
+
+/** Off, decided here because the workspace could not be read: no scope, no question, no memory. */
+const WORKSPACE_UNKNOWN: FolderPolicy = { mode: 'off', remoteAllowed: false, source: 'default' }
+
+/** True for the home folder, a folder above it or a filesystem root (an error counts as true). */
+function coversHome(dir: string): boolean {
+  try { return coversHomeOrRoot(dir) } catch { return true }
+}
+
+/** True when `dir` is `root` or inside it. */
+function within(dir: string, root: string): boolean {
+  const rel = relative(root, dir)
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+}
+
+/**
+ * What a Cursor hook decides for the workspace (G1 of the 0.21.1
+ * Codex/Cursor pre-release check; the audit of #1583). Cursor runs a hook
+ * wherever it likes (a plugin's folder, for hooks loaded from a plugin) and
+ * names the workspace in `workspace_roots`; some hooks also send the tool's
+ * `cwd`. Every Cursor hook calls this, so they all reach the same decision
+ * for the same workspace, and it is the MCP server's decision
+ * (workspaceWriteScope and the folder gate in packages/mcp):
  *
- * The folder is the payload's `cwd` when it has one; else the workspace
- * roots, all of them; else the process folder, as before. With several roots
- * the rule is the MCP server's: any `off` root turns memory off (and wins over
- * everything), the first undecided root is asked about, and a scope applies
- * only when every root is on with that same scope. A root that is the home
- * folder, a filesystem root or above home is never asked about (an answer
- * there would cover every folder under it), unless every root is one.
- * `dir` is the folder hook output (rule files, the question) belongs to.
+ *  - The inputs are the workspace roots. Only when the payload has no
+ *    `workspace_roots` key: its `cwd`, else (no `cwd` either) the hook
+ *    process folder, as before.
+ *  - Roots that are present but unusable — not a list, an empty list, an
+ *    entry that is not an absolute path or a local `file://` URI — fail
+ *    closed: off, so no scope, no question and no memory. Never the process
+ *    folder: that is where Cursor started the hook, not the workspace.
+ *  - Each input is realpath-resolved before the folder map and `.plur.yaml`
+ *    are read, so a link takes the decision of the folder it points at.
+ *  - Off wins: any root off — including a root that does not exist (an
+ *    unmounted disk), checked by its path as given — or a payload `cwd` that
+ *    is off, makes the whole workspace off, for every hook.
+ *  - The question is about the first undecided root that exists and is not
+ *    the home folder, a folder above it or a filesystem root (an answer there
+ *    would cover every folder under it). With no such root, an undecided
+ *    workspace is off (asked about nothing, nothing loaded).
+ *  - Otherwise memory is on. The scope applies only when every root exists,
+ *    is not home or above, and is on with that same scope; else no scope.
+ *  - A payload `cwd` never decides by itself when there are roots: it picks
+ *    which root the output belongs to (the root it is in), nothing more.
  */
 export function cursorHookFolder(
   input: Record<string, unknown> | null | undefined,
   flags?: { path?: string },
-): { dir: string; policy: FolderPolicy } {
-  const cwd = input?.cwd
-  if (typeof cwd === 'string' && cwd && existsSync(cwd)) return { dir: cwd, policy: hookFolderPolicy(cwd, flags) }
-  const raw = Array.isArray(input?.workspace_roots) ? (input!.workspace_roots as unknown[]) : []
-  const roots = [...new Set(raw.filter((r): r is string => typeof r === 'string' && r.length > 0 && existsSync(r)))]
-  if (roots.length === 0) return { dir: process.cwd(), policy: hookFolderPolicy(process.cwd(), flags) }
-  if (roots.length === 1) return { dir: roots[0], policy: hookFolderPolicy(roots[0], flags) }
-  const decided = roots.map(dir => ({ dir, policy: hookFolderPolicy(dir, flags) }))
-  const off = decided.find(d => d.policy.mode === 'off')
-  if (off) return off
-  const coversHome = (dir: string): boolean => { try { return coversHomeOrRoot(dir) } catch { return true } }
-  const askable = decided.filter(d => !coversHome(d.dir))
-  const considered = askable.length > 0 ? askable : decided
-  const ask = considered.find(d => d.policy.mode === 'ask')
-  if (ask) return ask
-  const scopes = new Set(decided.map(d => d.policy.scope))
-  const first = considered[0]
-  if (scopes.size === 1 && first.policy.scope) return first
-  const { scope: _dropped, ...rest } = first.policy
-  return { dir: first.dir, policy: rest as FolderPolicy }
+): CursorWorkspaceDecision {
+  const closed: CursorWorkspaceDecision = { dir: null, policy: WORKSPACE_UNKNOWN }
+  const rawCwd = input?.cwd
+  const hasCwd = rawCwd !== undefined && rawCwd !== null && rawCwd !== ''
+  const cwd = hasCwd ? cursorRootPath(rawCwd) : null
+  if (hasCwd && cwd === null) return closed
+
+  let inputs: string[]
+  if (input && Object.prototype.hasOwnProperty.call(input, 'workspace_roots')) {
+    const raw = input.workspace_roots
+    if (!Array.isArray(raw) || raw.length === 0) return closed
+    const paths = raw.map(r => cursorRootPath(r))
+    if (paths.some(p => p === null)) return closed
+    inputs = [...new Set(paths as string[])]
+  } else {
+    inputs = [cwd ?? process.cwd()]
+  }
+
+  const real = (p: string): string | null => { try { return realpathSync.native(p) } catch { return null } }
+  const roots = inputs.map(given => ({ given, real: real(given) }))
+  const existing = roots.filter((r): r is { given: string; real: string } => r.real !== null)
+  const cwdReal = cwd ? real(cwd) ?? cwd : null
+
+  // Off wins, on every root (missing ones by their given path) and the cwd.
+  const firstDir = existing[0]?.real ?? null
+  for (const p of [...roots.map(r => r.real ?? r.given), ...(cwdReal ? [cwdReal] : [])]) {
+    const policy = hookFolderPolicy(p, flags)
+    if (policy.mode === 'off') return { dir: firstDir, policy }
+  }
+
+  const decided = existing.map(r => ({ dir: r.real, policy: hookFolderPolicy(r.real, flags), broad: coversHome(r.real) }))
+  const askable = decided.filter(d => !d.broad)
+  const ask = askable.find(d => d.policy.mode === 'ask')
+  if (ask) return { dir: ask.dir, policy: ask.policy }
+  // Every root asked about is on. With none to ask about (only home-or-above
+  // roots, or none that exist), memory is on only when every root is: an
+  // undecided home folder is not a decision to turn memory on.
+  if (askable.length === 0 && (decided.length === 0 || decided.some(d => d.policy.mode !== 'on'))) {
+    return { dir: firstDir, policy: WORKSPACE_UNKNOWN }
+  }
+
+  // The scope: every root, none left out, the same rule as workspaceWriteScope.
+  const scopes = new Set(roots.map(r => {
+    const d = r.real === null ? undefined : decided.find(x => x.dir === r.real)
+    return d && !d.broad ? d.policy.scope ?? null : null
+  }))
+  const scope = scopes.size === 1 ? [...scopes][0] : null
+
+  // The output folder: the root the cwd is in (the deepest), else the first
+  // root that is not home or above, else the first root.
+  const pool = askable.length > 0 ? askable : decided
+  const inCwd = cwdReal ? pool.filter(d => within(cwdReal, d.dir)).sort((a, b) => b.dir.length - a.dir.length)[0] : undefined
+  const chosen = inCwd ?? pool[0]
+  const { scope: _own, ...rest } = chosen.policy
+  return { dir: chosen.dir, policy: scope ? { ...rest, scope } : { ...rest, ...(chosen.policy.scope ? { remoteAllowed: false } : {}) } }
 }
 
 /** True when a SessionStart payload says the session was resumed. */

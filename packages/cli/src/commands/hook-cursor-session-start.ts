@@ -54,12 +54,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // #1347: the folder map decides. off is silent; ask puts the one question
   // where Cursor reads it (the rule file, plus additional_context) instead of
   // memories, and marks nothing, so the guard stays silent too.
-  // G1: the workspace (payload cwd, else workspace_roots), not this
-  // process's folder — see cursorHookFolder.
+  // G1: the workspace (workspace_roots), not this process's folder — the
+  // same decision every Cursor hook reaches, see cursorHookFolder.
   const { dir, policy } = cursorHookFolder(input, flags)
+  if (dir && policy.mode !== 'on') removeStaleAsk(cursorContextRulePath(dir))
+  if (policy.mode === 'off' || !dir) return
   const rulePath = cursorContextRulePath(dir)
-  if (policy.mode !== 'on') removeStaleAsk(rulePath)
-  if (policy.mode === 'off') return
 
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't track this session — stay silent rather than guess

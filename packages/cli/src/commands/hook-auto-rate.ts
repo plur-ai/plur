@@ -62,6 +62,8 @@ interface Turn {
   sessionId: string
   reply: string
   cwd?: string
+  /** Cursor: the scope decided for the whole workspace; null for none. */
+  workspaceScope?: string | null
 }
 
 function str(v: unknown): string {
@@ -136,15 +138,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (turn.cwd && !hookFolderOn(turn.cwd, flags)) return
     } else if (editor === 'cursor') {
       // Cursor sends no cwd, only workspace_roots, and runs the hook wherever
-      // it likes (a plugin's folder): decide for the workspace (G1).
+      // it likes (a plugin's folder): decide for the workspace (G1). The
+      // worker gets the scope decided for the whole workspace, or an explicit
+      // none, so it never re-decides from one root (audit M1 of #1583).
       const folder = cursorHookFolder(input, flags)
-      if (folder.policy.mode !== 'on') return
+      if (folder.policy.mode !== 'on' || !folder.dir) return
       turn.cwd = folder.dir
+      turn.workspaceScope = folder.policy.scope ?? null
     } else if (!hookFolderOn(payloadDir({ cwd: turn.cwd }), flags)) {
       return
     }
 
-    const queued = enqueueTurn({ editor, sessionId: turn.sessionId, reply: turn.reply, cwd: turn.cwd })
+    const queued = enqueueTurn({ editor, sessionId: turn.sessionId, reply: turn.reply, cwd: turn.cwd, workspaceScope: turn.workspaceScope })
     if (!queued && !hasLeftoverBatches(editor, turn.sessionId)) return
     // If the worker cannot be started, do the work inline rather than drop
     // it — the pre-worker behaviour, bounded by the watchdog above.

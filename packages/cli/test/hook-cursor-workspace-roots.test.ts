@@ -83,7 +83,7 @@ function hook(name: string | string[], input: Record<string, unknown>, cwd = plu
 /**
  * afterAgentResponse with auto-capture on, for `roots`. Returns undefined when
  * the learned line did not reach the store, else the scope it was stored
- * under (null for none).
+ * under (null for none: `global`, the local store).
  */
 function captureScope(statement: string, roots: string[] = [ws]): string | null | undefined {
   const tmp = join(base, 'tmp')
@@ -102,7 +102,8 @@ function captureScope(statement: string, roots: string[] = [ws]): string | null 
   const list = (Array.isArray(doc) ? doc : (doc as { engrams?: unknown[] } | null)?.engrams ?? []) as Array<Record<string, unknown>>
   const hit = list.find(e => e?.statement === statement)
   if (!hit) return undefined
-  return typeof hit.scope === 'string' ? hit.scope : null
+  // learn() without a scope stores `global`: the local store, no team scope.
+  return typeof hit.scope === 'string' && hit.scope !== 'global' ? hit.scope : null
 }
 
 function captured(statement: string): boolean {

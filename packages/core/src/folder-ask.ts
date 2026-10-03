@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, rmSync, readdirSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync, readdirSync, existsSync } from 'fs'
 import { createHash } from 'crypto'
 import { basename, dirname, join, resolve } from 'path'
 import { homedir, tmpdir } from 'os'
@@ -61,12 +61,16 @@ function askedPath(sessionId: string, folder: string): string {
 
 /**
  * Record that this session has been asked about this folder. True the first
- * time, false after. An unwritable temp dir answers true (the question may
+ * time, false after (and false for a session the previous version asked). An unwritable temp dir answers true (the question may
  * then repeat, which is noisy but honest; never asking would hide the
  * folder's state).
  */
 function claimAsk(sessionId: string, folder: string): boolean {
   const path = askedPath(sessionId, folder)
+  // A session already asked by 0.21.0, whose marker was keyed by the session
+  // alone (`<session>.folder-asked`), is not asked again after the upgrade
+  // (audit L6 of #1583). A resume clears that marker too (clearFolderAsk).
+  if (existsSync(join(dirname(path), `${safeSessionKey(sessionId)}${ASKED_SUFFIX}`))) return false
   try {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, String(Date.now()), { flag: 'wx' })

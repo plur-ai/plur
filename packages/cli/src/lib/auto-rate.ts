@@ -163,6 +163,12 @@ export interface AutoRateOutcome {
 interface QueuedTurn {
   reply: string
   cwd?: string
+  /**
+   * The scope already decided for the whole workspace (Cursor, audit M1 of
+   * #1583): a string, or null for no scope. Absent (other editors, and lines
+   * queued by an older version): decided from `cwd` alone, as before.
+   */
+  workspaceScope?: string | null
 }
 
 /**
@@ -170,14 +176,18 @@ interface QueuedTurn {
  * writes nothing) when there is nothing to do — nothing pending, capture off.
  * Cheap: a couple of small file reads and one append.
  */
-export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; reply: string; cwd?: string }): boolean {
+export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; reply: string; cwd?: string; workspaceScope?: string | null }): boolean {
   try {
     const reply = typeof opts.reply === 'string' ? opts.reply : ''
     if (!reply.trim() || !opts.sessionId) return false
     const pending = autoRateEnabled() ? pendingInjected(opts.editor, opts.sessionId) : []
     if (pending.length === 0 && !autoCaptureEnabled()) return false
     if (!ensureSessionDir(DIR)) return false
-    const line = JSON.stringify({ reply, ...(opts.cwd ? { cwd: opts.cwd } : {}) } satisfies QueuedTurn) + '\n'
+    const line = JSON.stringify({
+      reply,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      ...(opts.workspaceScope !== undefined ? { workspaceScope: opts.workspaceScope } : {}),
+    } satisfies QueuedTurn) + '\n'
     appendFileSync(fileFor(opts.editor, opts.sessionId, 'queue'), line, { mode: 0o600 })
     return true
   } catch {
@@ -336,7 +346,7 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
           let turn: QueuedTurn
           try { turn = JSON.parse(line) as QueuedTurn } catch { continue }
           plur ??= createPlur(flags)
-          const out = await autoRateTurn({ editor, sessionId, reply: turn.reply, flags, cwd: turn.cwd, plur, captureDeadline })
+          const out = await autoRateTurn({ editor, sessionId, reply: turn.reply, flags, cwd: turn.cwd, ...(turn.workspaceScope !== undefined ? { workspaceScope: turn.workspaceScope } : {}), plur, captureDeadline })
           total.rated.push(...out.rated)
           total.captured += out.captured
         }
@@ -364,6 +374,12 @@ export async function autoRateTurn(opts: {
   flags: GlobalFlags
   /** Project root for `.plur.yaml` scope/domain on captured learnings. */
   cwd?: string
+  /**
+   * The scope the hook already decided for the whole workspace (null: none).
+   * When given, a capture never uses any other scope: the folder's own scope
+   * is kept only when it is this one (audit M1 of #1583).
+   */
+  workspaceScope?: string | null
   /** Reuse an open store (the worker handles several turns with one). */
   plur?: ReturnType<typeof createPlur>
   /** When the run's capture budget ends (epoch ms); shared by every turn a worker drains. */
@@ -446,11 +462,14 @@ export async function autoRateTurn(opts: {
         const hint = configPath ? readProjectConfigFromPath(configPath) : {}
         const trusted = configPath !== null && plur.isDirectoryTrusted(dirname(configPath))
         const mapScope = policy.scope && policy.scope !== hint.scope ? policy.scope : undefined
-        const project: { scope?: string; domain?: string } = policy.mode === 'off'
+        const own: { scope?: string; domain?: string } = policy.mode === 'off'
           ? {}
           : trusted
             ? { ...(policy.scope ? { scope: policy.scope } : {}), ...(hint.domain ? { domain: hint.domain } : {}) }
             : (mapScope ? { scope: mapScope } : {})
+        // The workspace decision narrows, never widens: roots that disagree
+        // (or one with no scope) mean no scope, whatever this one folder says.
+        const project = opts.workspaceScope === undefined || own.scope === (opts.workspaceScope ?? undefined) ? own : {}
         if (policy.mode === 'off') statements.length = 0
         const base = {
           type: 'behavioral' as const,
