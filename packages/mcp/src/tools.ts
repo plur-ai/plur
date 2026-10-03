@@ -857,6 +857,13 @@ export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
  */
 export interface FolderScopeContext {
   resolve(): Promise<{ scope: string | null; key: string } | null>
+  /**
+   * The same answer for the workspace the folder gate admitted this call in
+   * (#1566), with no new roots request. Reads use it; writes use resolve(),
+   * which re-reads the roots at the moment the write is admitted. Absent
+   * when the call was not gated: reads then use resolve().
+   */
+  admitted?(): { scope: string | null; key: string } | null
 }
 
 function _folderContext(args: Record<string, unknown>): FolderScopeContext | null {
@@ -982,7 +989,7 @@ function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
  * Without a FolderScopeContext (the tools used outside the server) the
  * session alone decides, as before.
  */
-async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined): Promise<string> {
+async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false): Promise<string> {
   const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
   const chosen = base !== undefined ? base : (explicit ?? _implicitSessionId())
   const ctx = _folderContext(args)
@@ -990,7 +997,7 @@ async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: s
   // An id this process never registered has no default (Codex path 6).
   const session = chosen !== undefined && _knownSession(chosen, plur, true) ? chosen : NO_SESSION
   let ws: { scope: string | null; key: string } | null = null
-  try { ws = await ctx.resolve() } catch { ws = null }
+  try { ws = read && ctx.admitted ? ctx.admitted() : await ctx.resolve() } catch { ws = null }
   if (session !== NO_SESSION) {
     const record = _sessionTelemetry.get(session)
     const own = plur.getSessionScope({ session })
@@ -1015,10 +1022,13 @@ async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: s
  * every workspace input agrees on one scope — else no scope. So an unscoped
  * recall in a team folder dials that team's store exactly as a session
  * started there would, with or without plur_session_start. An explicit
- * `scope` on the call still wins in core.
+ * `scope` on the call still wins in core. The workspace is the one the folder
+ * gate admitted the call in (FolderScopeContext.admitted).
  */
 function _readSession(args: Record<string, unknown>, plur: Plur): Promise<string> {
-  return _writeSession(args, plur)
+  // The workspace the gate admitted the call in, not a fresh roots request:
+  // a read is answered in the workspace it was admitted in.
+  return _writeSession(args, plur, undefined, true)
 }
 
 /**
