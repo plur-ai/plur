@@ -124,8 +124,9 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       // changes) establishes the remote dialing org context when no explicit
       // scope filter is passed. Same rule as writes (E7, formal R2): not
       // exactly one open session and no id → NO_SESSION, never the process
-      // slot the last-started session owns.
-      session: _resolveWriteSession(args),
+      // slot the last-started session owns. #1566: with no session default
+      // of its own, the workspace's scope — the one resolver writes use.
+      session: await _readSession(args, plur),
     })
     const response: Record<string, unknown> = {
       results: results.map(e => {
@@ -179,8 +180,9 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     remote_timeout_ms: 2000, // MCP recall remote budget (#776)
     // #243: session default scope (incl. mid-session plur_session_scope
     // changes) establishes the remote dialing org context when no explicit
-    // scope filter is passed. Same rule as writes (E7, formal R2).
-    session: _resolveWriteSession(args),
+    // scope filter is passed. Same rule as writes (E7, formal R2), and the
+    // same workspace scope when the session has no default (#1566).
+    session: await _readSession(args, plur),
   })
   // Opt-in, content-free engagement counter (default-off; no query text).
   recordTelemetry('recall')
@@ -1003,6 +1005,20 @@ async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: s
   const key = FOLDER_SCOPE_SESSION_PREFIX + scope
   plur.setSessionScope(scope, { session: key })
   return key
+}
+
+/**
+ * The session whose default scope sets the remote dialing context of an
+ * unscoped READ (#1566, the read-side twin of #1562). The same rule as
+ * `_writeSession`: a session's own default while it holds, else the
+ * workspace's scope from the one resolver (workspaceWriteScope) — only when
+ * every workspace input agrees on one scope — else no scope. So an unscoped
+ * recall in a team folder dials that team's store exactly as a session
+ * started there would, with or without plur_session_start. An explicit
+ * `scope` on the call still wins in core.
+ */
+function _readSession(args: Record<string, unknown>, plur: Plur): Promise<string> {
+  return _writeSession(args, plur)
 }
 
 /**
@@ -2133,6 +2149,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: args.scope as string | undefined,
           source: 'inject',
           session_id,
+          // #1566: the dialing context follows the same rule as writes — the
+          // workspace's scope when the session has no default of its own.
+          // session_id above stays the caller's for attribution.
+          dial_session: await _readSession(args, plur),
         })
         _recordInjectionTelemetry(session_id, result.injected_packs)
         const response: Record<string, unknown> = {
