@@ -209,6 +209,21 @@ describe('one server holding a writable and a readonly team store (H1, readonly 
     expect(sa.feedbackBodies.length).toBe(0)
   })
 
+  it('the BARE server id of the readonly row is refused too, never acted on through the writable store', async () => {
+    const { client } = await oneServer(true)
+    for (const [tool, args] of [
+      ['plur_forget', { id: ROW }],
+      ['plur_feedback', { id: ROW, signal: 'negative' }],
+      ['plur_pin', { id: ROW }],
+    ] as const) {
+      const res = await call(client, tool, args)
+      expect(res.success === true && !res._isError, `${tool}: ${JSON.stringify(res)}`).toBe(false)
+    }
+    expect(sa.getEngram(ROW)?.status).toBe('active')
+    expect((sa.getEngram(ROW)?.data as any).pinned ?? false).toBe(false)
+    expect(sa.feedbackBodies.length).toBe(0)
+  })
+
   it('the old three-letter form of the readonly row\'s id is refused too', async () => {
     const { client } = await oneServer(true)
     const res = await call(client, 'plur_forget', { id: legacyId(ROW, OPS) })
