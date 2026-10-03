@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.21.1
+
+You decide where your agents remember.
+
+- Folder map in MCP and opencode
+- New folders ask first
+- plur folders repair
+- See which memories a reply used
 
 ### Each team store gets its own id prefix, so an engram id names one store (#1575)
 
@@ -49,7 +56,7 @@ Found by the 0.21.1 pre-release check (finding F3, and low L1).
 - This reverses the id form of #1119, which showed the bare id because, at the time, forget refused the namespaced one. Forget, feedback and pin route a namespaced id to its store, so that reason is gone.
 - The near-duplicate report of a team save no longer lists the engram just saved (similarity 1.0). With a local engram of the same bare id, it no longer leaves that engram out instead.
 
-### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562)
+### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562, #1563)
 
 Found by the 0.21.1 pre-release check. The promise above (after a yes with a team scope, or in a folder mapped to a scope, an unscoped save goes to that scope) held over MCP only after `plur_session_start`. Without it, `plur_learn` with no scope was saved in `global` on this machine and never reached the team store.
 
@@ -66,7 +73,7 @@ Found by the 0.21.1 pre-release check. The promise above (after a yes with a tea
 
 A row a team store returned without `tags` made `plur_session_start`, `plur_inject` and `plur_inject_hybrid` fail with "engram.tags is not iterable" for everyone using that scope; one without `activation` made hybrid recall fail. Such rows now load with `tags: []` and a fresh activation record, as a local engram gets.
 
-### `plur init` registers the MCP server where Claude Code reads it; `--token-env` stores only the variable name (#1561)
+### `plur init` registers the MCP server where Claude Code reads it; `--token-env` stores only the variable name (#1561, #1564)
 
 **Claude Code got PLUR's hooks but none of its tools.** `plur init` wrote the
 MCP server into `~/.claude/settings.json`, and Claude Code does not read MCP
@@ -122,7 +129,7 @@ token replaces the literal with the reference.
 
 Every CLI, mcp and dsh test file now runs with a temp HOME, USERPROFILE and XDG_CONFIG_HOME and no inherited PLUR_PATH. The run checks whether the real `~/.plur` changed while it ran: in CI (`CI=true`) a change fails the run, locally it is reported as a warning (`PLUR_TEST_HOME_GUARD=fail|warn|off` overrides). In CI this check found mcp and dsh tests writing `server.pid`, `packs/` and `.tensions-purged` into the real home.
 
-### Instruction upgrades respect lists, links, edits and look-alike learnings
+### Instruction upgrades respect lists, links, edits and look-alike learnings (#1557)
 
 These follow up #1520 from its third audit.
 
@@ -148,7 +155,7 @@ These follow up #1520 from its third audit.
   core and Hermes. "Memory: recalled 3 times faster…" is still saved as a
   learning, and "Memory — none recalled" is not.
 
-### A team save is never lost while the server hangs, and a slow save is not reported as failed (#1531)
+### A team save is never lost while the server hangs, and a slow save is not reported as failed (#1531, #1532, #1558)
 
 **Release blocker for 0.21.1.** `plur learn` raced the whole save against a
 5-second timer and exited as soon as the timer won. Two things went wrong:
@@ -259,7 +266,7 @@ A store-unique id format is planned for 0.22.
   team store rejects the token, use the MCP `plur_forget` with
   `scope: "primary"`.
 
-### A broken folders.yaml says what is wrong, and `plur folders repair` fixes it (#1526)
+### A broken folders.yaml says what is wrong, and `plur folders repair` fixes it (#1526, #1530)
 
 When `~/.plur/folders.yaml` is broken, PLUR pauses memory, which is the safe
 direction. Until now the messages said only that the file was broken, or gave
@@ -331,7 +338,7 @@ such a file. Now the hooks and the plugin refuse every file the MCP server
 refuses: such a map gives `ask` with no memory, and `plur folders set` will not
 write over it until it is repaired.
 
-### The Claude Code memory check speaks up only after a correction, preference or decision
+### The Claude Code memory check speaks up only after a correction, preference or decision (#1522)
 
 The Stop-hook memory check used to fire after every third response, forcing an
 extra turn that usually ended in a bare "ok". It now reads the last message you
@@ -429,7 +436,7 @@ the MCP server's folder gate applies.
 The question itself moved from the CLI into core (`folderAskOnce`,
 `sessionSettings`), so the hooks and the plugin share one implementation.
 
-### The MCP server asks the folder question in a folder you have not decided about (#1525)
+### The MCP server asks the folder question in a folder you have not decided about (#1525, #1529)
 
 Most PLUR use is MCP calls, and until now the MCP server treated an undecided
 folder (folder map `ask`) as `on`: an agent that called `plur_learn` or
@@ -563,7 +570,7 @@ one that is not a function ("Plugin export is not a function"), so the whole
 plugin failed to load. The constant now lives in its own module, and a test
 keeps the entry module to functions only.
 
-### A recall in your personal scope now reads your personal remote store (#1515)
+### A recall in your personal scope now reads your personal remote store (#1515, #1528)
 
 **Personal remote memory is no longer write-only.** With a remote store
 configured for a personal scope (for example `scope: user:acme:me`),
