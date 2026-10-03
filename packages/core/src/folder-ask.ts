@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync, rmSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync, readdirSync } from 'fs'
+import { createHash } from 'crypto'
 import { basename, dirname, join, resolve } from 'path'
 import { homedir, tmpdir } from 'os'
 import { loadConfig } from './config.js'
@@ -42,17 +43,30 @@ export function sessionSettings(
   }
 }
 
-function askedPath(sessionId: string): string {
-  return join(tmpdir(), 'plur-sessions', `${safeSessionKey(sessionId)}.folder-asked`)
+const ASKED_SUFFIX = '.folder-asked'
+
+/**
+ * The marker for "this session was asked about this folder" (G2, 0.21.1
+ * Codex/Cursor pre-release check). Keyed by session AND folder: keyed by the
+ * session alone, the first PLUR hook to ask silenced every other one in that
+ * session, even one asking about a different folder. The session part never
+ * holds a dot (safeSessionKey), so `<session>.` is a safe prefix for clearing.
+ */
+function askedPath(sessionId: string, folder: string): string {
+  let real: string
+  try { real = canonicalize(folder) } catch { real = resolve(folder) }
+  const tag = createHash('sha256').update(real).digest('hex').slice(0, 16)
+  return join(tmpdir(), 'plur-sessions', `${safeSessionKey(sessionId)}.${tag}${ASKED_SUFFIX}`)
 }
 
 /**
- * Record that this session has been asked. True the first time, false after.
- * An unwritable temp dir answers true (the question may then repeat, which is
- * noisy but honest; never asking would hide the folder's state).
+ * Record that this session has been asked about this folder. True the first
+ * time, false after. An unwritable temp dir answers true (the question may
+ * then repeat, which is noisy but honest; never asking would hide the
+ * folder's state).
  */
-function claimAsk(sessionId: string): boolean {
-  const path = askedPath(sessionId)
+function claimAsk(sessionId: string, folder: string): boolean {
+  const path = askedPath(sessionId, folder)
   try {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, String(Date.now()), { flag: 'wx' })
@@ -63,17 +77,26 @@ function claimAsk(sessionId: string): boolean {
 }
 
 /**
- * Forget that this session was asked, so its next prompt asks again with a
- * fresh nonce. Called only when the editor resumes a session (Claude Code and
- * Codex send SessionStart with `source: "resume"`): SessionEnd already deleted
- * that session's nonces, so the question shown before the resume can no
- * longer be answered, and without this the resumed session is never asked
- * again (#1347, option C). Nonces are untouched here: they stay single-use,
- * bound to one folder, and still die at SessionEnd.
+ * Forget that this session was asked, about every folder, so its next prompt
+ * asks again with a fresh nonce. Called only when the editor resumes a
+ * session (Claude Code and Codex send SessionStart with `source: "resume"`):
+ * SessionEnd already deleted that session's nonces, so the question shown
+ * before the resume can no longer be answered, and without this the resumed
+ * session is never asked again (#1347, option C). Nonces are untouched here:
+ * they stay single-use, bound to one folder, and still die at SessionEnd.
+ * The marker of an earlier version (`<session>.folder-asked`) goes too.
  */
 export function clearFolderAsk(sessionId: string): void {
   if (!sessionId) return
-  try { rmSync(askedPath(sessionId), { force: true }) } catch { /* best-effort */ }
+  const key = safeSessionKey(sessionId)
+  const dir = join(tmpdir(), 'plur-sessions')
+  try {
+    for (const name of readdirSync(dir)) {
+      if (name === `${key}${ASKED_SUFFIX}` || (name.startsWith(`${key}.`) && name.endsWith(ASKED_SUFFIX))) {
+        try { rmSync(join(dir, name), { force: true }) } catch { /* best-effort */ }
+      }
+    }
+  } catch { /* best-effort */ }
 }
 
 
@@ -269,12 +292,13 @@ export interface FolderAskOptions {
   plur?: FolderAskScopeRanker | null
   prompt?: string
   /**
-   * Record that this session has been asked: true the first time, false
-   * after. Defaults to a marker file per session id in the temp dir, which
-   * suits the CLI hooks (one process per prompt). An in-process adapter that
-   * lives as long as its sessions (the opencode plugin) passes its own.
+   * Record that this session has been asked about `folder` (the `dir`
+   * asked from): true the first time, false after. Defaults to a marker file
+   * per session and folder in the temp dir, which suits the CLI hooks (one
+   * process per prompt). An in-process adapter that lives as long as its
+   * sessions (the opencode plugin) passes its own.
    */
-  claim?: (sessionId: string) => boolean
+  claim?: (sessionId: string, folder: string) => boolean
   /**
    * Bind each nonce to `sessionId` (audit F5 of #1517): it then works only
    * from a command that names that session (PLUR_FOLDER_SESSION). Only for a
@@ -342,7 +366,7 @@ export function folderAskOnce(opts: FolderAskOptions): string | null {
  */
 export function folderAsk(opts: FolderAskOptions): FolderAsk | null {
   if (!opts.sessionId) return null
-  if (!(opts.claim ?? claimAsk)(opts.sessionId)) return null
+  if (!(opts.claim ?? claimAsk)(opts.sessionId, opts.dir)) return null
   return buildFolderAsk(opts, null)
 }
 

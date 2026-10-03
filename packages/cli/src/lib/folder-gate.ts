@@ -3,6 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import {
   resolveFolderPolicy,
+  coversHomeOrRoot,
   folderAskOnce as coreFolderAskOnce,
   type FolderAskOptions as CoreFolderAskOptions,
   type FolderPolicy,
@@ -75,6 +76,48 @@ export function hookFolderOn(dir: string, flags?: { path?: string }): boolean {
   return hookFolderPolicy(dir, flags).mode === 'on'
 }
 
+
+/**
+ * The folder a Cursor hook decides for, and its policy (G1, 0.21.1
+ * Codex/Cursor pre-release check). Cursor's payload carries no `cwd`, only
+ * `workspace_roots`; the hook process runs wherever Cursor starts it (a
+ * plugin's folder, for hooks loaded from a plugin), so `process.cwd()` named
+ * the wrong folder: PLUR asked about the plugin folder, recorded the answer
+ * for it and wrote its rule file there.
+ *
+ * The folder is the payload's `cwd` when it has one; else the workspace
+ * roots, all of them; else the process folder, as before. With several roots
+ * the rule is the MCP server's: any `off` root turns memory off (and wins over
+ * everything), the first undecided root is asked about, and a scope applies
+ * only when every root is on with that same scope. A root that is the home
+ * folder, a filesystem root or above home is never asked about (an answer
+ * there would cover every folder under it), unless every root is one.
+ * `dir` is the folder hook output (rule files, the question) belongs to.
+ */
+export function cursorHookFolder(
+  input: Record<string, unknown> | null | undefined,
+  flags?: { path?: string },
+): { dir: string; policy: FolderPolicy } {
+  const cwd = input?.cwd
+  if (typeof cwd === 'string' && cwd && existsSync(cwd)) return { dir: cwd, policy: hookFolderPolicy(cwd, flags) }
+  const raw = Array.isArray(input?.workspace_roots) ? (input!.workspace_roots as unknown[]) : []
+  const roots = [...new Set(raw.filter((r): r is string => typeof r === 'string' && r.length > 0 && existsSync(r)))]
+  if (roots.length === 0) return { dir: process.cwd(), policy: hookFolderPolicy(process.cwd(), flags) }
+  if (roots.length === 1) return { dir: roots[0], policy: hookFolderPolicy(roots[0], flags) }
+  const decided = roots.map(dir => ({ dir, policy: hookFolderPolicy(dir, flags) }))
+  const off = decided.find(d => d.policy.mode === 'off')
+  if (off) return off
+  const coversHome = (dir: string): boolean => { try { return coversHomeOrRoot(dir) } catch { return true } }
+  const askable = decided.filter(d => !coversHome(d.dir))
+  const considered = askable.length > 0 ? askable : decided
+  const ask = considered.find(d => d.policy.mode === 'ask')
+  if (ask) return ask
+  const scopes = new Set(decided.map(d => d.policy.scope))
+  const first = considered[0]
+  if (scopes.size === 1 && first.policy.scope) return first
+  const { scope: _dropped, ...rest } = first.policy
+  return { dir: first.dir, policy: rest as FolderPolicy }
+}
 
 /** True when a SessionStart payload says the session was resumed. */
 export function isResumeStart(input: Record<string, unknown> | null | undefined): boolean {

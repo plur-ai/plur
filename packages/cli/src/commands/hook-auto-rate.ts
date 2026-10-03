@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
+import { hookFolderOn, payloadDir, cursorHookFolder } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId } from '../lib/codex-hook-io.js'
 import { exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from '../lib/store-lock-exit.js'
 import { enqueueTurn, hasLeftoverBatches, spawnWorker, runWorker, agyReplySinceLastUser, type AutoRateEditor } from '../lib/auto-rate.js'
@@ -134,6 +134,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // there (see hook-agy-guard): no workspace, no folder to decide about.
     if (editor === 'agy') {
       if (turn.cwd && !hookFolderOn(turn.cwd, flags)) return
+    } else if (editor === 'cursor') {
+      // Cursor sends no cwd, only workspace_roots, and runs the hook wherever
+      // it likes (a plugin's folder): decide for the workspace (G1).
+      const folder = cursorHookFolder(input, flags)
+      if (folder.policy.mode !== 'on') return
+      turn.cwd = folder.dir
     } else if (!hookFolderOn(payloadDir({ cwd: turn.cwd }), flags)) {
       return
     }

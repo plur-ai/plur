@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Cursor hooks decide for the workspace, not the folder the hook runs in; the folder question is once per session and folder (#1582)
+
+Found by the 0.21.1 Codex/Cursor pre-release check (findings G1 and G2).
+
+- Cursor tells its hooks which workspace is open (`workspace_roots`), not the folder to work in (`cwd`). PLUR's Cursor hooks used the folder the hook process ran in. With the hooks loaded from a plugin, that was the plugin's folder: PLUR asked about the plugin folder, recorded the user's answer for it, and wrote `.cursor/rules/plur-context.mdc` there, while the workspace stayed undecided. A workspace the user had turned off could also get another folder's "on".
+- Every Cursor hook now decides for the workspace. That covers session start, the tool guard, the post-tool reminder, the stop nudge and the end-of-turn rating and capture. A hook uses the payload's `cwd` when it sends one, else the workspace roots, else the hook's own folder, as before.
+- With several workspace roots: if any root is off, memory is off; if any root is undecided, the question is about that root; a scope applies only when every root agrees on it, the same rule as the MCP server. Rule files are written in the workspace.
+- `plur init --cursor` writes the hooks into `.cursor/hooks.json` of the folder it runs in. The folder the hook process runs in no longer matters, because the decision comes from the payload.
+- The "asked once per session" record is now kept per session and folder. A second PLUR hook asking about a different folder in the same session is no longer silenced. A resumed session is asked again about every folder, as before.
+
 ### Each team store gets its own id prefix, so an engram id names one store (#1575)
 
 Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0.21.1; not caused by #1570.

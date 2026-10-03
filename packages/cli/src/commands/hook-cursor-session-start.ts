@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur } from '../lib/folder-gate.js'
+import { cursorHookFolder, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
@@ -54,8 +54,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // #1347: the folder map decides. off is silent; ask puts the one question
   // where Cursor reads it (the rule file, plus additional_context) instead of
   // memories, and marks nothing, so the guard stays silent too.
-  const dir = payloadDir(input)
-  const policy = hookFolderPolicy(dir, flags)
+  // G1: the workspace (payload cwd, else workspace_roots), not this
+  // process's folder — see cursorHookFolder.
+  const { dir, policy } = cursorHookFolder(input, flags)
   const rulePath = cursorContextRulePath(dir)
   if (policy.mode !== 'on') removeStaleAsk(rulePath)
   if (policy.mode === 'off') return

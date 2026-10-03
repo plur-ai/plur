@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
+import { cursorHookFolder } from '../lib/folder-gate.js'
 import {
   readStdinJson,
   cursorConversationId,
@@ -73,7 +73,7 @@ function blockCountPath(conversationId: string): string {
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
   // Silent unless the folder map says on (#1347).
-  if (!hookFolderOn(payloadDir(input), flags)) return
+  if (cursorHookFolder(input, flags).policy.mode !== 'on') return
   const toolName = String(input.tool_name ?? '')
   if (isPlurSessionStartTool(toolName)) return
 
