@@ -18,7 +18,7 @@ describe('storePrefix is unique per store scope', () => {
   it('is stable, uppercase letters only, and keeps the readable three-letter start', () => {
     const p = storePrefix('group:plur/eng')
     expect(storePrefix('group:plur/eng')).toBe(p)
-    expect(p).toMatch(/^[A-Z]{7}$/)
+    expect(p).toMatch(/^[A-Z]{11}$/)
     expect(p.startsWith('GPL')).toBe(true)
   })
 

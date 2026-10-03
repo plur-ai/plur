@@ -738,11 +738,11 @@ describe('ID prefix round-trip (issue #86)', () => {
     // Wait for remote cache to populate
     await new Promise(r => setTimeout(r, 2000))
     const loadedAfter = await plur.list({ scope: 'group:test' })
-    const remoteEngrams = loadedAfter.filter(e => /-GTE[A-Z]{4}-/.test(e.id))
+    const remoteEngrams = loadedAfter.filter(e => /-GTE[A-Z]{8}-/.test(e.id))
     expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
 
     const prefixedId = remoteEngrams[0].id
-    expect(prefixedId).toMatch(/^ENG-GTE[A-Z]{4}-/) // Prefixed
+    expect(prefixedId).toMatch(/^ENG-GTE[A-Z]{8}-/) // Prefixed
 
     // Feedback with the prefixed ID — should succeed, not "Engram not found"
     await plur.feedback(prefixedId, 'positive')
@@ -764,11 +764,11 @@ describe('ID prefix round-trip (issue #86)', () => {
     // Wait for remote cache to populate
     await new Promise(r => setTimeout(r, 2000))
     const loaded = await plur.list({ scope: 'group:test' })
-    const remoteEngrams = loaded.filter(e => /-GTE[A-Z]{4}-/.test(e.id))
+    const remoteEngrams = loaded.filter(e => /-GTE[A-Z]{8}-/.test(e.id))
     expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
 
     const prefixedId = remoteEngrams[0].id
-    expect(prefixedId).toMatch(/^ENG-GTE[A-Z]{4}-/)
+    expect(prefixedId).toMatch(/^ENG-GTE[A-Z]{8}-/)
 
     // Forget with the prefixed ID — should succeed
     await plur.forget(prefixedId)
@@ -836,10 +836,10 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
     await new Promise(r => setTimeout(r, 2000)) // cache populate
 
     const loaded = await plur.list({ scope: 'group:test' })
-    const remoteEngrams = loaded.filter(e => /-GTE[A-Z]{4}-/.test(e.id))
+    const remoteEngrams = loaded.filter(e => /-GTE[A-Z]{8}-/.test(e.id))
     expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
     const prefixedId = remoteEngrams[0].id
-    expect(prefixedId).toMatch(/^ENG-GTE[A-Z]{4}-/)
+    expect(prefixedId).toMatch(/^ENG-GTE[A-Z]{8}-/)
 
     // Pin via the async variant — must reach the server (unprefixed)
     const patched = await plur.setPinnedAsync(prefixedId, true)
@@ -858,7 +858,7 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
     await new Promise(r => setTimeout(r, 2000))
 
     const loaded = await plur.list({ scope: 'group:test' })
-    const remoteEngrams = loaded.filter(e => /-GTE[A-Z]{4}-/.test(e.id))
+    const remoteEngrams = loaded.filter(e => /-GTE[A-Z]{8}-/.test(e.id))
     expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
     const target = remoteEngrams[0]
 
@@ -880,7 +880,7 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
     await new Promise(r => setTimeout(r, 2000))
 
     const loaded = await plur.list({ scope: 'group:test' })
-    const remoteEngrams = loaded.filter(e => /-GTE[A-Z]{4}-/.test(e.id))
+    const remoteEngrams = loaded.filter(e => /-GTE[A-Z]{8}-/.test(e.id))
     const target = remoteEngrams[0]
 
     // Mock LLM that returns an improved version

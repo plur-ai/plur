@@ -219,7 +219,7 @@ export class IndexedStorage {
 
   /**
    * Rebuild the index once when it holds a store row under a prefix that is
-   * no longer that store's (0.21.1: the three-letter prefix became seven
+   * no longer that store's (0.21.1: the three-letter prefix became eleven
    * letters, audit H1). Without this an index written by an earlier release
    * keeps serving the old ids until some store file happens to change.
    * Reads only the store rows' ids; a no-op on an index that is current.

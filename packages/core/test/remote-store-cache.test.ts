@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { RemoteStore } from '../src/store/remote-store.js'
-import { Plur } from '../src/index.js'
+import { Plur, storePrefix } from '../src/index.js'
 import { StubServer } from './helpers/stub-server.js'
 
 /**
@@ -419,7 +419,7 @@ describe('Plur cold-start with remote store (issues #184, #185)', () => {
     })
 
     // Cold start — cache not populated
-    const found = await plur.getById('ENG-GTE-SEED-001') // prefixed
+    const found = await plur.getById(`ENG-${storePrefix('group:test')}-SEED-001`) // prefixed
     expect(found).toBeNull()
   })
 
@@ -436,7 +436,7 @@ describe('Plur cold-start with remote store (issues #184, #185)', () => {
     // #776: reads no longer fire a background refresh — warm explicitly.
     await plur.warmRemoteCaches()
 
-    const found = await plur.getById('ENG-GTE-SEED-001')
+    const found = await plur.getById(`ENG-${storePrefix('group:test')}-SEED-001`)
     expect(found).toBeTruthy()
     expect(found!.statement).toBe('seeded engram')
   })
@@ -479,14 +479,14 @@ describe.skip('updateEngram remote routing (blocked on enterprise#110)', () => {
     await new Promise(r => setTimeout(r, 2000))
 
     const loaded = await plur.list({ scope: 'group:test' })
-    const remote = loaded.find(e => /-GTE[A-Z]{4}-/.test(e.id))
+    const remote = loaded.find(e => /-GTE[A-Z]{8}-/.test(e.id))
     expect(remote).toBeTruthy()
 
     remote!.pinned = true
     await plur.updateEngram(remote!)
 
     // Verify server received the pin update
-    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE[A-Z]{4}-/, 'ENG-'))
+    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE[A-Z]{8}-/, 'ENG-'))
     expect((serverEngram?.data as any)?.pinned).toBe(true)
   })
 
@@ -496,14 +496,14 @@ describe.skip('updateEngram remote routing (blocked on enterprise#110)', () => {
     await new Promise(r => setTimeout(r, 2000))
 
     const loaded = await plur.list({ scope: 'group:test' })
-    const remote = loaded.find(e => /-GTE[A-Z]{4}-/.test(e.id))
+    const remote = loaded.find(e => /-GTE[A-Z]{8}-/.test(e.id))
     expect(remote).toBeTruthy()
 
     remote!.status = 'active'
     remote!.activation.retrieval_strength = 0.7
     await plur.updateEngram(remote!)
 
-    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE[A-Z]{4}-/, 'ENG-'))
+    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE[A-Z]{8}-/, 'ENG-'))
     expect(serverEngram?.status).toBe('active')
   })
 })

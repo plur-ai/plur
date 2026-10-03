@@ -36,7 +36,7 @@ function makeEngram(overrides: Record<string, unknown> = {}) {
 }
 
 // storePrefix('datafund') → 'DA' (first 2 chars of single-word scope)
-// The store's namespaced id (0.21.1: the prefix is DFD plus four digest letters).
+// The store's namespaced id (0.21.1: the prefix is DFD plus eight digest letters).
 const NS_ID = `ENG-${storePrefix('datafund')}-2026-0401-001`
 
 describe('Multi-store', () => {

@@ -40,33 +40,33 @@ describe('bareEngramId (#1119)', () => {
 describe('legacyStorePrefix, and storePrefix starting with it', () => {
   it('group:plur/plur-ai/engineering → GPL', () => {
     expect(legacyStorePrefix('group:plur/plur-ai/engineering')).toBe('GPL')
-    expect(storePrefix('group:plur/plur-ai/engineering')).toMatch(new RegExp(`^${'GPL'}[A-Z]{4}$`))
+    expect(storePrefix('group:plur/plur-ai/engineering')).toMatch(new RegExp(`^${'GPL'}[A-Z]{8}$`))
   })
 
   it('project:plur → PPL', () => {
     expect(legacyStorePrefix('project:plur')).toBe('PPL')
-    expect(storePrefix('project:plur')).toMatch(new RegExp(`^${'PPL'}[A-Z]{4}$`))
+    expect(storePrefix('project:plur')).toMatch(new RegExp(`^${'PPL'}[A-Z]{8}$`))
   })
 
   it('project:Data → PDA', () => {
     expect(legacyStorePrefix('project:Data')).toBe('PDA')
-    expect(storePrefix('project:Data')).toMatch(new RegExp(`^${'PDA'}[A-Z]{4}$`))
+    expect(storePrefix('project:Data')).toMatch(new RegExp(`^${'PDA'}[A-Z]{8}$`))
   })
 
   it('global → GBL', () => {
     expect(legacyStorePrefix('global')).toBe('GBL')
-    expect(storePrefix('global')).toMatch(new RegExp(`^${'GBL'}[A-Z]{4}$`))
+    expect(storePrefix('global')).toMatch(new RegExp(`^${'GBL'}[A-Z]{8}$`))
   })
 
   it('group:datafund → GDA', () => {
     expect(legacyStorePrefix('group:datafund')).toBe('GDA')
-    expect(storePrefix('group:datafund')).toMatch(new RegExp(`^${'GDA'}[A-Z]{4}$`))
+    expect(storePrefix('group:datafund')).toMatch(new RegExp(`^${'GDA'}[A-Z]{8}$`))
   })
 
   it('single short word → padded', () => {
     // "ab" → A + B + A (padded)
     expect(legacyStorePrefix('ab')).toBe('ABA')
-    expect(storePrefix('ab')).toMatch(new RegExp(`^${'ABA'}[A-Z]{4}$`))
+    expect(storePrefix('ab')).toMatch(new RegExp(`^${'ABA'}[A-Z]{8}$`))
   })
 })
 

@@ -1150,7 +1150,7 @@ export function namespaceEngramId(id: string, scope: string): string {
 
 /**
  * The store prefix of a namespaced id and its bare form, or null for an id
- * that carries none. Both prefix forms parse: the current seven letters and
+ * that carries none. Both prefix forms parse: the current eleven letters and
  * the three-letter form of releases up to 0.21.0. A store prefix is always
  * followed by the four-digit year of the id it wraps, which is what tells it
  * apart from a bare id (`ENG-2026-…`) or a pack id.
@@ -1160,7 +1160,7 @@ export function parseNamespacedId(id: string, anyTail = false): { kind: string; 
   // prefix against a CONFIGURED store's (server ids are dated, test stubs and
   // some older servers' are not). Never for stripping blind — a pack id like
   // `ENG-PACK-EM-006` parses that way too.
-  const m = (anyTail ? /^(ENG|ABS|META)-([A-Z]{2,8})-(?=[A-Za-z0-9])/ : /^(ENG|ABS|META)-([A-Z]{2,8})-(?=\d{4}-)/).exec(id)
+  const m = (anyTail ? /^(ENG|ABS|META)-([A-Z]{2,11})-(?=[A-Za-z0-9])/ : /^(ENG|ABS|META)-([A-Z]{2,11})-(?=\d{4}-)/).exec(id)
   if (!m) return null
   return { kind: m[1], prefix: m[2], bare: `${m[1]}-${id.slice(m[0].length)}` }
 }
@@ -1200,8 +1200,8 @@ export function legacyStorePrefix(scope: string): string {
 
 /**
  * The namespace prefix of a store: the readable three letters of
- * {@link legacyStorePrefix} plus four letters of a SHA-256 digest of the whole
- * scope (e.g. 'group:plur/eng' → 'GPL' + four letters), so two scopes that
+ * {@link legacyStorePrefix} plus eight letters of a SHA-256 digest of the whole
+ * scope (e.g. 'group:plur/eng' → 'GPL' + eight letters), so two scopes that
  * share the first three no longer share a prefix (0.21.1 audit, H1).
  *
  * Derived from the scope alone, on purpose: every read and write path that
@@ -1218,7 +1218,10 @@ export function legacyStorePrefix(scope: string): string {
 export function storePrefix(scope: string): string {
   const digest = createHash('sha256').update(scope).digest()
   let tag = ''
-  for (let i = 0; i < 4; i++) tag += String.fromCharCode(65 + (digest[i] % 26))
+  // Eight letters (26^8 ≈ 2·10^11 per three-letter bucket): a collision among
+  // 100k scopes of one org is about 2%, so configured scopes are still checked
+  // for one (`Plur._sharedPrefixScopes`) and refused for actions by id.
+  for (let i = 0; i < 8; i++) tag += String.fromCharCode(65 + (digest[i] % 26))
   return legacyStorePrefix(scope) + tag
 }
 

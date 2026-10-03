@@ -2581,6 +2581,27 @@ export class Plur {
   }
 
   /**
+   * Whether a row a url store's driver handed back is that store's own. One
+   * server answers `GET /engrams/:id` for every scope the token can read, so
+   * the driver of a writable store "finds" a row that lives in another
+   * (possibly readonly) store on the same server. Acting on it through this
+   * store is the readonly bypass of the 0.21.1 audit (H1, and L1 of the #1576
+   * review for bare ids). A row with no scope, or `global`, counts as the
+   * store's, as the loaders treat it.
+   */
+  private _rowInStore(row: { scope?: unknown } | null | undefined, entry: StoreEntry): boolean {
+    const sc = row?.scope
+    return typeof sc !== 'string' || sc === '' || sc === 'global' || isScopeWithin(sc, entry.scope)
+  }
+
+  private _sharedPrefixRefusal(id: string, verb: string, prefix: string, scopes: string[]): Error {
+    return new Error(
+      `Cannot ${verb} "${id}": the stores for ${scopes.map(s => `"${s}"`).join(' and ')} share the id prefix ${prefix}, `
+      + `so this id cannot say which store is meant. Nothing was changed. Pass scope: "<the store's scope>" to choose one.`,
+    )
+  }
+
+  /**
    * Resolve a namespaced id to the ONE store it names, before any action on
    * it (0.21.1 audit of #1570, H1). Returns the id to act with — the current
    * prefix form for the store that holds the row — or the id unchanged when it
@@ -2607,14 +2628,32 @@ export class Plur {
    * before this returns.
    */
   private async _resolveNamespacedId(id: string, verb: string): Promise<string> {
-    const parsed = parseNamespacedId(id, true)
-    if (!parsed) return id
+    const loose = parseNamespacedId(id, true)
+    if (!loose) return id
     const stores = this.config.stores ?? []
-    let candidates = stores.filter(s => typeof s.scope === 'string' && storePrefix(s.scope) === parsed.prefix)
-    const legacy = candidates.length === 0
-    if (legacy) candidates = stores.filter(s => typeof s.scope === 'string' && legacyStorePrefix(s.scope) === parsed.prefix)
-    if (candidates.length === 0) return id
-    if (candidates.length === 1) return namespaceEngramId(parsed.bare, candidates[0].scope)
+    let parsed = loose
+    let candidates = stores.filter(s => typeof s.scope === 'string' && storePrefix(s.scope) === loose.prefix)
+    let legacy = false
+    if (candidates.length > 0) {
+      // Two DIFFERENT configured scopes behind one prefix: the id cannot say
+      // which store it names, whatever the stores hold. Refused before anything
+      // is asked or changed (review of #1576: rare at eight digest letters,
+      // never guessed at).
+      const scopes = [...new Set(candidates.map(c => c.scope))]
+      if (scopes.length > 1) throw this._sharedPrefixRefusal(id, verb, loose.prefix, scopes)
+      if (candidates.length === 1) return id
+    } else {
+      // The OLD three-letter form. Only a dated server-form id can be one
+      // (`ENG-XXX-YYYY-MM-DD-NNN`): pack ids such as `ENG-PFR-001` share the
+      // shape of a prefix and must stay as they are (review of #1576, M1). And
+      // it is rewritten only once a store is seen to hold the row — below.
+      const strict = parseNamespacedId(id)
+      if (!strict) return id
+      parsed = strict
+      candidates = stores.filter(s => typeof s.scope === 'string' && legacyStorePrefix(s.scope) === strict.prefix)
+      if (candidates.length === 0) return id
+      legacy = true
+    }
 
     type Holder = { entry: StoreEntry; rowScope: string; key: string }
     const holders: Holder[] = []
@@ -2637,10 +2676,14 @@ export class Plur {
       try {
         const ownership = driver.probeById
           ? await driver.probeById(parsed.bare, { signal: AbortSignal.timeout(REMOTE_PROBE_TIMEOUT_MS) })
-          : 'owned'
+          : 'assumed'
         if (ownership === 'unknown') { unreached.push(entry.scope); continue }
         if (ownership === 'absent') continue
         row = await driver.getById(parsed.bare)
+        // The store said it holds the row, then could not hand it over
+        // (`getById` reads a timeout or a 5xx as null): that is "cannot
+        // tell", never "does not hold it" (review of #1576, L3).
+        if (!row && ownership === 'owned') { unreached.push(entry.scope); continue }
       } catch {
         unreached.push(entry.scope)
         continue
@@ -2663,8 +2706,8 @@ export class Plur {
     }
     if (unreached.length > 0) {
       throw new Error(
-        `Cannot safely ${verb} "${id}": it may name an engram in ${unreached.map(s => `"${s}"`).join(', ')}, which could not be reached`
-        + (rows.size === 1 ? `, as well as the one in "${[...rows.values()][0][0].entry.scope}"` : '')
+        `Cannot reach ${unreached.map(x => `"${x}"`).join(', ')} to ${verb} "${id}" safely: it could not be reached, and it may hold an engram with this id`
+        + (rows.size === 1 ? ` (so may "${[...rows.values()][0][0].entry.scope}")` : '')
         + `. Nothing was changed. Retry once the store is reachable, or pass the scope of the one you mean.`,
       )
     }
@@ -6115,11 +6158,22 @@ export class Plur {
     const engrams = await this._loadAllEngrams()
     const exact = engrams.find(e => e.id === id)
     if (exact) return exact
+    return this._matchOldFormId(engrams, id)
+  }
+
+  /**
+   * The one loaded row an id in the OLD three-letter store form names, or
+   * null. Only a dated server-form id qualifies (a pack id such as
+   * `ENG-PFR-001` is not one), and only when exactly one loaded store row
+   * answers to it: the old prefix was shared by every team store of an org,
+   * so two rows can answer to one old id, and then it names neither (H1).
+   */
+  private _matchOldFormId(engrams: Engram[], id: string): Engram | null {
     // An id in the old three-letter store form (releases up to 0.21.0) still
     // finds its engram — but only when exactly one loaded row carries it. The
     // old prefix was shared by every team store of an org, so two rows can
     // answer to one old id; then it names neither (0.21.1 audit, H1).
-    const ns = parseNamespacedId(id, true)
+    const ns = parseNamespacedId(id)
     if (!ns) return null
     const matches = engrams.filter(e => {
       const stored = (e as { _storeScope?: unknown })._storeScope
@@ -6152,8 +6206,16 @@ export class Plur {
     const found = new Set(primary.map(e => e.id))
     let missing = wanted.filter(id => !found.has(id))
     if (missing.length === 0) return primary
-    const rest = (await this._loadAllEngrams()).filter(e => missing.includes(e.id))
+    const all = await this._loadAllEngrams()
+    const rest = all.filter(e => missing.includes(e.id))
     for (const e of rest) found.add(e.id)
+    missing = missing.filter(id => !found.has(id))
+    // Injection records written by 0.21.0 hold old-form team ids; the row is
+    // handed back under the id asked for, as the remote leg below does.
+    for (const id of missing) {
+      const m = this._matchOldFormId(all, id)
+      if (m) { rest.push({ ...m, id }); found.add(id) }
+    }
     missing = missing.filter(id => !found.has(id))
     const remote = options?.remoteCapability && missing.length > 0
       ? await this._fetchRemoteByIds(missing, options.remoteCapability)
@@ -6167,12 +6229,21 @@ export class Plur {
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       const prefixRe = new RegExp(`^(ENG|ABS|META)-${storePrefix(entry.scope)}-`)
-      const mine = ids.filter(id => !taken.has(id) && prefixRe.test(id)).slice(0, GET_BY_IDS_REMOTE_CAP)
+      // An old-form (0.21.0) id names this store only when no other url
+      // store shares its old prefix; then its bare form is asked for.
+      const oldPrefix = legacyStorePrefix(entry.scope)
+      const oldIsMine = (this.config.stores ?? []).filter(e => !!e.url && legacyStorePrefix(e.scope) === oldPrefix).length === 1
+      const serverIdOf = (id: string): string | null => {
+        if (prefixRe.test(id)) return this._stripRemotePrefix(id, entry.scope)
+        const old = oldIsMine ? parseNamespacedId(id) : null
+        return old && old.prefix === oldPrefix ? old.bare : null
+      }
+      const mine = ids.filter(id => !taken.has(id) && serverIdOf(id) !== null).slice(0, GET_BY_IDS_REMOTE_CAP)
       if (mine.length === 0) continue
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       if (!(await driver.hasCapability(capability))) continue
       const rows = await Promise.all(mine.map(async id => {
-        const row = await driver.getById(this._stripRemotePrefix(id, entry.scope))
+        const row = await driver.getById(serverIdOf(id)!)
         return row ? { id, row } : null
       }))
       for (const hit of rows) {
@@ -7073,7 +7144,7 @@ export class Plur {
     // Filter out store engrams — they're managed by their source.
     // Via YAML path: store engrams have _originalId. Via SQLite path: namespaced IDs (ENG-XX-...).
     const isStoreEngram = (e: Engram) =>
-      (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{3}(?:[A-Z]{4})?-/.test(e.id)
+      (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{3}(?:[A-Z]{8})?-/.test(e.id)
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
     await this._withStoreLock(this.paths.engrams, async () => {
@@ -7949,7 +8020,7 @@ export class Plur {
       if (entry.readonly === true) {
         const roDriver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
         const roFound = await roDriver.getById(serverId)
-        if (roFound) throw new Error('Engram is in a readonly store')
+        if (roFound && this._rowInStore(roFound, entry)) throw new Error('Engram is in a readonly store')
         continue
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
@@ -7982,6 +8053,8 @@ export class Plur {
       }
       if (!owns) continue
       const found = await driver.getById(serverId)
+      // Another store's row on the same server is not this store's to rate.
+      if (found && !this._rowInStore(found, entry)) continue
       if (found) {
         await driver.feedback(serverId, signal, remoteOpts)
         // Same reasoning as the local path: the remote already counted it.
@@ -8540,6 +8613,15 @@ export class Plur {
         // and so re-pinning an engram that was already pinned (which cannot
         // grow the tier) is never refused. Read from the driver's cache when
         // it holds the row, else one GET; only for a pin, never an unpin.
+        // A bare id: one server answers for every scope it holds, so make sure
+        // the row is this store's before patching it through this store —
+        // a readonly store's row must not be pinned through a writable one.
+        if (!scopedEntry && serverId === id) {
+          const current = typeof driver.getById === 'function'
+            ? await driver.getById(serverId).catch(() => null)
+            : null
+          if (current && !this._rowInStore(current, entry)) continue
+        }
         let priorPinned: boolean | null = null
         if (pinned === true) {
           const cachedRow = ((driver as unknown as { cache?: { engrams?: Engram[] } | null }).cache?.engrams ?? [])
@@ -9174,7 +9256,7 @@ export class Plur {
         // errors are specific ("cannot retire from readonly") not generic.
         const roDriver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
         const roFound = await roDriver.getById(serverId)
-        if (roFound) throw new Error('Cannot retire engram from readonly store')
+        if (roFound && this._rowInStore(roFound, entry)) throw new Error('Cannot retire engram from readonly store')
         continue
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
@@ -9225,6 +9307,8 @@ export class Plur {
       }
       if (ownership === 'absent') continue
       const found = await driver.getById(serverId)
+      // Another store's row on the same server is not this store's to retire.
+      if (found && !this._rowInStore(found, entry)) continue
       if (found) {
         const removed = await driver.remove(serverId)
         if (removed) {
@@ -11208,14 +11292,24 @@ export class Plur {
     // three-letter id form; a lookup by its current id returns them too. Not
     // the reverse: an old-form id was shared by every team store of an org,
     // so it cannot say which store's new-form events are its own (H1).
-    const ns = parseNamespacedId(engramId, true)
-    if (!ns) return readHistoryForEngram(this.paths.root, engramId)
+    return readHistoryForEngram(this.paths.root, this._idWithOldForms(engramId))
+  }
+
+  /**
+   * An id plus the 0.21.0 spelling(s) of the same engram: for a current-form
+   * store id, the old three-letter form records written before 0.21.1 carry.
+   * Records keyed by id (history, tensions) match on this set. Not the
+   * reverse — an old-form id was shared by every team store of an org (H1).
+   */
+  private _idWithOldForms(engramId: string): Set<string> {
     const ids = new Set([engramId])
+    const ns = parseNamespacedId(engramId, true)
+    if (!ns) return ids
     for (const store of this.config.stores ?? []) {
       if (typeof store.scope !== 'string' || storePrefix(store.scope) !== ns.prefix) continue
       ids.add(ns.bare.replace(/^(ENG|ABS|META)-/, `$1-${legacyStorePrefix(store.scope)}-`))
     }
-    return readHistoryForEngram(this.paths.root, ids)
+    return ids
   }
 
   /**
@@ -11762,10 +11856,13 @@ Generate an improved version of the procedure that prevents this failure. Return
       if (!r) throw new Error(`Tension ${id} not found`)
       if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
       if (r.status === 'dismissed') throw new Error(`Tension ${id} is dismissed`)
-      if (winnerId !== r.engram_a && winnerId !== r.engram_b) {
+      // The winner may be named by its current id while the tension was
+      // recorded under the 0.21.0 form (#1576 review).
+      const winnerForms = this._idWithOldForms(winnerId)
+      if (!winnerForms.has(r.engram_a) && !winnerForms.has(r.engram_b)) {
         throw new Error(`Winner ${winnerId} is not part of tension ${id} (${r.engram_a} vs ${r.engram_b})`)
       }
-      loserId = winnerId === r.engram_a ? r.engram_b : r.engram_a
+      loserId = winnerForms.has(r.engram_a) ? r.engram_b : r.engram_a
       previous = { status: r.status, resolved_by: r.resolved_by, resolved_at: r.resolved_at }
       r.status = 'resolved'
       r.resolved_by = winnerId
@@ -11864,9 +11961,11 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   hasUnresolvedTension(engramId: string): boolean {
     try {
+      // A tension recorded under the engram's 0.21.0 id still counts (#1576 review).
+      const ids = this._idWithOldForms(engramId)
       return loadTensions(this.paths.tensions).some(r =>
         (r.status === 'detected' || r.status === 'confirmed')
-        && (r.engram_a === engramId || r.engram_b === engramId))
+        && (ids.has(r.engram_a) || ids.has(r.engram_b)))
     } catch (err) {
       // Fail CLOSED (formal WritePath, candidate 5). `loadTensions` throws on
       // an unreadable file precisely so it is never read as empty (#794 F1);
@@ -11895,7 +11994,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       const unresolved = loadTensions(this.paths.tensions)
         .filter(r => r.status === 'detected' || r.status === 'confirmed')
       if (unresolved.length === 0) return []
-      const injected = new Set(injectedIds)
+      // Each injected id with its 0.21.0 spelling, so a tension recorded
+      // under the old form still warns (#1576 review).
+      const injected = new Set(injectedIds.flatMap(i => [...this._idWithOldForms(i)]))
       const clip = (t: string) => (t.length > 80 ? `${t.slice(0, 77)}...` : t)
       const warnings: string[] = []
       for (const r of unresolved) {
@@ -12071,6 +12172,24 @@ Generate an improved version of the procedure that prevents this failure. Return
   private _loadConfig(): PlurConfig {
     const config = loadConfig(this.paths.config)
     const stores = config.stores ?? []
+    // Two different scopes behind one id prefix (review of #1576): said once
+    // at load, and every action by a namespaced id for them is refused.
+    {
+      const byPrefix = new Map<string, Set<string>>()
+      for (const s of stores) {
+        if (typeof s.scope !== 'string') continue
+        const p = storePrefix(s.scope)
+        byPrefix.set(p, (byPrefix.get(p) ?? new Set()).add(s.scope))
+      }
+      for (const [p, scopes] of byPrefix) {
+        if (scopes.size < 2) continue
+        const key = `prefix\0${p}`
+        if (this._warnedDuplicateStores.has(key)) continue
+        this._warnedDuplicateStores.add(key)
+        logger.warning(`[plur:config] stores ${[...scopes].map(x => `"${x}"`).join(' and ')} share the engram id prefix ${p}. `
+          + `Forget, feedback, pin and update by an id with that prefix are refused for them; pass the store's scope instead.`)
+      }
+    }
     if (!stores.some(s => s.path !== undefined && !s.url)) {
       this._ignoredDuplicates = []
       return config
