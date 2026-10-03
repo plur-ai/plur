@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `plur folders repair` works on a map with a team-scoped folder (#1567)
+
+Found by the second 0.21.1 pre-release check. A broken `folders.yaml` that held one folder answered "Yes, with the team scope" could not be repaired, even for a one-character slip somewhere else in the file. The repair blamed that folder's line, which had no problem.
+
+- The answer "Yes, with the team scope" and `plur folders set <folder> --scope <s>` now write `plur: on` next to the scope. The folder resolves exactly as before. Because its own lines now say `on`, a repair of the file may keep it on.
+- The rule from 0.21.0 stays: a repair never brings memory back on for a folder whose own lines do not say `plur: on`. A folder that is on only through `scope:` or `trusted:` (one written by an earlier version, or by hand) still stops the repair. The message now names the lines that hold the slips, says to fix them by hand, and no longer points at that folder's line as the problem.
+- A folder with a scope (or `trusted:`) and its own `plur: on`, `off` or `ask` line never stopped a repair, and still does not. This is now tested, and the repair's fuzz test also runs over team-style maps.
+- When the map cannot be repaired automatically, the warning on stderr says to fix the named line by hand, and that `plur folders repair` re-checks the file. It used to say to run `plur folders repair` to repair it.
+
 ### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562)
 
 Found by the 0.21.1 pre-release check. The promise above (after a yes with a team scope, or in a folder mapped to a scope, an unscoped save goes to that scope) held over MCP only after `plur_session_start`. Without it, `plur_learn` with no scope was saved in `global` on this machine and never reached the team store.

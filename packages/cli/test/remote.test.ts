@@ -140,7 +140,7 @@ describe('plur remote (#1413)', () => {
 
     const config = yaml.load(configText()) as { stores: Array<Record<string, unknown>> }
     expect(config.stores).toEqual([expect.objectContaining({ url: baseUrl, scope: SCOPE, token: TOKEN })])
-    expect(folders()).toEqual([{ path: realpathSync(work), scope: SCOPE }])
+    expect(folders()).toEqual([{ path: realpathSync(work), plur: 'on', scope: SCOPE }])
     expect(existsSync(join(work, '.plur.yaml'))).toBe(false)
     expect(existsSync(join(work, '.gitignore'))).toBe(false)
   }, TEST_TIMEOUT_MS)
@@ -189,7 +189,7 @@ describe('plur remote (#1413)', () => {
       mkdirSync(proj, { recursive: true })
       const r = await cli(['remote', '--url', baseUrl, '--token', TOKEN, '--scope', SCOPE, '--json'], { cwd: proj })
       expect(r.status, r.stderr).toBe(0)
-      expect(folders()).toEqual([{ path: realpathSync(proj), scope: SCOPE }])
+      expect(folders()).toEqual([{ path: realpathSync(proj), plur: 'on', scope: SCOPE }])
     }, TEST_TIMEOUT_MS)
   })
 
@@ -198,7 +198,7 @@ describe('plur remote (#1413)', () => {
     expect(r.status, r.stderr).toBe(0)
     const config = yaml.load(configText()) as { stores: Array<Record<string, unknown>> }
     expect(config.stores.map(s => s.scope)).toEqual([SCOPE, SCOPE2])
-    expect(folders()).toEqual([{ path: realpathSync(work), scope: SCOPE }])
+    expect(folders()).toEqual([{ path: realpathSync(work), plur: 'on', scope: SCOPE }])
   }, TEST_TIMEOUT_MS)
 
   it('a rejected token writes nothing', async () => {
@@ -318,7 +318,7 @@ describe('plur remote (#1413)', () => {
     expect(r.status, r.stderr).toBe(0)
     const config = yaml.load(configText()) as { stores: Array<Record<string, unknown>> }
     expect(config.stores).toEqual([expect.objectContaining({ url: baseUrl, scope: SCOPE })])
-    expect(folders()).toEqual([{ path: realpathSync(work), scope: SCOPE }])
+    expect(folders()).toEqual([{ path: realpathSync(work), plur: 'on', scope: SCOPE }])
     expect(existsSync(join(work, '.plur.yaml'))).toBe(false)
 
     const v = await cli(['init-remote', '--verify', '--json'])

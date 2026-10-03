@@ -679,9 +679,20 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   if (broken) return refuse(check, broken)
   const switchedOn = onWithoutLiteralOn(s, st, after)
   if (switchedOn !== null) {
-    return refuse(check, `line ${switchedOn}: this entry turns memory on through \`scope:\` or \`trusted:\` (or a \`plur:\` that is not written as a plain \`on\`), and plur folders repair never repairs such an entry — fix the problem named for it by hand`)
+    // The entry itself is fine: name the lines that hold the problems, not its
+    // line (#1567). The rule stays — a repair never brings memory back on in
+    // an entry whose own lines do not say `plur: on`.
+    const slips = [...new Set(check.issues.map(i => i.line).filter((n): n is number => n !== undefined))].sort((a, b) => a - b)
+    const what = slips.length === 0 ? 'the problems named here' : 'the problem at ' + listLines(slips)
+    return refuse(check, `fix ${what} by hand: the entry that starts at line ${switchedOn} is on through \`scope:\` or \`trusted:\` with no plain \`plur: on\` line of its own, and plur folders repair never changes a file in which such an entry would come back on`)
   }
   return finish(text, after, fixes, opts)
+}
+
+/** "line 6", "line 6 and line 8", "line 2, line 6 and line 8". */
+function listLines(ns: number[]): string {
+  const ls = ns.map(n => `line ${n}`)
+  return ls.length === 1 ? ls[0] : `${ls.slice(0, -1).join(', ')} and ${ls[ls.length - 1]}`
 }
 
 /**

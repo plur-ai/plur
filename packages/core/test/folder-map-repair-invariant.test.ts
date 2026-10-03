@@ -293,9 +293,36 @@ describe('invariant fuzz: repaired on ⊆ literal plur: on in the original', () 
     return m === text ? null : m
   }
 
-  for (const seed of [1, 2, 3, 4, 5]) {
-    it(`seed ${seed}`, () => {
+  /**
+   * Team-style maps (#1567): most entries carry a scope (or a grant), with or
+   * without a literal plur line, as the folder question and `folders set
+   * --scope` write them — and the slips land anywhere.
+   */
+  function genTeam(r: ReturnType<typeof makeRng>): string {
+    const { rnd, pick, int } = r
+    const eol = rnd() < 0.15 ? '\r\n' : '\n'
+    const lines: string[] = []
+    if (rnd() < 0.3) lines.push('# PLUR folder map', '#   - path: ~/x', '#     scope: group:a/b', '')
+    lines.push('version: 1', 'folders:')
+    const n = int(2, 6)
+    for (let i = 0; i < n; i++) {
+      lines.push(`  - path: ${pick([`/w/e${i}`, `"/w/e${i}"`, `'/w/e${i}'`])}`)
+      const keys: string[] = []
+      const roll = rnd()
+      if (roll < 0.7) keys.push(`plur: ${pick(['on', 'on', 'off', 'ask', '"on"', 'On', 'oof', 'onn'])}`)
+      if (rnd() < 0.75) keys.push(`scope: ${pick(['group:a/b', 'user:plur:x', '"group:a/b"', 'project:p', 'org:z'])}`)
+      if (rnd() < 0.25) keys.push(`trusted: ${pick(['true', 'false'])}`)
+      if (rnd() < 0.15) keys.push(pick(CUSTOM))
+      if (rnd() < 0.5) keys.reverse()
+      for (const k of keys) lines.push(`    ${k}${rnd() < 0.1 ? '   # note' : ''}`)
+    }
+    return lines.join(eol) + eol
+  }
+
+  for (const [seed, g] of [[1, gen], [2, gen], [3, gen], [4, gen], [5, gen], [11, genTeam], [12, genTeam], [13, genTeam], [14, genTeam]] as const) {
+    it(`seed ${seed}${g === genTeam ? ' (team-style maps)' : ''}`, () => {
       const r = makeRng(seed)
+      const gen = g
       const bad: string[] = []
       let fixable = 0
       let refused = 0
