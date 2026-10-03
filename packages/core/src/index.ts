@@ -7086,7 +7086,9 @@ export class Plur {
       // co_injection provenance) doubles as the dialing-context key — the
       // session default scope drives org-affinity when no explicit scope is
       // given, so a mid-session scope switch redials the right org's hosts.
-      session: options?.session_id,
+      // `dial_session` (#1566): the workspace's scope for a read with no
+      // session default of its own; never recorded as a session.
+      session: options?.dial_session ?? options?.session_id,
       remote: options?.remote,
       remote_timeout_ms: options?.remote_timeout_ms,
       remote_project: options?.remote_project,
