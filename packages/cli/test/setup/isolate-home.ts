@@ -21,7 +21,7 @@
  * backend/telemetry overrides are removed for the same reason as in
  * helpers/isolated-env.ts (#1399). Everything is restored after the file.
  */
-import { mkdtempSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterAll } from 'vitest'
@@ -42,6 +42,12 @@ for (const key of [...SET, ...REMOVED]) saved.set(key, process.env[key])
 const home = mkdtempSync(join(tmpdir(), 'plur-cli-test-home-'))
 const xdg = join(home, '.config')
 mkdirSync(xdg, { recursive: true })
+// The temp HOME hides the developer's (or CI runner's) ~/.gitconfig, and with
+// it the user identity `git commit` requires: the store's first sync commit
+// failed with "empty ident name" on the CI runners. Give the temp HOME a test
+// identity, as core's test/helpers/git-isolation.ts does. It also keeps a
+// global gitignore that lists engrams.yaml out of the fixtures (#1062).
+writeFileSync(join(home, '.gitconfig'), '[user]\n  name = PLUR Test\n  email = test@plur.ai\n')
 
 process.env.HOME = home
 process.env.USERPROFILE = home
