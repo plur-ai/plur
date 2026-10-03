@@ -191,17 +191,19 @@ describe('(d) one set of question nonces per folder for a host and its MCP serve
     expect(hostFolderAsk({ dir: d, policy, root, hosts: [{ pid: 4242, startedAt: T - 60_000 }] })).toBeNull()
   })
 
-  // #1563 review, L2: the reused question offers "not now" too, with a nonce
-  // of the asking (MCP) session, so the server can stop asking.
-  it('with notNowSession, the reused question offers "not now", bound to that session', () => {
+  // #1563 review, L2 (round 2): the reused question offers "not now" too,
+  // bound to the HOST's session, so it works in the host's shell (opencode
+  // sets PLUR_FOLDER_SESSION to that session).
+  it('with offerNotNow, the reused question offers "not now", bound to the host session', () => {
     const d = mk('d')
     const policy = resolveFolderPolicy(d, { root })
     folderAsk({ dir: d, policy, sessionId: 'ses_oc4', root, claim: () => true, bindSession: true, host: HOST })
-    const shown = hostFolderAsk({ dir: d, policy, root, hosts: [HOST], notNowSession: 'mcp-abc' })!
+    const shown = hostFolderAsk({ dir: d, policy, root, hosts: [HOST], offerNotNow: true })!
     const nn = shown.answers.find(a => a.label === 'Not now')!
     expect(nn, JSON.stringify(shown.answers)).toBeDefined()
-    expect(nn.command).toMatch(/ --not-now --nonce [0-9a-f]+ --session mcp-abc$/)
+    expect(nn.command).toMatch(/ --not-now --nonce [0-9a-f]+ --session ses_oc4$/)
     expect(shown.notNowNonce).toBeDefined()
+    expect(shown.hostSession).toBe('ses_oc4')
   })
 })
 

@@ -315,6 +315,8 @@ export interface FolderAsk {
   notNowNonce?: string
   /** Every nonce the question issued, one per answer (none for a notice). */
   nonces: string[]
+  /** For a question reused from a host (hostFolderAsk): the host's session, which holds its nonces. */
+  hostSession?: string
 }
 
 /**
@@ -361,20 +363,21 @@ export function hostFolderAsk(opts: {
   /** The processes that may have asked: the caller's ancestors, each with its start time. */
   hosts: FolderAskHost[]
   /**
-   * The asking session (the MCP server's). With it, the question also offers
-   * "not now" (#1563 review, L2): a nonce of that session, which this call
-   * issues, so the server can stop asking once it is used. Without it,
-   * nothing is issued.
+   * Also offer "not now" (#1563 review, L2): a nonce this call issues for the
+   * HOST's session, bound to it like the host's own nonces, so the command
+   * works in the host's shell (opencode sets PLUR_FOLDER_SESSION to that
+   * session). The asking server watches it (FolderAsk.hostSession) and stops
+   * asking once it is used. Without it, nothing is issued.
    */
-  notNowSession?: string
+  offerNotNow?: boolean
   plur?: FolderAskScopeRanker | null
   prompt?: string
 }): FolderAsk | null {
   if (opts.hosts.length === 0) return null
-  return buildFolderAsk({ ...opts, sessionId: '' }, { hosts: opts.hosts, ...(opts.notNowSession ? { notNowSession: opts.notNowSession } : {}) })
+  return buildFolderAsk({ ...opts, sessionId: '' }, { hosts: opts.hosts, offerNotNow: opts.offerNotNow === true })
 }
 
-function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; notNowSession?: string } | null): FolderAsk | null {
+function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; offerNotNow: boolean } | null): FolderAsk | null {
   const root = opts.root
   const mcp = opts.mcp === true
   // The decision could not be read (audit F4 of #1517): no command, no nonce.
@@ -483,7 +486,7 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; 
   const yesOn: Offer = { flags: '--on', answer: { mode: 'on' } }
   // A reused question offers "not now" as a nonce of the asking session
   // (#1563 review, L2); the host's own question has none.
-  const notNowSession = reuse ? host?.notNowSession : undefined
+  const notNowSession = reuse && host?.offerNotNow ? reuse.session : undefined
   const notNow: Offer | null = (mcp && !reuse) || notNowSession ? { flags: '--not-now', answer: { notNow: true } } : null
   const never: Offer = { flags: '--off', answer: { mode: 'off' } }
   const offered = [trust, yesScope, yesOn, notNow, never].filter((o): o is Offer => o !== null)
@@ -492,10 +495,8 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; 
   try {
     for (const o of offered) {
       let nonce: string
-      let offerSessionArg = sessionArg
       if (reuse && o === notNow && notNowSession) {
         nonce = issueFolderNonce(root, notNowSession, folder, o.answer, undefined, { bindSession: true })
-        offerSessionArg = ` --session ${quoted(notNowSession)}`
       } else if (reuse) {
         // Every offered answer must have the host's nonce, or this is not the
         // question the host asked: reuse nothing.
@@ -510,7 +511,7 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; 
         })
       }
       nonces.set(o, nonce)
-      command.set(o, `plur ${storeArg}folders set ${f} ${o.flags} --nonce ${nonce}${offerSessionArg}`)
+      command.set(o, `plur ${storeArg}folders set ${f} ${o.flags} --nonce ${nonce}${sessionArg}`)
     }
   } catch (err) {
     process.stderr.write(`[plur] folder map: could not issue a nonce (${(err as Error)?.message ?? err}).\n`)
@@ -583,6 +584,7 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; 
     answers,
     notice: false,
     ...(notNow ? { notNowNonce: nonces.get(notNow)! } : {}),
+    ...(reuse ? { hostSession: reuse.session } : {}),
     nonces: [...nonces.values()],
   }
 }

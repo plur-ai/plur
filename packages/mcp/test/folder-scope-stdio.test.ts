@@ -12,7 +12,7 @@
  * CLI (`node ../cli/dist/index.js`), as an agent would in its shell.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { execFileSync } from 'child_process'
@@ -20,6 +20,8 @@ import { fileURLToPath, pathToFileURL } from 'url'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
+import { Plur, folderAsk } from '@plur-ai/core'
+import { createFolderGate } from '../src/folder-gate.js'
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST_ENTRY = join(PKG_ROOT, 'dist', 'index.js')
@@ -244,6 +246,78 @@ describe.skipIf(!ready)('multi-root workspaces: a folder scope only when every r
     expect(stub.appendStatements).toEqual([])
   }, 90_000)
 
+  // Review round 2 of #1563, M1 (Codex path 1): two personal map scopes
+  // disagree under a trusted parent .plur.yaml naming a team; the server
+  // starts in one of them. plur_session_start must not fall back to the
+  // start folder's .plur.yaml once the roots gave no scope.
+  it('M1: disagreeing personal scopes, a trusted team .plur.yaml above them: no team, with or without plur_session_start', async () => {
+    const e = multi((a, b) => `version: 1\nfolders:\n  - path: "${a}"\n    plur: on\n`)
+    const P = e.a
+    const sub = join(P, 'sub')
+    mkdirSync(sub)
+    writeFileSync(join(P, '.plur.yaml'), `scope: ${SCOPE2}\n`)
+    writeFileSync(join(e.home, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: "${P}"\n    trusted: true\n    scope: global\n  - path: "${sub}"\n    plur: on\n    scope: "project:private"\n`)
+    const client = await startRoots({ ...e, workspace: sub }, [P, sub])
+    const before = await call(client, 'plur_learn', { statement: 'zebra-m1-before a note' })
+    expect([SCOPE, SCOPE2]).not.toContain(before.scope)
+    const s = await call(client, 'plur_session_start', { task: 'zebra m1' })
+    expect(s.default_scope ?? null, JSON.stringify(s)).toBeNull()
+    const after = await call(client, 'plur_learn', { statement: 'zebra-m1-after a note' })
+    expect([SCOPE, SCOPE2], JSON.stringify(after)).not.toContain(after.scope)
+    expect(stub.appendStatements).toEqual([])
+  }, 90_000)
+
+  // M2: the home folder, a folder above it, or / as a root covers every
+  // folder: such a workspace never gets a team scope.
+  it('M2: [home, team] and [/, team], and [home] with the server started in a team folder: no team', async () => {
+    const e = multi((a, b) => `version: 1\nfolders:\n  - path: "${a}"\n    plur: on\n  - path: "${b}"\n    plur: on\n    scope: ${SCOPE}\n`)
+    for (const roots of [[e.fakeHome, e.b], ['/', e.b], [e.b, e.fakeHome]]) {
+      const client = await startRoots(e, roots)
+      const r = await call(client, 'plur_learn', { statement: `zebra-m2-${roots[0] === '/' ? 'root' : 'home'} a note` })
+      expect(r.scope, JSON.stringify(r)).not.toBe(SCOPE)
+      const s = await call(client, 'plur_session_start', { task: 'zebra m2' })
+      expect(s.default_scope ?? null).toBeNull()
+    }
+    const homeOnly = await startRoots({ ...e, workspace: e.b }, [e.fakeHome])
+    const r = await call(homeOnly, 'plur_learn', { statement: 'zebra-m2-home-only a note' })
+    expect(r.scope, JSON.stringify(r)).not.toBe(SCOPE)
+    expect(stub.appendStatements).toEqual([])
+  }, 120_000)
+
+  // L7 / Codex path 5: a link inside a trusted team folder pointing at a
+  // personal folder gets the personal folder's decision.
+  it('a symlink inside a trusted team folder to a personal folder: no team', async () => {
+    const e = multi((a, b) => `version: 1\nfolders:\n  - path: "${a}"\n    trusted: true\n  - path: "${b}"\n    plur: on\n`)
+    writeFileSync(join(e.a, '.plur.yaml'), `scope: ${SCOPE}\n`)
+    const link = join(e.a, 'link')
+    symlinkSync(e.b, link)
+    const client = await startRoots(e, [link])
+    const r = await call(client, 'plur_learn', { statement: 'zebra-link a note' })
+    expect(r.scope, JSON.stringify(r)).not.toBe(SCOPE)
+    expect(stub.appendStatements).toEqual([])
+  }, 60_000)
+
+  // R2 / L6: a session default from plur_session_start does not survive a
+  // change of roots.
+  it('a session started in [team], then a personal root added: the next save reaches no team', async () => {
+    const e = multi((a, b) => `version: 1\nfolders:\n  - path: "${a}"\n    plur: on\n  - path: "${b}"\n    plur: on\n    scope: ${SCOPE}\n`)
+    let current = [e.b]
+    const transport = new StdioClientTransport({ command: process.execPath, args: [DIST_ENTRY], cwd: e.workspace, stderr: 'ignore', env: childEnv(e) })
+    const client = new Client({ name: 'roots-change', version: '1.0.0' }, { capabilities: { roots: { listChanged: true } } })
+    client.setRequestHandler('roots/list' as any, async () => ({ roots: current.map(r => ({ uri: pathToFileURL(r).href, name: 'ws' })) }))
+    await client.connect(transport)
+    live.push(client)
+    const s = await call(client, 'plur_session_start', { task: 'zebra r2' })
+    expect(s.default_scope).toBe(SCOPE)
+    current = [e.b, e.a]
+    await (client as any).notification({ method: 'notifications/roots/list_changed' })
+    await new Promise(r => setTimeout(r, 100))
+    const r = await call(client, 'plur_learn', { statement: 'zebra-r2-after a note' })
+    expect(r.scope, JSON.stringify(r)).not.toBe(SCOPE)
+    expect(stub.appendStatements).toEqual([])
+  }, 60_000)
+
   it('[team A, team A]: team A', async () => {
     const e = multi((a, b) => `version: 1\nfolders:\n  - path: "${a}"\n    scope: ${SCOPE}\n  - path: "${b}"\n    scope: ${SCOPE}\n`)
     const client = await startRoots(e, [e.a, e.b])
@@ -265,5 +339,29 @@ describe.skipIf(!ready)('several sessions open, none named: the folder scope app
     await call(client, 'plur_session_start', { task: 'two', default_scope: 'project:other' })
     const r = await call(client, 'plur_learn', { statement: 'zebra-ambiguous an id-less save' })
     expect(r.scope, JSON.stringify(r)).toBe(SCOPE)
+  }, 60_000)
+})
+
+// Review round 2 of #1563, L2: the reused question's "not now" works in
+// opencode's own shell, where the plugin sets PLUR_FOLDER_SESSION. Run
+// through the real CLI with that environment.
+describe.skipIf(!ready)('the reused question\'s "not now" through the real CLI in an opencode shell (#1563 review round 2, L2)', () => {
+  it('the command works with PLUR_FOLDER_SESSION set to the plugin\'s session, and the server stops asking', () => {
+    const e = env()
+    const plur = new Plur({ path: e.home })
+    const HOST = { pid: 4242, startedAt: 1_790_000_000_000 }
+    folderAsk({ dir: e.workspace, policy: plur.resolveFolderPolicy(e.workspace), sessionId: 'ses_oc', root: plur.storageRoot, claim: () => true, bindSession: true, host: HOST })
+    const gate = createFolderGate(plur, { hosts: () => [HOST] })
+    const r = gate.check({ roots: [], cwd: e.workspace }) as any
+    const nn = (r.answers as Array<{ label: string; command: string }>).find(a => a.label === 'Not now')!
+    expect(nn, JSON.stringify(r.answers)).toBeDefined()
+    const q = (x: string) => `'${x.replace(/'/g, `'\\''`)}'`
+    execFileSync('sh', ['-c', `${q(process.execPath)} ${q(CLI_ENTRY)} ${nn.command.slice('plur '.length)}`], {
+      env: { ...childEnv(e), PLUR_FOLDER_SESSION: 'ses_oc' }, cwd: e.workspace, encoding: 'utf8', timeout: 30_000,
+    })
+    const after = gate.check({ roots: [], cwd: e.workspace }) as any
+    expect(after.plur).toBe('off')
+    expect(after.reason).toBe('not-now')
+    gate.end()
   }, 60_000)
 })

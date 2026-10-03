@@ -614,6 +614,11 @@ interface SessionTelemetry {
   default_scope_source?: 'caller' | 'folder-map' | 'project-config' | 'none'
   /** True while a mid-session plur_session_scope op:"set" is in effect (#243). */
   scope_adjusted?: boolean
+  /**
+   * The workspace (its roots) the session started in (#1563 review round 2):
+   * the start default holds only while the roots are these.
+   */
+  workspace_key?: string
 }
 const _sessionTelemetry = new Map<string, SessionTelemetry>()
 
@@ -829,12 +834,31 @@ function _escapedText(s: string): string {
 }
 
 /**
- * The folder map's write scope for the editor's workspace (#1525), attached
- * by the server's folder gate to a gated call's arguments. plur_session_start
- * uses it as the session default when the caller passes none. A Symbol key,
- * so a client cannot set it: JSON arguments carry only string keys.
+ * The workspace's default write scope, attached by the server to a call's
+ * arguments as a FolderScopeContext (#1525, #1563 review round 2). Every path
+ * that picks a default for an unscoped write reads it, and asks it at the
+ * moment the write is admitted, so the roots are the current ones. A Symbol
+ * key, so a client cannot set it: JSON arguments carry only string keys.
  */
 export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
+
+/**
+ * What the server attaches under FOLDER_SCOPE. `resolve()` fetches the
+ * workspace now and runs the one resolver (folder-gate.ts
+ * workspaceWriteScope): the scope every root agrees on, or null — and null is
+ * final, nothing falls back after it. `key` identifies the workspace (its
+ * roots), so a session default from plur_session_start is dropped when the
+ * roots change. null from resolve(): the workspace could not be read, which
+ * also means no scope.
+ */
+export interface FolderScopeContext {
+  resolve(): Promise<{ scope: string | null; key: string } | null>
+}
+
+function _folderContext(args: Record<string, unknown>): FolderScopeContext | null {
+  const c = (args as Record<PropertyKey, unknown>)[FOLDER_SCOPE] as FolderScopeContext | undefined
+  return c && typeof c === 'object' && typeof c.resolve === 'function' ? c : null
+}
 
 export function readTrustedProjectConfig(
   trust: { isDirectoryTrusted(dir: string): boolean; readonly storageRoot?: string },
@@ -917,30 +941,55 @@ function _resolveWriteSession(args: Record<string, unknown>): string {
   return _resolveInjectionSession(args) ?? NO_SESSION
 }
 
-/** Registry keys holding a workspace folder's scope (#1562); no real session id starts with NUL. */
+/** Registry keys holding a workspace's scope (#1562); no real session id starts with NUL. */
 const FOLDER_SCOPE_SESSION_PREFIX = '\u0000plur:folder-scope:'
 
+/** True when `id` names a session this process knows: started here, or registered in core. */
+function _knownSession(id: string, plur: Plur): boolean {
+  if (_sessionTelemetry.has(id)) return true
+  try { return plur.trackedSessionScopes().includes(id) } catch { return false }
+}
+
 /**
- * The session a WRITE passes to core, with the workspace folder's scope as
- * the default when nothing else gives one (#1562).
+ * The session a WRITE passes to core (#1562; #1563 review round 2). Every
+ * path that picks a default for an unscoped write comes through here.
  *
- * The folder gate attaches the folder's scope (a map entry's, or the scope
- * the user's "yes" recorded, else a trusted `.plur.yaml`'s) to every gated
- * call under FOLDER_SCOPE. plur_session_start used it; a write did not, so an
- * unscoped plur_learn with no open session (NO_SESSION) landed in `global`
- * even in a folder mapped to a team scope. Now, when the resolved session has
- * no default of its own, the write runs under a registry key that holds the
- * folder's scope. The folder's scope is the same for every session of this
- * workspace, so this never hands one session another's choice (E7). An
- * explicit `scope` still wins in core, and so does a session's own default.
+ *  - A session explicitly set by plur_session_scope op:"set" keeps its scope:
+ *    the user's explicit choice.
+ *  - A default from plur_session_start holds only while the workspace's roots
+ *    are the ones the session started with; when they changed, this write uses
+ *    the workspace's answer instead (the default is not changed, so going
+ *    back to the same roots restores it).
+ *  - Otherwise, and with no session (none open, several open and none named,
+ *    or an id this process never registered — never the process slot), the
+ *    workspace's answer: the scope every root agrees on, or no scope at all.
+ *
+ * The workspace is resolved here, immediately before core admits the write,
+ * so a call that passed the folder gate before the roots changed still uses
+ * the current roots. An explicit `scope` on the call still wins in core.
+ * Without a FolderScopeContext (the tools used outside the server) the
+ * session alone decides, as before.
  */
-function _resolveWriteSessionWithFolder(args: Record<string, unknown>, plur: Plur): string {
-  const session = _resolveWriteSession(args)
-  const carried = (args as Record<PropertyKey, unknown>)[FOLDER_SCOPE]
-  if (typeof carried !== 'string' || carried.length === 0) return session
-  if (plur.getSessionScope({ session }) != null) return session
-  const key = FOLDER_SCOPE_SESSION_PREFIX + carried
-  plur.setSessionScope(carried, { session: key })
+async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined): Promise<string> {
+  const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
+  const chosen = base !== undefined ? base : (explicit ?? _implicitSessionId())
+  const ctx = _folderContext(args)
+  if (!ctx) return chosen ?? NO_SESSION
+  // An id this process never registered has no default (Codex path 6).
+  const session = chosen !== undefined && _knownSession(chosen, plur) ? chosen : NO_SESSION
+  let ws: { scope: string | null; key: string } | null = null
+  try { ws = await ctx.resolve() } catch { ws = null }
+  if (session !== NO_SESSION) {
+    const record = _sessionTelemetry.get(session)
+    const own = plur.getSessionScope({ session })
+    if (record?.scope_adjusted) return session
+    if (record === undefined && own != null) return session
+    if (record && own != null && ws !== null && (record.workspace_key === undefined || record.workspace_key === ws.key)) return session
+  }
+  const scope = ws?.scope ?? null
+  if (scope === null) return NO_SESSION
+  const key = FOLDER_SCOPE_SESSION_PREFIX + scope
+  plur.setSessionScope(scope, { session: key })
   return key
 }
 
@@ -1456,9 +1505,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // #243: resolve which session's default scope governs this write —
           // explicit session_id first, else the lone open session. Never
           // persisted on the engram (LearnContext.session selects a scope, it
-          // is not part of one). With neither giving a default, the workspace
-          // folder's scope (#1562).
-          session: _resolveWriteSessionWithFolder(args, plur),
+          // is not part of one). The workspace's answer where the session
+          // gives none, or its roots changed (#1562, #1563 review round 2).
+          session: await _writeSession(args, plur),
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -1762,7 +1811,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Same context derivation as plur_learn (formal Adapters #1): the
         // session is resolved once for the whole call, the .plur.yaml domain
         // is the default when an item names none, and an explicit value wins.
-        const batchSession = _resolveWriteSessionWithFolder(args, plur)
+        const batchSession = await _writeSession(args, plur)
         const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
         const items = raw.map((e) => ({
           statement: sanitizeStatement(e.statement as string),
@@ -3496,9 +3545,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // server's folder gate: a map entry's scope, else a trusted
         // .plur.yaml's, which is what the editor hooks use. Never from the
         // client: it travels under a Symbol key, which JSON cannot carry.
-        const carried = (args as Record<PropertyKey, unknown>)[FOLDER_SCOPE]
-        const folder_scope = typeof carried === 'string' ? carried : null
-        const default_scope = explicit_default_scope ?? folder_scope ?? projectConfig.scope ?? null
+        // Through the server, the workspace resolver decides (#1563 review
+        // round 2): every root must agree, and its "no scope" is final — the
+        // server cwd's .plur.yaml is NOT a fallback after it. Outside the
+        // server (no context), the cwd's trusted .plur.yaml, as before.
+        const folderCtx = _folderContext(args)
+        let workspace: { scope: string | null; key: string } | null = null
+        if (folderCtx) { try { workspace = await folderCtx.resolve() } catch { workspace = null } }
+        const folder_scope = folderCtx ? (workspace?.scope ?? null) : null
+        const default_scope = explicit_default_scope ?? (folderCtx ? folder_scope : (projectConfig.scope ?? null)) ?? null
         const scope_source = explicit_default_scope
           ? 'caller'
           : folder_scope && folder_scope !== projectConfig.scope
@@ -3534,6 +3589,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           if (t) {
             t.default_scope = default_scope
             t.default_scope_source = scope_source as 'caller' | 'folder-map' | 'project-config' | 'none'
+            // The workspace this default belongs to (#1563 review round 2).
+            if (workspace) t.workspace_key = workspace.key
           }
         }
 
@@ -3980,12 +4037,22 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // session record that is the recorded default (robust even if another
         // session_start reset the process slot since); otherwise fall back to
         // the project config, the same source session_start derives from.
-        const restored = record !== undefined
-          ? (record.default_scope ?? null)
-          : (readTrustedProjectConfig(plur).scope ?? null)
+        // With no session record: through the server, the workspace
+        // resolver's answer (its "no scope" is final, #1563 review round 2);
+        // outside it, the project config as before.
+        const clearCtx = _folderContext(args)
+        let fallback: string | null
+        if (clearCtx) {
+          let w: { scope: string | null; key: string } | null = null
+          try { w = await clearCtx.resolve() } catch { w = null }
+          fallback = w?.scope ?? null
+        } else {
+          fallback = readTrustedProjectConfig(plur).scope ?? null
+        }
+        const restored = record !== undefined ? (record.default_scope ?? null) : fallback
         const restored_source = record !== undefined
           ? (record.default_scope_source === 'caller' ? 'session-start' : record.default_scope_source ?? 'none')
-          : (restored != null ? 'project-config' : 'none')
+          : (restored != null ? (clearCtx ? 'folder-map' : 'project-config') : 'none')
         const { previous, next } = plur.adjustSessionScope(restored, { session, reason, trigger: 'clear' })
         if (record) record.scope_adjusted = false
         return withCommon({
@@ -4104,8 +4171,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             // own session is most likely to carry them in.
             await plur.learnRouted(sanitizeStatement(statement), {
               type: type as any,
-              // E7: no resolvable session → no session default (NO_SESSION).
-              session: endSession ?? NO_SESSION,
+              // E7: no resolvable session → no session default; through the
+              // server, the workspace's answer (#1563 review round 2).
+              session: await _writeSession(args, plur, endSession),
               domain: projectDomain,
               // Link the engram back to the session that produced it (#960).
               session_episode_id: episode.id,

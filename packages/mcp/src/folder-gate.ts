@@ -7,6 +7,7 @@ import { folderMapAdvice } from './folder-map-advice.js'
 import { fileURLToPath } from 'url'
 import { randomBytes } from 'crypto'
 import { execFileSync } from 'child_process'
+import { realpathSync } from 'fs'
 import { dirname, resolve } from 'path'
 import { folderOnCommand } from './tools.js'
 
@@ -372,6 +373,47 @@ export function ancestorHosts(now: number = Date.now()): FolderAskHost[] {
   return out
 }
 
+/**
+ * THE default write scope for an unscoped write in this workspace (#1562,
+ * #1563 review round 2) — the one resolver every path that picks a default
+ * uses: plur_learn, plur_learn_batch, plur_session_end's learns,
+ * plur_session_start and plur_session_scope clear.
+ *
+ * Inputs: every client root, none left out; with no roots, the server's
+ * start folder. Each is realpath-resolved first, so a link gets the decision
+ * of the folder it points at (its folder map entry, and the `.plur.yaml`
+ * found from the real path). Each must resolve to `on` with a scope — the
+ * map's, else a trusted `.plur.yaml`'s for that folder — and all to the SAME
+ * scope. Anything else gives null, and null means no scope (the write stays
+ * on this machine), with no fallback after it:
+ *  - two inputs with different scopes, or one with no scope;
+ *  - the home folder, a folder above it or a filesystem root (each covers
+ *    every folder under it);
+ *  - an input that cannot be resolved, or any error.
+ */
+export function workspaceWriteScope(plur: Plur, ws: Workspace): string | null {
+  const inputs = ws.roots.length > 0 ? ws.roots : [ws.cwd]
+  let agreed: string | null = null
+  for (const input of inputs) {
+    let dir: string
+    try { dir = realpathSync.native(input) } catch { return null }
+    if (isHomeOrAbove(dir) || isFilesystemRoot(dir)) return null
+    let policy: ReturnType<Plur['resolveFolderPolicy']>
+    try { policy = plur.resolveFolderPolicy(dir) } catch { return null }
+    if (policy.mode !== 'on' || !policy.scope) return null
+    if (agreed === null) agreed = policy.scope
+    else if (agreed !== policy.scope) return null
+  }
+  return agreed
+}
+
+/** The workspace's identity for a session default (#1563 review round 2): its roots, or its start folder. */
+export function workspaceKey(ws: Workspace): string {
+  const inputs = ws.roots.length > 0 ? ws.roots : [ws.cwd]
+  const real = inputs.map(i => { try { return realpathSync.native(i) } catch { return resolve(i) } })
+  return JSON.stringify([ws.roots.length > 0 ? 'roots' : 'cwd', ...[...new Set(real)].sort()])
+}
+
 /** True for the home folder, a filesystem root or a folder above home. */
 function isHomeOrAbove(dir: string): boolean {
   try { return coversHomeOrRoot(dir) } catch { return true }
@@ -506,7 +548,15 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
     if (!entry && !ended) {
       const shown = hosted.get(dir)
       if (shown) {
-        if (shown.notNowNonce !== undefined && !outstanding(shown.notNowNonce)) {
+        // "Not now" was answered: its nonce (in the host's session) is gone
+        // while the question's other nonces are still there. All of them gone
+        // means the host's question ended, which is no answer.
+        const hostSession = shown.hostSession
+        const inHost = (n: string): boolean => {
+          try { return hostSession !== undefined && folderNonceOutstanding(plur.storageRoot, hostSession, n) } catch { return false }
+        }
+        const nn = shown.notNowNonce
+        if (nn !== undefined && !inHost(nn) && shown.nonces.some(n => n !== nn && inHost(n))) {
           log(`folder ${JSON.stringify(shown.folder)}: the user answered "not now"; memory tools do nothing for the rest of this session.`)
           hosted.delete(dir)
           notNow.add(dir)
@@ -523,7 +573,7 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
         let found: FolderAsk | null = null
         try {
           const list = hostList()
-          if (list.length > 0) found = hostFolderAsk({ dir, policy, root: plur.storageRoot, hosts: list, notNowSession: sessionId, plur })
+          if (list.length > 0) found = hostFolderAsk({ dir, policy, root: plur.storageRoot, hosts: list, offerNotNow: true, plur })
         } catch (err) {
           log(`folder question of the host process could not be read (${(err as Error)?.message ?? err}).`)
         }
@@ -610,13 +660,10 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
         }
         on.push({ dir, ...(policy.scope ? { scope: policy.scope } : {}) })
       }
-      // The workspace's scope, only when every decided folder has the same
-      // one (#1563 review, H1). With several roots that disagree — one with no
-      // scope, or two teams — no scope is attached: a save cannot tell which
-      // root it is about, and the first root the client happened to list must
-      // not pick the team. The save then takes the ordinary unscoped path.
-      const scopes = new Set(on.map(o => o.scope))
-      const scope = on.length > 0 && scopes.size === 1 ? on[0].scope : undefined
+      // The workspace's scope: workspaceWriteScope, the one resolver every
+      // default uses (#1563 review round 2). Only when every input — every
+      // root, none left out — agrees on one scope; otherwise none.
+      const scope = workspaceWriteScope(plur, workspace) ?? undefined
       // Every folder is decided. A folder this session asked about and the
       // user answered "yes" for: the workspace scope becomes the session's
       // default write scope, unless something already set one. That is the
