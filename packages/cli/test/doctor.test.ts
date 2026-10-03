@@ -176,7 +176,11 @@ describe('plur doctor', () => {
         } catch (err: any) { return err.stdout?.toString() ?? '' }
       }
       const unset = JSON.parse(run({}, true))
-      expect(unset.tokenEnvUnset).toEqual([{ scope: 'group:acme/eng', url: 'http://127.0.0.1:9/', variable: VAR }])
+      expect(unset.tokenEnvUnset).toEqual([expect.objectContaining({ scope: 'group:acme/eng', url: 'http://127.0.0.1:9/', variable: VAR })])
+      // The same wording plur_doctor uses over MCP (review M2), and the fix says to restart (review L1).
+      expect(unset.tokenEnvUnset[0].detail).toMatch(/^NO TOKEN — .*PLUR_TEST_1572_TOKEN, which is unset or empty/)
+      expect(unset.tokenEnvUnset[0].fix).toMatch(/restart/i)
+      expect(unset.tokenEnvUnset[0].fix).toContain(VAR)
 
       const SECRET = 'tok-1572-should-never-print'
       const set = JSON.parse(run({ [VAR]: SECRET }, true))
@@ -188,6 +192,30 @@ describe('plur doctor', () => {
       rmSync(store, { recursive: true, force: true })
     }
   }, 90000)
+
+  it('an unset token_env variable fails the overall verdict and the exit code, in an otherwise healthy install (#1572 review M1)', () => {
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] } },
+    })
+    const store = join(home, '.plur')
+    mkdirSync(store, { recursive: true })
+    const VAR = 'PLUR_TEST_1572_VERDICT'
+    writeFileSync(join(store, 'config.yaml'), `stores:\n  - url: http://127.0.0.1:9/\n    scope: group:acme/eng\n    token_env: ${VAR}\n`)
+    const run = (extra: Record<string, string>) => {
+      const env: Record<string, string | undefined> = { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1', ...extra }
+      if (!(VAR in extra)) delete env[VAR]
+      try {
+        return { stdout: execSync(`node ${CLI} doctor --no-handshake --json`, { encoding: 'utf-8', timeout: 15000, cwd: home, env, stdio: ['ignore', 'pipe', 'ignore'] }), status: 0 }
+      } catch (err: any) { return { stdout: err.stdout?.toString() ?? '', status: err.status ?? 1 } }
+    }
+    const set = run({ [VAR]: 'tok-verdict' })
+    expect(JSON.parse(set.stdout).overall).toBe('ok')
+    expect(set.status).toBe(0)
+    const unset = run({})
+    expect(JSON.parse(unset.stdout).overall).toBe('fail')
+    expect(unset.status).not.toBe(0)
+  }, 60000)
 
   it('reports ok when both hooks and plur MCP are present', () => {
     writeGlobalSettings({

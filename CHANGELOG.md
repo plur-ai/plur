@@ -2,13 +2,13 @@
 
 ## Unreleased
 
-### `plur doctor` warns when a team store's token variable is unset (#1572)
+### `plur doctor` fails when a team store's token variable is unset (#1572)
 
-A team store added with `--token-env` takes its token from an environment variable. When that variable was unset or empty, `plur doctor` still said everything was ok, and the only sign was one line on stderr. Saves to that store waited in the outbox and recalls skipped it.
+A team store added with `--token-env` takes its token from an environment variable. When that variable was unset or empty, `plur doctor` still said "Healthy", reported `overall: ok` and exited 0, and the only sign was one line on stderr. Saves to that store waited in the outbox and recalls skipped it. The MCP `plur_doctor` already said not ok for the same setup.
 
-- `plur doctor` now prints a warning for each such store, naming the store, its address and the variable, and saying what to do: set the variable where PLUR runs, then run `plur outbox --flush`. It never prints a token.
-- `plur doctor --json` lists them as `tokenEnvUnset` (scope, url, variable).
-- It is advice, like the other store warnings, and does not on its own make the overall check fail.
+- `plur doctor` now reports such a store as a failed check, sets `overall: fail` and exits non-zero, as `plur_doctor` does. Both doctors give the same detail ("NO TOKEN — …") and the same fix.
+- The fix says to set the variable where PLUR runs, then restart the editor or its MCP server so it picks the variable up (a running server keeps the environment it started with), and that queued engrams flush on the next session start or with `plur outbox --flush`.
+- `plur doctor --json` lists the stores as `tokenEnvUnset` (scope, url, variable, detail, fix). No token is ever printed.
 
 ### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562)
 

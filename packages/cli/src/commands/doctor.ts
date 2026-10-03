@@ -24,7 +24,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates, folderMapProblem, tokenFromEnv } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { repairAdvice, repairCommandFor } from './folders.js'
 
@@ -209,9 +209,10 @@ interface DoctorReport {
    * Remote stores whose token comes from an environment variable
    * (`token_env`, #1561) that is unset or empty where doctor runs (#1572).
    * Saves to such a store wait in the outbox and recalls skip it. Names the
-   * variable, never a value. Advisory only: does not fail the overall check.
+   * variable, never a value. It fails the overall check, as the MCP
+   * `plur_doctor` does, with the same `detail` and `fix` (#1572 review M1/M2).
    */
-  tokenEnvUnset: Array<{ scope: string; url: string; variable: string }>
+  tokenEnvUnset: Array<{ scope: string; url: string; variable: string; detail: string; fix: string }>
   /**
    * opencode leg. Owner-approved pre-publish requirement (2026-09-16): until
    * `@plur-ai/opencode` is published, opencode's `plugin: ["@plur-ai/opencode"]`
@@ -512,7 +513,10 @@ function findTokenEnvUnset(flags: GlobalFlags): DoctorReport['tokenEnvUnset'] {
     const stores = loadConfig(join(root, 'config.yaml')).stores ?? []
     return stores
       .filter(s => s.url && s.token_env && !s.token && tokenFromEnv(s.token_env) === undefined)
-      .map(s => ({ scope: s.scope, url: s.url!, variable: s.token_env! }))
+      .map(s => ({
+        scope: s.scope, url: s.url!, variable: s.token_env!,
+        detail: tokenEnvUnsetDetail(s.token_env!, s.scope), fix: tokenEnvUnsetFix(s.url!, s.token_env!),
+      }))
   } catch {
     return []
   }
@@ -1297,6 +1301,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
         }
       }
     } catch { /* doctor never fails on its own probe */ }
+    const tokenEnvUnset = findTokenEnvUnset(flags)
     const overall: 'ok' | 'fail' =
       folderMap === null &&
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
@@ -1304,7 +1309,9 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       brokenNodeMcp.length === 0 &&
       (!cursorProjectDetected || cursorWired) &&
       // #1299: a queued write no retry will deliver is a real failure.
-      (outbox?.ok ?? true)
+      (outbox?.ok ?? true) &&
+      // #1572: a team store with no token cannot work; MCP plur_doctor says not ok too.
+      tokenEnvUnset.length === 0
         ? 'ok' : 'fail'
     // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
     // The two detections are not the same kind of signal. A `.cursor/`
@@ -1357,7 +1364,6 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       : null
 
     const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
-    const tokenEnvUnset = findTokenEnvUnset(flags)
 
     return {
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
@@ -1618,11 +1624,11 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   if (report.tokenEnvUnset.length > 0) {
     outputText('')
+    // The same detail and fix plur_doctor gives over MCP (#1572 review M2).
     for (const t of report.tokenEnvUnset) {
-      outputText(`⚠  Team store "${t.scope}" (${t.url}) takes its token from ${t.variable}, which is unset or empty here.`)
+      outputText(`✗ remote store: ${t.url} — ${t.detail}`)
+      outputText(`   Fix: ${t.fix}`)
     }
-    outputText('   Saves to it wait in the outbox and recalls skip it. Set the variable where PLUR runs (your shell')
-    outputText('   profile, or the env of the editor\'s MCP server), then run `plur outbox --flush`.')
   }
 
   outputText('')

@@ -232,17 +232,18 @@ describe('doctor --quiet (#730)', () => {
     const { printText } = await import('../src/commands/doctor.js')
     printText({
       ...(await report()),
-      tokenEnvUnset: [{ scope: 'group:acme/eng', url: 'https://team.example/sse', variable: 'ACME_PLUR_TOKEN' }],
+      tokenEnvUnset: [{ scope: 'group:acme/eng', url: 'https://team.example/sse', variable: 'ACME_PLUR_TOKEN', detail: 'NO TOKEN — the detail', fix: 'Remote https://team.example/sse: the fix, then restart' }],
     }, { quiet: true })
     const text = out.join('')
-    expect(text).toContain('Team store "group:acme/eng" (https://team.example/sse) takes its token from ACME_PLUR_TOKEN, which is unset or empty here.')
-    expect(text).toContain('Saves to it wait in the outbox and recalls skip it.')
-    expect(text).toContain('plur outbox --flush')
+    // The report's own strings, shared with plur_doctor over MCP.
+    expect(text).toContain('remote store: https://team.example/sse — NO TOKEN — the detail')
+    expect(text).toContain('Remote https://team.example/sse: the fix, then restart')
+    expect(text).not.toContain('✓ Healthy')
   })
 
   it('prints nothing about token_env when every variable is set (#1572)', async () => {
     const { printText } = await import('../src/commands/doctor.js')
     printText(await report(), { quiet: true })
-    expect(out.join('')).not.toContain('takes its token from')
+    expect(out.join('')).not.toContain('NO TOKEN')
   })
 })
