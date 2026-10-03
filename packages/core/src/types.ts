@@ -312,6 +312,15 @@ export interface InjectOptions {
   rerank?: boolean
   /** Session ID (from plur_session_start) recorded on the co_injection provenance event (#452). */
   session_id?: string
+  /**
+   * The session whose default scope sets the remote dialing context, when it
+   * is not `session_id` (#1566). The MCP server passes the workspace's own
+   * registry key here for a read with no session default of its own, so the
+   * folder's team store is dialed while `session_id` — what is recorded on
+   * the co_injection event — stays the caller's real session (or none).
+   * Omitted: `session_id` sets the dialing context, as before.
+   */
+  dial_session?: string
   /** Which surface asked for this injection. Recorded on the co_injection event. */
   source?: InjectionSource
   /**
