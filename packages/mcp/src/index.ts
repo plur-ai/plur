@@ -349,6 +349,7 @@ async function installClaudeUserMcp(): Promise<{ ok: boolean; status: string }> 
     heal: (config) => healRaceyEntry(config.mcpServers as Record<string, unknown>) ? 'upgraded stale npx entry' : null,
     legacyEntry: oldEntry,
     legacyPath,
+    rerunCommand: 'plur-mcp init',
   })
   if (!r.ok || oldEntry === undefined) return { ok: r.ok, status: r.message }
 

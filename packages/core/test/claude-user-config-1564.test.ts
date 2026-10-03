@@ -47,12 +47,15 @@ describe('registerClaudeUserMcp (#1564 review)', () => {
     expect(fired).toBeGreaterThanOrEqual(2)
   })
 
-  it('L1: a file that keeps changing is refused with a clear message, and is left as the other writer left it', () => {
+  it('L1/R1: changed again after the one re-apply → refused, naming Claude Code; left as the other writer left it', () => {
     writeFileSync(userPath, JSON.stringify({ a: 1 }))
     let n = 0
     const r = register({ _beforeWrite: () => { writeFileSync(userPath, JSON.stringify({ a: 1, n: ++n })) } })
     expect(r.ok).toBe(false)
-    expect(r.message).toMatch(/kept changing/)
+    // Exactly one re-apply (#1564 re-review R1): fewer completed writes, fewer lost updates.
+    expect(n).toBe(2)
+    expect(r.message).toMatch(/Claude Code is writing .* right now/)
+    expect(r.message).toMatch(/run plur init again/)
     expect(read().mcpServers).toBeUndefined()
     expect(backups()).toEqual([])
   })

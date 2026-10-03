@@ -24,10 +24,12 @@ while `plur doctor` said it was registered. This was also the case in 0.21.0.
   went only into the repo's settings.json, where Claude Code never read it.)
 - `plur init` exits non-zero when the MCP server could not be registered, and
   says why: an unreadable or non-object `~/.claude.json`, an `mcpServers`
-  that is not an object, a symlink to a missing file, or a file that kept
-  changing (Claude Code saving it) through three tries. A change made while
-  init is writing is never overwritten; the edit is re-applied to the new
-  content. A byte-order mark is accepted. At most the last three PLUR backups
+  that is not an object, a symlink to a missing file, or Claude Code writing
+  `~/.claude.json` at that moment. If the file changes while init is writing,
+  the edit is re-applied once to the new content; if it changes again, init
+  stops and asks you to run it again. This narrows the window in which an
+  update by Claude Code could be lost; it cannot close it, because Claude Code
+  takes no lock PLUR could share. A byte-order mark is accepted. At most the last three PLUR backups
   of `~/.claude.json` are kept, each readable only by you.
 - `plur-mcp init` follows the same rules. It used to write `<cwd>/.mcp.json`,
   or `~/.claude/mcp.json` when that file existed, and Claude Code never reads

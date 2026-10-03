@@ -22,8 +22,12 @@ import { backupPath } from './instruction-section.js'
  * - The edit is applied to what was read; immediately before the atomic
  *   rename the file is read again and its content, size, mtime and inode are
  *   compared. If anything changed (Claude Code saving meanwhile), the edit is
- *   re-applied to the fresh content, up to `maxAttempts` times, and then
- *   refused — never written over the other writer's change (L1).
+ *   re-applied to the fresh content once; if it changed again, PLUR refuses
+ *   and says Claude Code is writing the file (L1, #1564 re-review R1). This
+ *   NARROWS the lost-update window to the time between that last check and
+ *   the rename; it cannot close it, because Claude Code takes no lock PLUR
+ *   could share. Retrying more often would complete more PLUR writes and so
+ *   lose more of the other writer's updates (measured), so it does not.
  * - Before a change, the current bytes are saved beside the file as
  *   `<name>.plur-backup-<stamp>` (mode 0600: the file holds Claude Code's
  *   private state); only the newest `maxBackups` PLUR backups are kept.
@@ -42,8 +46,10 @@ export interface RegisterClaudeUserMcpOptions {
   legacyPath?: string
   /** PLUR backups of the file to keep (default 3). */
   maxBackups?: number
-  /** Re-applications when the file changes underneath (default 3). */
+  /** Attempts in all when the file changes underneath (default 2: the first and one re-apply). */
   maxAttempts?: number
+  /** The command to name when the file was busy (default `plur init`). */
+  rerunCommand?: string
   /** Test seam: runs just before the last check and the rename. */
   _beforeWrite?: () => void
 }
@@ -118,7 +124,7 @@ export function pruneBackups(target: string, keep: number): void {
 
 export function registerClaudeUserMcp(opts: RegisterClaudeUserMcpOptions): RegisterClaudeUserMcpResult {
   const { userPath } = opts
-  const maxAttempts = opts.maxAttempts ?? 3
+  const maxAttempts = opts.maxAttempts ?? 2
   const keep = opts.maxBackups ?? 3
   const refused = (why: string): RegisterClaudeUserMcpResult =>
     ({ ok: false, status: 'refused', message: `not registered — ${userPath} ${why}. Nothing was changed` })
@@ -211,8 +217,9 @@ export function registerClaudeUserMcp(opts: RegisterClaudeUserMcpOptions): Regis
     pruneBackups(target, keep)
     return done(a.status, a.label, backup)
   }
-  return refused(
-    `kept changing while PLUR was updating it (${maxAttempts} tries) — Claude Code may be running and saving it; ` +
-    'quit Claude Code and run init again',
-  )
+  return {
+    ok: false,
+    status: 'refused',
+    message: `not registered — Claude Code is writing ${userPath} right now. Nothing was changed; run ${opts.rerunCommand ?? 'plur init'} again`,
+  }
 }
