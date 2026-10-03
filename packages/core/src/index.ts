@@ -161,6 +161,8 @@ export {
   endFolderNonceSession,
   folderNonceOutstanding,
   hostFolderNonces,
+  FOLDER_HOST_START_TOLERANCE_MS,
+  type FolderAskHost,
   answerFolderNotNow,
   sweepFolderNonces,
   removeLegacyTrustEntry,

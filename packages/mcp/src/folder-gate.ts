@@ -1,6 +1,7 @@
 import {
   folderOffEntries, folderMapProblem, folderAsk, hostFolderAsk, folderNonceOutstanding, endFolderNonceSession,
   sweepFolderNonces, coversHomeOrRoot, FOLDER_NONCE_TTL_MS, type FolderMapProblem, type Plur, type FolderAsk, type FolderAskAnswer,
+  type FolderAskHost,
 } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import { fileURLToPath } from 'url'
@@ -328,31 +329,45 @@ export interface FolderAskPayload {
 /** Every workspace folder is `on`: the tool runs, with the folder map's scope when there is one. */
 export interface FolderOn { plur: 'on'; scope?: string }
 
+/** `ps` etime (`[[dd-]hh:]mm:ss`) in seconds, or null. */
+export function parseEtime(etime: string): number | null {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime.trim())
+  if (!m) return null
+  return (Number(m[1] ?? 0) * 86400) + (Number(m[2] ?? 0) * 3600) + Number(m[3]) * 60 + Number(m[4])
+}
+
 /**
- * This process's ancestors, nearest first (#1562): the processes that may
- * have asked the folder question already, as the opencode plugin does in the
- * opencode process that started this server (directly, or through npx).
- * One `ps` call, at most eight levels; [] when it cannot be told (Windows,
- * no `ps`): then the server asks its own question, as before.
+ * This process's ancestors, nearest first, each with its start time (#1562,
+ * #1563 review L3): the processes that may have asked the folder question
+ * already, as the opencode plugin does in the opencode process that started
+ * this server (directly, or through npx). One `ps` call, at most eight
+ * levels. [] when it cannot be told (Windows, no `ps`, unreadable output):
+ * then the server asks its own question, as before. Without a start time a
+ * process is never matched, so a reused process id cannot pass for the host.
  */
-export function ancestorPids(): number[] {
+export function ancestorHosts(now: number = Date.now()): FolderAskHost[] {
   if (process.platform === 'win32') return []
   let table: string
   try {
-    table = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] })
+    table = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,etime='], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] })
   } catch {
-    return process.ppid > 1 ? [process.ppid] : []
+    return []
   }
-  const parent = new Map<number, number>()
+  const info = new Map<number, { ppid: number; startedAt: number }>()
   for (const line of table.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
-    if (m) parent.set(Number(m[1]), Number(m[2]))
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line)
+    if (!m) continue
+    const secs = parseEtime(m[3])
+    if (secs === null) continue
+    info.set(Number(m[1]), { ppid: Number(m[2]), startedAt: now - secs * 1000 })
   }
-  const out: number[] = []
+  const out: FolderAskHost[] = []
   let pid = process.ppid
-  while (pid > 1 && out.length < 8 && !out.includes(pid)) {
-    out.push(pid)
-    pid = parent.get(pid) ?? 0
+  while (pid > 1 && out.length < 8 && !out.some(h => h.pid === pid)) {
+    const i = info.get(pid)
+    if (!i) break
+    out.push({ pid, startedAt: i.startedAt })
+    pid = i.ppid
   }
   return out
 }
@@ -402,12 +417,13 @@ function isFilesystemRoot(dir: string): boolean {
  * stdio server calls it on stdin end and on SIGTERM / SIGINT, and nonce files
  * of sessions killed outright are swept once expired (audit F1 of #1529).
  */
-export function createFolderGate(plur: Plur, opts: { sessionId?: string; hostPids?: () => number[] } = {}): {
+export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?: () => FolderAskHost[] } = {}): {
   sessionId: string
   /**
    * The off answer, the folder question, or — every folder decided `on` — the
-   * folder map's write scope for the workspace (the first folder that has
-   * one), for plur_session_start's default.
+   * folder map's write scope for the workspace, only when every folder has
+   * the same one (#1563 review, H1), for plur_session_start's default and
+   * the unscoped writes.
    */
   check(workspace: Workspace): FolderOffAnswer | FolderAskPayload | FolderOn
   end(): void
@@ -425,13 +441,15 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hostPid
   const reissueAfter = Math.max(0, FOLDER_NONCE_TTL_MS - 60_000)
   // The processes that may have asked already (#1562), looked up once, when
   // first needed.
-  let hosts: number[] | null = null
-  const hostPids = (): number[] => {
+  let hosts: FolderAskHost[] | null = null
+  const hostList = (): FolderAskHost[] => {
     if (hosts === null) {
-      try { hosts = (opts.hostPids ?? ancestorPids)() } catch { hosts = [] }
+      try { hosts = (opts.hosts ?? ancestorHosts)() } catch { hosts = [] }
     }
     return hosts
   }
+  /** The host's question this session is showing, by folder, with this session's "not now" nonce (#1563 review, L2). */
+  const hosted = new Map<string, FolderAsk>()
 
   const notNowAnswer = (folder: string): FolderOffAnswer => ({
     success: true,
@@ -482,15 +500,38 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hostPid
     // One set of nonces per folder (#1562): when the process that started
     // this server (the opencode plugin, in opencode) already asked about this
     // folder, show that question, with its nonces, instead of a second one.
+    // It also offers "not now", with a nonce of THIS session, issued once and
+    // shown on every call; once it is used, memory is off here for the rest
+    // of the session, as for the server's own question (#1563 review, L2).
     if (!entry && !ended) {
-      let hosted: FolderAsk | null = null
-      try {
-        const pids = hostPids()
-        if (pids.length > 0) hosted = hostFolderAsk({ dir, policy, root: plur.storageRoot, hostPids: pids, plur })
-      } catch (err) {
-        log(`folder question of the host process could not be read (${(err as Error)?.message ?? err}).`)
+      const shown = hosted.get(dir)
+      if (shown) {
+        if (shown.notNowNonce !== undefined && !outstanding(shown.notNowNonce)) {
+          log(`folder ${JSON.stringify(shown.folder)}: the user answered "not now"; memory tools do nothing for the rest of this session.`)
+          hosted.delete(dir)
+          notNow.add(dir)
+          return notNowAnswer(shown.folder)
+        }
+        // Still the host's question (its nonces unused): show it again.
+        let still: FolderAsk | null = null
+        try { still = hostFolderAsk({ dir, policy, root: plur.storageRoot, hosts: hostList(), plur }) } catch { /* treated as gone */ }
+        if (still && still.nonces.every(n => shown.nonces.includes(n))) {
+          return { success: true, plur: 'ask', folder: shown.folder, question: shown.text, answers: shown.answers }
+        }
+        hosted.delete(dir)
+      } else {
+        let found: FolderAsk | null = null
+        try {
+          const list = hostList()
+          if (list.length > 0) found = hostFolderAsk({ dir, policy, root: plur.storageRoot, hosts: list, notNowSession: sessionId, plur })
+        } catch (err) {
+          log(`folder question of the host process could not be read (${(err as Error)?.message ?? err}).`)
+        }
+        if (found && !found.notice) {
+          hosted.set(dir, found)
+          return { success: true, plur: 'ask', folder: found.folder, question: found.text, answers: found.answers }
+        }
       }
-      if (hosted && !hosted.notice) return { success: true, plur: 'ask', folder: hosted.folder, question: hosted.text, answers: hosted.answers }
     }
     if (!entry && ended) {
       return {
@@ -569,13 +610,22 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hostPid
         }
         on.push({ dir, ...(policy.scope ? { scope: policy.scope } : {}) })
       }
+      // The workspace's scope, only when every decided folder has the same
+      // one (#1563 review, H1). With several roots that disagree — one with no
+      // scope, or two teams — no scope is attached: a save cannot tell which
+      // root it is about, and the first root the client happened to list must
+      // not pick the team. The save then takes the ordinary unscoped path.
+      const scopes = new Set(on.map(o => o.scope))
+      const scope = on.length > 0 && scopes.size === 1 ? on[0].scope : undefined
       // Every folder is decided. A folder this session asked about and the
-      // user answered "yes" for: its scope becomes the session's default
-      // write scope, unless something already set one. That is the process
-      // slot, which an id-less write with no open session does not read (E7):
-      // plur_session_start and the unscoped writes get the workspace scope
-      // through FOLDER_SCOPE instead (#1562, _resolveWriteSessionWithFolder).
-      for (const { dir, scope } of on) {
+      // user answered "yes" for: the workspace scope becomes the session's
+      // default write scope, unless something already set one. That is the
+      // process slot, which an id-less write with no open session does not
+      // read (E7): plur_session_start and the unscoped writes get the
+      // workspace scope through FOLDER_SCOPE instead (#1562,
+      // _resolveWriteSessionWithFolder).
+      for (const { dir } of on) {
+        hosted.delete(dir)
         if (!asked.has(dir)) continue
         asked.delete(dir)
         notNow.delete(dir)
@@ -585,12 +635,12 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hostPid
           } catch { /* the scope is a default, never a reason to fail the call */ }
         }
       }
-      const scope = on.find(o => o.scope)?.scope
       return { plur: 'on', ...(scope ? { scope } : {}) }
     },
     end() {
       ended = true
       asked.clear()
+      hosted.clear()
       try { endFolderNonceSession(plur.storageRoot, sessionId) } catch { /* best-effort */ }
     },
   }

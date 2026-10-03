@@ -1128,7 +1128,9 @@ function clearFolderTrustUnlocked(root: string, folder: string, home: string): b
   const cleared: string[] = []
   const raw = resolve(expandHome(folder, home))
   const target = canonicalize(raw)
-  map.folders = map.folders.filter(e => {
+  // The changed entries, so the file's other lines stay (#1563 review, L4).
+  const edit: FolderMapEdit = { count: map.folders.length, replace: new Map(), append: [] }
+  map.folders = map.folders.filter((e, i) => {
     // Also an entry for this folder recorded in another letter case, checked
     // for identity like findEntryIndex's fallback (#1357). Its grant never
     // applied, but `plur untrust` must still clear it and say so.
@@ -1138,10 +1140,12 @@ function clearFolderTrustUnlocked(root: string, folder: string, home: string): b
     changed = true
     cleared.push(e.path)
     delete e.trusted
-    return e.plur !== undefined || e.scope !== undefined
+    const kept = e.plur !== undefined || e.scope !== undefined
+    edit.replace.set(i, kept ? e : null)
+    return kept
   })
   if (changed) {
-    saveFolderMap(root, map)
+    saveFolderMap(root, map, edit)
     // Dual-write (F2): the revocation is completed in trust.yaml for EVERY
     // cleared entry, applied or name-only (untrustDirectory also removes the
     // line for the folder as given).
@@ -1248,7 +1252,17 @@ interface NonceRecord { nonce: string; folder: string; answer?: FolderAnswer; is
  * that editor started can show that same question instead of a second one
  * (hostFolderNonces).
  */
-interface NonceFile { session: string; nonces: NonceRecord[]; host_pid?: number }
+interface NonceFile { session: string; nonces: NonceRecord[]; host_pid?: number; host_started?: number }
+
+/**
+ * The process that asked a folder question (#1562): its id and when it
+ * started (ms since the epoch). The start time tells a reused process id
+ * from the process that asked (#1563 review, L3).
+ */
+export interface FolderAskHost { pid: number; startedAt: number }
+
+/** How far a host's start time, as measured by a child (`ps` etime, whole seconds), may differ from its own. */
+export const FOLDER_HOST_START_TOLERANCE_MS = 3000
 
 function nonceDir(root: string): string {
   return join(root, 'folder-nonces')
@@ -1271,10 +1285,12 @@ function readNonceFile(file: string): NonceFile | null {
       typeof (r as NonceRecord).folder === 'string' &&
       typeof (r as NonceRecord).issued_at === 'number')
     const host = (raw as { host_pid?: unknown }).host_pid
+    const started = (raw as { host_started?: unknown }).host_started
     return {
       session: typeof raw.session === 'string' ? raw.session : '',
       nonces,
       ...(typeof host === 'number' && Number.isInteger(host) && host > 0 ? { host_pid: host } : {}),
+      ...(typeof started === 'number' && Number.isFinite(started) ? { host_started: started } : {}),
     }
   } catch {
     return null
@@ -1301,14 +1317,14 @@ function writeNonceFile(file: string, data: NonceFile): void {
  */
 export function issueFolderNonce(
   root: string, sessionId: string, folder: string, answer: FolderAnswer, now: number = Date.now(),
-  options: { home?: string; literal?: boolean; bindSession?: boolean; hostPid?: number } = {},
+  options: { home?: string; literal?: boolean; bindSession?: boolean; host?: FolderAskHost } = {},
 ): string {
   if (answerKey(answer) === null) throw new FolderMapError('invalid', 'A folder nonce needs the answer it authorises.')
   const key = folderEntryKey(folder, options.home ?? homedir(), options.literal === true)
-  return locked(root, () => issueFolderNonceUnlocked(root, sessionId, key, answer, now, options.bindSession === true, options.hostPid))
+  return locked(root, () => issueFolderNonceUnlocked(root, sessionId, key, answer, now, options.bindSession === true, options.host))
 }
 
-function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number, bound: boolean, hostPid?: number): string {
+function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number, bound: boolean, host?: FolderAskHost): string {
   mkdirSync(nonceDir(root), { recursive: true, mode: 0o700 })
   // Orphans of sessions whose end was never reported go first (audit F1 of #1529).
   sweepFolderNoncesUnlocked(root, now)
@@ -1317,7 +1333,10 @@ function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, 
   // The file is this session's by its name; a wrong `session:` field (hand
   // edited) would make every nonce issued into it refused (N12).
   data.session = safeSessionKey(sessionId)
-  if (hostPid !== undefined && Number.isInteger(hostPid) && hostPid > 0) data.host_pid = hostPid
+  if (host && Number.isInteger(host.pid) && host.pid > 0 && Number.isFinite(host.startedAt)) {
+    data.host_pid = host.pid
+    data.host_started = Math.round(host.startedAt)
+  }
   const nonce = randomBytes(16).toString('hex')
   // The same key a write of this folder records (#1477 review): `~` expands
   // to the home, a literal folder is canonicalised, a glob is kept as typed.
@@ -1394,21 +1413,24 @@ function sweepFolderNoncesUnlocked(root: string, now: number): void {
 
 /**
  * The outstanding nonces a host process issued for `folder` (#1562): from the
- * newest session file whose `host_pid` is one of `hostPids` and that still
- * holds unexpired nonces for exactly that folder (the key a write of it
- * records). Null when there is none. Read-only; consumes nothing.
+ * newest session file whose host is one of `hosts` — the same process id AND
+ * the same start time, within FOLDER_HOST_START_TOLERANCE_MS, so a reused id
+ * never matches (#1563 review, L3) — and that still holds unexpired nonces
+ * for exactly that folder (the key a write of it records). Null when there is
+ * none. Read-only; consumes nothing.
  */
 export function hostFolderNonces(
-  root: string, hostPids: number[], folder: string, now: number = Date.now(), home: string = homedir(),
+  root: string, hosts: FolderAskHost[], folder: string, now: number = Date.now(), home: string = homedir(),
 ): { session: string; nonces: Array<{ nonce: string; answer: FolderAnswer }> } | null {
-  if (hostPids.length === 0) return null
+  if (hosts.length === 0) return null
   const key = folderEntryKey(folder, home, false)
   let names: string[] = []
   try { names = readdirSync(nonceDir(root)).filter(f => f.endsWith('.yaml')) } catch { return null }
   let best: { session: string; newest: number; nonces: Array<{ nonce: string; answer: FolderAnswer }> } | null = null
   for (const name of names) {
     const data = readNonceFile(join(nonceDir(root), name))
-    if (!data || data.host_pid === undefined || !hostPids.includes(data.host_pid) || !data.session) continue
+    if (!data || data.host_pid === undefined || data.host_started === undefined || !data.session) continue
+    if (!hosts.some(h => h.pid === data.host_pid && Math.abs(h.startedAt - data.host_started!) <= FOLDER_HOST_START_TOLERANCE_MS)) continue
     const live = data.nonces.filter(r => r.folder === key && r.answer && now - r.issued_at <= FOLDER_NONCE_TTL_MS)
     if (live.length === 0) continue
     const newest = Math.max(...live.map(r => r.issued_at))

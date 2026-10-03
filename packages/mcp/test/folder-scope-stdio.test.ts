@@ -16,7 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { execFileSync } from 'child_process'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
@@ -184,5 +184,86 @@ describe.skipIf(!ready || process.platform === 'win32')('a folder\'s team scope 
     expect(stub.appendStatements).toEqual([])
     expect(engramsText(off)).not.toContain('zebra-off')
     expect(engramsText(ask)).not.toContain('zebra-ask')
+  }, 60_000)
+})
+
+// Review round 1 of #1563 (H1): in a multi-root workspace the folder scope
+// was the first root's that had one, so a save went to a team the client
+// happened to list first. A scope is attached only when every root agrees.
+const SCOPE2 = 'group:test/ops'
+
+describe.skipIf(!ready)('multi-root workspaces: a folder scope only when every root agrees (#1563 review, H1)', () => {
+  function multi(map: (a: string, b: string) => string): Env & { a: string; b: string } {
+    const home = tmp('plur-fscope-store-')
+    const fakeHome = tmp('plur-fscope-home-')
+    const workspace = tmp('plur-fscope-ws-')
+    const a = tmp('plur-fscope-a-')
+    const b = tmp('plur-fscope-b-')
+    writeFileSync(join(home, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${SCOPE}"\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${SCOPE2}"\n`)
+    writeFileSync(join(home, 'folders.yaml'), map(a, b))
+    return { home, fakeHome, workspace, a, b }
+  }
+
+  async function startRoots(e: Env, roots: string[]): Promise<Client> {
+    const transport = new StdioClientTransport({ command: process.execPath, args: [DIST_ENTRY], cwd: e.workspace, stderr: 'ignore', env: childEnv(e) })
+    const client = new Client({ name: 'folder-scope-roots', version: '1.0.0' }, { capabilities: { roots: { listChanged: true } } })
+    client.setRequestHandler('roots/list' as any, async () => ({ roots: roots.map(r => ({ uri: pathToFileURL(r).href, name: 'ws' })) }))
+    await client.connect(transport)
+    live.push(client)
+    return client
+  }
+
+  beforeEach(() => {
+    stub.setMe({ username: 'tester', org_id: 'test', role: 'developer', scopes: [SCOPE, SCOPE2] })
+  })
+
+  it('[a root with no scope, a team root]: an unscoped save reaches no team, in either order', async () => {
+    const e = multi((a, b) => `version: 1\nfolders:\n  - path: "${a}"\n    plur: on\n  - path: "${b}"\n    plur: on\n    scope: ${SCOPE}\n`)
+    for (const [i, roots] of [[e.a, e.b], [e.b, e.a]].entries()) {
+      const client = await startRoots(e, roots)
+      const r = await call(client, 'plur_learn', { statement: `zebra-mixed-${i} a note about one of the two repos` })
+      expect(r.scope, JSON.stringify(r)).not.toBe(SCOPE)
+      expect(r.delivery).toBe('local')
+      const s = await call(client, 'plur_session_start', { task: 'zebra mixed' })
+      expect(s.default_scope ?? null).toBeNull()
+    }
+    expect(stub.appendStatements).toEqual([])
+  }, 90_000)
+
+  it('[team A, team B]: no team, whichever order the client lists them', async () => {
+    const e = multi((a, b) => `version: 1\nfolders:\n  - path: "${a}"\n    scope: ${SCOPE2}\n  - path: "${b}"\n    scope: ${SCOPE}\n`)
+    for (const [i, roots] of [[e.a, e.b], [e.b, e.a]].entries()) {
+      const client = await startRoots(e, roots)
+      const r = await call(client, 'plur_learn', { statement: `zebra-two-teams-${i} a note about one of the two repos` })
+      expect([SCOPE, SCOPE2], JSON.stringify(r)).not.toContain(r.scope)
+      expect(r.delivery).toBe('local')
+      const s = await call(client, 'plur_session_start', { task: 'zebra two teams' })
+      expect(s.default_scope ?? null).toBeNull()
+    }
+    expect(stub.appendStatements).toEqual([])
+  }, 90_000)
+
+  it('[team A, team A]: team A', async () => {
+    const e = multi((a, b) => `version: 1\nfolders:\n  - path: "${a}"\n    scope: ${SCOPE}\n  - path: "${b}"\n    scope: ${SCOPE}\n`)
+    const client = await startRoots(e, [e.a, e.b])
+    const r = await call(client, 'plur_learn', { statement: 'zebra-same-team both repos share the eng store' })
+    expect(r.scope, JSON.stringify(r)).toBe(SCOPE)
+    expect(r.delivery).toBe('remote')
+    expect(stub.appendStatements).toContain('zebra-same-team both repos share the eng store')
+  }, 90_000)
+})
+
+// Review round 1 of #1563 (L1): with several sessions open and none named, no
+// session default applies (E7), and the folder scope fills that gap. Pinned
+// here so the order is a decision, not an accident.
+describe.skipIf(!ready)('several sessions open, none named: the folder scope applies (#1563 review, L1)', () => {
+  it('an id-less save goes to the folder scope, not to either session\'s default', async () => {
+    const e = env(ws => `version: 1\nfolders:\n  - path: "${ws}"\n    plur: on\n    scope: ${SCOPE}\n`)
+    const client = await start(e)
+    await call(client, 'plur_session_start', { task: 'one', default_scope: 'global' })
+    await call(client, 'plur_session_start', { task: 'two', default_scope: 'project:other' })
+    const r = await call(client, 'plur_learn', { statement: 'zebra-ambiguous an id-less save' })
+    expect(r.scope, JSON.stringify(r)).toBe(SCOPE)
   }, 60_000)
 })

@@ -239,7 +239,9 @@ export const PlurPlugin: Plugin = async (ctx) => {
               bindSession: true,
               // This opencode process asked (#1562): the PLUR MCP server it
               // started shows this question, not a second set of nonces.
-              hostPid: process.pid,
+              // Its id and start time (#1563 review, L3), so a reused process
+              // id never passes for it.
+              host: { pid: process.pid, startedAt: Date.now() - process.uptime() * 1000 },
             })
             if (question) {
               offer = { question, reminder: folderAskReminder(question), unreadable, delivered: false, persisted: false, turnsSince: 0 }

@@ -43,7 +43,7 @@ describe('the plugin\'s folder question can be reused by its MCP server (#1562)'
     const shown = out.system.slice(1).join('\n')
     const pluginNonces = [...shown.matchAll(/--nonce ([0-9a-f]+)/g)].map(m => m[1])
     expect(pluginNonces.length).toBeGreaterThan(0)
-    const reused = hostFolderAsk({ dir: repo, policy: plur.resolveFolderPolicy(repo), root: plur.storageRoot, hostPids: [process.pid] })
+    const reused = hostFolderAsk({ dir: repo, policy: plur.resolveFolderPolicy(repo), root: plur.storageRoot, hosts: [{ pid: process.pid, startedAt: Date.now() - process.uptime() * 1000 }] })
     expect(reused, 'the plugin did not record its process as the host').not.toBeNull()
     expect([...reused!.nonces].sort()).toEqual([...new Set(pluginNonces)].sort())
   })

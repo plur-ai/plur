@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from 'path'
 import { homedir, tmpdir } from 'os'
 import { loadConfig } from './config.js'
 import { canonicalize, findProjectConfigPath } from './project-config.js'
-import { folderAnswerKey, hostFolderNonces, issueFolderNonce, safeSessionKey, type FolderAnswer, type FolderPolicy } from './folders.js'
+import { folderAnswerKey, hostFolderNonces, issueFolderNonce, safeSessionKey, type FolderAnswer, type FolderAskHost, type FolderPolicy } from './folders.js'
 
 /**
  * The one-time folder question (#1347, design r2 "The ask") and the session
@@ -289,12 +289,12 @@ export interface FolderAskOptions {
    */
   mcp?: boolean
   /**
-   * The process the question is asked from (#1562), recorded with its
-   * nonces. The opencode plugin passes its own pid, so the PLUR MCP server
-   * that opencode started (a descendant) shows this question, with these
-   * nonces, instead of issuing a second set (hostFolderAsk).
+   * The process the question is asked from (#1562): its id and start time,
+   * recorded with its nonces. The opencode plugin passes its own, so the PLUR
+   * MCP server that opencode started (a descendant) shows this question, with
+   * these nonces, instead of issuing a second set (hostFolderAsk).
    */
-  hostPid?: number
+  host?: FolderAskHost
 }
 
 /** One answer of the folder question as data: what it says and the command that records it. */
@@ -358,15 +358,23 @@ export function hostFolderAsk(opts: {
   dir: string
   policy: FolderPolicy
   root: string
-  hostPids: number[]
+  /** The processes that may have asked: the caller's ancestors, each with its start time. */
+  hosts: FolderAskHost[]
+  /**
+   * The asking session (the MCP server's). With it, the question also offers
+   * "not now" (#1563 review, L2): a nonce of that session, which this call
+   * issues, so the server can stop asking once it is used. Without it,
+   * nothing is issued.
+   */
+  notNowSession?: string
   plur?: FolderAskScopeRanker | null
   prompt?: string
 }): FolderAsk | null {
-  if (opts.hostPids.length === 0) return null
-  return buildFolderAsk({ ...opts, sessionId: '' }, { hostPids: opts.hostPids })
+  if (opts.hosts.length === 0) return null
+  return buildFolderAsk({ ...opts, sessionId: '' }, { hosts: opts.hosts, ...(opts.notNowSession ? { notNowSession: opts.notNowSession } : {}) })
 }
 
-function buildFolderAsk(opts: FolderAskOptions, host: { hostPids: number[] } | null): FolderAsk | null {
+function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; notNowSession?: string } | null): FolderAsk | null {
   const root = opts.root
   const mcp = opts.mcp === true
   // The decision could not be read (audit F4 of #1517): no command, no nonce.
@@ -415,7 +423,7 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hostPids: number[] } | n
   const folder = canonicalize(configPath ? dirname(configPath) : opts.dir)
   // Reusing a host's question: its session and its nonces, by the answer each
   // was issued for. None for this folder: nothing to reuse.
-  const reuse = host ? hostFolderNonces(root, host.hostPids, folder) : null
+  const reuse = host ? hostFolderNonces(root, host.hosts, folder) : null
   if (host && !reuse) return null
   const sessionId = reuse ? reuse.session : opts.sessionId
   // A folder the question cannot name safely gets a notice instead: no
@@ -473,7 +481,10 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hostPids: number[] } | n
   // scopes are listed under "Other team scopes" instead.
   const yesScope: Offer | null = suggested && !untrusted ? { flags: `--scope ${suggested}`, answer: { scope: suggested } } : null
   const yesOn: Offer = { flags: '--on', answer: { mode: 'on' } }
-  const notNow: Offer | null = mcp && !reuse ? { flags: '--not-now', answer: { notNow: true } } : null
+  // A reused question offers "not now" as a nonce of the asking session
+  // (#1563 review, L2); the host's own question has none.
+  const notNowSession = reuse ? host?.notNowSession : undefined
+  const notNow: Offer | null = (mcp && !reuse) || notNowSession ? { flags: '--not-now', answer: { notNow: true } } : null
   const never: Offer = { flags: '--off', answer: { mode: 'off' } }
   const offered = [trust, yesScope, yesOn, notNow, never].filter((o): o is Offer => o !== null)
   const command = new Map<Offer, string>()
@@ -481,7 +492,11 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hostPids: number[] } | n
   try {
     for (const o of offered) {
       let nonce: string
-      if (reuse) {
+      let offerSessionArg = sessionArg
+      if (reuse && o === notNow && notNowSession) {
+        nonce = issueFolderNonce(root, notNowSession, folder, o.answer, undefined, { bindSession: true })
+        offerSessionArg = ` --session ${quoted(notNowSession)}`
+      } else if (reuse) {
         // Every offered answer must have the host's nonce, or this is not the
         // question the host asked: reuse nothing.
         const k = folderAnswerKey(o.answer)
@@ -491,11 +506,11 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hostPids: number[] } | n
       } else {
         nonce = issueFolderNonce(root, opts.sessionId, folder, o.answer, undefined, {
           ...(opts.bindSession ? { bindSession: true } : {}),
-          ...(opts.hostPid !== undefined ? { hostPid: opts.hostPid } : {}),
+          ...(opts.host !== undefined ? { host: opts.host } : {}),
         })
       }
       nonces.set(o, nonce)
-      command.set(o, `plur ${storeArg}folders set ${f} ${o.flags} --nonce ${nonce}${sessionArg}`)
+      command.set(o, `plur ${storeArg}folders set ${f} ${o.flags} --nonce ${nonce}${offerSessionArg}`)
     }
   } catch (err) {
     process.stderr.write(`[plur] folder map: could not issue a nonce (${(err as Error)?.message ?? err}).\n`)
@@ -554,7 +569,9 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hostPids: number[] } | n
   }
   lines.push(`- Never here: ${set(never)}`)
   answers.push({ label: 'Never here', command: set(never) })
-  if (others.length > 0) lines.push(`Other team scopes configured here: ${others.join(', ')} (use one with --scope instead).`)
+  // In the untrusted question no --scope answer has a nonce, so the hint to
+  // use one would only be refused (#1563 review, L5): the scopes are listed.
+  if (others.length > 0) lines.push(`Other team scopes configured here: ${others.join(', ')}${untrusted ? '.' : ' (use one with --scope instead).'}`)
   lines.push(
     `Each command has its own nonce: it works once, only for this folder and that answer${opts.bindSession || reuse ? ', from this session' : ''}. ` +
     'Run nothing without an answer from the user. ' +

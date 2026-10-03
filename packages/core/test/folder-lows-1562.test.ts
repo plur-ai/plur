@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSy
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
-  Plur, folderAsk, hostFolderAsk, resolveFolderPolicy, folderMapPath, loadFolderMap, endFolderNonceSession,
+  Plur, folderAsk, hostFolderAsk, resolveFolderPolicy, folderMapPath, loadFolderMap, endFolderNonceSession, clearFolderTrust,
 } from '../src/index.js'
 import { logger } from '../src/logger.js'
 
@@ -146,15 +146,17 @@ describe('(c) "Yes, without its settings" never carries a team scope', () => {
 })
 
 describe('(d) one set of question nonces per folder for a host and its MCP server', () => {
+  const T = 1_790_000_000_000
+  const HOST = { pid: 4242, startedAt: T }
   it('a child of the host that asked gets the same question with the same nonces, naming its session', () => {
     const d = mk('d')
     const policy = resolveFolderPolicy(d, { root })
-    const plugin = folderAsk({ dir: d, policy, sessionId: 'ses_oc1', root, claim: () => true, bindSession: true, hostPid: 4242 })!
+    const plugin = folderAsk({ dir: d, policy, sessionId: 'ses_oc1', root, claim: () => true, bindSession: true, host: HOST })!
     expect(plugin.nonces.length).toBeGreaterThan(0)
-    const shown = hostFolderAsk({ dir: d, policy, root, hostPids: [77, 4242] })!
+    const shown = hostFolderAsk({ dir: d, policy, root, hosts: [{ pid: 77, startedAt: T }, { pid: 4242, startedAt: T + 1500 }] })!
     expect(shown, 'no host question found').not.toBeNull()
-    expect([...shown.nonces].sort()).toEqual([...plugin.nonces].sort())
-    for (const a of shown.answers) expect(a.command).toMatch(/ --session ses_oc1$/)
+    expect(plugin.nonces.every(n => shown.nonces.includes(n))).toBe(true)
+    for (const a of shown.answers.filter(x => x.label !== 'Not now')) expect(a.command).toMatch(/ --session ses_oc1$/)
     // One of them works, from the session it names.
     const yes = shown.answers.find(a => /^Yes/.test(a.label))!
     const nonce = / --nonce ([0-9a-f]+)/.exec(yes.command)![1]
@@ -165,17 +167,65 @@ describe('(d) one set of question nonces per folder for a host and its MCP serve
   it('no question from that host, another folder, or an ended session: nothing to reuse', () => {
     const d = mk('d'), other = mk('other')
     const policy = resolveFolderPolicy(d, { root })
-    folderAsk({ dir: d, policy, sessionId: 'ses_oc2', root, claim: () => true, bindSession: true, hostPid: 4242 })
-    expect(hostFolderAsk({ dir: d, policy, root, hostPids: [77] })).toBeNull()
-    expect(hostFolderAsk({ dir: other, policy: resolveFolderPolicy(other, { root }), root, hostPids: [4242] })).toBeNull()
+    folderAsk({ dir: d, policy, sessionId: 'ses_oc2', root, claim: () => true, bindSession: true, host: HOST })
+    expect(hostFolderAsk({ dir: d, policy, root, hosts: [{ pid: 77, startedAt: T }] })).toBeNull()
+    expect(hostFolderAsk({ dir: other, policy: resolveFolderPolicy(other, { root }), root, hosts: [HOST] })).toBeNull()
     endFolderNonceSession(root, 'ses_oc2')
-    expect(hostFolderAsk({ dir: d, policy, root, hostPids: [4242] })).toBeNull()
+    expect(hostFolderAsk({ dir: d, policy, root, hosts: [HOST] })).toBeNull()
   })
 
   it('a question issued without a host is never reused', () => {
     const d = mk('d')
     const policy = resolveFolderPolicy(d, { root })
     folderAsk({ dir: d, policy, sessionId: 'hook-1', root, claim: () => true })
-    expect(hostFolderAsk({ dir: d, policy, root, hostPids: [process.pid, process.ppid] })).toBeNull()
+    expect(hostFolderAsk({ dir: d, policy, root, hosts: [{ pid: process.pid, startedAt: Date.now() }] })).toBeNull()
+  })
+
+  // #1563 review, L3: a reused process id is another process. The host is
+  // matched by its id AND its start time.
+  it('the same pid with another start time is another process: nothing to reuse', () => {
+    const d = mk('d')
+    const policy = resolveFolderPolicy(d, { root })
+    folderAsk({ dir: d, policy, sessionId: 'ses_oc3', root, claim: () => true, bindSession: true, host: HOST })
+    expect(hostFolderAsk({ dir: d, policy, root, hosts: [{ pid: 4242, startedAt: T + 60_000 }] })).toBeNull()
+    expect(hostFolderAsk({ dir: d, policy, root, hosts: [{ pid: 4242, startedAt: T - 60_000 }] })).toBeNull()
+  })
+
+  // #1563 review, L2: the reused question offers "not now" too, with a nonce
+  // of the asking (MCP) session, so the server can stop asking.
+  it('with notNowSession, the reused question offers "not now", bound to that session', () => {
+    const d = mk('d')
+    const policy = resolveFolderPolicy(d, { root })
+    folderAsk({ dir: d, policy, sessionId: 'ses_oc4', root, claim: () => true, bindSession: true, host: HOST })
+    const shown = hostFolderAsk({ dir: d, policy, root, hosts: [HOST], notNowSession: 'mcp-abc' })!
+    const nn = shown.answers.find(a => a.label === 'Not now')!
+    expect(nn, JSON.stringify(shown.answers)).toBeDefined()
+    expect(nn.command).toMatch(/ --not-now --nonce [0-9a-f]+ --session mcp-abc$/)
+    expect(shown.notNowNonce).toBeDefined()
+  })
+})
+
+describe('#1563 review, L4: plur untrust keeps comments', () => {
+  it('clearing a grant edits only that entry', () => {
+    const a = mk('a'), b = mk('b')
+    const text = ['# keep me', 'version: 1', '', 'folders:', '  # first', `  - path: "${a}"`, '    plur: on', '    trusted: true', '',
+      '  # second', `  - path: "${b}"`, '    trusted: true', '# end', ''].join('\n')
+    writeFileSync(folderMapPath(root), text)
+    expect(clearFolderTrust(root, a)).toBe(true)
+    expect(clearFolderTrust(root, b)).toBe(true)
+    const after = readFileSync(folderMapPath(root), 'utf8')
+    for (const keep of ['# keep me', '  # first', '  # second', '# end']) expect(after, after).toContain(keep)
+    expect(loadFolderMap(root).folders).toEqual([{ path: a, plur: 'on' }])
+  })
+})
+
+describe('#1563 review, L5: the untrusted question has no --scope hint that cannot work', () => {
+  it('lists other team scopes without telling the agent to use --scope', () => {
+    config([TEAM])
+    const repo = mk('repo5')
+    writeFileSync(join(repo, '.plur.yaml'), 'scope: group:other/team\n')
+    const policy = resolveFolderPolicy(repo, { root })
+    const ask = folderAsk({ dir: repo, policy, sessionId: 'sess-l5', root, claim: () => true })!
+    expect(ask.text).not.toContain('use one with --scope instead')
   })
 })
