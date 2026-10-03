@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
-import { folderReadSession } from '../lib/folder-gate.js'
+import { folderReadContext } from '../lib/folder-gate.js'
 
 /**
  * Flags this command accepts (#986).
@@ -44,10 +44,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // An explicit scope is also the remote leg's dialing context (#243/#776).
   // Without one, the folder's scope is (L10), by the same rule as MCP (#1566).
-  const session = folderReadSession(plur, scope)
+  // An off folder, an undecided one (unscoped) or a broken folder map
+  // contacts no store at all; local memory is read either way.
+  const { session, remote } = folderReadContext(plur, scope)
   const engrams = flags.fast
-    ? await plur.recall(query, { limit, scope, domain, session })
-    : await plur.recallHybrid(query, { limit, scope, domain, session })
+    ? await plur.recall(query, { limit, scope, domain, session, remote })
+    : await plur.recallHybrid(query, { limit, scope, domain, session, remote })
 
   if (engrams.length === 0) {
     if (shouldOutputJson(flags)) {
