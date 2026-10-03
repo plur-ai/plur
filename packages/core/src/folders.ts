@@ -875,6 +875,38 @@ export function coversHomeOrRoot(dir: string, home: string = homedir()): boolean
   return false
 }
 
+/**
+ * THE default scope of a workspace (#1562, #1566; the CLI since L10 of the
+ * third 0.21.1 pre-release check) — the one resolver the MCP server (its
+ * client roots, else its start folder) and the CLI (the folder it runs in)
+ * use for an unscoped write or read.
+ *
+ * Each input is realpath-resolved first, so a link gets the decision of the
+ * folder it points at. Each must resolve to `on` with a scope — the folder
+ * map's, else a trusted `.plur.yaml`'s — and all to the SAME scope. Anything
+ * else gives null, and null means no scope, with no fallback after it:
+ *  - no inputs; two inputs with different scopes, or one with no scope;
+ *  - an `off` or undecided (`ask`) folder;
+ *  - the home folder, a folder above it or a filesystem root (each covers
+ *    every folder under it);
+ *  - an input that cannot be resolved, or any error.
+ */
+export function workspaceFolderScope(inputs: string[], policyOf: (dir: string) => FolderPolicy): string | null {
+  if (inputs.length === 0) return null
+  let agreed: string | null = null
+  for (const input of inputs) {
+    let dir: string
+    try { dir = realpathSync.native(input) } catch { return null }
+    try { if (coversHomeOrRoot(dir)) return null } catch { return null }
+    let policy: FolderPolicy
+    try { policy = policyOf(dir) } catch { return null }
+    if (policy.mode !== 'on' || !policy.scope) return null
+    if (agreed === null) agreed = policy.scope
+    else if (agreed !== policy.scope) return null
+  }
+  return agreed
+}
+
 function hasGlob(p: string): boolean {
   return firstGlobIndex(p) !== -1
 }
