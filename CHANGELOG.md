@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Each team store gets its own id prefix, so an engram id names one store (#1575)
+
+Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0.21.1; not caused by #1570.
+
+- A store's engram ids are shown as `ENG-<PREFIX>-…`. The prefix was three letters from the scope, so every team store of one org had the same one (`group:plur/eng` and `group:plur/ops` were both `GPL`). Two servers numbering engrams on the same day then gave two different engrams one id: recall for one team could show the other team's engram, and forgetting one team's engram by its id retired the other team's, reporting success.
+- The prefix is now the same three letters plus four letters derived from the whole scope (`group:plur/eng` is now `GPLTBNX`). Save, recall and inject all give the new form. Different scopes get different prefixes.
+- Forget, feedback, pin, update and promote by a namespaced id act only on the store that id names. A row in a readonly store is refused; it is no longer reached through a writable store of the same server.
+- Ids in the old three-letter form still work where they name exactly one engram. Where they name engrams in two stores, the action is refused and nothing changes; the message gives each engram's new id. One scope configured on two stores (two servers, or a file store and a server store) is resolved the same way.
+- Engram history recorded under the old form is still returned when you look the engram up by its new id. The local search index rebuilds itself once to pick up the new ids.
+- Checked against the enterprise server's code and data: one server never gives two scopes the same id, so the duplicate ids need two servers. Acting through the wrong store entry could happen on one server.
+
 ### A team engram keeps the id its save returned, in recall too (#1568)
 
 Found by the 0.21.1 pre-release check (finding F3, and low L1).
