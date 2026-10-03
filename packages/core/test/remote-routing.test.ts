@@ -307,10 +307,10 @@ describe('learn() — remote routing (issue #25)', () => {
     await new Promise(r => setTimeout(r, 100))
 
     const readId = plur.readIdFor(engram)
-    // storePrefix('group:plur/plur-ai/engineering') → 'GPL'
-    expect(readId).toMatch(/^ENG-GPL-/)
+    // storePrefix('group:plur/plur-ai/engineering') → 'GPL' + eight digest letters
+    expect(readId).toMatch(/^ENG-GPL[A-Z]{8}-/)
     // The raw engram.id is the server-assigned bare form.
-    expect(engram.id).not.toMatch(/^ENG-GPL-/)
+    expect(engram.id).not.toMatch(/^ENG-GPL[A-Z]{8}-/)
     // The namespaced form differs from the raw form.
     expect(readId).not.toBe(engram.id)
   })

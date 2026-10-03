@@ -19,10 +19,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Plur } from '../src/index.js'
+import { Plur, storePrefix } from '../src/index.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 const REMOTE_SCOPE = 'group:acme/eng'
+/** This store's id prefix (0.21.1: 'GAC' plus eight digest letters). */
+const NS = `ENG-${storePrefix(REMOTE_SCOPE)}`
 
 describe('write-path consolidation', () => {
   let dir: string
@@ -118,18 +120,18 @@ describe('write-path consolidation', () => {
   })
 
   describe('one body per twin', () => {
-    // storePrefix('group:acme/eng') === 'GAC': an id carrying that prefix names
+    // `NS` is storePrefix('group:acme/eng'): an id carrying that prefix names
     // exactly this store, so its refusal is the caller's business (same rule
     // forget() adopted in #1109). A bare id is ambiguous across stores and
     // keeps the graceful null/false contract pinned by set-pinned-remote.test.ts.
     it('a refusal for a NAMESPACED id surfaces instead of reading as not-found', async () => {
       patchImpl = async () => { throw new Error('Remote patch failed: 401 token expired') }
       const ghost = {
-        id: 'ENG-GAC-2026-09-03-001', scope: REMOTE_SCOPE, statement: 'clean statement', status: 'active',
+        id: `${NS}-2026-09-03-001`, scope: REMOTE_SCOPE, statement: 'clean statement', status: 'active',
       } as unknown as Engram
       await expect(plur.updateEngram(ghost)).rejects.toThrow(/401 token expired/)
       await expect(plur.updateEngramAsync(ghost)).rejects.toThrow(/401 token expired/)
-      await expect(plur.setPinned('ENG-GAC-2026-09-03-001', true)).rejects.toThrow(/401 token expired/)
+      await expect(plur.setPinned(`${NS}-2026-09-03-001`, true)).rejects.toThrow(/401 token expired/)
     })
 
     it('a refusal for a BARE id keeps the graceful contract: false / null, no throw', async () => {
@@ -145,11 +147,11 @@ describe('write-path consolidation', () => {
     it('a 404 from every store is genuinely not-found: false / null, no throw', async () => {
       patchImpl = async () => null
       const ghost = {
-        id: 'ENG-GAC-2026-09-03-003', scope: REMOTE_SCOPE, statement: 'clean statement', status: 'active',
+        id: `${NS}-2026-09-03-003`, scope: REMOTE_SCOPE, statement: 'clean statement', status: 'active',
       } as unknown as Engram
       await expect(plur.updateEngram(ghost)).resolves.toBe(false)
       await expect(plur.updateEngramAsync(ghost)).resolves.toBeNull()
-      await expect(plur.setPinned('ENG-GAC-2026-09-03-003', true)).resolves.toBeNull()
+      await expect(plur.setPinned(`${NS}-2026-09-03-003`, true)).resolves.toBeNull()
     })
 
     it('updateEngram and updateEngramAsync agree when the remote accepts', async () => {
@@ -162,8 +164,8 @@ describe('write-path consolidation', () => {
 
     it('setPinnedAsync is setPinned: same refusal on a namespaced id, same null on a bare one', async () => {
       patchImpl = async () => { throw new Error('Remote patch failed: 503') }
-      await expect(plur.setPinned('ENG-GAC-2026-09-03-002', true)).rejects.toThrow(/503/)
-      await expect(plur.setPinnedAsync('ENG-GAC-2026-09-03-002', true)).rejects.toThrow(/503/)
+      await expect(plur.setPinned(`${NS}-2026-09-03-002`, true)).rejects.toThrow(/503/)
+      await expect(plur.setPinnedAsync(`${NS}-2026-09-03-002`, true)).rejects.toThrow(/503/)
       await expect(plur.setPinned('ENG-2026-09-03-002', true)).resolves.toBeNull()
       await expect(plur.setPinnedAsync('ENG-2026-09-03-002', true)).resolves.toBeNull()
     })

@@ -20,12 +20,19 @@
  * The test is written AFTER A9 landed (#1127 — direct-scope path probeById fix),
  * because A9 changed what the direct-scope path says for unreachable stores and the
  * ordering contract here depends on A9 being settled first.
+ *
+ * 0.21.1 (audit H1): the prefix now carries a digest of the whole scope, so
+ * 'group:test' and 'group:tempo' no longer share one and the current id names
+ * the reachable store alone. The shared prefix survives only in the OLD
+ * three-letter id form ('ENG-GTE-…'); such an id is resolved to the one store
+ * holding the row, and refused when a store sharing it cannot be checked —
+ * it might hold a different engram with the same id.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { Plur } from '../src/index.js'
+import { Plur, storePrefix } from '../src/index.js'
 
 // storePrefix('group:test') === storePrefix('group:tempo') === 'GTE'.
 // Both stores accept 'ENG-GTE-...' as their own namespace — the deliberate
@@ -42,7 +49,9 @@ const SCOPE_REACHABLE = 'group:tempo'
 // caller-facing id, so both see this as the lookup target.
 const BARE_ID = 'ENG-2026-09-01-099'
 // Namespaced caller-facing id (the form recall surfaces and forget receives).
-const NAMESPACED_ID = 'ENG-GTE-2026-09-01-099'
+const NAMESPACED_ID = `ENG-${storePrefix(SCOPE_REACHABLE)}-2026-09-01-099`
+// The same id in the old three-letter form both stores shared.
+const LEGACY_ID = 'ENG-GTE-2026-09-01-099'
 
 function twoStoreConfig(unreachableFirst: boolean): object {
   const unreachable = { url: UNREACHABLE_URL, token: 'tok', scope: SCOPE_UNREACHABLE, shared: true, readonly: false }
@@ -148,5 +157,21 @@ describe('forget() — namespaced-id walk order with shared prefix (#1126)', () 
 
     expect(message, '"Cannot reach" surfaces, not a false claim of absence').toMatch(/Cannot reach/i)
     expect(message, 'must not claim absence it never verified').not.toMatch(/^Engram not found/)
+  })
+
+  // 0.21.1 (H1): the old shared form cannot say which store it names while one
+  // of them is unreachable, so the retire is refused and nothing is deleted.
+  it('refuses an old-form id while a store sharing its prefix cannot be checked', async () => {
+    writeFileSync(join(dir, 'config.yaml'), JSON.stringify(twoStoreConfig(/* unreachableFirst */ true)))
+    mockReachableOwns()
+    const plur = new Plur({ path: dir })
+
+    const message = await plur
+      .forget(LEGACY_ID, undefined, { force: true })
+      .then(() => 'retired', (e: Error) => e.message)
+
+    expect(message).toMatch(/could not be reached/i)
+    const deletes = (fetchMock.mock.calls as [string, any][]).filter(([, init]: [string, any]) => (init?.method ?? 'GET') === 'DELETE')
+    expect(deletes.length, 'nothing deleted').toBe(0)
   })
 })

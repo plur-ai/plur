@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Each team store gets its own id prefix, so an engram id names one store (#1575)
+
+Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0.21.1; not caused by #1570.
+
+- A store's engram ids are shown as `ENG-<PREFIX>-…`. The prefix was three letters from the scope, so every team store of one org had the same one (`group:plur/eng` and `group:plur/ops` were both `GPL`). Two servers numbering engrams on the same day then gave two different engrams one id: recall for one team could show the other team's engram, and forgetting one team's engram by its id retired the other team's, reporting success.
+- The prefix is now the same three letters plus eight letters derived from the whole scope (`group:plur/eng` is now `GPLTBNXSCAW`). Save, recall and inject all give the new form. Different scopes get different prefixes; in the rare case two configured scopes still share one, PLUR says so when it loads its config, and refuses to forget, rate, pin or update by an id with that prefix (pass the store's scope instead).
+- Forget, feedback, pin, update and promote by a namespaced id act only on the store that id names. A row in a readonly store is refused; it is no longer reached through a writable store of the same server, by its namespaced id or by its bare server id. A store that answers "I have it" and then fails to hand the row over counts as unreachable, so the action is refused rather than sent elsewhere.
+- Ids in the old three-letter form (`ENG-GPL-2026-10-03-001`) still work where a store holds exactly one engram with that id. Only dated ids count: a pack engram such as `ENG-PFR-001` is never mistaken for one. Where they name engrams in two stores, the action is refused and nothing changes; the message gives each engram's new id. One scope configured on two stores (two servers, or a file store and a server store) is resolved the same way.
+- Engram history, tensions and injection records written under the old form still match the engram under its new id. The local search index rebuilds itself once to pick up the new ids.
+- Checked against the enterprise server's code and data: one server never gives two scopes the same id, so the duplicate ids need two servers. Acting through the wrong store entry could happen on one server.
+
 ### `plur doctor` fails when a team store's token variable is unset (#1572)
 
 A team store added with `--token-env` takes its token from an environment variable. When that variable was unset or empty, `plur doctor` still said "Healthy", reported `overall: ok` and exited 0, and the only sign was one line on stderr. Saves to that store waited in the outbox and recalls skipped it. The MCP `plur_doctor` already said not ok for the same setup.
