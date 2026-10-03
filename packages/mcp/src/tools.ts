@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, bareEngramId, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
@@ -124,8 +124,9 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       // changes) establishes the remote dialing org context when no explicit
       // scope filter is passed. Same rule as writes (E7, formal R2): not
       // exactly one open session and no id → NO_SESSION, never the process
-      // slot the last-started session owns.
-      session: _resolveWriteSession(args),
+      // slot the last-started session owns. #1566: with no session default
+      // of its own, the workspace's scope — the one resolver writes use.
+      session: await _readSession(args, plur),
     })
     const response: Record<string, unknown> = {
       results: results.map(e => {
@@ -141,7 +142,11 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
               .join(', ') + ']'
           : ''
         return {
-          id: (raw._originalId as string | undefined) ?? bareEngramId(e.id),
+          // The id plur_learn returned for this engram (F3): a team row keeps
+          // its store prefix (`ENG-<PREFIX>-…`), so it never shares an id with
+          // a local engram minted the same day, and forget/feedback/pin route
+          // it to its store. A local engram's id has no prefix.
+          id: e.id,
           statement: e.statement + annotation + measuredAnnotation,
           type: e.type,
           scope: e.scope,
@@ -179,8 +184,9 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     remote_timeout_ms: 2000, // MCP recall remote budget (#776)
     // #243: session default scope (incl. mid-session plur_session_scope
     // changes) establishes the remote dialing org context when no explicit
-    // scope filter is passed. Same rule as writes (E7, formal R2).
-    session: _resolveWriteSession(args),
+    // scope filter is passed. Same rule as writes (E7, formal R2), and the
+    // same workspace scope when the session has no default (#1566).
+    session: await _readSession(args, plur),
   })
   // Opt-in, content-free engagement counter (default-off; no query text).
   recordTelemetry('recall')
@@ -218,7 +224,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
             .join(', ') + ']'
         : ''
       const base: Record<string, unknown> = {
-        id: (raw._originalId as string | undefined) ?? bareEngramId(e.id),
+        id: e.id, // same id plur_learn returned — see the keyword branch (F3)
         statement: e.statement + annotation + measuredAnnotation,
         type: e.type,
         scope: e.scope,
@@ -855,6 +861,13 @@ export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
  */
 export interface FolderScopeContext {
   resolve(): Promise<{ scope: string | null; key: string } | null>
+  /**
+   * The same answer for the workspace the folder gate admitted this call in
+   * (#1566), with no new roots request. Reads use it; writes use resolve(),
+   * which re-reads the roots at the moment the write is admitted. Absent
+   * when the call was not gated: reads then use resolve().
+   */
+  admitted?(): { scope: string | null; key: string } | null
 }
 
 function _folderContext(args: Record<string, unknown>): FolderScopeContext | null {
@@ -980,7 +993,7 @@ function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
  * Without a FolderScopeContext (the tools used outside the server) the
  * session alone decides, as before.
  */
-async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined): Promise<string> {
+async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false): Promise<string> {
   const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
   const chosen = base !== undefined ? base : (explicit ?? _implicitSessionId())
   const ctx = _folderContext(args)
@@ -988,7 +1001,7 @@ async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: s
   // An id this process never registered has no default (Codex path 6).
   const session = chosen !== undefined && _knownSession(chosen, plur, true) ? chosen : NO_SESSION
   let ws: { scope: string | null; key: string } | null = null
-  try { ws = await ctx.resolve() } catch { ws = null }
+  try { ws = read && ctx.admitted ? ctx.admitted() : await ctx.resolve() } catch { ws = null }
   if (session !== NO_SESSION) {
     const record = _sessionTelemetry.get(session)
     const own = plur.getSessionScope({ session })
@@ -1003,6 +1016,23 @@ async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: s
   const key = FOLDER_SCOPE_SESSION_PREFIX + scope
   plur.setSessionScope(scope, { session: key })
   return key
+}
+
+/**
+ * The session whose default scope sets the remote dialing context of an
+ * unscoped READ (#1566, the read-side twin of #1562). The same rule as
+ * `_writeSession`: a session's own default while it holds, else the
+ * workspace's scope from the one resolver (workspaceWriteScope) — only when
+ * every workspace input agrees on one scope — else no scope. So an unscoped
+ * recall in a team folder dials that team's store exactly as a session
+ * started there would, with or without plur_session_start. An explicit
+ * `scope` on the call still wins in core. The workspace is the one the folder
+ * gate admitted the call in (FolderScopeContext.admitted).
+ */
+function _readSession(args: Record<string, unknown>, plur: Plur): Promise<string> {
+  // The workspace the gate admitted the call in, not a fresh roots request:
+  // a read is answered in the workspace it was admitted in.
+  return _writeSession(args, plur, undefined, true)
 }
 
 /**
@@ -1645,7 +1675,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // after it so a reporting failure cannot cost a memory.
           const dedup = isOutbox
             ? undefined
-            : await plur.nearDuplicates(statement, context, engram.id)
+            // Excluded by the id recall gives the saved row (L1): a team row
+            // comes back namespaced, so its bare id would neither exclude it
+            // nor — when a local engram shares that bare id — spare the twin.
+            : await plur.nearDuplicates(statement, context, plur.readIdFor(engram))
 
           // Redraft detection (2026-09-07). Superseding an engram written only
           // minutes ago is not a correction — it is a redraft, and it leaves a
@@ -2133,6 +2166,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: args.scope as string | undefined,
           source: 'inject',
           session_id,
+          // #1566: the dialing context follows the same rule as writes — the
+          // workspace's scope when the session has no default of its own.
+          // session_id above stays the caller's for attribution.
+          dial_session: await _readSession(args, plur),
         })
         _recordInjectionTelemetry(session_id, result.injected_packs)
         const response: Record<string, unknown> = {

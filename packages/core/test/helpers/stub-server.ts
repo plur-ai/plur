@@ -75,6 +75,11 @@ export class StubServer {
   /** When set, POST /engrams returns this as the assigned id instead of a valid
    *  one — to simulate a buggy/hostile server (e.g. for the #404 id-shape test). */
   badAppendId: unknown = null
+  /** When true, POST /engrams mints ids the way the enterprise server does,
+   *  `ENG-YYYY-MM-DD-NNN` (today, sequence from 001), instead of `ENG-SRV-NNN`.
+   *  A local store minting on the same day gets the same bare ids, which is
+   *  the collision #1109 / the 0.21.1 F3 finding is about. Cleared by reset(). */
+  datedIds = false
   /** When set, POST /engrams short-circuits to this error response BEFORE reading
    *  the body — to simulate a server that rejects the write (#912 sanitise test). */
   appendErrorResponse: { status: number; body: string } | null = null
@@ -245,6 +250,7 @@ export class StubServer {
     this.engrams.clear()
     this.idCounter = 0
     this.badAppendId = null
+    this.datedIds = false
     this.appendErrorResponse = null
     this.appendErrorByScope = {}
     this.appendDelayMs = 0
@@ -385,7 +391,8 @@ export class StubServer {
         }
         // Recorded with the row, as docs/remote-store-contract.md recommends.
         const idempotency_key = body.idempotency_key
-        const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
+        const seq = String(++this.idCounter).padStart(3, '0')
+        const id = this.datedIds ? `ENG-${new Date().toISOString().slice(0, 10)}-${seq}` : `ENG-SRV-${seq}`
         const now = new Date().toISOString()
         const engram: StoredEngram = {
           id,
