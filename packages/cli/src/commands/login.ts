@@ -452,7 +452,10 @@ export function buildStatusReport(
           : h.status === 'auth_expired'
             ? { probed: true, reachable: true, ...(h.reason ? { reason: h.reason } : {}) }
             : { probed: true, reachable: false, ...(h.reason ? { reason: h.reason } : {}) }
-    const remediation = remediationFor(status, h.url, h.tokenExpiresInDays)
+    // #1564 review M2: an unset token_env variable is fixed by setting it, not by re-authenticating.
+    const remediation = h.tokenEnvUnset
+      ? `Set the environment variable ${h.tokenEnvUnset} where PLUR runs — it holds the token for ${normalizeEndpointUrl(h.url)}.`
+      : remediationFor(status, h.url, h.tokenExpiresInDays)
     return {
       url: h.url,
       status,

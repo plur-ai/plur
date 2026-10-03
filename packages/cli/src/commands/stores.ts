@@ -54,6 +54,8 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
   try {
     result = await plur.addRemoteStore({
       url: url!, token, scope: scope!,
+      // #1561: only the variable's name goes into config.yaml.
+      ...(tokenEnv ? { tokenEnv } : {}),
       ...(readonly ? { readonly } : {}),
       ...(args.includes('--overwrite-scope') ? { overwriteScope: true } : {}),
     })
@@ -77,12 +79,13 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
     exit(1, redactToken(`Not registered: ${msg}. Nothing was written.`, token))
   }
 
+  const kept = tokenEnv ? ` config.yaml records only the variable name (${tokenEnv}); it must be set wherever PLUR runs.` : ''
   const message = {
     added: `Added store: ${url} (scope: ${result.scope})`,
     already_registered: `Already registered: ${url} (scope: ${result.scope}) — nothing changed.`,
     token_rotated: `Updated the token for ${url} (scope: ${result.scope}) after it verified.`,
     overwritten: `Reassigned scope ${result.scope} to ${url}.`,
-  }[result.status]
+  }[result.status] + (result.status === 'already_registered' ? '' : kept)
   if (shouldOutputJson(flags)) {
     outputJson(redactTokenDeep({
       success: true, status: result.status, url, scope: result.scope,

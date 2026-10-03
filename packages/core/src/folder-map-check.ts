@@ -891,3 +891,105 @@ export function unifiedDiff(before: string, after: string, fromLabel: string, to
   }
   return out.join('\n') + '\n'
 }
+
+// ---------------------------------------------------------------------------
+// In-place edits (#1562): `plur folders set` / `rm` keep the user's lines.
+// ---------------------------------------------------------------------------
+
+/** Entries a write changes, by their index in the file's `folders:` list. */
+export interface FolderMapTextEdit {
+  /** How many entries the file holds now (the parsed map's count). */
+  count: number
+  /** The new entry for an index, or null to remove it. */
+  replace: Map<number, Record<string, unknown> | null>
+  /** Entries added at the end of the list. */
+  append: Array<Record<string, unknown>>
+}
+
+const ENTRY_KEY_ORDER = ['path', 'plur', 'scope', 'trusted', 'literal']
+
+/** One value as YAML on a single line, as `yaml.dump` writes it. Null when it needs more. */
+function inlineYaml(v: unknown): string | null {
+  const out = yaml.dump(v, { flowLevel: 0, lineWidth: -1 }).replace(/\n$/, '')
+  return out.includes('\n') ? null : out
+}
+
+/**
+ * The folder map's text with only the changed entries' lines rewritten (#1562):
+ * every comment, blank line and untouched entry stays as the user wrote it,
+ * the way `plur folders repair` edits lines in place. A changed entry keeps
+ * each of its lines whose key and value did not change (an inline comment
+ * there survives); the rest of its lines are rewritten in its own
+ * indentation. A removed entry loses its own lines only; new entries go after
+ * the last one. Null when the text is not a plain, valid block list this can
+ * edit safely (a flow list, a block scalar, an entry not written as
+ * `- key: value`, or a count that does not match) — the caller then writes
+ * the whole map. The caller checks the result reads back as intended.
+ */
+export function editFolderMapText(text: string, edit: FolderMapTextEdit): string | null {
+  if (!checkFolderMapText(text).ok) return null
+  const s = scan(text)
+  if (s.loneCR) return null
+  const st = structure(s)
+  if (st.block || st.nested) return null
+  if (st.entries.length !== edit.count) return null
+  if (st.entries.some(e => !e.line.key || e.line.inlineValue)) return null
+  const first = st.entries[0]?.line
+  const itemLead = first ? first.lead : '  '
+  const gap = first ? (first.gap || ' ') : ' '
+  const keyIndent = ' '.repeat(itemLead.length + 1 + gap.length)
+  const render = (entry: Record<string, unknown>, old?: { line: Line; keys: Map<string, Line> }): string[] | null => {
+    const keys = [...ENTRY_KEY_ORDER.filter(k => entry[k] !== undefined), ...Object.keys(entry).filter(k => !ENTRY_KEY_ORDER.includes(k) && entry[k] !== undefined)]
+    if (keys[0] !== 'path') return null
+    const lines: string[] = []
+    for (const [i, k] of keys.entries()) {
+      const prev = old?.keys.get(k)
+      if (prev) {
+        const was = lineValue(prev)
+        // Unchanged, and on the same kind of line (the item line stays the item line).
+        if (was.ok && isDeepStrictEqual(was.value, entry[k]) && (i === 0) === (prev === old!.line)) { lines.push(prev.text); continue }
+      }
+      if (!/^[A-Za-z_][A-Za-z0-9_-]{0,39}$/.test(k)) return null
+      const v = inlineYaml(entry[k])
+      if (v === null) return null
+      lines.push(i === 0 ? `${old ? old.line.lead : itemLead}-${old ? (old.line.gap || ' ') : gap}${k}: ${v}` : `${old ? ' '.repeat(old.line.lead.length + 1 + (old.line.gap || ' ').length) : keyIndent}${k}: ${v}`)
+    }
+    return lines
+  }
+  // Line number → what replaces it ([] drops it). Untouched lines are absent.
+  const out = new Map<number, string[]>()
+  for (const [idx, next] of edit.replace) {
+    const e = st.entries[idx]
+    if (!e) return null
+    const own = [e.line, ...[...e.keys.values()].filter(l => l !== e.line)]
+    for (const l of own) out.set(l.n, [])
+    if (next) {
+      const lines = render(next, e)
+      if (!lines) return null
+      out.set(e.line.n, lines)
+    }
+  }
+  const added: string[] = []
+  for (const entry of edit.append) {
+    const lines = render(entry)
+    if (!lines) return null
+    added.push(...lines)
+  }
+  // After the last line of the last entry; with none, right after `folders:`.
+  let after: number
+  if (st.entries.length > 0) {
+    const last = st.entries[st.entries.length - 1]
+    after = Math.max(last.line.n, ...[...last.keys.values()].map(l => l.n))
+  } else {
+    const top = st.tops.get('folders')
+    if (added.length > 0 && (!top || top.length !== 1 || (top[0].value !== '' && !top[0].value!.startsWith('#')))) return null
+    after = top ? top[0].n : 0
+  }
+  const result: string[] = []
+  for (const l of s.lines) {
+    const swap = out.get(l.n)
+    result.push(...(swap ?? [l.text]))
+    if (l.n === after && added.length > 0) result.push(...added)
+  }
+  return join(s, result)
+}

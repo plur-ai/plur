@@ -17,6 +17,13 @@ export const StoreEntrySchema = z.object({
   path: z.string().optional(),
   url: z.string().url().optional(),
   token: z.string().optional(),       // Bearer for remote stores; ignored for path
+  /**
+   * Name of an environment variable holding the Bearer token (#1561). The
+   * token is read from it when config.yaml is loaded (when `token` is absent)
+   * and is never written back to the file — `plur stores add --token-env VAR`
+   * and `plur remote --token-env VAR` store only this reference.
+   */
+  token_env: z.string().optional(),
   scope: z.string(),
   shared: z.boolean().default(false),
   readonly: z.boolean().default(false),
