@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### `plur doctor` warns when a team store's token variable is unset (#1572)
+
+A team store added with `--token-env` takes its token from an environment variable. When that variable was unset or empty, `plur doctor` still said everything was ok, and the only sign was one line on stderr. Saves to that store waited in the outbox and recalls skipped it.
+
+- `plur doctor` now prints a warning for each such store, naming the store, its address and the variable, and saying what to do: set the variable where PLUR runs, then run `plur outbox --flush`. It never prints a token.
+- `plur doctor --json` lists them as `tokenEnvUnset` (scope, url, variable).
+- It is advice, like the other store warnings, and does not on its own make the overall check fail.
+
 ### A folder's team scope reaches unscoped saves over MCP without plur_session_start (#1562)
 
 Found by the 0.21.1 pre-release check. The promise above (after a yes with a team scope, or in a folder mapped to a scope, an unscoped save goes to that scope) held over MCP only after `plur_session_start`. Without it, `plur_learn` with no scope was saved in `global` on this machine and never reached the team store.

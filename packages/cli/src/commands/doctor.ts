@@ -24,7 +24,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates, folderMapProblem } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates, folderMapProblem, tokenFromEnv } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { repairAdvice, repairCommandFor } from './folders.js'
 
@@ -205,6 +205,13 @@ interface DoctorReport {
    * the overall check.
    */
   ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
+  /**
+   * Remote stores whose token comes from an environment variable
+   * (`token_env`, #1561) that is unset or empty where doctor runs (#1572).
+   * Saves to such a store wait in the outbox and recalls skip it. Names the
+   * variable, never a value. Advisory only: does not fail the overall check.
+   */
+  tokenEnvUnset: Array<{ scope: string; url: string; variable: string }>
   /**
    * opencode leg. Owner-approved pre-publish requirement (2026-09-16): until
    * `@plur-ai/opencode` is published, opencode's `plugin: ["@plur-ai/opencode"]`
@@ -490,6 +497,22 @@ function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDu
     return classifyStoreDuplicates(stores, join(root, 'engrams.yaml')).ignored.map(d => ({
       path: d.entry.path ?? '', scope: d.entry.scope, duplicateOf: d.duplicateOf, primary: d.primary,
     }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * #1572: remote stores in config.yaml whose `token_env` variable is unset or
+ * blank here. Reads config.yaml only; no store is opened, no value is kept.
+ */
+function findTokenEnvUnset(flags: GlobalFlags): DoctorReport['tokenEnvUnset'] {
+  try {
+    const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+    const stores = loadConfig(join(root, 'config.yaml')).stores ?? []
+    return stores
+      .filter(s => s.url && s.token_env && !s.token && tokenFromEnv(s.token_env) === undefined)
+      .map(s => ({ scope: s.scope, url: s.url!, variable: s.token_env! }))
   } catch {
     return []
   }
@@ -1334,12 +1357,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       : null
 
     const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
+    const tokenEnvUnset = findTokenEnvUnset(flags)
 
     return {
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, opencode, outbox, folderMap, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, tokenEnvUnset, opencode, outbox, folderMap, overall,
     }
   })
 }
@@ -1590,6 +1614,15 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (report.ignoredDuplicateStores.some(d => !d.primary)) {
       outputText('   Remove an entry that repeats another store\'s file and scope from config.yaml by hand.')
     }
+  }
+
+  if (report.tokenEnvUnset.length > 0) {
+    outputText('')
+    for (const t of report.tokenEnvUnset) {
+      outputText(`⚠  Team store "${t.scope}" (${t.url}) takes its token from ${t.variable}, which is unset or empty here.`)
+    }
+    outputText('   Saves to it wait in the outbox and recalls skip it. Set the variable where PLUR runs (your shell')
+    outputText('   profile, or the env of the editor\'s MCP server), then run `plur outbox --flush`.')
   }
 
   outputText('')

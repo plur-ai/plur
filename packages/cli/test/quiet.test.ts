@@ -189,6 +189,7 @@ describe('doctor --quiet (#730)', () => {
       pgliteOrphan: null,
       staleContentHashes: 0,
       ignoredDuplicateStores: [],
+      tokenEnvUnset: [],
       opencode: null,
       overall: 'fail',
     }
@@ -225,5 +226,23 @@ describe('doctor --quiet (#730)', () => {
     expect(text).toContain('Loading it would inject the same engrams twice, so plur skips it')
     expect(text).toContain('run `plur stores prune`')
     expect(text).not.toContain('by hand')
+  })
+
+  it('warns about a team store whose token_env variable is unset (#1572)', async () => {
+    const { printText } = await import('../src/commands/doctor.js')
+    printText({
+      ...(await report()),
+      tokenEnvUnset: [{ scope: 'group:acme/eng', url: 'https://team.example/sse', variable: 'ACME_PLUR_TOKEN' }],
+    }, { quiet: true })
+    const text = out.join('')
+    expect(text).toContain('Team store "group:acme/eng" (https://team.example/sse) takes its token from ACME_PLUR_TOKEN, which is unset or empty here.')
+    expect(text).toContain('Saves to it wait in the outbox and recalls skip it.')
+    expect(text).toContain('plur outbox --flush')
+  })
+
+  it('prints nothing about token_env when every variable is set (#1572)', async () => {
+    const { printText } = await import('../src/commands/doctor.js')
+    printText(await report(), { quiet: true })
+    expect(out.join('')).not.toContain('takes its token from')
   })
 })
