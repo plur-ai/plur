@@ -26,6 +26,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, realpathSync, mkdirSy
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
+import { isDeepStrictEqual } from 'util'
 import {
   checkFolderMapText, planFolderMapRepair, repairFolderMap, folderMapPath, folderMapProblem, resolveFolderPolicy,
 } from '../src/index.js'
@@ -131,7 +132,12 @@ describe('R3: a mode becomes on only from a literal on', () => {
 describe('the invariant also refuses an implicit on', () => {
   it('an entry with scope (or trusted) and no plur would resolve on: a slip in it is not repaired', () => {
     notFixable(L('version: 1', 'folders:', '  - path: /a', '\tscope: group:x/y'))
-    notFixable(L('version: 1', 'folder:', '  - path: /a', '    trusted: true'))
+    notFixable(L('version: 1', 'folders:', '  - path: /a', '      trusted: true'))
+  })
+  it('with its own lines untouched it is repaired, and plur: on is written beside them (#1567)', () => {
+    const p = planFolderMapRepair(L('version: 1', 'folder:', '  - path: /a', '    trusted: true'))
+    expect(p.status).toBe('fixable')
+    if (p.status === 'fixable') expect(p.after).toBe(L('version: 1', 'folders:', '  - path: /a', '    plur: on', '    trusted: true'))
   })
   it('the same entry with a literal plur: on is repaired', () => {
     expect(planFolderMapRepair(L('version: 1', 'folders:', '  - path: /a', '\tscope: group:x/y', '    plur: on')).status).toBe('fixable')
@@ -242,6 +248,74 @@ function literalOnPaths(text: string): Set<string> {
   return out
 }
 
+/**
+ * The ORIGINAL text's entries, read independently of the repair (#1567): an
+ * entry starts at a `- ` line and ends at the next one or at a line at
+ * column 0. For each: every value of a `path:`-like key and of `scope:`,
+ * whether it says `trusted: true`, whether it has a `plur:` key at all, and
+ * its own non-blank, non-comment lines exactly as written.
+ */
+interface RawEntry { paths: string[]; scopes: unknown[]; trusted: boolean; plurKey: boolean; lines: string[] }
+function rawEntries(text: string): RawEntry[] {
+  const out: RawEntry[] = []
+  let cur: RawEntry | null = null
+  for (const raw of text.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)) {
+    const t = raw.replace(/^[ \t]+/, '')
+    // A comment or blank line belongs to no entry and ends none (as in YAML).
+    if (t === '' || t.startsWith('#')) continue
+    if (!/^[ \t]/.test(raw) && !t.startsWith('-')) { cur = null; continue }
+    if (t.startsWith('-')) { cur = { paths: [], scopes: [], trusted: false, plurKey: false, lines: [] }; out.push(cur) }
+    if (!cur) continue
+    cur.lines.push(raw)
+    const body = t.startsWith('-') ? t.replace(/^-[ \t]*/, '') : t
+    try {
+      const v = yaml.load(body)
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        for (const [k, x] of Object.entries(v)) {
+          if (typeof x === 'string' && /^(path|pth|pah|paht|apth|ptah)$/i.test(k)) cur.paths.push(x)
+          if (k === 'scope') cur.scopes.push(x)
+          if (k === 'trusted' && x === true) cur.trusted = true
+          if (k.toLowerCase() === 'plur') cur.plurKey = true
+        }
+      }
+    } catch { /* not a single key: value line */ }
+  }
+  return out
+}
+
+/**
+ * What a repaired file may hold, checked against the original (#1567):
+ *  - no entry is created: every entry's path was written on a line of an
+ *    entry of the original, and there are no more entries than it had;
+ *  - no scope moves: an entry's scope was written in an original entry with
+ *    the same path;
+ *  - on ⊆ literal `plur: on` in the original, or an original entry that was
+ *    on only through `scope:` / `trusted: true` (no `plur:` key), whose own
+ *    lines all survive verbatim and which now says `plur: on` explicitly.
+ */
+function repairViolations(original: string, repaired: string, after: unknown): string[] {
+  const bad: string[] = []
+  const entries = rawEntries(original)
+  const folders = ((after as { folders?: unknown })?.folders ?? []) as Array<Record<string, unknown>>
+  if (!Array.isArray(folders)) return ['folders is not a list']
+  if (folders.length > entries.length) bad.push(`created an entry: ${folders.length} > ${entries.length}`)
+  const literal = literalOnPaths(original)
+  const kept = new Set(repaired.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/))
+  for (const f of folders) {
+    const path = String(f?.path)
+    const from = entries.filter(e => e.paths.includes(path))
+    if (from.length === 0) { bad.push(`created an entry for ${path}`); continue }
+    if (f.scope !== undefined && !from.some(e => e.scopes.some(x => isDeepStrictEqual(x, f.scope)))) bad.push(`attached scope ${String(f.scope)} to ${path}`)
+  }
+  for (const path of onPaths(after)) {
+    if (literal.has(path)) continue
+    const f = folders.find(x => String(x?.path) === path)
+    const legacy = entries.some(e => e.paths.includes(path) && !e.plurKey && (e.scopes.length > 0 || e.trusted) && e.lines.every(l => kept.has(l)))
+    if (!legacy || f?.plur !== 'on') bad.push(`on without a literal plur: on or an untouched legacy entry (${path})`)
+  }
+  return bad
+}
+
 describe('invariant fuzz: repaired on ⊆ literal plur: on in the original', () => {
   function makeRng(seed: number) {
     let s = seed
@@ -326,6 +400,7 @@ describe('invariant fuzz: repaired on ⊆ literal plur: on in the original', () 
       const bad: string[] = []
       let fixable = 0
       let refused = 0
+      let legacy = 0
       for (let k = 0; k < 1200; k++) {
         const base = gen(r)
         for (let j = 0; j < 3; j++) {
@@ -336,16 +411,18 @@ describe('invariant fuzz: repaired on ⊆ literal plur: on in the original', () 
           if (p.status === 'unfixable') { refused++; continue }
           if (p.status !== 'fixable') continue
           fixable++
+          if (p.fixes.some(f => f.change?.startsWith('adds `plur: on`'))) legacy++
           let after: unknown
           try { after = yaml.load(p.after.replace(/^﻿/, '')) } catch { bad.push(`repaired file does not parse:\n${p.after}`); continue }
-          const allowed = literalOnPaths(m)
-          for (const path of onPaths(after)) if (!allowed.has(path)) bad.push(`on without a literal plur: on (${path}):\n${JSON.stringify(m)}\n→\n${JSON.stringify(p.after)}`)
+          for (const v of repairViolations(m, p.after, after)) bad.push(`${v}:\n${JSON.stringify(m)}\n→\n${JSON.stringify(p.after)}`)
           if (!checkFolderMapText(p.after).ok) bad.push(`repaired file still broken:\n${JSON.stringify(p.after)}`)
         }
       }
-      ;(globalThis as any).__invariant = [...((globalThis as any).__invariant ?? []), { seed, fixable, refused, bad: bad.length }]
+      ;(globalThis as any).__invariant = [...((globalThis as any).__invariant ?? []), { seed, fixable, refused, legacy, bad: bad.length }]
       expect(bad.slice(0, 3)).toEqual([])
       expect(fixable).toBeGreaterThan(50)
+      // The team-style seeds exercise the legacy-entry repair (#1567).
+      if (g === genTeam) expect(legacy).toBeGreaterThan(20)
     }, 120_000)
   }
 

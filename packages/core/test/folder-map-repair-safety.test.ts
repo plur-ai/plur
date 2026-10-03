@@ -304,7 +304,16 @@ describe('fuzz (audit harness, seeded)', () => {
         fixed++
         if (p.summary.includes(SECRET)) bad.push(`leak in summary: ${p.summary}`)
         const after = (yaml.load(p.after) as { folders?: Array<Record<string, unknown>> })?.folders ?? []
-        if (!isDeepStrictEqual(after, v.folders)) bad.push(`changed meaning:\n${m}\n→\n${p.after}`)
+        // The one change allowed (#1567): a legacy entry, on through its
+        // scope or grant alone, may get `plur: on` written beside them, which
+        // keeps its meaning.
+        const sameOrMadeExplicit = after.length === v.folders.length && after.every((e, i) => {
+          const was = v.folders[i] as Record<string, unknown>
+          if (isDeepStrictEqual(e, was)) return true
+          const implicitOn = was.plur === undefined && (was.scope !== undefined || was.trusted === true)
+          return implicitOn && isDeepStrictEqual(e, { ...was, plur: 'on' })
+        })
+        if (!sameOrMadeExplicit) bad.push(`changed meaning:\n${m}\n→\n${p.after}`)
         // A commented-out mode is never a mode: a file holding one is never fixable (F1).
         if (/plur\w*:\s*#/.test(m)) bad.push(`fixed a commented-out mode:\n${m}\n→\n${p.after}`)
         for (const c2 of commentsOf(m)) if (!p.after.includes(c2)) bad.push(`lost comment ${c2}:\n${m}`)
