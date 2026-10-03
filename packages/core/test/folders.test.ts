@@ -207,10 +207,10 @@ describe('resolveFolderPolicy', () => {
     writeMap([{ path: other, plur: 'off', trusted: true }])
 
     expect(setFolderEntry(root, proj, { scope: 'project:x' }, { configuredScopes: [], home }))
-      .toEqual({ path: proj, scope: 'project:x' })
+      .toEqual({ path: proj, plur: 'on', scope: 'project:x' })
     expect(loadFolderMap(root).folders).toEqual([
       { path: other, plur: 'off', trusted: true },
-      { path: proj, scope: 'project:x' },
+      { path: proj, plur: 'on', scope: 'project:x' },
     ])
     expect(policy(other).mode).toBe('off')
     expect(isTrustedInMap(loadFolderMap(root).folders, proj, home)).toBe(false)
@@ -234,7 +234,7 @@ describe('resolveFolderPolicy', () => {
 
     two()
     setFolderEntry(root, d, { scope: 'project:d' }, { configuredScopes: [], home })
-    expect(loadFolderMap(root).folders).toEqual([{ path: '~/dup', trusted: true, scope: 'project:d' }])
+    expect(loadFolderMap(root).folders).toEqual([{ path: '~/dup', trusted: true, plur: 'on', scope: 'project:d' }])
 
     two()
     expect(removeFolderEntry(root, d, home)).toBe(true)
@@ -394,7 +394,7 @@ describe('resolveFolderPolicy', () => {
       expect(clearFolderTrust(root, onDisk, home)).toBe(true)
       expect(loadFolderMap(root).folders).toEqual([])
       expect(setFolderEntry(root, onDisk, { scope: 'project:x' }, { configuredScopes: [], home }))
-        .toEqual({ path: onDisk, scope: 'project:x' })
+        .toEqual({ path: onDisk, plur: 'on', scope: 'project:x' })
       expect(isTrustedInMap(loadFolderMap(root).folders, onDisk, home)).toBe(false)
 
       // An edit that finds a dormant mis-cased grant keeps only its mode.
@@ -594,7 +594,7 @@ describe('trust.yaml import', () => {
     const d = mk('keep')
     setFolderEntry(root, d, { scope: 'project:k', trusted: true }, { configuredScopes: ['project:k'], home })
     expect(untrustDirectory(d, root)).toBe(true)
-    expect(loadFolderMap(root).folders).toEqual([{ path: realpathSync(d), scope: 'project:k' }])
+    expect(loadFolderMap(root).folders).toEqual([{ path: realpathSync(d), plur: 'on', scope: 'project:k' }])
   })
 })
 
@@ -759,11 +759,11 @@ describe('writes: nonce and shared-scope guards', () => {
     }
   })
 
-  it('--scope alone means on (drops a previous plur field); rm removes the exact entry', () => {
+  it('--scope alone means on (a previous plur: off becomes plur: on, #1567); rm removes the exact entry', () => {
     const d = mk('flip')
     setFolderEntry(root, d, { mode: 'off' }, { configuredScopes: [], home })
     expect(setFolderEntry(root, d, { scope: 'project:f' }, { configuredScopes: ['project:f'], home }))
-      .toEqual({ path: realpathSync(d), scope: 'project:f' })
+      .toEqual({ path: realpathSync(d), plur: 'on', scope: 'project:f' })
     expect(policy(d).mode).toBe('on')
     expect(removeFolderEntry(root, d, home)).toBe(true)
     expect(removeFolderEntry(root, d, home)).toBe(false)

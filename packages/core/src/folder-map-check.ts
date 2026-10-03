@@ -677,11 +677,47 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   // `plur:` mode may change, and only to the mode its case or letter points at.
   const broken = keepsWhatWasWritten(s, st, after)
   if (broken) return refuse(check, broken)
-  const switchedOn = onWithoutLiteralOn(s, st, after)
-  if (switchedOn !== null) {
-    return refuse(check, `line ${switchedOn}: this entry turns memory on through \`scope:\` or \`trusted:\` (or a \`plur:\` that is not written as a plain \`on\`), and plur folders repair never repairs such an entry — fix the problem named for it by hand`)
+  const implicit = onWithoutLiteralOn(s, st, after)
+  if (implicit === null) return refuse(check, 'plur folders repair cannot show that the repair keeps every entry exactly as written')
+  if (implicit.length === 0) return finish(text, after, fixes, opts)
+  // A legacy entry (#1567): on only through `scope:` / `trusted: true`, as
+  // 0.21.0 and earlier wrote it. It is repaired only when the repair leaves
+  // every one of its own lines exactly as written and they parse on their
+  // own; the repair then writes `plur: on` beside them, so the entry says in
+  // its own lines what it meant before the map broke. Anything else is the
+  // #1530 rule: a repair never brings memory back on.
+  const problemLines = new Set(check.issues.map(i => i.line).filter((n): n is number => n !== undefined))
+  const add = new Map<number, string>()   // line index after which `plur: on` goes → its indentation
+  for (const e of implicit) {
+    const own = s.lines.map((_, i) => i).filter(i => {
+      const r = st.roles[i]
+      return (r.role === 'item' || r.role === 'entry-key') && r.entry === e
+    })
+    const item = own.find(i => st.roles[i].role === 'item')
+    const start = st.entries[e]?.line.n ?? 1
+    const legacy = item !== undefined && implicitOnly(after, e) && !s.lines[item].inlineValue && s.lines[item].key !== undefined
+    const touched = own.find(i => out[i] !== s.lines[i].text || problemLines.has(s.lines[i].n) || !lineValue(s.lines[i]).ok)
+    if (!legacy || touched !== undefined) {
+      const n = touched !== undefined ? s.lines[touched].n : start
+      return refuse(check, `fix line ${n} by hand: the entry that starts at line ${start} is on through \`scope:\` or \`trusted:\` with no \`plur:\` line of its own, and plur folders repair changes such an entry only when it leaves the entry's own lines exactly as written`)
+    }
+    const keyLine = own.find(i => st.roles[i].role === 'entry-key')
+    const l = s.lines[item]
+    const indent = keyLine !== undefined ? s.lines[keyLine].lead : l.lead + ' '.repeat(1 + (l.gap ?? ' ').length)
+    add.set(item, indent)
+    fixes.push({ line: l.n, column: 1, fixable: true, change: 'adds `plur: on` beside the entry\'s scope or grant (it was on through them before the map broke)',
+      message: `line ${l.n}: this entry is on through \`scope:\` or \`trusted:\` — the repair writes \`plur: on\` beside them` })
   }
-  return finish(text, after, fixes, opts)
+  const out2 = out.map((line, i) => (add.has(i) ? line + s.eol + add.get(i)! + 'plur: on' : line))
+  const after2 = join(s, out2)
+  const recheck2 = checkFolderMapText(after2)
+  if (!recheck2.ok) return unfixable(recheck2)
+  // The added lines change exactly those entries' `plur`, and nothing else:
+  // the same entries, the same paths, scopes and grants (#1567).
+  if (!onlyAddsPlurOn(after, after2, implicit)) {
+    return refuse(check, 'plur folders repair cannot show that the repair keeps every entry exactly as written')
+  }
+  return finish(text, after2, fixes, opts)
 }
 
 /**
@@ -703,17 +739,18 @@ function yamlFeatureLine(s: Scan): Line | null {
 }
 
 /**
- * The first line of an entry that would resolve to `on` after the repair
- * although none of its own lines is literally `plur: on` (any case), or null.
- * `on` means `plur: on`, or no `plur` with a `scope` or `trusted: true` —
- * the resolver's rule. This is the promise itself, checked on the result: a
- * repair never switches memory on (#1530 re-review).
+ * The entries that would resolve to `on` after the repair although none of
+ * their own lines is literally `plur: on` (any case), or null when the result
+ * does not parse. `on` means `plur: on`, or no `plur` with a `scope` or
+ * `trusted: true` — the resolver's rule. This is the promise itself, checked
+ * on the result: a repair never switches memory on (#1530 re-review), except
+ * a legacy entry the caller proves untouched (#1567).
  */
-function onWithoutLiteralOn(s: Scan, st: Structure, after: string): number | null {
+function onWithoutLiteralOn(s: Scan, st: Structure, after: string): number[] | null {
   let parsed: unknown
-  try { parsed = yaml.load(after.replace(/^\uFEFF/, '')) } catch { return st.entries[0]?.line.n ?? 1 }
+  try { parsed = yaml.load(after.replace(/^\uFEFF/, '')) } catch { return null }
   const folders = (parsed as { folders?: unknown })?.folders
-  if (!Array.isArray(folders)) return null
+  if (!Array.isArray(folders)) return []
   const literalOn = st.entries.map(() => false)
   s.lines.forEach((l, i) => {
     const r = st.roles[i]
@@ -723,13 +760,39 @@ function onWithoutLiteralOn(s: Scan, st: Structure, after: string): number | nul
     const span = valueSpan(l)
     if (span && !span.value.includes('\\') && span.value.toLowerCase() === 'on') literalOn[r.entry] = true
   })
+  const out: number[] = []
   for (let i = 0; i < folders.length; i++) {
     const e = folders[i] as Record<string, unknown> | null
     if (!e || typeof e !== 'object') continue
     const on = e.plur === 'on' || (e.plur === undefined && (e.scope !== undefined || e.trusted === true))
-    if (on && !literalOn[i]) return st.entries[i]?.line.n ?? 1
+    if (on && !literalOn[i]) out.push(i)
   }
-  return null
+  return out
+}
+
+/** Entry `i` of the parsed text has no `plur` and is on through `scope` or `trusted: true`. */
+function implicitOnly(after: string, i: number): boolean {
+  try {
+    const f = (yaml.load(after.replace(/^\uFEFF/, '')) as { folders?: unknown })?.folders
+    const e = Array.isArray(f) ? f[i] as Record<string, unknown> | null : null
+    return !!e && typeof e === 'object' && e.plur === undefined && (e.scope !== undefined || e.trusted === true)
+  } catch {
+    return false
+  }
+}
+
+/** `b` is `a` with `plur: on` added to exactly the entries `which`, and no other change. */
+function onlyAddsPlurOn(a: string, b: string, which: number[]): boolean {
+  try {
+    const pa = yaml.load(a.replace(/^\uFEFF/, '')) as Record<string, unknown>
+    const pb = yaml.load(b.replace(/^\uFEFF/, '')) as Record<string, unknown>
+    const fa = pa?.folders, fb = pb?.folders
+    if (!Array.isArray(fa) || !Array.isArray(fb) || fa.length !== fb.length) return false
+    const want = { ...pa, folders: fa.map((e, i) => (which.includes(i) ? { ...(e as object), plur: 'on' } : e)) }
+    return isDeepStrictEqual(want, pb)
+  } catch {
+    return false
+  }
 }
 
 function renameKey(l: Line, from: string, to: string): string {
