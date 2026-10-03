@@ -152,6 +152,7 @@ export {
   removeFolderEntry,
   clearFolderTrust,
   coversHomeOrRoot,
+  workspaceFolderScope,
   findPlurMarker,
   folderPatternMatches,
   folderPatternSpecificity,
