@@ -20,6 +20,9 @@ while `plur doctor` said it was registered. This was also the case in 0.21.0.
   and init says so.
 - `plur init --project` also registers the server in `~/.claude.json`. Its
   repo entry stays as the folder's PLUR marker.
+- `plur-mcp init` follows the same rules. It used to write `<cwd>/.mcp.json`,
+  or `~/.claude/mcp.json` when that file existed, and Claude Code never reads
+  `~/.claude/mcp.json`. An old entry there is moved to `~/.claude.json`.
 - `plur doctor` now checks where Claude Code actually looks: user scope in
   `~/.claude.json`, this folder's local scope there, or a project `.mcp.json`.
   An entry in settings.json no longer counts. Doctor fails when Claude Code's

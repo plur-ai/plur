@@ -283,13 +283,6 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
   return notes.length ? `${head} (${notes.join('; ')})` : head
 }
 
-function findMcpConfig(): string {
-  const projectMcp = join(process.cwd(), '.mcp.json')
-  if (existsSync(projectMcp)) return projectMcp
-  const globalMcp = join(homedir(), '.claude', 'mcp.json')
-  if (existsSync(globalMcp)) return globalMcp
-  return projectMcp
-}
 
 /**
  * Read a config file this function intends to WRITE BACK. The #1059 rule,
@@ -310,39 +303,100 @@ function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; 
   return { data: {}, ok: false }
 }
 
-function writeMcpConfig(configPath: string): string {
-  const { data, ok } = readJsonObjectForWrite(configPath)
+/**
+ * Heal the @latest entries THIS command's older releases wrote — the #1069
+ * npx cache-rewrite race. Only the exact racey shape is touched; a custom or
+ * version-pinned entry is the user's decision. Returns true when it changed.
+ */
+function healRaceyEntry(servers: Record<string, unknown>): boolean {
+  const existing = servers.plur as { command?: string; args?: string[] } | undefined
+  if (!existing || typeof existing !== 'object') return false
+  const args = existing.args ?? []
+  const spec = args.filter(a => a !== '-y' && !a.startsWith('-'))[0] ?? ''
+  if (existing.command !== 'npx' || !/^@plur-ai\/mcp(@latest)?$/.test(spec)) return false
+  const healed = { ...existing, ...MCP_SERVER_CONFIG }
+  if (JSON.stringify(healed) === JSON.stringify(existing)) return false
+  servers.plur = healed
+  return true
+}
+
+/**
+ * Register the server for Claude Code at user scope, in `~/.claude.json` — the
+ * file `claude mcp add --scope user` writes and the only user-level place
+ * Claude Code reads MCP servers (#1561). This used to write `<cwd>/.mcp.json`,
+ * or `~/.claude/mcp.json` when that existed; Claude Code never reads the
+ * latter. Same rules as `plur init`: an old `~/.claude/mcp.json` entry is
+ * moved (env and extra keys kept) unless `~/.claude.json` already has one,
+ * which wins; every change to an existing file is preceded by a backup
+ * (writeWithBackup, which also refuses a file edited meanwhile); a run with
+ * nothing to change writes nothing; an unparseable `~/.claude.json` is
+ * refused and neither file is touched.
+ */
+async function installClaudeUserMcp(): Promise<string> {
+  const { writeWithBackup } = await import('@plur-ai/core')
+  const userPath = join(homedir(), '.claude.json')
+  const legacyPath = join(homedir(), '.claude', 'mcp.json')
+  const userRaw = existsSync(userPath) ? readFileSync(userPath, 'utf8') : null
+  const { data, ok } = readJsonObjectForWrite(userPath)
   if (!ok) {
-    return `skipped — ${configPath} exists but is not a JSON object; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur-mcp init\``
+    return `skipped — ${userPath} exists but is not valid JSON; writing would discard Claude Code's other settings and servers. Fix it by hand, then re-run \`plur-mcp init\``
   }
   const config = data as McpConfig
+  const legacyRaw = existsSync(legacyPath) ? readFileSync(legacyPath, 'utf8') : null
+  const legacy = readJsonObjectForWrite(legacyPath)
+  const oldServers = legacy.ok ? legacy.data.mcpServers : undefined
+  const oldEntry = oldServers && typeof oldServers === 'object' && !Array.isArray(oldServers)
+    ? (oldServers as Record<string, unknown>).plur
+    : undefined
 
-  const servers = (config.mcpServers ?? {}) as Record<string, unknown>
-  const existing = servers.plur as { command?: string; args?: string[] } | undefined
-  if (existing) {
-    // Heal the @latest entries THIS command's older releases wrote — the
-    // #1069 npx cache-rewrite race. Only the exact racey shape is touched;
-    // a custom or version-pinned entry is the user's decision.
-    const args = existing.args ?? []
-    const spec = args.filter(a => a !== '-y' && !a.startsWith('-'))[0] ?? ''
-    if (existing.command === 'npx' && /^@plur-ai\/mcp(@latest)?$/.test(spec)) {
-      const healed = { ...existing, ...MCP_SERVER_CONFIG }
-      if (JSON.stringify(healed) !== JSON.stringify(existing)) {
-        servers.plur = healed
-        config.mcpServers = servers
-        writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-        return `upgraded stale npx entry in ${configPath}`
-      }
-    }
-    return `already configured in ${configPath}`
+  const servers = (config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {}) as Record<string, unknown>
+  let status: string
+  let changed: boolean
+  if ('plur' in servers) {
+    changed = healRaceyEntry(servers)
+    status = changed ? `upgraded stale npx entry in ${userPath}` : `already configured in ${userPath}`
+  } else if (oldEntry && typeof oldEntry === 'object') {
+    servers.plur = JSON.parse(JSON.stringify(oldEntry))
+    healRaceyEntry(servers)
+    changed = true
+    status = `moved from ${legacyPath} to ${userPath}, where Claude Code reads MCP servers`
+  } else {
+    servers.plur = MCP_SERVER_CONFIG
+    changed = true
+    status = `added to ${userPath}`
   }
 
-  servers.plur = MCP_SERVER_CONFIG
-  config.mcpServers = servers
-  const dir = join(configPath, '..')
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-  return `added to ${configPath}`
+  if (changed) {
+    config.mcpServers = servers
+    const content = JSON.stringify(config, null, 2) + '\n'
+    try {
+      if (userRaw === null) {
+        // Claude Code keeps its own state in this file and creates it private.
+        writeFileSync(userPath, content, { flag: 'wx', mode: 0o600 })
+      } else {
+        const backup = writeWithBackup(userPath, content, userRaw)
+        if (backup) status += ` (backup: ${backup})`
+      }
+    } catch (err) {
+      const why = (err as { code?: string }).code === 'EEXIST' ? 'it was created while PLUR was updating it — run again' : (err as Error).message
+      return `not written to ${userPath}: ${why}`
+    }
+  }
+
+  if (oldEntry !== undefined) {
+    const next: Record<string, unknown> = { ...legacy.data }
+    const rest = { ...(oldServers as Record<string, unknown>) }
+    delete rest.plur
+    if (Object.keys(rest).length > 0) next.mcpServers = rest
+    else delete next.mcpServers
+    try {
+      const backup = writeWithBackup(legacyPath, JSON.stringify(next, null, 2) + '\n', legacyRaw)
+      status += `; removed the unused entry from ${legacyPath}${backup ? ` (backup: ${backup})` : ''}`
+    } catch (err) {
+      status += `; could not remove the unused entry from ${legacyPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
+    }
+  }
+  return status
 }
 
 /**
@@ -518,8 +572,7 @@ async function runInit() {
   results.push(`Search:   ${searchMode}`)
 
   // Step 2: Write MCP config
-  const mcpConfigPath = findMcpConfig()
-  const mcpStatus = writeMcpConfig(mcpConfigPath)
+  const mcpStatus = await installClaudeUserMcp()
   results.push(`MCP:      ${mcpStatus}`)
 
   // Step 3: Install Claude Code hooks
