@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import { randomUUID, createHash } from 'crypto'
-import { tmpdir, hostname } from 'os'
-import { join, dirname, basename } from 'path'
+import { tmpdir, hostname, homedir } from 'os'
+import { join, dirname, basename, sep } from 'path'
 import yaml from 'js-yaml'
 import { collapseLineTerminators } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
@@ -81,6 +81,7 @@ import {
 } from './trust.js'
 import {
   resolveFolderPolicy as _resolveFolderPolicy,
+  hasOwnFolderDecision as _hasOwnFolderDecision,
   loadFolderMap as _loadFolderMap,
   setFolderEntry as _setFolderEntry,
   removeFolderEntry as _removeFolderEntry,
@@ -154,6 +155,7 @@ export {
   coversHomeOrRoot,
   workspaceFolderScope,
   findPlurMarker,
+  hasOwnFolderDecision,
   folderPatternMatches,
   folderPatternSpecificity,
   issueFolderNonce,
@@ -12895,9 +12897,14 @@ Generate an improved version of the procedure that prevents this failure. Return
     const startDir = cwd || process.cwd()
     const discovered: Array<{ path: string; scope: string }> = []
 
-    // Skip discovery if Plur storage is in a temp directory (test scenario)
+    // Skip discovery if Plur storage is in a temp directory (test scenario).
+    // The literal /tmp check covers macOS, where the OS temp folder is under
+    // /var/folders and tests sometimes write to /tmp. On Linux /tmp IS the OS
+    // temp folder unless TMPDIR moves it, so the first check already covers
+    // it; a test that points TMPDIR elsewhere opts its tree back in (#1588).
     const tmpDir = tmpdir()
-    if (this.paths.root.startsWith(tmpDir) || this.paths.root.startsWith('/tmp/')) {
+    if (this.paths.root.startsWith(tmpDir) || isUnder(canonicalize(this.paths.root), canonicalize(tmpDir)) ||
+        (process.platform === 'darwin' && this.paths.root.startsWith('/tmp/'))) {
       return discovered
     }
 
@@ -12910,23 +12917,31 @@ Generate an improved version of the procedure that prevents this failure. Return
       (this.config.stores ?? []).filter(s => s.path !== undefined && !s.url).map(s => canonicalize(s.path!)),
     )
     const primaryStore = canonicalize(this.paths.engrams)
+    // The user's main store is never a project store either, whichever store
+    // is active (#1588): PLUR_PATH may point elsewhere while ~/.plur exists.
+    const home = canonicalize(homedir())
+    const mainStore = canonicalize(join(homedir(), '.plur', 'engrams.yaml'))
 
     let dir = startDir
     const visited = new Set<string>()
 
     while (dir && !visited.has(dir)) {
       visited.add(dir)
-      const candidate = join(dir, '.plur', 'engrams.yaml')
+      const dirKey = canonicalize(dir)
+      // Never enter the home folder or anything above it (#1588): a store
+      // there is the user's own or no project's, whatever decided the folder.
+      if (dirKey === home || isUnder(home, dirKey)) break
 
+      const candidate = join(dir, '.plur', 'engrams.yaml')
       const candidateKey = canonicalize(candidate)
 
-      // Skip primary store
-      if (candidateKey === primaryStore) {
-        dir = dirname(dir)
-        continue
-      }
-
-      if (fs.existsSync(candidate) && !knownPaths.has(candidateKey)) {
+      // A store is registered only for a folder with its OWN decision (#1588):
+      // an exact folder-map entry, or a marker in that folder. On only through
+      // a parent is not enough — a repository's shipped store would otherwise
+      // become a shared, writable store read in every folder.
+      if (candidateKey !== primaryStore && candidateKey !== mainStore &&
+          fs.existsSync(candidate) && !knownPaths.has(candidateKey) &&
+          _hasOwnFolderDecision(dir, { root: this.paths.root })) {
         // Infer scope from directory name or git remote
         let scope = `project:${basename(dir)}`
         try {
@@ -13711,4 +13726,10 @@ Generate an improved version of the procedure that prevents this failure. Return
   trackedSessionScopes(): string[] {
     return this._sessionScopes.trackedSessions
   }
+}
+
+/** True when `child` is strictly inside `parent` (both already canonical). */
+function isUnder(child: string, parent: string): boolean {
+  if (child === parent) return false
+  return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
 }

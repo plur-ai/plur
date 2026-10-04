@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### A folder inherits less from the folders above it (#1588)
+
+- **Some folders that were on only through a parent now ask once.** A PLUR marker (an MCP config that names plur, or a `.plur.yaml`) used to switch memory on for every folder below it, including repositories cloned underneath. Now the search for a marker stops at the repository root, the same way the `.plur.yaml` lookup already did. A repository below a folder with a marker gets the one-time "no decision for this folder yet" question instead. Answer it once, or run `plur folders set <repo> --on`. Markers inside the repository, and folders that are not in a repository, work as before.
+- **A memory store that ships inside a repository is no longer added on its own.** PLUR used to add a folder's `.plur/engrams.yaml` to your stores as a shared, writable store whenever memory was on in that folder, even when "on" came only from a parent folder. That store was then read in every folder. Now it is added only when that folder has its own decision: a folder-map entry for exactly that folder (`plur folders set <repo> --on`), or a PLUR marker in that folder. A folder that is off never adds its store.
+- **Your main store is never added as a project store.** Store discovery no longer looks in your home folder or any folder above it. Your main store (`~/.plur`) and the store PLUR is using are never added as a separate project store, even when `PLUR_PATH` points somewhere else.
+- Stores already listed in `~/.plur/config.yaml` are kept. To remove one you did not mean to add, run `plur stores list` to find it, then remove its entry from `config.yaml`.
+
 ## 0.21.1
 
 You decide where your agents remember.

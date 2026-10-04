@@ -636,11 +636,26 @@ function configHasPlur(path: string): boolean {
   }
 }
 
+/** The project marker in `dir` itself (no walk), or `null`. */
+function markerIn(dir: string): 'mcp-config' | 'plur-yaml' | null {
+  if (configHasPlur(join(dir, '.mcp.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.claude', 'settings.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return 'mcp-config'
+  if (existsSync(join(dir, '.plur.yaml'))) return 'plur-yaml'
+  return null
+}
+
 /**
  * The first project marker walking up from `cwd` — the same walk, order and
  * home rule as `isPlurConfigured` in packages/cli/src/lib/plur-configured.ts
  * (kept there without a core import so the lightweight hooks stay cheap; a
  * parity test holds the two together). `null` when there is none.
+ *
+ * The walk stops at the repository root (#1588), the same boundary as the
+ * `.plur.yaml` lookup (`findProjectConfigPath`): the folder holding `.git` is
+ * still checked, nothing above it is. A marker in a folder above a cloned
+ * repository does not decide for that repository.
  */
 export function findPlurMarker(cwd: string, home: string = homedir()): 'mcp-config' | 'plur-yaml' | null {
   const start = canonicalize(cwd)
@@ -649,17 +664,38 @@ export function findPlurMarker(cwd: string, home: string = homedir()): 'mcp-conf
   for (;;) {
     const atHome = dir === homeResolved
     if (!atHome || start === homeResolved) {
-      if (configHasPlur(join(dir, '.mcp.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.claude', 'settings.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return 'mcp-config'
-      if (existsSync(join(dir, '.plur.yaml'))) return 'plur-yaml'
+      const found = markerIn(dir)
+      if (found) return found
     }
     if (atHome) return null
+    if (existsSync(join(dir, '.git'))) return null
     const parent = dirname(dir)
     if (parent === dir) return null
     dir = parent
   }
+}
+
+/**
+ * True when `dir` has a decision of its OWN that turns PLUR on (#1588): a
+ * folder-map entry naming exactly this folder (not a parent, not a pattern),
+ * or a project marker in this folder itself. A folder that is on only
+ * through a parent (a parent's map entry or pattern, or a marker further up)
+ * has no decision of its own. Store auto-discovery registers a folder's
+ * `.plur/engrams.yaml` only when this is true, so a store shipped inside a
+ * repository is never adopted because of a decision made for somewhere else.
+ */
+export function hasOwnFolderDecision(dir: string, opts: FolderPolicyOptions): boolean {
+  const home = opts.home ?? homedir()
+  if (resolveFolderPolicy(dir, opts).mode !== 'on') return false
+  const targets = new Set([canonicalize(dir), ...canonicalSpellings(dir)])
+  const entries = load(opts.root).map.folders
+  const exact = entries.some(e =>
+    (e.plur === 'on' || (e.plur === undefined && (e.scope !== undefined || e.trusted === true))) &&
+    !entryIsGlob(e) &&
+    entryForms(e.path, home, false, e.literal === true).some(f => targets.has(f)))
+  if (exact) return true
+  const canonical = canonicalize(dir)
+  return canonical !== canonicalize(home) && markerIn(canonical) !== null
 }
 
 // ---------------------------------------------------------------------------
