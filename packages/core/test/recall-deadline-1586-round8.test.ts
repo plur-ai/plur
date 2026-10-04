@@ -35,7 +35,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-function slowEmbedder(ms: number): void {
+function slowEmbedder(ms: number, extra: Record<string, unknown> = {}): void {
   const vec = (text: string): Float32Array => {
     const v = new Float32Array(384)
     for (let i = 0; i < text.length; i++) v[(text.charCodeAt(i) * 31 + i) % 384] += 1
@@ -48,7 +48,8 @@ function slowEmbedder(ms: number): void {
     name: 'slow-test', dim: 384, modelId: 'test/slow',
     embed: (t: string) => new Promise<Float32Array>(r => setTimeout(() => r(vec(t)), ms)),
     embedBatch: async (ts: string[]) => ts.map(vec),
-  })
+    ...extra,
+  } as any)
 }
 
 async function storeWith(n: number): Promise<{ plur: Plur; dir: string }> {
@@ -84,16 +85,24 @@ describe('R8-2 — the delta fold stays off the reply path', () => {
   it('a long-lived process folds after the reply instead', async () => {
     const { plur, dir } = await storeWith(40)
     emb.setEmbeddingsEnabled(true)
-    slowEmbedder(30)
+    // Marked remote so no background fill runs (L4): the fold seen here can
+    // only be the deferred one.
+    slowEmbedder(30, { remote: true })
     ;(emb as any)._setDeltaCompactBytes(20_000)
     ;(emb as any)._setFoldCostMsPerMb(1_000_000)
     emb.allowBackgroundModelLoad(true)
+    const foldsBefore = (emb as any)._thresholdFoldCount()
     for (let i = 0; i < 3; i++) {
       await plur.recallHybridWithMeta('release checklist rollout', { deadline_ms: 200, remote: false })
     }
     const until = Date.now() + 10_000
     while (!existsSync(mainPath(dir)) && Date.now() < until) await new Promise(r => setTimeout(r, 100))
     expect(existsSync(mainPath(dir))).toBe(true)
+    // ...and that was the deferred threshold fold, not only the background
+    // fill's own end-of-run fold.
+    const deadline = Date.now() + 5_000
+    while ((emb as any)._thresholdFoldCount() <= foldsBefore && Date.now() < deadline) await new Promise(r => setTimeout(r, 100))
+    expect((emb as any)._thresholdFoldCount()).toBeGreaterThan(foldsBefore)
   }, 60_000)
 
   it('only the current model\'s records count toward the threshold', async () => {
@@ -104,6 +113,7 @@ describe('R8-2 — the delta fold stays off the reply path', () => {
     // 60 KB of another model's records: over the threshold on their own.
     const other = Array.from({ length: 40 }, (_, i) => JSON.stringify({ id: `o${i}`, hash: 'h', embedding: Array(150).fill(0.123456), embedder: 'other-model', dim: 150 })).join('\n') + '\n'
     writeFileSync(deltaFile(dir), other)
+    const foldsBefore = (emb as any)._thresholdFoldCount()
     const res = await plur.recallHybridWithMeta('release checklist rollout', { deadline_ms: 10_000, remote: false })
     expect(res.mode).toBe('hybrid')
     // The completed search folds its own model's vectors (that is expected);
@@ -111,7 +121,7 @@ describe('R8-2 — the delta fold stays off the reply path', () => {
     // by the other model's records. Count folds through the seam.
     const folds = (emb as any)._thresholdFoldCount
     expect(typeof folds).toBe('function')
-    expect(folds()).toBe(0)
+    expect(folds()).toBe(foldsBefore)
   }, 30_000)
 })
 

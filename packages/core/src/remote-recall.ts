@@ -238,11 +238,15 @@ export function startBudgetTimer(
   let blocked = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let done = false
+  /** The delay the pending tick was scheduled for — a late tick is measured
+   *  against it, not against the full `tickMs` (#1586 round 8, C-2). */
+  let scheduled = tickMs
 
   const schedule = (): void => {
     if (done) return
     const serviced = (now() - started) - credit
     const remaining = Math.max(1, Math.min(tickMs, budgetMs - serviced))
+    scheduled = remaining
     timer = setTimeout(tick, remaining)
     // Never hold the process open on account of a timeout sampler.
     ;(timer as { unref?: () => void }).unref?.()
@@ -253,7 +257,7 @@ export function startBudgetTimer(
     const t = now()
     // Anything beyond the interval we asked for is time the loop was busy
     // elsewhere — the request was not being serviced, so it is not charged.
-    const overshoot = Math.max(0, (t - last) - tickMs)
+    const overshoot = Math.max(0, (t - last) - scheduled)
     blocked += overshoot
     credit = Math.min(maxCredit, credit + overshoot)
     last = t

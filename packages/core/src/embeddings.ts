@@ -481,10 +481,69 @@ export function _setDeltaCompactBytes(bytes: number | undefined): void {
 
 /** Fold the delta into the main file when it has grown past the threshold.
  *  Under the cache lock; when the lock is busy, nothing happens (fail open). */
-function compactIfLarge(cachePath: string, meta: { name: string; dim: number }): void {
+function compactIfLarge(cachePath: string, meta: { name: string; dim: number }, deadlineAt?: number): void {
+  const dp = deltaPath(cachePath)
   let size = 0
-  try { size = statSync(deltaPath(cachePath)).size } catch { return }
-  if (size > deltaCompactBytes) compactCache(cachePath, meta)
+  try { size = statSync(dp).size } catch { return }
+  if (size <= deltaCompactBytes) return
+  // Only this model's records count (#1586 round 8, R8-2): records of
+  // another model are kept by every fold, so counting them would fold on
+  // every search.
+  if (ownDeltaBytes(dp, meta) <= deltaCompactBytes) return
+  // A fold rewrites the whole cache. Do it now only when the time budget
+  // allows it (no deadline: not a recall); else, in a long-lived process,
+  // after the reply; else leave it for a search that has the time.
+  let mainSize = 0
+  try { mainSize = statSync(cachePath).size } catch { /* none yet */ }
+  const estimateMs = ((mainSize + size) / (1024 * 1024)) * foldCostMsPerMb
+  if (deadlineAt === undefined || deadlineAt - Date.now() > 2 * estimateMs) {
+    if (compactCache(cachePath, meta)) thresholdFolds++
+    return
+  }
+  if (backgroundModelLoadAllowed_) deferFold(cachePath, meta, deadlineAt)
+}
+
+/** Bytes of the delta that belong to `meta`'s model (lines end with its
+ *  embedder and dim, as appendEntries writes them). */
+function ownDeltaBytes(dp: string, meta: { name: string; dim: number }): number {
+  const suffix = `"embedder":${JSON.stringify(meta.name)},"dim":${meta.dim}}`
+  let text = ''
+  try { text = readFileSync(dp, 'utf8') } catch { return 0 }
+  let bytes = 0
+  for (const line of text.split('\n')) if (line.endsWith(suffix)) bytes += line.length + 1
+  return bytes
+}
+
+/** Estimated cost of a fold per MB of cache (main + delta). Round 6 measured
+ *  about 0.4 s for 37 MB; this keeps a margin. */
+const DEFAULT_FOLD_COST_MS_PER_MB = 25
+let foldCostMsPerMb = DEFAULT_FOLD_COST_MS_PER_MB
+let thresholdFolds = 0
+const deferredFolds = new Set<string>()
+
+/** Test seam: the fold-cost estimate per MB (undefined restores). */
+export function _setFoldCostMsPerMb(ms: number | undefined): void {
+  foldCostMsPerMb = ms ?? DEFAULT_FOLD_COST_MS_PER_MB
+}
+
+/** Test seam: how many threshold folds this process has run. */
+export function _thresholdFoldCount(): number {
+  return thresholdFolds
+}
+
+/** Fold once the recall that saw the large delta has replied (its deadline
+ *  has passed). The timer is unref'd: it never keeps a process alive. */
+function deferFold(cachePath: string, meta: { name: string; dim: number }, deadlineAt: number): void {
+  if (deferredFolds.has(cachePath)) return
+  deferredFolds.add(cachePath)
+  const t = setTimeout(() => {
+    deferredFolds.delete(cachePath)
+    try {
+      const dp = deltaPath(cachePath)
+      if (existsSync(dp) && ownDeltaBytes(dp, meta) > deltaCompactBytes && compactCache(cachePath, meta)) thresholdFolds++
+    } catch { /* derived state: best effort */ }
+  }, Math.max(0, deadlineAt - Date.now()) + 250)
+  ;(t as { unref?: () => void }).unref?.()
 }
 
 /** Fold the delta file and `extra` into the main cache file, under the lock:
@@ -614,9 +673,9 @@ export function mergeEmbeddingsIntoCache(
  * write lands before the reply and before a short-lived process exits), and
  * again when the search ends. Each cut-off recall makes progress.
  */
-function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortSignal): { added(id: string): void; done(): void } {
+function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortSignal, deadlineAt?: number): { added(id: string): void; done(): void } {
   const meta = { name: cache.meta.embedder_name, dim: cache.meta.embedder_dim }
-  compactIfLarge(cachePath, meta)
+  compactIfLarge(cachePath, meta, deadlineAt)
   /** Vectors not yet on disk. */
   let pending: EmbeddingCacheEntries = {}
   let lastFlush = Date.now()
@@ -641,7 +700,7 @@ function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortS
         flush()
         // Still inside the search (not at the deadline): the place to fold a
         // delta that has grown past the threshold (D-2).
-        compactIfLarge(cachePath, meta)
+        compactIfLarge(cachePath, meta, deadlineAt)
       }
     },
     done: () => {
@@ -700,6 +759,9 @@ export function backgroundModelLoadAllowed(): boolean {
 
 /** Options for the embedding searches (#1586 audit L3). */
 export interface EmbeddingSearchOptions {
+  /** The recall's deadline (epoch ms, #1586 round 8): a fold of the cache's
+   *  delta file runs during the search only when it fits before it. */
+  deadlineAt?: number
   /** Aborted when the caller stopped waiting (a recall past its deadline):
    *  the search embeds nothing more and does not save the cache. */
   signal?: AbortSignal
@@ -739,7 +801,7 @@ export async function embeddingSearch(
 
   // Embed engrams (with caching)
   const similarities: Array<{ engram: Engram; score: number }> = []
-  const progress = cacheProgress(cachePath, cache, opts?.signal)
+  const progress = cacheProgress(cachePath, cache, opts?.signal, opts?.deadlineAt)
 
   for (const engram of engrams) {
     const searchText = engramSearchText(engram)
@@ -812,7 +874,7 @@ export async function embeddingSearchWithScores(
 
   // Embed engrams (with caching)
   const similarities: SimilarityResult[] = []
-  const progress = cacheProgress(cachePath, cache, opts?.signal)
+  const progress = cacheProgress(cachePath, cache, opts?.signal, opts?.deadlineAt)
 
   for (const engram of engrams) {
     const searchText = engramSearchText(engram)
