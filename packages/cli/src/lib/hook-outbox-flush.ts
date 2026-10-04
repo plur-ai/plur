@@ -173,6 +173,10 @@ export async function flushOutboxForHook(
           `[plur] ${opts.hook}: outbox — ${result.flushed} delivered, ${result.failed} failed, `
           + `${result.deferred} left for next time, ${result.skipped} skipped (host paused)`
           + (held > 0 ? `, ${held} held back (needs action — run \`plur outbox\`)` : '')
+          // #1581 audit L1: say why, instead of a bare "left for next time".
+          + (result.expired_warnings?.some(w => w.includes('push claim could not be recorded'))
+            ? '; a push claim could not be recorded on this machine (run `plur outbox`)'
+            : '')
           + '.\n',
         )
       }

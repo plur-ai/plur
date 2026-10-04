@@ -24,7 +24,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { repairAdvice, repairCommandFor } from './folders.js'
 
@@ -252,6 +252,10 @@ interface DoctorReport {
     retrying: number
     needs_action: number
     scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
+    /** Entries held on this machine for a stated reason (#1581 audit L1). */
+    held?: Array<{ count: number; reason: string; next_step: string }>
+    /** With writes queued: why the push-claims folder cannot be written (#1581 audit L1). */
+    claims_problem?: string
   } | null
   /**
    * The folder map (`folders.yaml`) when it exists but cannot be used (#1526):
@@ -488,8 +492,12 @@ function countStaleContentHashes(flags: GlobalFlags): number {
 /** #1299: classify the outbox. Local read only; never throws. */
 async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> {
   try {
-    const summary = await createPlur(flags, { readonly: true }).outboxSummary()
-    return { ok: summary.needs_action === 0, ...summary }
+    const plur = createPlur(flags, { readonly: true })
+    const summary = await plur.outboxSummary()
+    // A push claim that cannot be recorded holds every queued write here
+    // (#1581 audit L1). Checked only when something is queued.
+    const claims_problem = summary.pending > 0 ? plur.outboxClaimsProblem() : undefined
+    return { ok: summary.needs_action === 0 && !claims_problem, ...summary, ...(claims_problem ? { claims_problem } : {}) }
   } catch {
     return null
   }
@@ -1458,7 +1466,10 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   // #1299
   if (report.outbox && report.outbox.pending > 0) {
     const o = report.outbox
-    outputText(`${tick(o.ok)} Outbox: ${o.pending} queued write(s)` + (o.needs_action > 0 ? `, ${o.needs_action} will not deliver by retrying` : ', retrying'))
+    const heldLines = describeHeld({ ...o })
+    outputText(`${tick(o.ok)} Outbox: ${o.pending} queued write(s)` + (o.needs_action > 0 ? `, ${o.needs_action} will not deliver by retrying` : heldLines.length > 0 ? ', held on this machine' : ', retrying'))
+    if (o.claims_problem) outputText(`  The push-claims folder cannot be written (${o.claims_problem}), so queued writes cannot be sent from here. Check disk space and permissions of the PLUR store's cache folder.`)
+    for (const line of heldLines) outputText(`  ${line}`)
     if (!o.ok) {
       for (const line of describeNeedsAction({ ...o })) outputText(`  ${line}`)
       outputText('  Nothing is dropped automatically. `plur outbox` lists them.')
@@ -1755,7 +1766,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('       — or replace the plur entry command with an absolute path to your shell.')
     }
     if (report.outbox && !report.outbox.ok) {
-      outputText('  Fix: see the Outbox line above — queued team writes need a person to act.')
+      outputText(report.outbox.claims_problem
+        ? '  Fix: make the PLUR store\'s cache/outbox-claims folder writable (disk space, permissions), then `plur outbox --flush`.'
+        : '  Fix: see the Outbox line above — queued team writes need a person to act.')
     }
     for (const t of report.tokenEnvUnset ?? []) outputText(`  Fix: ${t.fix}`)
     if (report.folderMap) {

@@ -1574,14 +1574,23 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // "local", "global", "user:*", "agent:*" — and stays silent when the
         // write was auto-routed or an explicit scope was passed.
         const explicitScope = typeof args.scope === 'string' && args.scope.length > 0
-        const scopeHint = (engramScope: string, wasRouted: boolean): { scope_hint?: string } => {
+        const scopeHint = (engramScope: string, wasRouted: boolean, delivery: string): { scope_hint?: string } => {
           // isSharedScope swap (#353): fire on any non-shared landing scope, not
           // just the hardcoded {local,global} set, so a user:alice personal scope
           // also nudges when a team store is configured.
           if (explicitScope || wasRouted || isSharedScope(engramScope)) return {}
+          // L9 (third 0.21.1 pre-release check): the hint says the engram did
+          // NOT reach a shared store. A save that went to a team store
+          // (delivery "remote") or is queued for one ("outbox") — e.g. a
+          // personal `user:` scope backed by a remote store, reached through
+          // a folder or session default — already did, and an agent that
+          // followed the hint saved a duplicate. Only a save that stayed on
+          // this machine, at a scope no team store holds, gets the hint.
+          if (delivery !== 'local') return {}
           let remote: Array<{ scope: string }> = []
           try { remote = plur.getWritableRemoteScopes() } catch { return {} }
           if (remote.length === 0) return {}
+          if (remote.some(s => s.scope === engramScope)) return {}
           const scopes = remote.map(s => `"${s.scope}"`).join(', ')
           return { scope_hint:
             `Stored at "${engramScope}" because no scope was passed, but a team store is configured (${scopes}). ` +
@@ -1734,7 +1743,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ...(redraft ? { redraft } : {}),
             ...(() => { const c = composeHints(statement, context?.rationale, context?.source); return c ? { composition: c } : {} })(),
             ...temporalEcho(engram),
-            ...scopeHint(engram.scope, !!routed),
+            ...scopeHint(engram.scope, !!routed, delivered.delivery),
             ...domainHint(!!routed),
             ...(isOutbox ? { outbox: true, warning: delivered.reason ?? 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
             ...(demoted ? { demoted: true, requested_scope: demoted.from, warning: `Sensitive content (${demoted.patterns}) detected — stored at "${demoted.to}"/private instead of the requested shared scope "${demoted.from}". If this is a false positive, re-scope deliberately.` } : {}),
@@ -1770,7 +1779,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             ...temporalEcho(engram),
-            ...scopeHint(engram.scope, !!routedFallback),
+            ...scopeHint(engram.scope, !!routedFallback, delivered.delivery),
             ...domainHint(!!routedFallback),
             ...(isOutbox ? { outbox: true } : {}),
             // The routed write can fail for reasons that have nothing to do
