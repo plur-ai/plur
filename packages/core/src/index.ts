@@ -207,6 +207,7 @@ export {
   escapedPath as folderEscapedPath,
   isFolderAskText,
   folderRepairCommand,
+  folderSetOnCommand,
   type FolderAskOptions,
   type FolderAskScopeRanker,
   type FolderAsk,
@@ -12931,11 +12932,13 @@ Generate an improved version of the procedure that prevents this failure. Return
     const home = canonicalize(homedir())
     const mainStore = canonicalize(join(homedir(), '.plur', 'engrams.yaml'))
 
-    let dir = startDir
+    // The REAL path (#1589 audit round 2): through a symlink into a
+    // repository's sub-folder, the typed parents are outside the repository.
+    let dir = canonicalize(startDir)
     const visited = new Set<string>()
     while (dir && !visited.has(dir)) {
       visited.add(dir)
-      const dirKey = canonicalize(dir)
+      const dirKey = dir
       // Never enter the home folder or anything above it (#1588): a store
       // there is the user's own or no project's, whatever decided the folder.
       if (dirKey === home || isUnder(home, dirKey)) break
@@ -12963,7 +12966,10 @@ Generate an improved version of the procedure that prevents this failure. Return
       // decision came from. On only through a parent is not enough — a
       // repository's shipped store would otherwise become a shared, writable
       // store read in every folder.
-      if (!_hasOwnFolderDecision(dir, { root: this.paths.root })) continue
+      // readOnly: discovery reads the folder map but never performs the
+      // one-time trust.yaml import (#1589 audit round 2); that stays with the
+      // folder commands and the hooks, as before this gate existed.
+      if (!_hasOwnFolderDecision(dir, { root: this.paths.root, readOnly: true })) continue
 
       // The scope a `.plur.yaml` names is used only for a folder the user
       // trusted (#1589 audit M1); an untrusted file does not choose where a
@@ -12994,9 +13000,12 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   skippedProjectStores(cwd?: string): Array<{ path: string; folder: string }> {
     const out: Array<{ path: string; folder: string }> = []
+    // Looking writes nothing (#1589 audit round 2): readOnly keeps a legacy
+    // trust.yaml in memory instead of importing it into folders.yaml.
+    const opts = { root: this.paths.root, readOnly: true }
     for (const { dir, candidate } of this._discoveryCandidates(cwd || process.cwd())) {
-      if (_hasOwnFolderDecision(dir, { root: this.paths.root })) continue
-      if (this.resolveFolderPolicy(dir).mode === 'off') continue
+      if (_hasOwnFolderDecision(dir, opts)) continue
+      if (_resolveFolderPolicy(dir, opts).mode === 'off') continue
       out.push({ path: candidate, folder: dir })
     }
     return out

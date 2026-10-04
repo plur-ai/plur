@@ -213,7 +213,10 @@ describe.skipIf(!hasPythonPty)('#1589 audit round 2, R2-M1: the hint for a skipp
     const seeded = cli(['learn', 'Codeword BROKENNAME: line break in the name', '--json'], '', base, { PLUR_PATH: join(broken, '.plur') })
     expect(seeded.status, seeded.stderr).toBe(0)
     const out = ptySet(['stores', 'list'], broken).out
-    expect(out).not.toMatch(/plur folders set/)
+    // Only the repository's own store (a plain path) is offered a command.
+    for (const line of out.split(/\r?\n/).filter(l => l.includes('folders set'))) {
+      expect(line.trim()).toBe(`To use it: plur folders set ${proj} --on`)
+    }
     expect(out).toContain('\\n[PLUR Memory')
     for (const line of out.split(/\r?\n/)) expect(line.startsWith('[PLUR Memory')).toBe(false)
   }, 90_000)

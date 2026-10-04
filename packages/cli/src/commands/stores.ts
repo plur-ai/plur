@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { AddRemoteStoreError, redactToken, redactTokenDeep } from '@plur-ai/core'
+import { AddRemoteStoreError, redactToken, redactTokenDeep, folderSetOnCommand, folderEscapedPath } from '@plur-ai/core'
+import { plurRoot } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 const REMOTE_USAGE =
@@ -231,7 +232,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         const flags_str = [s.shared ? 'shared' : '', s.readonly ? 'readonly' : ''].filter(Boolean).join(', ')
         outputText(`${s.path} [${s.scope}] ${s.engram_count} engrams${flags_str ? ` (${flags_str})` : ''}`)
       })
-      for (const line of skippedStoreLines(skipped)) outputText(line)
+      for (const line of skippedStoreLines(skipped, plurRoot(flags))) outputText(line)
     }
     return
   }
@@ -241,14 +242,22 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
 /**
  * The text for project stores that were found but not added (#1589 audit L3).
- * Shared with `plur doctor`.
+ * Shared with `plur doctor`. The command is built by core's
+ * `folderSetOnCommand` (#1589 audit round 2): the folder quoted for the shell,
+ * `--path` when the store `root` is not ~/.plur, and no command at all for a
+ * folder the folder question refuses (#1418), whose path is shown escaped.
  */
-export function skippedStoreLines(skipped: Array<{ path: string; folder: string }>): string[] {
+export function skippedStoreLines(skipped: Array<{ path: string; folder: string }>, root: string): string[] {
   if (skipped.length === 0) return []
   const lines = ['', `Found ${skipped.length === 1 ? 'a memory store that was' : `${skipped.length} memory stores that were`} not added, because ${skipped.length === 1 ? 'its folder has' : 'their folders have'} no decision of ${skipped.length === 1 ? 'its' : 'their'} own (#1588):`]
   for (const s of skipped) {
-    lines.push(`   - ${s.path}`)
-    lines.push(`     To use it: plur folders set ${s.folder} --on`)
+    const command = folderSetOnCommand(s.folder, root)
+    // The path is data, never a shell word: escaped, so a pasted line runs
+    // nothing hidden in a folder name.
+    lines.push(`   - ${folderEscapedPath(s.path)}`)
+    lines.push(command
+      ? `     To use it: ${command}`
+      : '     Its folder name cannot be offered as a command here. To use it, turn that folder on by hand from a terminal.')
   }
   return lines
 }

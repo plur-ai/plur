@@ -439,14 +439,16 @@ function locked<T>(root: string, fn: () => T): T {
   }, { maxRetries: 12, baseDelay: 25 })
 }
 
-function load(root: string): LoadResult {
+function load(root: string, readOnly = false): LoadResult {
   const existing = readMapFile(root)
   if (existing) return existing
   // First read: import trust.yaml once, entries kept exactly as written.
   // trust.yaml itself is kept in step by the dual-write, not by the import.
+  // A read-only caller (#1589 audit round 2: listing skipped stores) uses the
+  // imported entries in memory and writes nothing.
   const legacy = readLegacyTrustEntries(root)
   const map: FolderMap = { version: 1, folders: legacy.map(path => ({ path, trusted: true })) }
-  if (legacy.length > 0) {
+  if (legacy.length > 0 && !readOnly) {
     try {
       // Under the lock, and only if nobody created folders.yaml meanwhile:
       // an import must never overwrite a concurrent writer's map.
@@ -713,7 +715,7 @@ export function hasOwnFolderDecision(dir: string, opts: FolderPolicyOptions): bo
   const home = opts.home ?? homedir()
   const policy = resolveFolderPolicy(dir, opts)
   if (policy.mode !== 'on') return false
-  if (hasExactOnEntry(dir, opts.root, home)) return true
+  if (hasExactOnEntry(dir, opts.root, home, opts.readOnly === true)) return true
   if (!MARKER_IS_OWN_DECISION) return false
   const canonical = canonicalize(dir)
   return policy.source !== 'map' && policy.source !== 'default' &&
@@ -721,9 +723,9 @@ export function hasOwnFolderDecision(dir: string, opts: FolderPolicyOptions): bo
 }
 
 /** A non-pattern folder-map entry that names exactly `dir` and turns it on (or trusts / scopes it). */
-function hasExactOnEntry(dir: string, root: string, home: string): boolean {
+function hasExactOnEntry(dir: string, root: string, home: string, readOnly: boolean): boolean {
   const targets = [...new Set([canonicalize(dir), ...canonicalSpellings(dir)])]
-  return load(root).map.folders.some(e =>
+  return load(root, readOnly).map.folders.some(e =>
     (e.plur === 'on' || (e.plur === undefined && (e.scope !== undefined || e.trusted === true))) &&
     !entryIsGlob(e) &&
     entryForms(e.path, home, false, e.literal === true).some(f => targets.some(t => sameFolderPath(f, t))))
@@ -738,6 +740,11 @@ export interface FolderPolicyOptions {
   root: string
   /** Defaults to `os.homedir()`. */
   home?: string
+  /**
+   * Write nothing: a legacy `trust.yaml` is read into memory but not imported
+   * into `folders.yaml` (#1589 audit round 2). For callers that only look.
+   */
+  readOnly?: boolean
 }
 
 /** True when a `trusted: true` entry covers `dir` (canonical target, #1334 entry forms). */
@@ -779,7 +786,7 @@ export function folderOffEntries(dir: string, opts: FolderPolicyOptions): Folder
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const home = opts.home ?? homedir()
-  const loaded = load(opts.root)
+  const loaded = load(opts.root, opts.readOnly === true)
   if (loaded.malformed) {
     // Fail SAFE (audit F4 of #1517): an unreadable map could hold an `off`
     // for this folder, so nothing — not even a project marker — turns memory

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from 'fs'
-import { basename, dirname, join, resolve, sep } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 
 /**
@@ -94,25 +94,30 @@ export interface ProjectConfig {
  *   - Stop at HOME or filesystem root as a hard ceiling.
  *   - Refuse to consider a `.plur.yaml` that sits IN HOME itself.
  *
- * Paths are resolved (path.resolve) to normalize trailing slashes,
- * symlink components, and `..` segments. The walk also ends where it leaves
- * the start's real repository (#1589 audit L1).
+ * Inside a repository the walk follows the REAL path (symlinks resolved) up
+ * to the real repository root (#1589 audit rounds 1 and 2), the same path the
+ * marker walk (`findPlurMarker`) takes: a symlinked sub-folder then finds the
+ * same `.plur.yaml` its real path does, and never one above the repository.
+ * The result is returned in the caller's spelling when an ancestor of the
+ * path as typed names the same folder (`/var/...` vs `/private/var/...`), so
+ * existing callers see the path they gave. Outside any repository the walk
+ * follows the path as typed (`path.resolve`), as before.
  */
 export function findProjectConfigPath(startDir: string = process.cwd()): string | null {
   const home = canonicalize(homedir())
-  let dir = resolve(startDir)
-  // The REAL repository root of the start (#1589 audit L1). The walk below
-  // goes up the path as typed, so a symlink into a repository's sub-folder
-  // would reach a `.plur.yaml` above that repository without passing its
-  // `.git`. Leaving the real repository ends the walk, the same boundary the
-  // marker walk (`findPlurMarker`) applies to the real path.
-  const realRepo = realRepositoryRoot(dir)
-  const MAX_DEPTH = 12  // hard ceiling — beyond ~12 dirs deep, give up
+  const typed = resolve(startDir)
+  const realRepo = realRepositoryRoot(typed)
+  const found = realRepo !== null ? walkForConfig(canonicalize(typed), home) : walkForConfig(typed, home)
+  if (found === null || realRepo === null) return found
+  return typedSpelling(found, typed)
+}
+
+const MAX_DEPTH = 12  // hard ceiling — beyond ~12 dirs deep, give up
+
+/** The `.plur.yaml` lookup proper: first one up from `start`, stopping at `.git`, HOME or the root. */
+function walkForConfig(start: string, home: string): string | null {
+  let dir = start
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    if (realRepo !== null) {
-      const real = canonicalize(dir)
-      if (real !== realRepo && !real.startsWith(realRepo.endsWith(sep) ? realRepo : realRepo + sep)) return null
-    }
     // Refuse to accept a .plur.yaml that lives directly in HOME.
     // That's the failure mode where a stray home-level config silently
     // intercepts every project the user opens. Canonical comparison so a
@@ -131,6 +136,24 @@ export function findProjectConfigPath(startDir: string = process.cwd()): string 
     dir = parent
   }
   return null
+}
+
+/**
+ * `found` (a path on the real walk) in the spelling of `typed`: the first
+ * ancestor of the typed path (itself included) that resolves to the same
+ * folder as `found`'s folder. When none does (a symlink crossed on the way),
+ * the real path is the only honest answer.
+ */
+function typedSpelling(found: string, typed: string): string {
+  const realDir = dirname(found)
+  let dir = typed
+  for (let depth = 0; depth < MAX_DEPTH; depth++) {
+    if (canonicalize(dir) === realDir) return join(dir, basename(found))
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return found
 }
 
 /**

@@ -55,6 +55,10 @@ export function refuseTrustWithoutNonce(nonce: string | undefined, json: boolean
  * `--list` prints every trusted directory; bare `plur trust` (no dir) trusts
  * the current directory, matching `direnv allow`'s no-argument default.
  */
+/** What a grant covers (#1589 audit round 2, R2-L4). */
+export const TRUST_COVERS =
+  'Trust covers every folder below it: the memory stores (.plur/engrams.yaml) of repositories below it are added when used there, with the scope their .plur.yaml names.'
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--list')) {
     const plur = createPlur(flags)
@@ -72,7 +76,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const parsed = parseTrustArgs(args)
-  if (!parsed) return exit(1, 'Usage: plur trust [dir] [--nonce <n>] | plur trust --list')
+  if (!parsed) return exit(1, 'Usage: plur trust [dir] [--nonce <n>] | plur trust --list\n' + TRUST_COVERS)
   const dir = parsed.dir || process.cwd()
   refuseTrustWithoutNonce(parsed.nonce, shouldOutputJson(flags))
   const plur = createPlur(flags)
@@ -111,6 +115,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   outputInfo(`Trusted: ${trusted}`, flags)
+  outputInfo(TRUST_COVERS, flags)
   if (declares) {
     outputInfo(`This authorizes ${configPath}:`, flags)
     if (config.scope) outputInfo(`  scope:  ${config.scope}`, flags)

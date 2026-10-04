@@ -138,6 +138,28 @@ export function folderRepairCommand(root: string, platform: NodeJS.Platform = pr
 
 
 /**
+ * The command that turns `folder` on in the folder map (`plur folders set
+ * <folder> --on`), as `plur doctor` and `plur stores list` suggest it for a
+ * store that was found but not added (#1589 audit round 2). The folder is
+ * quoted for the platform's shell, and the store is named with `--path` when
+ * it is not ~/.plur. Null for a folder the folder question refuses to offer
+ * a command for (#1418: line breaks, bidi and zero-width characters, Windows
+ * shell metacharacters, pattern characters) or a store path that cannot be
+ * printed safely; show the path with {@link escapedPath} instead.
+ */
+export function folderSetOnCommand(folder: string, root: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (unofferable(folder, platform)) return null
+  const store = resolve(root)
+  let prefix = 'plur'
+  if (store !== resolve(join(homedir(), '.plur'))) {
+    const blocked = unofferable(store, platform)
+    if (blocked && blocked !== 'pattern') return null
+    prefix = `plur --path ${quoted(store, platform)}`
+  }
+  return `${prefix} folders set ${quoted(folder, platform)} --on`
+}
+
+/**
  * Characters that can end or rewrite a line of the model's context: C0
  * controls (newline, carriage return, tab, ...), DEL, C1 controls (NEL is
  * U+0085), and the Unicode line and paragraph separators. A folder path

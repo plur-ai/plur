@@ -499,7 +499,9 @@ function countStaleContentHashes(flags: GlobalFlags): number {
 /** #1299: classify the outbox. Local read only; never throws. */
 async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> {
   try {
-    const plur = createPlur(flags, { readonly: true })
+    // Discovery off (#1589 audit round 2): doctor only looks, so its
+    // constructor must not register a project store or import trust.yaml.
+    const plur = createPlur(flags, { readonly: true, autoDiscover: false })
     const summary = await plur.outboxSummary()
     // A push claim that cannot be recorded holds every queued write here
     // (#1581 audit L1). Checked only when something is queued.
@@ -1697,7 +1699,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     }
   }
 
-  for (const line of skippedStoreLines(report.skippedProjectStores)) outputText(line.startsWith('Found') ? `⚠  ${line}` : line)
+  for (const line of skippedStoreLines(report.skippedProjectStores, plurRoot(flags))) outputText(line.startsWith('Found') ? `⚠  ${line}` : line)
 
   if (report.tokenEnvUnset.length > 0) {
     outputText('')
