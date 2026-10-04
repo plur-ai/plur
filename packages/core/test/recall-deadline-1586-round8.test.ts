@@ -92,10 +92,15 @@ describe('R8-2 — the delta fold stays off the reply path', () => {
     ;(emb as any)._setFoldCostMsPerMb(1_000_000)
     emb.allowBackgroundModelLoad(true)
     const foldsBefore = (emb as any)._thresholdFoldCount()
-    for (let i = 0; i < 3; i++) {
+    // Recall until the delta has passed the threshold (a starved CPU embeds
+    // fewer vectors per cut-off recall), or until the deferred fold has run.
+    const big = () => existsSync(deltaFile(dir)) && statSync(deltaFile(dir)).size > 20_000
+    for (let i = 0; i < 20 && !big() && (emb as any)._thresholdFoldCount() === foldsBefore; i++) {
       await plur.recallHybridWithMeta('release checklist rollout', { deadline_ms: 200, remote: false })
     }
-    const until = Date.now() + 10_000
+    // One more recall sees the large delta and defers its fold.
+    await plur.recallHybridWithMeta('release checklist rollout', { deadline_ms: 200, remote: false })
+    const until = Date.now() + 20_000
     while (!existsSync(mainPath(dir)) && Date.now() < until) await new Promise(r => setTimeout(r, 100))
     expect(existsSync(mainPath(dir))).toBe(true)
     // ...and that was the deferred threshold fold, not only the background
