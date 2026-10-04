@@ -32,6 +32,11 @@ jobs:
       # Build the CLI (and its core dep) the SDK shells out to.
       - run: pnpm --filter "@plur-ai/cli..." build
       - run: pip install -e packages/python pytest
+      # A first hybrid recall answers by keyword while the embedding model
+      # downloads in the background (#1586). The hybrid tests below need the
+      # model, so fetch it here, as an installed user would have it.
+      - name: Download the embedding model
+        run: node --input-type=module -e "const c = await import('./packages/core/dist/index.js'); const v = await c.embed('warm up'); if (!v) { console.error('embedding model did not load'); process.exit(1) }"
       - name: Run pytest (against the freshly built CLI)
         env:
           PLUR_CLI: node ${{ github.workspace }}/packages/cli/dist/index.js
