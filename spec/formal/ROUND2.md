@@ -1,0 +1,46 @@
+# Round 2 — 2026-09-26
+
+Owner goal: "all gaps are closed and issues from the audit applied". Owner answers (2026-09-26):
+format changes implemented now as separate PRs; provenance withheld = private, or local-only and not public;
+second verification round with ONE principles check-in (engineering calls take coordinator defaults, policy questions are batched).
+
+Postgres suites: now run against a throwaway pgvector/pg16 container (127.0.0.1:55432) — 11 files, 123/123 pass.
+Leads are the deferred list in CLUSTERS.md plus follow-ups/residuals in APPLY.md. Branch: verify/formal-lean (PR #1228, draft).
+
+## R2-CoreA — owns packages/core/src/index.ts, provenance.ts, content-fields.ts, session-scopes.ts
+E6 withheld (decided) · core-index#7 forget/feedback stale-cache ambiguity · #8 refcount retirement across stores · #9 egress guard: stale config, readonly url stores in _isRemoteBackedScope, updateEngram per-store guard · #10 dedup/recurrence swallowing writes (remote cache/packs) · core-policy#9 provenance fail-open defaults · follow-ups: BM25-only low_score, listOutbox shows retire-on-remote entries, rescope local-family case (keep; document)
+## R2-CoreB — owns packages/core/src/remote-recall.ts, store/remote-store.ts, tensions.ts
+core-policy#3 breaker keyed per URL vs (url, token) · #6 server-supplied `_pack` survives ingestion · #7 double ingestion (activation guard defeated, namespacing drift) · #10 malformed body trips host-down breaker
+## R2-Retrieval — owns packages/core/src/telemetry-counters.ts, telemetry-flush.ts, intent/, hybrid-search.ts, search-orchestrator.ts, query-expansion.ts, importers/, capsule.ts, embeddings.ts; spec/formal/PlurSpec/ScopeInject.lean §7 label
+core-retrieval#7 counters races · #8 rewrite drops non-ASCII · #9 strategy label / limit cap · #10 importer dry-run vs real, idempotency · #11 capsule integrity naming · #12 embedding cache merge + silent BM25-only inject · relabel `pglite_null_is_noResults` as pre-I4 counterexample
+## R2-Persist — owns packages/core/src/sync.ts, storage-pglite.ts, storage-postgres.ts, engrams.ts, backup.ts, store/async-lock.ts, migrations/
+core-persistence#9 PGLite fingerprint · #11 store-shape/duplicate-id drift across readers · #12 shrink ratchet + fail-open count · residuals: unguarded steal-guard removal, sync restore duplicate id, setSchemaVersion after save · follow-ups: record last-written count after a sync pull, warn on staleThreshold < ~45 s. Postgres tests: PLUR_TEST_POSTGRES_URL=postgres://postgres:verify@127.0.0.1:55432/plur_test
+## R2-CLI — owns packages/cli/src/ (all)
+cli#6 session checkpoint lifecycle · #7 session identity + inject lock · #8 session guards and session-dir vetting · #10 doctor false green · #11 append-then-stat counters · #12 antigravity turn cache · follow-up: `plur recall` honours `--`
+## R2-Integrations — owns packages/mcp/src/, packages/dsh/src/, packages/hermes/, packages/python/, packages/langchain/, packages/claw/src/, packages/opencode/src/, packages/migrate/, packages/ui/src/
+mcp#5 hermes dedup scope-blind + tool paths hard-code global · #6 plur_admin annotations · #8 migrate codemod positions/summary · #10 opencode latch/turn buffer · #11 claw setup/repair merge + context-engine dedup · #12 ui host normalisation · follow-ups: recall uses NO_SESSION when ambiguous, plur_session_scope with zero sessions, python/hermes recall query starting with `-`, plur_suggest_scope wording for a refused remote personal scope, plur_outbox shows retire entries (MCP side), dsh hard cap stays a constant (document)
+
+## Formats — separate PRs (agent Formats, own worktrees)
+F1 pack hash v2 (branch formal/pack-hash-v2 off main) · F2 pack registry key (formal/pack-registry-dir off main) · F3 outbox lease (off verify/formal-lean, after R2-CoreA finishes)
+
+## Progress
+- R2-CoreB DONE, verified: R2CoreB.lean clean; 19/19 tests; mutation (remove `_`-key strip in salvageRemoteRow) → 2/10 fail, restored 10/10. All 4 items CONFIRMED+FIXED; no NEEDS-OWNER. 3 NEEDS-FILE (index.ts) relayed to R2-CoreA.
+- R2-CLI DONE, verified: R2CLI.lean clean; 31/31 tests; mutation (drop sessionDirTrusted check in readAgyTurnCache) → 2/9 fail, restored 9/9. 7/7 CONFIRMED+FIXED. NEEDS-FILE (mcp `PLUR_PATH ??` → `||`) relayed to R2-Integrations.
+- Coordinator closed R2-CLI residual: session-mark hook matcher `mcp__.*__plur_session_start` (same rule as the guard). Test formal-gaps-session-mark-matcher: 1/3 failed before, 3/3 after; init.test 17/17.
+- R2-Retrieval DONE, verified: R2Retrieval.lean + ScopeInject.lean clean; 19/19; mutation (ASCII-only tokenCore) → 3/4 fail, restored 4/4. NEEDS-FILE ×2 (injectHybrid degraded warning; importer dry-run parity on SQL backends) relayed to R2-CoreA.
+- NEEDS-OWNER queue: [R] re-importing an existing record bumps write_count/sources while reported "skipped" — A true skip (recommended) / B report as 'reinforced' / C keep.
+- R2-Integrations DONE, verified: R2Integrations.lean clean; 53/53 TS + hermes 10/10 + python 15/15 (incl. end-to-end `--` recall with the rebuilt CLI); mutation (claw slotForeign → undefined) → 1/12 fail, restored 12/12. NEEDS-FILE ×2 (learnRouted recurrence swallowing team writes; listOutbox retire kind) relayed to R2-CoreA. dsh README timeoutMs line: coordinator to apply.
+- NEEDS-OWNER queue: [I] retiring through plur_tensions resolve / plur_rescope runs via plur_admin while plur_forget is gated — A both destructive / B tensions only (recommended) / C keep.
+- R2-CoreA DONE, verified: R2CoreA.lean clean; core tsc clean; 38/38; mutation (isWithheld → scope==='local') → 6/12 fail, restored 12/12. E6 APPLIED. All relayed NEEDS-FILE applied (CoreB ×3, Retrieval ×2, Integrations ×2).
+- R2-Persist DONE, verified: R2Persist.lean clean; 24/24 (with Postgres); mutation (countEngramsOnDisk → null on error) → 1/5 fail, restored 5/5.
+- Formats: #1229 (hash v2 + migration) and #1230 (registry dir, now STACKED on #1229, migration uses dir-first lookup — coordinator fix, test failed before) verified: pack suites 235 pass, vectors match, PGLite suites pass at load 59. New model PlurSpec/PacksV2.lean (framing injective via decode∘frame = id; registry uninstall preserves others; migration never blesses modified) — mutation (drop the length token) breaks 2 proofs.
+- NEEDS-OWNER queue (5): [R] re-import bumps metadata while "skipped"; [I] tensions resolve / rescope retire via plur_admin ungated; [A] write absorbed by a hit in a pack/readonly store/remote cache (nothing stored); [P1] duplicate ids across machines + sync collision; [P2] shrink guard ratchet.
+- Apply-MCP (decision I) DONE, verified: R2Integrations.lean clean; mcp tsc clean; 30/30; mutation (plur_tensions destructiveHint false) → 2/6 fail, restored 6/6. Audit found a second silent remover, plur_validate_meta — gated too (lean profile 14 tools).
+- Coordinator: plur_validate_meta response now states the retirement (`retired: true` + note); test failed before, 6/6 after. History event for retiring updates relayed to Apply-Core (updateEngram emits engram_retired).
+- Coordinator call (principle "every removal is gated" is about the user's memory): plur_packs_install over a same-name pack is an upgrade of pack-owned engrams to the version the caller named — not gated; recorded here.
+- Apply-Core (A, R) DONE, verified: R2CoreA.lean clean; 13/13; mutation (_firstPersistableHit accepts any hit) → 7/7 fail, restored 7/7. updateEngram now logs engram_retired on local retiring updates. Residuals sent back to Apply-Core: learnAsync candidates filtered to persistable rows; remote retiring PATCH traced; importer in-file map keyed by (hash, scope) on delegating stores.
+- Apply-Core follow-ups F1–F3 DONE, verified: R2CoreA.lean clean; 8/8; mutation (_persistableCandidates returns every row) → fails, restored 8/8. Coordinator keeps F3's YAML team-scope keying (parity with the real run is the point).
+- Apply-Persist (P1, P1b, P2) DONE, verified: R2Persist.lean clean; core tsc clean; 17/17 (Postgres); mutation (drop the rename) → 6/9 fail, restored 9/9. Three follow-ups sent back under the same principle: rewrite sibling references after a P1b rename on a personal remote; Postgres renames reach history; saveEngrams keeps a quarantined same-id entry.
+- Coordinator closed R2-CLI residual (item 3): stale inject-lock takeover is now rename + inode check; test formal-gaps-inject-lock-takeover failed before (1/3), 3/3 after; R2CLI §InjectLock proves the new takeover never removes a live lock (mutation: unconditional removal → proof fails).
+- Final full run (2026-09-27) lost 1/160 telemetry events under load: contended recorders dropped. Coordinator fix: spill + fold (settleSpilledEvents, also called by the flush); test formal-gaps-telemetry-spill failed before (1/2), 2/2 after; telemetry suites 40/40; R2Retrieval §Spill proves conservation (mutation: drop → conserved fails).
+- Second final run lost 1/160 again: a shared spill file raced (append into an already-read claim). Coordinator fix: one spill file per event (temp + rename). Telemetry suites 30/30; cross-process test 12/12 under 4-way parallel stress ×3. Other failures in that run (embed-dim-contract, heartbeat timing, scope-discovery, reranker eval) pass alone; scope-discovery 5/5 repeated — load (avg ~60).

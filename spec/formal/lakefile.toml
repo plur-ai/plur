@@ -1,0 +1,6 @@
+name = "formal"
+version = "0.1.0"
+defaultTargets = ["PlurSpec"]
+
+[[lean_lib]]
+name = "PlurSpec"

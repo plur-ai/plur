@@ -24,6 +24,8 @@ import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 
+import { backgroundPushesSettled } from './helpers/background-pushes.js'
+
 const REMOTE = 'https://plur.example.com/sse'
 const SCOPE = 'group:acme/team'
 
@@ -80,7 +82,7 @@ describe('supersedes survives the flush (#863)', () => {
     const correction = await plur.learn('there is NO trigger tied to the timer; the trigger is handover', {
       scope: SCOPE, type: 'behavioral', supersedes: [original.id],
     })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
     expect(correction.id).not.toBe(original.id)
 
     remoteUp()
@@ -102,7 +104,7 @@ describe('supersedes survives the flush (#863)', () => {
     await plur.learn('staging uses port 8081, not 8080', {
       scope: SCOPE, type: 'behavioral', supersedes: [original.id],
     })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
 
     remoteUp()
     await plur.flushOutbox()
@@ -118,7 +120,7 @@ describe('supersedes survives the flush (#863)', () => {
     const correction = await plur.learn('the corrected fact', {
       scope: SCOPE, type: 'behavioral', supersedes: [orphan.id],
     })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
 
     // Remove the target from the store entirely, so it is neither pending nor
     // local — the "cannot be resolved" case.
@@ -146,7 +148,7 @@ describe('supersedes survives the flush (#863)', () => {
     await plur.learn('the team-scoped correction of it', {
       scope: SCOPE, type: 'behavioral', supersedes: [localOnly.id],
     })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
 
     remoteUp()
     const res = await plur.flushOutbox()
@@ -218,7 +220,7 @@ describe('supersedes ordering for chains and across flushes (#863 follow-up)', (
     const a = await plur.learn('the final word on the timer claim', { scope: SCOPE, type: 'behavioral' })
     const b = await plur.learn('a first correction to the timer claim', { scope: SCOPE, type: 'behavioral' })
     const c = await plur.learn('the original claim about the timer', { scope: SCOPE, type: 'behavioral' })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
     for (const [from, to] of [[a, b], [b, c]] as const) {
       const row = (await plur.getById(from.id))!
       ;(row as unknown as { relations: Record<string, unknown> }).relations = {
@@ -253,7 +255,7 @@ describe('supersedes ordering for chains and across flushes (#863 follow-up)', (
     // mark, and the mark is not persisted) and would make this test assert
     // something other than what it is about.
     await plur.learn('an unrelated local note', { scope: 'global', type: 'behavioral' })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
 
     // Flush 1: the target goes, and its local row is spliced out.
     up()
@@ -266,7 +268,7 @@ describe('supersedes ordering for chains and across flushes (#863 follow-up)', (
     const correction = await plur.learn('the corrected statement', {
       scope: SCOPE, type: 'behavioral', supersedes: [target.id],
     })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
     expect(correction.id).not.toBe(target.id)
 
     up()
@@ -292,7 +294,7 @@ describe('supersedes ordering for chains and across flushes (#863 follow-up)', (
     const y = await plur.learn('the other side of a mutual correction', {
       scope: SCOPE, type: 'behavioral', supersedes: [x.id],
     })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
     // Close the cycle by hand — nothing in the API creates one.
     const stored = (await plur.getById(x.id))!
     ;(stored as unknown as { relations: Record<string, unknown> }).relations = {

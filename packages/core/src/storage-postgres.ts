@@ -71,9 +71,11 @@
  * `pg` is an OPTIONAL dependency, imported lazily: a personal install must not
  * pay for a driver it will never open.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
 import { normalizeEngramInput } from './normalize-engram.js'
+import { duplicateEngramIds, resolveDuplicateIds, type IdRename } from './engrams.js'
 import {
   searchEngrams, ftsTokenize, engramSearchText, embeddingContentHash,
   MIN_TOKEN_LENGTH, TOKENIZER_VERSION, type CorpusStats,
@@ -138,6 +140,55 @@ const HNSW_INDEX_NAME = 'engram_embeddings_hnsw'
 
 /** Rows per INSERT round trip in `save()`. */
 const SAVE_CHUNK_SIZE = 500
+
+/**
+ * Refuse an UPDATE batch that carries one id twice (formal round 2,
+ * core-persistence#11). Before, the outcome depended on the chunk boundary:
+ * two copies inside one {@link SAVE_CHUNK_SIZE} chunk raised "ON CONFLICT DO
+ * UPDATE command cannot affect row a second time", two copies in different
+ * chunks silently kept the later one.
+ *
+ * Only `updateMany` refuses now. Its rows name EXISTING engrams to replace, so
+ * renaming one copy would insert a new row rather than update anything — two
+ * different replacements for one row is a caller bug, and it surfaces. `save()`
+ * — the whole-corpus write a store load feeds — follows the shared duplicate
+ * rule instead (owner decision P1; see {@link resolveSaveBatch}).
+ */
+function refuseDuplicateIds(op: string, engrams: readonly Engram[]): void {
+  const dups = duplicateEngramIds(engrams)
+  if (dups.length === 0) return
+  const shown = dups.slice(0, 5).join(', ') + (dups.length > 5 ? `, … (${dups.length} in all)` : '')
+  throw new Error(
+    `[plur] refusing to ${op} ${engrams.length} engram(s) to Postgres: duplicate id(s) ${shown}. ` +
+    `A Postgres store holds one row per id, so one copy would be lost. Nothing was written.`,
+  )
+}
+
+/**
+ * Owner decision P1 (2026-09-27, "keep both, rename one"): a whole-corpus
+ * batch carrying one id on two different engrams keeps both — the later copy
+ * under the loader's fresh id ({@link resolveDuplicateIds}, the one rule every
+ * reader follows); an exact duplicate is written once. Replaces the refusal
+ * that stood in while the decision was open. Independent of chunking, since it
+ * runs on the whole batch before anything is written. A batch from
+ * `loadEngrams` is already resolved (and its renames recorded in history), so
+ * this only acts on a batch that did not come through the loader. The
+ * renames are handed to the rename listener after the write commits
+ * ({@link PostgresAdapter.addRenameListener}); every `Plur` instance attached to
+ * the adapter subscribes and records `engram_rekeyed` in its own history root,
+ * so no rename is log-only while an engine is attached. A bare adapter has no
+ * history root: there the log line is the only record.
+ */
+function resolveSaveBatch(engrams: Engram[]): { engrams: Engram[]; renames: IdRename[] } {
+  const { engrams: out, renames } = resolveDuplicateIds(engrams)
+  if (renames.length > 0) {
+    logger.warning(
+      `[plur] Postgres save: ${renames.length} engram(s) shared an id with an earlier, different engram in the batch; ` +
+      `stored under fresh ids (${renames.slice(0, 5).map(r => `${r.from} -> ${r.to}`).join(', ')}${renames.length > 5 ? ', …' : ''}).`,
+    )
+  }
+  return { engrams: out, renames }
+}
 
 /** Postgres identifiers this adapter will interpolate into DDL. */
 const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/
@@ -279,6 +330,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   private readonly efSearch: number
   private readonly maxConnections: number
 
+  private readonly exclusiveSession = new AsyncLocalStorage<{ client: any; active: boolean; committed: boolean; failure?: Error; afterCommit: Array<() => void> }>()
   private pool: any = null
   /**
    * In-flight (or completed) pool construction. Memoized so concurrent first
@@ -287,7 +339,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    */
   private poolPromise: Promise<any> | undefined
   /**
-   * Connections used ONLY to hold advisory locks — never for queries.
+   * Connections for exclusive operations: lock, reads and writes share a session.
    *
    * Separate from the main pool so a lock holder can never be waiting on a
    * connection that another lock holder is occupying. See `withExclusiveAccess`.
@@ -370,6 +422,17 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 
   private async getPool(): Promise<any> {
     if (this.closed) throw new Error('[postgres] adapter is closed')
+    const session = this.exclusiveSession.getStore()
+    if (session) {
+      const query = (...args: any[]) => {
+        if (session.failure) return Promise.reject(session.failure)
+        if (!session.active) return Promise.reject(new Error('[postgres] exclusive operation has ended'))
+        return session.client.query(...args)
+      }
+      // Borrow the lock's connection. Never return it to the pool from an
+      // inner method; the outer protected operation owns its entire lifetime.
+      return { query, connect: async () => ({ query, release: () => {} }) }
+    }
     // Memoize the PROMISE, not the resolved pool.
     //
     // The old shape checked `if (!this.pool)` and then awaited `loadPg()`.
@@ -502,17 +565,23 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     const client = await this.acquire(this.pool)
     const key = `plur:init:${this.schema}`
     let locked = false
+    let poisoned: Error | undefined
     try {
       await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
       locked = true
       await this.initSchemaLocked(client)
     } finally {
       if (locked) {
-        // Best-effort: the session ends on release anyway, and Postgres drops
-        // session advisory locks with the session.
-        try { await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]) } catch { /* released with the session */ }
+        // Same rule as withExclusiveAccess (formal verification, round-2 drift
+        // review): a bare release() returns the session to the pool, and a
+        // session advisory lock lives as long as the SESSION — so a failed
+        // unlock must destroy the session, or every later initSchema waits on
+        // the lock forever.
+        try { await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]) } catch (err) {
+          poisoned = err instanceof Error ? err : new Error(String(err))
+        }
       }
-      client.release()
+      client.release(poisoned)
     }
   }
 
@@ -893,10 +962,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    */
   async updateMany(engrams: Engram[]): Promise<void> {
     if (engrams.length === 0) return
+    refuseDuplicateIds('update', engrams)
     const pool = await this.getPool()
     const client = await this.acquire(pool)
     try {
-      await client.query('BEGIN')
+      if (!this.exclusiveSession.getStore()) await client.query('BEGIN')
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
@@ -919,11 +989,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
           [JSON.stringify(chunk.map(toRow))],
         )
       }
-      await client.query('COMMIT')
+      if (!this.exclusiveSession.getStore()) await client.query('COMMIT')
       // No cache to drop — `loadCached()` delegates to `load()` on this adapter
       // precisely because another process may have written since.
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
+      if (!this.exclusiveSession.getStore()) await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
       throw err
     } finally {
       client.release()
@@ -953,11 +1023,35 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // No cache to drop — `loadCached()` delegates to `load()` on this adapter.
   }
 
-  async save(engrams: Engram[]): Promise<void> {
+  /**
+   * Subscribe to the id renames `save()` makes under the shared duplicate rule
+   * (owner decision P1). Every subscriber is called, after the transaction
+   * commits, so a rename is reported only once it is stored. Returns the
+   * unsubscribe function.
+   *
+   * A SET of listeners, not one slot: several `Plur` instances may share one
+   * adapter, and each records the rename in its own history root — with a
+   * single slot the last one registered silently took the others' records
+   * ("nothing hidden", owner principle 2026-09-27). `Plur` subscribes in its
+   * constructor and unsubscribes in `close()`.
+   *
+   * With NO subscriber (a bare adapter no engine is attached to) there is no
+   * history root to record in; the rename is then only logged — see
+   * {@link resolveSaveBatch}.
+   */
+  addRenameListener(fn: (renames: IdRename[]) => void): () => void {
+    this.renameListeners.add(fn)
+    return () => { this.renameListeners.delete(fn) }
+  }
+
+  private readonly renameListeners = new Set<(renames: IdRename[]) => void>()
+
+  async save(batch: Engram[]): Promise<void> {
+    const { engrams, renames } = resolveSaveBatch(batch)
     const pool = await this.getPool()
     const client = await this.acquire(pool)
     try {
-      await client.query('BEGIN')
+      if (!this.exclusiveSession.getStore()) await client.query('BEGIN')
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
@@ -990,9 +1084,25 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       } else {
         await client.query(`DELETE FROM "${this.schema}".engrams`)
       }
-      await client.query('COMMIT')
+      // Rename listeners run only once the rows are committed (decision P1).
+      // Inside a protected operation the outer transaction commits later, so
+      // they are registered as post-commit work there (dropped on rollback).
+      const reportRenames = () => {
+        if (renames.length === 0) return
+        for (const listener of [...this.renameListeners]) {
+          try { listener(renames) } catch (err) {
+            logger.warning(`[plur] Postgres save: recording ${renames.length} id rename(s) failed: ${(err as Error).message}`)
+          }
+        }
+      }
+      if (!this.exclusiveSession.getStore()) {
+        await client.query('COMMIT')
+        reportRenames()
+      } else if (renames.length > 0) {
+        this.afterCommit(reportRenames)
+      }
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
+      if (!this.exclusiveSession.getStore()) await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
       throw err
     } finally {
       client.release()
@@ -1039,61 +1149,70 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    */
 
   /**
-   * Serialize a read-modify-write across every process sharing this schema,
-   * using a Postgres advisory lock.
-   *
-   * `pg_advisory_lock` is session-scoped, so the lock and its release must
-   * happen on the SAME connection — hence a dedicated client checked out for
-   * the duration rather than `pool.query`, which may hand back a different
-   * connection each call.
-   *
-   * The key is derived from the schema name, so two adapters pointed at the
-   * same schema contend and two pointed at different schemas do not. `hashtext`
-   * is Postgres's own hash, computed server-side, so every client agrees on it
-   * without the driver having to reproduce the hash function.
-   *
-   * Costs, both real and accepted here:
-   *   - one pooled connection is held for the whole critical section, so a pool
-   *     of N supports N-1 concurrent non-write operations. `maxConnections`
-   *     defaults to 10.
-   *   - writers serialize globally per schema. That is the point; the
-   *     alternative on a whole-corpus `save()` is losing data.
-   *
-   * The real fix for the throughput cost is incremental writes — an
-   * `append`/`update` seam on `PrimaryStore` so a write does not rewrite the
-   * corpus at all. That is a larger change; this makes the current write path
-   * CORRECT, which it was not.
+   * Protected operations use one transaction and one connection for locking,
+   * reads and writes. Losing that connection aborts the transaction and its
+   * ownership together. A separate pool avoids starving ordinary readers;
+   * incremental mutations join the outer transaction instead of committing it.
    */
+  /**
+   * Background work must start after commit, outside the connection's
+   * ownership context. See the contract on {@link PrimaryStore.afterCommit}:
+   * register synchronously inside the protected function; a registration
+   * that arrives after the function ended — including while COMMIT is in
+   * flight — is dropped with a warning even if the commit then succeeds.
+   * Rolled-back operations never launch these callbacks.
+   */
+  afterCommit(callback: () => void): void {
+    const session = this.exclusiveSession.getStore()
+    if (!session || session.committed) { this.exclusiveSession.exit(callback); return }
+    if (session.active) { session.afterCommit.push(callback); return }
+    // Registered after the protected function ended but before a COMMIT was
+    // confirmed — after a throw, or while COMMIT is in flight. The outcome is
+    // rollback or unknown, so work that assumes the write landed must not run.
+    logger.warning('[postgres] dropped post-commit work registered after the transaction stopped accepting it')
+  }
+
   async withExclusiveAccess<T>(fn: () => Promise<T>): Promise<T> {
-    // The lock connection comes from a SEPARATE pool.
-    //
-    // It used to come from the main pool, which deadlocks: the lock is held for
-    // the whole critical section, and `fn()` — a `save()` or a `load()` — needs
-    // its own connection from that same pool. With `maxConnections` writers in
-    // flight, every connection is held by a lock holder waiting for a
-    // connection that can never be freed. Reproduced with pool=2 and three
-    // writers: permanent hang, no error, no timeout.
-    //
-    // A second pool removes the circular wait by construction. Reserving
-    // headroom inside one pool would not: nothing enforces the reservation.
-    // The cost is up to `maxConnections` additional server connections, which
-    // is the honest price of holding a session lock across arbitrary work.
+    const existing = this.exclusiveSession.getStore()
+    if (existing) {
+      if (existing.failure) throw existing.failure
+      if (!existing.active) throw new Error('[postgres] exclusive operation has ended')
+      return fn()
+    }
+    // The separate pool avoids capacity deadlocks with ordinary readers.
+    // ALL work in this operation uses this connection. If it dies, its lock
+    // and transaction die together; no stale writer can switch connections.
     const pool = await this.getLockPool()
     const client = await this.acquire(pool)
+    const session: { client: any; active: boolean; committed: boolean; failure?: Error; afterCommit: Array<() => void> } = { client, active: true, committed: false, afterCommit: [] }
+    let discard: Error | undefined
+    const onError = (error: Error) => { session.failure = error; discard = error }
+    client.on('error', onError)
     try {
-      await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [`plur:${this.schema}`])
-      try {
-        return await fn()
-      } finally {
-        // Release on the same session, even if `fn` threw. If THIS throws the
-        // connection is broken; releasing it below discards it from the pool,
-        // and Postgres drops session advisory locks when the session ends, so
-        // the lock cannot leak.
-        await client.query(`SELECT pg_advisory_unlock(hashtext($1))`, [`plur:${this.schema}`])
-          .catch(() => { /* session is going away; the lock dies with it */ })
+      await client.query('BEGIN')
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`plur:${this.schema}`])
+      const result = await this.exclusiveSession.run(session, fn)
+      if (session.failure) throw session.failure
+      // Disallow detached work before committing/releasing the connection.
+      session.active = false
+      const committed = await client.query('COMMIT')
+      if (committed.command !== 'COMMIT') throw new Error('[postgres] transaction was aborted; protected writes were rolled back')
+      session.committed = true
+      for (const callback of session.afterCommit) {
+        const report = (error: unknown) => logger.warning(`[postgres] post-commit background work failed: ${String(error)}`)
+        try { Promise.resolve(this.exclusiveSession.exit(callback)).catch(report) } catch (error) { report(error) }
       }
+      return result
+    } catch (error) {
+      session.active = false
+      await client.query('ROLLBACK').catch((rollbackError: Error) => { discard = rollbackError })
+      throw error
     } finally {
-      client.release()
+      session.active = false
+      // Keep the error listener through release: a disconnected socket can
+      // report another event while pg destroys it. Never reuse a broken client.
+      client.release(discard)
+      if (!discard) client.removeListener('error', onError)
     }
   }
 
@@ -1527,7 +1646,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // #751: every checkout goes through acquire() so close() can destroy it.
     const client = await this.acquire(pool)
     try {
-      await client.query('BEGIN')
+      if (!this.exclusiveSession.getStore()) await client.query('BEGIN')
       if (this.hnswActive) {
         await client.query(`SET LOCAL hnsw.ef_search = ${this.efSearchForLimit(limit)}`)
       }
@@ -1540,10 +1659,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
          LIMIT $${limitIdx}`,
         [...params, literal, limit],
       )
-      await client.query('COMMIT')
+      if (!this.exclusiveSession.getStore()) await client.query('COMMIT')
       return res.rows.map((r: any) => ({ engram: parseRow(r), score: Number(r.score) }))
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
+      if (!this.exclusiveSession.getStore()) await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
       throw err
     } finally {
       client.release()

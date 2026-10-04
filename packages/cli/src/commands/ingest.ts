@@ -17,6 +17,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--scope' && i + 1 < args.length) { scope = args[++i]; i++ }
     else if (arg === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
     else if (arg === '--extract-only') { extractOnly = true; i++ }
+    // `--` ends flag parsing: the next token is the content, verbatim, even when
+    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
+    // itself became the content.
+    else if (arg === '--') { if (!content && i + 1 < args.length) content = args[i + 1]; break }
     else if (!content) { content = arg; i++ }
     else { i++ }
   }

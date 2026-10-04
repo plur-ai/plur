@@ -37,7 +37,11 @@ export interface InjectionContext {
    */
   grantedScopes?: readonly string[]
   session_id?: string
-  maxTokens?: number      // Default: 8000 (~10% of 80K context)
+  /**
+   * Budget for the WHOLE injection — directives + constraints + consider +
+   * spread (decision I1). Default: 8000 (~10% of 80K context).
+   */
+  maxTokens?: number
   minRelevance?: number   // Default: 0.3
 }
 
@@ -59,6 +63,7 @@ export interface InternalInjectionResult {
   directives: WireEngram[]
   constraints: WireEngram[]
   consider: WireEngram[]
+  /** Estimated tokens per bucket; `directives + consider` ≤ `maxTokens`. */
   tokens_used: { directives: number; consider: number }
   /**
    * Association edges dropped during spreading activation, by reason.
@@ -86,6 +91,59 @@ const MAX_PER_DOMAIN = 10
 // every relevance-scored engram. Cap at 50% of maxTokens so contextual recall
 // still gets at least half the budget. Tuned for default 8000 → 4000 pinned.
 const PINNED_TOKEN_BUDGET_RATIO = 0.5
+/**
+ * Default share of the pinned budget the HARD tier may occupy (pinned
+ * two-tier model). The hard tier is a sub-cap INSIDE the pinned share, not a
+ * budget of its own: soft pins get whatever the hard tier leaves, so a store
+ * with no hard-tier engrams sees exactly the pinned share it always had.
+ * Configurable as `injection.pinned_hard_ratio`; bounded to [0, 1], so the
+ * hard tier can never exceed the pinned quota.
+ */
+export const DEFAULT_PINNED_HARD_RATIO = 0.5
+
+/**
+ * Token cap for the hard tier, given the base the pinned share is taken from.
+ *
+ * ONE formula for both ends: the write path passes `injection_budget` (the
+ * same base `pinnedQuota()` uses), the injection path passes the injection
+ * budget. With default config both give floor(floor(2000 × 0.5) × 0.5) = 500.
+ */
+export function pinnedHardCap(
+  pinnedBudgetBase: number,
+  hardRatio: number = DEFAULT_PINNED_HARD_RATIO,
+  pinnedRatio: number = PINNED_TOKEN_BUDGET_RATIO,
+): number {
+  // A non-finite ratio (NaN from a bad direct call) falls back to the
+  // default: Math.min/Math.max pass NaN through, which would disable the cap.
+  const hard = Number.isFinite(hardRatio) ? Math.min(1, Math.max(0, hardRatio)) : DEFAULT_PINNED_HARD_RATIO
+  return Math.floor(Math.floor(pinnedBudgetBase * pinnedShareRatio(pinnedRatio)) * hard)
+}
+
+/**
+ * The share of the injection budget reserved for pinned engrams —
+ * `injection.pinned_ratio`, the same ratio `pinnedQuota()` enforces at pin
+ * time, so admission and injection agree. Non-finite falls back to the
+ * default 0.5; out-of-range values are clamped to [0, 1].
+ */
+export function pinnedShareRatio(pinnedRatio: number = PINNED_TOKEN_BUDGET_RATIO): number {
+  return Number.isFinite(pinnedRatio) ? Math.min(1, Math.max(0, pinnedRatio)) : PINNED_TOKEN_BUDGET_RATIO
+}
+
+/** True when an engram is in the hard pinned tier. Anything else pinned is soft. */
+export function isHardPinned(e: { pinned?: unknown; pinned_tier?: unknown }): boolean {
+  return e.pinned === true && e.pinned_tier === 'hard'
+}
+
+/**
+ * Soft-tier eviction priority, validated (schema: integer 1–100, default 50).
+ * A value outside the range is clamped rather than trusted, so a stored
+ * `9999` cannot sort ahead of every legitimately prioritised engram.
+ */
+export function effectivePinnedPriority(e: { pinned_priority?: unknown }): number {
+  const p = e.pinned_priority
+  if (typeof p !== 'number' || !Number.isFinite(p)) return 50
+  return Math.min(100, Math.max(1, Math.round(p)))
+}
 
 // --- Section budgets (2026-09-07) ---
 //
@@ -267,23 +325,53 @@ export function pinnedOriginRank(e: Record<string, unknown>): 0 | 1 | 2 {
  * reality again, which is the defect this replaces.
  */
 export function estimateTokens(engram: ScoredEngram): number {
+  // Measured by the formatters themselves (formal run 2026-09-23). The
+  // hand-kept field sum this replaced had already drifted from formatLayer3 —
+  // it charged nothing for `Kind: <claim_class>` (#963) or for the soft-expiry
+  // `⚠ EXPIRED <date> — verify before use: ` prefix — and it charged layer 1
+  // for the statement although layer 1 renders an UNTRUNCATED `summary`.
+  // Replayed: an inferred, soft-expired engram rendered 202 chars (51 tokens)
+  // against an estimate of 37; a consider entry with a long summary rendered
+  // 34 against 25. Rendering is the only estimate that cannot drift.
+  //
+  // Still charged at the RICHER of the layers an engram can render at (3 for
+  // directives/constraints, 1 for consider), since selection happens before
+  // the bucket is known. `confidence_score` is a placeholder of the same
+  // rendered width ("0.00"); +1 is the newline that joins entries.
+  //
+  // The previous field-sum estimate is kept as a FLOOR: it over-charged the
+  // common case by a few characters, and budgets and fixtures are calibrated
+  // against it. With the floor this change can only add cost where rendering
+  // was under-charged — it never loosens an existing budget.
+  const wire = { ...engram, confidence_score: 0 } as unknown as WireEngram
+  const rendered = Math.max(formatLayer3(wire).length, formatLayer1(wire).length) + 1
+  return Math.ceil(Math.max(rendered, legacyEstimateChars(engram)) / 4)
+}
+
+/** The pre-2026-09-23 field-sum estimate, in characters. Floor only; see above. */
+function legacyEstimateChars(engram: ScoredEngram): number {
   const e = engram as ScoredEngram & {
     contraindications?: string[]
     rationale?: string
     commitment?: string
+    claim_class?: unknown
   }
-  let chars = e.id.length + 4 + (e.statement?.length ?? 0)          // "[ID] statement"
+  let chars = e.id.length + 4 + (e.statement?.length ?? 0)
   const contra = e.contraindications
-  if (contra?.length) chars += 24 + contra.join('; ').length         // "  Does NOT apply when: "
-  if (e.rationale) chars += 15 + e.rationale.length                  // "  Rationale: "
-  // Meta line: Domain | Commitment | Confidence | Last active.
+  if (contra?.length) chars += 24 + contra.join('; ').length
+  if (e.rationale) chars += 15 + e.rationale.length
   const meta =
     (e.domain ? e.domain.length + 10 : 0) +
     (e.commitment ? e.commitment.length + 14 : 0) +
+    // "Kind: <claim_class>" (#963). Also covered by the rendered estimate
+    // above; kept in this floor too so the floor never under-counts a field
+    // formatLayer3 renders — nothing validates `claim_class` against its enum
+    // before it is stored.
+    (typeof e.claim_class === 'string' ? e.claim_class.length + 9 : 0) +
     20 +                                                             // "Confidence: 0.00"
     (e.activation?.last_accessed ? e.activation.last_accessed.length + 15 : 0)
   if (meta > 20) chars += meta + 3
-  return Math.ceil(chars / 4)
+  return chars
 }
 
 // --- Anchor boost ---
@@ -359,6 +447,50 @@ function isSupersededEngram(engram: ScoredEngram): boolean {
   return (engram.relations?.superseded_by?.length ?? 0) > 0
 }
 
+/**
+ * Replaced by an engram that this session could deliver. Such an engram is not
+ * current: the correction that replaced it is, so it is not injected (outside
+ * a historical prompt). When no replacement is deliverable here — retired,
+ * living only in a remote store, a draft awaiting approval (#1141), expired,
+ * or in an on_request pack — dropping the old engram would leave the session
+ * with neither, so the ×0.3 re-rank still applies instead.
+ *
+ * A supersede loop is not a replacement. Self-supersession, and a replacement
+ * whose own superseded_by chain leads back to this engram (A → B → A), would
+ * otherwise make every member of the loop disappear; each member keeps the
+ * ×0.3 re-rank instead, as before #1232.
+ *
+ * Only DIRECT superseded_by edges count. On a chain A → B → C where B is not
+ * deliverable and C is, A is not suppressed: it keeps the ×0.3 re-rank and is
+ * injected beside C, as before #1232.
+ */
+function isReplacedByDeliverable(
+  engram: Engram,
+  deliverableIds: ReadonlySet<string>,
+  supersededBy: ReadonlyMap<string, readonly string[]>,
+): boolean {
+  return (engram.relations?.superseded_by ?? []).some(id =>
+    deliverableIds.has(id) && !leadsBackTo(id, engram.id, supersededBy))
+}
+
+/** Does following superseded_by edges from `start` reach `target`? A self-edge reaches at once. */
+function leadsBackTo(
+  start: string,
+  target: string,
+  supersededBy: ReadonlyMap<string, readonly string[]>,
+): boolean {
+  const seen = new Set<string>()
+  const stack = [start]
+  while (stack.length > 0) {
+    const id = stack.pop()!
+    if (id === target) return true
+    if (seen.has(id)) continue
+    seen.add(id)
+    for (const next of supersededBy.get(id) ?? []) stack.push(next)
+  }
+  return false
+}
+
 // --- Strip pipeline ---
 
 function stripAssociations(engram: ScoredEngram): AgentEngram {
@@ -373,6 +505,31 @@ function stripScoring(engram: AgentEngram): WireEngram {
 
 // --- Scoring ---
 
+/**
+ * Is `engram` visible under the inject's scope filter? The SAME decision as the
+ * scope gate at the top of `scoreEngram` (targeted `global`, else
+ * `makeVisibilityPredicate`), exposed as a boolean.
+ *
+ * `scoreEngram` answers 0 both for "excluded by scope" and for "no keyword
+ * hits". Three paths in `selectAndSpread` revive a 0 — the pinned exemption,
+ * the semantic-only embedding boost, and spreading activation — and they are
+ * right to revive a no-hits 0 and wrong to revive an excluded one. Measured
+ * (formal run 2026-09-23): under `scope: 'project:a'` a pinned engram in an
+ * ungranted `group:*` scope was injected, and under `scope: 'global'` a pinned
+ * `user:x` engram was, contradicting INJECT_GLOBAL_IS_TARGETED. Invisible
+ * engrams are therefore dropped before scoring and never enter the spreading
+ * map.
+ */
+export function isInjectVisible(
+  engramScope: string,
+  scopeFilter: string | undefined,
+  grantedScopes?: readonly string[],
+): boolean {
+  if (!scopeFilter) return true
+  if (scopeFilter === 'global') return engramScope === 'global'
+  return makeVisibilityPredicate(scopeFilter, grantedScopes)(engramScope)
+}
+
 export function scoreEngram(
   engram: Engram,
   promptLower: string,
@@ -383,7 +540,9 @@ export function scoreEngram(
   // Trailing optional so the post-#759 public signature stays non-breaking.
   grantedScopes?: readonly string[],
 ): number {
-  // Scope filtering: if scope is specified, only include matching engrams
+  // Scope filtering: if scope is specified, only include matching engrams.
+  // `isInjectVisible` below is the same decision as a boolean; selectAndSpread
+  // consults it directly because a 0 from here does not say WHICH gate fired.
   if (scopeFilter) {
     if (scopeFilter === 'global') {
       // INJECT_GLOBAL_IS_TARGETED: explicit scope=global inject returns ONLY
@@ -482,9 +641,36 @@ export interface OmittedPinned {
   id: string
   /** Estimated token cost of the engram that was skipped. */
   cost: number
-  /** `pinned-sub-budget`: the 50% pinned share was exhausted while overall
-   *  budget remained. `total-budget`: no room left at all. */
-  reason: 'pinned-sub-budget' | 'total-budget'
+  /** `pinned-sub-budget`: the pinned share (`injection.pinned_ratio`, default
+   *  50%) was exhausted while overall
+   *  budget remained. `total-budget`: no room left at all.
+   *  `hard-tier-cap`: a hard-tier engram did not fit the hard tier's sub-cap.
+   *  `soft-tier-budget`: an engram with an explicit soft tier or priority did
+   *  not fit what the hard tier left of the pinned share. An engram with no
+   *  tier fields keeps reporting `pinned-sub-budget`, as it always has. */
+  reason: 'pinned-sub-budget' | 'total-budget' | 'hard-tier-cap' | 'soft-tier-budget'
+}
+
+/**
+ * Tokens the hard tier holds back from the soft tier in one injection: what the
+ * hard-pinned candidates cost, up to the hard cap.
+ *
+ * Computed ONCE over every candidate and shared through the ledger, because
+ * selection runs in several section passes (#1138). Without the reservation a
+ * soft pin in the constraints pass could spend the pinned share before a hard
+ * pin in the directives pass is even looked at — inverting the tiers.
+ */
+//
+// Known limitation: a hard pin that can never fit (larger than the cap, or than
+// what the section passes leave) still counts toward the reserve, so the soft
+// tier can be held back by up to the cap for a pin that is then reported as
+// omitted. The write-time cap makes that state rare; it is not corrected here.
+export function hardPinnedReserve(scored: Array<ScoredEngram>, hardCap: number): number {
+  let sum = 0
+  for (const e of scored) {
+    if (isHardPinned(e as never)) sum += estimateTokens(e)
+  }
+  return Math.min(hardCap, sum)
 }
 
 /**
@@ -535,12 +721,35 @@ export function fillTokenBudget(
    * eaten the entire injection and no relevance-scored engram reached the
    * agent, which is the exact failure the sub-budget exists to prevent.
    */
-  pinnedLedger: { spent: number } = { spent: 0 },
+  pinnedLedger: { spent: number; hardSpent?: number; hardReserve?: number } = { spent: 0 },
+  /**
+   * Share of the pinned budget the hard tier may occupy (pinned two-tier
+   * model). See {@link DEFAULT_PINNED_HARD_RATIO}.
+   */
+  pinnedHardRatio: number = DEFAULT_PINNED_HARD_RATIO,
+  /**
+   * Share of `pinnedBudgetBase` reserved for pinned engrams
+   * (`injection.pinned_ratio`, default 0.5) — the ratio the pin-time quota
+   * uses, passed through so the two cannot disagree.
+   */
+  pinnedRatio: number = PINNED_TOKEN_BUDGET_RATIO,
+  /**
+   * Engrams already committed to this section by an earlier selection (the
+   * global pinned pre-pass in `selectAndSpread`). They count toward the
+   * per-pack and per-domain caps exactly as if they had been selected here.
+   */
+  seed: readonly ScoredEngram[] = [],
 ): { selected: ScoredEngram[]; tokens_used: number; omitted_pinned: OmittedPinned[] } {
   const result: ScoredEngram[] = []
   const omittedPinned: OmittedPinned[] = []
   const packCounts = new Map<string, number>()
   const domainCounts = new Map<string, number>()
+  for (const e of seed) {
+    const pack = e.pack ?? '__personal__'
+    packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
+    const topDomain = (e.domain ?? '__none__').split('.')[0]
+    domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
+  }
   let tokensUsed = 0
 
   // Two-pass selection: pinned engrams first, then the rest. Pinned items
@@ -551,10 +760,30 @@ export function fillTokenBudget(
   // Primary-store pins first, then `stores:`/remote, then packs; score orders
   // within an origin. Sorted before selection so budget pressure can never let
   // a pack pin in ahead of one of the user's own.
+  //
+  // Pinned two-tier model: WITHIN an origin, hard-tier pins come first, then
+  // soft pins by `pinned_priority` (higher first), then score. Origin stays the
+  // outer key — the tiers must not reopen the trust boundary it enforces. An
+  // engram with no tier fields is soft at the default priority, so for a store
+  // that never sets them the order is exactly origin, then score.
   const pinned = scored.filter(e => (e as any).pinned === true).sort((a, b) =>
-    pinnedOriginRank(a as never) - pinnedOriginRank(b as never) || b.score - a.score)
+    pinnedOriginRank(a as never) - pinnedOriginRank(b as never)
+    || (isHardPinned(a as never) ? 0 : 1) - (isHardPinned(b as never) ? 0 : 1)
+    || (isHardPinned(a as never) ? 0 : effectivePinnedPriority(b as never) - effectivePinnedPriority(a as never))
+    || b.score - a.score)
   const unpinned = scored.filter(e => (e as any).pinned !== true)
-  const pinnedBudget = Math.floor(pinnedBudgetBase * PINNED_TOKEN_BUDGET_RATIO)
+  const pinnedBudget = Math.floor(pinnedBudgetBase * pinnedShareRatio(pinnedRatio))
+  // The hard tier is a sub-cap inside the pinned share; the soft tier gets
+  // what the hard tier holds back. With no hard-tier candidates the reserve is
+  // 0 and the soft tier has the whole pinned share, as before the tiers.
+  const hardCap = pinnedHardCap(pinnedBudgetBase, pinnedHardRatio, pinnedRatio)
+  if (pinnedLedger.hardSpent === undefined) pinnedLedger.hardSpent = 0
+  if (pinnedLedger.hardReserve === undefined) pinnedLedger.hardReserve = hardPinnedReserve(scored, hardCap)
+  const softBudget = pinnedBudget - pinnedLedger.hardReserve
+  const softReason = (e: ScoredEngram): OmittedPinned['reason'] => {
+    const r = e as unknown as { pinned_tier?: unknown; pinned_priority?: unknown }
+    return r.pinned_tier === 'soft' || r.pinned_priority != null ? 'soft-tier-budget' : 'pinned-sub-budget'
+  }
 
   // Omissions are REPORTED, not silent (#1142). `pinned: true` reads as a
   // promise of always-load, but pinning is priority-subject-to-capacity: a
@@ -569,29 +798,52 @@ export function fillTokenBudget(
   // it (plur-ai/plur#1124: selection was greedy, so a large primary pin could be
   // skipped while smaller pack pins still got in). Within one origin, greedy is
   // fine and wastes less budget.
-  let skippedRank: number | null = null
+  //
+  // The rule is kept per tier: the hard tier draws on its own reserve, which
+  // no soft pin can spend, so a soft skip must not block a lower-origin hard
+  // pin and vice versa. A total-budget skip means no room at all and blocks
+  // both. With no hard-tier engrams only the soft rank is ever set, which is
+  // the single rank this loop always had.
+  let skippedRankSoft: number | null = null
+  let skippedRankHard: number | null = null
+  const lower = (cur: number | null, rank: number) => cur === null ? rank : Math.min(cur, rank)
   for (const engram of pinned) {
     const rank = pinnedOriginRank(engram as never)
-    if (skippedRank !== null && rank > skippedRank) {
-      omittedPinned.push({ id: engram.id, cost: estimateTokens(engram), reason: 'pinned-sub-budget' })
+    const hard = isHardPinned(engram as never)
+    const blockedAt = hard ? skippedRankHard : skippedRankSoft
+    if (blockedAt !== null && rank > blockedAt) {
+      omittedPinned.push({ id: engram.id, cost: estimateTokens(engram), reason: hard ? 'hard-tier-cap' : softReason(engram) })
       continue
     }
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > maxTokens) {
       omittedPinned.push({ id: engram.id, cost, reason: 'total-budget' })
-      skippedRank = skippedRank === null ? rank : Math.min(skippedRank, rank)
+      skippedRankSoft = lower(skippedRankSoft, rank)
+      skippedRankHard = lower(skippedRankHard, rank)
       continue
     }
     // Against the SHARED spend, so the cap binds across passes rather than
     // once per pass.
-    if (pinnedLedger.spent + cost > pinnedBudget) {
-      omittedPinned.push({ id: engram.id, cost, reason: 'pinned-sub-budget' })
-      skippedRank = skippedRank === null ? rank : Math.min(skippedRank, rank)
+    if (hard) {
+      // Hard-tier overflow is REPORTED like any other omission. The write
+      // path refuses a hard-tier engram that would overrun the cap, but it can
+      // only count what this client sees (a remote store's hard tier may be
+      // written elsewhere), so this is the enforcement point that cannot be
+      // bypassed — and a tier sold as guaranteed must not vanish silently.
+      if (pinnedLedger.hardSpent + cost > hardCap || pinnedLedger.spent + cost > pinnedBudget) {
+        omittedPinned.push({ id: engram.id, cost, reason: 'hard-tier-cap' })
+        skippedRankHard = lower(skippedRankHard, rank)
+        continue
+      }
+    } else if (pinnedLedger.spent - pinnedLedger.hardSpent + cost > softBudget) {
+      omittedPinned.push({ id: engram.id, cost, reason: softReason(engram) })
+      skippedRankSoft = lower(skippedRankSoft, rank)
       continue
     }
     result.push(engram)
     tokensUsed += cost
     pinnedLedger.spent += cost
+    if (hard) pinnedLedger.hardSpent += cost
     const pack = engram.pack ?? '__personal__'
     packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
     const topDomain = (engram.domain ?? '__none__').split('.')[0]
@@ -625,7 +877,7 @@ export function selectAndSpread(
   ctx: InjectionContext,
   personalEngrams: Engram[],
   packs: LoadedPack[],
-  config?: { spread_cap?: number; spread_budget?: number; expiry?: ExpiryConfig },
+  config?: { spread_cap?: number; spread_budget?: number; expiry?: ExpiryConfig; pinned_hard_ratio?: number; pinned_ratio?: number },
   embeddingBoosts?: Map<string, number>,
 ): InternalInjectionResult {
   const spreadCap = config?.spread_cap ?? 3
@@ -645,17 +897,35 @@ export function selectAndSpread(
   // "locally known but inactive" from "absent entirely (remote-only or missing)".
   const engramMap = new Map<string, Engram>()
   const nonActiveIds = new Set<string>()
+  // Engrams hidden by the scope filter. A spreading edge to one is neither
+  // "retired" nor "unresolvable" — it is simply not part of this view — so it
+  // is skipped without feeding spread_drops.
+  const scopeExcludedIds = new Set<string>()
+  // Every engram this session could deliver, in scope or not, for the
+  // "replaced by a deliverable engram" test: active, approved, valid, and not
+  // in an on_request pack. A correction stored in another scope still replaces
+  // (whether it should is #1237). Filled by the scoring loops below.
+  const deliverableIds = new Set<string>()
+  // superseded_by edges of every engram the loops see, for loop detection.
+  const supersededBy = new Map<string, readonly string[]>()
+  const historical = hasHistoricalIntent(ctx.prompt)
 
   // Step 1-2: Score all active engrams
   const scored: ScoredEngram[] = []
 
   for (const engram of personalEngrams) {
+    if (engram.relations?.superseded_by?.length) supersededBy.set(engram.id, engram.relations.superseded_by)
     if (engram.status !== 'active') { nonActiveIds.add(engram.id); continue }
     // NOT added to nonActiveIds: a draft is active, it is simply ungated for
     // delivery (#1141). That set feeds spread_drops accounting for retired or
     // unresolvable targets, and a pending-review engram is neither.
-    if (skipForApproval(engram)) continue
-    if (skipForValidity(engram, nowMs, expiryMode, graceDays)) continue
+    const deliverable = !skipForApproval(engram)
+      && !skipForValidity(engram, nowMs, expiryMode, graceDays)
+    if (deliverable) deliverableIds.add(engram.id)
+    // Visibility BEFORE the map and the score (see isInjectVisible): nothing
+    // below — pinned exemption, embedding boost, spreading — may revive it.
+    if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
+    if (!deliverable) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
     // Embedding boost: semantically similar engrams with zero keyword hits still get scored.
@@ -693,9 +963,13 @@ export function selectAndSpread(
     if (packMeta.injection_policy === 'on_request') continue
     const matchTerms = packMeta.match_terms
     for (const engram of pack.engrams) {
+      if (engram.relations?.superseded_by?.length) supersededBy.set(engram.id, engram.relations.superseded_by)
       if (engram.status !== 'active') continue
-      if (skipForApproval(engram)) continue
-      if (skipForValidity(engram, nowMs, expiryMode, graceDays)) continue
+      const deliverable = !skipForApproval(engram)
+        && !skipForValidity(engram, nowMs, expiryMode, graceDays)
+      if (deliverable) deliverableIds.add(engram.id)
+      if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
+      if (!deliverable) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
@@ -737,13 +1011,20 @@ export function selectAndSpread(
   // pinning. Without this exemption, a session with strong personal-engram
   // matches normalizes pinned scores below DEFAULT_MIN_RELEVANCE (0.3) and
   // the pinned engram is silently dropped before fillTokenBudget sees it.
-  const filtered = scored.filter(s => (s as any).pinned === true || s.score >= minRelevance)
+  // A superseded engram whose replacement is deliverable is not current, so it is
+  // not a candidate at all — not in directives, constraints or consider.
+  // A historical prompt ("previously", "used to") still reaches it.
+  const filtered = scored.filter(s =>
+    ((s as any).pinned === true || s.score >= minRelevance)
+    && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy)))
 
   // Sort by score descending
   filtered.sort((a, b) => b.score - a.score)
 
-  // Supersedes chain preference: under budget pressure, tip beats older members
-  if (!hasHistoricalIntent(ctx.prompt)) {
+  // Supersedes chain preference: under budget pressure, tip beats older members.
+  // Only a superseded engram with no deliverable replacement here (or one in a
+  // supersede loop) reaches this.
+  if (!historical) {
     for (const e of filtered) {
       if (isSupersededEngram(e)) {
         e.score *= 0.3
@@ -758,37 +1039,73 @@ export function selectAndSpread(
   // 'dont', or cognitive_level apply/analyze). It must stay in step with it:
   // if the two disagree, the floor reserves space for engrams that then get
   // rendered into a different section.
-  const constraintCandidates = filtered.filter(isConstraintCandidate)
-  const otherCandidates = filtered.filter(e => !isConstraintCandidate(e))
+  //
+  // PINNED FIRST, across both sections, in ONE origin-ordered pass (formal run
+  // 2026-09-23, plur-ai/plur#1124). Pinned engrams used to be selected inside
+  // each section pass, each with its own origin ordering, so the ordering held
+  // within a pass and not across them. Replayed at maxTokens 1000: a primary
+  // pinned constraint (450 tokens) did not fit the 400-token constraints
+  // floor, an installed pack's pinned directive (300) was admitted in the
+  // directives pass, and the slack pass then refused the primary pin for the
+  // pinned sub-budget (300 + 450 > 500). A pack pin displaced the user's own —
+  // exactly what `pinnedOriginRank` exists to prevent. One pass over every pin
+  // makes the origin rule global; the section passes below see only unpinned
+  // engrams and draw on what the pins left.
+  //
+  // ONE ledger for every pass drawing on `maxTokens`. The pinned sub-budget is
+  // a share of the injection; granting it per pass multiplied it by the number
+  // of passes and let pinned starve contextual recall entirely.
+  //
+  // Pinned two-tier model: the hard-tier reserve is computed over ALL
+  // candidates, so within the origin-ordered pinned pass a higher-origin soft
+  // pin cannot spend the share a lower-origin hard pin is entitled to.
+  const hardRatio = config?.pinned_hard_ratio ?? DEFAULT_PINNED_HARD_RATIO
+  const pinnedRatio = config?.pinned_ratio ?? PINNED_TOKEN_BUDGET_RATIO
+  const pinnedLedger = {
+    spent: 0,
+    hardSpent: 0,
+    hardReserve: hardPinnedReserve(filtered, pinnedHardCap(maxTokens, hardRatio, pinnedRatio)),
+  }
+  const pinnedPass = fillTokenBudget(
+    filtered.filter(e => (e as any).pinned === true), maxTokens, maxTokens, pinnedLedger, hardRatio, pinnedRatio)
+  const pinnedConstraints = pinnedPass.selected.filter(isConstraintCandidate)
+  const pinnedDirectives = pinnedPass.selected.filter(e => !isConstraintCandidate(e))
+  const pinnedConstraintTokens = pinnedConstraints.reduce((a, e) => a + estimateTokens(e), 0)
+
+  const unpinned = filtered.filter(e => (e as any).pinned !== true)
+  const constraintCandidates = unpinned.filter(isConstraintCandidate)
+  const otherCandidates = unpinned.filter(e => !isConstraintCandidate(e))
 
   const constraintsFloor = Math.floor(maxTokens * CONSTRAINTS_FLOOR_RATIO)
-  // ONE ledger for all three passes drawing on `maxTokens`. The pinned
-  // sub-budget is a share of the injection; granting it per pass multiplied it
-  // by the number of passes and let pinned starve contextual recall entirely.
-  // The DIP-19 consider pass below draws on its own budget and so keeps its own.
-  const pinnedLedger = { spent: 0 }
-  const firstPass = fillTokenBudget(constraintCandidates, constraintsFloor, maxTokens, pinnedLedger)
+  // Pinned constraints draw on the constraints floor first, as they did when
+  // they were selected inside the constraints pass.
+  const firstPass = fillTokenBudget(constraintCandidates,
+    Math.max(0, constraintsFloor - pinnedConstraintTokens), maxTokens, pinnedLedger, hardRatio, pinnedRatio,
+    pinnedConstraints)
 
-  // Directives get everything the constraints floor did not use.
-  const directivesBudget = Math.max(0, maxTokens - firstPass.tokens_used)
-  const dirPass = fillTokenBudget(otherCandidates, directivesBudget, maxTokens, pinnedLedger)
+  // Directives get everything the pins and the constraints floor did not use.
+  const directivesBudget = Math.max(0, maxTokens - pinnedPass.tokens_used - firstPass.tokens_used)
+  const dirPass = fillTokenBudget(otherCandidates, directivesBudget, maxTokens, pinnedLedger, hardRatio, pinnedRatio,
+    pinnedDirectives)
 
   // Any budget the directives left over flows BACK to constraints, so a
   // session with few directives carries more of its rules, not fewer.
-  const slack = Math.max(0, maxTokens - firstPass.tokens_used - dirPass.tokens_used)
+  const slack = Math.max(0,
+    maxTokens - pinnedPass.tokens_used - firstPass.tokens_used - dirPass.tokens_used)
   const chosen = new Set(firstPass.selected.map(e => e.id))
   const secondPass = slack > 0
-    ? fillTokenBudget(constraintCandidates.filter(e => !chosen.has(e.id)), slack, maxTokens, pinnedLedger)
+    ? fillTokenBudget(constraintCandidates.filter(e => !chosen.has(e.id)), slack, maxTokens, pinnedLedger, hardRatio, pinnedRatio)
     : { selected: [] as ScoredEngram[], tokens_used: 0, omitted_pinned: [] as OmittedPinned[] }
 
-  const selectedConstraints = [...firstPass.selected, ...secondPass.selected]
-  const constraintTokens = firstPass.tokens_used + secondPass.tokens_used
+  const selectedConstraints = [...pinnedConstraints, ...firstPass.selected, ...secondPass.selected]
+  const constraintTokens = pinnedConstraintTokens + firstPass.tokens_used + secondPass.tokens_used
 
   // Downstream (spreading activation, consider pool, wire split) consumes one
   // ordered pool. Constraints lead it so any consumer that truncates head-first
   // keeps the prohibitions.
-  const directives = [...selectedConstraints, ...dirPass.selected]
-  const directiveTokens = constraintTokens + dirPass.tokens_used
+  const directives = [...selectedConstraints, ...pinnedDirectives, ...dirPass.selected]
+  const directiveTokens = pinnedPass.tokens_used + firstPass.tokens_used + secondPass.tokens_used
+    + dirPass.tokens_used
   const directiveIds = new Set(directives.map(e => e.id))
 
   // DIP-0019 consider pool: next candidates that didn't fit as directives
@@ -804,12 +1121,22 @@ export function selectAndSpread(
     if (pack !== '__personal__' && (directivePackCounts.get(pack) ?? 0) >= MAX_PER_PACK) return false
     return true
   })
+  // CAP-SUM (owner decision I1, formal run 2026-09-26): `maxTokens` bounds the
+  // WHOLE injection — directives + constraints + consider + spread. The
+  // sections above keep priority and never exceed it; the consider pool, then
+  // spreading activation, get at most what they leave (each still also capped
+  // by its own budget). Previously both pools had their own budgets ON TOP of
+  // `maxTokens`, so `tokens_used` could reach maxTokens + 200 + spread_budget
+  // (replayed: 823 at an injection_budget of 500).
+  const remainingAfterSections = Math.max(0, maxTokens - directiveTokens)
   const { selected: dip19Consider } = fillTokenBudget(
-    dip19Remainder, DIP19_CONSIDER_BUDGET,
+    dip19Remainder, Math.min(DIP19_CONSIDER_BUDGET, remainingAfterSections),
   )
   // Cap at DIP19_CONSIDER_MAX and correct token count
   const dip19Pool = dip19Consider.slice(0, DIP19_CONSIDER_MAX)
   const dip19PoolTokens = dip19Pool.reduce((acc, e) => acc + estimateTokens(e), 0)
+  // Spreading activation draws on what the sections and the consider pool left.
+  const effectiveSpreadBudget = Math.min(spreadBudget, Math.max(0, remainingAfterSections - dip19PoolTokens))
 
   // Step 7-8: Guard empty
   if (directives.length === 0 && dip19Pool.length === 0) {
@@ -822,9 +1149,7 @@ export function selectAndSpread(
       // everything was dropped reported nothing dropped — re-opening the hole
       // #1142 exists to close, in its worst instance. A single oversized
       // pinned engram at a tiny budget returned silence.
-      omitted_pinned: dedupeOmitted([
-        ...firstPass.omitted_pinned, ...dirPass.omitted_pinned, ...secondPass.omitted_pinned,
-      ]),
+      omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned),
     }
   }
 
@@ -851,11 +1176,13 @@ export function selectAndSpread(
 
       const target = engramMap.get(assoc.target)
       if (!target) {
+        if (scopeExcludedIds.has(assoc.target)) continue
         if (nonActiveIds.has(assoc.target)) droppedRetired++
         else droppedUnresolvable++
         continue
       }
       if (target.status !== 'active') { droppedRetired++; continue }
+      if (!historical && isReplacedByDeliverable(target, deliverableIds, supersededBy)) continue
 
       // Apply decay to co_accessed associations at read time
       const effectiveStrength = assoc.type === 'co_accessed' && assoc.updated_at
@@ -875,7 +1202,7 @@ export function selectAndSpread(
       }
 
       const cost = estimateTokens(spreadEngram)
-      if (spreadTokens + cost > spreadBudget) continue
+      if (spreadTokens + cost > effectiveSpreadBudget) continue
       if (spreadCandidates.length >= spreadCap) break
 
       spreadCandidates.push(spreadEngram)
@@ -930,10 +1257,7 @@ export function selectAndSpread(
     ...(droppedUnresolvable > 0 || droppedRetired > 0
       ? { spread_drops: { dropped_unresolvable: droppedUnresolvable, dropped_retired: droppedRetired } }
       : {}),
-    omitted_pinned: dedupeOmitted(
-      [...firstPass.omitted_pinned, ...dirPass.omitted_pinned, ...secondPass.omitted_pinned],
-      directives,
-    ),
+    omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned, directives),
   }
 }
 

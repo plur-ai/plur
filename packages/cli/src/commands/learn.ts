@@ -7,6 +7,12 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
  */
 export const FLAGS_WITH_VALUES = ['--scope', '--type', '--domain', '--source', '--rationale', '--tags', '--visibility', '--abstract', '--derived-from', '--knowledge-anchors', '--dual-coding', '--supersedes', '--license', '--claim-class', '--asserted-by']
 
+/**
+ * How long `plur learn` waits for a team server before saving to the outbox
+ * (0.21.1). The save itself is never cut short; only the server leg is.
+ */
+export const REMOTE_WRITE_TIMEOUT_MS = 5_000
+
 export const FLAGS = [
   '--scope', '--type', '--domain', '--source', '--rationale', '--tags',
   '--visibility', '--abstract', '--derived-from', '--knowledge-anchors',
@@ -138,6 +144,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
       claimClass = v as typeof claimClass; i++
     }
+    // `--` ends flag parsing: the next token is the statement, verbatim, even
+    // when it starts with `-` (decision S4). Before, `--` itself was stored.
+    else if (arg === '--') {
+      if (!statement && i + 1 < args.length) statement = args[i + 1]
+      break
+    }
     else if (!statement) { statement = arg; i++ }
     else { i++ }
   }
@@ -153,7 +165,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>] ' +
       '[--source <s>] [--rationale <r>] [--tags a,b,c] [--visibility private|public|template] ' +
       '[--abstract <id>] [--derived-from <id>] [--knowledge-anchors <json>] [--dual-coding <json>] ' +
-      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>]\n\n' +
+      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>]\n' +
+      '       plur learn [flags] -- <statement>   (a statement that starts with "-")\n\n' +
       '  --license      which licence governs reuse of this memory, e.g. cc-by-4.0.\n' +
       '                 Leave it out and a default applies that nobody chose, and\n' +
       '                 a provenance record will say so.\n' +
@@ -194,46 +207,30 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // explicit `--scope group:engineering` on learn() would silently drop the
   // remote push.
   //
-  // learnRouted BLOCKS on the network for remote-scoped engrams (it awaits the
-  // POST to the remote store); the unscoped no-covers path falls to
-  // local/global (personal) and does NOT touch a remote, so it returns
-  // promptly. A 5s timeout guards against a dead/slow remote hanging the CLI.
-  let engram
-  // Hold the timer handle so it can be cleared on success — an un-cleared 5s
-  // setTimeout would keep Node's event loop alive and hang the CLI for 5s after
-  // learnRouted resolves (the unscoped/personal path returns immediately).
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-  try {
-    engram = await Promise.race([
-      // NOT `await plur.learnRouted(...)`. Awaiting here resolves the call
-      // before the array is even constructed and before the timer below is
-      // armed, so `Promise.race` receives a settled value and the 5s guard
-      // never runs — the CLI would hang indefinitely on an unreachable remote,
-      // which is the exact failure this guard exists to bound. An automated
-      // add-awaits pass inserted it; the resulting code is still valid
-      // TypeScript and every test still passed.
-      plur.learnRouted(statement, ctx),
-      new Promise<never>((_, rej) => {
-        timeoutHandle = setTimeout(
-          () => rej(new Error('learnRouted timed out after 5s — remote store slow/unreachable; engram not confirmed remotely')),
-          5000,
-        )
-      }),
-    ])
-  } catch (err) {
-    if (timeoutHandle) clearTimeout(timeoutHandle)
-    const msg = err instanceof Error ? err.message : String(err)
-    // The local write may still have completed on the remote-failure outbox
-    // path; this only reports that the engram was NOT confirmed remotely.
-    if (shouldOutputJson(flags)) {
-      outputJson({ error: msg })
-      exit(1)
-    } else {
-      exit(1, `Error: ${msg}`)
-    }
-    return
-  }
-  if (timeoutHandle) clearTimeout(timeoutHandle)
+  // The deadline lives in CORE and covers the server request only (0.21.1).
+  // This used to race the WHOLE call against a 5 s timer and `process.exit(1)`
+  // when the timer won. That raced local work too — a save into a large store
+  // took ~6 s with no network at all and was reported as failed, and the exit
+  // landed inside the store lock and left it behind — and it exited while core
+  // was still waiting on a hanging server, before core's outbox fallback could
+  // run, so a team save was written nowhere. Now a server that does not answer
+  // in time takes the outbox, and this awaits whatever core does, however long
+  // the local write takes. Exit 1 only when nothing was stored (core threw).
+  const engram = await plur.learnRouted(statement, ctx, { remoteTimeoutMs: REMOTE_WRITE_TIMEOUT_MS })
+
+  // #1264: where the engram went — remote, outbox or local. A shared scope that
+  // stayed local also carries a warning, because nothing else would tell the
+  // user their team save never left this machine.
+  const delivered = plur.deliveryOf(engram, scopeProvided ? scope : undefined)
+  // Item 6 of the 2026-10-02 investigation: report the id in the form the read
+  // paths hand back (#914), as the MCP plur_learn does. A server-minted id is
+  // bare (`ENG-2026-10-02-001`) and collides with ids minted on this machine
+  // the same day; the namespaced form (`ENG-GTE-…`) names the store. An outbox
+  // row keeps its local id: it sits in the local store until the retry lands.
+  const reportedId = delivered.delivery === 'outbox' ? engram.id : plur.readIdFor(engram)
+  const where = delivered.delivery === 'remote'
+    ? `remote store for ${engram.scope} (confirmed)`
+    : delivered.delivery === 'outbox' ? 'this machine, queued in the outbox' : 'this machine'
 
   // LOW-10 (#353): surface a scope demotion instead of swallowing it silently.
   // When learnRouted demotes a sensitive shared-scope write to local/private it
@@ -249,7 +246,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // --domain, no --scope, the write did NOT auto-route, and at least one
   // registered scope declares covers. Advisory only — never fails the write.
   let domainHint: string | undefined
-  const routed = (engram as { structured_data?: { _routed?: unknown } }).structured_data?._routed
+  const routed = (engram as { structured_data?: { _routed?: { scope: string; confidence: number; reason: string } } })
+    .structured_data?._routed
+  // #1115: both routing outcomes were read here only to decide whether to show
+  // a domain hint, so the CLI never named the destination it picked, nor the
+  // shared scope it declined. Both change where the engram ended up, which is
+  // the one thing a write command has to be able to say.
+  const routeRefused = (engram as { structured_data?: { _routeRefused?: { scope: string; confidence: number; reason: string } } })
+    .structured_data?._routeRefused
   if (!domain && !scopeProvided && !routed) {
     try {
       const coversScopes = plur.listScopeMetadata()
@@ -265,11 +269,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   if (shouldOutputJson(flags)) {
     outputJson({
-      id: engram.id,
+      id: reportedId,
       statement: engram.statement,
       scope: engram.scope,
       type: engram.type,
       domain: engram.domain ?? null,
+      delivery: delivered.delivery,
+      ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
+      ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
       // Include the demotion only when it happened; include requested_scope ONLY
       // when --scope was passed, to avoid a confusing requested_scope on an
       // unscoped write that demoted from the resolved default.
@@ -277,16 +284,47 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         ? { demoted: { from: demoted.from, to: demoted.to, patterns: demoted.patterns }, ...(scopeProvided ? { requested_scope: demoted.from } : {}) }
         : {}),
       ...(domainHint ? { domain_hint: domainHint } : {}),
+      ...(routed ? { routed: { scope: routed.scope, confidence: routed.confidence, reason: routed.reason } } : {}),
+      ...(routeRefused ? { route_refused: { scope: routeRefused.scope, confidence: routeRefused.confidence, reason: routeRefused.reason } } : {}),
     })
   } else {
     // Confirmation of a requested mutation → suppressed by --quiet (#730).
     outputInfo(`Learned: "${engram.statement}"`, flags)
-    outputInfo(`  ID: ${engram.id} | Scope: ${engram.scope} | Type: ${engram.type}${engram.domain ? ` | Domain: ${engram.domain}` : ''}`, flags)
+    outputInfo(`  ID: ${reportedId} | Scope: ${engram.scope} | Type: ${engram.type}${engram.domain ? ` | Domain: ${engram.domain}` : ''}`, flags)
+    if (delivered.delivery === 'outbox') {
+      // Not where a reader assumes a team save went — never suppressed.
+      outputText(`  Queued in the outbox: ${delivered.reason ?? `saved on this machine and queued for ${engram.scope}.`}`)
+    } else {
+      outputInfo(`  Saved: ${where}`, flags)
+    }
     if (demoted) {
       // The write landed somewhere OTHER than requested — never suppressed.
       outputText(
         `  Warning: Sensitive content (${demoted.patterns}) detected — stored at ` +
         `${demoted.to}/private instead of ${demoted.from}; re-scope deliberately if false positive.`,
+      )
+    }
+    if (delivered.warning) {
+      // Same class as the demotion: the write is not where a reader of the
+      // command would assume, so it is never suppressed by --quiet.
+      outputText(`  Warning: ${delivered.warning}`)
+    }
+    if (routed) {
+      // Where it landed, when the caller did not choose — same class as the
+      // demotion above: the write is not where a reader of the command would
+      // assume, so it is stated rather than hinted.
+      outputText(
+        `  Note: No scope was given — auto-routed to ${routed.scope} ` +
+        `(confidence ${routed.confidence}) because its content matched that scope's covers. ` +
+        `Pass --scope to choose deliberately.`,
+      )
+    }
+    if (routeRefused) {
+      outputText(
+        `  Warning: No scope was given. This content matched the shared scope ${routeRefused.scope} ` +
+        `(confidence ${routeRefused.confidence}), which unscoped writes are never auto-routed into — ` +
+        `it was stored at ${engram.scope} instead. Pass --scope ${routeRefused.scope} if it belongs to ` +
+        `the team, or move it with plur rescope.`,
       )
     }
     if (domainHint) {

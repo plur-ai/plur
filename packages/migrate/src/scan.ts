@@ -732,31 +732,52 @@ function matchParen(s: string, open: number, spans: Array<[number, number]>, bas
 }
 
 /**
- * Add `await` at the fixable sites. Returns the new source and a count.
+ * Add `await` at the fixable sites. Returns the new source, the count applied,
+ * and the fixable sites it could NOT apply (for the caller to report).
  *
- * Applied right-to-left so earlier offsets stay valid, and only to sites the
- * scanner marked fixable.
+ * Applied right-to-left so a site's START is never moved by an earlier edit.
+ * Its END can be: when one fixable call sits inside another's argument list on
+ * the same line (`plur.list(plur.getById(id)).length`), the inner `await ` is
+ * inserted first, inside the outer wrap's span, and an unadjusted `wrapTo`
+ * then closed the outer `(await …)` six characters early — corrupting the
+ * line (formal R2, mcp-integrations#8). So every position is mapped through
+ * the insertions already made on that line (original offset → current offset).
  */
-export function applyFixes(src: string, findings: Finding[]): { src: string; applied: number } {
+export function applyFixes(src: string, findings: Finding[]): { src: string; applied: number; skipped: Finding[] } {
   const lines = src.split('\n')
+  const original = lines.slice()
   const fixable = findings.filter(f => f.fixable).sort((a, b) =>
     b.line - a.line || b.column - a.column)
+  // Per line: insertions made so far, as [original offset, inserted length].
+  const inserted = new Map<number, Array<[number, number]>>()
+  const map = (li: number, orig: number): number => {
+    let shift = 0
+    for (const [at, len] of inserted.get(li) ?? []) if (at < orig) shift += len
+    return orig + shift
+  }
   let applied = 0
+  const skipped: Finding[] = []
   for (const f of fixable) {
     const li = f.line - 1
     const line = lines[li]
-    if (line === undefined) continue
+    const origLen = original[li]?.length ?? -1
     const at = f.column - 1
-    if (at < 0 || at > line.length) continue
+    if (line === undefined || at < 0 || at > origLen) { skipped.push(f); continue }
+    const ins = inserted.get(li) ?? []
     if (f.wrapTo !== undefined) {
       // `(await call())` — parenthesised, because the result is consumed.
       const end = f.wrapTo - 1
-      if (end <= at || end > line.length) continue
-      lines[li] = line.slice(0, at) + '(await ' + line.slice(at, end) + ')' + line.slice(end)
+      if (end <= at || end > origLen) { skipped.push(f); continue }
+      const a = map(li, at), e = map(li, end)
+      lines[li] = line.slice(0, a) + '(await ' + line.slice(a, e) + ')' + line.slice(e)
+      ins.push([at, '(await '.length], [end, 1])
     } else {
-      lines[li] = line.slice(0, at) + 'await ' + line.slice(at)
+      const a = map(li, at)
+      lines[li] = line.slice(0, a) + 'await ' + line.slice(a)
+      ins.push([at, 'await '.length])
     }
+    inserted.set(li, ins)
     applied++
   }
-  return { src: lines.join('\n'), applied }
+  return { src: lines.join('\n'), applied, skipped }
 }

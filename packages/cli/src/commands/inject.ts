@@ -14,29 +14,48 @@ Each response must end with a 🧠 I learned block recording reusable insights, 
 Supersedes rule: if this 🧠 corrects a previous engram, call: plur_learn(statement="...", supersedes=["ENG-xxx"], source="<bot_name>")
 Skip the block only when truly nothing new was discovered.`
 
+/**
+ * Flags this command accepts (#986). Declaring them turns on the argv check,
+ * so a flag inject cannot honour (`--domain`: MCP `plur_inject` takes no
+ * domain either) is refused rather than silently ignored — which is what
+ * happened to `--scope` before it was wired through.
+ */
+export const FLAGS_WITH_VALUES = ['--budget', '--scope']
+
+export const FLAGS = ['--budget', '--scope', '--no-with-default-protocol']
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 
   let task = ''
   let budget = 2000
+  let scope: string | undefined
   let withProtocol = true
 
   let i = 0
   while (i < args.length) {
     const arg = args[i]
     if (arg === '--budget' && i + 1 < args.length) { budget = parseInt(args[++i], 10); i++ }
+    else if (arg === '--scope' && i + 1 < args.length) { scope = args[++i]; i++ }
     else if (arg === '--no-with-default-protocol') { withProtocol = false; i++ }
+    // `--` ends flag parsing: the next token is the task, verbatim, even when
+    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
+    // itself became the task.
+    else if (arg === '--') { if (!task && i + 1 < args.length) task = args[i + 1]; break }
     else if (!task) { task = arg; i++ }
     else { i++ }
   }
 
   if (!task) {
-    exit(1, 'Usage: plur inject <task> [--budget <n>] [--no-with-default-protocol]')
+    exit(1, 'Usage: plur inject <task> [--budget <n>] [--scope <scope>] [--no-with-default-protocol]')
   }
 
+  // Same semantics as MCP plur_inject / plur_inject_hybrid: `scope` filters
+  // engram selection, and on the hybrid path it is the remote leg's dialing
+  // context (#243/#776).
   const result = flags.fast
-    ? await plur.inject(task, { budget })
-    : await plur.injectHybrid(task, { budget })
+    ? await plur.inject(task, { budget, scope })
+    : await plur.injectHybrid(task, { budget, scope })
 
   // Append default learning protocol to directives (opt-out via --no-with-default-protocol)
   let directives = result.directives || ''

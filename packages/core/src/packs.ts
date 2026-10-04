@@ -2,9 +2,10 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import * as os from 'os'
-import { execFileSync } from 'child_process'
+import { gunzipSync } from 'zlib'
+import * as tar from 'tar'
 import yaml from 'js-yaml'
-import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
+import { loadPack, loadEngrams, saveEngrams, isTransientPackDir } from './engrams.js'
 import { atomicWrite, fsyncDir, withLock } from './sync.js'
 import { detectSecrets, detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
 import { userStructuredData } from './content-fields.js'
@@ -46,66 +47,100 @@ export function isPackUrl(source: string): boolean {
  * No auth headers are added: signed-URL delivery means the URL is the
  * credential and no Authorization header is needed.
  */
+export const MAX_PACK_DOWNLOAD_BYTES = 32 * 1024 * 1024
+export const MAX_PACK_ARCHIVE_BYTES = 64 * 1024 * 1024
+export const PACK_DOWNLOAD_TIMEOUT_MS = 30_000
+
 export async function downloadAndExtractPack(url: string): Promise<{ packDir: string; tmpRoot: string }> {
-  // Create a unique temp root for this download
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-pack-dl-'))
-
-  // Download
-  let response: Response
+  const controller = new AbortController()
+  // A TOTAL deadline for the request and the body, not an idle timeout.
+  // Extraction below is synchronous and runs after the body is in memory.
+  const timeout = setTimeout(() => controller.abort(), PACK_DOWNLOAD_TIMEOUT_MS)
+  // Signed URLs carry credentials in their path/query; errors must not echo them.
   try {
-    response = await fetch(url)
-  } catch (err: unknown) {
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
-    const msg = err instanceof Error ? err.message : String(err)
-    throw new Error(`Failed to fetch pack from ${url}: ${msg}`)
-  }
-
-  if (!response.ok) {
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
-    throw new Error(`Failed to fetch pack from ${url}: HTTP ${response.status} ${response.statusText}`)
-  }
-
-  // Save the response body to a .tar.gz file
-  const archivePath = path.join(tmpRoot, 'pack.tar.gz')
-  const buffer = await response.arrayBuffer()
-  fs.writeFileSync(archivePath, Buffer.from(buffer))
-
-  // Extract the archive
-  const extractDir = path.join(tmpRoot, FLAT_ARCHIVE_DIRNAME)
-  fs.mkdirSync(extractDir)
-  try {
-    execFileSync('tar', ['-xzf', archivePath, '-C', extractDir], { stdio: 'pipe' })
-  } catch (err: unknown) {
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
-    const msg = err instanceof Error ? (err as NodeJS.ErrnoException).message : String(err)
-    throw new Error(`Failed to extract pack archive from ${url}: ${msg}`)
-  }
-
-  // Find the pack directory: either a single top-level subdirectory, or the
-  // extraction root itself (for flat archives).
-  // `lstat`: a tar entry that is a symbolic link to a directory must not be
-  // taken for the pack directory, or the preview would walk wherever it points.
-  const entries = fs.readdirSync(extractDir)
-  const subdirs = entries.filter(e => fs.lstatSync(path.join(extractDir, e)).isDirectory())
-
-  let packDir: string
-  if (subdirs.length === 1) {
-    // Standard layout: archive contains a single top-level directory
-    packDir = path.join(extractDir, subdirs[0])
-  } else {
-    // Flat layout: SKILL.md / engrams.yaml at archive root
-    const hasPackFiles = entries.some(e => e === 'SKILL.md' || e === 'engrams.yaml' || e === 'manifest.yaml')
-    if (hasPackFiles) {
-      packDir = extractDir
-    } else {
-      fs.rmSync(tmpRoot, { recursive: true, force: true })
-      throw new Error(
-        `Pack archive from ${url} has an unexpected layout — expected a single top-level directory or pack files at the root (SKILL.md / engrams.yaml).`,
-      )
+    let response: Response
+    try {
+      response = await fetch(url, { signal: controller.signal })
+    } catch {
+      // fetch() quotes the URL in its own messages ("Failed to parse URL
+      // from <url>", "…includes credentials: <url>"). Never pass them on.
+      throw new Error(controller.signal.aborted ? 'download timed out' : 'request failed before a response')
     }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const declared = Number(response.headers.get('content-length'))
+    if (declared > MAX_PACK_DOWNLOAD_BYTES) {
+      await response.body?.cancel()
+      throw new Error('pack download exceeds size limit')
+    }
+    if (!response.body) throw new Error('empty pack response')
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    try {
+      for (;;) {
+        let next: Awaited<ReturnType<typeof reader.read>>
+        try { next = await reader.read() } catch {
+          throw new Error(controller.signal.aborted ? 'download timed out' : 'connection failed while downloading')
+        }
+        const { done, value } = next
+        if (done) break
+        total += value.byteLength
+        if (total > MAX_PACK_DOWNLOAD_BYTES) throw new Error('pack download exceeds size limit')
+        chunks.push(value)
+      }
+    } finally {
+      await reader.cancel().catch(() => {})
+      reader.releaseLock()
+    }
+    // Bound expansion BEFORE extracting even the first archive entry. This
+    // also bounds tar metadata, padding and sparse-file payloads.
+    const archive = gunzipSync(Buffer.concat(chunks), { maxOutputLength: MAX_PACK_ARCHIVE_BYTES })
+    const archivePath = path.join(tmpRoot, 'pack.tar')
+    fs.writeFileSync(archivePath, archive, { mode: 0o600 })
+    let entries = 0
+    tar.list({ file: archivePath, sync: true, strict: true, onReadEntry(entry) {
+      if (++entries > MAX_PACK_ENTRIES) throw new Error('pack archive exceeds entry limit')
+      if (entry.type !== 'File' && entry.type !== 'OldFile' && entry.type !== 'Directory') {
+        throw new Error('pack archive contains a symbolic link, hard link, or special file')
+      }
+      const name = entry.path
+      if (name.startsWith('/') || /^[a-z]:/i.test(name) || name.includes('\\') || name.split('/').some(unsafeSegment)) {
+        throw new Error('pack archive path escapes extraction directory')
+      }
+      if (name.split('/').length > 64 || entry.size > MAX_PACK_FILE_BYTES) {
+        throw new Error('pack archive entry exceeds size or depth limit')
+      }
+    } })
+    const extractDir = path.join(tmpRoot, FLAT_ARCHIVE_DIRNAME)
+    fs.mkdirSync(extractDir)
+    tar.extract({ file: archivePath, cwd: extractDir, sync: true, strict: true,
+      preservePaths: false, preserveOwner: false, noChmod: true, maxDepth: 64 })
+    const names = fs.readdirSync(extractDir)
+    const subdirs = names.filter(e => fs.lstatSync(path.join(extractDir, e)).isDirectory())
+    const hasPackFiles = names.some(e => ['SKILL.md', 'engrams.yaml', 'manifest.yaml'].includes(e))
+    const packDir = hasPackFiles ? extractDir
+      : subdirs.length === 1 ? path.join(extractDir, subdirs[0]) : undefined
+    if (!packDir) throw new Error('unexpected archive layout — expected a pack directory or pack files at root')
+    return { packDir, tmpRoot }
+  } catch (err) {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+    const reason = controller.signal.aborted ? 'download timed out' : (err instanceof Error ? err.message : 'invalid archive')
+    throw new Error(`Failed to fetch or extract pack: ${reason}`)
+  } finally {
+    clearTimeout(timeout)
   }
+}
 
-  return { packDir, tmpRoot }
+/**
+ * A path segment that is, or on some platform becomes, a parent reference.
+ * Windows strips trailing dots and spaces, so `.. `, `...` and `name.` are
+ * not what they look like. A lone `.` is a no-op (`tar -czf p.tgz .` writes
+ * `./SKILL.md`) and stays allowed.
+ */
+function unsafeSegment(segment: string): boolean {
+  if (segment === '.') return false
+  return /^\.+\s*$/.test(segment) || /[. ]$/.test(segment)
 }
 
 /** Remove the temp directory created by downloadAndExtractPack. Safe to call even if the path no longer exists. */
@@ -121,12 +156,58 @@ export function cleanupDownloadedPack(tmpRoot: string): void {
 // --- Registry ---
 
 export interface RegistryEntry {
+  /** The pack's manifest name. NOT unique: two install directories may share it. */
   name: string
+  /**
+   * The install directory under the packs directory — what identifies the row
+   * (formal verification run, persistence finding 11). Absent on rows written
+   * before it existed; those are matched by `name` (`findRegistryRow`).
+   */
+  dir?: string
   installed_at: string
   source: string
   integrity: string
   version?: string
   creator?: string
+  /**
+   * Set when `integrity` is a v2 value that `migratePackIntegrity` carried
+   * forward from a v1 row WITHOUT re-verifying the pack against its source
+   * (§5.5). v1 cannot see bytes moved across the SKILL.md / engrams.yaml
+   * boundary or an added `manifest.yaml`, so a carried value inherits v1's
+   * trust and nothing more: it detects changes made AFTER the migration, not
+   * changes made before it. A reinstall writes a fresh row without it.
+   */
+  integrity_carried_from?: 'v1'
+  /**
+   * Set on a legacy row (no `dir`) when a pack that could have owned it was
+   * uninstalled while another installed directory with the same manifest name
+   * could also own it. The row stays, because nothing records whose baseline it
+   * is, but the remaining directory is no longer the only candidate in any
+   * meaningful sense: verifying it against the row would compare it with what
+   * may be the uninstalled pack's hash and report a false `modified` (#1245).
+   * A row carrying it is reported as ambiguous. A reinstall writes a fresh row
+   * without it.
+   */
+  ambiguous?: true
+}
+
+// `isTransientPackDir` lives in engrams.ts so `loadAllPacks` can use it
+// without importing this module back (#1236); re-exported here.
+export { isTransientPackDir }
+
+/**
+ * Is `p` a directory right now? `false` when it is not, or when it vanished
+ * between the `readdir` that named it and this check — an install that
+ * finished mid-walk renames its staging directory away, and that must not
+ * abort a listing or a migration (audit of #1229, finding 3).
+ */
+function isDirNow(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw err
+  }
 }
 
 function registryPath(packsDir: string): string {
@@ -228,28 +309,149 @@ function withRegistryLock<T>(packsDir: string, fn: () => T): T {
   return withLock(registryPath(packsDir), fn)
 }
 
-function addToRegistry(packsDir: string, entry: RegistryEntry): void {
+/*
+ * Which registry row belongs to which installed pack.
+ *
+ * Rows are keyed by install directory (`dir`). Install used to write
+ * `registry[manifest.name]` while the pack lived at `packs/<basename>`, so two
+ * directories whose manifests shared a name shared ONE row: the second install
+ * overwrote the first's baseline (the untouched pack then reported `modified`),
+ * and uninstalling either removed the row by manifest name, leaving the other
+ * `unverified` — the loss of baseline the registry lock above exists to
+ * prevent (formal verification run, persistence finding 11, Lean theorem
+ * `Packs.registry_shared_row`).
+ *
+ * Rows written before `dir` existed carry only `name`. They still resolve, by
+ * manifest name, and only rows WITHOUT `dir` are matched that way — a row that
+ * names its directory never answers for another one.
+ */
+
+/** Index of the row for the pack installed at `dir` (manifest `name`), or -1. */
+function findRegistryRowIndex(entries: RegistryEntry[], dir: string, name: string | undefined): number {
+  const own = entries.findIndex(e => e.dir === dir)
+  if (own >= 0) return own
+  if (name === undefined) return -1
+  return entries.findIndex(e => e.dir === undefined && e.name === name)
+}
+
+/**
+ * Other install directories whose manifest carries `name` and that could own a
+ * legacy row (no `dir`) with that name. A legacy row is claimed or removed on
+ * behalf of `dir` only when this is empty.
+ *
+ * Two kinds of directory are NOT candidates (audit of #1230, finding 1):
+ *   - one that already owns a `dir` row: its baseline is that row, so a legacy
+ *     row cannot be its. Counting it made a legacy row next to a newer
+ *     same-name install "ambiguous", so the legacy pack could never be
+ *     reinstalled in place, migrated, or uninstalled cleanly.
+ *   - a transient staging (`*.installing-*`) or displaced (`*.replacing-*`)
+ *     directory, which is not a pack at all.
+ */
+function otherDirsNamed(packsDir: string, dir: string, name: string, entries: RegistryEntry[]): string[] {
+  if (!fs.existsSync(packsDir)) return []
+  const owned = new Set(entries.map(e => e.dir).filter((d): d is string => d !== undefined))
+  return fs.readdirSync(packsDir).filter(e => {
+    if (e === dir || owned.has(e) || isTransientPackDir(e)) return false
+    const d = path.join(packsDir, e)
+    try {
+      if (!fs.statSync(d).isDirectory()) return false
+      return loadPack(d).manifest.name === name
+    } catch { return false }
+  })
+}
+
+/**
+ * Is `row`, found for the pack at `dir`, a legacy row that cannot be told to be
+ * that pack's baseline? Either another installed directory could equally own
+ * it, or it was marked `ambiguous` when such a directory was uninstalled
+ * (#1245). Used where a row is VERIFIED against; claiming or removing a row
+ * goes by `ownedRegistryRowIndex`, which ignores the mark, so the last
+ * candidate can still reinstall over the row or remove it.
+ */
+function isAmbiguousLegacyRow(packsDir: string, dir: string, name: string, row: RegistryEntry | undefined, entries: RegistryEntry[]): boolean {
+  if (row === undefined || row.dir !== undefined) return false
+  return row.ambiguous === true || otherDirsNamed(packsDir, dir, name, entries).length > 0
+}
+
+/** Index of the row `dir` may claim or remove: its own, or a legacy row only it can own. */
+function ownedRegistryRowIndex(packsDir: string, entries: RegistryEntry[], dir: string, name: string | undefined): number {
+  const idx = findRegistryRowIndex(entries, dir, name)
+  if (idx < 0 || entries[idx].dir === dir) return idx
+  // A legacy row matched by name: only if no other installed directory could own it.
+  return otherDirsNamed(packsDir, dir, name!, entries).length === 0 ? idx : -1
+}
+
+/**
+ * The name `name` has in the packs directory's own listing. On a
+ * case-insensitive filesystem `PACK-ONE` opens `pack-one` (and on APFS a
+ * composed `café` opens a decomposed one, #1246), but a row keyed by
+ * `dir` must carry the name the directory actually has, or the row and the
+ * directory part ways: uninstall removed the directory and kept its row, and a
+ * reinstall from a case-variant source added a second row (audit of #1230,
+ * finding 2). Returns `name` unchanged when nothing on disk answers to it.
+ */
+function onDiskEntryName(packsDir: string, name: string): string {
+  if (!fs.existsSync(packsDir)) return name
+  const listing = fs.readdirSync(packsDir)
+  if (listing.includes(name)) return name
+  let target: fs.Stats
+  try { target = fs.statSync(path.join(packsDir, name)) } catch { return name }
+  // Case and Unicode normalization: APFS ignores both, so `café` spelled
+  // composed (NFC) opens the directory listed decomposed (NFD) (#1246). The
+  // inode comparison below is what decides; this only narrows the candidates.
+  const fold = (s: string) => s.normalize('NFC').toLowerCase()
+  for (const e of listing) {
+    if (fold(e) !== fold(name)) continue
+    try {
+      const st = fs.statSync(path.join(packsDir, e))
+      if (st.ino === target.ino && st.dev === target.dev) return e
+    } catch { /* vanished */ }
+  }
+  return name
+}
+
+function addToRegistry(packsDir: string, entry: RegistryEntry & { dir: string }): void {
   withRegistryLock(packsDir, () => {
     const entries = loadRegistry(packsDir)
-    const idx = entries.findIndex(e => e.name === entry.name)
+    const idx = ownedRegistryRowIndex(packsDir, entries, entry.dir, entry.name)
     if (idx >= 0) entries[idx] = entry
     else entries.push(entry)
     saveRegistry(packsDir, entries)
   })
 }
 
-function removeFromRegistry(packsDir: string, name: string): void {
+/**
+ * Remove the row for the pack installed at `dir` — never another pack's row.
+ * `name` is its manifest name when it could be read; a legacy row is removed
+ * by it only when no other installed directory carries the same name.
+ */
+function removeFromRegistry(packsDir: string, dir: string, name: string | undefined): void {
   withRegistryLock(packsDir, () => {
-    const entries = loadRegistry(packsDir).filter(e => e.name !== name)
-    saveRegistry(packsDir, entries)
+    const entries = loadRegistry(packsDir)
+    const idx = ownedRegistryRowIndex(packsDir, entries, dir, name)
+    if (idx >= 0) {
+      entries.splice(idx, 1)
+      saveRegistry(packsDir, entries)
+      return
+    }
+    // A legacy row this pack might own but cannot claim, because another
+    // installed directory could too. It stays, but once this pack is gone the
+    // other directory would look like its only owner and be verified against
+    // what may be this pack's hash (#1245). Mark it so it keeps being reported
+    // as ambiguous.
+    const legacy = findRegistryRowIndex(entries, dir, name)
+    if (legacy >= 0 && entries[legacy].dir === undefined && entries[legacy].ambiguous !== true) {
+      entries[legacy].ambiguous = true
+      saveRegistry(packsDir, entries)
+    }
   })
 }
 
 /** Rewrite one entry's `source` under the same lock — the URL-install path. */
-function setRegistrySource(packsDir: string, name: string, source: string): void {
+function setRegistrySource(packsDir: string, dir: string, source: string): void {
   withRegistryLock(packsDir, () => {
     const entries = loadRegistry(packsDir)
-    const idx = entries.findIndex(e => e.name === name)
+    const idx = entries.findIndex(e => e.dir === dir)
     if (idx >= 0) { entries[idx].source = source; saveRegistry(packsDir, entries) }
   })
 }
@@ -1103,6 +1305,36 @@ function fsyncTree(dir: string): void {
   try { fsyncDir(dir) } catch { /* not a syncable directory */ }
 }
 
+/**
+ * The transformations install applies to a staged copy before hashing it: a
+ * deprecated `manifest.yaml`-only pack is upgraded to `SKILL.md` (#325), and
+ * host-overriding engram fields are neutralized (§5.6.1 step 3). Mutates
+ * `dir`. Shared by install and by `migratePackIntegrity`, which must reproduce
+ * the installed form of a source byte for byte to re-verify against it.
+ */
+function normalizeStagedPack(dir: string, manifest: PackManifest): {
+  upgradedManifest: boolean
+  engrams: Engram[]
+  sanitized: ReturnType<typeof sanitizePackEngrams>
+} {
+  const skillMd = path.join(dir, 'SKILL.md')
+  const manifestYaml = path.join(dir, 'manifest.yaml')
+  let upgradedManifest = false
+  if (!fs.existsSync(skillMd) && fs.existsSync(manifestYaml)) {
+    fs.writeFileSync(skillMd, manifestToSkillMd(manifest))
+    fs.rmSync(manifestYaml)
+    upgradedManifest = true
+  }
+  const engramsPath = path.join(dir, 'engrams.yaml')
+  let engrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
+  const sanitized = sanitizePackEngrams(engrams)
+  if (sanitized.changed) {
+    engrams = sanitized.engrams
+    saveEngrams(engramsPath, engrams)
+  }
+  return { upgradedManifest, engrams, sanitized }
+}
+
 function _installPackDir(
   packsDir: string,
   source: string,
@@ -1221,7 +1453,10 @@ function _installPackDir(
   const sourceName = rawName === FLAT_ARCHIVE_DIRNAME && manifestName && /^[A-Za-z0-9._-]+$/.test(manifestName)
     ? manifestName
     : rawName
-  const destDir = resolveInside(packsDir, sourceName, 'install')
+  // The name the directory already has, if a case-variant of it is installed
+  // on a case-insensitive filesystem: the swap below then keeps that name and
+  // the registry row follows the directory (audit of #1230, finding 2).
+  const destDir = resolveInside(packsDir, onDiskEntryName(packsDir, sourceName), 'install')
 
   // STAGE the whole install, then swap it in (#813, audit finding 12).
   //
@@ -1276,27 +1511,22 @@ function _installPackDir(
   // Auto-upgrade a deprecated manifest.yaml pack to SKILL.md in the installed
   // copy (#325). manifest.yaml still LOADS (loadPack reads it with a deprecation
   // warning), but the managed copy is normalized to the canonical SKILL.md so
-  // the integrity hash below is computed over SKILL.md + engrams.yaml. Done
-  // before computePackHash so the recorded integrity reflects the upgrade.
-  const destSkillMd = path.join(staging, 'SKILL.md')
-  const destManifestYaml = path.join(staging, 'manifest.yaml')
-  if (!fs.existsSync(destSkillMd) && fs.existsSync(destManifestYaml)) {
-    fs.writeFileSync(destSkillMd, manifestToSkillMd(preview.manifest))
-    fs.rmSync(destManifestYaml)
+  // the integrity value below covers the SKILL.md that is actually installed.
+  // Done before computePackIntegrity so the recorded integrity reflects the upgrade.
+  //
+  // Load engrams, then clamp host-overriding fields (pinned / locked commitment)
+  // before they can reach injection. Re-save the sanitized copy so the on-disk
+  // pack AND the integrity hash reflect the clamped content.
+  //
+  // Both steps live in `normalizeStagedPack` so that `migratePackIntegrity`
+  // can reproduce the installed form of a source exactly (§5.5 re-baselining).
+  const { upgradedManifest, engrams: newEngrams, sanitized } = normalizeStagedPack(staging, preview.manifest)
+  if (upgradedManifest) {
     logger.warning(
       `installPack: pack '${preview.manifest.name}' shipped a deprecated manifest.yaml — upgraded to SKILL.md in the installed copy`,
     )
   }
-
-  // Load engrams, then clamp host-overriding fields (pinned / locked commitment)
-  // before they can reach injection. Re-save the sanitized copy so the on-disk
-  // pack AND the integrity hash reflect the clamped content.
-  const engramsPath = path.join(staging, 'engrams.yaml')
-  let newEngrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
-  const sanitized = sanitizePackEngrams(newEngrams)
   if (sanitized.changed) {
-    newEngrams = sanitized.engrams
-    saveEngrams(engramsPath, newEngrams)
     // Each field on its own line (§5.6.5: "which field was changed"). The
     // locked downgrade had no line at all, so a pack that shipped only locked
     // commitments was altered in silence.
@@ -1318,7 +1548,7 @@ function _installPackDir(
   // Compute integrity over the STAGED, sanitized content — the bytes that are
   // about to become the pack. Hashing the live directory before the swap would
   // record the hash of the previous install.
-  const integrity = `sha256:${computePackHash(staging)}`
+  const integrity = computePackIntegrity(staging)
 
   // Make the staged content durable BEFORE it becomes the live pack (audit
   // 2026-08-03, finding 11). Every file was copied with plain writes and the
@@ -1354,8 +1584,9 @@ function _installPackDir(
   try { fsyncDir(path.dirname(destDir)) } catch { /* best-effort, as elsewhere */ }
   fs.rmSync(displaced, { recursive: true, force: true })
 
-  const registryEntry: RegistryEntry = {
+  const registryEntry: RegistryEntry & { dir: string } = {
     name: preview.manifest.name,
+    dir: path.basename(destDir),
     installed_at: new Date().toISOString(),
     source: path.resolve(source),
     integrity,
@@ -1409,7 +1640,7 @@ export async function installPack(
       // Overwrite the registry source with the original URL so `plur packs list`
       // shows where the pack came from, not an ephemeral /tmp path.
       result.registry.source = source
-      setRegistrySource(packsDir, result.registry.name, source)
+      setRegistrySource(packsDir, result.registry.dir!, source)
       return result
     } finally {
       cleanupDownloadedPack(tmpRoot)
@@ -1474,8 +1705,11 @@ export interface UninstallResult {
 }
 
 export function uninstallPack(packsDir: string, name: string): UninstallResult {
-  // Find the pack — try exact name, then case-insensitive
-  let packDir = resolveInside(packsDir, name, 'uninstall')
+  // Find the pack — try exact name, then case-insensitive. Either way the
+  // directory is addressed by the name it has ON DISK, so the registry row
+  // keyed by it is found (audit of #1230, finding 2).
+  resolveInside(packsDir, name, 'uninstall')
+  let packDir = resolveInside(packsDir, onDiskEntryName(packsDir, name), 'uninstall')
   if (!fs.existsSync(packDir)) {
     // Try case-insensitive scan
     const entries = fs.existsSync(packsDir) ? fs.readdirSync(packsDir) : []
@@ -1499,9 +1733,12 @@ export function uninstallPack(packsDir: string, name: string): UninstallResult {
   let manifestName: string | undefined
   try { manifestName = loadPack(packDir).manifest.name } catch {}
 
-  // Remove from registry (try both directory name and manifest name)
-  removeFromRegistry(packsDir, name)
-  if (manifestName && manifestName !== name) removeFromRegistry(packsDir, manifestName)
+  // Remove THIS directory's row only (formal finding 11): by `dir`, or — for a
+  // row written before `dir` existed — by manifest name, and then only when no
+  // other installed directory carries the same name. The directory name stands
+  // in for the manifest name when the manifest cannot be read, as before.
+  // Removing by name alone erased the baseline of every other pack sharing it.
+  removeFromRegistry(packsDir, path.basename(packDir), manifestName ?? path.basename(packDir))
 
   // Remove recursively
   fs.rmSync(packDir, { recursive: true, force: true })
@@ -1537,6 +1774,25 @@ export interface PackInfo {
    */
   integrity_status?: 'ok' | 'modified' | 'unverified'
   /**
+   * `'carried-from-v1'` when the registry's v2 baseline was carried forward
+   * from a v1 row without re-verifying the pack against its source (§5.5,
+   * `RegistryEntry.integrity_carried_from`). `integrity_status: 'ok'` then
+   * means "unchanged since the migration", not "matches what was installed":
+   * an edit v1 could not see, made before the migration, is inside the
+   * baseline. Absent for a baseline written by an install or re-verified
+   * against the source.
+   */
+  baseline?: 'carried-from-v1'
+  /**
+   * `true` when the only registry row for this pack is a legacy row (no
+   * `dir`) that another installed directory with the same manifest name could
+   * equally own — the state the pre-`dir` registry left when two same-name
+   * packs were installed. `integrity_status` is then `'unverified'`: which pack
+   * the recorded value belongs to cannot be told. Reinstalling the pack gives
+   * it a row of its own.
+   */
+  registry_ambiguous?: true
+  /**
    * Why this pack could not be read, when it could not (audit 2026-08-03,
    * finding 13). A damaged pack is listed with what is known about it rather
    * than aborting the listing or appearing as a healthy pack with 0 engrams.
@@ -1548,27 +1804,48 @@ export function listPacks(packsDir: string): PackInfo[] {
   if (!fs.existsSync(packsDir)) return []
 
   const registry = loadRegistry(packsDir)
-  const registryMap = new Map(registry.map(r => [r.name, r]))
+  // By directory first; a legacy row (no `dir`) by manifest name (finding 11).
+  const rowFor = (dir: string, name: string | undefined): RegistryEntry | undefined => {
+    const idx = findRegistryRowIndex(registry, dir, name)
+    return idx >= 0 ? registry[idx] : undefined
+  }
+  // A legacy row that another installed directory could equally own is not
+  // this pack's baseline to verify against: comparing an untouched pack with
+  // its same-name neighbour's hash reported a false `modified`, while migrate
+  // called the same row ambiguous (audit of #1230, finding 3). Report it as
+  // unanswerable, the same verdict migration reaches.
+  const ambiguous = (dir: string, name: string, reg: RegistryEntry | undefined): boolean =>
+    isAmbiguousLegacyRow(packsDir, dir, name, reg, registry)
 
   const result: PackInfo[] = []
   for (const entry of fs.readdirSync(packsDir)) {
+    if (isTransientPackDir(entry)) continue
     const packDir = path.join(packsDir, entry)
-    if (!fs.statSync(packDir).isDirectory()) continue
+    if (!isDirNow(packDir)) continue
 
     try {
       const pack = loadPack(packDir)
-      const currentIntegrity = `sha256:${computePackHash(packDir)}`
-      const reg = registryMap.get(pack.manifest.name)
+      const matched = rowFor(entry, pack.manifest.name)
+      const registryAmbiguous = ambiguous(entry, pack.manifest.name, matched)
+      const reg = registryAmbiguous ? undefined : matched
+      // Compared in the version the registry recorded: a v1 row from before
+      // `sha256:v2:` still verifies as it did (§5.5). The reported value is
+      // always v2, the current form.
+      const integrityOk = reg ? packIntegrityMatches(reg.integrity, packDir) : undefined
       result.push({
         name: pack.manifest.name,
         path: packDir,
         engram_count: pack.engrams.length,
         manifest: pack.manifest,
-        integrity: currentIntegrity,
+        integrity: computePackIntegrity(packDir),
         installed_at: reg?.installed_at,
         source: reg?.source,
-        integrity_ok: reg ? reg.integrity === currentIntegrity : undefined,
-        integrity_status: reg ? (reg.integrity === currentIntegrity ? 'ok' : 'modified') : 'unverified',
+        integrity_ok: integrityOk,
+        integrity_status: reg ? (integrityOk ? 'ok' : 'modified') : 'unverified',
+        ...(reg?.integrity_carried_from === 'v1' && INTEGRITY_V2_RE.test(reg.integrity)
+          ? { baseline: 'carried-from-v1' as const }
+          : {}),
+        ...(registryAmbiguous ? { registry_ambiguous: true as const } : {}),
       })
     } catch (manifestErr) {
       // Per-pack fallback: the manifest would not load, so report what can
@@ -1587,7 +1864,7 @@ export function listPacks(packsDir: string): PackInfo[] {
       } catch (corpusErr) {
         loadError = (corpusErr as Error).message
       }
-      const reg = registryMap.get(entry)
+      const reg = rowFor(entry, entry)
       result.push({
         name: entry,
         path: packDir,
@@ -1707,6 +1984,16 @@ export function sanitizePackEngrams(engrams: Engram[]): {
     const c = { ...e } as Record<string, unknown>
     if (c.pinned === true) { pinnedStripped++; changed = true }
     if ('pinned' in c) delete c.pinned
+    // The tier and priority travel WITH `pinned` and must go with it. They are
+    // inert while selection filters on `pinned === true`, but leaving a pack's
+    // `pinned_tier: 'hard'` and `pinned_priority: 9999` in the store means the
+    // next change that pins an engram for any other reason silently adopts a
+    // third party's claim on the hard tier — which is guaranteed injection and
+    // bypasses the per-pack and per-domain fairness caps. This function exists
+    // to clamp host-overriding fields; a field added beside `pinned` without
+    // being added here is the same enumerate-vs-serialize drift as #381/#389.
+    if ('pinned_tier' in c) { delete c.pinned_tier; changed = true }
+    if ('pinned_priority' in c) { delete c.pinned_priority; changed = true }
     if (c.commitment === 'locked') {
       c.commitment = 'decided'
       delete c.locked_at
@@ -2007,7 +2294,7 @@ export function exportPack(
   //
   // `metadata.provenance` is written BEFORE the integrity hash is computed, so
   // the declaration is inside the hash even though the records it points at are
-  // not (the §5.5 hash covers SKILL.md and engrams.yaml only). That is the most
+  // not (the §5.5 hash covers the manifest and engrams.yaml only). That is the most
   // a manifest can offer here: a reader learns the directory should be there
   // without probing, and learns it from bytes that cannot be altered without
   // breaking the pack's integrity value. It is still a producer's claim, so
@@ -2134,13 +2421,13 @@ export function exportPack(
   fs.writeFileSync(path.join(outputDir, 'engrams.yaml'), content)
 
   // Compute and write integrity hash
-  const integrity = computePackHash(outputDir)
-  fs.writeFileSync(path.join(outputDir, 'INTEGRITY'), `sha256:${integrity}\n`)
+  const integrity = computePackIntegrity(outputDir)
+  fs.writeFileSync(path.join(outputDir, 'INTEGRITY'), `${integrity}\n`)
 
   // Provenance (#972), written after the integrity hash so the pack record can
   // carry it.
   //
-  // The hash covers SKILL.md and engrams.yaml only, per the standard, so these
+  // The hash covers the manifest and engrams.yaml only, per the standard, so these
   // files are NOT covered by it. The dependency therefore runs the other way:
   // the record commits to the pack. Change the pack and the hash inside the
   // record stops matching.
@@ -2158,7 +2445,7 @@ export function exportPack(
         version: manifest.version,
         creator: manifest.creator,
         license: packLicense,
-        integrity: `sha256:${integrity}`,
+        integrity,
       },
       safeEngrams,
     )
@@ -2192,7 +2479,7 @@ export function exportPack(
     engram_count: safeEngrams.length,
     privacy: allPrivacy,
     match_terms: matchTerms,
-    integrity: `sha256:${integrity}`,
+    integrity,
     ...(shipsProvenance ? { provenance_files: provenanceFiles } : {}),
   }
 }
@@ -2232,19 +2519,22 @@ export interface IntegrityCheck {
  * together — nothing here is signed. Say that plainly wherever this is shown.
  */
 export function verifyPackIntegrity(packDir: string): IntegrityCheck {
-  const computed = `sha256:${computePackHash(packDir)}`
   const file = path.join(packDir, 'INTEGRITY')
 
   if (!fs.existsSync(file)) {
     return {
       status: 'absent',
-      computed,
+      computed: computePackIntegrity(packDir),
       note: 'This pack shipped no integrity value, so there was nothing to check it against.',
     }
   }
 
   const shipped = fs.readFileSync(file, 'utf8').trim()
-  if (shipped === computed) {
+  // Recompute in the version the pack shipped (§5.5): a v1 value from a pack
+  // built before `sha256:v2:` verifies exactly as it always did, and `computed`
+  // stays comparable with `shipped` when both are shown.
+  const computed = computePackIntegrityLike(shipped, packDir)
+  if (packIntegrityMatches(shipped, packDir)) {
     return {
       status: 'ok',
       shipped,
@@ -2265,30 +2555,306 @@ export function verifyPackIntegrity(packDir: string): IntegrityCheck {
 }
 
 /**
- * Compute SHA256 hash of pack contents per ENGRAM-STANDARD-v1.md §5.5:
- *   H = SHA256( bytes(SKILL.md) || bytes(engrams.yaml) )
- * Deterministic — same content always produces same hash; usable as a
- * content-addressable identifier (like a Swarm hash).
+ * The v1 pack hash (ENGRAM-STANDARD-v1.md §5.5, legacy form):
+ *   H1 = SHA256( bytes(SKILL.md) || bytes(engrams.yaml) )
+ * recorded as `sha256:<hex>`. Returns the bare hex.
  *
- * SKILL.md is the canonical pack manifest. `manifest.yaml` is deprecated (#325)
- * and does NOT contribute to the hash; installPack auto-upgrades a manifest.yaml
- * pack to SKILL.md before this is computed over the installed copy, so the
- * integrity hash always reflects SKILL.md + engrams.yaml.
+ * Kept so that every pack shipped and every registry row written before v2
+ * still verifies (`packIntegrityMatches`). Do NOT use it for new values: the
+ * concatenation is unframed, so it is not injective. Bytes moved across the
+ * file boundary keep the hash, a missing SKILL.md hashes like an empty one, and
+ * a deprecated `manifest.yaml` is not covered at all (formal verification run,
+ * spec/formal/findings/persistence.md candidate 10). New values are v2 —
+ * `computePackIntegrity`.
  */
 export function computePackHash(packDir: string): string {
+  return packHashV1FromParts(readPackIntegrityParts(packDir, ['SKILL.md', 'engrams.yaml']))
+}
+
+/** The parts the v2 hash covers, in the order it covers them (§5.5). */
+export const PACK_INTEGRITY_V2_PARTS = ['SKILL.md', 'manifest.yaml', 'engrams.yaml'] as const
+
+/**
+ * The raw bytes of each part a pack hash covers (`PACK_INTEGRITY_V2_PARTS`, a
+ * superset of the v1 parts), or `null` for a part that does not exist. Read
+ * once, so a v1 check and a v2 value can be computed from the same bytes.
+ */
+type PackIntegrityParts = Record<(typeof PACK_INTEGRITY_V2_PARTS)[number], Buffer | null>
+
+function readPackIntegrityParts(
+  packDir: string,
+  only: ReadonlyArray<(typeof PACK_INTEGRITY_V2_PARTS)[number]> = PACK_INTEGRITY_V2_PARTS,
+): PackIntegrityParts {
+  const parts = {} as PackIntegrityParts
+  for (const name of PACK_INTEGRITY_V2_PARTS) {
+    const p = path.join(packDir, name)
+    parts[name] = only.includes(name) && fs.existsSync(p) ? fs.readFileSync(p) : null
+  }
+  return parts
+}
+
+/** v1 over already-read parts: SKILL.md then engrams.yaml, unframed. Bare hex. */
+function packHashV1FromParts(parts: PackIntegrityParts): string {
   const hash = crypto.createHash('sha256')
-
-  // Hash the SKILL.md manifest. No manifest.yaml fallback.
-  const skillMd = path.join(packDir, 'SKILL.md')
-  if (fs.existsSync(skillMd)) {
-    hash.update(fs.readFileSync(skillMd))
-  }
-
-  // Hash engrams
-  const engramsPath = path.join(packDir, 'engrams.yaml')
-  if (fs.existsSync(engramsPath)) {
-    hash.update(fs.readFileSync(engramsPath))
-  }
-
+  // No manifest.yaml fallback.
+  if (parts['SKILL.md']) hash.update(parts['SKILL.md'])
+  if (parts['engrams.yaml']) hash.update(parts['engrams.yaml'])
   return hash.digest('hex')
+}
+
+/** v2 over already-read parts, as recorded: `sha256:v2:<hex>`. */
+function packIntegrityV2FromParts(parts: PackIntegrityParts): string {
+  const hash = crypto.createHash('sha256')
+  for (const name of PACK_INTEGRITY_V2_PARTS) {
+    const bytes = parts[name]
+    if (bytes) {
+      hash.update(`${name}\0${bytes.length}\0`)
+      hash.update(bytes)
+    } else {
+      hash.update(`${name}\0-\0`)
+    }
+  }
+  return `sha256:v2:${hash.digest('hex')}`
+}
+
+/**
+ * The v2 pack integrity value (ENGRAM-STANDARD-v1.md §5.5), as the string it is
+ * recorded as: `sha256:v2:<64 lowercase hex>`.
+ *
+ *   H2 = SHA256( part(SKILL.md) || part(manifest.yaml) || part(engrams.yaml) )
+ *   part(n) = n || 0x00 || decimal(byte length) || 0x00 || bytes   if the file exists
+ *           = n || 0x00 || "-" || 0x00                              if it does not
+ *
+ * Every part is named and length-prefixed, and an absent part is spelled
+ * differently from an empty one, so the input can be parsed back unambiguously:
+ * two packs with the same value have byte-identical parts. That is what makes
+ * it usable as a content-addressable identifier for a pack's hashed parts,
+ * which v1 (`computePackHash`) was documented as and was not.
+ *
+ * `provenance/` and `INTEGRITY` are not covered, as in v1. Raw file bytes; never
+ * re-serialize before hashing.
+ */
+export function computePackIntegrity(packDir: string): string {
+  return packIntegrityV2FromParts(readPackIntegrityParts(packDir))
+}
+
+const INTEGRITY_V1_RE = /^sha256:[0-9a-f]{64}$/
+const INTEGRITY_V2_RE = /^sha256:v2:[0-9a-f]{64}$/
+
+/**
+ * What `packDir` hashes to, in the same version as `recorded` — so a shipped or
+ * recorded v1 value is compared against a v1 recomputation, and anything else
+ * (v2, or a value in no known format) against v2.
+ */
+export function computePackIntegrityLike(recorded: string, packDir: string): string {
+  return INTEGRITY_V1_RE.test(recorded) ? `sha256:${computePackHash(packDir)}` : computePackIntegrity(packDir)
+}
+
+/**
+ * Does `packDir` match a recorded integrity value? Accepts v1 (`sha256:<hex>`,
+ * legacy) and v2 (`sha256:v2:<hex>`); any other format never matches.
+ */
+export function packIntegrityMatches(recorded: string, packDir: string): boolean {
+  if (!INTEGRITY_V1_RE.test(recorded) && !INTEGRITY_V2_RE.test(recorded)) return false
+  return computePackIntegrityLike(recorded, packDir) === recorded
+}
+
+// --- Migration: v1 -> v2 registry baselines ---
+
+export type PackIntegrityMigrationAction =
+  /**
+   * v1 row, pack verifies clean under v1: re-baselined to v2 (or would be, on a
+   * dry run). `baseline` says whether the pack was re-verified against its
+   * source or the v1 trust was only carried forward.
+   */
+  | 'migrated'
+  /** The row already carries v2. Nothing to do. */
+  | 'already-v2'
+  /**
+   * Left as v1. `reason` says why: the pack no longer matches its v1 value
+   * (`differs-from-v1`, it goes on reporting `modified`), or it matches v1 but
+   * not what installing its recorded source produces (`differs-from-source`,
+   * an edit v1 cannot see — or a source that has moved on since install).
+   */
+  | 'skipped-modified'
+  /** No registry row for this pack. No baseline is invented. */
+  | 'skipped-no-entry'
+  /** A legacy row (no `dir`) that another installed directory's manifest also names, or one marked `ambiguous` when such a pack was uninstalled (#1245): it could be either pack's baseline, so it is left alone. */
+  | 'skipped-ambiguous-legacy-row'
+  /** The pack's manifest could not be read, so it cannot be matched to a row. */
+  | 'skipped-unreadable'
+  /** The row's value is in no known format. Left as it is. */
+  | 'skipped-unknown-format'
+
+export interface PackIntegrityMigrationReport {
+  dry_run: boolean
+  /** How many rows were (or, on a dry run, would be) re-baselined to v2, carried ones included. */
+  migrated: number
+  /** Of `migrated`, how many were carried forward without re-verification. */
+  carried: number
+  packs: Array<{
+    /** Directory name under the packs directory. */
+    dir: string
+    /** Manifest name, when it could be read. */
+    name?: string
+    action: PackIntegrityMigrationAction
+    /** For `migrated`: how the new baseline was established. */
+    baseline?: 'source-verified' | 'carried-from-v1'
+    /** For `skipped-modified`: which comparison failed. */
+    reason?: 'differs-from-v1' | 'differs-from-source'
+    from?: string
+    to?: string
+  }>
+}
+
+/**
+ * The v2 value installing `source` would record today, or `null` when the
+ * source is not a local pack directory that can be read (a URL, a path that no
+ * longer exists, the installed directory itself, anything that fails to load).
+ *
+ * Only the three hashed parts are copied, into a temporary directory, and put
+ * through the same `normalizeStagedPack` install uses, so a source that install
+ * had to neutralize still reproduces the installed bytes.
+ */
+function expectedInstalledIntegrity(source: string | undefined, packDir: string): string | null {
+  if (!source || isPackUrl(source)) return null
+  const src = path.resolve(source)
+  if (src === path.resolve(packDir) || !isDirNow(src)) return null
+  let tmp: string | undefined
+  try {
+    const manifest = loadPack(src).manifest
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-pack-reverify-'))
+    for (const name of PACK_INTEGRITY_V2_PARTS) {
+      const from = path.join(src, name)
+      let st: fs.Stats
+      try { st = fs.lstatSync(from) } catch { continue } // absent part
+      if (!st.isFile()) return null // a link or special file: install would refuse it
+      fs.copyFileSync(from, path.join(tmp, name))
+    }
+    normalizeStagedPack(tmp, manifest)
+    return computePackIntegrity(tmp)
+  } catch {
+    return null
+  } finally {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Re-baseline installed packs' registry integrity from v1 to v2 (§5.5).
+ *
+ * A v1 match is NOT evidence that a pack is unchanged: v1 cannot see bytes
+ * moved across the SKILL.md / engrams.yaml boundary, nor a `manifest.yaml`
+ * added beside SKILL.md (audit of #1229, finding 1). So a row whose pack still
+ * matches v1 is handled in one of two ways:
+ *
+ *   - its recorded `source` is still a local pack directory: the pack is
+ *     re-verified against what installing that source produces, and
+ *     re-baselined only if it matches (`baseline: 'source-verified'`), else
+ *     left as v1 (`skipped-modified`, `reason: 'differs-from-source'`);
+ *   - otherwise the v2 value is recorded but marked
+ *     `integrity_carried_from: 'v1'` (`baseline: 'carried-from-v1'`), and
+ *     `listPacks` reports it as carried. It inherits v1's trust; it certifies
+ *     nothing.
+ *
+ * A pack that no longer matches its v1 value keeps it and goes on reporting
+ * `modified`. Nothing else in the row changes, and a pack's shipped
+ * `INTEGRITY` file is never touched (it is the producer's value, §5.5.1).
+ *
+ * Staging (`*.installing-*`) and displaced (`*.replacing-*`) directories and
+ * non-directories are skipped, and an entry that vanishes mid-walk is skipped
+ * rather than aborting the run. The hashing is done WITHOUT the registry lock;
+ * only a real run takes it, briefly, to write rows whose value is still the one
+ * it planned from. A dry run never takes it. Idempotent.
+ */
+export function migratePackIntegrity(
+  packsDir: string,
+  opts: { dryRun?: boolean } = {},
+): PackIntegrityMigrationReport {
+  const dryRun = opts.dryRun === true
+  const report: PackIntegrityMigrationReport = { dry_run: dryRun, migrated: 0, carried: 0, packs: [] }
+  if (!fs.existsSync(packsDir)) return report
+
+  const entries = loadRegistry(packsDir)
+  const plan: Array<{ dir: string; name: string; from: string; to: string; carried: boolean }> = []
+  for (const dir of fs.readdirSync(packsDir).sort()) {
+    if (isTransientPackDir(dir)) continue
+    const packDir = path.join(packsDir, dir)
+    if (!isDirNow(packDir)) continue
+    let name: string
+    try { name = loadPack(packDir).manifest.name } catch {
+      if (!fs.existsSync(packDir)) continue // removed mid-walk
+      report.packs.push({ dir, action: 'skipped-unreadable' })
+      continue
+    }
+    // By directory first, a legacy row (no `dir`) by manifest name — the same
+    // rule listPacks verifies with, so a pack is migrated against its own row.
+    // A legacy row that another directory's manifest also names could be
+    // either pack's baseline: leave it alone rather than guess.
+    const idx = findRegistryRowIndex(entries, dir, name)
+    const row = idx >= 0 ? entries[idx] : undefined
+    if (isAmbiguousLegacyRow(packsDir, dir, name, row, entries)) {
+      report.packs.push({ dir, name, action: 'skipped-ambiguous-legacy-row' })
+      continue
+    }
+    if (!row) { report.packs.push({ dir, name, action: 'skipped-no-entry' }); continue }
+    if (INTEGRITY_V2_RE.test(row.integrity)) { report.packs.push({ dir, name, action: 'already-v2' }); continue }
+    if (!INTEGRITY_V1_RE.test(row.integrity)) {
+      report.packs.push({ dir, name, action: 'skipped-unknown-format', from: row.integrity })
+      continue
+    }
+    // One read serves both the v1 check and the new v2 value. Reading twice
+    // would let an edit made between the reads become the new baseline of a
+    // row carried forward from v1, unreported (#1234).
+    const parts = readPackIntegrityParts(packDir)
+    if (`sha256:${packHashV1FromParts(parts)}` !== row.integrity) {
+      report.packs.push({ dir, name, action: 'skipped-modified', reason: 'differs-from-v1', from: row.integrity })
+      continue
+    }
+    const to = packIntegrityV2FromParts(parts)
+    const expected = expectedInstalledIntegrity(row.source, packDir)
+    if (expected !== null && expected !== to) {
+      report.packs.push({ dir, name, action: 'skipped-modified', reason: 'differs-from-source', from: row.integrity })
+      continue
+    }
+    const carried = expected === null
+    report.packs.push({
+      dir, name, action: 'migrated',
+      baseline: carried ? 'carried-from-v1' : 'source-verified',
+      from: row.integrity, to,
+    })
+    report.migrated++
+    if (carried) report.carried++
+    plan.push({ dir, name, from: row.integrity, to, carried })
+  }
+
+  if (!dryRun && plan.length > 0) {
+    withRegistryLock(packsDir, () => {
+      // Re-read under the lock: an install or uninstall may have landed since
+      // the plan was made. Only a row still holding the value planned from is
+      // rewritten; anything else was changed by somebody else and is theirs.
+      const current = loadRegistry(packsDir)
+      let changed = false
+      for (const step of plan) {
+        const i = findRegistryRowIndex(current, step.dir, step.name)
+        const row = i >= 0 ? current[i] : undefined
+        if (!row || row.integrity !== step.from) continue
+        row.integrity = step.to
+        if (step.carried) row.integrity_carried_from = 'v1'
+        else delete row.integrity_carried_from
+        changed = true
+      }
+      if (changed) saveRegistry(packsDir, current)
+    })
+  }
+  return report
+}
+
+/**
+ * A short form of a §5.5 value for display, long enough to tell packs apart:
+ * the form prefix (`sha256:v2:` or `sha256:`) and the first 12 hex digits.
+ */
+export function shortPackIntegrity(value: string): string {
+  const m = /^(sha256:(?:v2:)?)([0-9a-f]+)$/.exec(value)
+  return m ? `${m[1]}${m[2].slice(0, 12)}` : value.slice(0, 22)
 }

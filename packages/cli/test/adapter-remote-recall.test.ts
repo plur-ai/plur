@@ -123,11 +123,15 @@ describe('adapters reach PLUR Enterprise, gated on directory trust (#1198)', () 
       expect(hits.length).toBeGreaterThan(0)
     })
 
+    // Decision D1 (#1347): an untrusted .plur.yaml asks once instead of
+    // printing the refusal line. The question rides the first prompt, so
+    // Codex's SessionStart stays silent and codex inject carries it.
     it(`${a.name}: refuses, and says so, when the directory is not trusted`, async () => {
       const out = run(a.hook, a.input(repo))
       await new Promise(r => setTimeout(r, 1500))
       expect(hits).toHaveLength(0)
-      expect(out).toMatch(/Ignored remote memory settings|plur trust /)
+      if (a.hook === 'hook-codex-session-start') expect(out).not.toContain('PLUR Memory')
+      else expect(out).toMatch(/\.plur\.yaml is not trusted[\s\S]*--trusted --nonce/)
     })
   }
 })

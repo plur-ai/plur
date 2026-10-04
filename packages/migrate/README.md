@@ -58,8 +58,9 @@ both valid TypeScript, both shipped.
 
 ## Exit codes
 
-`0` clean, or all findings fixed. `2` when something needs a human — so it
-composes in CI.
+`0` clean, or all findings fixed by `--write`. `2` when un-awaited calls
+remain — sites that need a human, or, in report-only mode, fixable sites not
+yet written — so it composes in CI.
 
 ## Scope
 

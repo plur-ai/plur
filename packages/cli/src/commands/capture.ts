@@ -13,6 +13,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const arg = args[i]
     if (arg === '--agent' && i + 1 < args.length) { agent = args[++i]; i++ }
     else if (arg === '--session' && i + 1 < args.length) { session_id = args[++i]; i++ }
+    // `--` ends flag parsing: the next token is the summary, verbatim, even when
+    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
+    // itself became the summary.
+    else if (arg === '--') { if (!summary && i + 1 < args.length) summary = args[i + 1]; break }
     else if (!summary) { summary = arg; i++ }
     else { i++ }
   }

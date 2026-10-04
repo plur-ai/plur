@@ -2,7 +2,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
-import type { LicenseSource } from '@plur-ai/core'
+import { shortPackIntegrity, type LicenseSource } from '@plur-ai/core'
 
 /**
  * The four ways a licence can be arrived at (provenance profile §8.4), in the
@@ -59,13 +59,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       for (const p of packs) {
         const version = p.manifest?.version ?? 'unknown'
         const creator = p.manifest?.creator ? ` by ${p.manifest.creator}` : ''
-        const hash = p.integrity ? ` [${p.integrity.slice(0, 16)}]` : ''
+        const hash = p.integrity ? ` [${shortPackIntegrity(p.integrity)}]` : ''
         // 'unverified' used to print NOTHING, so a pack whose integrity baseline
         // had been destroyed looked identical to one that verified clean (#805,
         // F11). An unanswerable integrity question is reported as loudly as a
         // failed one — the two usually have the same cause.
         const integrityFlag = p.integrity_status === 'modified'
           ? ' ⚠️  MODIFIED — contents changed since install'
+          : p.registry_ambiguous
+            ? ` ⚠️  UNVERIFIED — its registry row could belong to another pack named "${p.name}"; reinstall this pack to give it its own`
           : p.integrity_status === 'unverified'
             ? ' ⚠️  UNVERIFIED — no registry entry, integrity cannot be checked'
             : ''
@@ -74,6 +76,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
           const date = p.installed_at.slice(0, 10)
           const source = p.source ? ` from ${p.source}` : ''
           outputText(`  Installed: ${date}${source}`)
+        }
+        if (p.baseline === 'carried-from-v1') {
+          // A carried baseline is not a verified v2 install, and must not read
+          // like one (audit of #1229, finding 1).
+          outputText('  Integrity: baseline carried from v1 — detects changes since the migration, '
+            + 'not edits v1 could not see before it. Reinstall from a trusted source to verify.')
         }
       }
     }
@@ -422,5 +430,50 @@ Use 'plur packs list' to see installed packs.`)
     return
   }
 
-  exit(1, `Unknown packs subcommand: "${subcommand}". Use: list, preview, install, uninstall, export`)
+  if (subcommand === 'migrate-integrity') {
+    // Re-baseline installed packs' registry integrity from v1 to sha256:v2:
+    // (ENGRAM-STANDARD-v1 §5.5). A DRY RUN unless --yes is given: the flag
+    // list is shared by every packs subcommand, and a mistyped flag must never
+    // turn a report into a write (#986).
+    const apply = args.includes('--yes')
+    const report = plur.migratePackIntegrity({ dryRun: !apply })
+    if (shouldOutputJson(flags)) {
+      outputJson(report)
+    } else {
+      for (const p of report.packs) {
+        const detail = p.baseline === 'carried-from-v1'
+          ? ' (carried from v1, not checked again against its source: its recorded source is not a local pack directory)'
+          : p.baseline === 'source-verified'
+            ? ' (re-verified against its recorded source)'
+            : p.reason === 'differs-from-source'
+              ? ' (matches its v1 value but not its recorded source)'
+              : p.reason === 'differs-from-v1'
+                ? ' (no longer matches its v1 value)'
+                : ''
+        outputText(`${p.dir}${p.name && p.name !== p.dir ? ` (${p.name})` : ''}: ${p.action}${detail}`)
+      }
+      outputText(report.dry_run
+        ? `Dry run: ${report.migrated} pack(s) would be re-baselined to sha256:v2:. Re-run with --yes to apply.`
+        : `${report.migrated} pack(s) re-baselined to sha256:v2:.`)
+      if (report.carried > 0) {
+        outputText(`${report.carried} of them ${report.dry_run ? 'would be' : 'were'} carried from v1 and not checked again against their source: `
+          + 'a v1 match cannot see bytes moved between SKILL.md and engrams.yaml, or an added manifest.yaml, '
+          + 'so the new value inherits v1\'s trust and certifies nothing. `plur packs list` marks them. '
+          + 'Reinstall them from a trusted source to get a verified baseline.')
+      }
+      if (report.packs.some(p => p.action === 'skipped-ambiguous-legacy-row')) {
+        outputText('Packs marked skipped-ambiguous-legacy-row share one registry row, written by an older PLUR, '
+          + 'with another installed pack of the same name, and nothing records which of them it belongs to. '
+          + 'Reinstall each of them from a trusted source: each then gets a row of its own, keyed by its directory.')
+      }
+      if (report.packs.some(p => p.action === 'skipped-modified')) {
+        outputText('Packs marked skipped-modified keep their v1 value: they no longer match it, or they match it '
+          + 'but differ from what their recorded source installs — re-hashing them would hide the change. '
+          + 'Reinstall them from a trusted source.')
+      }
+    }
+    return
+  }
+
+  exit(1, `Unknown packs subcommand: "${subcommand}". Use: list, preview, install, uninstall, export, migrate-integrity`)
 }

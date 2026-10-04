@@ -96,7 +96,12 @@ type Resolver = {
   _resolveUnscopedScope: (
     s: string,
     c?: { domain?: string; tags?: string[] },
-  ) => Promise<{ scope: string; routed: { scope: string; confidence: number; reason: string } | null }>
+  ) => Promise<{
+    scope: string
+    routed: { scope: string; confidence: number; reason: string } | null
+    // #1115: the shared candidate this decision declined to adopt, if any.
+    refusedShared: { scope: string; confidence: number; reason: string } | null
+  }>
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +109,7 @@ type Resolver = {
 // ---------------------------------------------------------------------------
 
 const SHARED_SCOPE = 'group:plur/core' // a SHARED, writable scope
+const PERSONAL_SCOPE = 'user:fuzz' // a PERSONAL, writable scope (#1115: the only kind an unscoped write may reach)
 const FALLBACK = 'global'              // schema default unscoped_default
 
 /** Domains spanning broad → specific, plus adversarial near-misses. */
@@ -276,30 +282,36 @@ describe('routing-fuzz — _resolveUnscopedScope no-over-route / no-under-route'
   const overRoutes: string[] = []
   const underRoutes: string[] = []
 
-  it('resolves every case per the independent oracle, with no over-route into the shared scope and no under-route of a forward match', async () => {
+  it('resolves every case per the independent oracle: never into the shared scope, and no under-route into a personal one', async () => {
     for (const c of cases) {
-      const store: Record<string, unknown> = c.readonly
-        ? { url: 'https://ro.example.com', token: 't', readonly: true, scope: SCOPE, description: 'S', covers: c.covers }
-        : { path: '/tmp/fuzz.yaml', scope: SCOPE, description: 'S', covers: c.covers }
-      const plur = makePlur({ stores: [store] }) as unknown as Resolver
-      const res = await plur._resolveUnscopedScope(c.domain ? STMT : STMT, { domain: c.domain, tags: c.tags })
+      const mkStore = (scope: string) => c.readonly
+        ? { url: 'https://ro.example.com', token: 't', readonly: true, scope, description: 'S', covers: c.covers }
+        : { path: '/tmp/fuzz.yaml', scope, description: 'S', covers: c.covers }
 
-      if (res.scope !== c.expect)
-        failures.push(`${c.label}: oracle=${c.expect} got=${res.scope} routed=${JSON.stringify(res.routed)}`)
+      // (1) SHARED target. Since #1115 an unscoped write must never land here,
+      // whatever the oracle would otherwise have said.
+      const sharedPlur = makePlur({ stores: [mkStore(SHARED_SCOPE)] }) as unknown as Resolver
+      const sharedRes = await sharedPlur._resolveUnscopedScope(STMT, { domain: c.domain, tags: c.tags })
+      if (sharedRes.scope === SHARED_SCOPE)
+        overRoutes.push(`${c.label}: landed in SHARED ${SHARED_SCOPE} (oracle=${c.expect})`)
+      // And a refusal is never silent: whenever the signals WOULD have routed,
+      // the decision must say which shared scope it declined.
+      if (c.expect === SCOPE && !c.readonly && !sharedRes.refusedShared)
+        failures.push(`${c.label}: shared candidate was passed over with no refusedShared marker`)
 
-      // SECURITY INVARIANT 1 — NO OVER-ROUTE. The shared scope is reached only
-      // when the oracle says so. Any reverse-only or sub-threshold signal landing
-      // in the shared scope is an over-route leak.
-      if (res.scope === SCOPE && c.expect !== SCOPE)
-        overRoutes.push(`${c.label}: landed in SHARED ${SCOPE} (oracle=${c.expect})`)
+      // (2) PERSONAL target. The oracle's original expectation still holds —
+      // this is what keeps the no-under-route invariant meaningful.
+      const personalPlur = makePlur({ stores: [mkStore(PERSONAL_SCOPE)] }) as unknown as Resolver
+      const personalRes = await personalPlur._resolveUnscopedScope(STMT, { domain: c.domain, tags: c.tags })
+      const expPersonal = c.expect === SCOPE ? PERSONAL_SCOPE : FALLBACK
+      if (personalRes.scope !== expPersonal)
+        failures.push(`${c.label}: oracle=${expPersonal} got=${personalRes.scope} routed=${JSON.stringify(personalRes.routed)}`)
+      if (expPersonal === PERSONAL_SCOPE && personalRes.scope !== PERSONAL_SCOPE)
+        underRoutes.push(`${c.label}: forward/threshold match did NOT route (got ${personalRes.scope})`)
 
-      // SECURITY INVARIANT 2 — NO UNDER-ROUTE of a clean forward match to a
-      // writable scope (a forward case that fell to fallback).
-      if (c.expect === SCOPE && res.scope !== SCOPE)
-        underRoutes.push(`${c.label}: forward/threshold match did NOT route (got ${res.scope})`)
-
-      // The shared scope is in fact shared (sanity on the predicate the guard uses).
-      expect(isSharedScope(SCOPE)).toBe(true)
+      // Sanity on the predicate the refusal and the guard both use.
+      expect(isSharedScope(SHARED_SCOPE)).toBe(true)
+      expect(isSharedScope(PERSONAL_SCOPE)).toBe(false)
     }
 
     expect(overRoutes, `OVER-ROUTE (leak) cases:\n${overRoutes.join('\n')}`).toEqual([])
@@ -322,17 +334,19 @@ describe('routing-fuzz — _resolveUnscopedScope no-over-route / no-under-route'
   })
 
   it('multi-candidate forward ties resolve deterministically and stay within a forward scope', async () => {
-    // Two shared scopes that both forward-match the domain. Winner must be one of
+    // Two PERSONAL scopes that both forward-match the domain (#1115: a shared one
+    // would be refused, which would test the refusal rather than the tie-break).
+    // Winner must be one of
     // them (never fallback — that would be an under-route) and deterministic.
     const plur = makePlur({
       stores: [
-        { path: '/tmp/b.yaml', scope: 'group:plur/b', description: 'B', covers: ['plur.*'] },
-        { path: '/tmp/a.yaml', scope: 'group:plur/a', description: 'A', covers: ['plur.core.*'] },
+        { path: '/tmp/b.yaml', scope: 'user:plur-b', description: 'B', covers: ['plur.*'] },
+        { path: '/tmp/a.yaml', scope: 'user:plur-a', description: 'A', covers: ['plur.core.*'] },
       ],
     }) as unknown as Resolver
     const r1 = await plur._resolveUnscopedScope(STMT, { domain: 'plur.core.security' })
     const r2 = await plur._resolveUnscopedScope(STMT, { domain: 'plur.core.security' })
     expect(r1.scope).toBe(r2.scope)                  // deterministic
-    expect(['group:plur/a', 'group:plur/b']).toContain(r1.scope) // forward, not fallback
+    expect(['user:plur-a', 'user:plur-b']).toContain(r1.scope) // forward, not fallback
   })
 })

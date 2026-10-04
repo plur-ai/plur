@@ -26,7 +26,14 @@ logger = logging.getLogger("plur_hermes.bridge")
 # demotion and unscoped auto-routing on the npx-fallback path. release.sh
 # rewrites this to the release version on every release (mirroring the pyproject
 # bump), and check_version_sync.py enforces pin >= the published @plur-ai/cli.
-_NPX_CLI_VERSION = "0.20.0"
+#
+# TODO(release): the first @plur-ai/cli after 0.20.1 is the first that honours
+# `--` (recall / inject / learn / capture / …). Until this pin reaches that
+# release, the npx fallback runs a CLI that reads `--` as the query: the bridge
+# therefore uses `--` ONLY for text that begins with "-" (every other query and
+# task keeps its pre-`--` argv), and sends learn/capture text on stdin. The bump
+# itself is release.sh's job (RELEASING.md), not a hand edit.
+_NPX_CLI_VERSION = "0.21.0"
 
 _DEFAULT_DEDUP_CACHE_SIZE = 256
 # TTL (seconds) on dedup-cache entries — the in-process half of #120.
@@ -153,7 +160,7 @@ class PlurLockError(PlurBridgeError):
     pass
 
 
-def _run_in_process_group(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
+def _run_in_process_group(cmd: list[str], timeout: int, input: str | None = None) -> subprocess.CompletedProcess:
     """subprocess.run(timeout=), but killing the whole process group.
 
     subprocess.run's timeout path calls Popen.kill() — SIGKILL to the DIRECT
@@ -174,15 +181,19 @@ def _run_in_process_group(cmd: list[str], timeout: int) -> subprocess.CompletedP
     Raises subprocess.TimeoutExpired exactly as subprocess.run would, so the
     retry layers above are unchanged.
     """
+    # `input` (formal Adapters #7): a statement that must not travel in argv
+    # is written to the child's stdin; `plur learn` reads it there when no
+    # positional statement is given. Without it, stdin stays inherited.
     with subprocess.Popen(
         cmd,
+        stdin=subprocess.PIPE if input is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
     ) as proc:
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(input=input, timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill_process_group(proc)
             # Reap, then re-raise so call()'s outer retry sees a normal timeout.
@@ -239,6 +250,18 @@ class PlurBridge:
         self._inject_timeout = int(os.environ.get("PLUR_BRIDGE_INJECT_TIMEOUT", str(_DEFAULT_INJECT_TIMEOUT)))
         self._retry_enabled = os.environ.get("PLUR_BRIDGE_RETRY", "true").lower() != "false"
 
+    @staticmethod
+    def _cache_key(normalized: str, scope: str | None) -> str:
+        """Dedup-cache key (formal R2 #5). Core's content-hash dedup is
+        scope-aware — the same statement in another scope is a new engram — so
+        the bridge's shortcut is keyed by the REQUESTED scope too. An unscoped
+        request keeps the bare statement as its key: its entry only ever comes
+        from a real learn, i.e. from core's own routing decision."""
+        return normalized if scope is None else f"{scope}\x1f{normalized}"
+
+    def _cache_clear(self) -> None:
+        self._dedup_cache.clear()
+
     def _cache_get(self, normalized: str) -> dict | None:
         if self._dedup_cache_size == 0 or not normalized:
             return None
@@ -294,20 +317,23 @@ class PlurBridge:
         raise PlurNotFoundError(_NOT_FOUND_MSG)
 
     def call(self, command: str, args: list[str] | None = None,
-             timeout: int | None = None, retries: int = _DEFAULT_RETRIES) -> dict[str, Any]:
+             timeout: int | None = None, retries: int = _DEFAULT_RETRIES,
+             stdin: str | None = None) -> dict[str, Any]:
         binary = self._find_binary()
         args = args or []
         effective_timeout = timeout if timeout is not None else self._timeout
         effective_retries = retries if self._retry_enabled else 0
 
+        # Global flags go straight after the command, before any argument
+        # (audit 1228-c): the CLI reads them anywhere before a `--` separator,
+        # and inserting `--path` before the first "--" in the argv split a
+        # flag from a VALUE that happened to be "--" (forget(search="--")).
+        head = ["--json"] + (["--path", self._plur_path] if self._plur_path else [])
         if binary.startswith("npx:"):
             package = binary.split(":", 1)[1]
-            cmd = ["npx", "-y", package, command, "--json"] + args
+            cmd = ["npx", "-y", package, command] + head + args
         else:
-            cmd = [binary, command, "--json"] + args
-
-        if self._plur_path:
-            cmd.extend(["--path", self._plur_path])
+            cmd = [binary, command] + head + args
 
         # Two-layer retry:
         #   OUTER (Miles's, slow 5/15/30s) — TimeoutExpired = hung CLI.
@@ -317,7 +343,7 @@ class PlurBridge:
         # Both honor `_retry_enabled` (PLUR_BRIDGE_RETRY=false disables everything).
         for timeout_attempt in range(effective_retries + 1):
             try:
-                return self._call_with_lock_retry(cmd, command, effective_timeout)
+                return self._call_with_lock_retry(cmd, command, effective_timeout, stdin)
             except subprocess.TimeoutExpired:
                 if timeout_attempt < effective_retries:
                     delay = _RETRY_DELAYS[min(timeout_attempt, len(_RETRY_DELAYS) - 1)]
@@ -335,7 +361,8 @@ class PlurBridge:
             except FileNotFoundError:
                 raise PlurNotFoundError(_NOT_FOUND_MSG)
 
-    def _call_with_lock_retry(self, cmd: list[str], command: str, timeout: int) -> dict[str, Any]:
+    def _call_with_lock_retry(self, cmd: list[str], command: str, timeout: int,
+                              stdin: str | None = None) -> dict[str, Any]:
         """Inner retry layer — handles PlurLockError (lock contention) with
         fast jittered backoff. Propagates TimeoutExpired and FileNotFoundError
         so the outer layer in call() can handle them.
@@ -344,7 +371,7 @@ class PlurBridge:
         """
         # First attempt — no delay, no log.
         try:
-            return self._invoke_cli(cmd, command, timeout)
+            return self._invoke_cli(cmd, command, timeout, stdin)
         except PlurLockError as e:
             if not self._retry_enabled:
                 raise
@@ -360,7 +387,7 @@ class PlurBridge:
             )
             time.sleep(delay)
             try:
-                result = self._invoke_cli(cmd, command, timeout)
+                result = self._invoke_cli(cmd, command, timeout, stdin)
                 logger.info("plur %s: succeeded on retry #%d", command, attempt)
                 return result
             except PlurLockError as e:
@@ -370,14 +397,16 @@ class PlurBridge:
         # above (not behind an assert so it remains valid under `python -O`).
         raise last_lock_error
 
-    def _invoke_cli(self, cmd: list[str], command: str, timeout: int) -> dict[str, Any]:
+    def _invoke_cli(self, cmd: list[str], command: str, timeout: int,
+                    stdin: str | None = None) -> dict[str, Any]:
         """Single CLI invocation. Returns the parsed response dict on success.
 
         Raises PlurLockError on lock contention (caught by _call_with_lock_retry).
         Lets subprocess.TimeoutExpired and FileNotFoundError propagate (caught
         by call()'s outer layer). All other CLI failures raise PlurBridgeError.
         """
-        result = _run_in_process_group(cmd, timeout)
+        result = (_run_in_process_group(cmd, timeout, input=stdin) if stdin is not None
+                  else _run_in_process_group(cmd, timeout))
 
         if result.returncode == 2:
             return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}
@@ -409,14 +438,20 @@ class PlurBridge:
               derived_from: str | None = None,
               force: bool = False) -> dict:
         needle = statement.strip().casefold()
+        key = self._cache_key(needle, scope) if needle else ""
 
         if not force:
-            cached = self._cache_get(needle)
+            cached = self._cache_get(key)
             if cached is not None:
                 return {**cached, "deduplicated": True}
-            existing = self._find_duplicate(statement)
+            # Scope-aware (formal R2 #5): a recall hit counts only when it is in
+            # the scope this write names. An UNSCOPED write goes to core, whose
+            # routing (auto-route / unscoped_default) picks the scope and whose
+            # own dedup is scope-aware — the bridge cannot know that scope, and
+            # a false dedup loses the write (a missed one costs a recurrence).
+            existing = self._find_duplicate(statement, scope) if scope is not None else None
             if existing is not None:
-                self._cache_put(needle, existing)
+                self._cache_put(key, existing)
                 return {**existing, "deduplicated": True}
 
         # Scope is OMITTED when the caller didn't specify one (#9): passing no
@@ -426,7 +461,15 @@ class PlurBridge:
         # Hard-coding --scope global here would bypass auto-route-to-team and
         # opt Hermes out of the 0.10.0 routing behavior. An explicit scope is
         # honored as-is.
-        args = [statement, "--type", type]
+        # A statement is data, not argv (formal Adapters #7). The CLI reads a
+        # leading `--name=value` token — or an exact flag such as `--json` —
+        # as a FLAG, and `plur learn` does not honour `--`, so a statement
+        # like "--dry-run=true is required" was refused ("Unrecognised
+        # flag") and "--path=/x …" re-pointed the store. When the statement
+        # could be read as a flag it goes on stdin, which `plur learn` reads
+        # when no positional is given; every other statement stays in argv.
+        via_stdin = statement.lstrip().startswith("-")
+        args = ([] if via_stdin else [statement]) + ["--type", type]
         if scope is not None:
             args.extend(["--scope", scope])
         if domain:
@@ -447,16 +490,27 @@ class PlurBridge:
             args.extend(["--abstract", abstract])
         if derived_from:
             args.extend(["--derived-from", derived_from])
-        result = self.call("learn", args)
+        result = self.call("learn", args, stdin=statement if via_stdin else None)
+        if result == _SAFE_RESPONSE:
+            # call() collapses an exhausted timeout into the read-path safe
+            # fallback. For a WRITE that reads as an empty success; say what
+            # happened instead — the CLI was killed, so whether the engram
+            # landed is unknown (formal Adapters #7).
+            return {**result, "timed_out": True,
+                    "warning": "plur learn timed out; it is unknown whether the engram was stored — "
+                               "recall it before re-learning."}
         if result.get("id"):
-            self._cache_put(needle, {
+            self._cache_put(key, {
                 "id": result["id"],
                 "statement": result.get("statement", statement),
             })
         return result
 
-    def _find_duplicate(self, statement: str) -> dict | None:
-        """Return existing engram if statement matches verbatim, else None.
+    def _find_duplicate(self, statement: str, scope: str | None = None) -> dict | None:
+        """Return existing engram if statement matches verbatim IN `scope`, else None.
+
+        A hit whose scope differs from (or does not report) the requested scope
+        is not a duplicate: core would store the statement there (formal R2 #5).
 
         Falls through silently on any recall failure so learn() never blocks
         on a bridge issue.
@@ -470,20 +524,35 @@ class PlurBridge:
             return None
         for engram in response.get("results", []) or []:
             existing_statement = (engram.get("statement") or "").strip().casefold()
-            if existing_statement and existing_statement == needle:
+            if existing_statement and existing_statement == needle \
+                    and (scope is None or engram.get("scope") == scope):
                 return {"id": engram.get("id"), "statement": engram.get("statement")}
         return None
 
     def recall(self, query: str, limit: int = 10, fast: bool = False) -> dict:
-        args = [query, "--limit", str(limit)]
+        # A query is data (formal R2 follow-up): one that begins with "-" could
+        # be read as a flag, so it travels after "--", which `plur recall`
+        # honours. Every other query keeps its argv shape.
+        flag_like = query.lstrip().startswith("-")
+        args = ([] if flag_like else [query]) + ["--limit", str(limit)]
         if fast:
             args.append("--fast")
+        if flag_like:
+            args += ["--", query]
         return self.call("recall", args)
 
     def inject(self, task: str, budget: int = 2000, fast: bool = True) -> dict:
-        args = [task, "--budget", str(budget)]
+        # The task is the user's message — data, not argv (audit 1228-c). One
+        # that begins with "-" ("--path=/x …") was read by the CLI's global
+        # parser: it re-pointed the store, or the CLI exited 1 and the turn had
+        # no memory. It travels after "--" (`plur inject` honours it since the
+        # release after 0.20.1); every other task keeps its argv shape.
+        flag_like = task.lstrip().startswith("-")
+        args = ([] if flag_like else [task]) + ["--budget", str(budget)]
         if fast:
             args.append("--fast")
+        if flag_like:
+            args += ["--", task]
         # Short timeout, no retries — inject runs on the pre-LLM blocking path.
         return self.call("inject", args, timeout=self._inject_timeout, retries=0)
 
@@ -509,6 +578,11 @@ class PlurBridge:
             args.extend(["--search", search])
         if reason:
             args.extend(["--reason", reason])
+        # A forget invalidates the dedup cache (formal R2 #5): a cached entry
+        # would otherwise report a retired engram as the live duplicate until
+        # its TTL runs out. Cleared before the call — a failed or timed-out
+        # forget may still have retired something.
+        self._cache_clear()
         return self.call("forget", args)
 
     def feedback(self, id: str | None = None, signal: str | None = None,
@@ -549,9 +623,13 @@ class PlurBridge:
         return self.call("ingest", args)
 
     def capture(self, summary: str, agent: str = "hermes", session: str | None = None) -> dict:
-        args = [summary, "--agent", agent]
+        # A summary that begins with "-" goes on stdin, which `plur capture`
+        # reads when argv carries none — on every CLI version, unlike "--"
+        # (audit 1228-c). Every other summary keeps its argv shape.
+        via_stdin = summary.lstrip().startswith("-")
+        args = ([] if via_stdin else [summary]) + ["--agent", agent]
         if session: args.extend(["--session", session])
-        return self.call("capture", args)
+        return self.call("capture", args, stdin=summary if via_stdin else None)
 
     def timeline(self, query: str | None = None, limit: int = 20) -> dict:
         args = ["--limit", str(limit)]

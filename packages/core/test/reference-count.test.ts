@@ -101,7 +101,9 @@ describe('reference-counted content-addressed dedup (#107)', () => {
       // universal applicability and merges into the existing engram with
       // recurrence_count++ instead of creating a duplicate.
       const a = await plur.learn('use 2-space indent', { scope: 'project:a' })
-      const b = await plur.learn('use 2-space indent', { scope: 'project:b' })
+      // A personal re-learn: since decision A1 (2026-09-29) a SHARED save
+      // (`project:b`) is credited, never absorbed, and writes its own engram.
+      const b = await plur.learn('use 2-space indent', { scope: 'user:b' })
       expect(b.id).toBe(a.id)                         // SAME engram, mutated
       expect(b.recurrence_count).toBe(1)              // 1st cross-scope hit
       expect(b.write_count).toBe(2)               // also bumped by recurrence path

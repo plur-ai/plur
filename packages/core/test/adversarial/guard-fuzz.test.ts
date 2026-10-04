@@ -260,19 +260,17 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
   // (forward domain match) into a SHARED scope must then be demoted by the
   // sensitivity guard — the guard runs AFTER _resolveUnscopedScope. Proves the
   // auto-route fix did not open a back-door around the leak guard.
-  it('auto-route into a shared scope is still demoted when the content is sensitive', async () => {
+  it('an EXPLICIT shared scope is still demoted when the content is sensitive', async () => {
     writeStoresConfig(dir, [
       { path: join(dir, 'team-store.yaml'), scope: SHARED_SCOPE, readonly: false, covers: ['plur'] },
       { url: REMOTE_URL, token: 'plur_sk_test', scope: REMOTE_SCOPE, readonly: false },
     ])
     const plur = new Plur({ path: dir })
-    // No explicit scope; domain forward-matches `covers:['plur']` → auto-route to
     // project:plur, then the public IP must force a demotion.
-    const e = await plur.learn(`deploy box is ${PUBLIC_IP}`, { domain: 'plur.infra', type: 'behavioral' }) as any
-    expect(e.scope, 'auto-routed shared scope must still demote').toBe('local')
+    const e = await plur.learn(`deploy box is ${PUBLIC_IP}`, { scope: SHARED_SCOPE, domain: 'plur.infra', type: 'behavioral' }) as any
+    expect(e.scope, 'explicit shared scope must still demote').toBe('local')
     expect(e.visibility).toBe('private')
-    expect(e.structured_data?._routed?.scope).toBe(SHARED_SCOPE) // it DID auto-route
-    expect(e.structured_data?._demoted?.from).toBe(SHARED_SCOPE) // and was then demoted
+    expect(e.structured_data?._demoted?.from).toBe(SHARED_SCOPE)
     expect((await readSharedStore(dir)).length).toBe(0)
   })
 

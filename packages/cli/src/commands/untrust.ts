@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { parseTrustArgs } from './trust.js'
 
 /**
  * `plur untrust [dir]` — revoke a directory trust grant made by `plur trust`.
@@ -17,9 +18,20 @@ import { shouldOutputJson, outputJson, outputText } from '../output.js'
  * revokes it, instead of silently doing nothing while claiming success.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  const parsed = parseTrustArgs(args)
+  if (!parsed) return exit(1, 'Usage: plur untrust [dir]')
+  const dir = parsed.dir || process.cwd()
+  // No terminal-or-nonce gate (#1477 review): a revocation only removes
+  // trust, and scripts and runbooks that revoke must keep working. Only the
+  // grant (`plur trust`) is gated. A `--nonce` is accepted and ignored — it
+  // is neither checked nor consumed — so a caller that passes one still works.
   const plur = createPlur(flags)
-  const dir = args[0] || process.cwd()
-  const removed = plur.untrustDirectory(dir)
+  let removed: boolean
+  try {
+    removed = plur.untrustDirectory(dir)
+  } catch (err) {
+    return exit(1, (err as Error).message)
+  }
 
   if (removed) {
     if (shouldOutputJson(flags)) {

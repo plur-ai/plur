@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, existsSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { isPlurConfigured } from '../src/lib/plur-configured.js'
+import { isPlurConfigured, canonicalize } from '../src/lib/plur-configured.js'
+import { canonicalize as coreCanonicalize } from '@plur-ai/core'
 
 describe('isPlurConfigured', () => {
   let root: string
@@ -147,5 +148,42 @@ describe('isPlurConfigured — Cursor', () => {
     )
     expect(isPlurConfigured(dir)).toBe(false)
     rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+/**
+ * The CLI keeps its own copy of core's `canonicalize` (no core import in the
+ * lightweight hooks). The two must agree (#1357): the same symlink, missing
+ * path and letter-case handling.
+ */
+describe('canonicalize matches core', () => {
+  let base: string
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'plur-canon-parity-'))
+    mkdirSync(join(base, 'Real', 'Inner'), { recursive: true })
+    symlinkSync(join(base, 'Real'), join(base, 'link'))
+    writeFileSync(join(base, 'Real', 'Inner', 'engrams.yaml'), '')
+  })
+
+  afterEach(() => { rmSync(base, { recursive: true, force: true }) })
+
+  it('for existing, missing, symlinked and case-variant paths', () => {
+    const cases = [
+      base,
+      join(base, 'Real', 'Inner', 'engrams.yaml'),
+      join(base, 'link', 'Inner', 'engrams.yaml'),
+      join(base, 'link', 'missing', 'deeper', 'engrams.yaml'),
+      join(base, 'link', 'gone', '..', 'Inner'),
+      join(base, 'real', 'inner', 'engrams.yaml'),
+      join(base, 'REAL', 'inner', 'missing.yaml'),
+      join('relative', 'path'),
+    ]
+    for (const c of cases) expect(canonicalize(c), c).toBe(coreCanonicalize(c))
+  })
+
+  it('folds letter case like core on a case-insensitive filesystem', ({ skip }) => {
+    if (!existsSync(join(base, 'real'))) skip()
+    expect(canonicalize(join(base, 'real', 'inner'))).toBe(join(realpathSync(base), 'Real', 'Inner'))
   })
 })

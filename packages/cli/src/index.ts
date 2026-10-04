@@ -1,6 +1,7 @@
 import { shouldOutputJson, outputJson, setQuiet, exit } from './output.js'
 import { parseGlobalFlags, createPlur } from './plur.js'
 import { unknownFlagMessage } from './known-flags.js'
+import { exitWhenStoreIdle } from './lib/store-lock-exit.js'
 
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
@@ -9,13 +10,29 @@ import { CLI_VERSION as VERSION } from './version.js'
 
 // --- Main ---
 const argv = process.argv.slice(2)
+// `--` ends option parsing (formal verification S4, 2026-09-26): a statement
+// such as `plur learn -- "--help"` is data, not a request for help.
+const sep = argv.indexOf('--')
+const options = sep === -1 ? argv : argv.slice(0, sep)
 
-if (argv.includes('--version') || argv.includes('-v')) {
+// Hook probe (decision H3's Windows CI job): with PLUR_HOOK_PROBE set to a
+// file path, a hook-* invocation appends its subcommand to that file and
+// exits 0 without running. The job runs every hook string `plur init`
+// generated through bash, pwsh and cmd, and this proves each one reached
+// the CLI with the right subcommand. Unset (always, outside that job), it
+// does nothing.
+if (process.env.PLUR_HOOK_PROBE && /^hook-/.test(argv[0] ?? '')) {
+  const { appendFileSync } = await import('fs')
+  appendFileSync(process.env.PLUR_HOOK_PROBE, `${argv[0]}\n`)
+  process.exit(0)
+}
+
+if (options.includes('--version') || options.includes('-v')) {
   console.log(VERSION)
   process.exit(0)
 }
 
-if (argv.includes('--help') || argv.includes('-h') || argv.length === 0) {
+if (options.includes('--help') || options.includes('-h') || argv.length === 0) {
   console.log(`plur v${VERSION} — persistent memory for AI agents
 
 Usage: plur <command> [options]
@@ -45,6 +62,7 @@ Commands:
   packs list              List installed packs
   packs install <source>  Install engram pack (--force: accept an integrity mismatch)
   packs export <name>     Export engrams as a pack
+  packs migrate-integrity Re-baseline installed packs to sha256:v2: (dry run; --yes applies)
   similarity-search <q>   Search by cosine similarity with scores
   promote <id>            Promote an engram to active
   rescope <id...> --to <scope>  Move engram(s) to another scope (#676)
@@ -52,8 +70,15 @@ Commands:
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
-  trust [dir]             Trust a directory's .plur.yaml scope/domain (default: cwd) [--list]
-  untrust [dir]           Revoke a directory's trust grant (default: cwd)
+  stores add --url <u>    Add a remote store (verified; --scope, --token-env)
+  stores prune            Remove config.yaml store entries that name the primary store file (#1356)
+  remote                  Show this folder's team-store connection and check it (#1413)
+  remote --url <u> --token <t> --scope <s>
+                          Connect this folder to a team store (verified; [--scopes a,b])
+  folders list            Your per-folder decisions (~/.plur/folders.yaml, #1347)
+  folders repair [--yes]  Fix a broken folders.yaml: shows the change, asks, keeps a backup (#1526)
+  folders set <folder>    --scope <s> | --on | --off | --ask  [--trusted|--no-trusted] [--nonce <n>]
+  folders rm <folder>     Remove a folder's entry
   scopes                  List authorized-but-unregistered shared scopes (#647)
   scopes register <scope> Register one; scopes dismiss <scope>; scopes --reoffer
   outbox                  Show team-scoped writes queued for an unreachable store
@@ -61,7 +86,6 @@ Commands:
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
-  init-remote             Opt this project into recall from a PLUR Enterprise server
   login --status          Enterprise token validity per host (probe + expiry) (#587)
   doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
@@ -75,12 +99,14 @@ Commands:
   hook-session-end        (internal) SessionEnd hook — auto-close memory lifecycle
   hook-session-mark       (internal) Hook handler for session sentinel
   hook-session-remind     (internal) Hook handler for session start reminder
+  hook-session-resume     (internal) SessionStart(resume) hook: re-ask the folder question
   hook-correction-detect  (internal) UserPromptSubmit hook — detect corrections
   hook-revert-detect      (internal) PostToolUse hook — detect revert operations
   hook-cursor-session-start (internal) Cursor sessionStart hook handler
   hook-cursor-guard      (internal) Cursor preToolUse hook handler
   hook-cursor-post-tool  (internal) Cursor postToolUse hook handler
   hook-cursor-stop       (internal) Cursor stop hook handler
+  hook-auto-rate <editor> (internal) End-of-turn hook — rate injected engrams from the reply
   hook-codex-session-start (internal) Codex SessionStart hook handler
   hook-codex-inject      (internal) Codex UserPromptSubmit hook handler
   hook-codex-guard       (internal) Codex PreToolUse hook handler
@@ -109,8 +135,16 @@ if (flagError) exit(1, flagError)
 // hook-* commands are unaffected: their stdout is protocol JSON written
 // directly, never through outputInfo.
 setQuiet(flags.quiet === true)
+// `plur -- learn x`: `--` ends option parsing, so what follows it is data —
+// including the word that would have been the command. Say where it goes
+// instead of reporting "Unknown command: --" (audit 1228-c #3).
+if (args[0] === '--') {
+  exit(1, args[1]
+    ? `\`--\` goes after the command, not before it: plur ${args[1]} -- <value>`
+    : "`--` goes after the command, not before it: plur <command> -- <value>. Run 'plur --help' for usage.")
+}
 const command = args[0]
-const commandArgs = args.slice(1)
+const commandArgs = separatedArgs(command, args.slice(1))
 
 const COMMANDS: Record<string, string> = {
   learn: './commands/learn.js',
@@ -139,14 +173,20 @@ const COMMANDS: Record<string, string> = {
   rescope: './commands/rescope.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
+  remote: './commands/remote.js',
+  // Hidden from --help (#1413, design r3): trust is granted by the ask flow,
+  // `plur folders set <dir> --trusted` or the trust.yaml import. Both keep
+  // working so existing scripts and runbooks do.
   trust: './commands/trust.js',
   untrust: './commands/untrust.js',
+  folders: './commands/folders.js',
   scopes: './commands/scopes.js',
   outbox: './commands/outbox.js',
   'reindex-tokens': './commands/reindex-tokens.js',
   'reindex-hashes': './commands/reindex-hashes.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',
+  // Hidden alias of `remote` (#1413); `--verify` is bare `plur remote`.
   'init-remote': './commands/init-remote.js',
   // `login` is registered for `--status` (#587: token validity per host). The
   // OAuth device flow itself (#532) stays GATED INSIDE the command — it is
@@ -165,12 +205,14 @@ const COMMANDS: Record<string, string> = {
   'hook-session-end': './commands/hook-session-end.js',
   'hook-session-mark': './commands/hook-session-mark.js',
   'hook-session-remind': './commands/hook-session-remind.js',
+  'hook-session-resume': './commands/hook-session-resume.js',
   'hook-correction-detect': './commands/hook-correction-detect.js',
   'hook-revert-detect': './commands/hook-revert-detect.js',
   'hook-cursor-session-start': './commands/hook-cursor-session-start.js',
   'hook-cursor-guard': './commands/hook-cursor-guard.js',
   'hook-cursor-post-tool': './commands/hook-cursor-post-tool.js',
   'hook-cursor-stop': './commands/hook-cursor-stop.js',
+  'hook-auto-rate': './commands/hook-auto-rate.js',
   'hook-codex-session-start': './commands/hook-codex-session-start.js',
   'hook-codex-inject': './commands/hook-codex-inject.js',
   'hook-codex-guard': './commands/hook-codex-guard.js',
@@ -200,6 +242,31 @@ async function drainPendingIndexWork(): Promise<void> {
   } catch { /* derived index — never fail a command over it */ }
 }
 
+/**
+ * `--` for the commands that do not parse it themselves (audit 1228-c #3).
+ *
+ * The global parser passes `--` through so a command can see where values
+ * start. Eight commands read it (below); every other one took `--` as its
+ * first positional — `plur trust -- <dir>` trusted a directory named `--`,
+ * `plur feedback -- <id> positive` looked up the id `--`. For those the
+ * separator is dropped and the values after it stay positional. They parse
+ * any `-…` token as one of their own flags, so a value that begins with `-`
+ * after `--` is refused rather than silently read as a flag.
+ */
+function separatedArgs(cmd: string | undefined, rest: string[]): string[] {
+  const SEPARATOR_AWARE = new Set([
+    'learn', 'recall', 'inject', 'forget', 'capture', 'timeline', 'similarity-search', 'ingest',
+  ])
+  const at = rest.indexOf('--')
+  if (!cmd || at === -1 || SEPARATOR_AWARE.has(cmd) || cmd.startsWith('hook-')) return rest
+  const values = rest.slice(at + 1)
+  const dashed = values.find(v => v.startsWith('-'))
+  if (dashed !== undefined) {
+    exit(1, `plur ${cmd} cannot take a value that begins with "-" (got ${JSON.stringify(dashed)}), even after \`--\`.`)
+  }
+  return [...rest.slice(0, at), ...values]
+}
+
 if (!command || !COMMANDS[command]) {
   exit(1, `Unknown command: ${command}. Run 'plur --help' for usage.`)
 }
@@ -224,6 +291,22 @@ try {
   // isn't, the fingerprint guard makes an unchanged YAML nearly free.
   await drainPendingIndexWork()
 } catch (err: any) {
+  // Hook commands never print errors to stdout (owner decision H1, formal
+  // field report cluster 5). An editor parses a hook's stdout as its result
+  // and shows a non-zero exit as a hook error, so an `{"error"}` document
+  // there — e.g. from an injection that threw after the watchdog had stopped
+  // the run — breaks the turn instead of failing open. Stderr, exit 0.
+  // Every other command keeps its error document and exit 1.
+  //
+  // The exit goes through exitWhenStoreIdle (#1349): the throw can arrive
+  // while a store write of this process is still in flight (the hybrid search
+  // a hook abandoned at its deadline records its injection under
+  // `engrams.yaml.lock`), and exiting there leaves that lock behind for every
+  // later writer. Bounded, and immediate when the store is idle.
+  if (command.startsWith('hook-')) {
+    process.stderr.write(`[plur] ${command} failed: ${err?.message ?? 'unknown error'}\n`)
+    await exitWhenStoreIdle()
+  }
   if (shouldOutputJson(flags)) {
     outputJson({ error: err.message })
   } else {

@@ -45,6 +45,7 @@
  * deterministic bypass lives in the caller, not in this ranker.
  */
 import type { ScopeMetadata } from './schemas/scope-metadata.js'
+import { isSharedScope } from './scope-util.js'
 
 /** Below this confidence a scope is not a confident home for an engram. Exported
  * for Stage 3b to gate auto-routing on; NOT applied to ranking here — the ranker
@@ -377,4 +378,124 @@ export function rankScopes(
   // (NaN > 0 is false) with no error (#670 review).
   const min = options?.minConfidence ?? 0
   return Number.isFinite(min) && min > 0 ? candidates.filter(c => c.confidence >= min) : candidates
+}
+
+/**
+ * What an unscoped write decided to do — and the SAME function the suggestion
+ * surface uses to report what such a write WOULD do (#1115).
+ *
+ * Before this existed, two code paths answered "where does an unscoped write
+ * go?" differently. The write path took `candidates[0]` and applied a
+ * deterministic forward-domain bypass; `plur_suggest_scope` ranked with all
+ * three channels and floored the list for display. A user could consult the
+ * suggestion tool, write without a scope, and land somewhere else. One
+ * function, used by both, is the structural fix: they cannot drift because
+ * there is only one decision.
+ *
+ * The other half of #1115 is the leak this closes. An unscoped write whose
+ * domain prefix happened to match a SHARED scope's `covers` was routed into
+ * that team store and pushed to its remote, announced only by an `info` string
+ * in the tool result. Local cleanup could not undo it. A shared candidate is
+ * now REFUSED: auto-routing survives for personal-family scopes, where a wrong
+ * guess costs nothing that a `plur_rescope` cannot fix, and promotion into a
+ * team store becomes something a human asks for.
+ *
+ * A refused shared candidate does not stop the search. The next eligible
+ * non-shared candidate still wins, so a user whose personal `user:*` scope
+ * declares `covers` keeps the routing they had — unless that personal scope is
+ * backed by a URL store and is not the user's own `/me` namespace (decision
+ * E1, `refuseScope`): server-declared covers for another namespace never
+ * route, and it is refused and reported like a shared scope. `refusedShared` reports the
+ * highest-ranked shared candidate that was passed over either way, so the
+ * caller can say what it declined to do rather than silently doing less.
+ */
+/**
+ * Who chose a write's scope (#1221).
+ *
+ * A server receiving a write sees only a scope string, so a scope the user
+ * typed and one the router picked from `covers` arrive identical. That is why
+ * a server-side mirror of #1115 could not be built: the only mitigation that
+ * does not punish deliberate writes needs to tell the two apart.
+ *
+ * - `explicit` — named on the call itself.
+ * - `session`  — a session or `.plur.yaml` scope was in effect. A standing
+ *   human choice, not stated on this call.
+ * - `default`  — nothing named it; the unscoped default applied.
+ * - `routed`   — the router chose it from `covers`. The only value that means
+ *   no human picked this destination.
+ */
+export type ScopeSource = 'explicit' | 'session' | 'default' | 'routed'
+
+export interface AutoRouteDecision {
+  /**
+   * `route` — write to `scope`.
+   * `refuse-shared` — the only eligible candidates were shared; the caller
+   *   falls back to its unscoped default.
+   * `no-match` — nothing cleared the gate at all.
+   */
+  action: 'route' | 'refuse-shared' | 'no-match'
+  /** The scope to write to, or null when the caller should use its own default. */
+  scope: string | null
+  /** The candidate that decided the outcome — the one routed to, or the one refused. */
+  candidate: ScopeCandidate | null
+  /** The highest-ranked SHARED candidate that was passed over, when there was one. */
+  refusedShared: ScopeCandidate | null
+}
+
+export interface DecideAutoRouteOptions {
+  /** Confidence gate for non-forward-domain candidates. Default SCOPE_MATCH_THRESHOLD. */
+  matchThreshold?: number
+  /**
+   * Opt in to routing an unscoped write into a shared scope. Default false
+   * (#1115). Exists so an install that genuinely wants covers-driven team
+   * routing can have it, deliberately and in writing, rather than by accident.
+   */
+  allowSharedScope?: boolean
+  /**
+   * Decision E1 "me-only" (2026-09-26): refuse a NON-shared candidate exactly
+   * like a shared one — same `refuse-shared` action, same `refusedShared`
+   * report. The write path passes "backed by a URL store AND not the user's
+   * own `/me` namespace (or that identity is unknown)", so an unscoped write
+   * reaches a remote personal scope only when it is the user's own. Applies
+   * whatever `allowSharedScope` says: that opt-in governs shared scopes only.
+   */
+  refuseScope?: (scope: string) => boolean
+}
+
+/**
+ * Pick the auto-route target from a ranked candidate list.
+ *
+ * Eligibility per candidate is unchanged from the behaviour this replaces: a
+ * FORWARD domain match (`coverContainsDomain` — the scope's coverage contains
+ * the engram's topic) routes deterministically, bypassing the confidence gate,
+ * because it is the strongest and most deliberate signal; everything else —
+ * a reverse domain match, tags only, keywords only — must clear
+ * `matchThreshold`. What changed is that a shared scope can no longer be the
+ * answer unless the caller opted in.
+ */
+export function decideAutoRoute(
+  candidates: ScopeCandidate[],
+  options: DecideAutoRouteOptions = {},
+): AutoRouteDecision {
+  const threshold = options.matchThreshold ?? SCOPE_MATCH_THRESHOLD
+  const allowShared = options.allowSharedScope === true
+  let refusedShared: ScopeCandidate | null = null
+  let firstEligible: ScopeCandidate | null = null
+
+  for (const candidate of candidates) {
+    // The deterministic forward-domain bypass, then the threshold gate.
+    if (!candidate.coverContainsDomain && !(candidate.confidence >= threshold)) continue
+    if (!firstEligible) firstEligible = candidate
+    const shared = isSharedScope(candidate.scope)
+    if ((!allowShared && shared) || (!shared && options.refuseScope?.(candidate.scope) === true)) {
+      if (!refusedShared) refusedShared = candidate
+      continue
+    }
+    return { action: 'route', scope: candidate.scope, candidate, refusedShared }
+  }
+
+  if (refusedShared) {
+    return { action: 'refuse-shared', scope: null, candidate: refusedShared, refusedShared }
+  }
+  return { action: 'no-match', scope: null, candidate: firstEligible, refusedShared: null }
 }

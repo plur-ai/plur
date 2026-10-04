@@ -1,4 +1,14 @@
-import { Plur, renderMemoryBlock, readProjectConfigFromPath, findProjectConfigPath } from '@plur-ai/core'
+import {
+  Plur,
+  renderMemoryBlock,
+  readProjectConfigFromPath,
+  findProjectConfigPath,
+  resolveProjectRemoteFromConfig,
+  folderAskOnce,
+  sessionSettings,
+  type FolderPolicy,
+  type ProjectRemote,
+} from '@plur-ai/core'
 // Type-only: the host contract is untyped at runtime — `@opencode-ai/plugin`
 // is an optional peerDependency and this import must never become a runtime
 // require. Typechecking the hook map against it turns a renamed/changed
@@ -9,13 +19,26 @@ import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
 import { OPENCODE_PLUGIN_VERSION } from './version.js'
-import { resolveScopeRoot, resolveTrustedScope } from './scope.js'
+import { resolveScopeRoot, resolveFolderDir, resolveTrustedScope, projectRemoteRefusalNotice, folderPolicy } from './scope.js'
+import { INJECT_TIMEOUT_MS } from './timeout.js'
+import { folderAskReminder, plurOnPath, PLUR_CLI_MISSING } from './ask.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
 // Unconditional — unlike `log` above. A `.plur.yaml` scope the plugin refuses
 // to adopt (untrusted directory, D2) is exactly the kind of thing a user
 // needs to see without having to already know to set PLUR_DEBUG=1 first.
 const warn = (msg: string) => { console.error(`[plur:opencode] warning: ${msg}`) }
+
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const t = new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })
+  return Promise.race([p, t]).finally(() => { if (timer) clearTimeout(timer) })
+}
+const TIMED_OUT = Symbol('timed-out')
+
+/** Turns after the question that still carry its commands (re-audit R4 of #1517). */
+const REMINDER_TURNS = 1
 
 /** Never let a memory failure break the agent's turn. */
 async function safe(label: string, fn: () => Promise<void>): Promise<void> {
@@ -24,6 +47,9 @@ async function safe(label: string, fn: () => Promise<void>): Promise<void> {
 
 export const PlurPlugin: Plugin = async (ctx) => {
   const scopeRoot = resolveScopeRoot(ctx ?? {})
+  // The folder-map decision, the folder asked about and the .plur.yaml read
+  // are all for the folder opencode is open in (audit F1 of #1517).
+  const folderDir = resolveFolderDir(ctx ?? {})
   // `_plur` is a test-only injection seam, not part of the host contract —
   // narrowly typed here rather than widening `ctx` itself.
   //
@@ -39,7 +65,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
   // cwd-derived disk side effect that writes the user's global config as a
   // side effect of merely being loaded.
   //
-  // Everything through `projectConfig` below is wrapped (D7, 2026-09 audit):
+  // The construction below is wrapped (D7, 2026-09 audit):
   // this whole block sits BEFORE the plugin has returned its hook map, so
   // there is no `safe()` wrapper reachable yet, and `new Plur()` can throw
   // (e.g. a hostile `.plur.yaml` naming a scope that collides with one the
@@ -47,31 +73,112 @@ export const PlurPlugin: Plugin = async (ctx) => {
   // factory's promise, which fails opencode's PLUGIN LOAD, not just memory —
   // the whole host degrades because its memory layer couldn't build. Catch
   // it and return an all-no-op hook map instead: no memory this session,
-  // but the agent's turn is never at risk.
+  // but the agent's turn is never at risk. The folder decision and the
+  // `.plur.yaml` read are no longer done here: they run per turn in
+  // `folderState()`, inside each hook's `safe()` (#1347).
   let plur: Plur
-  let projectConfig: ReturnType<typeof resolveTrustedScope>
   try {
     plur = (ctx as { _plur?: Plur })?._plur
       ?? new Plur({ path: process.env.PLUR_PATH, cwd: scopeRoot, autoDiscover: false })
-    // E5 (2026-09 audit): resolve the path ONCE and read from that resolved
-    // path, rather than `readProjectConfig(scopeRoot)` +
-    // `findProjectConfigPath(scopeRoot)` as two independent filesystem
-    // walks that were then assumed to refer to the same file — a TOCTOU
-    // between the file trust is checked against and the file whose
-    // scope/domain actually get adopted.
-    const configPath = findProjectConfigPath(scopeRoot)
-    const rawProjectConfig = readProjectConfigFromPath(configPath)
-    projectConfig = resolveTrustedScope(plur, rawProjectConfig, configPath, warn)
   } catch (err) {
     warn(`memory layer failed to initialize — running this session with no memory: ${(err as Error).message}`)
     return {} satisfies Hooks
   }
   log(`scope root: ${scopeRoot}`)
-  if (projectConfig.scope) log(`project scope: ${projectConfig.scope}`)
-  if (projectConfig.domain) log(`project domain: ${projectConfig.domain}`)
+
+  // Warnings about the repo's own settings are printed once per plugin
+  // instance, and only in a folder that is `on`: an `off` folder is silent,
+  // and an `ask` folder's question already says what the repo requests.
+  const warnedOnce = new Set<string>()
+  const warnOnce = (msg: string) => { if (!warnedOnce.has(msg)) { warnedOnce.add(msg); warn(msg) } }
+
+  /**
+   * What this session does in its folder, resolved per turn so a decision
+   * made mid-session (the user answering the folder question with
+   * `plur folders set`) applies from the next prompt (#1347):
+   *
+   *  - `off` → nothing: no recall, no question, no learning;
+   *  - `ask` → no memories; the first turn of each session carries the one
+   *    question, the next one a reminder, then nothing (`chat.message`);
+   *  - `on`  → the session scope is the map's scope, else a TRUSTED
+   *    `.plur.yaml`'s (the resolver decides both; a map scope beats the
+   *    hint). That scope is also what makes core dial the team store.
+   *
+   * The `.plur.yaml` is read once here, from one resolved path (E5,
+   * 2026-09 audit): its REMOTE settings (#1207) go through core's gate, the
+   * one every adapter passes (#1196/#1198), and its domain is adopted only
+   * when the policy came from that file and its directory is trusted — both
+   * checked against this same read, so the file trust is checked against is
+   * the file whose fields are adopted.
+   */
+  function folderState(): { policy: FolderPolicy; settings: { scope?: string; domain?: string }; remote: ProjectRemote | null } {
+    const policy = folderPolicy(plur, folderDir, warnOnce)
+    if (policy.mode !== 'on') return { policy, settings: {}, remote: null }
+    const configPath = findProjectConfigPath(folderDir)
+    const raw = readProjectConfigFromPath(configPath)
+    // The `.plur.yaml` hints, trust-checked against this read (D2); warns
+    // once when they are ignored because the map decided for an untrusted
+    // repo. The scope is the resolver's (map scope, else the trusted hint);
+    // the domain is the trusted hint's, and only when the policy came from
+    // that `.plur.yaml` — the CLI hooks' rule (sessionSettings).
+    const hinted = resolveTrustedScope(plur, raw, configPath, warnOnce)
+    const settings = sessionSettings(policy, hinted)
+    const remote = resolveProjectRemoteFromConfig(plur, raw, configPath)
+    // Refusal is unconditional like the scope one: team memory that silently
+    // never arrives is indistinguishable from a broken remote leg, which is
+    // the failure #1198 was filed about.
+    if (remote.refusedFrom) warnOnce(projectRemoteRefusalNotice(remote.refusedFrom, plur.storageRoot))
+    // Host only, never the token.
+    if (remote.remoteProject) log(`project remote: ${remote.remoteProject.url}`)
+    if (settings.scope) log(`session scope: ${settings.scope}`)
+    return { policy, settings, remote }
+  }
+
+  // Sessions already asked the folder question by THIS plugin instance. In
+  // memory, not a temp-dir marker like the CLI hooks: a session resumed in a
+  // new opencode process gets the question again with fresh nonces, since
+  // the old ones were expired when the previous process ended (dispose), the
+  // same outcome as the CLI's resume rule (#1347 option C).
+  const asked = new Set<string>()
+  const claimAsk = (sessionID: string) => {
+    if (asked.has(sessionID)) return false
+    asked.add(sessionID)
+    return true
+  }
+  // The offer each undecided session was given (audit F2 of #1517): the full
+  // question until it has reached the model once, then one reminder with the
+  // same commands on the next turn — the turn the user answers in — and then
+  // nothing (re-audit R4): the nonces are ended, so a later unrelated "yes"
+  // cannot be run as consent. Delivered into history (the chat.message
+  // fallback), the question stays there, so no reminder is pushed at all.
+  // `unreadable`: the offer is the "map cannot be read" notice; when that
+  // changes, the offer is rebuilt (re-audit R2).
+  type Offer = { question: string; reminder: string; unreadable: boolean; delivered: boolean; persisted: boolean; turnsSince: number }
+  const offers = new Map<string, Offer>()
+  // Sessions the "plur CLI is missing" notice has REACHED (audit F8, re-audit R1).
+  const cliMissingTold = new Set<string>()
+  /** A block reached the model: through system[] (`persisted` false) or as a history part. */
+  const markDelivered = (sessionID: string, block: string, persisted: boolean) => {
+    if (block === PLUR_CLI_MISSING) cliMissingTold.add(sessionID)
+    const offer = offers.get(sessionID)
+    if (offer && !offer.delivered && block === offer.question) {
+      offer.delivered = true
+      offer.persisted = persisted
+    }
+  }
+  /** End a session's folder nonces (#1378): they die with the session, or after core's TTL. */
+  const endNonces = (sessionID: string | undefined) => {
+    if (!sessionID || !asked.has(sessionID)) return
+    try { plur.endFolderNonceSession(sessionID) } catch (e) { log(`ending folder nonces failed: ${(e as Error).message}`) }
+  }
+
   const blocks = new BlockCache()
   const path = new RenderPath()
   const turns = new TurnBuffer()
+  // Sessions whose CURRENT turn's block was already injected by the
+  // chat.message fallback (formal R2, mcp#10): system.transform must not push
+  // it again into the same request. Reset at the next chat.message.
+  const fallbackInjected = new Set<string>()
   void OPENCODE_PLUGIN_VERSION
 
   return {
@@ -89,21 +196,95 @@ export const PlurPlugin: Plugin = async (ctx) => {
         // fires for the user's own submitted message too, not just the
         // assistant's streamed reply (confirmed against the real binary).
         turns.markUserMessage(input.sessionID, output.message?.id)
+        fallbackInjected.delete(input.sessionID)
 
         const query = (output?.parts ?? [])
           .filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
           .map((p: any) => p.text).join('\n')
-        const injection = await plur.injectHybrid(query, {
-          scope: projectConfig.scope,
-        })
-        blocks.set(input.sessionID, renderMemoryBlock({ injection }))
-        log(`recall for ${input.sessionID}: ${injection?.count ?? 0} engrams`)
 
-        // Secondary learning path: corrections/preferences from the user's
-        // own text — the same text the recall query above was built from.
-        // Fire-and-forget: never stall the turn on a slow store.
-        void learnFromUserText(plur, query, projectConfig).catch((e) =>
-          log(`learn (user) failed: ${(e as Error).message}`))
+        const state = folderState()
+        // Decided (on or off): the offer, and its nonces, are done.
+        if (state.policy.mode !== 'ask' && offers.delete(input.sessionID)) endNonces(input.sessionID)
+        if (state.policy.mode === 'off') {
+          blocks.clear(input.sessionID)
+          return
+        }
+        if (state.policy.mode === 'ask') {
+          // No memories, no learning. The first turn of the session carries
+          // the one question — the same text, content rules and per-answer
+          // nonces as the CLI hooks (core's folderAskOnce); the next turn a
+          // reminder of its commands; later turns nothing.
+          const unreadable = state.policy.reason === 'malformed-map' || state.policy.reason === 'resolver-error'
+          let offer = offers.get(input.sessionID)
+          // The map became unreadable after the question, or readable again
+          // after the notice (re-audit R2): drop the old offer and its nonces.
+          if (offer && offer.unreadable !== unreadable) {
+            endNonces(input.sessionID)
+            offers.delete(input.sessionID)
+            asked.delete(input.sessionID)
+            offer = undefined
+          }
+          // The offered commands need the plur CLI (audit F8 of #1517): without
+          // it, say so once per session and issue nothing; ask once it appears.
+          const cliMissing = !offer && !unreadable && !plurOnPath()
+          if (cliMissing) {
+            if (!cliMissingTold.has(input.sessionID)) blocks.set(input.sessionID, PLUR_CLI_MISSING)
+            else blocks.clear(input.sessionID)
+          } else if (!offer) {
+            const question = folderAskOnce({
+              dir: folderDir, policy: state.policy, sessionId: input.sessionID,
+              root: plur.storageRoot, plur, prompt: query, claim: claimAsk,
+              // Bound to this session (audit F5 of #1517): shell.env below tells
+              // the agent's shell which session it is in.
+              bindSession: true,
+            })
+            if (question) {
+              offer = { question, reminder: folderAskReminder(question), unreadable, delivered: false, persisted: false, turnsSince: 0 }
+              offers.set(input.sessionID, offer)
+            }
+          }
+          if (!offer) {
+            if (!cliMissing) blocks.clear(input.sessionID)
+          } else if (!offer.delivered) {
+            blocks.set(input.sessionID, offer.question)
+          } else if (++offer.turnsSince <= REMINDER_TURNS) {
+            // Fallback delivery left the question in history: nothing to add.
+            if (offer.persisted) blocks.clear(input.sessionID)
+            else blocks.set(input.sessionID, offer.reminder)
+          } else {
+            // Unanswered: the offer is over for this session.
+            blocks.clear(input.sessionID)
+            if (offer.turnsSince === REMINDER_TURNS + 1) endNonces(input.sessionID)
+          }
+        } else {
+          const { settings, remote } = state
+          const pending = plur.injectHybrid(query, {
+            scope: settings.scope,
+            // Without this the remote leg dials only when the session scope
+            // happens to match a store already registered in the user's global
+            // config — so an enterprise user following the documented
+            // `plur init-remote` onboarding got local-only recall here while
+            // every other adapter reached their team store (#1207).
+            ...(remote?.remoteProject ? { remote_project: remote.remoteProject } : {}),
+          })
+          pending.catch(() => {}) // a late rejection after the timeout must not go unhandled
+          const injection = await withTimeout(pending, INJECT_TIMEOUT_MS)
+          if (injection === TIMED_OUT) {
+            // No memory this turn rather than the previous turn's block, which
+            // answered a different query.
+            blocks.clear(input.sessionID)
+            warn(`recall took longer than ${INJECT_TIMEOUT_MS} ms — continuing this turn without memory`)
+          } else {
+            blocks.set(input.sessionID, renderMemoryBlock({ injection }))
+            log(`recall for ${input.sessionID}: ${injection?.count ?? 0} engrams`)
+          }
+
+          // Secondary learning path: corrections/preferences from the user's
+          // own text — the same text the recall query above was built from.
+          // Fire-and-forget: never stall the turn on a slow store.
+          void learnFromUserText(plur, query, settings).catch((e) =>
+            log(`learn (user) failed: ${(e as Error).message}`))
+        }
 
         // Safety net: system.transform is the preferred, non-accreting path.
         // If a full turn has gone by without it firing (see RenderPath),
@@ -121,6 +302,8 @@ export const PlurPlugin: Plugin = async (ctx) => {
               text: block,
               synthetic: true,
             })
+            fallbackInjected.add(input.sessionID)
+            markDelivered(input.sessionID, block, true)
             log('system.transform unavailable — using chat.message fallback (accretes)')
           } else if (block) {
             // Per the spec's Known Gotcha #1: a part with messageID undefined
@@ -141,7 +324,11 @@ export const PlurPlugin: Plugin = async (ctx) => {
     'experimental.chat.system.transform': async (input, output) => {
       await safe('system.transform', async () => {
         const block = input.sessionID ? blocks.get(input.sessionID) : undefined
-        if (block) output.system.push(block)
+        // Already in this request via the fallback part: do not render twice.
+        if (block && !fallbackInjected.has(input.sessionID!)) {
+          output.system.push(block)
+          markDelivered(input.sessionID!, block, false)
+        }
         if (input.sessionID) path.markRendered(input.sessionID)
       })
     },
@@ -164,10 +351,13 @@ export const PlurPlugin: Plugin = async (ctx) => {
           path.markTurn(sessionID)
           const texts = turns.takeIfFresh(sessionID)
           if (!texts) return
+          // Auto-capture only where the folder is on (#1347).
+          const state = folderState()
+          if (state.policy.mode !== 'on') return
           // Fire-and-forget: never stall the turn on a slow store. One-shot
           // takeIfFresh already guards against session.idle's double-fire —
           // this only runs once per turn.
-          void learnFromTurn(plur, texts, projectConfig).catch((e) =>
+          void learnFromTurn(plur, texts, state.settings).catch((e) =>
             log(`learn (turn) failed: ${(e as Error).message}`))
         }
         if (event.type === 'session.deleted') {
@@ -175,6 +365,11 @@ export const PlurPlugin: Plugin = async (ctx) => {
           blocks.clear(sessionID)
           turns.clear(sessionID)
           path.clear(sessionID)
+          fallbackInjected.delete(sessionID)
+          endNonces(sessionID)
+          asked.delete(sessionID)
+          offers.delete(sessionID)
+          cliMissingTold.delete(sessionID)
         }
       })
     },
@@ -184,17 +379,37 @@ export const PlurPlugin: Plugin = async (ctx) => {
     // the host's compaction prompt entirely.
     'experimental.session.compacting': async (input, output) => {
       await safe('compacting', async () => {
+        const texts = turns.takeIfFresh(input.sessionID)
+        // Memory crosses the cut, and what is dropped is learned, only where
+        // the folder is on (#1347): an ask folder's block is the question,
+        // which must not outlive its turn.
+        const state = folderState()
+        if (state.policy.mode !== 'on') return
         const block = blocks.get(input.sessionID)
         if (block) output.context.push(block)
-        const texts = turns.takeIfFresh(input.sessionID)
-        if (texts) void learnFromTurn(plur, texts, projectConfig).catch((e) =>
+        if (texts) void learnFromTurn(plur, texts, state.settings).catch((e) =>
           log(`learn (compacting) failed: ${(e as Error).message}`))
+      })
+    },
+
+    // Tells every shell the agent runs which session it belongs to, so
+    // `plur folders set --nonce` accepts this session's nonces and refuses
+    // another session's (audit F5 of #1517). opencode's bash tool calls this
+    // hook with the session id (checked against 1.18.33).
+    'shell.env': async (input, output) => {
+      await safe('shell.env', async () => {
+        if (input?.sessionID) output.env.PLUR_FOLDER_SESSION = input.sessionID
       })
     },
 
     dispose: async () => {
       await safe('dispose', async () => {
         blocks.clearAll()
+        // The process is going away: the question's nonces go with it.
+        for (const sessionID of [...asked]) endNonces(sessionID)
+        asked.clear()
+        offers.clear()
+        cliMissingTold.clear()
       })
     },
   } satisfies Hooks

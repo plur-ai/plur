@@ -9,7 +9,8 @@
  * @module
  */
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import yaml from 'js-yaml'
 
 /**
@@ -32,6 +33,23 @@ const MAX_DEPTH = 32
  *   the wrong direction to fail.
  */
 export async function readWorkspaceScope(cwd: string): Promise<string | undefined> {
+  return findWorkspaceScope(cwd)?.scope
+}
+
+/** A declared workspace scope and the file that declared it. */
+export interface WorkspaceScopeDecl {
+  scope: string
+  /** The `.plur.yaml` path; trust is checked against its directory. */
+  file: string
+}
+
+/**
+ * {@link readWorkspaceScope}, also returning which file declared the scope.
+ *
+ * @param cwd - the session's working directory.
+ * @returns the declaration, or `undefined`. Never throws.
+ */
+export function findWorkspaceScope(cwd: string): WorkspaceScopeDecl | undefined {
   let dir = cwd
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     try {
@@ -40,7 +58,7 @@ export async function readWorkspaceScope(cwd: string): Promise<string | undefine
         const raw = yaml.load(readFileSync(candidate, 'utf8')) as { scope?: unknown } | null
         const scope = raw?.scope
         // A non-string scope is a malformed file, not an instruction.
-        if (typeof scope === 'string' && scope.trim()) return scope.trim()
+        if (typeof scope === 'string' && scope.trim()) return { scope: scope.trim(), file: candidate }
         return undefined
       }
       // Stop at the git root: an inner repository must not inherit an outer
@@ -54,4 +72,112 @@ export async function readWorkspaceScope(cwd: string): Promise<string | undefine
     dir = parent
   }
   return undefined
+}
+
+/**
+ * The workspace reader the plugin wires (decision E3, 2026-09-26): a declared
+ * scope is adopted only when the directory holding the `.plur.yaml` is trusted
+ * (`plur trust <dir>` — core's `Plur.isDirectoryTrusted`, the check
+ * @plur-ai/opencode already made). A cloned repository must not choose which
+ * scope — possibly a remote team store — this harness reads and writes.
+ *
+ * `scope: global` is never adopted, trusted or not: the ambient global store is
+ * never this plugin's scope (scope.ts). Either refusal warns once per file and
+ * narrows to the configured/derived default. A throwing check fails closed.
+ *
+ * @param trusts - is this directory trusted?
+ * @param warn - where refusals are reported.
+ * @returns a reader with {@link readWorkspaceScope}'s contract.
+ */
+export function trustedWorkspaceScope(
+  trusts: (dir: string) => Promise<boolean> | boolean,
+  warn: (msg: string) => void,
+  remedy: (dir: string) => Promise<string> | string = dir => `If this project is yours, run: ${trustCommand(dir)}`,
+): (cwd: string) => Promise<string | undefined> {
+  const warned = new Set<string>()
+  const once = (key: string, msg: string) => {
+    if (warned.has(key)) return
+    warned.add(key)
+    try { warn(msg) } catch { /* a warning must never break scope resolution */ }
+  }
+  return async (cwd: string) => {
+    const decl = findWorkspaceScope(cwd)
+    if (!decl) return undefined
+    const dir = dirname(decl.file)
+    if (decl.scope === 'global') {
+      once(`global\u0000${decl.file}`,
+        `[plur] Ignored scope "global" in ${decl.file} — this plugin never uses the ambient global store; ` +
+        'using the workspace default scope instead.')
+      return undefined
+    }
+    let trusted = false
+    try {
+      trusted = (await trusts(dir)) === true
+    } catch {
+      trusted = false
+    }
+    if (trusted) return decl.scope
+    let fix: string
+    try {
+      fix = await remedy(dir)
+    } catch {
+      fix = `If this project is yours, run: ${trustCommand(dir)}`
+    }
+    once(decl.file,
+      `[plur] Ignored scope "${decl.scope}" in ${decl.file} — ${dir} is not a trusted directory, so the ` +
+      `workspace default scope is used instead. ${fix}`)
+    return undefined
+  }
+}
+
+/**
+ * One argument of a printed command, or null when it cannot be quoted safely
+ * (#1228 review; the rule of #1418's folder question): POSIX single quotes;
+ * Windows double quotes, refused for $, backtick, %, ! and the curly double
+ * quotes, which PowerShell and cmd expand; never a line-breaking, bidi or
+ * zero-width character.
+ */
+function shellWord(s: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/.test(s)) return null
+  if (/^[A-Za-z0-9_@+=:,./~-]+$/.test(s)) return s
+  if (platform === 'win32') {
+    if (/[$`%!"\u201c\u201d\u201e]/.test(s) || s.endsWith('\\')) return null
+    return `"${s}"`
+  }
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The trust command that reaches the store this plugin checks (audit 1228-c #1):
+ * a store configured with `path` (or the plugin's `PLUR_PATH`) is not the one a
+ * bare `plur trust <dir>` in the user's shell writes, so it is named.
+ */
+export function trustCommand(dir: string, storageRoot?: string, platform: NodeJS.Platform = process.platform): string {
+  const target = shellWord(dir, platform)
+  const custom = storageRoot && resolve(storageRoot) !== resolve(join(homedir(), '.plur'))
+  const store = custom ? shellWord(resolve(storageRoot!), platform) : ''
+  if (target === null || store === null) return '`plur trust` for that directory, from a terminal (its path cannot be printed as a safe command)'
+  return custom ? `plur --path ${store} trust ${target}` : `plur trust ${target}`
+}
+
+/** What the engine can do about trust — decides which remedy is honest. */
+export type TrustSupport = 'ok' | 'no-engine' | 'no-trust'
+
+/**
+ * The sentence after "is not a trusted directory" (audit 1228-c, dsh with an
+ * older core). The gate fails closed when the engine cannot answer, which is
+ * right — but telling the user to run `plur trust` then promised a fix that
+ * could not work: an engine without `isDirectoryTrusted` never reads the
+ * grant, and one that did not load answers nothing.
+ */
+export function trustRemedy(dir: string, support: TrustSupport, storageRoot?: string): string {
+  if (support === 'no-trust') {
+    return 'The installed @plur-ai/core cannot check directory trust, so trusting this directory would not ' +
+      `change this; upgrade @plur-ai/core, then run: ${trustCommand(dir, storageRoot)}`
+  }
+  if (support === 'no-engine') {
+    return 'The PLUR memory engine did not load, so directory trust cannot be checked; fix that first ' +
+      '(the load error was reported when the plugin started).'
+  }
+  return `If this project is yours, run: ${trustCommand(dir, storageRoot)}`
 }

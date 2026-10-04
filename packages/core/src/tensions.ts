@@ -394,13 +394,23 @@ export function measuredUnderDiffers(a: Engram, b: Engram): boolean {
  * `_pack` (set by `_loadSecondaryAndPacks` from the manifest), `stores:` and
  * remote rows carry `_storeScope` (set from the config entry), primary-store
  * rows carry neither. A foreign row cannot forge a primary origin because the
- * loader always stamps foreign rows; a row that ships its own marker can only
- * look MORE foreign, never less.
+ * loader always stamps foreign rows.
+ *
+ * Nor can it borrow ANOTHER foreign origin (formal R2-CoreB, core-policy#6):
+ * remote rows lose every `_`-prefixed key at the trust boundary
+ * (`salvageRemoteRow`) before the loader stamps `_storeScope`. A row carrying
+ * BOTH markers was stamped by one loader and forged the other — no loader
+ * stamps both — so which loader it came from is unknown. It gets an
+ * `ambiguous:` origin, which {@link measuredUnderGateApplies} never gates:
+ * such a pair always reaches the judge.
  */
 export function engramOrigin(e: Engram): string {
   const r = e as unknown as Record<string, unknown>
-  if (typeof r._pack === 'string') return `pack:${r._pack}`
-  if (typeof r._storeScope === 'string') return `store:${r._storeScope}`
+  const pack = typeof r._pack === 'string' ? r._pack : undefined
+  const store = typeof r._storeScope === 'string' ? r._storeScope : undefined
+  if (pack !== undefined && store !== undefined) return `ambiguous:pack:${pack}|store:${store}`
+  if (pack !== undefined) return `pack:${pack}`
+  if (store !== undefined) return `store:${store}`
   return 'primary'
 }
 
@@ -425,7 +435,8 @@ const MEASUREMENT_TOKEN = /(?<![A-Za-z])\d+(?:[.,:]\d+)*\s*%?(?![A-Za-z])/
  *   3. The configurations differ (measuredUnderDiffers).
  */
 export function measuredUnderGateApplies(a: Engram, b: Engram): boolean {
-  if (engramOrigin(a) !== engramOrigin(b)) return false
+  const originA = engramOrigin(a)
+  if (originA.startsWith('ambiguous:') || originA !== engramOrigin(b)) return false
   if (!MEASUREMENT_TOKEN.test(a.statement) || !MEASUREMENT_TOKEN.test(b.statement)) return false
   return measuredUnderDiffers(a, b)
 }

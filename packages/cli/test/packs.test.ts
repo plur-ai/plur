@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
+import { join, basename } from 'path'
+import { createHash } from 'crypto'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
@@ -74,6 +75,37 @@ describe('plur packs', () => {
       const output = JSON.parse(run(`packs install ${packDir}`))
       expect(output.installed).toBe(1)
       expect(output.name).toBeDefined()
+    } finally {
+      rmSync(packDir, { recursive: true })
+    }
+  })
+
+  it('packs migrate-integrity is a dry run without --yes, and re-baselines a clean v1 row with it', () => {
+    const packDir = mkdtempSync(join(tmpdir(), 'test-pack-mig-'))
+    try {
+      writeFileSync(join(packDir, 'SKILL.md'), '---\nname: mig-pack\nversion: 1.0.0\n---\n')
+      writeFileSync(join(packDir, 'engrams.yaml'), 'engrams: []\n')
+      run(`packs install ${packDir}`)
+      // Put the registry row back into the pre-v2 state: a v1 value.
+      const installed = join(dir, 'packs', basename(packDir))
+      const v1 = 'sha256:' + createHash('sha256')
+        .update(readFileSync(join(installed, 'SKILL.md')))
+        .update(readFileSync(join(installed, 'engrams.yaml'))).digest('hex')
+      const regPath = join(dir, 'packs', 'registry.yaml')
+      writeFileSync(regPath, readFileSync(regPath, 'utf8').replace(/integrity: .*/, `integrity: "${v1}"`))
+      const before = readFileSync(regPath, 'utf8')
+
+      const dry = JSON.parse(run('packs migrate-integrity'))
+      expect(dry.dry_run).toBe(true)
+      expect(dry.migrated).toBe(1)
+      expect(readFileSync(regPath, 'utf8')).toBe(before)
+
+      const real = JSON.parse(run('packs migrate-integrity --yes'))
+      expect(real.dry_run).toBe(false)
+      expect(real.migrated).toBe(1)
+      expect(readFileSync(regPath, 'utf8')).toMatch(/integrity: "?sha256:v2:[0-9a-f]{64}/)
+      const listed = JSON.parse(run('packs list'))
+      expect(listed.packs[0].integrity_status).toBe('ok')
     } finally {
       rmSync(packDir, { recursive: true })
     }
@@ -282,5 +314,58 @@ describe('plur packs — text surface', () => {
     out.length = 0
     await packs(['list'], true)
     expect(JSON.parse(stdout()).count).toBe(0)
+  })
+
+  it('list shows enough of a v2 value to tell packs apart (audit of #1229, finding 5)', async () => {
+    const packDir = writePack('shown', [engram('ENG-2026-0101-001')])
+    await packs(['install', packDir])
+    out.length = 0
+    await packs(['list'])
+    // `sha256:v2:` plus 12 hex digits — slice(0, 16) left six.
+    expect(stdout()).toMatch(/\[sha256:v2:[0-9a-f]{12}\]/)
+  })
+
+  it('a baseline carried from v1 is labelled as carried in migrate and in list (audit of #1229, finding 1)', async () => {
+    const packDir = writePack('carried', [engram('ENG-2026-0101-001')])
+    await packs(['install', packDir])
+    const installed = join(dir, 'packs', basename(packDir))
+    const v1 = 'sha256:' + createHash('sha256')
+      .update(readFileSync(join(installed, 'SKILL.md')))
+      .update(readFileSync(join(installed, 'engrams.yaml'))).digest('hex')
+    const regPath = join(dir, 'packs', 'registry.yaml')
+    writeFileSync(regPath, readFileSync(regPath, 'utf8').replace(/integrity: .*/, `integrity: "${v1}"`))
+    rmSync(packDir, { recursive: true, force: true }) // the recorded source is gone
+    out.length = 0
+    await packs(['migrate-integrity', '--yes'])
+    expect(stdout()).toMatch(/carried from v1/i)
+    expect(stdout()).toMatch(/not checked again against (its|their) source/i)
+    out.length = 0
+    await packs(['list'])
+    expect(stdout()).toMatch(/baseline carried from v1/i)
+    out.length = 0
+    await packs(['list'], true)
+    expect(JSON.parse(stdout()).packs[0].baseline).toBe('carried-from-v1')
+  })
+
+  it('a legacy row two same-name packs could own is explained in migrate and list (audit of #1230, finding 4)', async () => {
+    // The registry the pre-`dir` defect left: two same-name packs, one row.
+    await packs(['install', writePack('shared', [engram('ENG-2026-0101-001')])])
+    const second = join(dir, 'pack-shared-2')
+    mkdirSync(second)
+    writeFileSync(join(second, 'SKILL.md'), '---\nname: shared\nversion: "1.0.0"\n---\n\n# second\n')
+    writeFileSync(join(second, 'engrams.yaml'), readFileSync(join(dir, 'pack-shared', 'engrams.yaml'), 'utf8'))
+    await packs(['install', second])
+    const regPath = join(dir, 'packs', 'registry.yaml')
+    const reg = readFileSync(regPath, 'utf8')
+    // Keep the first row only, without its `dir`.
+    const firstRow = reg.split(/\n(?=  - )/)[1]
+    writeFileSync(regPath, 'packs:\n' + firstRow.replace(/\n    dir: .*/, '') + '\n')
+    out.length = 0
+    await packs(['migrate-integrity'])
+    expect(stdout()).toMatch(/skipped-ambiguous-legacy-row/)
+    expect(stdout()).toMatch(/Reinstall each of them/i)
+    out.length = 0
+    await packs(['list'])
+    expect(stdout()).toMatch(/UNVERIFIED — its registry row could belong to another pack named "shared"/)
   })
 })

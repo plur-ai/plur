@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
+import { isPlurHookCommand } from './lib/hook-command.js'
 
 /**
  * Support for Cursor's `.cursor/hooks.json`. Structurally different from
@@ -47,34 +48,24 @@ export function buildCursorHooks(cmd: string): Record<string, CursorHookEntry[]>
     preToolUse: [{ command: `${cmd} hook-cursor-guard`, timeout: 3, failClosed: false }],
     postToolUse: [{ command: `${cmd} hook-cursor-post-tool`, timeout: 10, failClosed: false }],
     stop: [{ command: `${cmd} hook-cursor-stop`, timeout: 3, failClosed: false }],
+    // Auto-rate injected engrams from the reply text (#1310): the `stop`
+    // payload carries no reply, `afterAgentResponse` carries `text`.
+    afterAgentResponse: [{ command: `${cmd} hook-auto-rate cursor`, timeout: 10, failClosed: false }],
   }
 }
 
-/** The exact set of subcommands `buildCursorHooks()` installs — see below. */
-const PLUR_CURSOR_SUBCOMMANDS = [
-  'hook-cursor-session-start',
-  'hook-cursor-guard',
-  'hook-cursor-post-tool',
-  'hook-cursor-stop',
-]
-
 /**
- * A command is PLUR-owned only if it BOTH names the PLUR binary AND invokes
- * one of PLUR's exact subcommands. Originally this matched on the bare
- * substring `hook-cursor-` alone, which flagged ANY hook whose command
- * happened to contain that string — e.g. a user's own
- * `./scripts/hook-cursor-lint.sh` — as PLUR's, so the next `plur init
- * --cursor` upgrade would silently delete it via `stripPlurCursorHooks()`
- * (audit fix — Codex adversarial review, 2026-07-08: real config corruption,
- * not just mis-detection). Requiring both the binary name (`plur-hook`, the
- * shim `installHookBinary()` creates, or the `@plur-ai/cli` npx fallback —
- * see init.ts's `cmd` resolution) and an exact known subcommand narrows this
- * to commands PLUR itself could plausibly have written.
+ * A command is PLUR-owned when PLUR's own launcher (the plur-hook shim or
+ * the `@plur-ai/cli` npx fallback) runs a `hook-*` subcommand — the shared
+ * matcher `plur init` uses for every editor (decision H2 "prefix"; no
+ * subcommand list, so a new Cursor hook needs no update here). A user's own
+ * `./scripts/hook-cursor-lint.sh`, or any hook-* run by another binary, is
+ * not PLUR's and survives `stripPlurCursorHooks()` (audit fix, Codex
+ * adversarial review 2026-07-08: a bare `hook-cursor-` substring test once
+ * deleted such hooks).
  */
 function isPlurCursorHookEntry(entry: CursorHookEntry): boolean {
-  const isPlurBinary = entry.command.includes('@plur-ai/cli') || entry.command.includes('plur-hook')
-  if (!isPlurBinary) return false
-  return PLUR_CURSOR_SUBCOMMANDS.some((sub) => entry.command.includes(sub))
+  return typeof entry?.command === 'string' && isPlurHookCommand(entry.command)
 }
 
 export function hasPlurCursorHooks(config: CursorHooksConfig): boolean {
@@ -97,7 +88,10 @@ export function mergeCursorHooks(config: CursorHooksConfig, additions: Record<st
   for (const [event, entries] of Object.entries(additions)) {
     hooks[event] = [...(hooks[event] ?? []), ...entries]
   }
-  return { version: clean.version ?? 1, hooks }
+  // Spread `clean`: unknown top-level keys readCursorHooksConfig preserved
+  // must survive the merge too — returning `{ version, hooks }` dropped them
+  // on every `plur init --cursor` (formal Adapters #4, cli#2).
+  return { ...clean, version: clean.version ?? 1, hooks }
 }
 
 export function readCursorHooksConfig(path: string): CursorHooksConfig {

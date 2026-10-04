@@ -48,7 +48,7 @@ describe('MCP server (wire protocol)', () => {
   it('returns server info with instructions on initialize', () => {
     const info = client.getServerVersion()
     expect(info?.name).toBe('plur-mcp')
-    expect(info?.version).toBe('0.20.0')
+    expect(info?.version).toBe('0.21.0')
   })
 
   // --- Tools ---
@@ -190,21 +190,25 @@ describe('MCP server (wire protocol)', () => {
       expect(parsed.error).not.toContain('plur-ai/plur#297')
     })
 
-    // The workaround the #297 message advertises must actually work for the
-    // parameter it is most often needed on. engram_suggestions has union items
-    // (anyOf: [string, object], #231); the old `items?.type === 'string'` check
-    // was false for it, so comma-separated input fell through uncoerced.
-    it('coerces comma-separated input for union (anyOf) item schemas', async () => {
+    // engram_suggestions has union items (anyOf: [string, object], #231): each
+    // item is a free-text statement. Decision S2 (2026-09-26): a bare string is
+    // ONE suggestion, never comma-split — "Use pnpm, not npm" split into two
+    // engrams, one of them the inverted "not npm". A JSON-stringified array
+    // (next test) is still the way to send several as a string.
+    it('treats a bare string for union (anyOf) item schemas as one item', async () => {
       const result = await client.callTool({
         name: 'plur_session_end',
         arguments: {
           summary: 'Union-item coercion',
-          engram_suggestions: 'first learning, second learning',
+          engram_suggestions: 'Use pnpm, not npm',
         },
       })
       expect(result.isError).toBeFalsy()
       const parsed = JSON.parse((result.content as any)[0].text)
-      expect(parsed.engrams_created).toBe(2)
+      expect(parsed.engrams_created).toBe(1)
+      const onDisk = readFileSync(join(dir, 'engrams.yaml'), 'utf8')
+      expect(onDisk).toContain('Use pnpm, not npm')
+      expect(onDisk).not.toMatch(/statement: ['"]?not npm/)
     })
 
     it('coerces a JSON-stringified array for union (anyOf) item schemas', async () => {
@@ -538,7 +542,7 @@ describe('MCP server (wire protocol)', () => {
     const result = await client.readResource({ uri: 'plur://status' })
     const data = JSON.parse((result.contents[0] as any).text)
     expect(data.engram_count).toBe(1)
-    expect(data.version).toBe('0.20.0')
+    expect(data.version).toBe('0.21.0')
     expect(data.storage_root).toBe(dir)
   })
 

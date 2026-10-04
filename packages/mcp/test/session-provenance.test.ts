@@ -157,6 +157,27 @@ describe('plur_session_end and a suggestion that cannot be stored', () => {
     expect((await plur.timeline({})).some(e => e.summary === 'One bad apple')).toBe(true)
   })
 
+  // Regression pin (field-report triage item 8b): the case above has the
+  // secret in the middle. A failure at either END of the loop, and the object
+  // form of a suggestion, must isolate the same way — and the secret itself
+  // must never be what was stored.
+  it('a secret first or last, in object form, still leaves every other suggestion stored', async () => {
+    const result = await callTool('plur_session_end', {
+      summary: 'Bad apples at both ends',
+      engram_suggestions: [
+        { statement: 'The staging login is password = example-not-real-123', type: 'procedural' },
+        { statement: 'Run migrations before deploys', type: 'procedural' },
+        'Prefer small pull requests',
+        { statement: 'Our AWS key is AKIAIOSFODNN7EXAMPLE', type: 'behavioral' },
+      ],
+    })
+    expect(result.engrams_created).toBe(2)
+    expect(result.engrams_failed.map((f: { index: number }) => f.index)).toEqual([0, 3])
+    for (const f of result.engrams_failed) expect(f.error).toMatch(/Secret detected/)
+    const stored = (await plur.list()).map(e => e.statement).sort()
+    expect(stored).toEqual(['Prefer small pull requests', 'Run migrations before deploys'])
+  })
+
   it('a malformed suggestion is refused before anything is written', async () => {
     await expect(callTool('plur_session_end', {
       summary: 'Nothing should land',

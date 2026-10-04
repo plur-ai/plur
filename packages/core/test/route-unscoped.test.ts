@@ -59,7 +59,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('routes an un-scoped write to a covers-matched scope (confident), stamps _routed', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*', 'embeddings', 'core'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*', 'embeddings', 'core'] },
       ],
     })
     // Domain-prefix hit (plur.core.embeddings ⊂ plur.*) + tag hit (embeddings) +
@@ -69,9 +69,9 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
       tags: ['embeddings'],
     }) as { scope: string; structured_data?: { _routed?: { scope: string; confidence: number; reason: string } } }
 
-    expect(e.scope).toBe('group:plur/core')
+    expect(e.scope).toBe('user:plur-core')
     expect(e.structured_data?._routed).toBeDefined()
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-core')
     expect(e.structured_data?._routed?.confidence).toBeGreaterThanOrEqual(SCOPE_MATCH_THRESHOLD)
     expect(e.structured_data?._routed?.reason).toBeTruthy()
   })
@@ -79,7 +79,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('falls to global (the default, reverted in 0.10.0 #353) when no covers match', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*', 'embeddings'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*', 'embeddings'] },
       ],
     })
     const e = await plur.learn('completely unrelated note about lunch preferences') as {
@@ -93,7 +93,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     const plur = makePlur({
       unscoped_default: 'global',
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*'] },
       ],
     })
     const e = await plur.learn('unrelated note that matches no covers') as {
@@ -107,7 +107,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     const plur = makePlur({
       unscoped_default: 'local',
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*'] },
       ],
     })
     const e = await plur.learn('unrelated note that matches no covers') as {
@@ -121,7 +121,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     const plur = makePlur({
       stores: [
         // covers would confidently match, but the caller chose a scope explicitly.
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*', 'embeddings'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*', 'embeddings'] },
       ],
     })
     const e = await plur.learn('the embeddings index for the core engine', {
@@ -136,7 +136,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('honors a session default_scope — NO auto-route, no _routed marker', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*', 'embeddings'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*', 'embeddings'] },
       ],
     })
     plur.setSessionScope('project:my-app')
@@ -152,7 +152,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     const plur = makePlur({
       auto_route_scope: false,
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*', 'embeddings'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*', 'embeddings'] },
       ],
     })
     const e = await plur.learn('the embeddings index for the core engine', {
@@ -171,15 +171,15 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
         // plur.*) → raw = WEIGHT_DOMAIN = 1.5 → squash(1.5) = 0.50, which the `>=`
         // gate accepts. Pre-0.10.0 (WEIGHT_DOMAIN=1.0) this squashed to 0.40 and
         // the strongest, most deliberate signal never auto-routed — the bug.
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*'] },
       ],
     })
     const e = await plur.learn('xyzzy nonoverlapping content tokens', {
       domain: 'plur.core.security',
     }) as { scope: string; structured_data?: { _routed?: { scope: string; confidence: number; reason: string } } }
-    expect(e.scope).toBe('group:plur/core')
+    expect(e.scope).toBe('user:plur-core')
     expect(e.structured_data?._routed).toBeDefined()
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-core')
     expect(e.structured_data?._routed?.confidence).toBe(0.5)
     expect(e.structured_data?._routed?.confidence).toBeGreaterThanOrEqual(SCOPE_MATCH_THRESHOLD)
   })
@@ -187,7 +187,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('a LONE tag-only match does NOT auto-route (0.25 < 0.5) — falls to default', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers'] },
+        { path: '/tmp/r-infra.yaml', scope: 'user:plur-infra', description: 'Infra', covers: ['servers'] },
       ],
     })
     // Single tag hit → raw = WEIGHT_TAG = 0.5 → squash(0.5) = 0.25 < threshold.
@@ -201,7 +201,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('a LONE single-keyword match does NOT auto-route (0.118 < 0.5) — falls to default', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers'] },
+        { path: '/tmp/r-infra.yaml', scope: 'user:plur-infra', description: 'Infra', covers: ['servers'] },
       ],
     })
     // One statement keyword overlaps a cover token → raw = WEIGHT_KEYWORD = 0.2.
@@ -218,7 +218,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
         // A readonly REMOTE store whose covers would confidently match. Because a
         // write can never land here (_resolveRemoteStoreForScope continues on
         // readonly), the ranker must not LABEL it as the auto-route target.
-        { url: 'https://ro.example.com', token: 't', readonly: true, scope: 'group:plur/core', description: 'Core (RO)', covers: ['plur.*', 'embeddings'] },
+        { url: 'https://ro.example.com', token: 't', readonly: true, scope: 'user:plur-core', description: 'Core (RO)', covers: ['plur.*', 'embeddings'] },
       ],
     })
     const e = await plur.learn('the embeddings index for the core engine', {
@@ -233,7 +233,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('excludes a readonly PATH-based store from auto-route targets (MED-12)', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core-ro.yaml', readonly: true, scope: 'group:plur/core', description: 'Core (RO)', covers: ['plur.*', 'embeddings'] },
+        { path: '/tmp/r-core-ro.yaml', readonly: true, scope: 'user:plur-core', description: 'Core (RO)', covers: ['plur.*', 'embeddings'] },
       ],
     })
     const e = await plur.learn('the embeddings index for the core engine', {
@@ -247,28 +247,28 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('a WRITABLE store with the same covers still auto-routes (proves the filter is readonly-specific)', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core-rw.yaml', readonly: false, scope: 'group:plur/core', description: 'Core (RW)', covers: ['plur.*', 'embeddings'] },
+        { path: '/tmp/r-core-rw.yaml', readonly: false, scope: 'user:plur-core', description: 'Core (RW)', covers: ['plur.*', 'embeddings'] },
       ],
     })
     const e = await plur.learn('the embeddings index for the core engine', {
       domain: 'plur.core.embeddings',
       tags: ['embeddings'],
     }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
-    expect(e.scope).toBe('group:plur/core')
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(e.scope).toBe('user:plur-core')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-core')
   })
 
   it('suggestScope (advisory) STILL surfaces a readonly scope as a candidate (discovery unchanged)', async () => {
     const plur = makePlur({
       stores: [
-        { url: 'https://ro.example.com', token: 't', readonly: true, scope: 'group:plur/core', description: 'Core (RO)', covers: ['plur.*', 'embeddings'] },
+        { url: 'https://ro.example.com', token: 't', readonly: true, scope: 'user:plur-core', description: 'Core (RO)', covers: ['plur.*', 'embeddings'] },
       ],
     })
     // The readonly filter applies ONLY to the auto-route candidate set inside
     // _resolveUnscopedScope. Advisory discovery (suggestScope/listScopeMetadata)
     // must still show readonly scopes so a human can find them.
     const ranked = await plur.suggestScope({ statement: 'embeddings core', domain: 'plur.core.embeddings', tags: ['embeddings'] })
-    expect(ranked.map(c => c.scope)).toContain('group:plur/core')
+    expect(ranked.map(c => c.scope)).toContain('user:plur-core')
   })
 
   // --- PR-6 (#353): a FULL domain-prefix match routes DETERMINISTICALLY,
@@ -279,7 +279,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('PR-6: a full domain-prefix match routes deterministically (via the bypass, not the >= edge)', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*'] },
       ],
     })
     // Domain-only hit, zero token overlap. Under the weight curve this squashes
@@ -290,8 +290,8 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     const e = await plur.learn('xyzzy nonoverlapping content tokens', {
       domain: 'plur.core.security',
     }) as { scope: string; structured_data?: { _routed?: { scope: string; confidence: number; reason: string } } }
-    expect(e.scope).toBe('group:plur/core')
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(e.scope).toBe('user:plur-core')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-core')
     // The route is for a domain reason (proves it came through the domain channel,
     // i.e. the deterministic branch, not a coincidental tag/keyword pile-up).
     expect(e.structured_data?._routed?.reason).toContain('domain plur.core.security')
@@ -307,7 +307,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // — NOT on `domainMatch` (which is also true for the reverse direction) and
     // NOT just on having a candidate (reaudit finding 4, R2-C).
     const plur = makePlur({
-      stores: [{ path: '/tmp/r.yaml', scope: 'group:plur/core', covers: ['plur.*'], description: 'Core' }],
+      stores: [{ path: '/tmp/r.yaml', scope: 'user:plur-core', covers: ['plur.*'], description: 'Core' }],
     }) as unknown as {
       _resolveUnscopedScope: (s: string, c?: { domain?: string }) => { scope: string; routed: { scope: string } | null }
     }
@@ -316,11 +316,11 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     routeMock.mockReturnValueOnce([
       // coverSpecificity 1: the forward-matching cover `plur.*` normalizes to the
       // single segment `plur`. It is a tie-break only — irrelevant to a one-candidate list.
-      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain x ⊂ covers plur.*', domainMatch: true, coverContainsDomain: true, coverSpecificity: 1 },
+      { scope: 'user:plur-core', confidence: 0.2, reason: 'domain x ⊂ covers plur.*', domainMatch: true, coverContainsDomain: true, coverSpecificity: 1 },
     ])
     const routedLow = await plur._resolveUnscopedScope('anything', { domain: 'plur.core.x' })
-    expect(routedLow.scope).toBe('group:plur/core')
-    expect(routedLow.routed?.scope).toBe('group:plur/core')
+    expect(routedLow.scope).toBe('user:plur-core')
+    expect(routedLow.routed?.scope).toBe('user:plur-core')
 
     // REVERSE: domainMatch:true BUT coverContainsDomain:false, confidence 0.2
     // (< 0.5) → must NOT route (the over-route case: broad engram, narrow scope).
@@ -328,7 +328,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // coverContainsDomain correctly gates it.
     routeMock.mockReturnValueOnce([
       // coverSpecificity 0: no FORWARD match, so the ranker records no depth.
-      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain plur ⊃ covers plur.core', domainMatch: true, coverContainsDomain: false, coverSpecificity: 0 },
+      { scope: 'user:plur-core', confidence: 0.2, reason: 'domain plur ⊃ covers plur.core', domainMatch: true, coverContainsDomain: false, coverSpecificity: 0 },
     ])
     const reverseLow = await plur._resolveUnscopedScope('anything', { domain: 'plur' })
     expect(reverseLow.scope).toBe('global')
@@ -336,7 +336,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
 
     // WEAK: neither flag set, same low confidence 0.2 (< 0.5) → must NOT route.
     routeMock.mockReturnValueOnce([
-      { scope: 'group:plur/core', confidence: 0.2, reason: 'keywords [...]', domainMatch: false, coverContainsDomain: false, coverSpecificity: 0 },
+      { scope: 'user:plur-core', confidence: 0.2, reason: 'keywords [...]', domainMatch: false, coverContainsDomain: false, coverSpecificity: 0 },
     ])
     const gatedLow = await plur._resolveUnscopedScope('anything')
     expect(gatedLow.scope).toBe('global')
@@ -348,7 +348,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
       stores: [
         // Two cover tokens, hit by two tags → raw 1.0 → squash 0.40 < 0.5, and
         // NO domain match. The bypass must not fire; the write stays gated.
-        { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deploy'] },
+        { path: '/tmp/r-infra.yaml', scope: 'user:plur-infra', description: 'Infra', covers: ['servers', 'deploy'] },
       ],
     })
     const e = await plur.learn('no overlap words zzz', {
@@ -363,20 +363,20 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
       stores: [
         // Three tags → raw 1.5 → squash 0.50, NO domain. The threshold path (not
         // the bypass) routes it — proves PR-6 left the weak-signal gate working.
-        { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deploy', 'infra'] },
+        { path: '/tmp/r-infra.yaml', scope: 'user:plur-infra', description: 'Infra', covers: ['servers', 'deploy', 'infra'] },
       ],
     })
     const e = await plur.learn('no overlap words zzz', {
       tags: ['servers', 'deploy', 'infra'],
     }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
-    expect(e.scope).toBe('group:plur/infra')
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/infra')
+    expect(e.scope).toBe('user:plur-infra')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-infra')
   })
 
   it('PR-6: a keyword-only match (no domain) is STILL gated by threshold — falls to default', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers'] },
+        { path: '/tmp/r-infra.yaml', scope: 'user:plur-infra', description: 'Infra', covers: ['servers'] },
       ],
     })
     const e = await plur.learn('restart the servers now') as {
@@ -392,7 +392,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
         // Readonly store whose covers domain-match. PR-4's readonly exclusion runs
         // BEFORE ranking, so the domain candidate never enters the set — the
         // deterministic bypass has nothing to route to.
-        { url: 'https://ro.example.com', token: 't', readonly: true, scope: 'group:plur/core', description: 'Core (RO)', covers: ['plur.*'] },
+        { url: 'https://ro.example.com', token: 't', readonly: true, scope: 'user:plur-core', description: 'Core (RO)', covers: ['plur.*'] },
       ],
     })
     const e = await plur.learn('zzz no overlap', {
@@ -407,16 +407,16 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
       stores: [
         // Both scopes domain-match `plur.core.security` (plur.* and plur.core.*),
         // both score 0.5. Tie-break is deterministic: both are domain matches, so
-        // it falls to scope name ascending → group:plur/a wins, every run.
-        { path: '/tmp/r-b.yaml', scope: 'group:plur/b', description: 'B', covers: ['plur.*'] },
-        { path: '/tmp/r-a.yaml', scope: 'group:plur/a', description: 'A', covers: ['plur.core.*'] },
+        // it falls to scope name ascending → user:plur-a wins, every run.
+        { path: '/tmp/r-b.yaml', scope: 'user:plur-b', description: 'B', covers: ['plur.*'] },
+        { path: '/tmp/r-a.yaml', scope: 'user:plur-a', description: 'A', covers: ['plur.core.*'] },
       ],
     })
     const e = await plur.learn('zzz no overlap', {
       domain: 'plur.core.security',
     }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
-    expect(e.scope).toBe('group:plur/a')
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/a')
+    expect(e.scope).toBe('user:plur-a')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-a')
   })
 
   it('R2-C: a FORWARD domain match (cover ⊃ domain) STILL routes deterministically (unchanged)', async () => {
@@ -425,14 +425,14 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // the engram's topic → coverContainsDomain → deterministic bypass routes it.
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur'] },
       ],
     })
     const e = await plur.learn('zzz no overlap tokens', {
       domain: 'plur.core.security',
     }) as { scope: string; structured_data?: { _routed?: { scope: string; reason: string } } }
-    expect(e.scope).toBe('group:plur/core')
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(e.scope).toBe('user:plur-core')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-core')
     expect(e.structured_data?._routed?.reason).toContain('domain plur.core.security ⊂ covers plur')
   })
 
@@ -441,14 +441,14 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // coverContainsDomain → deterministic bypass.
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.core'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.core'] },
       ],
     })
     const e = await plur.learn('zzz no overlap tokens', {
       domain: 'plur.core',
     }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
-    expect(e.scope).toBe('group:plur/core')
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(e.scope).toBe('user:plur-core')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-core')
   })
 
   it('R2-C OVER-ROUTE REGRESSION: a BROAD engram (domain ⊃ cover) does NOT deterministically route into a narrow shared scope', async () => {
@@ -457,12 +457,12 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // a NARROW shared sub-scope (cover `plur.core`). This is the REVERSE direction
     // — the engram is BROADER than the scope, so it does NOT belong in the narrow
     // scope. Under the old bug (bypass keyed on domainMatch, reverse at full
-    // WEIGHT_DOMAIN → conf 0.5) it deterministically landed in group:plur/core.
+    // WEIGHT_DOMAIN → conf 0.5) it deterministically landed in user:plur-core.
     // Now: reverse is down-weighted (WEIGHT_DOMAIN_REVERSE → squash(0.5)=0.25 < 0.5)
     // and never sets coverContainsDomain, so it falls to unscoped_default (global).
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.core'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.core'] },
       ],
     })
     const e = await plur.learn('a broad personal preference about plur in general zzz', {
@@ -475,7 +475,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // — only the deterministic auto-route is withheld. Confidence stays below
     // threshold so even the `>=` path doesn't fire on the lone reverse match.
     const ranked = await plur.suggestScope({ statement: 'zzz', domain: 'plur' })
-    const core = ranked.find(c => c.scope === 'group:plur/core')!
+    const core = ranked.find(c => c.scope === 'user:plur-core')!
     expect(core).toBeDefined()
     expect(core.domainMatch).toBe(true)            // it IS a domain-channel hit…
     expect(core.coverContainsDomain).toBe(false)   // …but the REVERSE direction…
@@ -490,21 +490,21 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // squash(2.0)=0.5714 >= 0.5.
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.core', 'alpha', 'beta', 'gamma'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.core', 'alpha', 'beta', 'gamma'] },
       ],
     })
     const e = await plur.learn('zzz no overlap', {
       domain: 'plur',
       tags: ['alpha', 'beta', 'gamma'],
     }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
-    expect(e.scope).toBe('group:plur/core')
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(e.scope).toBe('user:plur-core')
+    expect(e.structured_data?._routed?.scope).toBe('user:plur-core')
   })
 
   it('PR-6: explicit scope still bypasses auto-route entirely (domain match ignored)', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*'] },
       ],
     })
     const e = await plur.learn('zzz no overlap', {
@@ -518,7 +518,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('PR-6: a session default still bypasses auto-route entirely (domain match ignored)', async () => {
     const plur = makePlur({
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*'] },
       ],
     })
     plur.setSessionScope('project:my-app')
@@ -529,33 +529,28 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     expect(e.structured_data?._routed).toBeUndefined()
   })
 
-  it('auto-routed SHARED scope with sensitive content is still DEMOTED to local (3b + guard)', async () => {
+  it('an EXPLICIT shared scope with sensitive content is still DEMOTED to local (guard unchanged)', async () => {
     const plur = makePlur({
       stores: [
-        // A SHARED group scope (isSharedScope) whose covers confidently match infra content.
         { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['plur.*', 'infra', 'deploy'] },
       ],
     })
-    // Confident match (domain-prefix + tag) → would route to group:plur/infra,
-    // but the statement carries a public IP, so the guard demotes to local/private.
+    // The guard is about what a SHARED write CARRIES, not about how the scope was
+    // chosen. Since #1115 an unscoped write is never auto-routed into a shared
+    // scope, so the only way to reach the guard is to ask for one explicitly.
     const e = await plur.learn('deploy target for infra is 139.59.155.82', {
+      scope: 'group:plur/infra',
       domain: 'plur.infra.deploy',
       tags: ['infra'],
     }) as {
       scope: string; visibility: string
-      structured_data?: {
-        _routed?: { scope: string; confidence: number }
-        _demoted?: { from: string; to: string; patterns: string }
-      }
+      structured_data?: { _demoted?: { from: string; to: string; patterns: string } }
     }
-    // Demoted, not routed-as-shared.
     expect(e.scope).toBe('local')
     expect(e.visibility).toBe('private')
     expect(e.structured_data?._demoted?.from).toBe('group:plur/infra')
     expect(e.structured_data?._demoted?.to).toBe('local')
     expect(e.structured_data?._demoted?.patterns).toMatch(/public_ipv4/)
-    // The routing decision is preserved alongside the demotion — both facts are true.
-    expect(e.structured_data?._routed?.scope).toBe('group:plur/infra')
   })
 })
 
@@ -585,7 +580,7 @@ describe('unscoped write routing reloads a changed config (scope-audit 2026-07-2
     writeFileSync(configPath, yaml.dump({
       index: false,
       stores: [
-        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*', 'embeddings', 'core'] },
+        { path: '/tmp/r-core.yaml', scope: 'user:plur-core', description: 'Core', covers: ['plur.*', 'embeddings', 'core'] },
       ],
     }, { noRefs: true }))
     // Guarantee an observable mtime change regardless of FS timestamp granularity.
@@ -596,7 +591,135 @@ describe('unscoped write routing reloads a changed config (scope-audit 2026-07-2
     const after = await plur.learn('the embeddings index for the core engine again', {
       domain: 'plur.core.embeddings', tags: ['embeddings'],
     }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
-    expect(after.scope).toBe('group:plur/core')
-    expect(after.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(after.scope).toBe('user:plur-core')
+    expect(after.structured_data?._routed?.scope).toBe('user:plur-core')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #1115: an unscoped write auto-routed into a SHARED scope, was pushed to that
+// scope's remote, and said so only in an `info` field that is easy to miss in a
+// long session. Local cleanup could not undo it. Auto-routing now refuses a
+// shared candidate; personal-scope routing is untouched.
+// ---------------------------------------------------------------------------
+
+describe('#1115 — an unscoped write is never auto-routed into a shared scope', () => {
+  it('refuses a confident SHARED domain match and falls to the unscoped default', async () => {
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-team.yaml', scope: 'group:acme/eng', description: 'Eng', covers: ['acme.*'] },
+      ],
+    })
+    const e = await plur.learn('the staging deploy runs at 09:00', {
+      domain: 'acme.infra.deploy',
+    }) as {
+      scope: string
+      structured_data?: {
+        _routed?: unknown
+        _routeRefused?: { scope: string; confidence: number; reason: string }
+      }
+    }
+    // Landed at the default, NOT in the team store.
+    expect(e.scope).toBe('global')
+    // And it is not silent: the refusal is recorded where `_routed` would have been.
+    expect(e.structured_data?._routed).toBeUndefined()
+    expect(e.structured_data?._routeRefused?.scope).toBe('group:acme/eng')
+    expect(e.structured_data?._routeRefused?.reason).toBeTruthy()
+  })
+
+  it('every shared prefix is refused, not just group:', async () => {
+    for (const scope of ['group:acme/eng', 'project:acme-app', 'space:acme', 'team:acme', 'org:acme', 'public']) {
+      const plur = makePlur({ stores: [{ path: '/tmp/r-s.yaml', scope, description: 'S', covers: ['acme.*'] }] })
+      const e = await plur.learn('the staging deploy runs at 09:00', { domain: 'acme.infra.deploy' }) as {
+        scope: string; structured_data?: { _routeRefused?: { scope: string } }
+      }
+      expect(e.scope, `${scope} must not receive an unscoped write`).toBe('global')
+      expect(e.structured_data?._routeRefused?.scope).toBe(scope)
+    }
+  })
+
+  it('still auto-routes to a PERSONAL scope — the mechanism is not disabled', async () => {
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-mine.yaml', scope: 'user:crt', description: 'Mine', covers: ['acme.*'] },
+      ],
+    })
+    const e = await plur.learn('the staging deploy runs at 09:00', { domain: 'acme.infra.deploy' }) as {
+      scope: string; structured_data?: { _routed?: { scope: string }; _routeRefused?: unknown }
+    }
+    expect(e.scope).toBe('user:crt')
+    expect(e.structured_data?._routed?.scope).toBe('user:crt')
+    expect(e.structured_data?._routeRefused).toBeUndefined()
+  })
+
+  it('passes a higher-ranked SHARED candidate over in favour of an eligible personal one', async () => {
+    const plur = makePlur({
+      stores: [
+        // More specific cover: ranks FIRST on the coverSpecificity tie-break.
+        { path: '/tmp/r-team.yaml', scope: 'group:acme/eng', description: 'Eng', covers: ['acme.infra'] },
+        { path: '/tmp/r-mine.yaml', scope: 'user:crt', description: 'Mine', covers: ['acme'] },
+      ],
+    })
+    const e = await plur.learn('the staging deploy runs at 09:00', { domain: 'acme.infra.deploy' }) as {
+      scope: string
+      structured_data?: { _routed?: { scope: string }; _routeRefused?: { scope: string } }
+    }
+    // The refused shared candidate does not end the search.
+    expect(e.scope).toBe('user:crt')
+    expect(e.structured_data?._routed?.scope).toBe('user:crt')
+    expect(e.structured_data?._routeRefused?.scope).toBe('group:acme/eng')
+  })
+
+  it('an EXPLICIT shared scope still routes there — the refusal is only for unscoped writes', async () => {
+    const plur = makePlur({
+      stores: [{ path: '/tmp/r-team.yaml', scope: 'group:acme/eng', description: 'Eng', covers: ['acme.*'] }],
+    })
+    const e = await plur.learn('the staging deploy runs at 09:00', {
+      scope: 'group:acme/eng',
+      domain: 'acme.infra.deploy',
+    }) as { scope: string; structured_data?: { _routeRefused?: unknown } }
+    expect(e.scope).toBe('group:acme/eng')
+    expect(e.structured_data?._routeRefused).toBeUndefined()
+  })
+
+  it('allow_shared_auto_route: true restores the old behaviour, deliberately', async () => {
+    const plur = makePlur({
+      scope_routing: { allow_shared_auto_route: true },
+      stores: [{ path: '/tmp/r-team.yaml', scope: 'group:acme/eng', description: 'Eng', covers: ['acme.*'] }],
+    })
+    const e = await plur.learn('the staging deploy runs at 09:00', { domain: 'acme.infra.deploy' }) as {
+      scope: string; structured_data?: { _routed?: { scope: string }; _routeRefused?: unknown }
+    }
+    expect(e.scope).toBe('group:acme/eng')
+    expect(e.structured_data?._routed?.scope).toBe('group:acme/eng')
+    expect(e.structured_data?._routeRefused).toBeUndefined()
+  })
+
+  // The other half of #1115: `plur_suggest_scope` weighed tags while the write
+  // path routed on a forward domain match alone, so the tool could name one
+  // scope and the write land in another. Both now go through decideAutoRoute.
+  it('previewAutoRoute reports exactly what the write path does — refusal case', async () => {
+    const plur = makePlur({
+      stores: [{ path: '/tmp/r-team.yaml', scope: 'group:acme/eng', description: 'Eng', covers: ['acme.*'] }],
+    })
+    const signals = { statement: 'the staging deploy runs at 09:00', domain: 'acme.infra.deploy' }
+    const decision = plur.previewAutoRoute(signals)
+    const e = await plur.learn(signals.statement, { domain: signals.domain }) as { scope: string }
+    expect(decision.action).toBe('refuse-shared')
+    expect(decision.scope).toBeNull()
+    expect(decision.refusedShared?.scope).toBe('group:acme/eng')
+    expect(e.scope).toBe('global') // what the preview said would happen
+  })
+
+  it('previewAutoRoute reports exactly what the write path does — routed case', async () => {
+    const plur = makePlur({
+      stores: [{ path: '/tmp/r-mine.yaml', scope: 'user:crt', description: 'Mine', covers: ['acme.*'] }],
+    })
+    const signals = { statement: 'the staging deploy runs at 09:00', domain: 'acme.infra.deploy' }
+    const decision = plur.previewAutoRoute(signals)
+    const e = await plur.learn(signals.statement, { domain: signals.domain }) as { scope: string }
+    expect(decision.action).toBe('route')
+    expect(decision.scope).toBe('user:crt')
+    expect(e.scope).toBe(decision.scope)
   })
 })

@@ -483,6 +483,10 @@ export const EngramSchema = z.object({
     scope: z.string(),
     session_id: z.string().nullable().default(null),
     stored_at: z.string().describe('ISO 8601 timestamp of this write.'),
+    validated_by: z.string().optional()
+      .describe('Set when this entry records a shared-scope save of the same text: the team scope that validated this engram (#1268). The team save itself is written separately.'),
+    promoted_from: z.string().optional()
+      .describe('Set on the first source of a global copy the recurrence ladder made of a team-store engram (#1268): the team scope it was promoted from. The team engram itself is left in its store; `derived_from` names it.'),
   })).default([]).describe('Provenance of each write attempt; one entry per write.'),
 
   // === SP1: Cross-scope recurrence (issue #176) ===
@@ -511,10 +515,47 @@ export const EngramSchema = z.object({
    * cross-cutting safety conventions, and core operating principles only.
    * Pinned engrams still respect the token budget — they bypass per-pack and
    * per-domain fairness caps in fillTokenBudget so always-load behavior is
-   * honored even if a single pack contributes many.
+   * honored even if a single pack contributes many. Tier is controlled by
+   * pinned_tier; see pinned_tier and pinned_priority for budget semantics.
    */
   pinned: z.boolean().optional()
-    .describe('Always-load flag. Pinned engrams bypass the keyword-relevance gate and are eligible for injection every session. Use sparingly.'),
+    .describe(
+      'Always-load flag. If true, this engram is eligible for injection every ' +
+      'session regardless of keyword relevance. Tier is controlled by pinned_tier. ' +
+      'Use sparingly — see pinned_tier and pinned_priority for budget semantics.'
+    ),
+
+  /**
+   * Tier within the pinned budget (pinned two-tier model). Only meaningful
+   * with `pinned: true`; cleared on unpin.
+   * "hard": a sub-cap inside the pinned quota (`injection.pinned_hard_ratio`
+   *         of it, default 0.5). Filled first within each origin. A write that
+   *         would grow the hard tier past its cap is rejected.
+   * "soft": gets what the hard tier leaves of the pinned share, ordered by
+   *         pinned_priority, then relevance score.
+   * Default when omitted: "soft". Pins never outrank the origin order
+   * (primary store, then stores/remote, then packs).
+   */
+  pinned_tier: z.enum(['hard', 'soft']).optional()
+    .describe(
+      'Tier within the pinned budget. "hard": a sub-cap inside the pinned quota ' +
+      '(injection.pinned_hard_ratio of it, default 0.5), filled first within each ' +
+      'origin; a write that would grow the hard tier past its cap is rejected. ' +
+      '"soft": gets what the hard tier leaves, ordered by pinned_priority then ' +
+      'relevance score. Default when omitted: "soft".'
+    ),
+
+  /**
+   * Soft-tier priority. 1 (lowest) to 100 (highest). Default 50. Higher is
+   * selected first within an origin; ties fall back to relevance score.
+   * Ignored for pinned_tier="hard". Cleared on unpin.
+   */
+  pinned_priority: z.number().int().min(1).max(100).optional()
+    .describe(
+      'Soft-tier priority. 1 (lowest) to 100 (highest). Default 50. Higher is ' +
+      'selected first within an origin; ties fall back to relevance score. ' +
+      'Ignored for pinned_tier="hard".'
+    ),
 
   /** Measurement context for numeric or benchmark-derived claims (#869).
    *  Records model, source_type, hardware, dataset, and/or date under which the

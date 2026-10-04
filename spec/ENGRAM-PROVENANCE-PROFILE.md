@@ -636,8 +636,8 @@ disclosure.
 
 #### 5.3.3 Which way the integrity dependency runs
 
-The pack integrity hash covers `SKILL.md` and `engrams.yaml` only (Engram
-Standard §5.5). Files under `provenance/` are therefore **not** covered by it,
+The pack integrity hash covers the manifest (`SKILL.md`, or a deprecated
+`manifest.yaml` under v2) and `engrams.yaml` only (Engram Standard §5.5). Files under `provenance/` are therefore **not** covered by it,
 and adding them to the hash would be a breaking change to a stable section.
 
 So the dependency runs the other way round. **The record commits to the pack;
@@ -682,7 +682,7 @@ member so the record has no dangling reference.
 | `prov:wasGeneratedBy` | the assembly activity below |
 | `prov:hadMember` | one entry per engram shipped |
 | `engram:engramCount` | how many members |
-| `engram:packIntegrity` | the pack's `sha256:` value, per section 5.3.3 |
+| `engram:packIntegrity` | the pack's §5.5 value (`sha256:v2:`, or legacy `sha256:`), per section 5.3.3 |
 | `engram:license` + `odrl:hasPolicy` | the licence in the pack's own manifest, mapped by section 8. See below — this is not the same question as the licences inside |
 | `prov:wasAttributedTo` | who assembled it, when a creator is recorded. Omitted otherwise — never guessed |
 

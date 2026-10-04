@@ -13,6 +13,9 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
  *
  * Dismissed scopes are excluded from the list (and the session-start hint) until
  * `--reoffer`. Personal-family scopes are never offered (see registerScope/#382).
+ *
+ * Exit code: a refused `register` exits 1 in text and JSON mode alike; the JSON
+ * body (`success: false`, `error`) is still written to stdout.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -40,7 +43,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       return outputInfo(`${verb} scope "${scope}" (${url}).`, flags)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (json) return outputJson({ success: false, action: 'register', scope, error: msg })
+      if (json) {
+        // A refused registration exits 1 in both modes (decision S1). exitCode,
+        // not process.exit(), so the piped JSON body is never truncated.
+        process.exitCode = 1
+        return outputJson({ success: false, action: 'register', scope, error: msg })
+      }
       return exit(1, msg)
     }
   }

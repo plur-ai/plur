@@ -339,15 +339,20 @@ describe('lock-escalation gate (#181, audit item 3)', () => {
   /** Drive cross-scope recurrence to the point where the NEXT hit would lock. */
   async function escalateToDecided(): Promise<Engram> {
     await plur.learn(STMT, { scope: 'project:a' })            // create (leaning)
-    await plur.learn(STMT, { scope: 'project:b' })            // recurrence 1 — no escalation
-    const e = await plur.learn(STMT, { scope: 'project:c' })  // recurrence 2 — leaning → decided
+    // Personal saves drive the ladder: since decision A1 (2026-09-29) a shared
+    // save is credited, never absorbed, so `project:b`/`project:c` saves would
+    // each write their own engram and return it.
+    await plur.learn(STMT, { scope: 'user:b' })               // recurrence 1 — no escalation
+    const e = await plur.learn(STMT, { scope: 'user:c' })     // recurrence 2 — leaning → decided
     expect((await plur.getById(e.id) as any).commitment).toBe('decided')
     return e as Engram
   }
 
   it('without a tension, the next cross-scope hit locks (baseline #176 behavior)', async () => {
     const e = await escalateToDecided()
-    await plur.learn(STMT, { scope: 'project:d' })            // recurrence 3 — decided → locked
+    // A personal save: since #1268 a shared save only credits the (now global)
+    // engram and never locks it, which would mask what these tests measure.
+    await plur.learn(STMT, { scope: 'local' })                // recurrence 3 — decided → locked
     expect((await plur.getById(e.id) as any).commitment).toBe('locked')
   })
 
@@ -358,7 +363,7 @@ describe('lock-escalation gate (#181, audit item 3)', () => {
     assert(eStored !== null, 'escalated engram was not stored')
     await plur.recordTensions([pairOf(eStored, rival)])
 
-    await plur.learn(STMT, { scope: 'project:d' })            // recurrence 3 — capped
+    await plur.learn(STMT, { scope: 'local' })                // recurrence 3 — capped (personal save, #1268)
     expect((await plur.getById(e.id) as any).commitment).toBe('decided')
   })
 
@@ -369,11 +374,11 @@ describe('lock-escalation gate (#181, audit item 3)', () => {
     assert(eStored !== null, 'escalated engram was not stored')
     const { records } = await plur.recordTensions([pairOf(eStored, rival)])
 
-    await plur.learn(STMT, { scope: 'project:d' })            // blocked
+    await plur.learn(STMT, { scope: 'local' })                // blocked (personal save, #1268)
     expect((await plur.getById(e.id) as any).commitment).toBe('decided')
 
     await plur.resolveTension(records[0].id, e.id)            // engram wins
-    await plur.learn(STMT, { scope: 'project:e' })            // next hit locks
+    await plur.learn(STMT, { scope: 'user:e' })               // next hit locks
     expect((await plur.getById(e.id) as any).commitment).toBe('locked')
   })
 })

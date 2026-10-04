@@ -284,16 +284,14 @@ github.com/plur-ai/plur/releases/tag/v$VERSION"
   # One line per harness this repo actually integrates with. Windsurf is not
   # listed: it has no integration here (generic MCP only), and naming it beside
   # harnesses that ship hooks implies a parity that does not exist. Codex and
-  # Antigravity ship hooks through @plur-ai/cli. opencode is set up through
-  # @plur-ai/cli too: @plur-ai/opencode has no bin, and opencode fetches that
-  # plugin from npm itself — this is the line packages/opencode/README.md uses.
+  # Antigravity ship hooks through @plur-ai/cli. OpenCode shares the npm line:
+  # opencode fetches the unpinned @plur-ai/opencode plugin from npm itself and
+  # takes its plur_* tools from @plur-ai/mcp, so this line updates it. Its
+  # first-time setup (plur init --opencode) is not an update step.
   REPLY="Manual update:
 
-Claude Code / Cursor / Codex / Antigravity:
+Claude Code / Cursor / OpenCode / Codex / Antigravity:
 npm update -g @plur-ai/mcp @plur-ai/cli
-
-opencode:
-npx @plur-ai/cli init --opencode
 
 OpenClaw:
 openclaw plugins install @plur-ai/claw

@@ -38,6 +38,13 @@ export const SPAWN_SUITES = [
   'test/rescope.test.ts',
   'test/sync.test.ts',
   'test/timeline.test.ts',
+  // #1269: spawns every editor hook against a real-HTTP stub, wall-clock timed.
+  'test/hook-outbox-flush.test.ts',
+  // #1299: spawns status / doctor / outbox / sync against a real-HTTP stub.
+  'test/outbox-needs-action.test.ts',
+  // 0.21.1 save deadline: spawns learn/forget/feedback against hanging, 401
+  // and real-HTTP stubs, wall-clock timed, plus a 13k-engram store.
+  'test/save-deadline-outbox.test.ts',
 ]
 
 export default defineConfig({

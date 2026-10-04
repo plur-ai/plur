@@ -1,13 +1,16 @@
 /**
  * Import engine (issue #441) — routes normalized ImportRecords through
- * `plur.learn()` so every existing write gate applies:
+ * `plur.learn()` so every existing write gate applies (secret detection, the
+ * sensitive-scope guard, routing).
  *
- *   - content-hash fast-path dedup (same scope → write_count bump),
- *   - cross-scope recurrence (same statement, different scope → graduation),
- *   - secret detection and the sensitive-scope guard.
+ * Re-running an import changes nothing (Decision R, owner 2026-09-27). A record
+ * that learn() would resolve to an existing engram — same-scope content-hash
+ * dedup or cross-scope recurrence, asked with `plur.wouldDeduplicate` (learn()'s
+ * own dedup code) BEFORE learn() is called — is reported as skipped and the
+ * existing engram is left completely untouched: no write_count bump, no sources
+ * append, no recurrence, no graduation. A re-import is a retry, not new evidence.
  *
- * Imports NEVER raw-append to the store. A record whose learn() resolves to a
- * pre-existing (or earlier-in-this-run) engram is reported as skipped.
+ * Imports NEVER raw-append to the store.
  *
  * Conflicts are detected with the same non-LLM heuristic pre-filter the
  * tension scan uses (scope partition → domain overlap → subject overlap,
@@ -25,9 +28,11 @@
 import type { Plur } from '../index.js'
 import type { Engram } from '../schemas/engram.js'
 import type { LearnContext } from '../types.js'
-import { computeContentHash } from '../content-hash.js'
+import { computeContentHash, isHashable } from '../content-hash.js'
 import { detectSecrets } from '../secrets.js'
+import { learnContextContent } from '../content-fields.js'
 import { scopesOverlap, domainSegmentsOverlap, subjectsOverlap } from '../tensions.js'
+import { isSharedScope } from '../scope-util.js'
 import type { ImportRecord, ImportRecordResult, MigrationReport } from './types.js'
 
 export interface RunImportOptions {
@@ -57,11 +62,17 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
   // metadata on the existing engram along the way).
   const preExisting = await plur.list({ include_expired: true })
   const knownIds = new Set(preExisting.map(e => e.id))
+  // Dry run only: earlier records of this file, keyed both by hash and by
+  // (hash, scope). The store half of the dedup question goes to
+  // `plur.wouldDeduplicate` (learn()'s own code, which follows decision A1 /
+  // F1: a shared-scope record is never absorbed by another scope's engram).
+  // Which key a record is looked up by follows `plur.dedupScopeFor`:
+  // scope-blind where learn() dedups across scopes (YAML, #176, non-shared
+  // scopes), (hash, scope) where it does not (a shared scope, a delegating
+  // Postgres/PGLite store, a writable-remote scope) — so two records of one
+  // file in different scopes are predicted as the real run imports them.
   const hashToId = new Map<string, string>()
-  for (const e of preExisting) {
-    const hash = (e as any).content_hash ?? computeContentHash(e.statement)
-    if (!hashToId.has(hash)) hashToId.set(hash, e.id)
-  }
+  const inFileKey = (hash: string, scope: string) => `${hash}\u0000${scope}`
   const allowSecrets = (await plur.status()).config?.allow_secrets === true
 
   const results: ImportRecordResult[] = []
@@ -78,25 +89,62 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
       continue
     }
     const scope = opts.scope ?? record.scope
+    // One context for both modes: the dry run must scan and key exactly what
+    // learn() will (formal R2, core-retrieval#10).
+    let context: LearnContext
+    try {
+      context = importContext(record, scope, opts)
+    } catch (err) {
+      errors++
+      results.push({ statement, action: 'error', error: (err as Error).message })
+      continue
+    }
+
+    // learn()'s hard scan: the statement plus every content field of the
+    // context (`_hardScanText`), not only statement/domain/tags — a secret in
+    // `source` is refused by learn() and must be predicted as an error. Both
+    // modes check it FIRST, so the real run's pre-learn dedup below cannot
+    // turn learn()'s refusal into a skip (dry/real parity).
+    let secretPattern: string | null = null
+    if (!allowSecrets) {
+      const content = learnContextContent(context)
+      const secretText = content ? `${statement}\n${JSON.stringify(content)}` : statement
+      secretPattern = detectSecrets(secretText)[0]?.pattern ?? null
+    }
 
     if (dryRun) {
       // Mirror the learn() gates without writing.
-      if (!allowSecrets) {
-        const secretText = [statement, record.domain, ...(record.tags ?? [])].filter(Boolean).join(' ')
-        const secrets = detectSecrets(secretText)
-        if (secrets.length > 0) {
-          errors++
-          results.push({ statement, action: 'error', error: `Secret detected in statement/domain/tags: ${secrets[0].pattern}` })
-          continue
-        }
-      }
-      const hash = computeContentHash(statement)
-      if (hashToId.has(hash)) {
-        skipped++
-        results.push({ statement, action: 'skipped', id: hashToId.get(hash) })
+      if (secretPattern !== null) {
+        errors++
+        results.push({ statement, action: 'error', error: `Secret detected in statement or context: ${secretPattern}` })
         continue
       }
-      hashToId.set(hash, '') // in-file duplicates dedup against each other too
+      // learn() never dedups a statement that normalizes to nothing (#896):
+      // every such statement shares the empty-string hash. Predict "imported".
+      if (isHashable(statement)) {
+        const hash = computeContentHash(statement)
+        // Against the store: ask learn()'s own dedup (`Plur.wouldDeduplicate`),
+        // not a scope-blind hash map — on a delegating store (Postgres/PGLite)
+        // learn() does not treat another scope's primary row as a duplicate,
+        // so the map reported `skipped` for a record the real run imports.
+        const existing = await plur.wouldDeduplicate(statement, context)
+        if (existing !== null) {
+          skipped++
+          results.push({ statement, action: 'skipped', id: existing })
+          continue
+        }
+        // Earlier records of THIS file (nothing was written for them).
+        const plan = await plur.dedupScopeFor(statement, context)
+        const key = plan.acrossScopes ? hash : inFileKey(hash, plan.scope)
+        if (hashToId.has(key)) {
+          skipped++
+          results.push({ statement, action: 'skipped', id: hashToId.get(key) })
+          continue
+        }
+        // in-file duplicates dedup against each other too
+        hashToId.set(hash, '')
+        hashToId.set(inFileKey(hash, plan.scope), '')
+      }
       const conflictIds = findConflicts(statement, scope, record.domain, preExisting)
       imported++
       if (conflictIds.length > 0) conflicts++
@@ -105,22 +153,23 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
     }
 
     try {
-      const context: LearnContext = {
-        source: record.source ?? opts.defaultSource ?? `import:${opts.from}`,
+      // Decision R: a record that already exists is a TRUE skip — asked before
+      // learn(), so the existing engram is never touched (learn() on a hit
+      // bumps write_count / appends a source / records recurrence). A secret
+      // record goes on to learn(), which refuses it with its own message.
+      if (secretPattern === null) {
+        const existing = await plur.wouldDeduplicate(statement, context)
+        if (existing !== null) {
+          skipped++
+          results.push({ statement, action: 'skipped', id: existing })
+          continue
+        }
       }
-      if (record.type) context.type = record.type
-      if (scope) context.scope = scope
-      if (record.domain) context.domain = record.domain
-      if (record.tags && record.tags.length > 0) context.tags = record.tags
-      if (record.valid_from) context.valid_from = record.valid_from.slice(0, 10)
-      if (record.valid_until) context.valid_until = record.valid_until.slice(0, 10)
-      if (record.pinned) context.pinned = true
-
       const engram = await plur.learn(statement, context)
 
       if (knownIds.has(engram.id)) {
-        // learn() resolved to an existing engram (hash dedup or cross-scope
-        // recurrence) — the dedup gate did its job.
+        // Defensive: learn() still resolved to an existing engram (a write
+        // landed between the check and learn()). Reported as skipped.
         skipped++
         results.push({ statement, action: 'skipped', id: engram.id })
         continue
@@ -151,6 +200,21 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
     errors,
     records: results,
   }
+}
+
+/** The LearnContext a record is written with (shared by the dry and real runs). */
+function importContext(record: ImportRecord, scope: string | undefined, opts: RunImportOptions): LearnContext {
+  const context: LearnContext = {
+    source: record.source ?? opts.defaultSource ?? `import:${opts.from}`,
+  }
+  if (record.type) context.type = record.type
+  if (scope) context.scope = scope
+  if (record.domain) context.domain = record.domain
+  if (record.tags && record.tags.length > 0) context.tags = record.tags
+  if (record.valid_from) context.valid_from = record.valid_from.slice(0, 10)
+  if (record.valid_until) context.valid_until = record.valid_until.slice(0, 10)
+  if (record.pinned) context.pinned = true
+  return context
 }
 
 /**

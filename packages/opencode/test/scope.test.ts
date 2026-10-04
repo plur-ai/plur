@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, realpathSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { resolveScopeRoot, resolveTrustedScope } from '../src/scope.js'
 import { PlurPlugin } from '../src/index.js'
+import { withFolderMap, folderOn } from './folder-fixture.js'
 
 describe('resolveScopeRoot', () => {
   it('prefers a real worktree when there is one', () => {
@@ -38,6 +39,8 @@ describe('PlurPlugin project config integration', () => {
       // behaviour itself is covered by its own describe block below.
       isDirectoryTrusted: vi.fn().mockReturnValue(true),
     }
+    // #1347: the same trust, as the folder map holds it.
+    mockPlur = withFolderMap(mockPlur, [{ path: tempDir, trusted: true }])
   })
 
   afterEach(() => {
@@ -119,18 +122,23 @@ domain: fixture-domain-abc
     // Would FAIL if: domain/scope wiring in learn.ts was deleted, or if readProjectConfig wasn't called from right dir
   })
 
-  it('C. verifies readProjectConfig is called with resolved scope root (fails if cwd wiring removed)', async () => {
+  it('C. reads the .plur.yaml from the folder opencode is open in, walking up into its worktree (fails if cwd wiring removed)', async () => {
     // Create fixture config in temp directory
     const fixtureConfig = `scope: project:cwd-test-scope
 domain: cwd-test-domain
 `
     writeFileSync(join(tempDir, '.plur.yaml'), fixtureConfig)
 
-    // Call plugin with explicit worktree that should be preferred over directory
+    // Since the audit of #1517 (F1) the folder decision and the .plur.yaml
+    // read are for the folder opencode is open in (`directory`), as in the
+    // CLI hooks. Opened in a subfolder of the worktree, the walk still reaches
+    // the repo's .plur.yaml (C2 and C3 below pin which folder is read).
+    const sub = join(tempDir, 'sub')
+    mkdirSync(sub)
     const plur = mockPlur
     const plugin = await PlurPlugin({
-      directory: '/tmp/some-other-dir',
-      worktree: tempDir, // This should be preferred by resolveScopeRoot
+      directory: sub,
+      worktree: tempDir,
       _plur: plur,
     } as any)
 
@@ -152,10 +160,49 @@ domain: cwd-test-domain
     // Would FAIL if: readProjectConfig(scopeRoot) was changed to readProjectConfig() or readProjectConfig(process.cwd())
   })
 
+  // R5 (re-audit of #1517): case C cannot tell `directory` from `worktree`,
+  // since both walk up to the same file. These two can. The scope comes from
+  // core's resolver either way, so they pin what the plugin itself reads from
+  // the .plur.yaml: its remote settings.
+  it('C2. a subfolder with its own .plur.yaml uses that one, not the worktree\'s', async () => {
+    writeFileSync(join(tempDir, '.plur.yaml'), 'scope: project:worktree-scope\nremote_url: https://worktree.example\nremote_token: t-worktree\n')
+    const sub = join(tempDir, 'sub')
+    mkdirSync(sub)
+    writeFileSync(join(sub, '.plur.yaml'), 'scope: project:subfolder-scope\nremote_url: https://subfolder.example\nremote_token: t-sub\n')
+    const plugin = await PlurPlugin({ directory: sub, worktree: tempDir, _plur: mockPlur } as any)
+
+    await plugin['chat.message']!({ sessionID: 'ses-c2' } as any, { message: { id: 'msg-1' }, parts: [{ type: 'text', text: 'q' }] } as any)
+
+    expect(mockPlur.injectHybrid).toHaveBeenCalled()
+    const opts = mockPlur.injectHybrid.mock.calls[0][1]
+    expect(opts.scope).toBe('project:subfolder-scope')
+    expect(opts.remote_project?.url).toBe('https://subfolder.example')
+  })
+
+  it('C3. opened in a folder outside the worktree, the worktree\'s .plur.yaml is not read', async () => {
+    writeFileSync(join(tempDir, '.plur.yaml'), 'scope: project:worktree-scope\nremote_url: https://worktree.example\nremote_token: t-worktree\n')
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-scope-elsewhere-')))
+    try {
+      const plur = withFolderMap(mockPlur, [{ path: tempDir, trusted: true }, { path: elsewhere, plur: 'on' }])
+      const plugin = await PlurPlugin({ directory: elsewhere, worktree: tempDir, _plur: plur } as any)
+
+      await plugin['chat.message']!({ sessionID: 'ses-c3' } as any, { message: { id: 'msg-1' }, parts: [{ type: 'text', text: 'q' }] } as any)
+
+      expect(plur.injectHybrid).toHaveBeenCalled()
+      const opts = plur.injectHybrid.mock.calls[0][1]
+      expect(opts.scope).toBeUndefined()
+      expect(opts.remote_project).toBeUndefined()
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   it('handles missing .plur.yaml — scope undefined passed to injectHybrid', async () => {
     // Deliberately create a directory with NO .plur.yaml
     const emptyDir = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-no-config-')))
-    const plur = mockPlur
+    // #1347: a folder with no decision asks instead of recalling; this case is
+    // about a folder that is on but has no .plur.yaml.
+    const plur = folderOn(mockPlur, emptyDir)
 
     try {
       const plugin = await PlurPlugin({ directory: emptyDir, _plur: plur } as any)
@@ -198,6 +245,9 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
       learnRouted: vi.fn().mockResolvedValue(undefined),
       isDirectoryTrusted: vi.fn().mockReturnValue(false),
     }
+    // #1347: an untrusted .plur.yaml with no decision asks (folder-map.test.ts);
+    // here the folder map says on, so the decision applies and the repo's hints do not.
+    withFolderMap(plur, [{ path: tempDir, plur: 'on' }])
     const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
     await plugin['chat.message']!({ sessionID: 's1' } as any, {
       message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
@@ -216,6 +266,7 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
       learnRouted: vi.fn().mockResolvedValue(undefined),
       isDirectoryTrusted: vi.fn().mockReturnValue(true),
     }
+    withFolderMap(plur, [{ path: tempDir, trusted: true }])
     const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
     await plugin['chat.message']!({ sessionID: 's1' } as any, {
       message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
@@ -225,9 +276,14 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
     expect(callArgs[1].scope).toBe('group:acme/eng')
   })
 
-  it('never reads remote_url/remote_token/remote_scopes into the effective scope, trusted or not (regression)', async () => {
-    // hook-inject (CLI) honors these fields; this plugin never has and must
-    // never start to — see ARCHITECTURE.md/README.md's Scope sections.
+  it('carries remote fields ONLY inside remote_project, and only when trusted (#1207)', async () => {
+    // Until #1207 this asserted the plugin never read the remote fields at
+    // all. It now does — through core's shared gate, the same one every CLI
+    // adapter passes (#1196/#1198), because an enterprise user's team memory
+    // silently never arriving here was the bug. What survives from the old
+    // assertion is the shape: these fields are a REMOTE grant and never
+    // become loose recall options or leak from an untrusted directory. The
+    // dial/refuse pair itself lives in remote.test.ts.
     writeFileSync(
       join(tempDir, '.plur.yaml'),
       'scope: group:acme/eng\nremote_url: https://evil.example\nremote_token: SHOULD-NEVER-APPEAR\nremote_scopes:\n  - group:acme/eng\n',
@@ -238,16 +294,29 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
         learnRouted: vi.fn().mockResolvedValue(undefined),
         isDirectoryTrusted: vi.fn().mockReturnValue(trusted),
       }
+      withFolderMap(plur, [trusted ? { path: tempDir, trusted: true } : { path: tempDir, plur: 'on' }])
       const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)
       await plugin['chat.message']!({ sessionID: `s-${trusted}` } as any, {
         message: { id: 'm1' }, parts: [{ type: 'text', text: 'hi' }],
       } as any)
       const opts = plur.injectHybrid.mock.calls[0][1]
+      // Never as loose options — `remote_project` is the one channel.
       expect(opts).not.toHaveProperty('remote_url')
       expect(opts).not.toHaveProperty('remote_token')
       expect(opts).not.toHaveProperty('remote_scopes')
-      expect(JSON.stringify(opts)).not.toContain('evil.example')
-      expect(JSON.stringify(opts)).not.toContain('SHOULD-NEVER-APPEAR')
+      if (trusted) {
+        expect(opts.remote_project).toEqual({
+          url: 'https://evil.example',
+          token: 'SHOULD-NEVER-APPEAR',
+          scopes: ['group:acme/eng'],
+        })
+      } else {
+        // Untrusted: the repo named both the host and the credential (#1196),
+        // so neither may appear anywhere in what the recall is given.
+        expect(opts.remote_project).toBeUndefined()
+        expect(JSON.stringify(opts)).not.toContain('evil.example')
+        expect(JSON.stringify(opts)).not.toContain('SHOULD-NEVER-APPEAR')
+      }
     }
   })
 })

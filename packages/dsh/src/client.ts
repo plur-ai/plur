@@ -67,6 +67,8 @@ export interface PlurClient {
   inject?(task: string, options?: ReadScope): Promise<InjectionLike>
   /** Targeted list lookup, backing the `plur_recall` tool. */
   recall?(query: string, options?: ReadScope & { limit?: number }): Promise<readonly EngramLike[]>
+  /** Has the user trusted this directory (`plur trust <dir>`)? Synchronous in core. */
+  isDirectoryTrusted?(dir: string): boolean
   /** Store one assertion. Positional statement, NOT an options object. */
   learn?(statement: string, context?: LearnContextLike): Promise<unknown>
   /** Retire one engram by id. */

@@ -6,3 +6,5 @@
 /.github/workflows/   @plur9
 /.github/CODEOWNERS    @plur9
 /scripts/release.sh    @plur9
+/scripts/check-workflow-pins.py       @plur9
+/scripts/test_check_workflow_pins.py  @plur9

@@ -170,6 +170,7 @@ describe('doctor --quiet (#730)', () => {
       datacoreCollision: false,
       staleNpxHooks: false,
       staleNpxMcp: false,
+      brokenNodeMcp: [],
       hookShim: { valid: false, shimPath: '/tmp/shim', error: 'shim not found — run `plur init` to create it' },
       mcpShim: { valid: true, shimPath: '/tmp/mcp-shim' },
       handshake: { ok: false, error: 'skipped (--no-handshake)' },
@@ -179,11 +180,14 @@ describe('doctor --quiet (#730)', () => {
       cursorWired: false,
       codexDetected: false,
       codexWired: false,
+      codexCmdShimMcp: false,
+      windowsHookFallback: [],
       agyDetected: false,
       agyWired: false,
       pgliteGemmaReembedNeeded: false,
       pgliteOrphan: null,
       staleContentHashes: 0,
+      ignoredDuplicateStores: [],
       opencode: null,
       overall: 'fail',
     }
@@ -204,5 +208,21 @@ describe('doctor --quiet (#730)', () => {
     const { printText } = await import('../src/commands/doctor.js')
     printText(await report(), { quiet: false })
     expect(out.join('')).toContain('plur doctor — Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode diagnostic')
+  })
+
+  it('lists store entries ignored as duplicates and points at `plur stores prune` (#1356)', async () => {
+    const { printText } = await import('../src/commands/doctor.js')
+    printText({
+      ...(await report()),
+      ignoredDuplicateStores: [
+        { path: '/h/.plur/engrams.yaml', scope: 'project:h', duplicateOf: 'the primary store', primary: true },
+      ],
+    }, { quiet: true })
+    const text = out.join('')
+    expect(text).toContain('config.yaml lists 1 store entry that is ignored at load')
+    expect(text).toContain('"project:h" (/h/.plur/engrams.yaml): the same file as the primary store')
+    expect(text).toContain('Loading it would inject the same engrams twice, so plur skips it')
+    expect(text).toContain('run `plur stores prune`')
+    expect(text).not.toContain('by hand')
   })
 })

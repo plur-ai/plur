@@ -1,6 +1,43 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
-import { findProjectConfigPath, readProjectConfigFromPath } from '@plur-ai/core'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { findProjectConfigPath, readProjectConfigFromPath, FolderMapError } from '@plur-ai/core'
+import { nonceRequired, fail, nonceSession } from './folders.js'
+
+/**
+ * Split `[dir] [--nonce <n>]` (#1378). Returns null on a malformed argument
+ * list so the caller can print its usage.
+ */
+export function parseTrustArgs(args: string[]): { dir?: string; nonce?: string } | null {
+  let dir: string | undefined
+  let nonce: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '--nonce') {
+      const v = args[++i]
+      if (!v || v.startsWith('--')) return null
+      nonce = v
+    } else if (a.startsWith('--') || dir !== undefined) {
+      return null
+    } else {
+      dir = a
+    }
+  }
+  return { ...(dir !== undefined ? { dir } : {}), ...(nonce !== undefined ? { nonce } : {}) }
+}
+
+/**
+ * The terminal-or-nonce gate `plur folders set` has, for `plur trust`
+ * (#1378). Outside an interactive terminal a grant needs a `--nonce` issued
+ * for this folder and `{ trusted: true }`; a person at a terminal needs none.
+ * `plur untrust` is not gated: a revocation only removes trust (#1477 review).
+ * See nonceRequired for what the gate does not stop.
+ */
+export function refuseTrustWithoutNonce(nonce: string | undefined, json: boolean): void {
+  if (nonce !== undefined || !nonceRequired(process.stdin.isTTY, process.stdout.isTTY)) return
+  fail(new FolderMapError('nonce-required',
+    'Not an interactive terminal: plur trust needs the --nonce the ask flow issued for this answer. ' +
+    'Run plur trust yourself in a terminal to grant trust by hand.'), json)
+}
 
 /**
  * `plur trust [dir]` — grant a directory the same "I vouch for this" status
@@ -19,9 +56,8 @@ import { findProjectConfigPath, readProjectConfigFromPath } from '@plur-ai/core'
  * the current directory, matching `direnv allow`'s no-argument default.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
-  const plur = createPlur(flags)
-
   if (args.includes('--list')) {
+    const plur = createPlur(flags)
     const dirs = plur.listTrustedDirectories()
     if (shouldOutputJson(flags)) {
       outputJson({ trusted: dirs, count: dirs.length })
@@ -35,8 +71,20 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  const dir = args[0] || process.cwd()
-  const trusted = plur.trustDirectory(dir)
+  const parsed = parseTrustArgs(args)
+  if (!parsed) return exit(1, 'Usage: plur trust [dir] [--nonce <n>] | plur trust --list')
+  const dir = parsed.dir || process.cwd()
+  refuseTrustWithoutNonce(parsed.nonce, shouldOutputJson(flags))
+  const plur = createPlur(flags)
+  // #1347: the grant is `trusted: true` in the folder map. A map that cannot
+  // be read is refused rather than overwritten.
+  let trusted: string
+  try {
+    trusted = plur.trustDirectory(dir, parsed.nonce !== undefined ? { nonce: parsed.nonce, ...nonceSession() } : undefined)
+  } catch (err) {
+    if (err instanceof FolderMapError && err.code.startsWith('nonce-')) return fail(err, shouldOutputJson(flags))
+    return exit(1, (err as Error).message)
+  }
 
   // E7 (2026-09 audit): this is the one moment a human is in the loop before
   // a `.plur.yaml`'s scope/domain (and, if it declares one, a REMOTE store
@@ -73,5 +121,5 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } else {
     outputInfo('No .plur.yaml found here (or above, within this project) — nothing for an adapter to adopt yet. This grant takes effect if one is added later.', flags)
   }
-  outputInfo('A .plur.yaml scope/domain in this directory (or below it) will now be honored by adapters that check trust (e.g. the opencode plugin).', flags)
+  outputInfo('Recorded in folders.yaml, and in trust.yaml for adapters on an older core (the opencode plugin). A .plur.yaml in this directory (or below it) may now use the remote it names, and adapters that check trust honour its scope/domain.', flags)
 }

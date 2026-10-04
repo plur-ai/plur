@@ -91,8 +91,8 @@ describe('hook-inject concurrency guard (#519)', () => {
     )
     // With an empty store the output is still a session-start header (0 engrams).
     expect(result.status).toBe(0)
-    const parsed = JSON.parse(result.stdout) as { additionalContext?: string }
-    expect(parsed.additionalContext).toContain('session started')
+    const parsed = JSON.parse(result.stdout) as { hookSpecificOutput?: { additionalContext?: string } }
+    expect(parsed.hookSpecificOutput?.additionalContext).toContain('session started')
   }, 30_000)
 
   // MISSING (fail-open contract, PROVEN): a hook MUST never throw or block the

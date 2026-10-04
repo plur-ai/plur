@@ -103,6 +103,13 @@ const NOT_MODELLED = new Set([
   // the bundling that hid #1138's own blocking defect. Recorded as undecided,
   // which is what this set means, and routed to #1153 with the other twelve.
   'created_at', 'updated_at',
+  // Pinned two-tier model. Not transmitted yet: the server has to accept and
+  // honour them first, and a remote that rejected unknown keys would turn every
+  // tiered remote write into an outbox retry loop. Until then a tiered write to
+  // a remote scope lands there as a plain pin — the client still refuses one
+  // that would overrun the local hard-tier cap, because the remote-failure
+  // fallback stores the tier locally.
+  'pinned_tier', 'pinned_priority',
 ])
 
 describe('the remote write contract covers every schema field (#1151)', () => {

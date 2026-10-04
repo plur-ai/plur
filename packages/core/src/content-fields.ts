@@ -50,6 +50,9 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   commitment: 'control',
   memory_class: 'control',
   pinned: 'control',
+  // Pinned two-tier model: an enum and a validated integer, not text.
+  pin_tier: 'control',
+  pinned_priority: 'control',
   valid_from: 'control',
   valid_until: 'control',
   session: 'control',
@@ -103,6 +106,8 @@ export function learnContextContent(context: LearnContext | undefined): Record<s
  */
 export const PLUR_BOOKKEEPING_KEYS: ReadonlySet<string> = new Set([
   '_outbox', '_routed', '_demoted', '_rescoped_from', '_expiry_extracted',
+  // Decision D1: the queued "retire on remote" entry (server id + target url/scope).
+  '_retireRemote',
 ])
 
 /** `structured_data` with PLUR's own bookkeeping removed, or undefined if nothing else is in it. */

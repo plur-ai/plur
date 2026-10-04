@@ -1,7 +1,7 @@
 ---
 name: plur-memory
 description: Persistent learning for AI agents. Open engram format. Your agent learns from corrections, remembers across sessions, and transfers knowledge across domains.
-version: 0.20.0
+version: 0.21.0
 metadata:
   hermes:
     tags: [memory, learning, knowledge, engrams]
@@ -40,6 +40,10 @@ End your responses with a learning section when you discover reusable insights:
 ```
 
 The plugin auto-captures these — no manual `plur_learn` call needed. This is a convenience fallback; calling `plur_learn` directly is preferred for important learnings.
+
+## The Memory Line
+
+End every reply with one short line: `Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…` (recalled as a count; used and written as ids only, no statements), or `Memory — none`. Only count/list ids you actually saw this turn; never invent an id. Give details only if the user asks.
 
 ## Getting Started
 

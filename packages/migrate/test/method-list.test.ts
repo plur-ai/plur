@@ -59,6 +59,12 @@ const ALWAYS_ASYNC = new Set([
   // Embedding-backed, so it could never have been sync, and it is new in this
   // release, so no pre-0.16 call site exists for the migrate tool to rewrite.
   'nearDuplicates',
+  // Born async (formal verification round 2, 2026-09-27) — the importer's
+  // dry-run parity helpers: they answer "would learn() dedup this?" and
+  // "which scope would it write to?" through the same async store seam as
+  // learn(). New in this release, so no pre-0.16 call site exists.
+  'wouldDeduplicate',
+  'dedupScopeFor',
   // Born async (#852) — the content_hash repair behind `plur reindex-hashes`.
   // Takes the store lock and goes through the async PrimaryStore seam, so it
   // could never have been sync; new in this release, so there is no pre-0.16
@@ -74,6 +80,25 @@ const ALWAYS_ASYNC = new Set([
   // corpus through the async PrimaryStore seam, so it could never have been
   // sync; new in this release, so there is no pre-0.16 call site to rewrite.
   'pinnedQuota',
+  // Born async (#1310) — batch lookup of injected engrams for the auto-rate
+  // Stop hook. Loads through the async PrimaryStore seam and may fetch ids from
+  // remote stores, so it could never have been sync; new in this release, so
+  // there is no pre-0.16 call site to rewrite.
+  'getByIds',
+  // Born async (#1299) — counts outbox entries by state and lists the scopes
+  // that need action. Wraps the async listOutbox, so it could never have been
+  // sync; new in this release, so there is no pre-0.16 call site to rewrite.
+  'outboxSummary',
+  // Born async (#1265) — the verified add behind `plur stores add --url`.
+  // Calls the remote server's /me before writing the store entry, so it could
+  // never have been sync; new in this release, so there is no pre-0.16 call
+  // site to rewrite.
+  'addRemoteStore',
+  // Born async (#1413) — the /me round trip addRemoteStore and `plur remote`
+  // share, split out so a store can be checked without writing it. Network
+  // I/O, so it could never have been sync; new in this release, so there is
+  // no pre-0.16 call site to rewrite.
+  'verifyRemoteStore',
 ])
 
 /** Public methods of `Plur`, mapped to whether they are declared `async`. */

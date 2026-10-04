@@ -87,6 +87,26 @@ function extractMessageText(message: LearnableMessage): string {
 const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 
 /**
+ * The per-reply memory line PLUR's instructions ask for
+ * (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`),
+ * in the forms an agent may write it: plain, in backticks, bold or italics, as
+ * a bullet, numbered item or quote, after a 🧠, inside an HTML tag, with an em
+ * dash, en dash, hyphen or colon. It reports on the turn; it is never a
+ * learning (#1520 audit S3, re-audit R2).
+ *
+ * Anchored on the footer's shape, not just its first word (second re-audit
+ * L2): `recalled` then a count or a colon, `used:`/`written:` then an engram
+ * id, or `none` alone on the line. A learning such as "Memory: used 4GB is too
+ * low" or "Memory — none of the caches survive" does not match.
+ */
+export const MEMORY_LINE_RE = new RegExp(
+  '^[\\s>*_`~•-]*(?:\\d+[.)]\\s*)?(?:🧠\\s*)?(?:<[a-z][^>]*>\\s*)?[*_`]*' +
+  'Memory[\\s*_`]*(?:[—–-]+|:)\\s*[*_`]*\\s*' +
+  '(?:recalled\\s*(?::|\\d)|(?:used|written)\\s*:\\s*[*_`]*\\s*ENG-|none[\\s*_`.]*(?:</[a-z]+>)?[\\s*_`.]*$)',
+  'i',
+)
+
+/**
  * Extract self-reported learnings from a message.
  * Looks for the 🧠 I learned: section and parses bullet points.
  *
@@ -100,11 +120,15 @@ const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 export function extractSelfReportedLearnings(message: LearnableMessage): string[] {
   const content = extractMessageText(message)
   // Match the learning section: ---\n🧠 I learned:\n- item\n- item
+  // The per-reply memory line may follow the last bullet with no blank line,
+  // so it can land inside the block; it is filtered out below, line by line,
+  // so a real learning after it is never lost (#1520 audit S3, re-audits R2, L2).
   const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)/)
   if (!match) return []
 
   return match[1]
     .split('\n')
+    .filter(line => !MEMORY_LINE_RE.test(line))
     .map(line => line.replace(/^[-•*]\s*/, '').trim())
     .filter(line => line.length >= 10 && !PLACEHOLDER_BULLET_RE.test(line)) // skip empty, trivial, or placeholder lines
 }
@@ -128,7 +152,22 @@ const PREFERENCE_PATTERNS = [
   // the capturing group keeps the directive word attached to its tail, so
   // the stored statement is a complete, correctly-signed instruction when
   // rendered under memory-block.ts's "should apply" header.
-  { re: /((?:always|never)\s+.+)/i, type: 'behavioral' as const, confidence: 0.7 },
+  //
+  // Formal run 2026-09-23 (spec/formal/PlurSpec/ScopeInject.lean §4): the
+  // same inversion survived A1 from the LEFT. The pattern was unanchored, so
+  // (a) a negation directly before the directive word was cut off — "Don't
+  // always rerun the full suite" was stored as "always rerun the full suite" —
+  // and (b) the directive word matched inside another word — "Whenever you
+  // deploy, run the smoke tests" was stored as "never you deploy, run the
+  // smoke tests". The directive word now needs word boundaries, and a
+  // directly preceding negation is captured with it.
+  //
+  // Audit of #1228 (finding 3): "negation" is every contracted form
+  // (`\w+n't` — doesn't, can't, won't, shouldn't, isn't, mustn't …), the
+  // same forms typed without the apostrophe, and `cannot` — not only
+  // don't / do not / not, or "cannot always trust the cache" was stored as
+  // "always trust the cache". A word merely ending in -nt ("want") is not one.
+  { re: /((?:\b(?:\w+n['\u2019]t|(?:do|does|did|ca|wo|sha|should|could|would|must|need|is|are|was|were|has|have|had|ai)nt|cannot|do not|not)\s+)?\b(?:always|never)\b\s+.+)/i, type: 'behavioral' as const, confidence: 0.7 },
   { re: /((?:you should|you must|don't|do not)\s+.+)/i, type: 'behavioral' as const, confidence: 0.6 },
   { re: /(?:your purpose is|you are)\s+(.{15,})/i, type: 'behavioral' as const, confidence: 0.6 },
   { re: /(?:i want you to)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.6 },

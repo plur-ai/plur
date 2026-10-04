@@ -25,6 +25,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, loadEngrams } from '../src/index.js'
+import { backgroundPushesSettled } from './helpers/background-pushes.js'
 
 const REMOTE = 'https://plur.example.com/sse'
 const SCOPE = 'group:acme/team'
@@ -119,7 +120,7 @@ describe('flushOutbox merges fields instead of replacing the row', () => {
     const queued = await plur.learn('a team fact that will not reach its store', {
       scope: SCOPE, type: 'behavioral',
     })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
     expect(await plur.outboxCount(), 'fixture did not queue — nothing to merge').toBe(1)
 
     // The edit must land AFTER the flush snapshots its corpus and BEFORE the
@@ -150,7 +151,7 @@ describe('flushOutbox merges fields instead of replacing the row', () => {
     const queued = await plur.learn('another team fact for the unreachable store', {
       scope: SCOPE, type: 'behavioral',
     })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
 
     await plur.flushOutbox()
 
@@ -165,7 +166,7 @@ describe('flushOutbox merges fields instead of replacing the row', () => {
     const plur = new Plur({ path: dir })
     await plur.learn('a queued team fact', { scope: SCOPE, type: 'behavioral' })
     const bystander = await plur.learn('a purely local fact', { scope: 'global', type: 'behavioral' })
-    await new Promise(r => setTimeout(r, 60))
+    await backgroundPushesSettled(dir)
 
     const before = loadEngrams(join(dir, 'engrams.yaml')).find(e => e.id === bystander.id)!
     await plur.flushOutbox()

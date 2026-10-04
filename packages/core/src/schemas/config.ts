@@ -193,6 +193,24 @@ export const ScopeRoutingConfigSchema = z.object({
    * key is set.
    */
   min_confidence: z.number().min(0).max(1).optional().catch(undefined),
+  /**
+   * Opt in to auto-routing a genuinely-unscoped write into a SHARED scope
+   * (`group:`/`project:`/`space:`/`team:`/`org:`/`public`). Default FALSE
+   * (#1115).
+   *
+   * Auto-routing used to send an unscoped write wherever a scope's `covers`
+   * matched its domain prefix, shared scopes included — so a personal engram
+   * could land in a team store and be pushed to its remote, announced only by
+   * an `info` field in the response. Once there, local cleanup could not undo
+   * it. Routing among PERSONAL scopes is unaffected: a wrong guess there costs
+   * nothing a `plur_rescope` cannot fix.
+   *
+   * Set true only if covers-driven team routing is something this install
+   * actually wants. Even then, prefer raising `match_threshold` alongside it:
+   * a lone forward domain-prefix match bypasses the threshold entirely, so the
+   * gate does not protect that path.
+   */
+  allow_shared_auto_route: z.boolean().optional().catch(undefined),
 }).partial()
 
 export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
@@ -248,6 +266,14 @@ export const PlurConfigSchema = z.object({
      * actually works.
      */
     pinned_ratio: z.number().min(0).max(1).default(0.5),
+    /**
+     * Share of the pinned quota the HARD pinned tier may occupy (pinned
+     * two-tier model). The hard tier is a sub-cap inside the pinned quota, so
+     * it is bounded to [0, 1] and can never exceed it; soft pins get what the
+     * hard tier leaves. Default 0.5 — at the default `injection_budget` of
+     * 2000 and `pinned_ratio` of 0.5, a 500-token hard tier.
+     */
+    pinned_hard_ratio: z.number().min(0).max(1).default(0.5),
   }).default({}),
   dedup: DedupConfigSchema.default({}),
   /**
@@ -306,6 +332,20 @@ export const PlurConfigSchema = z.object({
   }).default({}),
   /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */
   tensions: TensionsConfigSchema.default({}),
+  /**
+   * Cross-scope recurrence ladder policy (#176, #1268).
+   *
+   * `max_commitment` caps how high the ladder may escalate an engram's
+   * commitment when the same statement recurs across scopes — team validation
+   * (a team save crediting a matching engram) and the global copy made by
+   * copy-on-promote included. `locked` (default) lets the ladder reach
+   * `locked`; `decided` stops it one step below, so only an explicit human act
+   * locks an engram. A config without this key behaves as `locked`. An
+   * unresolved tension still blocks the step into `locked` either way (#181).
+   */
+  recurrence: z.object({
+    max_commitment: z.enum(['locked', 'decided']).default('locked'),
+  }).default({}),
   /**
    * Expiry handling at injection time (#347). `hard` (default) skips any
    * engram whose `temporal.valid_until` is in the past. `soft` keeps

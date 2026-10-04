@@ -1,6 +1,6 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
-import { checkForUpdate, CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit } from '@plur-ai/core'
+import { checkForUpdate, CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit, shortPackIntegrity } from '@plur-ai/core'
 import { CLAW_VERSION } from './version.js'
 
 // Telemetry is core's module, not a copy (2026-09 audit): the claw copy had
@@ -60,9 +60,16 @@ const plugin = {
     const workspacePath = api.config?.agents?.defaults?.workspace || `${process.env.HOME || '/root'}/.openclaw/workspace`
     try {
       const result = ensureSystemPrompt(workspacePath)
-      if (result.appended) api.logger.info(`PLUR: appended memory instructions to ${result.path}`)
-      else if (result.updated) api.logger.info(`PLUR: updated memory instructions in ${result.path}`)
+      const backup = result.backup ? ` (backup: ${result.backup})` : ''
+      if (result.appended) api.logger.info(`PLUR: appended memory instructions to ${result.path}${backup}`)
+      else if (result.updated) api.logger.info(`PLUR: updated memory instructions in ${result.path}${backup}`)
       else api.logger.info(`PLUR: memory instructions up to date`)
+      if (result.closedOpenBlock) {
+        api.logger.info(`PLUR: closed the ${result.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of ${result.path} before adding the memory instructions`)
+      }
+      if (result.keptSections > 0) {
+        api.logger.warn(`PLUR: left ${result.keptSections} older "## PLUR Memory System" section(s) in ${result.path} untouched because they have text PLUR did not write — remove them yourself once you have kept what you need`)
+      }
     } catch (err: any) {
       api.logger.warn(`PLUR: could not update SYSTEM.md: ${err.message}`)
     }
@@ -205,7 +212,7 @@ const plugin = {
           if (sub === 'list') {
             const packs = e.plur.listPacks()
             if (!packs.length) return { text: 'No packs installed.' }
-            return { text: packs.map((p: any) => `${p.name} v${p.manifest?.version ?? '?'} (${p.engram_count} engrams)${p.integrity ? ` [${p.integrity.slice(0, 12)}]` : ''}`).join('\n') }
+            return { text: packs.map((p: any) => `${p.name} v${p.manifest?.version ?? '?'} (${p.engram_count} engrams)${p.integrity ? ` [${shortPackIntegrity(p.integrity)}]` : ''}${p.baseline === 'carried-from-v1' ? ' (baseline carried from v1, not checked again against its source)' : ''}`).join('\n') }
           }
           if (sub === 'install' && args[1]) {
             const result = await e.plur.installPack(args[1])

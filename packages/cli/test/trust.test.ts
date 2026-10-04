@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
+import { issueFolderNonce } from '@plur-ai/core'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 
@@ -29,6 +30,9 @@ describe('plur trust / untrust (D2)', () => {
 
   const run = (args: string) =>
     execSync(`node ${CLI} ${args} --path ${plurHome} --json`, { encoding: 'utf-8', timeout: 10000 }).trim()
+  // #1378: these run outside a terminal, so trust/untrust carry a nonce bound to the grant or revocation.
+  const grant = (dir: string) => `${dir} --nonce ${issueFolderNonce(plurHome, 'trust-test', dir, { trusted: true })}`
+  const revoke = (dir: string) => `${dir} --nonce ${issueFolderNonce(plurHome, 'trust-test', dir, { trusted: false })}`
 
   it('trust --list is empty with nothing trusted', () => {
     const out = JSON.parse(run('trust --list'))
@@ -37,7 +41,7 @@ describe('plur trust / untrust (D2)', () => {
   })
 
   it('trust <dir> grants trust; trust --list then shows it', () => {
-    const t = JSON.parse(run(`trust ${target}`))
+    const t = JSON.parse(run(`trust ${grant(target)}`))
     expect(t.success).toBe(true)
     expect(t.trusted).toBe(target)
 
@@ -47,22 +51,22 @@ describe('plur trust / untrust (D2)', () => {
   })
 
   it('trust is idempotent', () => {
-    run(`trust ${target}`)
-    run(`trust ${target}`)
+    run(`trust ${grant(target)}`)
+    run(`trust ${grant(target)}`)
     const list = JSON.parse(run('trust --list'))
     expect(list.count).toBe(1)
   })
 
   it('untrust <dir> revokes a grant and reports removed:true; untrusting again reports removed:false', () => {
-    run(`trust ${target}`)
-    const u1 = JSON.parse(run(`untrust ${target}`))
+    run(`trust ${grant(target)}`)
+    const u1 = JSON.parse(run(`untrust ${revoke(target)}`))
     expect(u1.success).toBe(true)
     expect(u1.removed).toBe(true)
 
     const list = JSON.parse(run('trust --list'))
     expect(list.trusted).not.toContain(target)
 
-    const u2 = JSON.parse(run(`untrust ${target}`))
+    const u2 = JSON.parse(run(`untrust ${revoke(target)}`))
     expect(u2.removed).toBe(false)
   })
 
@@ -77,7 +81,7 @@ describe('plur trust / untrust (D2)', () => {
         join(target, '.plur.yaml'),
         'scope: group:acme/eng\ndomain: acme.engineering\nremote_url: https://plur.acme.example.com\n',
       )
-      const out = JSON.parse(run(`trust ${target}`))
+      const out = JSON.parse(run(`trust ${grant(target)}`))
       expect(out.scope).toBe('group:acme/eng')
       expect(out.domain).toBe('acme.engineering')
       expect(out.remote_url).toBe('https://plur.acme.example.com')
@@ -85,7 +89,7 @@ describe('plur trust / untrust (D2)', () => {
     })
 
     it('omits scope/domain/remote_url when no .plur.yaml declares any', () => {
-      const out = JSON.parse(run(`trust ${target}`))
+      const out = JSON.parse(run(`trust ${grant(target)}`))
       expect(out).not.toHaveProperty('scope')
       expect(out).not.toHaveProperty('domain')
       expect(out).not.toHaveProperty('remote_url')
@@ -93,7 +97,7 @@ describe('plur trust / untrust (D2)', () => {
   })
 
   it('bare "plur trust" with no argument trusts the CURRENT directory', () => {
-    const out = execSync(`node ${CLI} trust --path ${plurHome} --json`, {
+    const out = execSync(`node ${CLI} trust --nonce ${issueFolderNonce(plurHome, 'trust-test', target, { trusted: true })} --path ${plurHome} --json`, {
       encoding: 'utf-8', timeout: 10000, cwd: target,
     }).trim()
     const parsed = JSON.parse(out)
@@ -106,11 +110,11 @@ describe('plur trust / untrust (D2)', () => {
   // via the ancestor).
   describe('untrust <subdir-of-a-trusted-repo> (E3)', () => {
     it('reports still_trusted + the covering ancestor instead of a bare false removal', () => {
-      run(`trust ${target}`)
+      run(`trust ${grant(target)}`)
       const sub = join(target, 'packages', 'inner')
       mkdirSync(sub, { recursive: true })
 
-      const out = JSON.parse(run(`untrust ${sub}`))
+      const out = JSON.parse(run(`untrust ${revoke(sub)}`))
       expect(out.removed).toBe(false)
       expect(out.still_trusted).toBe(true)
       expect(out.covering_ancestor).toBe(target)
@@ -121,12 +125,12 @@ describe('plur trust / untrust (D2)', () => {
     })
 
     it('untrusting the named covering ancestor actually revokes coverage', () => {
-      run(`trust ${target}`)
+      run(`trust ${grant(target)}`)
       const sub = join(target, 'packages', 'inner')
       mkdirSync(sub, { recursive: true })
 
-      const first = JSON.parse(run(`untrust ${sub}`))
-      const revoked = JSON.parse(run(`untrust ${first.covering_ancestor}`))
+      const first = JSON.parse(run(`untrust ${revoke(sub)}`))
+      const revoked = JSON.parse(run(`untrust ${revoke(first.covering_ancestor)}`))
       expect(revoked.removed).toBe(true)
 
       const list = JSON.parse(run('trust --list'))
@@ -134,7 +138,7 @@ describe('plur trust / untrust (D2)', () => {
     })
 
     it('reports still_trusted: false with no covering_ancestor when truly untrusted', () => {
-      const out = JSON.parse(run(`untrust ${target}`))
+      const out = JSON.parse(run(`untrust ${revoke(target)}`))
       expect(out.removed).toBe(false)
       expect(out.still_trusted).toBe(false)
       expect(out).not.toHaveProperty('covering_ancestor')

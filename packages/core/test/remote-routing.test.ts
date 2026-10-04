@@ -104,6 +104,86 @@ describe('learn() — remote routing (issue #25)', () => {
     }
   })
 
+  // #1221 — a server receives only a scope string, so a scope the user typed
+  // and one the router picked out of `covers` arrive identical. That is why a
+  // server-side mirror of #1115 could not be built. `scope_source` is the one
+  // field that tells them apart, and it has to survive BOTH remote paths:
+  // learn()'s outbox push and learnRouted()'s direct push.
+  describe('scope_source travels with the write (#1221)', () => {
+    const REMOTE = {
+      url: 'https://plur.example.com/sse',
+      token: 'plur_sk_test',
+      scope: 'group:plur/plur-ai/engineering',
+      shared: true,
+      readonly: false,
+    }
+
+    const postedBody = async () => {
+      await new Promise(r => setTimeout(r, 100))
+      const posts = postCalls()
+      expect(posts.length, 'no POST was made — the fixture is not exercising the remote path').toBe(1)
+      return JSON.parse((posts[0][1] as any).body)
+    }
+
+    it('reports explicit when the caller named the scope', async () => {
+      mockSuccessfulAppend()
+      writeStoresConfig(primaryDir, [REMOTE])
+      const plur = new Plur({ path: primaryDir })
+      await plur.learn('a deliberate team fact', { scope: REMOTE.scope, type: 'behavioral' })
+      expect((await postedBody()).scope_source).toBe('explicit')
+    })
+
+    it('reports explicit through learnRouted, the path the MCP tool uses', async () => {
+      // learnRouted pushes directly rather than through the outbox, so it is a
+      // second, separate stamp site. plur_learn is the dominant write path.
+      mockSuccessfulAppend()
+      writeStoresConfig(primaryDir, [REMOTE])
+      const plur = new Plur({ path: primaryDir })
+      await plur.learnRouted('a deliberate team fact', { scope: REMOTE.scope, type: 'behavioral' })
+      expect((await postedBody()).scope_source).toBe('explicit')
+    })
+
+    it('reports routed when the router picked the destination', async () => {
+      // A PERSONAL remote scope, because a shared one is refused outright
+      // (#1115) and would never reach the wire. The distinction `scope_source`
+      // exists to draw is "a machine chose this", which is true here.
+      mockSuccessfulAppend()
+      // Decision E1 "me-only" (2026-09-26): a url-backed personal scope is an
+      // auto-route target only when `/me` says it is the user's own namespace,
+      // so the remote must have answered `/me` for this token first.
+      const append = fetchMock.getMockImplementation()! as (url: string, init?: { method?: string }) => Promise<Response>
+      fetchMock.mockImplementation((async (url: string, init?: { method?: string }) =>
+        String(url).endsWith('/me')
+          ? { ok: true, status: 200, json: async () => ({ username: 'plur-me', org_id: '', role: 'developer', scopes: [] }), text: async () => '' } as Response
+          : append(url, init)) as any)
+      writeStoresConfig(primaryDir, [{
+        url: 'https://plur.example.com/sse',
+        token: 'plur_sk_test',
+        scope: 'user:plur-me',
+        readonly: false,
+        covers: ['acme.engineering'],
+      }])
+      const plur = new Plur({ path: primaryDir })
+      await plur.discoverRemoteScopes()
+      const e = await plur.learnRouted('the staging deploy runs at 09:00', {
+        domain: 'acme.engineering.deploy', type: 'behavioral',
+      })
+      expect(e.scope, 'fixture no longer routes — the case is not exercised').toBe('user:plur-me')
+      expect((await postedBody()).scope_source).toBe('routed')
+    })
+
+    it('reports session when a session scope chose it, not explicit', async () => {
+      // A standing human choice that was not stated on this call. Reporting it
+      // as `explicit` would overclaim; as `routed` would libel the user.
+      mockSuccessfulAppend()
+      writeStoresConfig(primaryDir, [REMOTE])
+      const plur = new Plur({ path: primaryDir })
+      plur.setSessionScope(REMOTE.scope, { session: 's1' })
+      await plur.learnRouted('a fact written under a session scope', { session: 's1', type: 'behavioral' })
+      expect((await postedBody()).scope_source).toBe('session')
+    })
+  })
+
   it('writes locally when scope does NOT match any remote store', async () => {
     writeStoresConfig(primaryDir, [
       {
@@ -1086,6 +1166,8 @@ describe('feedback() — cross-store ID collision guard (issue #850)', () => {
     const plur = new Plur({ path: primaryDir })
     const e = await plur.learn('local engram unreachable remote', { scope: 'global' })
 
-    await expect(plur.feedback(e.id, 'positive')).resolves.toBeUndefined()
+    // 0.21.1: the unverified store is reported back, not only logged.
+    const res = await plur.feedback(e.id, 'positive')
+    expect(res.warnings.join(' ')).toMatch(/could not be reached/)
   })
 })

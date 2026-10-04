@@ -69,10 +69,12 @@ describe('injection hooks no-op in non-plur projects (#247)', () => {
     expect(existsSync(join(dir, '.plur'))).toBe(false)
   })
 
-  it('hook-learn-check passes stdin through and writes no counter', () => {
+  // #1266: a Stop hook's stdout is parsed as hook output, so the old echo of
+  // the input payload was at best ignored. Silence is the no-op.
+  it('hook-learn-check prints nothing and writes no counter', () => {
     const input = { session_id: 's1', cwd: dir }
     const result = runHook('hook-learn-check', input)
-    expect(result.stdout).toBe(JSON.stringify(input))
+    expect(result.stdout).toBe('')
     expect(result.status).toBe(0)
     expect(existsSync(join(dir, 'tmp', 'plur-sessions'))).toBe(false)
   })
@@ -89,7 +91,7 @@ describe('injection hooks no-op in non-plur projects (#247)', () => {
     addPlurConfig()
     const input = { session_id: 's1', cwd: dir }
     const result = runHook('hook-learn-check', input)
-    expect(result.stdout).toBe(JSON.stringify(input))
-    expect(existsSync(join(dir, 'tmp', 'plur-sessions'))).toBe(true)
+    expect(result.stdout).toBe('') // 1st stop: counted, no nudge, no echo (#1266)
+    expect(existsSync(join(dir, 'tmp', 'plur-sessions', 's1.stop-count'))).toBe(true)
   })
 })

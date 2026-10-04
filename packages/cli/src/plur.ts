@@ -1,4 +1,6 @@
-import { Plur } from '@plur-ai/core'
+import { Plur, isDirectoryTrusted, type ProjectConfig } from '@plur-ai/core'
+import { join, resolve } from 'path'
+import { homedir } from 'os'
 import type { OutputOptions } from './output.js'
 
 export interface GlobalFlags extends OutputOptions {
@@ -61,6 +63,11 @@ export function parseGlobalFlags(rawArgv: string[]): {
   let i = 0
   while (i < argv.length) {
     const arg = argv[i]
+    // `--` ends option parsing (decision S4, 2026-09-26). Everything after it
+    // is passed to the command verbatim, `--` included so the command can see
+    // where values start: a statement such as "--path=/elsewhere …" must never
+    // select — or create — a store, and "--json" after `--` is a value.
+    if (arg === '--') { args.push(...argv.slice(i)); break }
     if (arg === '--json') { flags.json = true; i++ }
     else if (arg === '--quiet') { flags.quiet = true; i++ }
     else if (arg === '--fast') { flags.fast = true; i++ }
@@ -128,9 +135,74 @@ export function getLastPlurInstance(): Plur | null {
  * mutation throws `ReadonlyStoreError`, and recall skips its activation
  * refresh. Read-only commands (`list`, `status`, `tensions` list mode) pass it
  * so lazy engine side-effects cannot mutate the store from a pure query.
+ *
+ * `autoDiscover: false` skips the constructor's walk for a `<cwd>/.plur`
+ * store, which otherwise registers that store in config.yaml. The folder
+ * question passes it: asking about a folder must change nothing (#1418 review).
  */
-export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean }): Plur {
+export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; autoDiscover?: boolean }): Plur {
   const path = flags.path || process.env.PLUR_PATH || undefined
-  lastInstance = new Plur({ path, readonly: options?.readonly })
+  lastInstance = new Plur({
+    path,
+    readonly: options?.readonly,
+    ...(options?.autoDiscover !== undefined ? { autoDiscover: options.autoDiscover } : {}),
+  })
   return lastInstance
+}
+
+
+/**
+ * The one question the scope gate asks — `Plur` answers it (`plur trust`).
+ * `storageRoot` (a `Plur` has it) is the store whose `trust.yaml` answers, so
+ * the notice can name a command that writes to THAT store.
+ */
+export interface ScopeTrustCheck {
+  isDirectoryTrusted(dir: string): boolean
+  readonly storageRoot?: string
+}
+
+/**
+ * One argument of a command printed for the user or the agent to run, or null
+ * when it cannot be quoted safely (#1228 review, the same rule as #1418's
+ * folder question). POSIX: single quotes. Windows: double quotes, which
+ * PowerShell and cmd still expand for $, backtick, %, ! and the curly double
+ * quotes, so a path holding one gets no command. A line break, bidi or
+ * zero-width character never gets one.
+ */
+function shellWord(s: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/.test(s)) return null
+  if (/^[A-Za-z0-9_@+=:,./~-]+$/.test(s)) return s
+  if (platform === 'win32') {
+    if (/[$`%!"\u201c\u201d\u201e]/.test(s) || s.endsWith('\\')) return null
+    return `"${s}"`
+  }
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The trust command a notice tells the user to run (audit 1228-c #1).
+ *
+ * `plur trust <dir>` writes `trust.yaml` in the store the CLI resolves —
+ * `--path`, else `PLUR_PATH`, else `~/.plur`. A hook or server running on a
+ * different store (its own `PLUR_PATH`, `--path`, an MCP config's env) checks
+ * THAT store's file, and the user's shell usually has none of those set: the
+ * bare command wrote a grant the adapter never read, and the notice repeated.
+ * So when the store is not the default one, the command names it.
+ */
+export function trustCommand(dir: string | null, storageRoot?: string, platform: NodeJS.Platform = process.platform): string | null {
+  const target = dir === null ? '<dir>' : shellWord(dir, platform)
+  if (target === null) return null
+  if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur trust ${target}`
+  const store = shellWord(resolve(storageRoot), platform)
+  return store === null ? null : `plur --path ${store} trust ${target}`
+}
+
+/**
+ * A trust check against the store `flags` select, without constructing a Plur
+ * (the hook reminder path runs on every prompt and builds none). Same answer
+ * as `Plur.isDirectoryTrusted`: the trust file lives in the store root.
+ */
+export function storeTrustCheck(flags: GlobalFlags): ScopeTrustCheck {
+  const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+  return { isDirectoryTrusted: (dir: string) => isDirectoryTrusted(dir, root), storageRoot: root }
 }

@@ -28,7 +28,13 @@ from typing import Any, Sequence
 # packages/hermes/scripts/check_version_sync.py enforces pin >= published
 # @plur-ai/cli. A stale pin silently runs a pre-release CLI on the npx-fallback
 # write path, bypassing that release's scope-routing / leak-guard fixes.
-_NPX_CLI_VERSION = "0.20.0"
+#
+# TODO(release): the first @plur-ai/cli after 0.20.1 is the first that honours
+# `--`. Until this pin reaches it, the npx fallback reads `--` as the query, so
+# the client uses `--` ONLY for text that begins with "-" (every other query or
+# task keeps its old argv) and sends such a statement to `learn` on stdin. The
+# bump is release.sh's job (RELEASING.md), not a hand edit.
+_NPX_CLI_VERSION = "0.21.0"
 _DEFAULT_TIMEOUT = 30
 
 
@@ -106,7 +112,7 @@ def _kill_process_group(proc: "subprocess.Popen[str]") -> None:
 
 
 def _run_in_process_group(
-    cmd: list[str], *, env: dict[str, str], timeout: float
+    cmd: list[str], *, env: dict[str, str], timeout: float, input: str | None = None
 ) -> "subprocess.CompletedProcess[str]":
     """``subprocess.run``-equivalent with process-group teardown on timeout.
 
@@ -116,9 +122,13 @@ def _run_in_process_group(
     its own session/process group and, on timeout, we kill the whole group, then
     re-raise ``subprocess.TimeoutExpired`` so callers behave exactly as they did
     under ``subprocess.run``.
+
+    ``input``, when given, is written to the child's stdin (then closed); when
+    ``None`` stdin is inherited, exactly as before.
     """
     proc = subprocess.Popen(
         cmd,
+        stdin=subprocess.PIPE if input is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -126,7 +136,7 @@ def _run_in_process_group(
         start_new_session=True,
     )
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
         # Drain pipes / reap the direct child so we don't leak fds or a zombie.
@@ -145,14 +155,30 @@ def run_json(
     binary: str | None = None,
     path: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
+    input: str | None = None,
 ) -> Any:
-    """Run ``plur <args> --json`` and return the parsed JSON (dict/list/None)."""
-    cmd = _resolve_base_command(binary) + list(args) + ["--json"]
+    """Run ``plur <args> --json`` and return the parsed JSON (dict/list/None).
+
+    ``input`` is sent on the CLI's stdin. ``plur learn`` reads its statement
+    from stdin when argv carries none, which is how a statement starting with
+    ``-`` reaches it verbatim instead of being parsed as a flag.
+    """
+    args = list(args)
+    # `--json` must precede a `--` separator (everything after it is
+    # positional). Inserting it before the FIRST "--" split a flag from a value
+    # that happened to be "--" (audit 1228-c), so with a separator present it
+    # goes straight after the command; without one it stays last, the argv
+    # every CLI version has always accepted.
+    if "--" in args and args:
+        args = args[:1] + ["--json"] + args[1:]
+    else:
+        args = args + ["--json"]
+    cmd = _resolve_base_command(binary) + args
     env = dict(os.environ)
     if path:
         env["PLUR_PATH"] = path
     try:
-        proc = _run_in_process_group(cmd, env=env, timeout=timeout)
+        proc = _run_in_process_group(cmd, env=env, timeout=timeout, input=input)
     except FileNotFoundError as exc:  # binary vanished between resolve and run
         raise PlurNotInstalledError(str(exc)) from exc
     except subprocess.TimeoutExpired as exc:

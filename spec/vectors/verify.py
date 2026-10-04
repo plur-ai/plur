@@ -14,8 +14,10 @@ TypeScript.
 What it checks, per §5 of ENGRAM-STANDARD-v1.md:
 
   §5.1  layout — SKILL.md required, manifest is its YAML frontmatter
-  §5.5  integrity — SHA-256 over bytes(SKILL.md) ‖ bytes(engrams.yaml),
-        recorded as sha256:<64 lowercase hex>, computed over RAW BYTES
+  §5.5  integrity — v2: SHA-256 over named, length-prefixed parts, recorded as
+        sha256:v2:<64 lowercase hex>; v1 (legacy): SHA-256 over
+        bytes(SKILL.md) ‖ bytes(engrams.yaml), recorded as sha256:<64 hex>.
+        Either is accepted; each is recomputed over RAW BYTES in its own form
   §5.4  export privacy — declared private engrams, pinned, locked commitment
   profile §5.3.1 — provenance/ layout, and that it does not affect the hash
 
@@ -45,6 +47,7 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 INTEGRITY_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+INTEGRITY_V2_RE = re.compile(r"^sha256:v2:[0-9a-f]{64}$")
 ENGRAM_ID_RE = re.compile(r"^(?:ENG|ABS|META)-[A-Za-z0-9-]+$")
 
 
@@ -88,6 +91,19 @@ def pack_hash(pack: Path) -> str:
     if engrams.exists():
         data += engrams.read_bytes()
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def pack_hash_v2(pack: Path) -> str:
+    """§5.5 v2: named, length-prefixed parts; an absent part is spelled `-`."""
+    h = hashlib.sha256()
+    for part in ("SKILL.md", "manifest.yaml", "engrams.yaml"):
+        f = pack / part
+        if f.exists():
+            data = f.read_bytes()
+            h.update(part.encode("ascii") + b"\0" + str(len(data)).encode("ascii") + b"\0" + data)
+        else:
+            h.update(part.encode("ascii") + b"\0-\0")
+    return "sha256:v2:" + h.hexdigest()
 
 
 def frontmatter(skill_md: Path) -> str | None:
@@ -152,11 +168,12 @@ def check_pack(pack: Path, r: Result) -> Findings:
     integrity_file = pack / "INTEGRITY"
     if integrity_file.exists():
         shipped = integrity_file.read_text(encoding="utf-8").strip()
-        if not INTEGRITY_RE.match(shipped):
-            r.fail(name, f"§5.5: INTEGRITY is not `sha256:<64 lowercase hex>` — {shipped!r}")
+        shipped_computed = pack_hash_v2(pack) if INTEGRITY_V2_RE.match(shipped) else computed
+        if not (INTEGRITY_RE.match(shipped) or INTEGRITY_V2_RE.match(shipped)):
+            r.fail(name, f"§5.5: INTEGRITY is neither `sha256:v2:<64 lowercase hex>` nor `sha256:<64 lowercase hex>` — {shipped!r}")
             f.integrity_status = "modified"
-        elif shipped != computed:
-            r.note(name, f"§5.5: integrity MISMATCH (shipped {shipped[:23]}…, computed {computed[:23]}…)")
+        elif shipped != shipped_computed:
+            r.note(name, f"§5.5: integrity MISMATCH (shipped {shipped[:26]}…, computed {shipped_computed[:26]}…)")
             f.integrity_status = "modified"
         else:
             f.integrity_status = "ok"
@@ -369,6 +386,11 @@ def main() -> int:
                 r.fail(pack.name,
                        f"hash drift from index.json: declared {entry['computed_integrity'][:23]}…, "
                        f"got {actual[:23]}…")
+            actual_v2 = pack_hash_v2(pack)
+            if actual_v2 != entry.get("computed_integrity_v2"):
+                r.fail(pack.name,
+                       f"v2 hash drift from index.json: declared {str(entry.get('computed_integrity_v2'))[:26]}…, "
+                       f"got {actual_v2[:26]}…")
             check_declaration(pack.name, entry, findings[pack.name], r)
         for name in by_name:
             if not (args.index.parent / "packs" / name).is_dir():

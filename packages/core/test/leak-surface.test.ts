@@ -131,7 +131,11 @@ describe('both engram constructors put every content field where the scan reads 
     const { context } = canaryContext('same')
     const now = new Date().toISOString()
     const learned = await plur.learn('the same statement', { ...context, scope: 'local' })
-    const shaped = (plur as any)._buildEngramShape('the same statement', 'local', context, now) as Engram
+    // The same context through both, as the comment above says — `scope` is
+    // positional for the shape builder, but it must also be IN the context, or
+    // the two calls differ on whether the caller named a scope and the #1221
+    // provenance field correctly reports two different answers.
+    const shaped = (plur as any)._buildEngramShape('the same statement', 'local', { ...context, scope: 'local' }, now) as Engram
     const keys = (e: Engram) => Object.keys(e).filter(k => (e as any)[k] !== undefined).sort()
     expect(keys(shaped)).toEqual(keys(learned))
 

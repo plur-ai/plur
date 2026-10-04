@@ -20,14 +20,24 @@ describe('tool profiles', () => {
     const lean = getToolDefinitions()
     const full = getToolDefinitions('full')
     expect(lean.length).toBeLessThan(full.length)
-    expect(lean.length).toBeLessThanOrEqual(12)
+    // 14 = 13 direct tools + plur_admin. Owner decision I_tensions_resolve
+    // (formal R2, 2026-09-27): every tool that can retire memory is destructive
+    // and therefore direct, so plur_tensions (resolve retires the loser) and
+    // plur_validate_meta (retires a meta-engram on its third failed validation)
+    // joined the direct set — the cap grew from 12 to 14 for that reason only.
+    expect(lean.length).toBeLessThanOrEqual(14)
     expect(lean.some(t => t.name === 'plur_admin')).toBe(true)
     expect(lean.some(t => t.name === 'plur_packs_install')).toBe(false)
   })
 
-  it('lean profile stays at or under 12 tools and includes plur_admin', () => {
+  it('lean profile stays at or under 14 tools and includes plur_admin', () => {
     const lean = getToolDefinitions('lean')
-    expect(lean.length).toBeLessThanOrEqual(12)
+    // 14 = 13 direct tools + plur_admin. Owner decision I_tensions_resolve
+    // (formal R2, 2026-09-27): every tool that can retire memory is destructive
+    // and therefore direct, so plur_tensions (resolve retires the loser) and
+    // plur_validate_meta (retires a meta-engram on its third failed validation)
+    // joined the direct set — the cap grew from 12 to 14 for that reason only.
+    expect(lean.length).toBeLessThanOrEqual(14)
     const names = lean.map(t => t.name)
     expect(names).toContain('plur_session_start')
     expect(names).toContain('plur_learn')
@@ -35,6 +45,8 @@ describe('tool profiles', () => {
     expect(names).toContain('plur_admin')
     expect(names).toContain('plur_packs_uninstall')
     expect(names).toContain('plur_tensions_purge')
+    expect(names).toContain('plur_tensions')
+    expect(names).toContain('plur_validate_meta')
     expect(names).not.toContain('plur_packs_install')
   })
 
@@ -44,14 +56,16 @@ describe('tool profiles', () => {
     expect(cursor.map(t => t.name).sort()).toEqual(lean.map(t => t.name).sort())
   })
 
-  it('cursor profile stays at or under 12 tools and includes plur_admin', () => {
+  it('cursor profile stays at or under 14 tools and includes plur_admin', () => {
     const cursor = getToolDefinitions('cursor')
     // 8 day-to-day tools + plur_packs_uninstall/plur_tensions_purge
     // (destructive maintenance tools kept as direct top-level tools, not wrapped
     // in plur_admin, so their destructiveHint annotation stays visible to
     // clients — audit fix, evaluator review 2026-07-08)
+    // + plur_tensions/plur_validate_meta (they retire memory — owner decision
+    // I_tensions_resolve, formal R2, 2026-09-27: every removal is gated)
     // + plur_admin, still far under Cursor's ~40-tool-per-workspace cap.
-    expect(cursor.length).toBeLessThanOrEqual(12)
+    expect(cursor.length).toBeLessThanOrEqual(14)
     const names = cursor.map(t => t.name)
     expect(names).toContain('plur_session_start')
     expect(names).toContain('plur_learn')
@@ -80,9 +94,11 @@ describe('tool profiles', () => {
       rmSync(dir, { recursive: true })
     })
 
-    it('lists <=12 tools over the wire in cursor profile', async () => {
+    it('lists <=14 tools over the wire in cursor profile', async () => {
       const { tools } = await client.listTools()
-      expect(tools.length).toBeLessThanOrEqual(12)
+      // 12 → 14: plur_tensions and plur_validate_meta became direct tools
+      // (decision I_tensions_resolve, formal R2).
+      expect(tools.length).toBeLessThanOrEqual(14)
     })
 
     // Audit fix (evaluator review, 2026-07-08): destructive tools must keep
@@ -182,7 +198,7 @@ describe('tool profiles', () => {
     })
 
     it('plur_admin REFUSES to dispatch destructive tools — the annotation-visibility guarantee is enforced', async () => {
-      for (const action of ['plur_forget', 'plur_packs_uninstall', 'plur_tensions_purge']) {
+      for (const action of ['plur_forget', 'plur_packs_uninstall', 'plur_tensions_purge', 'plur_tensions', 'plur_validate_meta']) {
         const result = await client.callTool({
           name: 'plur_admin',
           arguments: { action, args: {} },

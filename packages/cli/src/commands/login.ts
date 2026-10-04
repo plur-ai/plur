@@ -67,7 +67,8 @@ SIGNING IN
   \`plur login <host>\` (OAuth device flow) is not available yet — enterprise
   servers do not expose the device-flow endpoints. To connect:
     1. Sign in at <host>/auth in your browser
-    2. Add the store via plur_stores_add (MCP) or \`plur stores add\`
+    2. Add the store: \`plur stores add --url <host> --token-env <VAR> --scope <scope>\`
+       (or plur_stores_add over MCP). The token is checked before it is saved.
 `
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -638,7 +639,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputError('')
     outputError(`To connect to ${origin}:`)
     outputError(`  1. Sign in at ${origin}/auth in your browser`)
-    outputError('  2. Add the store via plur_stores_add (MCP) or `plur stores add`')
+    outputError(`  2. Add the store: plur stores add --url ${origin} --token-env <VAR> --scope <scope>`)
+    outputError('     (or plur_stores_add over MCP). The token is checked before it is saved.')
     outputError('')
     outputError('Check existing tokens with: plur login --status')
     process.exit(1)

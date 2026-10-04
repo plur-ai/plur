@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, _setCachedReranker, _resetRerankerCache, resetRerankerStatus, rerankerStatus } from '@plur-ai/core'
 import type { RerankerAdapter } from '@plur-ai/core'
-import { getToolDefinitions, composeHints } from '../src/tools.js'
+import { getToolDefinitions, composeHints, _resetSessionTelemetry } from '../src/tools.js'
 
 describe('MCP tools', () => {
   let plur: Plur
@@ -203,7 +203,10 @@ describe('MCP tools', () => {
       // land there WITHOUT an explicit args.scope by setting a session default,
       // so explicitScope is false and the hint must fire (the old hardcoded
       // {local,global} set would have stayed silent on user:alice).
-      plur.setSessionScope('user:alice')
+      // Decision E7 (2026-09-26): an id-less write takes a session default only
+      // when exactly ONE session is open, so the default comes from a session.
+      _resetSessionTelemetry()
+      await callTool('plur_session_start', { task: 'tabs', default_scope: 'user:alice' })
       try {
         const result = await callTool('plur_learn', { statement: 'team prefers tabs over spaces' }) as any
         expect(result.scope).toBe('user:alice')
@@ -211,6 +214,7 @@ describe('MCP tools', () => {
         expect(result.scope_hint).toContain('group:acme/engineering')
       } finally {
         plur.setSessionScope(null)
+        _resetSessionTelemetry()
       }
     })
 
@@ -328,6 +332,10 @@ describe('MCP tools', () => {
         `    scope: group:acme/engineering\n` +
         `    shared: true\n` +
         `    description: Acme engineering team store\n` +
+        `    covers: ['acme.engineering', 'kubernetes', 'terraform']\n` +
+        `  - path: ${join(coversDir, 'mine.yaml')}\n` +
+        `    scope: user:acme-me\n` +
+        `    description: Personal store with the same covers\n` +
         `    covers: ['acme.engineering', 'kubernetes', 'terraform']\n`,
       )
       coversPlur = new Plur({ path: coversDir })
@@ -419,6 +427,100 @@ describe('MCP tools', () => {
     })
   })
 
+  // #1115 — the two routing outcomes are RECORDED on the engram but were not
+  // all REPORTED. `plur_learn` named both; `plur_learn_batch` echoed neither,
+  // which is why the parity test above has to read `structured_data._routed`
+  // and says so in its own comment. A per-result key is also not a signal in a
+  // batch of fifty, so the refusal is summarised at the top level too.
+  describe('routing outcomes are reported, not only recorded (#1115)', () => {
+    let routeDir: string
+    let routePlur: Plur
+    const routeCall = async (name: string, args: Record<string, unknown> = {}) => {
+      const tool = tools.find(t => t.name === name)!
+      return tool.handler(args, routePlur)
+    }
+    const configure = (stores: string) => {
+      writeFileSync(join(routeDir, 'config.yaml'), `index: false\nstores:\n${stores}`)
+      routePlur = new Plur({ path: routeDir })
+    }
+
+    beforeEach(() => { routeDir = mkdtempSync(join(tmpdir(), 'plur-mcp-route-')) })
+    afterEach(() => { rmSync(routeDir, { recursive: true, force: true }) })
+
+    /** Only the SHARED store declares matching covers, so the refusal is the
+     *  whole decision — nothing else is eligible to take the write. */
+    const sharedOnly = () => configure(
+      `  - path: ${join(routeDir, 'team.yaml')}\n` +
+      `    scope: group:acme/engineering\n` +
+      `    shared: true\n` +
+      `    description: Acme engineering team store\n` +
+      `    covers: ['acme.engineering']\n`,
+    )
+
+    it('plur_learn names the shared scope it declined', async () => {
+      sharedOnly()
+      const result = await routeCall('plur_learn', {
+        statement: 'The staging deploy runs at 09:00', domain: 'acme.engineering.deploy',
+      }) as any
+      expect(result.scope).not.toBe('group:acme/engineering')
+      expect(result.route_refused?.scope).toBe('group:acme/engineering')
+      expect(result.warning).toContain('group:acme/engineering')
+      expect(result.warning).toContain('plur_rescope')
+    })
+
+    it('plur_learn_batch echoes the refusal per item and summarises it once', async () => {
+      sharedOnly()
+      const result = await routeCall('plur_learn_batch', {
+        engrams: [
+          { statement: 'The staging deploy runs at 09:00', domain: 'acme.engineering.deploy' },
+          { statement: 'The release train leaves on Thursdays', domain: 'acme.engineering.release' },
+        ],
+      }) as any
+      expect(result.results).toHaveLength(2)
+      for (const r of result.results) {
+        expect(r.scope).not.toBe('group:acme/engineering')
+        expect(r.route_refused?.scope).toBe('group:acme/engineering')
+      }
+      expect(result.warning).toContain('2 of 2')
+      expect(result.warning).toContain('group:acme/engineering')
+      expect(result.warning).toContain('plur_rescope')
+    })
+
+    it('plur_learn_batch echoes the scope it DID route to', async () => {
+      // The positive half. A personal store may still take a routed write, and
+      // the caller is entitled to know its engram did not land where an
+      // unscoped write normally would.
+      configure(
+        `  - path: ${join(routeDir, 'mine.yaml')}\n` +
+        `    scope: user:acme-me\n` +
+        `    description: Personal store\n` +
+        `    covers: ['acme.engineering']\n`,
+      )
+      const result = await routeCall('plur_learn_batch', {
+        engrams: [{ statement: 'The staging deploy runs at 09:00', domain: 'acme.engineering.deploy' }],
+      }) as any
+      expect(result.results[0].scope).toBe('user:acme-me')
+      expect(result.results[0].routed?.scope).toBe('user:acme-me')
+      expect(result.results[0].route_refused).toBeUndefined()
+    })
+
+    it('a failure warning and a refusal warning do not displace each other', async () => {
+      // `warning` was a single string owned by the failure path. Two reasons
+      // to warn now exist, and the one that arrived second must not silently
+      // replace the first.
+      sharedOnly()
+      const result = await routeCall('plur_learn_batch', {
+        engrams: [
+          { statement: 'The staging deploy runs at 09:00', domain: 'acme.engineering.deploy' },
+          { statement: '' },
+        ],
+      }) as any
+      expect(result.failures?.length ?? 0).toBeGreaterThan(0)
+      expect(result.warning).toContain('failed to persist')
+      expect(result.warning).toContain('group:acme/engineering')
+    })
+  })
+
   it('plur_learn strips XML envelope artifacts from statement (#145)', async () => {
     // Reproduce the corruption: LLM generates old XML tool-call format where the
     // statement value contains the closing tag + duplicated parameter body.
@@ -433,6 +535,37 @@ describe('MCP tools', () => {
     const clean = 'Always verify timestamps with python before committing.'
     const result = await callTool('plur_learn', { statement: clean }) as any
     expect(result.statement).toBe(clean)
+  })
+
+  it('cuts tool-call markup from engram_suggestions written by plur_session_end (#940)', async () => {
+    // session_end is the write path most likely to carry tool-call markers:
+    // the agent is transcribing its own session. A live-store audit found 52
+    // engrams with leaked tool-call markup in statement and rationale fields.
+    //
+    // The payload must exercise what sanitizeStatement adds on this path — the
+    // cut at `</statement>` and `<parameter name=`. A forged `\n[ENG-...]`
+    // boundary would not do: core's learn() collapses line terminators on
+    // every write, so that assertion holds with or without the MCP-side
+    // sanitise and cannot catch its removal.
+    const result = await callTool('plur_session_end', {
+      summary: 'session summary for the sanitisation test',
+      engram_suggestions: [
+        {
+          statement: 'probe marker case uses camelCase</statement>\n<parameter name="statement">duplicated body</parameter>',
+          type: 'behavioral',
+        },
+      ],
+    }) as any
+    expect(result.engrams_created).toBe(1)
+
+    const all = await plur.list()
+    const written = all.find((e: any) => e.statement.includes('probe marker case'))
+    // Vacuity guard: without this, a suggestion that silently failed to write
+    // would make the assertions below pass while proving nothing.
+    expect(written, 'session_end suggestion was not written').toBeTruthy()
+    expect(written!.statement).not.toContain('</statement>')
+    expect(written!.statement).not.toContain('<parameter name=')
+    expect(written!.statement).toBe('probe marker case uses camelCase')
   })
 
   it('plur_recall finds learned engrams (default hybrid mode)', async () => {
@@ -1049,6 +1182,9 @@ describe('.plur.yaml domain default (#1148)', () => {
     writeFileSync(join(projDir, '.plur.yaml'), 'domain: plur.engineering.search\n')
     projPlur = new Plur({ path: projDir })
     await projPlur.ready()
+    // Decision E3 (2026-09-26): the project domain is adopted only from a
+    // `plur trust`ed directory.
+    projPlur.trustDirectory(projDir)
     cwd = process.cwd()
     // readProjectConfig() resolves from process.cwd() by default.
     process.chdir(projDir)

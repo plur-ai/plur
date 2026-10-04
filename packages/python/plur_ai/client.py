@@ -30,10 +30,13 @@ class Plur:
         self.binary = binary
         self.timeout = timeout
 
-    def _run(self, args: list[str], *, timeout: float | None = None) -> Any:
+    def _run(
+        self, args: list[str], *, timeout: float | None = None, input: str | None = None
+    ) -> Any:
         return run_json(
             args, binary=self.binary, path=self.path,
             timeout=self.timeout if timeout is None else timeout,
+            input=input,
         )
 
     def learn(
@@ -47,8 +50,14 @@ class Plur:
         source: str | None = None,
         rationale: str | None = None,
     ) -> dict:
-        """Store a correction, preference, or convention. Returns the engram."""
-        args = ["learn", statement]
+        """Store a correction, preference, or convention. Returns the engram.
+
+        The statement is stored verbatim. One that starts with ``-`` (for example
+        ``"--dry-run is required"``) is sent on stdin: in argv the CLI would read
+        it as a flag.
+        """
+        on_stdin = statement.startswith("-")
+        args = ["learn"] if on_stdin else ["learn", statement]
         if type:
             args += ["--type", type]
         if scope:
@@ -61,7 +70,7 @@ class Plur:
             args += ["--rationale", rationale]
         if tags:
             args += ["--tags", ",".join(tags)]
-        return self._run(args) or {}
+        return self._run(args, input=statement if on_stdin else None) or {}
 
     def recall(self, query: str, *, limit: int | None = None) -> list[dict]:
         """Fast lexical-only search. Returns engrams most relevant first.
@@ -69,9 +78,7 @@ class Plur:
         Use :meth:`recall_hybrid` for better quality at the cost of a slightly
         longer first call while the embedder model loads.
         """
-        args = ["recall", "--fast", query]
-        if limit is not None:
-            args += ["--limit", str(limit)]
+        args = _with_query(["recall", "--fast"], query, limit)
         res = self._run(args) or {}
         return res.get("results", [])
 
@@ -81,9 +88,7 @@ class Plur:
         Requires ``@plur-ai/cli`` >= 0.10.0. The first call may be slower while the
         BGE embedder model loads; subsequent calls are fast.
         """
-        args = ["recall", query]
-        if limit is not None:
-            args += ["--limit", str(limit)]
+        args = _with_query(["recall"], query, limit)
         res = self._run(args, timeout=max(self.timeout, 30)) or {}
         return res.get("results", [])
 
@@ -94,11 +99,27 @@ class Plur:
         plus ``count`` and ``tokens_used`` — the same payload the MCP server's
         ``plur_inject`` tool returns.
         """
-        args = ["inject", task]
+        # The task is data (audit 1228-c): one that begins with "-" could be
+        # read by the CLI as a flag (``--path=…`` would pick another store), so
+        # it travels after ``--``. Every other task keeps its argv shape.
+        flag_like = task.lstrip().startswith("-")
+        args = ["inject"] if flag_like else ["inject", task]
         if budget is not None:
             args += ["--budget", str(budget)]
+        if flag_like:
+            args += ["--", task]
         return self._run(args, timeout=min(self.timeout, 15)) or {}
 
     def status(self) -> dict:
         """System health — engram/episode/pack counts and storage path."""
         return self._run(["status"]) or {}
+
+
+def _with_query(head: list[str], query: str, limit: int | None) -> list[str]:
+    """Recall argv. A query is data (formal R2 follow-up): one that begins with
+    ``-`` could be read as a flag, so it goes after ``--``, which ``plur recall``
+    honours. Every other query keeps its original position."""
+    tail = ["--limit", str(limit)] if limit is not None else []
+    if query.lstrip().startswith("-"):
+        return head + tail + ["--", query]
+    return head + [query] + tail

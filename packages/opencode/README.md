@@ -4,16 +4,11 @@
 
 Part of [PLUR](https://plur.ai) — the engram exchange layer connecting agents across tools. Compatible with the MCP server ([`@plur-ai/mcp`](https://npmjs.com/package/@plur-ai/mcp)) for Claude Code, Cursor, and Windsurf, and with [`@plur-ai/claw`](https://npmjs.com/package/@plur-ai/claw) for OpenClaw. One store, shared across every PLUR-compatible tool.
 
-> **This package must be published on npm before it works.** opencode resolves
-> a bare plugin name — `plugin: ["@plur-ai/opencode"]` — by having Bun fetch it
-> from the npm registry at plugin-load time. Until `@plur-ai/opencode` is on
-> npm, that entry silently resolves to nothing: **no error appears anywhere in
-> opencode's log.** The config looks correct, opencode starts normally, and no
-> memory ever reaches the model. This was found the hard way, by the live
-> acceptance gate below, before the package was published — see [Live
-> acceptance gate](#live-acceptance-gate). If you are reading this before the
-> npm listing exists, `plur init --opencode` will write a config entry that
-> does nothing yet.
+> opencode resolves a bare plugin name — `plugin: ["@plur-ai/opencode"]` — by
+> having Bun fetch it from the npm registry at plugin-load time, and logs **no
+> error anywhere** when that fetch finds nothing. The package is published, so
+> the entry resolves; if memory never reaches the model, run `plur doctor`,
+> which checks that the plugin name resolves.
 
 ## What it does
 
@@ -29,15 +24,15 @@ Everything is stored as plain YAML in `~/.plur/` — the same store `@plur-ai/mc
 ## Install
 
 ```sh
-npx @plur-ai/cli init --opencode
+npx @plur-ai/cli init
 ```
 
-This writes two things into opencode's global config (`~/.config/opencode/opencode.json`, or `.jsonc` if that's what you already have):
+When `~/.config/opencode` exists, this writes two things into opencode's global config (`~/.config/opencode/opencode.json`, or `.jsonc` if that's what you already have):
 
 - `plugin: ["@plur-ai/opencode"]` — the automatic layer described above.
-- `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`, for when you want the agent to query or teach memory on demand.
+- `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`, for when you want the agent to query or teach memory on demand. On Windows it launches `node.exe` with `@plur-ai/mcp`'s js entry, not a bare `npx`.
 
-Unlike `--cursor`/`--codex`/`--antigravity`, `plur init` does **not** auto-detect opencode from `~/.config/opencode` existing — you must pass `--opencode` explicitly. That's deliberate: until this package is published on npm, auto-enabling it would write a `plugin` entry that silently resolves to nothing (see the warning above) into every opencode user's config. `--no-opencode` is accepted too, as an explicit no-op.
+Like `--cursor`/`--codex`/`--antigravity`, opencode is auto-detected. `--opencode` sets it up even when `~/.config/opencode` does not exist yet; `--no-opencode` skips it. Re-running `plur init` is safe: it changes nothing that is already in place.
 
 ### Manual `opencode.json`
 
@@ -57,7 +52,7 @@ If you'd rather edit the config by hand, or `plur init` reports your config is i
 }
 ```
 
-`plur init --opencode` merges into an existing config — it only ever adds to `plugin` and sets `mcp.plur`, never touching your other keys (`model`, `theme`, `permission`, …). If your existing `opencode.json`/`.jsonc` doesn't parse as JSON, or `plugin`/`mcp` already hold something other than an array/object, it refuses and leaves the file untouched rather than guessing — add the two keys above by hand in that case.
+`plur init` merges into an existing config — it only ever adds to `plugin` and sets `mcp.plur`, never touching your other keys (`model`, `theme`, `permission`, …). If your existing `opencode.json`/`.jsonc` doesn't parse as JSON, or `plugin`/`mcp` already hold something other than an array/object, it refuses and leaves the file untouched rather than guessing — add the two keys above by hand in that case.
 
 ## Verified version
 
@@ -71,7 +66,7 @@ Both of the hooks this plugin depends on carry opencode's `experimental.` prefix
 PLUR_DEBUG=1 opencode run "..."
 ```
 
-Logs one line per hook invocation to stderr — scope root resolution, project scope/domain if `.plur.yaml` sets one, recall counts, and whether the `system.transform` fallback has latched. Silent otherwise; the plugin never writes to stdout or interrupts a turn on a memory-store failure.
+Logs one line per hook invocation to stderr — scope root resolution, the session scope in an `on` folder, recall counts, and whether the `system.transform` fallback has latched. Silent otherwise; the plugin never writes to stdout or interrupts a turn on a memory-store failure.
 
 ## What leaves your machine
 
@@ -84,9 +79,35 @@ Not nothing — two things do, both on default paths this plugin exercises every
 
 Beyond those: search falls back to local BM25 when embeddings are off, storage is YAML on disk at `~/.plur/` (override with `PLUR_PATH`), and this plugin wires no telemetry of its own.
 
+## Folder map: on, off or ask
+
+The plugin follows the folder map (`~/.plur/folders.yaml`, or `folders.yaml` in your `PLUR_PATH` store), the same decisions the Claude Code, Codex, Cursor and Antigravity hooks follow. Before every turn it asks what you have decided about the folder opencode is open in (opencode's `directory`; for a subfolder of a repo, that subfolder, not the repo root):
+
+| Mode | What the plugin does in that folder |
+|---|---|
+| **on** | Recalls, injects and learns as described above. The session scope is the map entry's `scope`, else a trusted `.plur.yaml`'s `scope` (a map scope beats the `.plur.yaml` hint). That scope is also what makes core dial the team store it belongs to. |
+| **off** | Nothing: no recall, no memory block, no question, no learning. |
+| **ask** | No memories. The first message of each session carries one question for the agent to put to you, with a command per answer: yes (`--on`, or `--scope <s>` when a team scope is configured), never here (`--off`), and — when the repo's `.plur.yaml` is not trusted — yes and trust it (`--trusted`). The next message of the session carries the same commands once more, telling the agent not to ask again and to run one only for an answer to that question, so it can still run your answer when you give it. After that the session carries nothing and the unanswered commands stop working. "Not now" runs nothing. |
+
+A folder with no decision asks; your home folder is not a special case and asks too. A folder is `on` without a decision when it (or a folder above it, up to your home) has a project marker: a project MCP config naming `plur` (`.mcp.json`, `.claude/settings.json`, `.cursor/mcp.json`) or a `.plur.yaml` that requests nothing. A `.plur.yaml` that requests a scope, domain or remote from an untrusted folder asks instead; what it requests is shown only as quoted data (a scope or domain that fits the grammar, the remote's host — never its token, never free text).
+
+**A folder map that cannot be read fails safe.** If `folders.yaml` does not parse, is empty or holds only comments, has an unknown top-level key (a misspelled `folder:`), or the decision cannot be resolved, the folder gets no memory — even with a project marker — and the agent is told which file, which line, and what is wrong in plain words (quoting at most the key on that line). No folder command is offered, also when the map breaks after the question was shown. When `plur folders repair` can fix the file, the notice offers it: the agent tells you what is wrong and runs `plur folders repair --yes` only after you agree (the next turn carries that command once more, so your answer can still be acted on). Once the map is fixed, the question comes back.
+
+**The commands need the `plur` CLI** on the `PATH` of the shell the agent runs them in. Without it, the plugin says so and gives the install command (`npm install -g @plur-ai/cli`) instead of offering commands that would fail; once `plur` is on `PATH`, the next message offers them.
+
+Each offered command carries its own single-use nonce, issued by core for exactly that folder and that answer, and bound to the session that showed it: the plugin tells every shell the agent runs which session it belongs to (`PLUR_FOLDER_SESSION`, through opencode's `shell.env` hook), and `plur folders set` refuses a nonce from another session. A session's nonces end after the message that follows the question, when opencode deletes the session or the opencode process exits, and after 24 hours at most. A session continued in a new opencode process is asked again, with fresh nonces. The answer applies from the next prompt. You can always decide yourself instead, from any terminal:
+
+```sh
+plur folders set . --on                  # or --scope group:acme/eng
+plur folders set . --off
+plur folders set . --trusted             # trust this repo's .plur.yaml
+```
+
+When opencode runs with its own `PLUR_PATH`, the offered commands name that store with `--path`, so the answer lands in the map the plugin reads.
+
 ## Scope
 
-Project scoping mirrors `@plur-ai/mcp`: if a `.plur.yaml` file is found walking up from the resolved scope root, its `scope` and `domain` become the default for recall and for anything this plugin learns — **but only in a directory you have explicitly trusted.**
+Project scoping mirrors `@plur-ai/mcp`: if a `.plur.yaml` file is found walking up from the resolved scope root, its `scope` and `domain` become the default for recall and for anything this plugin learns — **but only in a directory you have explicitly trusted**, in a folder that is `on` (above).
 
 **Trusting a directory.** Run this once per repo:
 
@@ -96,13 +117,13 @@ plur trust --list   # see what's trusted
 plur untrust .      # revoke
 ```
 
-This is the same shape as `direnv allow`, `git config safe.directory`, and VS Code's workspace trust: a project file that changes behaviour requires a one-time, explicit, per-directory grant — stored under your PLUR home (`~/.plur/trust.yaml`, never inside the project, so a repo cannot grant itself trust). Trusting a directory also trusts everything below it, so trusting a repo's root covers a `.plur.yaml` anywhere in that repo.
+This is the same shape as `direnv allow`, `git config safe.directory`, and VS Code's workspace trust: a project file that changes behaviour requires a one-time, explicit, per-directory grant — stored under your PLUR home (`trusted: true` in `~/.plur/folders.yaml`, also kept in `~/.plur/trust.yaml` for older readers; never inside the project, so a repo cannot grant itself trust). `plur folders set . --trusted` records the same grant. If opencode runs with its own `PLUR_PATH`, the grant must go to that store — `plur --path <store> trust .` — and the warning prints the command in that form. Trusting a directory also trusts everything below it, so trusting a repo's root covers a `.plur.yaml` anywhere in that repo.
 
 **Enterprise flow:** clone the company repo (whose `.plur.yaml` says `scope: group:acme/eng`), run `plur trust .` once, and recall/writes reach your team's store from then on — exactly as if you had configured the scope yourself.
 
-**Untrusted directory:** the plugin ignores the `.plur.yaml`'s `scope`/`domain` entirely and falls back to the local default, logging a `warning`-level line (visible by default, no `PLUR_DEBUG` needed) naming the file, the scope it declared, and the exact `plur trust` command to run if you meant to honor it. This closes an attack proved end to end during the 2026-09 audit: a repo you merely clone and open — no prompt typed — could otherwise redirect your recall queries and taught statements to a scope of the attacker's choosing, including one of *your own* team's remote stores if the attacker guessed or knew its name.
+**Untrusted directory:** with no decision for the folder, the plugin asks (see [Folder map](#folder-map-on-off-or-ask)). When the folder map does have a decision for it (say `plur folders set . --on`), that decision applies and the `.plur.yaml`'s `scope`/`domain` are ignored, falling back to the map's scope or the local default and logging a `warning`-level line (visible by default, no `PLUR_DEBUG` needed) naming the file, the scope it declared, and the exact `plur trust` command to run if you meant to honor it. This closes an attack proved end to end during the 2026-09 audit: a repo you merely clone and open — no prompt typed — could otherwise redirect your recall queries and taught statements to a scope of the attacker's choosing, including one of *your own* team's remote stores if the attacker guessed or knew its name.
 
-The plugin never reads `.plur.yaml`'s `remote_url`/`remote_token`/`remote_scopes` fields (honored by the CLI's `hook-inject` for other integrations) — trusted directory or not.
+**PLUR Enterprise.** Connect a folder with `plur remote --url <url> --token <token> --scope <scope>`: the URL and token go into your own `~/.plur/config.yaml` as a url store, the scope is recorded for the folder in `~/.plur/folders.yaml`, and nothing is written to the repo (#1413). Core dials a url store only when the session's scope names that store's org; this plugin takes the session scope from the folder map, so recall reaches the team store here as it does in the other editors. A `.plur.yaml` written by an older `plur init-remote` also carries `remote_url`/`remote_token`/`remote_scopes`, and the plugin honors those too, behind the same trust gate every other PLUR adapter uses — so recall reaches your team's store here exactly as it does in Claude Code, Codex and Antigravity. They are a stronger grant than `scope`: they send your prompt text to the host the file names, using the credential the file carries, so an untrusted directory gets them dropped and a `warning` line naming the directory and the `plur trust` command. Until 0.1.1 the plugin read none of them and enterprise recall silently stayed local (#1207).
 
 The `cwd` passed to the underlying `Plur` constructor is `autoDiscover: false` (2026-09 audit) — it never performs cwd-derived store discovery at all, so it cannot create a per-project store as a side effect of merely loading.
 
@@ -137,6 +158,24 @@ Environment knobs:
 | `PLUR_E2E_MODEL` | `openai/gpt-5.5` | Model to drive the gate with. |
 | `PLUR_E2E_FULL` | unset (BM25-only) | Set to `1` to exercise the hybrid/embedding recall path. Local embeddings load inside the opencode process and can OOM a loaded machine; the default runs BM25-only, which is sufficient for all three assertions since the seeded fact uses distinctive tokens. |
 | `PLUR_E2E_KEEP_TMP` | unset | Set to `1` to keep the temporary harness directory (packed tarballs, isolated XDG dirs, observer log) after the run for inspection. **The preserved directory contains a copy of your opencode provider credentials** (`xdg-data/opencode/auth.json`, copied from `~/.local/share/opencode/auth.json` so the harness can authenticate) — the OS still restricts it to your user (`mkdtemp` default `0700`), but treat the kept directory itself as sensitive and remove it when you're done inspecting it. |
+
+### Enterprise gate
+
+`test/e2e-enterprise.manual.mjs` is the sibling gate for the other half: does a project's `.plur.yaml` remote config actually deliver **team** memory into a real session (#1207)? Same harness shape, two differences that carry the point — the local store is left with zero engrams and zero configured stores, so a pass cannot be explained by local memory, and the work repo carries a legacy `.plur.yaml` with remote fields, trusted with the real `plur trust` and checked with `plur remote` before the session starts. `plur remote` no longer writes `.plur.yaml`, so this gate exists to keep repos that still carry those fields working.
+
+It asserts on the **injected block** (via the observer) rather than the model's prose, and then on the breaker's own `cache/remote-health.json` — a real `POST /api/v1/recall` outcome per host, which a pass from any other source cannot fake.
+
+The token is read from **stdin**, never argv or env, because the agent under test can run `env`:
+
+```sh
+PLUR_E2E_REMOTE_URL=https://plur.example.io \
+PLUR_E2E_REMOTE_SCOPE=group:acme/eng \
+PLUR_E2E_QUESTION='Is prod deployed with Docker or over SSH?' \
+PLUR_E2E_EXPECT='git pull,NOT Docker' \
+  your-secret-broker | node packages/opencode/test/e2e-enterprise.manual.mjs
+```
+
+`PLUR_E2E_QUESTION` must be answerable only from the remote store, and `PLUR_E2E_EXPECT` lists phrases from those engrams. One opencode invocation, one model call. Note that an engram written through the REST API lands in the server's policy review queue (`commitment: draft`) and is excluded from recall until approved — so pick phrases from engrams that are already live, rather than seeding a fixture.
 
 ## Related packages
 

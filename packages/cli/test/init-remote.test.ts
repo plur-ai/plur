@@ -1,9 +1,10 @@
 /**
- * init-remote + remote-inject path tests.
+ * `plur init-remote` — now a hidden alias of `plur remote` (#1413).
  *
- * Coverage for the high-priority paths flagged by the pre-publish
- * audit (criticism #3, cto #6): the YAML parser variants, args bounds
- * checking, .gitignore boundary, and stripRemoteKeys idempotency.
+ * Args bounds checking and URL validation carried over from the pre-publish
+ * audit (criticism #3, cto #6). The alias no longer writes `.plur.yaml` or
+ * `.gitignore`: the store goes into the user's config.yaml and the folder
+ * into folders.yaml. Full coverage of that is in remote.test.ts.
  *
  * Pure CLI process-level tests (matches the init.test.ts pattern):
  * each test spawns the built CLI in a tmpdir with HOME overridden so
@@ -32,7 +33,7 @@ function runCli(args: string, cwd: string, home: string): Promise<{ stdout: stri
   return new Promise(resolve => {
     const child = spawn('node', [CLI, ...args.split(' ').filter(s => s.length > 0)], {
       cwd,
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: join(home, '.plur') },
     })
     let out = ''
     child.stdout.on('data', c => { out += c.toString() })
@@ -84,18 +85,6 @@ describe('plur init-remote', () => {
     await new Promise<void>(resolve => server.close(() => resolve()))
   })
 
-  it.skip('writes .plur.yaml and updates .gitignore on success [spawn/event-loop flake]', async () => {
-    const r = await runCli(`init-remote --url ${serverUrl} --token test-token`, cwd, home)
-    expect(r.status).toBe(0)
-    expect(r.stdout).toContain(`Wrote ${join(cwd, '.plur.yaml')}`)
-    expect(r.stdout).toContain('Token sensitivity')   // cloud-sync warning
-    const yaml = readFileSync(join(cwd, '.plur.yaml'), 'utf8')
-    expect(yaml).toContain(`remote_url: ${serverUrl}`)
-    expect(yaml).toContain('remote_token: test-token')
-    const gi = readFileSync(join(cwd, '.gitignore'), 'utf8')
-    expect(gi).toContain('.plur.yaml')
-  })
-
   it('refuses to write when --url is missing a value (args bounds check)', async () => {
     const r = await runCli(`init-remote --url --token x`, cwd, home)
     expect(r.status).toBe(1)
@@ -124,52 +113,22 @@ describe('plur init-remote', () => {
     expect(r.stdout).toContain('must be http')
   })
 
-  it.skip('refuses to write a broken config when connectivity fails [flake]', async () => {
-    nextResponse = () => ({ status: 401, body: { error: 'bad token' } })
-    const r = await runCli(`init-remote --url ${serverUrl} --token bad`, cwd, home)
-    expect(r.status).toBe(2)
-    expect(r.stdout).toContain('Connection failed')
-    expect(existsSync(join(cwd, '.plur.yaml'))).toBe(false)
-  })
-
-  it('is idempotent: re-running preserves non-remote keys and replaces remote_* block', async () => {
-    // Pre-existing config with domain/scope + old remote_url
-    writeFileSync(join(cwd, '.plur.yaml'),
+  it('never edits an existing .plur.yaml or .gitignore (#1413)', async () => {
+    nextResponse = () => ({ status: 200, body: { username: 'test-user', org_id: 'test-org', scopes: ['org:example'] } })
+    const legacy =
       'domain: my-project\n' +
-      'scope: org:plur\n' +
-      'remote_url: https://old.example.com\n' +
-      'remote_token: old-token\n' +
-      'remote_scopes:\n' +
-      '  - org:plur\n' +
-      '  - group:plur/eng\n')
+      'scope: org:example\n' +
+      'remote_url: https://old.example.test\n' +
+      'remote_token: old-token\n'
+    writeFileSync(join(cwd, '.plur.yaml'), legacy)
 
-    const r = await runCli(`init-remote --url ${serverUrl} --token new-token --scopes org:plur`, cwd, home)
-    expect(r.status).toBe(0)
-
-    const yaml = readFileSync(join(cwd, '.plur.yaml'), 'utf8')
-    expect(yaml).toContain('domain: my-project')      // preserved
-    expect(yaml).toContain('scope: org:plur')          // preserved
-    expect(yaml).toContain(`remote_url: ${serverUrl}`) // new
-    expect(yaml).toContain('remote_token: new-token')  // new
-    expect(yaml).not.toContain('https://old.example.com')
-    expect(yaml).not.toContain('old-token')
-    expect(yaml).not.toContain('group:plur/eng')       // old list dropped
-  })
-
-  it.skip('stops the .gitignore walk at .git boundary [flake]', async () => {
-    // Project at cwd, parent-of-parent has another .gitignore (monorepo root)
-    const monorepo = join(cwd, '..')
-    const monorepoGitignore = join(monorepo, '.gitignore.tmp-monorepo')
-    writeFileSync(monorepoGitignore, '# monorepo gitignore\n')
-
-    const r = await runCli(`init-remote --url ${serverUrl} --token x`, cwd, home)
-    expect(r.status).toBe(0)
-    // ensureGitignore should have stopped at cwd/.git boundary and
-    // created cwd/.gitignore, NOT touched anything in the parent.
-    expect(existsSync(join(cwd, '.gitignore'))).toBe(true)
-    const original = readFileSync(monorepoGitignore, 'utf8')
-    expect(original).toBe('# monorepo gitignore\n')   // untouched
-    rmSync(monorepoGitignore)
+    const r = await runCli(`init-remote --url ${serverUrl} --token new-token --scopes org:example`, cwd, home)
+    expect(r.status, r.stdout).toBe(0)
+    expect(readFileSync(join(cwd, '.plur.yaml'), 'utf8')).toBe(legacy)
+    expect(existsSync(join(cwd, '.gitignore'))).toBe(false)
+    expect(r.stdout).not.toContain('new-token')
+    expect(r.stdout).not.toContain('old-token')
+    expect(readFileSync(join(home, '.plur', 'config.yaml'), 'utf8')).toContain(serverUrl)
   })
 })
 
@@ -197,17 +156,9 @@ describe('plur init-remote --verify', () => {
     await new Promise<void>(resolve => server.close(() => resolve()))
   })
 
-  it.skip('reports success when config + connectivity are valid [flake]', async () => {
-    writeFileSync(join(cwd, '.plur.yaml'),
-      `remote_url: ${serverUrl}\nremote_token: valid-token\n`)
-    const r = await runCli(`init-remote --verify`, cwd, home)
-    expect(r.status).toBe(0)
-    expect(r.stdout).toContain('Connected to')
-  })
-
-  it('exits non-zero when no remote config is present in cwd', async () => {
+  it('exits non-zero when no store serves this folder', async () => {
     const r = await runCli(`init-remote --verify`, cwd, home)
     expect(r.status).toBe(1)
-    expect(r.stdout).toContain('No remote config')
+    expect(JSON.parse(r.stdout)).toMatchObject({ success: false, stores: [] })
   })
 })

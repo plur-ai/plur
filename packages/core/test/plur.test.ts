@@ -140,7 +140,9 @@ describe('Plur', () => {
     // The 2nd cross-scope hit auto-broadens scope to 'global' and escalates
     // commitment; this first-hit case still preserves the original scope.
     const local = await plur.learn('pnpm build before tests', { scope: 'global' })
-    const recurrence = await plur.learn('pnpm build before tests', { scope: 'group:team/eng' })
+    // Personal→personal: since #1268 a shared-scope write is never absorbed
+    // into a personal engram (covered in cross-scope-recurrence-shared.test.ts).
+    const recurrence = await plur.learn('pnpm build before tests', { scope: 'local' })
     expect(recurrence.id).toBe(local.id)              // SAME engram, mutated
     expect(recurrence.recurrence_count).toBe(1)       // 1st cross-scope hit
     expect(recurrence.scope).toBe('global')           // unchanged on 1st hit

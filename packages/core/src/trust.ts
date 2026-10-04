@@ -1,8 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join, sep } from 'path'
-import yaml from 'js-yaml'
-import { logger } from './logger.js'
+import { homedir } from 'os'
 import { canonicalize } from './project-config.js'
+import { loadFolderMap, isTrustedInMap, setFolderEntry, clearFolderTrust, removeLegacyTrustEntry, withFolderMapLock } from './folders.js'
 
 /**
  * Directory trust — a one-time, explicit, per-directory grant, the same
@@ -19,92 +17,69 @@ import { canonicalize } from './project-config.js'
  * refuse remote scopes, it is to require the user to have said, once, "I
  * trust this directory."
  *
- * Stored under the PLUR home (`<root>/trust.yaml`), never inside the
- * project — a repo cannot grant itself trust; only a human running
- * `plur trust` on their own machine can.
+ * Stored under the PLUR home, never inside the project — a repo cannot grant
+ * itself trust; only a human running `plur trust` on their own machine can.
+ *
+ * #1347: the grant now lives in the folder map (`<root>/folders.yaml`) as
+ * `trusted: true` on an entry. A pre-#1347 `<root>/trust.yaml` is imported
+ * once, on the first read of a missing folders.yaml, and every grant and
+ * revocation is dual-written to both files (see folders.ts).
+ * These functions keep their signatures and results; see folders.ts.
  */
-
-interface TrustFile {
-  version: 1
-  trusted: string[]
-}
-
-function trustFilePath(root: string): string {
-  return join(root, 'trust.yaml')
-}
-
-function loadTrustFile(root: string): TrustFile {
-  const file = trustFilePath(root)
-  if (!existsSync(file)) return { version: 1, trusted: [] }
-  try {
-    const raw = yaml.load(readFileSync(file, 'utf8')) as Partial<TrustFile> | null | undefined
-    const trusted = Array.isArray(raw?.trusted)
-      ? raw!.trusted.filter((t): t is string => typeof t === 'string')
-      : []
-    return { version: 1, trusted }
-  } catch (err) {
-    logger.warning(`[plur:trust] cannot parse ${file}: ${(err as Error).message} — treating as no trusted directories`)
-    return { version: 1, trusted: [] }
-  }
-}
-
-function saveTrustFile(root: string, data: TrustFile): void {
-  if (!existsSync(root)) mkdirSync(root, { recursive: true })
-  writeFileSync(trustFilePath(root), yaml.dump(data), 'utf8')
-}
 
 /**
  * True when `dir` — or an ancestor of it — has been explicitly trusted.
  *
  * Hierarchical: trusting a repo root also trusts everything below it (VS
- * Code's workspace-trust shape). A `.plur.yaml` living in a subdirectory of a
- * trusted repo is exactly as much the user's own project as the root is;
- * requiring a separate grant per subdirectory would make the common flow
- * ("clone the repo, `plur trust .` once") not actually work.
- *
- * Paths are canonicalized before comparing (`canonicalize`, shared with
- * `project-config.ts` — see #778 there for why a plain string compare fails
- * OPEN on a symlinked path component).
+ * Code's workspace-trust shape). The target is canonicalised; stored entries
+ * are matched as written (fails closed) — neither an entry nor its parent is
+ * resolved at compare time (#778, #1334).
  */
 export function isDirectoryTrusted(dir: string, root: string): boolean {
-  const target = canonicalize(dir)
-  const { trusted } = loadTrustFile(root)
-  return trusted.some(t => target === t || target.startsWith(t + sep))
+  return isTrustedInMap(loadFolderMap(root).folders, dir)
 }
 
 /**
  * Grant trust to `dir`. Idempotent. Returns the canonicalized path recorded,
  * so a caller can echo back exactly what was trusted.
+ *
+ * A `nonce` (#1378) must be one issued for `dir` and the answer
+ * `{ trusted: true }`; it is consumed once the grant is saved.
  */
-export function trustDirectory(dir: string, root: string): string {
+export function trustDirectory(dir: string, root: string, opts?: { nonce?: string; now?: number; session?: string }): string {
   const target = canonicalize(dir)
-  const data = loadTrustFile(root)
-  if (!data.trusted.includes(target)) {
-    data.trusted.push(target)
-    data.trusted.sort()
-    saveTrustFile(root, data)
-  }
+  setFolderEntry(root, target, { trusted: true }, {
+    configuredScopes: [],
+    ...(opts?.nonce !== undefined ? { nonce: opts.nonce } : {}),
+    ...(opts?.now !== undefined ? { now: opts.now } : {}),
+    ...(opts?.session !== undefined ? { session: opts.session } : {}),
+  })
   return target
 }
 
 /**
- * Revoke trust from `dir`. Exact match only — untrusting a root does not
- * walk its previously-covered descendants (there is nothing to walk; they
- * were never their own entries). Returns whether an entry was removed.
+ * Revoke trust from `dir`. Exact entry only — untrusting a root does not
+ * walk its previously-covered descendants (they were never their own
+ * entries). Returns whether a grant was removed.
+ *
+ * The grant is removed from folders.yaml AND from trust.yaml (the dual-write
+ * for adapters on the previous core), so neither an older reader, a downgrade
+ * nor a re-import can bring it back.
+ *
+ * Takes no nonce (#1477 review): a revocation only removes trust, so, like a
+ * grant before #1378, it works from a script. Only a grant is gated.
  */
 export function untrustDirectory(dir: string, root: string): boolean {
-  const target = canonicalize(dir)
-  const data = loadTrustFile(root)
-  const idx = data.trusted.indexOf(target)
-  if (idx === -1) return false
-  data.trusted.splice(idx, 1)
-  saveTrustFile(root, data)
-  return true
+  return withFolderMapLock(root, () => {
+    const fromMap = clearFolderTrust(root, dir)
+    const fromLegacy = removeLegacyTrustEntry(root, dir)
+    return fromMap || fromLegacy
+  })
 }
 
-/** List every directory this user has explicitly trusted (canonicalized, sorted). */
+/** List every directory this user has explicitly trusted (sorted). */
 export function listTrustedDirectories(root: string): string[] {
-  return loadTrustFile(root).trusted
+  return loadFolderMap(root).folders.filter(e => e.trusted === true).map(e => e.path).sort()
 }
 
 /**
@@ -112,19 +87,16 @@ export function listTrustedDirectories(root: string): string[] {
  * grant) or an ancestor directory whose grant is hierarchical over it.
  * Returns `null` when nothing covers `dir` at all.
  *
- * E3 (2026-09 audit): `untrustDirectory` is an exact-match removal (by
- * design — trust is hierarchical, grants are not, so there is nothing to
- * "walk" for a subdirectory that was never its own entry). But that made
- * `plur untrust <subdir-of-a-trusted-repo>` print "was not trusted" —
- * true of the exact string, false of the actual security question ("is this
- * directory still trusted after this command?", answer: yes) — on a
- * revocation command for a security primitive, telling the user the
- * opposite of the truth. This lets the caller name the covering ancestor and
- * the command that actually revokes it, instead of silently doing nothing
- * while claiming success.
+ * E3 (2026-09 audit): `untrustDirectory` is an exact-match removal, so
+ * `plur untrust <subdir-of-a-trusted-repo>` must be able to name the grant
+ * that still covers it rather than claim the directory is untrusted.
  */
 export function coveringTrustedAncestor(dir: string, root: string): string | null {
-  const target = canonicalize(dir)
-  const { trusted } = loadTrustFile(root)
-  return trusted.find(t => target === t || target.startsWith(t + sep)) ?? null
+  const home = homedir()
+  const entries = loadFolderMap(root).folders.filter(e => e.trusted === true)
+  const hit = entries
+    .filter(e => isTrustedInMap([e], dir, home))
+    .map(e => e.path)
+    .sort()
+  return hit[0] ?? null
 }

@@ -4,32 +4,48 @@ import { bareEngramId } from '@plur-ai/core'
 
 /**
  * Flags this command accepts (#986).
+ *
+ * `--scope` and `--domain` are passed to core recall as filters, the same
+ * semantics as MCP `plur_recall`. They used to be declared here and then
+ * skipped by the parser, so the recall ran unfiltered and the remote leg was
+ * never dialed for the requested scope. `--tags` and `--type` were declared
+ * the same way, but core recall has no filter for them, so they are no longer
+ * declared: the argv check refuses them instead of ignoring them.
  */
-export const FLAGS_WITH_VALUES = ['--limit', '--scope', '--domain', '--tags', '--type']
+export const FLAGS_WITH_VALUES = ['--limit', '--scope', '--domain']
 
-export const FLAGS = ['--limit', '--scope', '--domain', '--tags', '--type']
+export const FLAGS = ['--limit', '--scope', '--domain']
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 
   let query = ''
   let limit = 10
+  let scope: string | undefined
+  let domain: string | undefined
 
   let i = 0
   while (i < args.length) {
     const arg = args[i]
     if (arg === '--limit' && i + 1 < args.length) { limit = parseInt(args[++i], 10); i++ }
+    else if (arg === '--scope' && i + 1 < args.length) { scope = args[++i]; i++ }
+    else if (arg === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
+    // `--` ends flag parsing: the next token is the query, verbatim, even when
+    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
+    // itself became the query.
+    else if (arg === '--') { if (!query && i + 1 < args.length) query = args[i + 1]; break }
     else if (!query) { query = arg; i++ }
     else { i++ }
   }
 
   if (!query) {
-    exit(1, 'Usage: plur recall <query> [--limit <n>]')
+    exit(1, 'Usage: plur recall <query> [--limit <n>] [--scope <scope>] [--domain <prefix>]')
   }
 
+  // An explicit scope is also the remote leg's dialing context (#243/#776).
   const engrams = flags.fast
-    ? await plur.recall(query, { limit })
-    : await plur.recallHybrid(query, { limit })
+    ? await plur.recall(query, { limit, scope, domain })
+    : await plur.recallHybrid(query, { limit, scope, domain })
 
   if (engrams.length === 0) {
     if (shouldOutputJson(flags)) {

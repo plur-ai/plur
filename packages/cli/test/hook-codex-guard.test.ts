@@ -10,6 +10,26 @@ import {
   markSessionStarted,
   isSessionStarted,
 } from '../src/lib/codex-hook-io.js'
+import { trustDirectory } from '@plur-ai/core'
+
+// The hooks read the folder map from the PLUR home and $HOME (#1347). These
+// tests run the hooks in-process, so both point into a temp dir: the real
+// ~/.plur is never read or written.
+let isoHome: string
+const savedEnv = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, PLUR_PATH: process.env.PLUR_PATH }
+function isolateHome(): void {
+  isoHome = mkdtempSync(join(tmpdir(), 'plur-iso-home-'))
+  process.env.HOME = isoHome
+  process.env.USERPROFILE = isoHome
+  process.env.PLUR_PATH = join(isoHome, '.plur')
+}
+function restoreHome(): void {
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  rmSync(isoHome, { recursive: true, force: true })
+}
 
 /**
  * These exercise the ENFORCEMENT logic, which is the part that can wedge a
@@ -32,10 +52,14 @@ let cwdSpy: ReturnType<typeof vi.spyOn>
 let stdout: ReturnType<typeof vi.spyOn>
 let stderr: ReturnType<typeof vi.spyOn>
 
-/** Make isPlurConfigured() true by putting a .plur.yaml in a scratch cwd. */
+/**
+ * Make the folder policy `on` with a .plur.yaml in a scratch cwd, trusted in
+ * the temp PLUR home (decision D1: an untrusted one asks instead).
+ */
 function makePlurProject(): string {
   const dir = mkdtempSync(join(tmpdir(), 'plur-codex-guard-'))
   writeFileSync(join(dir, '.plur.yaml'), 'scope: project:test\n')
+  trustDirectory(dir, process.env.PLUR_PATH!)
   return dir
 }
 
@@ -48,6 +72,7 @@ function emitted(): unknown | null {
 
 beforeEach(() => {
   written = []
+  isolateHome()
   projectDir = makePlurProject()
   cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(projectDir)
   // Record only non-empty writes. runCodexHook flushes with a zero-length
@@ -64,6 +89,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  restoreHome()
   cwdSpy.mockRestore()
   stdout.mockRestore()
   stderr.mockRestore()

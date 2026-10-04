@@ -87,12 +87,16 @@ describe('validateStore — the gate', () => {
     expect(validateStore(storePath).failures).toContain('invalid-entries')
   })
 
-  it('rejects duplicate ids', () => {
+  // Owner decision P1 (2026-09-27, "keep both, rename one"): this used to pin
+  // `duplicate-ids` as a failure. The loader now resolves a repeated id without
+  // loss (the later, different copy is read under a fresh id), so a snapshot of
+  // such a file restores to the same engrams and is not refused.
+  it('accepts duplicate ids — the loader resolves them (P1)', () => {
     writeStore(3)
     const raw: any = yaml.load(fs.readFileSync(storePath, 'utf8'))
     raw.engrams[1].id = raw.engrams[0].id
     fs.writeFileSync(storePath, yaml.dump(raw))
-    expect(validateStore(storePath).failures).toContain('duplicate-ids')
+    expect(validateStore(storePath).failures).not.toContain('duplicate-ids')
   })
 
   it('rejects a corpus that shrank past tolerance — the F1 truncation case', () => {
@@ -216,13 +220,17 @@ describe('restore', () => {
     maybeDailyBackup(root, storePath, taken)
 
     fs.mkdirSync(path.join(root, 'history'), { recursive: true })
+    // `engram_created` is the real event name (history.ts HistoryEvent). This
+    // test used an invented `engram_learned`, which the unrecoverable list now
+    // ignores: it counts only engram_created events (owner decision P3,
+    // formal run 2026-09-26).
     fs.writeFileSync(
       path.join(root, 'history', 'events.jsonl'),
       [
-        { event: 'engram_learned', engram_id: 'ENG-2026-08-02-050', timestamp: '2026-08-02T14:00:00.000Z' },
-        { event: 'engram_learned', engram_id: 'ENG-2026-08-02-051', timestamp: '2026-08-02T15:00:00.000Z' },
+        { event: 'engram_created', engram_id: 'ENG-2026-08-02-050', timestamp: '2026-08-02T14:00:00.000Z' },
+        { event: 'engram_created', engram_id: 'ENG-2026-08-02-051', timestamp: '2026-08-02T15:00:00.000Z' },
         // Before the snapshot — already in it, must NOT be reported.
-        { event: 'engram_learned', engram_id: 'ENG-2026-08-02-000', timestamp: '2026-08-02T08:00:00.000Z' },
+        { event: 'engram_created', engram_id: 'ENG-2026-08-02-000', timestamp: '2026-08-02T08:00:00.000Z' },
       ].map(e => JSON.stringify(e)).join('\n') + '\n',
     )
 

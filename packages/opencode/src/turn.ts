@@ -26,16 +26,26 @@ export class TurnBuffer {
   private parts = new Map<string, Map<string, string>>() // sessionID -> partID -> latest text
   private fresh = new Map<string, boolean>()
   private userMessage = new Map<string, string>() // sessionID -> that session's current user messageID
+  /**
+   * Part ids already handed out by `takeIfFresh` this turn (formal R2, mcp#10).
+   * Updates are cumulative snapshots, and one can arrive AFTER the take (the
+   * second `session.idle`, a late stream flush). It used to re-arm `fresh`
+   * with the same full text, so the transcript was learned twice. A taken
+   * part is closed; the set resets when the next turn's user message arrives.
+   */
+  private taken = new Map<string, Set<string>>()
 
   /** Record the messageID of the user's own turn message, so `append` can exclude its parts. */
   markUserMessage(sessionID: string, messageID: string | undefined): void {
     if (!messageID) return
+    if (this.userMessage.get(sessionID) !== messageID) this.taken.delete(sessionID)
     this.userMessage.set(sessionID, messageID)
   }
 
   append(sessionID: string, partID: string, messageID: string | undefined, text: string): void {
     if (!text) return
     if (messageID && this.userMessage.get(sessionID) === messageID) return
+    if (this.taken.get(sessionID)?.has(partID)) return
     const byPart = this.parts.get(sessionID) ?? new Map<string, string>()
     byPart.set(partID, text)
     this.parts.set(sessionID, byPart)
@@ -47,6 +57,9 @@ export class TurnBuffer {
     const byPart = this.parts.get(sessionID)
     if (!byPart || byPart.size === 0) return undefined
     this.fresh.set(sessionID, false)
+    const taken = this.taken.get(sessionID) ?? new Set<string>()
+    for (const id of byPart.keys()) taken.add(id)
+    this.taken.set(sessionID, taken)
     this.parts.set(sessionID, new Map())
     return [...byPart.values()]
   }
@@ -55,5 +68,6 @@ export class TurnBuffer {
     this.parts.delete(sessionID)
     this.fresh.delete(sessionID)
     this.userMessage.delete(sessionID)
+    this.taken.delete(sessionID)
   }
 }

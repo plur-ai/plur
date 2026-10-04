@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import * as crypto from 'crypto'
@@ -11,9 +11,10 @@ import { loadPack } from '../src/engrams.js'
  *
  * SKILL.md is the canonical pack manifest. manifest.yaml is deprecated: it still
  * loads (with a warning) and installPack auto-upgrades the installed copy to
- * SKILL.md. The §5.5 hash is SHA256(SKILL.md || engrams.yaml) — manifest.yaml
- * never enters it — and computePackChecksum delegates to computePackHash so the
- * two helpers cannot diverge (#316).
+ * SKILL.md. The legacy v1 §5.5 hash is SHA256(SKILL.md || engrams.yaml) —
+ * manifest.yaml never enters it — and computePackChecksum delegates to
+ * computePackHash so the two helpers cannot diverge (#316). The v2 value covers
+ * manifest.yaml too (pack-integrity-v2.test.ts).
  */
 describe('pack SKILL.md policy + manifest.yaml deprecation (#325)', () => {
   let dir: string
@@ -108,8 +109,17 @@ describe('pack SKILL.md policy + manifest.yaml deprecation (#325)', () => {
         expect(existsSync(join(dest, 'manifest.yaml'))).toBe(false)
         // The upgraded SKILL.md re-parses to the same manifest.
         expect(loadPack(dest).manifest.name).toBe('legacy-pack')
-        // Integrity recorded over SKILL.md + engrams.yaml.
-        expect(result.registry.integrity).toBe(`sha256:${computePackHash(dest)}`)
+        // Integrity recorded (v2) over the upgraded SKILL.md + engrams.yaml;
+        // manifest.yaml is gone, so its part is spelled absent. Built here from
+        // the §5.5 construction rather than by calling computePackIntegrity on
+        // the same directory, which would only compare the function to itself.
+        const part = (n: string, b: Buffer) => Buffer.concat([Buffer.from(`${n}\0${b.length}\0`), b])
+        const expected = 'sha256:v2:' + crypto.createHash('sha256').update(Buffer.concat([
+          part('SKILL.md', readFileSync(join(dest, 'SKILL.md'))),
+          Buffer.from('manifest.yaml\0-\0'),
+          part('engrams.yaml', readFileSync(join(dest, 'engrams.yaml'))),
+        ])).digest('hex')
+        expect(result.registry.integrity).toBe(expected)
       } finally {
         rmSync(source, { recursive: true, force: true })
       }

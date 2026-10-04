@@ -200,8 +200,12 @@ describe('telemetry miss-signal (WS5 demand flywheel)', () => {
     })
   })
 
-  it('DEFAULT_MISS_SCORE_THRESHOLD sits just under a single top-1 RRF hit (~0.0164)', () => {
-    expect(DEFAULT_MISS_SCORE_THRESHOLD).toBeLessThan(1 / 61)
-    expect(DEFAULT_MISS_SCORE_THRESHOLD).toBeGreaterThan(0)
+  // Was 'DEFAULT_MISS_SCORE_THRESHOLD sits just under a single top-1 RRF hit
+  // (~0.0164)'. Below 1/61 every non-empty recall was a hit, so `low_score` was
+  // unreachable (formal run 2026-09-23). Owner decision I3 (2026-09-26) moved
+  // the floor strictly between 1/61 and 2/61: a single-leg top hit is a miss.
+  it('DEFAULT_MISS_SCORE_THRESHOLD sits between a single-leg (1/61) and a both-leg (2/61) top-1 RRF hit', () => {
+    expect(DEFAULT_MISS_SCORE_THRESHOLD).toBeGreaterThan(1 / 61)
+    expect(DEFAULT_MISS_SCORE_THRESHOLD).toBeLessThan(2 / 61)
   })
 })
