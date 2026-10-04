@@ -208,6 +208,9 @@ export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; r
 export function hasLeftoverBatches(editor: AutoRateEditor, sessionId: string): boolean {
   try {
     const prefixes = (['queue', 'queue-ws'] as const).map(k => `${basename(fileFor(editor, sessionId, k))}.`)
+    // A pending `.queue-ws` counts too (R2-2 of the #1583 re-audit): an older
+    // worker that held the lock when it was queued never reads it.
+    if (existsSync(fileFor(editor, sessionId, 'queue-ws'))) return true
     return readdirSync(DIR).some(f => prefixes.some(p => f.startsWith(p)))
   } catch {
     return false
@@ -236,6 +239,8 @@ export function spawnWorker(editor: AutoRateEditor, sessionId: string, flags: Gl
 
 /** A worker lock older than this, or owned by a dead pid, is abandoned. */
 const WORKER_STALE_MS = 15 * 60 * 1000
+/** How long a worker waits for another worker's lock while a `.queue-ws` turn is pending (below the 15 min worker ceiling). */
+const LOCK_WAIT_MS = 14 * 60 * 1000
 
 function pidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false
@@ -317,7 +322,12 @@ function releaseWorkerLock(path: string): void {
  * worker runs per session; a second one exits at once and leaves its turn
  * to the running worker, which re-checks the queue before it leaves.
  */
-export async function runWorker(editor: AutoRateEditor, sessionId: string, flags: GlobalFlags): Promise<AutoRateOutcome> {
+export async function runWorker(
+  editor: AutoRateEditor,
+  sessionId: string,
+  flags: GlobalFlags,
+  opts: { waitForLockMs?: number } = {},
+): Promise<AutoRateOutcome> {
   const total: AutoRateOutcome = { rated: [], captured: 0 }
   if (!ensureSessionDir(DIR)) return total
   const lock = fileFor(editor, sessionId, 'worker')
@@ -338,8 +348,22 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
     } catch { return [] }
   }
   const pendingQueue = (): string | undefined => queues.find(q => existsSync(q))
+  // Across an upgrade (R2-2 of the #1583 re-audit) the lock may belong to an
+  // older worker, which drains `.queue` but never `.queue-ws`. While a
+  // `.queue-ws` turn is pending, wait for the lock (bounded) instead of
+  // leaving: if that was the session's last turn, no later hook would start
+  // a worker for it. A current worker holding the lock drains it itself, and
+  // this one then finds nothing and leaves.
+  const waitUntil = Date.now() + (opts.waitForLockMs ?? LOCK_WAIT_MS)
+  const acquire = async (): Promise<boolean> => {
+    for (;;) {
+      if (acquireWorkerLock(lock)) return true
+      if (!existsSync(queues[1]) || Date.now() >= waitUntil) return false
+      await new Promise(r => setTimeout(r, 250))
+    }
+  }
   for (let round = 0; round < 10 && (pendingQueue() !== undefined || orphans().length > 0); round++) {
-    if (!acquireWorkerLock(lock)) break
+    if (!(await acquire())) break
     try {
       for (;;) {
         let batch = orphans()[0]

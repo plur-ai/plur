@@ -154,7 +154,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // If the worker cannot be started, do the work inline rather than drop
     // it — the pre-worker behaviour, bounded by the watchdog above.
     if (!spawnWorker(editor, turn.sessionId, flags)) {
-      await runWorker(editor, turn.sessionId, flags)
+      // Inline, inside the editor's hook budget: never wait for another
+      // worker's lock here (that worker, or the next turn's, drains it).
+      await runWorker(editor, turn.sessionId, flags, { waitForLockMs: 0 })
     }
   })
 }
