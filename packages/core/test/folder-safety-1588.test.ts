@@ -21,7 +21,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, findPlurMarker, resolveFolderPolicy, hasOwnFolderDecision, findProjectConfigPath, folderPatternMatches, sameFolderPath } from '../src/index.js'
+import { Plur, findPlurMarker, resolveFolderPolicy, hasOwnFolderDecision, findProjectConfigPath, folderPatternMatches, sameFolderPath, folderSetOnCommand } from '../src/index.js'
 
 const MCP = JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } })
 
@@ -410,5 +410,95 @@ describe('#1589 audit L5: the temp-folder skip does not follow a user\u2019s sym
     writeFileSync(join(real, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(proj)}\n    plur: on\n`)
     new Plur({ path: link, cwd: proj })
     expect(registered(real)).toEqual([realpathSync(store)])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Audit round 2 (PR #1589).
+// ---------------------------------------------------------------------------
+
+describe('#1589 audit round 2, R2-L1: the .plur.yaml lookup walks the real path to the real repository root', () => {
+  it('P15: an untrusted .plur.yaml at the real repository root makes a symlinked sub-folder ask, as the real path does', () => {
+    const ws = join(home, 'ws')
+    const repo = join(ws, 'repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(join(repo, 'src'))
+    writeFileSync(join(repo, '.plur.yaml'), 'scope: "group:acme/eng"\n')
+    const link = join(ws, 'link')
+    symlinkSync(join(repo, 'src'), link)
+    expect(findProjectConfigPath(link)).toBe(join(repo, '.plur.yaml'))
+    const viaLink = resolveFolderPolicy(link, { root, home })
+    const real = resolveFolderPolicy(join(repo, 'src'), { root, home })
+    expect(`${viaLink.mode}/${viaLink.reason}`).toBe('ask/untrusted-plur-yaml')
+    expect(`${real.mode}/${real.reason}`).toBe('ask/untrusted-plur-yaml')
+    // An untrusted .plur.yaml above the repository changes nothing.
+    writeFileSync(join(ws, '.plur.yaml'), 'scope: "group:acme/eng"\n')
+    expect(resolveFolderPolicy(link, { root, home }).mode).toBe('ask')
+    expect(findProjectConfigPath(link)).toBe(join(repo, '.plur.yaml'))
+  })
+
+  it('the returned path keeps the spelling the caller used (an unresolved temp-folder path)', () => {
+    const typed = mkdtempSync(join(tmpdir(), 'plur-1589-spell-'))
+    try {
+      const repo = join(typed, 'repo')
+      mkdirSync(join(repo, '.git'), { recursive: true })
+      mkdirSync(join(repo, 'sub', 'deep'), { recursive: true })
+      writeFileSync(join(repo, '.plur.yaml'), 'domain: x\n')
+      expect(findProjectConfigPath(join(repo, 'sub', 'deep'))).toBe(join(repo, '.plur.yaml'))
+      expect(findProjectConfigPath(repo)).toBe(join(repo, '.plur.yaml'))
+    } finally {
+      rmSync(typed, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('#1589 audit round 2, R2-L2: the skipped-store walk follows the real path', () => {
+  it('through a symlink into a repository sub-folder, a store above the real repository is not listed', async () => {
+    const code = join(home, 'code')
+    const ws = join(code, 'ws')
+    const repo = join(ws, 'repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(join(repo, 'src'))
+    await seedStore(ws, 'Codeword ABOVEREPO: above the real repository')
+    const link = join(ws, 'link')
+    symlinkSync(join(repo, 'src'), link)
+    mapOn(code)
+    const plur = new Plur({ path: root, cwd: link })
+    expect(plur.skippedProjectStores(link)).toEqual([])
+    expect(registered()).toEqual([])
+  })
+})
+
+describe('#1589 audit round 2, R2-L3: listing skipped stores writes nothing', () => {
+  it('a legacy trust.yaml is not imported into folders.yaml by skippedProjectStores', async () => {
+    const code = join(home, 'code')
+    const proj = join(code, 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    await seedStore(proj, 'Codeword LEGACYTRUST: a store under a legacy trust entry')
+    writeFileSync(join(root, 'trust.yaml'), `trusted:\n  - ${JSON.stringify(code)}\n`)
+    const plur = new Plur({ path: root, cwd: proj, autoDiscover: false, readonly: true })
+    expect(existsSync(join(root, 'folders.yaml'))).toBe(false)
+    const skipped = plur.skippedProjectStores(proj)
+    expect(existsSync(join(root, 'folders.yaml'))).toBe(false)
+    // The legacy entry is still honoured in memory: the parent is trusted, the repository is not decided.
+    expect(skipped.map(s => realpathSync(s.folder))).toEqual([realpathSync(proj)])
+  })
+})
+
+describe('#1589 audit round 2, R2-M1: the command that adds a skipped store is safe to paste', () => {
+  const defaultRoot = () => join(home, '.plur')
+  it('quotes the folder and offers nothing for a folder the folder question refuses', () => {
+    expect(folderSetOnCommand('/w/proj', defaultRoot(), 'linux')).toBe('plur folders set /w/proj --on')
+    expect(folderSetOnCommand('/w/x$(touch C)', defaultRoot(), 'linux')).toBe(`plur folders set '/w/x$(touch C)' --on`)
+    expect(folderSetOnCommand("/w/it's here", defaultRoot(), 'linux')).toBe(`plur folders set '/w/it'\\''s here' --on`)
+    expect(folderSetOnCommand('/w/a\nb', defaultRoot(), 'linux')).toBeNull()
+    expect(folderSetOnCommand('/w/a\u202eb', defaultRoot(), 'linux')).toBeNull()
+    expect(folderSetOnCommand('/w/x*', defaultRoot(), 'linux')).toBeNull()
+    expect(folderSetOnCommand('C:\\w\\x$(a)', 'C:\\Users\\u\\.plur', 'win32')).toBeNull()
+  })
+
+  it('names the store with --path when it is not the default one', () => {
+    expect(folderSetOnCommand('/w/proj', '/data/my plur', 'linux')).toBe(`plur --path '/data/my plur' folders set /w/proj --on`)
+    expect(folderSetOnCommand('/w/proj', '/data/a\nb', 'linux')).toBeNull()
   })
 })
