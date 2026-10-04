@@ -155,21 +155,24 @@ describe('D-4 — presence edge cases and the migration import', () => {
   })
 })
 
-describe('D-5 — an existing store\'s .gitignore gains the delta and lock lines', () => {
-  it('appends the missing lines once, keeps the others, never creates the file', () => {
-    const withIgnore = tmp('plur-1587-r7-ign-')
-    writeFileSync(join(withIgnore, '.gitignore'), '# mine\nconfig.yaml\n.embeddings-cache.json\n')
-    writeFileSync(join(withIgnore, 'config.yaml'), 'embeddings:\n  enabled: false\n')
-    new Plur({ path: withIgnore })
-    new Plur({ path: withIgnore })
-    const lines = readFileSync(join(withIgnore, '.gitignore'), 'utf8').split('\n')
-    expect(lines.slice(0, 3)).toEqual(['# mine', 'config.yaml', '.embeddings-cache.json'])
-    expect(lines.filter(l => l === '.embeddings-cache.delta.jsonl')).toHaveLength(1)
-    expect(lines.filter(l => l === '.embeddings-cache.json.lock')).toHaveLength(1)
+describe('D-5 (round 8) — opening a store never edits its .gitignore', () => {
+  for (const git of [false, true]) {
+    it(`an existing .gitignore is left byte for byte (${git ? 'a git repository' : 'not a git repository'})`, () => {
+      const dir = tmp('plur-1587-r8-ign-')
+      if (git) mkdirSync(join(dir, '.git'))
+      const original = '# mine\nconfig.yaml\n.embeddings-cache.json\n'
+      writeFileSync(join(dir, '.gitignore'), original)
+      writeFileSync(join(dir, 'config.yaml'), 'embeddings:\n  enabled: false\n')
+      new Plur({ path: dir })
+      new Plur({ path: dir })
+      expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe(original)
+    })
+  }
 
-    const without = tmp('plur-1587-r7-noign-')
-    writeFileSync(join(without, 'config.yaml'), 'embeddings:\n  enabled: false\n')
-    new Plur({ path: without })
-    expect(existsSync(join(without, '.gitignore'))).toBe(false)
+  it('a store without a .gitignore does not get one on open', () => {
+    const dir = tmp('plur-1587-r8-noign-')
+    writeFileSync(join(dir, 'config.yaml'), 'embeddings:\n  enabled: false\n')
+    new Plur({ path: dir })
+    expect(existsSync(join(dir, '.gitignore'))).toBe(false)
   })
 })

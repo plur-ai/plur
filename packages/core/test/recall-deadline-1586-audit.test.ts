@@ -221,11 +221,13 @@ describe('L5 — a successful save clears a network cooldown, never a 429 one', 
 
 describe('L4 — consecutive client_slow calls', () => {
   const host = (): RemoteRecallHost => ({ url: baseUrl, token: TOKEN, scopes: [TEAM_SCOPE], entries: [{ scope: TEAM_SCOPE } as any] })
+  // Wide margins (#1586 round 8, C-1): a 2 s block against a 300 ms budget and
+  // a 500 ms credit cap is unmistakably client-side, even on a starved CPU.
   const blockingFetch = ((input: any, init?: any) => {
-    setTimeout(() => busyWait(600), 0)
+    setTimeout(() => busyWait(2000), 0)
     return fetch(input, init)
   }) as typeof fetch
-  const opts = (statePath: string) => ({ statePath, timeoutMs: 100, maxStarvationCreditMs: 300, fetchImpl: blockingFetch })
+  const opts = (statePath: string) => ({ statePath, timeoutMs: 300, maxStarvationCreditMs: 500, fetchImpl: blockingFetch })
 
   it('after CLIENT_SLOW_STREAK_LIMIT in a row, further ones count as host timeouts and open the breaker', async () => {
     expect(CLIENT_SLOW_STREAK_LIMIT).toBeGreaterThanOrEqual(2)
@@ -246,7 +248,7 @@ describe('L4 — consecutive client_slow calls', () => {
     expect(fileHost(statePath, key).cooldown_until).toBeGreaterThan(Date.now())
     const skipped = await remoteRecall([host()], 'q', opts(statePath))
     expect(skipped.outcomes[0].state).toBe('skipped_cooldown')
-  }, 30_000)
+  }, 90_000)
 
   it('an answer from the host resets the streak', async () => {
     const statePath = statePathIn()
