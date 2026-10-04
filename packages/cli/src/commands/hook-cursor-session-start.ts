@@ -56,22 +56,28 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // memories, and marks nothing, so the guard stays silent too.
   // G1: the workspace (workspace_roots), not this process's folder — the
   // same decision every Cursor hook reaches, see cursorHookFolder.
-  const { dir, policy } = cursorHookFolder(input, flags)
+  const { dir, policy, askAbout } = cursorHookFolder(input, flags)
   if (dir && policy.mode !== 'on') removeStaleAsk(cursorContextRulePath(dir))
-  if (policy.mode === 'off' || !dir) return
-  const rulePath = cursorContextRulePath(dir)
+  if (policy.mode === 'off') return
 
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't track this session — stay silent rather than guess
 
   if (policy.mode === 'ask') {
+    // The question is about `askAbout` when that root does not exist (N3 of
+    // the #1583 re-audit): shown from `dir`, the first root that does, and
+    // only in additional_context when none does — never by creating it.
+    const about = askAbout ?? dir
+    if (!about) return
     // No store discovery: asking must not register this folder's .plur store.
-    const ask = folderAskOnce({ dir, policy, sessionId: conversationId, flags, plur: createAskPlur(flags) })
+    const ask = folderAskOnce({ dir: about, policy, sessionId: conversationId, flags, plur: createAskPlur(flags) })
     if (!ask) return
-    writeContextRule(ask, rulePath)
+    if (dir) writeContextRule(ask, cursorContextRulePath(dir))
     process.stdout.write(JSON.stringify({ additional_context: ask }))
     return
   }
+  if (!dir) return
+  const rulePath = cursorContextRulePath(dir)
 
   // markSessionStarted (not a bare sentinel write) so the reminder timer also
   // resets here — otherwise hook-cursor-post-tool's isReminderDue() sees no

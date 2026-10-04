@@ -98,7 +98,7 @@ export const AUTO_CAPTURE_REMOTE_TIMEOUT_MS = 4_000
 /** Floor for a statement's deadline once the run's budget is spent. */
 const AUTO_CAPTURE_SPENT_MS = 1
 
-function fileFor(editor: AutoRateEditor, sessionId: string, kind: 'injected' | 'rated' | 'tries' | 'queue' | 'worker'): string {
+function fileFor(editor: AutoRateEditor, sessionId: string, kind: 'injected' | 'rated' | 'tries' | 'queue' | 'queue-ws' | 'worker'): string {
   return join(DIR, `${editor}-${safeSessionKey(sessionId)}.${kind}`)
 }
 
@@ -188,7 +188,12 @@ export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; r
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
       ...(opts.workspaceScope !== undefined ? { workspaceScope: opts.workspaceScope } : {}),
     } satisfies QueuedTurn) + '\n'
-    appendFileSync(fileFor(opts.editor, opts.sessionId, 'queue'), line, { mode: 0o600 })
+    // A line carrying workspaceScope goes to its own file (N4 of the #1583
+    // re-audit): an older worker still running after an upgrade reads only
+    // `.queue` and its `.queue.<pid>` batches, ignores the field, and would
+    // re-decide the scope from one folder, which can widen it.
+    const kind = opts.workspaceScope !== undefined ? 'queue-ws' : 'queue'
+    appendFileSync(fileFor(opts.editor, opts.sessionId, kind), line, { mode: 0o600 })
     return true
   } catch {
     return false
@@ -202,8 +207,8 @@ export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; r
  */
 export function hasLeftoverBatches(editor: AutoRateEditor, sessionId: string): boolean {
   try {
-    const prefix = `${basename(fileFor(editor, sessionId, 'queue'))}.`
-    return readdirSync(DIR).some(f => f.startsWith(prefix))
+    const prefixes = (['queue', 'queue-ws'] as const).map(k => `${basename(fileFor(editor, sessionId, k))}.`)
+    return readdirSync(DIR).some(f => prefixes.some(p => f.startsWith(p)))
   } catch {
     return false
   }
@@ -316,7 +321,9 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
   const total: AutoRateOutcome = { rated: [], captured: 0 }
   if (!ensureSessionDir(DIR)) return total
   const lock = fileFor(editor, sessionId, 'worker')
-  const queue = fileFor(editor, sessionId, 'queue')
+  // Both queue files: `.queue` (other editors, and lines from older
+  // versions) and `.queue-ws` (lines carrying workspaceScope, see enqueueTurn).
+  const queues = [fileFor(editor, sessionId, 'queue'), fileFor(editor, sessionId, 'queue-ws')]
   let plur: ReturnType<typeof createPlur> | null = null
   // Batches a killed worker renamed but never finished. Only ever read while
   // holding the lock, and the lock is only taken over from a dead or stale
@@ -326,17 +333,19 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
   const captureDeadline = Date.now() + AUTO_CAPTURE_REMOTE_TIMEOUT_MS
   const orphans = (): string[] => {
     try {
-      const prefix = `${basename(queue)}.`
-      return readdirSync(DIR).filter(f => f.startsWith(prefix)).map(f => join(DIR, f))
+      const prefixes = queues.map(q => `${basename(q)}.`)
+      return readdirSync(DIR).filter(f => prefixes.some(p => f.startsWith(p))).map(f => join(DIR, f))
     } catch { return [] }
   }
-  for (let round = 0; round < 10 && (existsSync(queue) || orphans().length > 0); round++) {
+  const pendingQueue = (): string | undefined => queues.find(q => existsSync(q))
+  for (let round = 0; round < 10 && (pendingQueue() !== undefined || orphans().length > 0); round++) {
     if (!acquireWorkerLock(lock)) break
     try {
       for (;;) {
         let batch = orphans()[0]
         if (!batch) {
-          if (!existsSync(queue)) break
+          const queue = pendingQueue()
+          if (!queue) break
           batch = `${queue}.${process.pid}`
           try { renameSync(queue, batch) } catch { break }
         }

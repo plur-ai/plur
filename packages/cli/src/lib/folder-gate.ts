@@ -91,17 +91,26 @@ export function hookFolderOn(dir: string, flags?: { path?: string }): boolean {
  */
 export function cursorRootPath(raw: unknown, windows: boolean = process.platform === 'win32'): string | null {
   if (typeof raw !== 'string' || raw.length === 0) return null
+  let path = raw
   if (/^file:/i.test(raw)) {
     try {
       // The options argument exists from Node 20.13 / 22.1; older Nodes use
       // the running platform, which is the right answer outside tests.
-      return (fileURLToPath as (u: string, o?: { windows?: boolean }) => string)(raw.replace(/^file:/i, 'file:'), { windows })
+      path = (fileURLToPath as (u: string, o?: { windows?: boolean }) => string)(raw.replace(/^file:/i, 'file:'), { windows })
     } catch {
       return null
     }
+  } else if (/^[a-z][a-z0-9+.-]+:\/\//i.test(raw)) {
+    return null // another scheme: not a local folder
   }
-  if (/^[a-z][a-z0-9+.-]+:\/\//i.test(raw)) return null // another scheme: not a local folder
-  return (windows ? win32 : posix).isAbsolute(raw) && (!windows || /^([a-z]:[\\/]|[\\/]{2})/i.test(raw)) ? raw : null
+  if (!windows) return posix.isAbsolute(path) ? path : null
+  // Windows (N7 of the #1583 re-audit): the forms an editor may send for a
+  // drive path — `c:\…`, `c:/…`, and the VS Code style `/c:/…` — all become
+  // `c:\…`; a UNC path `\\server\share\…` is kept. Not verified against a
+  // recorded Cursor payload on Windows.
+  if (/^[\\/][a-z]:[\\/]/i.test(path)) path = path.slice(1)
+  if (/^[a-z]:[\\/]/i.test(path) || /^[\\/]{2}[^\\/]/.test(path)) return win32.normalize(path)
+  return null
 }
 
 /** What a Cursor hook decides for the workspace (see {@link cursorHookFolder}). */
@@ -113,6 +122,11 @@ export interface CursorWorkspaceDecision {
   dir: string | null
   /** The workspace's policy. Its `scope` is set only when every root agrees on it. */
   policy: FolderPolicy
+  /**
+   * With `ask`: the folder the question is about, when that is not `dir` —
+   * a root that does not exist, whose question is shown from `dir`.
+   */
+  askAbout?: string
 }
 
 /** Off, decided here because the workspace could not be read: no scope, no question, no memory. */
@@ -182,38 +196,62 @@ export function cursorHookFolder(
 
   const real = (p: string): string | null => { try { return realpathSync.native(p) } catch { return null } }
   const roots = inputs.map(given => ({ given, real: real(given) }))
-  const existing = roots.filter((r): r is { given: string; real: string } => r.real !== null)
-  const cwdReal = cwd ? real(cwd) ?? cwd : null
+  const cwdReal = cwd ? real(cwd) : null
+  const firstDir = roots.find(r => r.real !== null)?.real ?? null
 
-  // Off wins, on every root (missing ones by their given path) and the cwd.
-  const firstDir = existing[0]?.real ?? null
-  for (const p of [...roots.map(r => r.real ?? r.given), ...(cwdReal ? [cwdReal] : [])]) {
+  // Off wins: every root and the cwd, each by its path as given AND as
+  // resolved (core matches an off entry on either spelling, and the MCP gate
+  // checks the root as given): a link inside an off folder is off, wherever
+  // it points (N1 of the #1583 re-audit). A missing root is checked as given.
+  const offChecks = [...new Set([
+    ...roots.flatMap(r => r.real !== null ? [r.given, r.real] : [r.given]),
+    ...(cwd ? [cwd, ...(cwdReal ? [cwdReal] : [])] : []),
+  ])]
+  for (const p of offChecks) {
     const policy = hookFolderPolicy(p, flags)
     if (policy.mode === 'off') return { dir: firstDir, policy }
   }
 
-  const decided = existing.map(r => ({ dir: r.real, policy: hookFolderPolicy(r.real, flags), broad: coversHome(r.real) }))
-  const askable = decided.filter(d => !d.broad)
-  const ask = askable.find(d => d.policy.mode === 'ask')
-  if (ask) return { dir: ask.dir, policy: ask.policy }
-  // Every root asked about is on. With none to ask about (only home-or-above
-  // roots, or none that exist), memory is on only when every root is: an
-  // undecided home folder is not a decision to turn memory on.
-  if (askable.length === 0 && (decided.length === 0 || decided.some(d => d.policy.mode !== 'on'))) {
-    return { dir: firstDir, policy: WORKSPACE_UNKNOWN }
+  // The question, as over MCP: in root order, the first undecided root that
+  // is not the home folder, a folder above it or a filesystem root. A root
+  // that does not exist counts too (N3): it is asked about, and memory stays
+  // off until it is answered. Its question is shown from the first root that
+  // exists, never by creating the missing folder.
+  const askable = roots
+    .map(r => ({ ...r, path: r.real ?? r.given }))
+    .filter(r => !coversHome(r.path))
+    .map(r => ({ ...r, policy: hookFolderPolicy(r.path, flags) }))
+  const existingAskable = askable.filter(r => r.real !== null)
+  const ask = askable.find(r => r.policy.mode === 'ask')
+  if (ask) {
+    const dir = ask.real ?? existingAskable[0]?.real ?? null
+    return { dir, policy: ask.policy, ...(ask.real === null ? { askAbout: ask.given } : {}) }
   }
 
-  // The scope: every root, none left out — core's workspaceFolderScope, the
-  // resolver the MCP server's workspaceWriteScope uses.
+  // On. With no root to ask about (only the home folder or above), memory is
+  // on without a scope, as over MCP (N2): no scope means nothing leaves the
+  // machine, and solo use in the home folder keeps working. The scope: every
+  // root, none left out — core's workspaceFolderScope, the resolver the MCP
+  // server's workspaceWriteScope uses.
   const scope = workspaceFolderScope(inputs, d => hookFolderPolicy(d, flags))
 
   // The output folder: the root the cwd is in (the deepest), else the first
-  // root that is not home or above, else the first root.
-  const pool = askable.length > 0 ? askable : decided
-  const inCwd = cwdReal ? pool.filter(d => within(cwdReal, d.dir)).sort((a, b) => b.dir.length - a.dir.length)[0] : undefined
-  const chosen = inCwd ?? pool[0]
-  const { scope: _own, ...rest } = chosen.policy
-  return { dir: chosen.dir, policy: scope ? { ...rest, scope } : { ...rest, ...(chosen.policy.scope ? { remoteAllowed: false } : {}) } }
+  // root that exists and is not home or above, else the first root that
+  // exists. None (every root missing): no folder to write in.
+  const pool = existingAskable.length > 0
+    ? existingAskable.map(r => r.real as string)
+    : roots.filter(r => r.real !== null).map(r => r.real as string)
+  const inCwd = cwdReal ? pool.filter(d => within(cwdReal, d)).sort((a, b) => b.length - a.length)[0] : undefined
+  const dir = inCwd ?? pool[0] ?? null
+  const policy = dir ? hookFolderPolicy(dir, flags) : null
+  // A map that cannot be read decides nothing: off, as MCP refuses (fail safe).
+  if (!policy || policy.reason === 'malformed-map' || policy.reason === 'resolver-error') return { dir, policy: WORKSPACE_UNKNOWN }
+  // A home-or-above root that is undecided is on here, by the MCP rule, never `ask`.
+  const on: FolderPolicy = policy.mode === 'on'
+    ? policy
+    : { mode: 'on', remoteAllowed: false, source: 'default' }
+  const { scope: _own, ...rest } = on
+  return { dir, policy: scope ? { ...rest, scope } : { ...rest, ...(on.scope ? { remoteAllowed: false } : {}) } }
 }
 
 /** Registry key for the folder's scope on a CLI read; no real session id starts with NUL. */
