@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
-import { describeNeedsAction } from '@plur-ai/core'
+import { describeNeedsAction, describeHeld } from '@plur-ai/core'
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // Pure query — a read-only engine guarantees no lazy write side-effects.
@@ -36,6 +36,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         outputText(`  ⚠️  ${line}`)
       }
       outputText('      Nothing is dropped automatically. `plur outbox` lists them.')
+    }
+    // #1581 audit L1: say why writes are held here, not just that they retry.
+    for (const line of describeHeld({ pending: 0, retrying: 0, needs_action: 0, scopes: [], held: result.outbox_held })) {
+      outputText(`  ⚠️  ${line}`)
     }
     // Discoverability, not decoration: the dashboard is on-demand by design
     // (it serves the whole store with no auth, so nothing auto-starts it),

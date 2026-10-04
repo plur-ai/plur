@@ -66,11 +66,19 @@ export interface OutboxFailureInput {
 
 export interface OutboxVerdict {
   state: OutboxState
-  /** One line: why retrying will not help. Only for `needs_action`. */
+  /** One line: why retrying will not help (`needs_action`), or why a
+   *  `retrying` entry is held on this machine (its push claim, #1581 L1). */
   reason?: string
-  /** One line: a real command or change that would. Only for `needs_action`. */
+  /** One line: a real command or change that would help. */
   next_step?: string
 }
+
+/**
+ * Prefix of `last_error` when a flush could not record the entry's push claim
+ * (#1581 audit L1). Not a push failure: the entry stays `retrying`, with a
+ * reason and next step so the listing, doctor and status can say why.
+ */
+export const OUTBOX_CLAIM_ERROR_PREFIX = 'push claim could not be recorded: '
 
 export function classifyOutboxFailure(input: OutboxFailureInput): OutboxVerdict {
   const scope = input.scope ?? '<scope>'
@@ -78,6 +86,14 @@ export function classifyOutboxFailure(input: OutboxFailureInput): OutboxVerdict 
   // several entries, next to the listing that names them.
   const rescope = '`plur rescope <id> --to <other scope>`'
   const retry = 'then `plur outbox --flush`'
+
+  if (input.last_error?.startsWith(OUTBOX_CLAIM_ERROR_PREFIX)) {
+    return {
+      state: 'retrying',
+      reason: `its push claim could not be recorded on this machine (${input.last_error.slice(OUTBOX_CLAIM_ERROR_PREFIX.length)})`,
+      next_step: 'check that the PLUR store\'s cache/outbox-claims folder can be written (disk space, permissions); a later flush sends it',
+    }
+  }
 
   if (input.has_store === false) {
     return {
@@ -147,6 +163,9 @@ export interface OutboxSummary {
   needs_action: number
   /** One row per (scope, reason) with needs_action entries, each with that reason's next step. */
   scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
+  /** `retrying` entries held on this machine for a stated reason (a push
+   *  claim that could not be recorded, #1581 audit L1), one row per reason. */
+  held?: Array<{ count: number; reason: string; next_step: string }>
 }
 
 export function summarizeOutbox(entries: readonly OutboxEntryLike[]): OutboxSummary {
@@ -155,8 +174,16 @@ export function summarizeOutbox(entries: readonly OutboxEntryLike[]): OutboxSumm
   // scope alone told a 403 entry to `plur forget` itself (the 422 advice).
   const rows = new Map<string, { scope: string; count: number; reason: string; next_step: string }>()
   let needs = 0
+  const held = new Map<string, { count: number; reason: string; next_step: string }>()
   for (const e of entries) {
-    if (e.state !== 'needs_action') continue
+    if (e.state !== 'needs_action') {
+      if (e.reason) {
+        const h = held.get(e.reason)
+        if (h) h.count++
+        else held.set(e.reason, { count: 1, reason: e.reason, next_step: e.next_step ?? 'run `plur outbox`' })
+      }
+      continue
+    }
     needs++
     const reason = e.reason ?? 'retrying cannot fix it'
     const key = `${e.target_scope}\u0000${reason}`
@@ -166,7 +193,16 @@ export function summarizeOutbox(entries: readonly OutboxEntryLike[]): OutboxSumm
       scope: e.target_scope, count: 1, reason, next_step: e.next_step ?? 'run `plur outbox`',
     })
   }
-  return { pending: entries.length, retrying: entries.length - needs, needs_action: needs, scopes: [...rows.values()] }
+  return {
+    pending: entries.length, retrying: entries.length - needs, needs_action: needs, scopes: [...rows.values()],
+    ...(held.size > 0 ? { held: [...held.values()] } : {}),
+  }
+}
+
+/** One human line per held reason (#1581 audit L1), for outbox/doctor/status. */
+export function describeHeld(summary: OutboxSummary): string[] {
+  return (summary.held ?? []).map(h =>
+    `${h.count} queued write(s) are held on this machine: ${h.reason}. Next: ${h.next_step}.`)
 }
 
 /** One human line per needs_action scope, for status/doctor/session_start. */
