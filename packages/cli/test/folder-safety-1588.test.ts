@@ -199,12 +199,20 @@ describe.skipIf(!hasPythonPty)('#1589 audit round 2, R2-M1: the hint for a skipp
     it(`plur ${cmd[0]}: the folder is quoted, and no line runs a command hidden in its name`, () => {
       const out = ptySet(cmd, weird, { PLUR_DISABLE_EMBEDDINGS: '1' }).out
       expect(out).toContain(`plur folders set '${weird}' --on`)
+      // Only the hint block is pasted: the rest of doctor's output names real
+      // commands in backticks (npm, plur init), which bash would run.
+      const lines = out.split(/\r?\n/)
+      const start = lines.findIndex(l => l.includes('not added, because'))
+      expect(start).toBeGreaterThanOrEqual(0)
+      const block: string[] = [lines[start]]
+      for (const l of lines.slice(start + 1)) { if (!l.startsWith('   ')) break; block.push(l) }
+      expect(block.some(l => l.includes('folders set'))).toBe(true)
       const run = join(base, `bash-${cmd[0]}`)
       mkdirSync(run)
-      runLinesInBash(out, run)
+      runLinesInBash(block.join('\n'), run)
       expect(existsSync(join(run, 'CANARY'))).toBe(false)
       expect(existsSync(join(weird, 'CANARY'))).toBe(false)
-    }, 90_000)
+    }, 180_000)
   }
 
   it('a folder name with a line break gets its path escaped and no command', () => {

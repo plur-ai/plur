@@ -12961,11 +12961,11 @@ Generate an improved version of the procedure that prevents this failure. Return
     const seen = new Set<string>()
     for (const { dir, candidate, key } of this._discoveryCandidates(cwd || process.cwd())) {
       if (seen.has(key)) continue
-      // A store is registered only for a folder with its OWN decision (#1588):
-      // an exact folder-map entry, or a marker in that folder that the
-      // decision came from. On only through a parent is not enough — a
-      // repository's shipped store would otherwise become a shared, writable
-      // store read in every folder.
+      // A store is registered only for a folder the USER decided on itself
+      // (#1588; owner decision 2026-10-05): an exact folder-map entry. On only
+      // through a parent, or through a marker the repository ships, is not
+      // enough — the repository's store would otherwise become a shared,
+      // writable store read in every folder.
       // readOnly: discovery reads the folder map but never performs the
       // one-time trust.yaml import (#1589 audit round 2); that stays with the
       // folder commands and the hooks, as before this gate existed.

@@ -688,38 +688,20 @@ export function sameFolderPath(a: string, b: string, platform: Platform = proces
 }
 
 /**
- * Whether a project marker in the folder itself (an MCP config naming plur,
- * or a trusted or request-free `.plur.yaml`) counts as that folder's own
- * decision for store discovery (#1588). Set to `false` to require an exact
- * folder-map entry (`plur folders set <folder> --on`, the folder question's
- * yes, or `plur trust`) — the open owner question of the #1589 audit.
- */
-const MARKER_IS_OWN_DECISION = true
-
-/**
- * True when `dir` has a decision of its OWN that turns PLUR on (#1588):
- *  - a folder-map entry naming exactly this folder (not a parent, not a
- *    pattern), or
- *  - a project marker in this folder itself, and only when the resolver's
- *    decision actually came from that marker (#1589 audit M1). An untrusted
- *    `.plur.yaml` that requests a scope, domain or remote is ignored by the
- *    resolver; if a parent's map entry decides instead, that file is not this
- *    folder's decision.
- * A folder that is on only through a parent (a parent's map entry or
- * pattern, or a marker further up) has no decision of its own. Store
- * auto-discovery registers a folder's `.plur/engrams.yaml` only when this is
- * true, so a store shipped inside a repository is never adopted because of a
- * decision made for somewhere else.
+ * True when the USER decided on `dir` itself (#1588; owner decision
+ * 2026-10-05): the folder is on, and a non-pattern folder-map entry names
+ * exactly this folder — written by `plur folders set <folder> --on`, a yes to
+ * the folder question, or `plur trust`. Nothing a repository ships counts: a
+ * project marker in the folder (an MCP config naming plur, a `.plur.yaml`)
+ * can switch memory on there, but is not the user's decision about the
+ * repository's own store. A folder that is on only through a parent (a
+ * parent's entry or pattern, or a marker) has no decision of its own either.
+ * Store auto-discovery registers a folder's `.plur/engrams.yaml` only when
+ * this is true.
  */
 export function hasOwnFolderDecision(dir: string, opts: FolderPolicyOptions): boolean {
-  const home = opts.home ?? homedir()
-  const policy = resolveFolderPolicy(dir, opts)
-  if (policy.mode !== 'on') return false
-  if (hasExactOnEntry(dir, opts.root, home, opts.readOnly === true)) return true
-  if (!MARKER_IS_OWN_DECISION) return false
-  const canonical = canonicalize(dir)
-  return policy.source !== 'map' && policy.source !== 'default' &&
-    canonical !== canonicalize(home) && markerIn(canonical) !== null
+  if (resolveFolderPolicy(dir, opts).mode !== 'on') return false
+  return hasExactOnEntry(dir, opts.root, opts.home ?? homedir(), opts.readOnly === true)
 }
 
 /** A non-pattern folder-map entry that names exactly `dir` and turns it on (or trusts / scopes it). */
