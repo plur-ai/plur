@@ -33,7 +33,7 @@ logger = logging.getLogger("plur_hermes.bridge")
 # therefore uses `--` ONLY for text that begins with "-" (every other query and
 # task keeps its pre-`--` argv), and sends learn/capture text on stdin. The bump
 # itself is release.sh's job (RELEASING.md), not a hand edit.
-_NPX_CLI_VERSION = "0.21.0"
+_NPX_CLI_VERSION = "0.21.1"
 
 _DEFAULT_DEDUP_CACHE_SIZE = 256
 # TTL (seconds) on dedup-cache entries — the in-process half of #120.
