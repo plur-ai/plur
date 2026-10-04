@@ -382,3 +382,92 @@ describe('L6 — injectHybrid has the recall deadline and the per-call remote re
     expect(res.results_complete).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Round 2 (re-audit of bf990fe7)
+// ---------------------------------------------------------------------------
+
+describe('N1 — the injection-counter write is bounded by the deadline', () => {
+  for (const holder of ['in-process', 'lock-file'] as const) {
+    it(`injectHybrid returns near a 20 ms deadline with the store lock held (${holder})`, async () => {
+      const { plur, dir } = plurFor([{ url: baseUrl, scope: TEAM_SCOPE }])
+      await plur.learn('injection counter fact about buoys', { scope: PROJECT })
+      const before = (await plur.list()).find(e => e.statement.includes('buoys'))!
+      if (holder === 'in-process') {
+        let release!: () => void
+        const held = new Promise<void>(r => { release = r })
+        releasers.push(release)
+        void withAsyncLock(join(dir, 'engrams.yaml'), () => held)
+      } else {
+        // A live holder by the lock-file protocol (this pid, another token),
+        // as another process holding the store would leave it.
+        const lockFile = join(dir, 'engrams.yaml.lock')
+        writeFileSync(lockFile, makeToken())
+        lockFiles.push(lockFile)
+      }
+      const t0 = Date.now()
+      await plur.injectHybrid('buoys injection counter', { remote: false, deadline_ms: 20 })
+      expect(Date.now() - t0).toBeLessThan(1500)
+      // Released after the reply: the counter is not written behind its back.
+      while (releasers.length) releasers.pop()!()
+      while (lockFiles.length) { const f = lockFiles.pop()!; try { unlinkSync(f) } catch { /* gone */ } }
+      await sleep(700)
+      const after = (await plur.list()).find(e => e.id === before.id)!
+      expect(after.injection_count ?? 0).toBe(before.injection_count ?? 0)
+    }, 15_000)
+  }
+
+  it('uncontended, the injection counter is still written', async () => {
+    const { plur } = plurFor([{ url: baseUrl, scope: TEAM_SCOPE }])
+    await plur.learn('injection counter fact about jetties', { scope: PROJECT })
+    const before = (await plur.list()).find(e => e.statement.includes('jetties'))!
+    const res = await plur.injectHybrid('jetties injection counter', { remote: false })
+    expect(res.injected_ids).toContain(before.id)
+    const after = (await plur.list()).find(e => e.id === before.id)!
+    expect(after.injection_count ?? 0).toBe((before.injection_count ?? 0) + 1)
+  })
+})
+
+describe('N2 — a successful recall clears a cooldown opened while it was in flight', () => {
+  it('the host answered: failures, cooldown and last_state are written even though they look unchanged', async () => {
+    const statePath = statePathIn()
+    seedFake(statePath, { failures: 0, cooldown_until: 0, last_state: 'ok', updated_at: Date.now() })
+    const openingFetch = (async (...a: any[]) => {
+      // Three failed writes in another process open the breaker meanwhile.
+      const cur = JSON.parse(readFileSync(statePath, 'utf8'))
+      Object.assign(cur.hosts[FAKE_KEY], { failures: 0, cooldown_until: Date.now() + BREAKER_COOLDOWN_MS, cooldown_opened_at: Date.now(), last_state: 'unreachable' })
+      writeFileSync(statePath, JSON.stringify(cur))
+      return (okFetch as any)(...a)
+    }) as unknown as typeof fetch
+    const r = await remoteRecall([fakeHost], 'q', { statePath, timeoutMs: 500, fetchImpl: openingFetch })
+    expect(r.outcomes[0].state).toBe('ok')
+    const h = fileHost(statePath)
+    expect(h.cooldown_until ?? 0).toBeLessThanOrEqual(Date.now())
+    expect(h.last_state).toBe('ok')
+    expect(h.failures ?? 0).toBe(0)
+  })
+})
+
+describe('N3 — a successful save resets the client_slow streak', () => {
+  it('client_slow_streak is 0 after a successful save', () => {
+    const statePath = statePathIn()
+    seedFake(statePath, { client_slow_streak: CLIENT_SLOW_STREAK_LIMIT, last_state: 'client_slow', updated_at: Date.now() })
+    recordWriteOutcome(FAKE, true, Date.now(), statePath)
+    expect(fileHost(statePath).client_slow_streak ?? 0).toBe(0)
+  })
+})
+
+describe('N5 — a 422 breaks the token\'s 403 streak', () => {
+  it('403, 422, 403 is not a revocation', async () => {
+    const statePath = statePathIn()
+    const statuses = [403, 422, 403]
+    const seqFetch = (async () => new Response('{}', { status: statuses.shift()!, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+    const states: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const r = await remoteRecall([fakeHost], 'q', { statePath, timeoutMs: 500, fetchImpl: seqFetch })
+      states.push(r.outcomes[0].state)
+    }
+    expect(states[2]).not.toBe('forbidden')
+    expect(fileHost(statePath).forbidden_count).toBeUndefined()
+  })
+})

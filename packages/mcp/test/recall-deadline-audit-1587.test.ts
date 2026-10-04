@@ -117,3 +117,18 @@ describe('L6 — injection replies carry the per-call remote report', () => {
     expect(res.results_complete).toBe(true)
   })
 })
+
+describe('N4 — session start takes its injection deadline at handler entry', () => {
+  it('plur_session_start passes injectHybrid an absolute deadline_at set before its own awaits', async () => {
+    const plur = new Plur({ path: storeDir(null) })
+    let seen: any
+    const orig = plur.injectHybrid.bind(plur)
+    ;(plur as any).injectHybrid = (t: string, o: any) => { seen = o; return orig(t, o) }
+    const client = await makeClient(plur)
+    const before = Date.now()
+    await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything at all' } })
+    expect(typeof seen?.deadline_at).toBe('number')
+    expect(seen.deadline_at).toBeGreaterThanOrEqual(before + DEFAULT_RECALL_DEADLINE_MS - 50)
+    expect(seen.deadline_at).toBeLessThanOrEqual(Date.now() + DEFAULT_RECALL_DEADLINE_MS)
+  })
+})
