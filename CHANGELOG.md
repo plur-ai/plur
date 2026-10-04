@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Team-memory recall no longer stalls or goes quiet on a slow start, and every recall says what the server did (#1586)
+
+Found by the 0.21.1 post-release smoke run: saves reached the team server while recalls hung, returned nothing after 7 s, or paused team memory for five minutes. The server was healthy; the causes were in the client.
+
+- **Recall has one deadline.** `plur_recall` (keyword and hybrid) returns within 10 s whatever the server or another process holding the memory file does. Set `PLUR_RECALL_DEADLINE_MS` to change it. The freshness update after a recall waits at most half a second for the memory file; when the file is busy, the update is skipped instead of holding the reply (it used to wait up to 180 s).
+- **A slow start is no longer blamed on the server.** When a request runs out of time because PLUR's own process was busy (a cold start, a loaded machine), the result is `client_slow`. It no longer counts toward the five-minute pause for that server.
+- **A successful save ends the pause.** A save that reaches the server clears that server's read pause, so the next recall asks it again.
+- **A pause allows one trial read.** One minute into a pause, one recall asks the server. If it answers, the pause ends; if not, the pause starts over.
+- **Every recall reply says what the server leg did.** `plur_recall` replies now carry `remote` (the state for this call, with each server's state and time) and `results_complete` (false when the server did not answer or local search ran out of time). Existing fields are unchanged. In core, `recallWithMeta()` returns the same for keyword recall, and `recallHybridWithMeta()` results carry `remote` and `results_complete`.
+
 ## 0.21.1
 
 You decide where your agents remember.

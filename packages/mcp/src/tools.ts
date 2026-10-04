@@ -3,7 +3,7 @@ import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
-import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
@@ -74,6 +74,34 @@ function formatAge(ageMs: number | undefined): string {
  * the shared core table — consequence + agent action), mirroring the
  * hybrid-degraded warning pattern above it. Healthy hosts attach nothing.
  */
+/**
+ * #1586: say, for THIS call, what the remote (server) leg did and whether the
+ * results are complete. Added fields only — `results`, `count`, `mode`,
+ * `remote_stores` and `warning` keep their shape. `remote_stores` reports the
+ * latest outcome per host for the whole process; `remote` is this call.
+ */
+function attachRecallReport(
+  response: Record<string, unknown>,
+  meta: { remote?: RecallRemoteReport; results_complete?: boolean; local_complete?: boolean },
+): void {
+  const remote: RecallRemoteReport = meta.remote ?? { state: 'not_dialed', hosts: [] }
+  response.remote = remote
+  response.results_complete = meta.results_complete ?? true
+  const notes: string[] = []
+  if (meta.local_complete === false) {
+    notes.push('Local search did not finish within the recall deadline — results are incomplete; retrying is fine.')
+  }
+  if (remote.hosts.some(h => h.detail === 'recall_deadline')) {
+    notes.push('The server did not answer within the recall deadline — results may be missing team engrams this call.')
+  }
+  if (notes.length > 0) {
+    const line = notes.join(' ')
+    response.warning = typeof response.warning === 'string' && response.warning.length > 0
+      ? `${response.warning} ${line}`
+      : line
+  }
+}
+
 function attachRemoteStoreDegradation(response: Record<string, unknown>, plur: Plur): void {
   let status: RemoteStoreStatusEntry[]
   try {
@@ -115,7 +143,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     // `await` added on merge: `recall()` is async as of the Phase 2 write-path
     // flip. Landed on main against the synchronous signature, so without this
     // `results` is a Promise and `.map` below throws.
-    const results = await plur.recall(args.query as string, {
+    const kwMeta = await plur.recallWithMeta(args.query as string, {
       scope: args.scope as string | undefined,
       domain: args.domain as string | undefined,
       limit: args.limit as number | undefined,
@@ -128,6 +156,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       // of its own, the workspace's scope — the one resolver writes use.
       session: await _readSession(args, plur),
     })
+    const results = kwMeta.engrams
     const response: Record<string, unknown> = {
       results: results.map(e => {
         const supersededBy = e.relations?.superseded_by
@@ -167,6 +196,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       mode: 'keyword',
     }
     attachRemoteStoreDegradation(response, plur)
+    attachRecallReport(response, kwMeta)
     return response
   }
   // mode === 'hybrid' (default)
@@ -268,6 +298,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
   }
   // A4′ (#776): per-host remote degradation — attached only when non-ok.
   attachRemoteStoreDegradation(response, plur)
+  attachRecallReport(response, meta)
   return response
 }
 

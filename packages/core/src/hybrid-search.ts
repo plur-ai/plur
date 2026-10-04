@@ -1,3 +1,4 @@
+import type { RecallRemoteReport } from './remote-recall.js'
 import type { Engram } from './schemas/engram.js'
 import { searchEngrams } from './fts.js'
 import { embeddingSearch, embedderStatus } from './embeddings.js'
@@ -37,6 +38,15 @@ export interface HybridSearchResult {
    * empty. Useful for benchmark + diagnostic reporting.
    */
   reranked?: number
+  /** What the remote (server) leg did on THIS call (#1586). Set by Plur's
+   *  recall paths; absent from the bare local search functions. */
+  remote?: RecallRemoteReport
+  /** False when a leg that should have contributed did not: a dialed host
+   *  was not ok, or the local search was cut by the recall deadline (#1586). */
+  results_complete?: boolean
+  /** Present (false) only when the local search did not finish within the
+   *  recall deadline (#1586). */
+  local_complete?: boolean
 }
 
 /** Options for the optional cross-encoder rerank stage (#220). */

@@ -62,10 +62,12 @@ import { redactToken, containsToken } from './redact-token.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
+  resolveRecallDeadlineMs, buildRecallRemoteReport, RECALL_BOOKKEEPING_LOCK_WAIT_MS, settleBy,
+  type RecallRemoteReport,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome, stampStoreRow} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
-import { withAsyncLock } from './store/async-lock.js'
+import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
@@ -457,6 +459,9 @@ export {
   BREAKER_FAILURE_THRESHOLD, BREAKER_COOLDOWN_MS, UNSUPPORTED_TTL_MS, HOOK_HEADER_REPEAT_MS,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
   startBudgetTimer, BUDGET_TICK_MS, MAX_STARVATION_CREDIT_MS,
+  BREAKER_HALF_OPEN_AFTER_MS, DEFAULT_RECALL_DEADLINE_MS, RECALL_BOOKKEEPING_LOCK_WAIT_MS,
+  resolveRecallDeadlineMs, buildRecallRemoteReport,
+  type BudgetExpiry, type RecallRemoteReport, type RecallRemoteHostReport,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome,
   type RemoteHostState, type RemoteStoreStatusEntry, type RemoteRecallOptions,
 } from './remote-recall.js'
@@ -2190,7 +2195,7 @@ export class Plur {
    *
    * @see AsyncPrimaryStore.withExclusiveAccess
    */
-  private async _withStoreLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  private async _withStoreLock<T>(path: string, fn: () => Promise<T>, lockOptions?: AsyncLockOptions): Promise<T> {
     const store = this._storeAt(path)
     // Lock the store's PHYSICAL location, not the conventional path (#813,
     // audit finding 11). `paths.engrams` is where a store would live by
@@ -2210,7 +2215,7 @@ export class Plur {
       return await fn()
     }
     if (store.withExclusiveAccess) return await store.withExclusiveAccess(guarded)
-    return await withAsyncLock(lockKey, guarded)
+    return await withAsyncLock(lockKey, guarded, lockOptions)
   }
 
   /**
@@ -4610,6 +4615,7 @@ export class Plur {
               ;({ id: serverId } = await remoteDriver.appendAndGetServerId(engram, { idempotencyKey: pushKey }))
               this._noteSeenOnServer([{ id: serverId, scope: engram.scope }])
               pushed = true
+              this._noteRemoteWriteSucceeded(remoteDriver.endpointUrl)
             } catch (err) {
               // The POST did not land. The in-flight claim is still held, and is
               // released only by the `finally` below, AFTER this bookkeeping
@@ -5003,6 +5009,7 @@ export class Plur {
         const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder, { idempotencyKey: writeKey, signal })
         serverEngram = { ...localPlaceholder, id: serverId }
         this._noteSeenOnServer([{ id: serverId, scope }])
+        this._noteRemoteWriteSucceeded(remoteDriver.endpointUrl)
       } catch (inner) {
         // Say what happened in words a person can act on: the caller's
         // deadline passed with no answer. Recorded as the outbox's last_error.
@@ -5471,151 +5478,180 @@ export class Plur {
    *  `remote: false` (internal callers) or PLUR_REMOTE_RECALL=off keeps it
    *  fully local. */
   async recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
+    return (await this.recallWithMeta(query, options)).engrams
+  }
+
+  /**
+   * {@link recall}, plus what happened on THIS call (#1586): the remote leg's
+   * state per host (`remote`), and whether the results are complete. Returns
+   * within the recall deadline (`deadline_ms`, default
+   * {@link DEFAULT_RECALL_DEADLINE_MS}) whatever the server or a store-lock
+   * holder does.
+   */
+  async recallWithMeta(
+    query: string,
+    options?: Omit<RecallOptions, 'mode' | 'llm'>,
+  ): Promise<{ engrams: Engram[]; remote: RecallRemoteReport; results_complete: boolean; local_complete?: boolean }> {
+    const deadlineAt = Date.now() + resolveRecallDeadlineMs(options?.deadline_ms)
     const limit = options?.limit ?? 20
 
     // #776: start the remote leg BEFORE the local pipeline so the effective
     // added latency is max(0, remote − local), not remote + local.
     const remotePromise = this._startRemoteRecall(query, options)
 
-    // Push the search into the store when the store can answer it.
-    //
-    // Until now this always loaded the corpus into memory and ranked it here,
-    // which is correct at YAML scale and is the whole cost the Postgres tier
-    // exists to avoid. `searchBM25` and `corpusStats` were implemented and
-    // parity-tested against real Postgres but had ZERO call sites — built and
-    // unreachable. This is the wiring.
-    //
-    // Scope, domain and the permitted-scope allow-list go INTO the query, so
-    // `limit` is not spent on rows the caller may not see.
-    //
-    // The rest of `_filterEngrams`'s work still has to happen, and an earlier
-    // version of this branch simply returned here — which silently dropped four
-    // things the in-memory path applies:
-    //
-    //   - temporal validity: an engram whose `valid_until` has passed was
-    //     returned as current. A fact explicitly withdrawn in 2020 was injected
-    //     into an agent's context by `recall()` while `list()` correctly
-    //     excluded it. Reproduced, not theorised.
-    //   - `min_strength`
-    //   - engrams merged in from `config.stores` (team/enterprise stores)
-    //   - pack engrams
-    //
-    // The last two are the ones that would have been reported as "recall is
-    // broken": on the Postgres tier `plur_recall` stopped returning the team
-    // store entirely, while `recallHybrid` on the SAME instance still did.
-    //
-    // The adapter cannot answer those — it queries one table and knows nothing
-    // about packs, secondary stores, or the caller's clock. So the pushdown is
-    // a NARROWING step, not a replacement: it returns a superset, and the
-    // remaining predicates are applied here. `limit` is applied last, after all
-    // of them, so a row removed by expiry does not consume a slot.
-    const adapter = this._primaryQueryAdapter()
-    if (adapter) {
-      const pushdownFilter = {
-        status: 'active' as const,
-        scope: options?.scope,
-        scopes: options?.scopes,
-        // Mounted-scope visibility grants (#775) go INTO the pushdown so
-        // `limit` counts granted team rows too. Visibility-only — widens the
-        // `scope` clause, never the `scopes` authorization clause.
-        visibilityGrants: this._grantedScopes(),
-        domain: options?.domain,
-      }
-      // Widen and retry rather than trust a fixed multiplier.
+    const localLeg = async (): Promise<Engram[]> => {
+
+      // Push the search into the store when the store can answer it.
       //
-      // The over-fetch exists because the residual filters below (expiry,
-      // min_strength) remove rows the adapter cannot evaluate, and a row
-      // dropped after a LIMIT is a result the caller silently never sees. A
-      // FIXED 3x is only enough while those filters remove less than two
-      // thirds of the page; past that the caller asks for N, the store holds
-      // N matching rows, and recall quietly returns fewer.
+      // Until now this always loaded the corpus into memory and ranked it here,
+      // which is correct at YAML scale and is the whole cost the Postgres tier
+      // exists to avoid. `searchBM25` and `corpusStats` were implemented and
+      // parity-tested against real Postgres but had ZERO call sites — built and
+      // unreachable. This is the wiring.
       //
-      // So: if filtering consumed the page AND the adapter returned a full one
-      // (meaning it was truncated, so more rows exist), widen and ask again.
-      // Bounded, because each round is a real query.
-      let narrowed: Engram[] = []
-      let surviving: Engram[] = []
-      let fetch = Math.max(limit * PUSHDOWN_OVERFETCH, limit)
-      for (let round = 0; round < PUSHDOWN_MAX_ROUNDS; round++) {
-        // #753: prefer the exhaustion-aware call when the adapter offers one.
-        //
-        // `narrowed.length < fetch` is the only exhaustion signal core can
-        // derive, and it is wrong for an adapter whose prefilter cannot rank:
-        // PostgresAdapter computes and scores the FULL candidate set and slices
-        // to `limit` here, so a full page means "your slice was full", not
-        // "there is more". The loop then re-ran an identical query up to three
-        // times to take a longer slice of an answer already computed — a 2-3x
-        // amplification, concentrated in the high-rejection case the widening
-        // exists to serve, at the scale that selects this tier.
-        let exhausted = false
-        if (adapter.searchBM25Exhaustive) {
-          const res = await adapter.searchBM25Exhaustive(query, { ...pushdownFilter, limit: fetch })
-          narrowed = res.rows
-          exhausted = res.exhausted
-        } else {
-          narrowed = await adapter.searchBM25(query, { ...pushdownFilter, limit: fetch })
+      // Scope, domain and the permitted-scope allow-list go INTO the query, so
+      // `limit` is not spent on rows the caller may not see.
+      //
+      // The rest of `_filterEngrams`'s work still has to happen, and an earlier
+      // version of this branch simply returned here — which silently dropped four
+      // things the in-memory path applies:
+      //
+      //   - temporal validity: an engram whose `valid_until` has passed was
+      //     returned as current. A fact explicitly withdrawn in 2020 was injected
+      //     into an agent's context by `recall()` while `list()` correctly
+      //     excluded it. Reproduced, not theorised.
+      //   - `min_strength`
+      //   - engrams merged in from `config.stores` (team/enterprise stores)
+      //   - pack engrams
+      //
+      // The last two are the ones that would have been reported as "recall is
+      // broken": on the Postgres tier `plur_recall` stopped returning the team
+      // store entirely, while `recallHybrid` on the SAME instance still did.
+      //
+      // The adapter cannot answer those — it queries one table and knows nothing
+      // about packs, secondary stores, or the caller's clock. So the pushdown is
+      // a NARROWING step, not a replacement: it returns a superset, and the
+      // remaining predicates are applied here. `limit` is applied last, after all
+      // of them, so a row removed by expiry does not consume a slot.
+      const adapter = this._primaryQueryAdapter()
+      if (adapter) {
+        const pushdownFilter = {
+          status: 'active' as const,
+          scope: options?.scope,
+          scopes: options?.scopes,
+          // Mounted-scope visibility grants (#775) go INTO the pushdown so
+          // `limit` counts granted team rows too. Visibility-only — widens the
+          // `scope` clause, never the `scopes` authorization clause.
+          visibilityGrants: this._grantedScopes(),
+          domain: options?.domain,
         }
-        surviving = this._applyResidualFilters(narrowed, options)
-        // Enough survivors, the adapter says there is no more, or the page came
-        // back short (the inferred signal, kept for adapters without the hook).
-        if (surviving.length >= limit || exhausted || narrowed.length < fetch) break
-        fetch *= PUSHDOWN_OVERFETCH
+        // Widen and retry rather than trust a fixed multiplier.
+        //
+        // The over-fetch exists because the residual filters below (expiry,
+        // min_strength) remove rows the adapter cannot evaluate, and a row
+        // dropped after a LIMIT is a result the caller silently never sees. A
+        // FIXED 3x is only enough while those filters remove less than two
+        // thirds of the page; past that the caller asks for N, the store holds
+        // N matching rows, and recall quietly returns fewer.
+        //
+        // So: if filtering consumed the page AND the adapter returned a full one
+        // (meaning it was truncated, so more rows exist), widen and ask again.
+        // Bounded, because each round is a real query.
+        let narrowed: Engram[] = []
+        let surviving: Engram[] = []
+        let fetch = Math.max(limit * PUSHDOWN_OVERFETCH, limit)
+        for (let round = 0; round < PUSHDOWN_MAX_ROUNDS; round++) {
+          // #753: prefer the exhaustion-aware call when the adapter offers one.
+          //
+          // `narrowed.length < fetch` is the only exhaustion signal core can
+          // derive, and it is wrong for an adapter whose prefilter cannot rank:
+          // PostgresAdapter computes and scores the FULL candidate set and slices
+          // to `limit` here, so a full page means "your slice was full", not
+          // "there is more". The loop then re-ran an identical query up to three
+          // times to take a longer slice of an answer already computed — a 2-3x
+          // amplification, concentrated in the high-rejection case the widening
+          // exists to serve, at the scale that selects this tier.
+          let exhausted = false
+          if (adapter.searchBM25Exhaustive) {
+            const res = await adapter.searchBM25Exhaustive(query, { ...pushdownFilter, limit: fetch })
+            narrowed = res.rows
+            exhausted = res.exhausted
+          } else {
+            narrowed = await adapter.searchBM25(query, { ...pushdownFilter, limit: fetch })
+          }
+          surviving = this._applyResidualFilters(narrowed, options)
+          // Enough survivors, the adapter says there is no more, or the page came
+          // back short (the inferred signal, kept for adapters without the hook).
+          if (surviving.length >= limit || exhausted || narrowed.length < fetch) break
+          fetch *= PUSHDOWN_OVERFETCH
+        }
+
+        const outsiders = await this._engramsOutsidePrimaryStore(options)
+        const extra = this._applyResidualFilters(outsiders, options)
+        let results: Engram[]
+        if (extra.length > 0) {
+          // Rank the union TOGETHER, rather than appending the outsiders.
+          //
+          // This used to be `[...narrowed, ...extra].slice(0, limit)`, which puts
+          // every secondary-store and pack engram after every primary one. With a
+          // primary store holding `limit` matches — the normal case — a team
+          // engram that is the single best match for the query never appeared at
+          // all. The bug is invisible from the primary store's side: results come
+          // back, they are just the wrong ones.
+          //
+          // Scored with the UNION's statistics: the store supplies corpus-wide
+          // figures for the primary side, and `extendCorpusStats` folds the
+          // outsiders in exactly — they are already materialised in memory, so
+          // their `df`/length contributions cost one tokenisation pass.
+          //
+          // The first version of this ranking scored the union with primary-only
+          // stats and called the outsiders' IDF "an approximation". It was not a
+          // bounded one: a query term absent from the primary corpus priced at
+          // log(N/1) — maximally rare regardless of how common it is in the
+          // store it actually lives in — and team-store jargon is by nature
+          // common there and absent here. Measured: the single best primary
+          // match for a mixed query ranked 197th behind 196 weak outsider rows.
+          // The fold takes the PRE-residual outsiders, deliberately asymmetric
+          // with the `extra` that gets ranked: the primary side's `corpusStats`
+          // counts every active row — SQL cannot evaluate expiry or
+          // min_strength — so folding only residual-surviving outsiders would
+          // describe a hybrid corpus (full primary + filtered outsiders) and
+          // under-weight outsider vocabulary whenever outsiders are expired or
+          // weak. Both sides now contribute the same population: post-scope,
+          // pre-residual (#752, iteration 2).
+          const queryTokens = ftsTokenize(query)
+          const primaryStats = adapter.corpusStats
+            ? await adapter.corpusStats(queryTokens, pushdownFilter)
+            : undefined
+          const stats = primaryStats
+            ? extendCorpusStats(primaryStats, queryTokens, outsiders)
+            : undefined
+          results = searchEngrams([...surviving, ...extra], query, limit, stats)
+        } else {
+          results = surviving.slice(0, limit)
+        }
+        return results
       }
 
-      const outsiders = await this._engramsOutsidePrimaryStore(options)
-      const extra = this._applyResidualFilters(outsiders, options)
-      let results: Engram[]
-      if (extra.length > 0) {
-        // Rank the union TOGETHER, rather than appending the outsiders.
-        //
-        // This used to be `[...narrowed, ...extra].slice(0, limit)`, which puts
-        // every secondary-store and pack engram after every primary one. With a
-        // primary store holding `limit` matches — the normal case — a team
-        // engram that is the single best match for the query never appeared at
-        // all. The bug is invisible from the primary store's side: results come
-        // back, they are just the wrong ones.
-        //
-        // Scored with the UNION's statistics: the store supplies corpus-wide
-        // figures for the primary side, and `extendCorpusStats` folds the
-        // outsiders in exactly — they are already materialised in memory, so
-        // their `df`/length contributions cost one tokenisation pass.
-        //
-        // The first version of this ranking scored the union with primary-only
-        // stats and called the outsiders' IDF "an approximation". It was not a
-        // bounded one: a query term absent from the primary corpus priced at
-        // log(N/1) — maximally rare regardless of how common it is in the
-        // store it actually lives in — and team-store jargon is by nature
-        // common there and absent here. Measured: the single best primary
-        // match for a mixed query ranked 197th behind 196 weak outsider rows.
-        // The fold takes the PRE-residual outsiders, deliberately asymmetric
-        // with the `extra` that gets ranked: the primary side's `corpusStats`
-        // counts every active row — SQL cannot evaluate expiry or
-        // min_strength — so folding only residual-surviving outsiders would
-        // describe a hybrid corpus (full primary + filtered outsiders) and
-        // under-weight outsider vocabulary whenever outsiders are expired or
-        // weak. Both sides now contribute the same population: post-scope,
-        // pre-residual (#752, iteration 2).
-        const queryTokens = ftsTokenize(query)
-        const primaryStats = adapter.corpusStats
-          ? await adapter.corpusStats(queryTokens, pushdownFilter)
-          : undefined
-        const stats = primaryStats
-          ? extendCorpusStats(primaryStats, queryTokens, outsiders)
-          : undefined
-        results = searchEngrams([...surviving, ...extra], query, limit, stats)
-      } else {
-        results = surviving.slice(0, limit)
-      }
-      const merged = await this._mergeRemoteRecall(results, remotePromise, options, limit)
-      await this._reactivateResults(merged)
-      return merged
+      const filtered = await this._filterEngrams(options)
+      return searchEngrams(filtered, query, limit)
     }
 
-    const filtered = await this._filterEngrams(options)
-    const results = searchEngrams(filtered, query, limit)
-    const merged = await this._mergeRemoteRecall(results, remotePromise, options, limit)
-    await this._reactivateResults(merged)
-    return merged
+    // #1586: the local search is bounded by the same deadline. Past it the
+    // reply carries what the remote leg returned and says the local part is
+    // missing; the abandoned search finishes (read-only) in the background.
+    const local = await settleBy(localLeg(), deadlineAt)
+    if (local.done && local.error !== undefined) throw local.error
+    const localComplete = local.done
+    const { engrams: merged, remote } = await this._mergeRemoteRecall(
+      local.done ? (local.value ?? []) : [], remotePromise, options, limit, deadlineAt)
+    await this._reactivateWithinDeadline(merged, deadlineAt)
+    return {
+      engrams: merged,
+      remote,
+      results_complete: localComplete && (remote.state === 'ok' || remote.state === 'not_dialed'),
+      ...(localComplete ? {} : { local_complete: false }),
+    }
   }
 
   /**
@@ -5697,40 +5733,60 @@ export class Plur {
     query: string,
     options?: Omit<RecallOptions, 'mode' | 'llm'>,
   ): Promise<HybridSearchResult> {
+    const deadlineAt = Date.now() + resolveRecallDeadlineMs(options?.deadline_ms)
     // #776: remote leg starts BEFORE the local pipeline (added latency =
     // max(0, remote − local)); merged below via RRF.
     const remotePromise = this._startRemoteRecall(query, options)
-    // #906: narrowed by the store when provably equivalent, else the full read.
-    const filtered = await this._hybridCandidates(query, options)
     const limit = options?.limit ?? 20
-    const rerank = await this._resolveRerankOptions(options?.rerank)
-    const intent = this._resolveIntentProfile(query, options?.intentOverride)
-    // When intent routing is on we over-fetch from the hybrid call WITHOUT the
-    // reranker, apply intent routing, then run the reranker on the routed set.
-    // When intent is off the hybrid call handles reranking inline so the
-    // PGLite and JSON paths stay symmetric.
-    const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
-    let result: HybridSearchResult
-    if (intent) {
-      result = this.pgliteAdapter
-        ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
-        : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
-      let routed = applyIntentRouting(result.engrams, intent.profile)
-      let rerankedCount = result.reranked
-      if (rerank) {
-        const reranked = await applyReranker(routed, query, rerank)
-        routed = reranked.engrams
-        rerankedCount = reranked.count
+    const localLeg = async (): Promise<HybridSearchResult> => {
+      // #906: narrowed by the store when provably equivalent, else the full read.
+      const filtered = await this._hybridCandidates(query, options)
+      const rerank = await this._resolveRerankOptions(options?.rerank)
+      const intent = this._resolveIntentProfile(query, options?.intentOverride)
+      // When intent routing is on we over-fetch from the hybrid call WITHOUT the
+      // reranker, apply intent routing, then run the reranker on the routed set.
+      // When intent is off the hybrid call handles reranking inline so the
+      // PGLite and JSON paths stay symmetric.
+      const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
+      let result: HybridSearchResult
+      if (intent) {
+        result = this.pgliteAdapter
+          ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
+          : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
+        let routed = applyIntentRouting(result.engrams, intent.profile)
+        let rerankedCount = result.reranked
+        if (rerank) {
+          const reranked = await applyReranker(routed, query, rerank)
+          routed = reranked.engrams
+          rerankedCount = reranked.count
+        }
+        result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
+      } else if (this.pgliteAdapter) {
+        result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
+      } else {
+        result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
       }
-      result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
-    } else if (this.pgliteAdapter) {
-      result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
-    } else {
-      result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
+      return result
     }
+    // #1586: the local pipeline (store load, embedder, reranker) is bounded by
+    // the same deadline. Past it the reply carries the remote rows and says
+    // the local part is missing; the abandoned search finishes in the background.
+    const local = await settleBy(localLeg(), deadlineAt)
+    if (local.done && local.error !== undefined) throw local.error
+    const localComplete = local.done
+    let result: HybridSearchResult = local.done
+      ? local.value!
+      : { engrams: [], mode: 'bm25-only', embedderError: null, topScore: null, reranked: 0 }
     // #776: fold the server leg in (RRF) before reactivation so displaced
     // local rows are not reactivated and server rows rank on merged order.
-    result = { ...result, engrams: await this._mergeRemoteRecall(result.engrams, remotePromise, options, limit) }
+    const mergedLegs = await this._mergeRemoteRecall(result.engrams, remotePromise, options, limit, deadlineAt)
+    result = {
+      ...result,
+      engrams: mergedLegs.engrams,
+      remote: mergedLegs.remote,
+      results_complete: localComplete && (mergedLegs.remote.state === 'ok' || mergedLegs.remote.state === 'not_dialed'),
+      ...(localComplete ? {} : { local_complete: false }),
+    }
     // Belt-and-suspenders: all inner paths apply slice(0, limit) before
     // returning, but recallHybridWithMeta is called directly by the MCP layer
     // (#770) and lacks the outer guard that recallHybrid() adds. Note
@@ -5741,7 +5797,7 @@ export class Plur {
     if (result.engrams.length > limit) {
       result = { ...result, engrams: result.engrams.slice(0, limit) }
     }
-    await this._reactivateResults(result.engrams)
+    await this._reactivateWithinDeadline(result.engrams, deadlineAt)
     // WS5 demand flywheel: a zero-result or low-top-score recall is a demand
     // signal. Emit an anonymized, content-free miss-signal (query fingerprint +
     // scope/domain + timestamp; never the raw query). Opt-in/default-off and
@@ -6799,13 +6855,15 @@ export class Plur {
   private _startRemoteRecall(
     query: string,
     options?: { scope?: string; scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
-  ): Promise<RemoteRecallResult> | null {
+  ): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null {
     if (options?.remote === false) return null
     if (isRemoteRecallDisabled()) return null
     if (!query || !query.trim()) return null
     const hosts = this._remoteRecallHosts(options)
     if (hosts.length === 0) return null
-    return remoteRecall(hosts, query, {
+    // The dialed hosts ride along so a recall that stops waiting at its
+    // deadline can still name them in its per-call report (#1586).
+    return Object.assign(remoteRecall(hosts, query, {
       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
       limit: options?.limit,
       statePath: this.remoteHealthStatePath(),
@@ -6815,7 +6873,7 @@ export class Plur {
         this._lastRemoteOutcomes.set(normalizeEndpointUrl(o.url), { outcome: o, observed_at })
       }
       return result
-    }).catch((): RemoteRecallResult => ({ engrams: [], scores: new Map(), outcomes: [] }))
+    }).catch((): RemoteRecallResult => ({ engrams: [], scores: new Map(), outcomes: [] })), { hostUrls: hosts.map(h => h.url) })
   }
 
   /**
@@ -6848,20 +6906,34 @@ export class Plur {
    */
   private async _mergeRemoteRecall(
     local: Engram[],
-    remotePromise: Promise<RemoteRecallResult> | null,
+    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null,
     options: (RecallOptions & { include_expired?: boolean }) | undefined,
     limit: number,
-  ): Promise<Engram[]> {
+    /** Epoch ms past which this recall stops waiting for the server (#1586). */
+    deadlineAt: number = Infinity,
+  ): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }> {
     // Team rows from a warm cache sit among the local results (#1532 re-audit R2).
     this._noteSeenRows(local)
-    if (!remotePromise) return local
-    const remote = await remotePromise
+    if (!remotePromise) return { engrams: local, remote: { state: 'not_dialed', hosts: [] } }
+    const waited = Number.isFinite(deadlineAt)
+      ? await settleBy(remotePromise, deadlineAt)
+      : { done: true as const, value: await remotePromise }
+    if (!waited.done || !waited.value) {
+      // The recall deadline came first. The leg keeps running and records its
+      // own outcome for the breaker; THIS call says it did not get an answer.
+      const hosts = (remotePromise.hostUrls ?? []).map(u => ({
+        host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, detail: 'recall_deadline',
+      }))
+      return { engrams: local, remote: { state: hosts.length > 0 ? 'timeout' : 'not_dialed', hosts } }
+    }
+    const remote = waited.value
+    const report = buildRecallRemoteReport(remote.outcomes)
     const rows = this._filterRemoteRows(remote.engrams, options)
-    if (rows.length === 0) return local
+    if (rows.length === 0) return { engrams: local, remote: report }
     const merged = pgliteRrfMerge([rows, local]).slice(0, limit)
     // Every live remote row returned, by the server id it carries.
     this._noteSeenRows(merged.filter(r => rows.includes(r)), true)
-    return merged
+    return { engrams: merged, remote: report }
   }
 
   /**
@@ -6935,6 +7007,21 @@ export class Plur {
       })
     }
     return out
+  }
+
+  /**
+   * A direct write to `url` just succeeded (#1586): the host is reachable, so
+   * the read leg's breaker cooldown ends, exactly as an outbox flush success
+   * already ended it (#785). Before this the direct `plur_learn` path — the
+   * one a save normally takes — neither consulted nor fed the breaker, so
+   * saves reached the server while reads stayed paused for the full five
+   * minutes. Best-effort: health bookkeeping never fails a write.
+   */
+  private _noteRemoteWriteSucceeded(url: string): void {
+    try {
+      recordWriteOutcome(url, true, Date.now(), this.remoteHealthStatePath())
+      this.noteRemoteHostReachable(url)
+    } catch { /* advisory state only */ }
   }
 
   /**
@@ -7164,8 +7251,31 @@ export class Plur {
     return engrams
   }
 
-  /** Reactivate accessed engrams and update co-access associations */
-  private async _reactivateResults(results: Engram[]): Promise<void> {
+  /**
+   * The post-recall bookkeeping, held to the recall's deadline (#1586).
+   *
+   * Freshness bookkeeping is not the answer to the read, and a read must not
+   * queue behind a writer for it: the store lock waited up to 180 s
+   * (`DEFAULT_ACQUIRE_TIMEOUT`) behind another process's write or a sync. Now
+   * the lock is tried for {@link RECALL_BOOKKEEPING_LOCK_WAIT_MS}; if it is not
+   * taken by then the refresh is skipped (the next recall of the same engrams
+   * does it). Once the lock is held the write runs, but the reply waits for it
+   * only until the deadline; past that it finishes in the background.
+   * Uncontended, nothing changes: the lock is taken in milliseconds and the
+   * refresh lands before the reply.
+   */
+  private async _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void> {
+    const work = this._reactivateResults(results, { lockWaitMs: RECALL_BOOKKEEPING_LOCK_WAIT_MS })
+      .catch(err => {
+        logger.debug(`[plur:recall] activation refresh skipped: ${(err as Error).message}`)
+      })
+    await settleBy(work, deadlineAt)
+  }
+
+  /** Reactivate accessed engrams and update co-access associations.
+   *  `lockWaitMs` (#1586): give up — skip the refresh — when the store lock is
+   *  not taken within that time. Unset: wait as every writer does. */
+  private async _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number }): Promise<void> {
     // Read-only instance: SKIP the activation refresh, silently (#731). Recall
     // is a read and must succeed on a read-only engine; the write it piggy-
     // backs (retrieval_strength / last_accessed / frequency / co-access edges)
@@ -7183,7 +7293,18 @@ export class Plur {
       (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{3}(?:[A-Z]{8})?-/.test(e.id)
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
-    await this._withStoreLock(this.paths.engrams, async () => {
+    // Bounded lock wait (#1586). The file-lock wait gives up by itself at
+    // `acquireTimeout`; a wait in the in-process queue, or on a store's own
+    // exclusive access, is cut by `abandoned`: when the lock finally comes,
+    // the refresh is skipped and the lock released at once.
+    let acquired = false
+    let abandoned = false
+    const lockOptions: AsyncLockOptions | undefined = opts?.lockWaitMs !== undefined
+      ? { acquireTimeout: opts.lockWaitMs, baseDelay: 25 }
+      : undefined
+    const locked = this._withStoreLock(this.paths.engrams, async () => {
+      acquired = true
+      if (abandoned) return
       const resultIds = new Set(primaryResults.map(e => e.id))
       // Read only the engrams this recall touched, when the store can.
       // Everything below is keyed by id — the reactivation targets `resultIds`
@@ -7294,7 +7415,19 @@ export class Plur {
         await this._writeEngrams(this.paths.engrams, allEngrams)
       }
       await this._syncIndex()
-    })
+    }, lockOptions)
+    if (opts?.lockWaitMs === undefined) return await locked
+    const waited = await settleBy(locked, Date.now() + opts.lockWaitMs)
+    if (!waited.done && !acquired) {
+      // Not taken in time: skip. If the lock comes later, the callback above
+      // returns at once instead of writing behind the reply's back.
+      abandoned = true
+      locked.catch(() => { /* the abandoned waiter's give-up is expected */ })
+      return
+    }
+    // Taken (or settled): the refresh runs to its end — the caller decides
+    // how long the reply waits for it.
+    await locked
   }
 
   /** Scored injection within token budget (BM25 only). Returns formatted strings. */

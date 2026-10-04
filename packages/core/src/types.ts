@@ -273,6 +273,10 @@ export interface RecallOptions {
    *  Hook path passes 1500; MCP recall defaults to 2000; session_start warm
    *  passes 5000. */
   remote_timeout_ms?: number
+  /** End-to-end deadline for this recall in ms (#1586). The call returns
+   *  within it with whatever is ready and reports what is missing. Default
+   *  10 s; env PLUR_RECALL_DEADLINE_MS wins. */
+  deadline_ms?: number
   /** `.plur.yaml` remote endpoint — establishes the org context for dialing
    *  on the hook path (#776). See {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig

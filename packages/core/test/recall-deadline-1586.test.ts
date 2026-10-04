@@ -176,7 +176,7 @@ describe('#1586 fix 1 — one end-to-end deadline per recall', () => {
     const before = (await plur.recall('bridges', { remote: false }))[0]
     const f0 = before.activation.frequency
     await plur.recallWithMeta('bridges', { remote: false })
-    const after = plur.list().find(e => e.id === before.id)!
+    const after = (await plur.list()).find(e => e.id === before.id)!
     expect(after.activation.frequency).toBeGreaterThan(f0)
   })
 })

@@ -48,7 +48,7 @@ function logRemoteAttempt(entry: {
   // #776: the recall leg's per-host states join the legacy outcome values so
   // old log tooling keeps parsing the same field.
   outcome:   'ok' | 'http_error' | 'timeout' | 'network_error' | 'bad_response' | 'oversize'
-           | 'unreachable' | 'auth_expired' | 'forbidden' | 'rate_limited' | 'unsupported' | 'skipped_cooldown'
+           | 'unreachable' | 'auth_expired' | 'forbidden' | 'rate_limited' | 'unsupported' | 'skipped_cooldown' | 'client_slow'
   ms:        number
   http?:     number
   engrams?:  number

@@ -375,6 +375,12 @@ export class RemoteStore {
     private readonly opts: { ttlMs?: number; tokenEnv?: string } = {},
   ) {}
 
+  /** The configured endpoint url — the key the per-host health state uses
+   *  (normalized by its readers). Read-only; #1586. */
+  get endpointUrl(): string {
+    return this.url
+  }
+
   /** #1564 review M2: never send a request without the token a `token_env` names. */
   private assertToken(): void {
     if (!this.token && this.opts.tokenEnv) throw new TokenEnvUnsetError(this.opts.tokenEnv, this.scope)
