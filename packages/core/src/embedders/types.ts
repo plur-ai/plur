@@ -36,5 +36,20 @@ export interface EmbedderAdapter {
   isLoaded?(): boolean
   /** Optional (#1586 round 3): where the model's weights live on disk, so a
    *  caller can tell a one-time download from a load. Null when unknown. */
-  modelFile?(): Promise<{ cacheDir: string | null; file: string | null; localFile?: string | null; dtype?: string } | null>
+  modelFile?(): Promise<ModelFiles | null>
+}
+
+/** Where a model's files live on disk (#1586 rounds 3-5). The model counts as
+ *  present when every file of one location exists. */
+export interface ModelFiles {
+  cacheDir: string | null
+  /** The weights in the model cache. */
+  file: string | null
+  /** Every file the load needs in the model cache (weights, tokenizer, config). */
+  files?: string[]
+  /** The weights under transformers.js's `localModelPath`, when set. */
+  localFile?: string | null
+  /** Every file the load needs under `localModelPath`. */
+  localFiles?: string[]
+  dtype?: string
 }

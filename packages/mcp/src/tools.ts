@@ -285,12 +285,15 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
   }
   if (meta.mode === 'hybrid-degraded') {
     // #1586 round 4: say why, by cause — a model that is simply not downloaded
-    // yet is not an "unavailable embedding layer".
+    // yet is not an "unavailable embedding layer". The reason's message is
+    // already a whole sentence with its next step.
     response.warning = meta.degraded_reason
-      ? `Keyword results only: ${meta.embedderError ?? meta.degraded_reason}`
+      ? (meta.embedderError ?? meta.degraded_reason)
       : `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
-    if (meta.degraded_reason) response.degraded_reason = meta.degraded_reason
   }
+  // Forwarded whenever set (#1586 round 5): a reranker cut by the deadline
+  // keeps mode 'hybrid' but is still a degraded answer.
+  if (meta.degraded_reason) response.degraded_reason = meta.degraded_reason
   // #341: reranker non-engagement surfacing. When PLUR_RERANKER requests
   // reranking, report how many candidates the cross-encoder actually
   // re-scored — and if it never engaged on a non-empty result set, say
@@ -2236,7 +2239,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // (Kept as 'hybrid' otherwise, as this reply always said.)
           mode: result.mode === 'hybrid-degraded' ? 'hybrid-degraded' : 'hybrid',
           ...(result.degraded_reason ? { degraded_reason: result.degraded_reason } : {}),
-          ...(result.mode === 'hybrid-degraded' && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
+          ...((result.mode === 'hybrid-degraded' || result.degraded_reason) && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
           // #181: unresolved-tension warnings — flag contradicted context
           ...(result.warnings ? { warnings: result.warnings } : {}),
           // #1142: pinned engrams that did not fit. `pinned: true` reads as a
@@ -3753,7 +3756,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             remote: result.remote,
             results_complete: result.results_complete,
             ...(result.degraded_reason ? { degraded_reason: result.degraded_reason } : {}),
-            ...(result.mode === 'hybrid-degraded' && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
+            ...((result.mode === 'hybrid-degraded' || result.degraded_reason) && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
           }
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {

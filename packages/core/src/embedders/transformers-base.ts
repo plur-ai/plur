@@ -11,7 +11,7 @@
  * 100MB+ of WASM / ONNX setup.
  */
 import { join } from 'path'
-import type { EmbedderAdapter } from './types.js'
+import type { EmbedderAdapter, ModelFiles } from './types.js'
 
 /** Pooling strategies supported by @huggingface/transformers feature-extraction. */
 export type Pooling = 'cls' | 'mean' | 'none'
@@ -40,7 +40,7 @@ const DTYPE_SUFFIX: Record<string, string> = {
 
 /** The cache directory transformers.js will use: the PLUR / HF override, else
  *  the library's own default. Null when it has none (not running locally). */
-async function resolveModelCacheDir(): Promise<string | null> {
+export async function resolveModelCacheDir(): Promise<string | null> {
   const override = process.env.PLUR_MODEL_CACHE_DIR || process.env.HF_HOME
   if (override) return override
   try {
@@ -103,6 +103,30 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
   return await pending
 }
 
+/** The files a transformers.js model load reads, in the model cache and under
+ *  `localModelPath` (#1586 rounds 3-5): weights, tokenizer and config. */
+export async function modelFilesFor(modelId: string, weights: string, dtype?: string): Promise<ModelFiles | null> {
+  const rels = [join('onnx', weights), 'tokenizer.json', 'tokenizer_config.json', 'config.json']
+  const cacheDir = await resolveModelCacheDir()
+  // Weights an operator provisioned for transformers.js (air-gapped hosts).
+  let localRoot: string | null = null
+  try {
+    const transformers = await import('@huggingface/transformers') as { env?: { localModelPath?: string; allowLocalModels?: boolean } }
+    const lp = transformers.env?.localModelPath
+    if (lp && transformers.env?.allowLocalModels !== false) localRoot = join(lp, modelId)
+  } catch { /* not installed: nothing provisioned either */ }
+  if (!cacheDir && !localRoot) return null
+  const cacheRoot = cacheDir ? join(cacheDir, modelId) : null
+  return {
+    cacheDir,
+    file: cacheRoot ? join(cacheRoot, rels[0]) : null,
+    files: cacheRoot ? rels.map(r => join(cacheRoot, r)) : [],
+    localFile: localRoot ? join(localRoot, rels[0]) : null,
+    localFiles: localRoot ? rels.map(r => join(localRoot, r)) : [],
+    dtype,
+  }
+}
+
 /** Reset the shared pipeline cache. Test-only. */
 export function _resetTransformersPipelineCache(): void {
   pipelineCache.clear()
@@ -134,20 +158,7 @@ export function makeTransformersAdapter(config: TransformersAdapterConfig): Embe
     modelId: config.modelId,
     embed: embedOne,
     isLoaded: () => loadedKeys.has(keyOf(config.modelId, config.dtype)),
-    async modelFile() {
-      const suffix = DTYPE_SUFFIX[config.dtype ?? 'fp32'] ?? ''
-      const rel = join(config.modelId, 'onnx', `model${suffix}.onnx`)
-      const cacheDir = await resolveModelCacheDir()
-      // Weights an operator provisioned for transformers.js (air-gapped hosts).
-      let localFile: string | null = null
-      try {
-        const transformers = await import('@huggingface/transformers') as { env?: { localModelPath?: string; allowLocalModels?: boolean } }
-        const lp = transformers.env?.localModelPath
-        if (lp && transformers.env?.allowLocalModels !== false) localFile = join(lp, rel)
-      } catch { /* not installed: nothing provisioned either */ }
-      if (!cacheDir && !localFile) return null
-      return { cacheDir, file: cacheDir ? join(cacheDir, rel) : null, localFile, dtype: config.dtype }
-    },
+    modelFile: () => modelFilesFor(config.modelId, `model${DTYPE_SUFFIX[config.dtype ?? 'fp32'] ?? ''}.onnx`, config.dtype),
     async embedBatch(texts: string[]): Promise<Float32Array[]> {
       // The transformers pipeline supports batched input, but in practice the
       // batched-output reshape depends on the runtime version. Iterating

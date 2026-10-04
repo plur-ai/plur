@@ -28,7 +28,7 @@ import { _resetCrossEncoderCaches } from './rerankers/transformers-cross-encoder
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, rewriteLexicalQuery, isQueryRewriteDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
-import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, semanticModelState, type EmbedderStatus } from './embeddings.js'
+import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, semanticModelState, backgroundModelLoadAllowed, fillEmbeddingCache, type EmbedderStatus } from './embeddings.js'
 import type { DegradedReason } from './types.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
@@ -5814,6 +5814,7 @@ export class Plur {
       else if (candidates) lateFallback = keywordOnly(candidates, 'semantic_deadline')
     }
     if (local.done && local.error !== undefined) throw local.error
+    if (!local.done || semanticSkipped !== null) this._maybeFillEmbeddingCache()
     const localComplete = local.done && semanticSkipped === null
     let result: HybridSearchResult = local.done
       ? local.value!
@@ -6973,6 +6974,25 @@ export class Plur {
     return { result: waited.value, report: buildRecallRemoteReport(waited.value.outcomes) }
   }
 
+  /** Background embedding-cache fills this instance started (0 or 1, #1586 R3). */
+  private _embeddingFillStarts = 0
+
+  /**
+   * In a long-lived process that opted in ({@link allowBackgroundModelLoad}),
+   * fill the store's embedding cache in the background — once per instance,
+   * never awaited by a recall, never retried (#1586 round 5, R3). Each
+   * cut-off recall also keeps its own progress; this finishes the job without
+   * waiting for more recalls.
+   */
+  private _maybeFillEmbeddingCache(): void {
+    if (!backgroundModelLoadAllowed() || this._embeddingFillStarts > 0) return
+    this._embeddingFillStarts++
+    void (async () => {
+      const engrams = (await this._loadAllEngrams()).filter(e => e.status === 'active')
+      await fillEmbeddingCache(engrams, this.paths.root)
+    })().catch(err => logger.debug(`[plur] background embedding fill stopped: ${(err as Error).message}`))
+  }
+
   /** Why a hybrid recall or injection answered without its semantic leg, in
    *  words, with the next step where there is one (#1586 rounds 3-4). */
   private static readonly DEGRADED_MESSAGES: Record<DegradedReason, string> = {
@@ -7702,6 +7722,7 @@ export class Plur {
     // deadline; past it the injection runs on keyword matching and says so.
     const semantic = await settleBy(semanticLeg(), deadlineAt)
     const semanticComplete = semantic.done && !modelMissing
+    if (!semanticComplete) this._maybeFillEmbeddingCache()
     if (!semanticComplete) {
       semanticAbort.abort()
       embeddingBoosts = undefined

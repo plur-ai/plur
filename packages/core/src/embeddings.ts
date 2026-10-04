@@ -1,5 +1,5 @@
 import type { Engram } from './schemas/engram.js'
-import type { EmbedRole } from './embedders/types.js'
+import type { EmbedRole, ModelFiles } from './embedders/types.js'
 import { engramSearchText } from './fts.js'
 import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
@@ -183,17 +183,41 @@ export async function semanticModelState(): Promise<'ready' | 'cached' | 'missin
   const embedder = await getEmbedder()
   if (!embedder) return 'unknown'
   if (typeof embedder.isLoaded === 'function' && embedder.isLoaded()) return 'ready'
-  if (typeof embedder.modelFile !== 'function') return 'unknown'
-  let where: { cacheDir: string | null; file: string | null; localFile?: string | null } | null = null
-  try { where = await embedder.modelFile() } catch { where = null }
-  if (!where) return 'unknown'
-  if (where.file && existsSync(where.file)) return 'cached'
-  if (where.localFile && existsSync(where.localFile)) return 'cached'
+  const present = await modelPresent(embedder)
+  if (present === null) return 'unknown'
+  if (present) return 'cached'
   await maybeStartBackgroundModelLoad(embedder)
   return 'missing'
 }
 
-let backgroundModelLoadAllowed = false
+/** Are the model's files on disk? Null when the embedder cannot say. The
+ *  weights alone are not enough: the load would fetch the missing tokenizer
+ *  and config files (#1586 round 5). */
+async function modelPresent(embedder: { modelFile?: () => Promise<ModelFiles | null> }): Promise<boolean | null> {
+  if (typeof embedder.modelFile !== 'function') return null
+  let where: ModelFiles | null = null
+  try { where = await embedder.modelFile() } catch { where = null }
+  if (!where) return null
+  const all = (files: string[] | undefined, single: string | null | undefined): boolean =>
+    files && files.length > 0 ? files.every(f => existsSync(f)) : !!single && existsSync(single)
+  return all(where.files, where.file) || all(where.localFiles, where.localFile)
+}
+
+/**
+ * The one download policy, for every path that loads the model (#1586 round 5,
+ * L-learn): recall, injection, and the learn-time near-duplicate check and
+ * auto-indexing. With downloads off (HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE,
+ * PLUR_MODEL_DOWNLOAD=off, allowRemoteModels=false) a model that is not on
+ * disk is not loaded at all, so nothing is fetched.
+ */
+async function loadAllowed(embedder: { isLoaded?: () => boolean; modelFile?: () => Promise<ModelFiles | null> }): Promise<boolean> {
+  if (typeof embedder.isLoaded === 'function' && embedder.isLoaded()) return true
+  const present = await modelPresent(embedder)
+  if (present !== false) return true
+  return !(await modelDownloadDisabled())
+}
+
+let backgroundModelLoadAllowed_ = false
 let backgroundModelLoadStarted = false
 let backgroundModelLoadCount = 0
 
@@ -204,7 +228,7 @@ let backgroundModelLoadCount = 0
  * this, so it never downloads: it would be killed mid-download at exit.
  */
 export function allowBackgroundModelLoad(allowed = true): void {
-  backgroundModelLoadAllowed = allowed
+  backgroundModelLoadAllowed_ = allowed
 }
 
 /** How many background model loads this process started (0 or 1). */
@@ -214,7 +238,7 @@ export function backgroundModelLoadAttempts(): number {
 
 /** Test-only: forget the background-load state. */
 export function _resetBackgroundModelLoad(): void {
-  backgroundModelLoadAllowed = false
+  backgroundModelLoadAllowed_ = false
   backgroundModelLoadStarted = false
   backgroundModelLoadCount = 0
 }
@@ -235,7 +259,7 @@ async function modelDownloadDisabled(): Promise<boolean> {
 
 /** At most once per process, never awaited by a recall, never retried. */
 async function maybeStartBackgroundModelLoad(embedder: { embed: (t: string) => Promise<unknown> }): Promise<void> {
-  if (!backgroundModelLoadAllowed || backgroundModelLoadStarted) return
+  if (!backgroundModelLoadAllowed_ || backgroundModelLoadStarted) return
   if (await modelDownloadDisabled()) return
   if (backgroundModelLoadStarted) return
   backgroundModelLoadStarted = true
@@ -251,6 +275,10 @@ async function maybeStartBackgroundModelLoad(embedder: { embed: (t: string) => P
 export async function embed(text: string, role?: EmbedRole): Promise<Float32Array | null> {
   const embedder = await getEmbedder()
   if (!embedder) return null
+  if (!(await loadAllowed(embedder))) {
+    lastLoadError = 'the embedding model is not on disk and downloads are off — run `plur doctor` with network access to download it'
+    return null
+  }
   // When the cached value is an EmbedderAdapter (PR 4 path) it has an .embed
   // method; the legacy code path stored the raw transformers pipeline. Branch
   // on shape so the swap is backward-compatible in tests that stub the cache.
@@ -437,6 +465,83 @@ export function mergeEmbeddingsIntoCache(
   return written
 }
 
+/**
+ * Keeps the vectors an embedding search computes (#1586 round 5, R3).
+ *
+ * A recall cut off by its deadline used to throw them away, so a store without
+ * an embedding cache started again at its first engram on every recall and
+ * never became hybrid. Now they are saved — atomically (tmp + rename) — at the
+ * moment the caller stops waiting (synchronously, inside the abort, so the
+ * write lands before the reply and before a short-lived process exits), and
+ * again when the search ends. Each cut-off recall makes progress.
+ */
+function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortSignal): { added(): void; done(): void } {
+  let unsaved = 0
+  const save = (): void => {
+    if (unsaved === 0) return
+    unsaved = 0
+    try { saveCacheMerged(cachePath, cache) } catch { /* derived state: best effort */ }
+  }
+  const onAbort = (): void => save()
+  signal?.addEventListener('abort', onAbort, { once: true })
+  return {
+    added: () => { unsaved++ },
+    done: () => { signal?.removeEventListener('abort', onAbort); save() },
+  }
+}
+
+/**
+ * Save `cache`, keeping the entries another search or the background fill
+ * wrote to the file meanwhile (#1586 round 5): every entry is a valid vector
+ * keyed by engram id and text hash, so the union is correct.
+ */
+function saveCacheMerged(cachePath: string, cache: EmbeddingCache): void {
+  const onDisk = existsSync(cachePath) ? loadCache(cachePath, { name: cache.meta.embedder_name, dim: cache.meta.embedder_dim }) : null
+  if (onDisk && onDisk.meta.embedder_name === cache.meta.embedder_name) {
+    cache.entries = { ...onDisk.entries, ...cache.entries }
+  }
+  saveCache(cachePath, cache)
+}
+
+/**
+ * Embed every engram the cache does not hold yet, saving as it goes (#1586
+ * round 5, R3). Run in the background, once, by a long-lived process that
+ * opted in ({@link allowBackgroundModelLoad}) when a recall found the cache
+ * incomplete. Stops at the first failure (model missing and downloads off,
+ * load error); never retried. Returns how many vectors it added.
+ */
+export async function fillEmbeddingCache(engrams: Engram[], storagePath?: string): Promise<number> {
+  const activeMeta = await getActiveEmbedderMeta()
+  if (!activeMeta) return 0
+  const cachePath = storagePath ? join(storagePath, '.embeddings-cache.json') : '.embeddings-cache.json'
+  const cache = loadCache(cachePath, activeMeta)
+  let added = 0
+  let unsaved = 0
+  let lastSave = Date.now()
+  for (const engram of engrams) {
+    const text = engramSearchText(engram)
+    const hash = hashStatement(text)
+    if (cache.entries[engram.id]?.hash === hash) continue
+    const v = await embed(text)
+    if (!v) break
+    cache.entries[engram.id] = { hash, embedding: Array.from(v) }
+    added++
+    unsaved++
+    if (unsaved >= 200 || Date.now() - lastSave > 5000) {
+      saveCacheMerged(cachePath, cache)
+      unsaved = 0
+      lastSave = Date.now()
+    }
+  }
+  if (unsaved > 0) saveCacheMerged(cachePath, cache)
+  return added
+}
+
+/** Did this process opt in to background model work? */
+export function backgroundModelLoadAllowed(): boolean {
+  return backgroundModelLoadAllowed_
+}
+
 /** Options for the embedding searches (#1586 audit L3). */
 export interface EmbeddingSearchOptions {
   /** Aborted when the caller stopped waiting (a recall past its deadline):
@@ -478,6 +583,7 @@ export async function embeddingSearch(
 
   // Embed engrams (with caching)
   const similarities: Array<{ engram: Engram; score: number }> = []
+  const progress = cacheProgress(cachePath, cache, opts?.signal)
 
   for (const engram of engrams) {
     const searchText = engramSearchText(engram)
@@ -489,11 +595,12 @@ export async function embeddingSearch(
       engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text. Nobody is waiting
-      // for an aborted search: stop here, and leave the cache as it was.
-      if (opts?.signal?.aborted) return []
+      // for an aborted search: stop embedding (what was computed is saved).
+      if (opts?.signal?.aborted) break
       const emb = await embed(searchText)
-      if (!emb) return [] // model unloaded mid-search
+      if (!emb) { progress.done(); return [] } // model unloaded mid-search
       engramEmbedding = emb
+      progress.added()
       cache.entries[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
@@ -504,10 +611,8 @@ export async function embeddingSearch(
     similarities.push({ engram, score })
   }
 
-  // Save updated cache — unless the caller stopped waiting (#1586 audit L3):
-  // a write after the reply can be cut short by the process exiting.
+  progress.done()
   if (opts?.signal?.aborted) return []
-  saveCache(cachePath, cache)
 
   // Sort by similarity (descending) and return top N
   similarities.sort((a, b) => b.score - a.score)
@@ -551,6 +656,7 @@ export async function embeddingSearchWithScores(
 
   // Embed engrams (with caching)
   const similarities: SimilarityResult[] = []
+  const progress = cacheProgress(cachePath, cache, opts?.signal)
 
   for (const engram of engrams) {
     const searchText = engramSearchText(engram)
@@ -562,11 +668,12 @@ export async function embeddingSearchWithScores(
       engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text. Nobody is waiting
-      // for an aborted search: stop here, and leave the cache as it was.
-      if (opts?.signal?.aborted) return []
+      // for an aborted search: stop embedding (what was computed is saved).
+      if (opts?.signal?.aborted) break
       const emb = await embed(searchText)
-      if (!emb) return [] // model unloaded mid-search
+      if (!emb) { progress.done(); return [] } // model unloaded mid-search
       engramEmbedding = emb
+      progress.added()
       cache.entries[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
@@ -581,10 +688,8 @@ export async function embeddingSearchWithScores(
     similarities.push({ engram, score })
   }
 
-  // Save updated cache — unless the caller stopped waiting (#1586 audit L3):
-  // a write after the reply can be cut short by the process exiting.
+  progress.done()
   if (opts?.signal?.aborted) return []
-  saveCache(cachePath, cache)
 
   // Sort by similarity (descending) and return top N with scores
   similarities.sort((a, b) => b.score - a.score)

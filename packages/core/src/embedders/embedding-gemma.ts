@@ -28,6 +28,7 @@
  * benchmark numbers and keep first-run download manageable.
  */
 import type { EmbedderAdapter, EmbedRole } from './types.js'
+import { resolveModelCacheDir, modelFilesFor } from './transformers-base.js'
 
 export const EMBEDDING_GEMMA_MODEL_ID = 'onnx-community/embeddinggemma-300m-ONNX'
 const DIM = 768
@@ -46,18 +47,29 @@ async function load(): Promise<{ tokenizer: Tok; model: Mdl }> {
     loaded = (async () => {
       // Xet transfer protocol silently truncates ONNX files (#340). Disable it.
       process.env.HF_HUB_DISABLE_XET ??= '1'
-      const { AutoTokenizer, AutoModel } = await import('@huggingface/transformers')
+      const transformers = await import('@huggingface/transformers')
+      const { AutoTokenizer, AutoModel } = transformers
+      // The same cache placement as the other adapters (#845), so the presence
+      // check below looks where the load reads.
+      const cacheDir = await resolveModelCacheDir()
+      if (cacheDir) (transformers as { env?: { cacheDir?: string } }).env!.cacheDir = cacheDir
       const tokenizer = (await AutoTokenizer.from_pretrained(EMBEDDING_GEMMA_MODEL_ID)) as unknown as Tok
       const model = (await AutoModel.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, { dtype: 'q8' })) as unknown as Mdl
+      gemmaLoaded = true
       return { tokenizer, model }
     })()
+    // A failed load is not cached: the next call tries again.
+    loaded.catch(() => { loaded = null })
   }
   return loaded
 }
 
+let gemmaLoaded = false
+
 /** Reset the model + tokenizer cache. Test-only. */
 export function _resetEmbeddingGemmaCache(): void {
   loaded = null
+  gemmaLoaded = false
 }
 
 export function makeEmbeddingGemmaAdapter(): EmbedderAdapter {
@@ -84,6 +96,10 @@ export function makeEmbeddingGemmaAdapter(): EmbedderAdapter {
     dim: DIM,
     modelId: EMBEDDING_GEMMA_MODEL_ID,
     embed: embedOne,
+    // #1586 round 5: say whether the model is here, so a recall never
+    // downloads it (q8 weights, as loaded above).
+    isLoaded: () => gemmaLoaded,
+    modelFile: () => modelFilesFor(EMBEDDING_GEMMA_MODEL_ID, 'model_quantized.onnx', 'q8'),
     async embedBatch(texts: string[]): Promise<Float32Array[]> {
       const out: Float32Array[] = []
       for (const t of texts) out.push(await embedOne(t))

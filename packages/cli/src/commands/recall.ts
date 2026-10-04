@@ -61,7 +61,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // #1586 round 4: which leg is missing and why (hybrid only; added fields).
     ...(hybrid.mode ? { mode: hybrid.mode } : {}),
     ...(hybrid.degraded_reason ? { degraded_reason: hybrid.degraded_reason } : {}),
-    ...(hybrid.mode === 'hybrid-degraded' && hybrid.embedderError ? { embedder_error: hybrid.embedderError } : {}),
+    ...((hybrid.mode === 'hybrid-degraded' || hybrid.degraded_reason) && hybrid.embedderError ? { embedder_error: hybrid.embedderError } : {}),
   }
   // An incomplete answer is never presented as a plain "no results": say what
   // is missing, by cause (stderr, so piped text output stays the results only).
