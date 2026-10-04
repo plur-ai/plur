@@ -132,3 +132,41 @@ describe('N4 — session start takes its injection deadline at handler entry', (
     expect(seen.deadline_at).toBeLessThanOrEqual(Date.now() + DEFAULT_RECALL_DEADLINE_MS)
   })
 })
+
+describe('D4 — the injection replies carry the degraded mode and its reason', () => {
+  const degraded = (orig: any) => async (t: string, o: any) => {
+    const r = await orig(t, o)
+    return { ...r, mode: 'hybrid-degraded', embedder_error: 'the embedding model is not downloaded yet — run `plur doctor`', degraded_reason: 'embedding_model_missing', results_complete: false }
+  }
+
+  it('plur_inject_hybrid: mode, reason and next step from the injection, not a fixed "hybrid"', async () => {
+    const plur = new Plur({ path: storeDir(null) })
+    ;(plur as any).injectHybrid = degraded(plur.injectHybrid.bind(plur))
+    const client = await makeClient(plur)
+    const res = callResult(await client.callTool({ name: 'plur_inject_hybrid', arguments: { task: 'anything' } }))
+    expect(res.mode).toBe('hybrid-degraded')
+    expect(res.degraded_reason).toBe('embedding_model_missing')
+    expect(String(res.embedder_error)).toMatch(/plur doctor/)
+    expect(res.results_complete).toBe(false)
+  })
+
+  it('plur_session_start: the reason and next step are attached', async () => {
+    const plur = new Plur({ path: storeDir(null) })
+    ;(plur as any).injectHybrid = degraded(plur.injectHybrid.bind(plur))
+    const client = await makeClient(plur)
+    const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything at all' } }))
+    expect(res.degraded_reason).toBe('embedding_model_missing')
+    expect(String(res.embedder_error)).toMatch(/plur doctor/)
+    expect(res.results_complete).toBe(false)
+  })
+
+  it('plur_recall (hybrid): degraded_reason is attached', async () => {
+    const plur = new Plur({ path: storeDir(null) })
+    const orig = plur.recallHybridWithMeta.bind(plur)
+    ;(plur as any).recallHybridWithMeta = async (q: string, o: any) => ({ ...(await orig(q, o)), mode: 'hybrid-degraded', embedderError: 'run `plur doctor`', degraded_reason: 'embedding_model_missing', results_complete: false })
+    const client = await makeClient(plur)
+    const res = callResult(await client.callTool({ name: 'plur_recall', arguments: { query: 'anything' } }))
+    expect(res.mode).toBe('hybrid-degraded')
+    expect(res.degraded_reason).toBe('embedding_model_missing')
+  })
+})
