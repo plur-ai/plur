@@ -9,6 +9,16 @@ You decide where your agents remember.
 - plur folders repair
 - See which memories a reply used
 
+### Cursor hooks decide for the workspace, not the folder the hook runs in; the folder question is once per session and folder (#1582, #1583)
+
+Found by the 0.21.1 Codex/Cursor pre-release check (findings G1 and G2).
+
+- Cursor tells every hook which workspace is open (`workspace_roots`); only the tool hooks also send the tool's folder (`cwd`). PLUR's Cursor hooks used the folder the hook process ran in. With the hooks loaded from a plugin, that was the plugin's folder: PLUR asked about the plugin folder, recorded the user's answer for it, and wrote `.cursor/rules/plur-context.mdc` there, while the workspace stayed undecided. A workspace the user had turned off could also get another folder's "on".
+- Every Cursor hook now decides for the workspace, and they all reach the same decision for it: session start, the tool guard, the post-tool reminder, the stop nudge and the end-of-turn rating and capture. It is the MCP server's rule. If any root is off, memory is off. A root that is a link counts as off when either the link or the folder it points at is off. A root that is not there (an unmounted disk) counts as off when its entry is off, and so does an off `cwd`. A hook's `cwd` only picks which root its output belongs to. If a root is undecided, even one that is not there, the question is about the first such root in order, and memory stays off until it is answered; a missing folder is never created to show it. The home folder, a folder above it and a filesystem root are never asked about: a workspace that is only such a folder, undecided, gets memory without a scope and without a question, as over MCP: nothing it learns is sent to a team store. A scope applies only when every root is on with that same scope, so end-of-turn capture with roots that disagree stays on this machine. A turn queued for capture carries that decision in a queue file that a capture worker of an older version does not read, so a worker still running across an upgrade cannot widen it; a new worker waits only for such an older worker to finish, then captures the turn. Rule files are written in the workspace.
+- When Cursor's workspace roots are there but cannot be read (not a list, an empty list, a relative path, or an address that is not a local folder), memory stays off for that hook: no question and nothing loaded. The hook's own folder is used only when the payload names no roots and no `cwd`. `file://` roots are read as the folders they name. On Windows, `c:\…`, `c:/…`, `/c:/…` and `file:///c:/…` are all read as the same drive path (not yet checked against a real Cursor payload on Windows).
+- `plur init --cursor` writes the hooks into `.cursor/hooks.json` of the folder it runs in. The folder the hook process runs in no longer matters, because the decision comes from the payload.
+- The "asked once per session" record is now kept per session and folder. A second PLUR hook asking about a different folder in the same session is no longer silenced. A session already asked before this upgrade is not asked again. A resumed session is asked again about every folder, as before.
+
 ### A push claim that cannot be recorded no longer lets two processes push one engram (#1580, #1581)
 
 Found by the 0.21.1 Windows pre-release check (finding B1).
@@ -28,7 +38,7 @@ Found by the third 0.21.1 pre-release check (findings L9 and L10).
 - An unscoped `plur recall` or `plur inject` run in a folder mapped `plur: on` with a scope now searches that scope's store, as `plur_recall`, `plur_recall_hybrid` and `plur_inject_hybrid` do over MCP (#1566). The CLI uses the same rule as the MCP server, with one input: the folder it runs in. An explicit `--scope` still wins. The home folder and a folder with no scope behave as before. `plur inject --fast` never contacts a store, as before.
 - `plur recall` and `plur inject` no longer contact any remote store (team or personal), not even one set to `dial: always`, from a folder mapped `plur: off` (even with `--scope`, as over MCP) or from a folder you have not decided about yet (unless you pass `--scope`). They still show the memory on this machine.
 - With a broken `folders.yaml`, `plur recall` and `plur inject` said "PLUR memory is paused in every folder until the map is fixed" and then showed memory anyway. They now say that no team memory is used until the map is fixed and that only the memory on this machine was read, name the `plur folders repair` command, and contact no remote store.
-- The editor hooks are unchanged. They already take the folder's scope from the folder map (their own check of the folder the editor sends), not from this rule.
+- The editor hooks are unchanged here. Cursor's hooks use this same rule since #1582; the other editors' hooks take the folder's scope from the folder map, from their own check of the folder the editor sends.
 
 ### Each team store gets its own id prefix, so an engram id names one store (#1575, #1576)
 

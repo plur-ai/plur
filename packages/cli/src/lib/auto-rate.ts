@@ -98,7 +98,7 @@ export const AUTO_CAPTURE_REMOTE_TIMEOUT_MS = 4_000
 /** Floor for a statement's deadline once the run's budget is spent. */
 const AUTO_CAPTURE_SPENT_MS = 1
 
-function fileFor(editor: AutoRateEditor, sessionId: string, kind: 'injected' | 'rated' | 'tries' | 'queue' | 'worker'): string {
+function fileFor(editor: AutoRateEditor, sessionId: string, kind: 'injected' | 'rated' | 'tries' | 'queue' | 'queue-ws' | 'worker'): string {
   return join(DIR, `${editor}-${safeSessionKey(sessionId)}.${kind}`)
 }
 
@@ -163,6 +163,12 @@ export interface AutoRateOutcome {
 interface QueuedTurn {
   reply: string
   cwd?: string
+  /**
+   * The scope already decided for the whole workspace (Cursor, audit M1 of
+   * #1583): a string, or null for no scope. Absent (other editors, and lines
+   * queued by an older version): decided from `cwd` alone, as before.
+   */
+  workspaceScope?: string | null
 }
 
 /**
@@ -170,15 +176,24 @@ interface QueuedTurn {
  * writes nothing) when there is nothing to do — nothing pending, capture off.
  * Cheap: a couple of small file reads and one append.
  */
-export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; reply: string; cwd?: string }): boolean {
+export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; reply: string; cwd?: string; workspaceScope?: string | null }): boolean {
   try {
     const reply = typeof opts.reply === 'string' ? opts.reply : ''
     if (!reply.trim() || !opts.sessionId) return false
     const pending = autoRateEnabled() ? pendingInjected(opts.editor, opts.sessionId) : []
     if (pending.length === 0 && !autoCaptureEnabled()) return false
     if (!ensureSessionDir(DIR)) return false
-    const line = JSON.stringify({ reply, ...(opts.cwd ? { cwd: opts.cwd } : {}) } satisfies QueuedTurn) + '\n'
-    appendFileSync(fileFor(opts.editor, opts.sessionId, 'queue'), line, { mode: 0o600 })
+    const line = JSON.stringify({
+      reply,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      ...(opts.workspaceScope !== undefined ? { workspaceScope: opts.workspaceScope } : {}),
+    } satisfies QueuedTurn) + '\n'
+    // A line carrying workspaceScope goes to its own file (N4 of the #1583
+    // re-audit): an older worker still running after an upgrade reads only
+    // `.queue` and its `.queue.<pid>` batches, ignores the field, and would
+    // re-decide the scope from one folder, which can widen it.
+    const kind = opts.workspaceScope !== undefined ? 'queue-ws' : 'queue'
+    appendFileSync(fileFor(opts.editor, opts.sessionId, kind), line, { mode: 0o600 })
     return true
   } catch {
     return false
@@ -192,8 +207,11 @@ export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; r
  */
 export function hasLeftoverBatches(editor: AutoRateEditor, sessionId: string): boolean {
   try {
-    const prefix = `${basename(fileFor(editor, sessionId, 'queue'))}.`
-    return readdirSync(DIR).some(f => f.startsWith(prefix))
+    const prefixes = (['queue', 'queue-ws'] as const).map(k => `${basename(fileFor(editor, sessionId, k))}.`)
+    // A pending `.queue-ws` counts too (R2-2 of the #1583 re-audit): an older
+    // worker that held the lock when it was queued never reads it.
+    if (existsSync(fileFor(editor, sessionId, 'queue-ws'))) return true
+    return readdirSync(DIR).some(f => prefixes.some(p => f.startsWith(p)))
   } catch {
     return false
   }
@@ -221,6 +239,8 @@ export function spawnWorker(editor: AutoRateEditor, sessionId: string, flags: Gl
 
 /** A worker lock older than this, or owned by a dead pid, is abandoned. */
 const WORKER_STALE_MS = 15 * 60 * 1000
+/** How long a worker waits for another worker's lock while a `.queue-ws` turn is pending (below the 15 min worker ceiling). */
+const LOCK_WAIT_MS = 14 * 60 * 1000
 
 function pidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false
@@ -228,7 +248,21 @@ function pidAlive(pid: number): boolean {
 }
 
 /** This process's worker-lock token: pid first, so a reader can check liveness. */
-const WORKER_TOKEN = `${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`
+// The `:qws` suffix marks a worker that drains `.queue-ws` (R2-2 of the #1583
+// re-audit); a worker of an older version writes no such suffix. The leading
+// pid is what every version parses to tell a live owner from a dead one.
+const QWS_MARKER = ':qws'
+const WORKER_TOKEN = `${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}${QWS_MARKER}`
+
+/** True when the lock at `path` is held by a live worker of an older version (one that never reads `.queue-ws`). */
+function heldByOlderWorker(path: string): boolean {
+  try {
+    const observed = readFileSync(path, 'utf8')
+    return !observed.endsWith(QWS_MARKER) && pidAlive(parseInt(observed, 10))
+  } catch {
+    return false
+  }
+}
 
 /**
  * Take over a worker lock judged stale, atomically (decision H2). Mirrors
@@ -302,11 +336,18 @@ function releaseWorkerLock(path: string): void {
  * worker runs per session; a second one exits at once and leaves its turn
  * to the running worker, which re-checks the queue before it leaves.
  */
-export async function runWorker(editor: AutoRateEditor, sessionId: string, flags: GlobalFlags): Promise<AutoRateOutcome> {
+export async function runWorker(
+  editor: AutoRateEditor,
+  sessionId: string,
+  flags: GlobalFlags,
+  opts: { waitForLockMs?: number } = {},
+): Promise<AutoRateOutcome> {
   const total: AutoRateOutcome = { rated: [], captured: 0 }
   if (!ensureSessionDir(DIR)) return total
   const lock = fileFor(editor, sessionId, 'worker')
-  const queue = fileFor(editor, sessionId, 'queue')
+  // Both queue files: `.queue` (other editors, and lines from older
+  // versions) and `.queue-ws` (lines carrying workspaceScope, see enqueueTurn).
+  const queues = [fileFor(editor, sessionId, 'queue'), fileFor(editor, sessionId, 'queue-ws')]
   let plur: ReturnType<typeof createPlur> | null = null
   // Batches a killed worker renamed but never finished. Only ever read while
   // holding the lock, and the lock is only taken over from a dead or stale
@@ -316,17 +357,34 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
   const captureDeadline = Date.now() + AUTO_CAPTURE_REMOTE_TIMEOUT_MS
   const orphans = (): string[] => {
     try {
-      const prefix = `${basename(queue)}.`
-      return readdirSync(DIR).filter(f => f.startsWith(prefix)).map(f => join(DIR, f))
+      const prefixes = queues.map(q => `${basename(q)}.`)
+      return readdirSync(DIR).filter(f => prefixes.some(p => f.startsWith(p))).map(f => join(DIR, f))
     } catch { return [] }
   }
-  for (let round = 0; round < 10 && (existsSync(queue) || orphans().length > 0); round++) {
-    if (!acquireWorkerLock(lock)) break
+  const pendingQueue = (): string | undefined => queues.find(q => existsSync(q))
+  // Across an upgrade (R2-2 of the #1583 re-audit) the lock may belong to an
+  // older worker, which drains `.queue` but never `.queue-ws`. Only then, and
+  // only while a `.queue-ws` turn is pending, wait for the lock (bounded)
+  // instead of leaving: if that was the session's last turn, no later hook
+  // would start a worker for it. A current worker holding the lock drains
+  // `.queue-ws` itself, so this one leaves at once, as before: in normal use
+  // every Cursor turn queues there, and waiters would pile up.
+  const waitUntil = Date.now() + (opts.waitForLockMs ?? LOCK_WAIT_MS)
+  const acquire = async (): Promise<boolean> => {
+    for (;;) {
+      if (acquireWorkerLock(lock)) return true
+      if (!existsSync(queues[1]) || !heldByOlderWorker(lock) || Date.now() >= waitUntil) return false
+      await new Promise(r => setTimeout(r, 250))
+    }
+  }
+  for (let round = 0; round < 10 && (pendingQueue() !== undefined || orphans().length > 0); round++) {
+    if (!(await acquire())) break
     try {
       for (;;) {
         let batch = orphans()[0]
         if (!batch) {
-          if (!existsSync(queue)) break
+          const queue = pendingQueue()
+          if (!queue) break
           batch = `${queue}.${process.pid}`
           try { renameSync(queue, batch) } catch { break }
         }
@@ -336,7 +394,7 @@ export async function runWorker(editor: AutoRateEditor, sessionId: string, flags
           let turn: QueuedTurn
           try { turn = JSON.parse(line) as QueuedTurn } catch { continue }
           plur ??= createPlur(flags)
-          const out = await autoRateTurn({ editor, sessionId, reply: turn.reply, flags, cwd: turn.cwd, plur, captureDeadline })
+          const out = await autoRateTurn({ editor, sessionId, reply: turn.reply, flags, cwd: turn.cwd, ...(turn.workspaceScope !== undefined ? { workspaceScope: turn.workspaceScope } : {}), plur, captureDeadline })
           total.rated.push(...out.rated)
           total.captured += out.captured
         }
@@ -364,6 +422,12 @@ export async function autoRateTurn(opts: {
   flags: GlobalFlags
   /** Project root for `.plur.yaml` scope/domain on captured learnings. */
   cwd?: string
+  /**
+   * The scope the hook already decided for the whole workspace (null: none).
+   * When given, a capture never uses any other scope: the folder's own scope
+   * is kept only when it is this one (audit M1 of #1583).
+   */
+  workspaceScope?: string | null
   /** Reuse an open store (the worker handles several turns with one). */
   plur?: ReturnType<typeof createPlur>
   /** When the run's capture budget ends (epoch ms); shared by every turn a worker drains. */
@@ -446,11 +510,14 @@ export async function autoRateTurn(opts: {
         const hint = configPath ? readProjectConfigFromPath(configPath) : {}
         const trusted = configPath !== null && plur.isDirectoryTrusted(dirname(configPath))
         const mapScope = policy.scope && policy.scope !== hint.scope ? policy.scope : undefined
-        const project: { scope?: string; domain?: string } = policy.mode === 'off'
+        const own: { scope?: string; domain?: string } = policy.mode === 'off'
           ? {}
           : trusted
             ? { ...(policy.scope ? { scope: policy.scope } : {}), ...(hint.domain ? { domain: hint.domain } : {}) }
             : (mapScope ? { scope: mapScope } : {})
+        // The workspace decision narrows, never widens: roots that disagree
+        // (or one with no scope) mean no scope, whatever this one folder says.
+        const project = opts.workspaceScope === undefined || own.scope === (opts.workspaceScope ?? undefined) ? own : {}
         if (policy.mode === 'off') statements.length = 0
         const base = {
           type: 'behavioral' as const,

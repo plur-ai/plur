@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur } from '../lib/folder-gate.js'
+import { cursorHookFolder, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
@@ -54,23 +54,30 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // #1347: the folder map decides. off is silent; ask puts the one question
   // where Cursor reads it (the rule file, plus additional_context) instead of
   // memories, and marks nothing, so the guard stays silent too.
-  const dir = payloadDir(input)
-  const policy = hookFolderPolicy(dir, flags)
-  const rulePath = cursorContextRulePath(dir)
-  if (policy.mode !== 'on') removeStaleAsk(rulePath)
+  // G1: the workspace (workspace_roots), not this process's folder — the
+  // same decision every Cursor hook reaches, see cursorHookFolder.
+  const { dir, policy, askAbout } = cursorHookFolder(input, flags)
+  if (dir && policy.mode !== 'on') removeStaleAsk(cursorContextRulePath(dir))
   if (policy.mode === 'off') return
 
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't track this session — stay silent rather than guess
 
   if (policy.mode === 'ask') {
+    // The question is about `askAbout` when that root does not exist (N3 of
+    // the #1583 re-audit): shown from `dir`, the first root that does, and
+    // only in additional_context when none does — never by creating it.
+    const about = askAbout ?? dir
+    if (!about) return
     // No store discovery: asking must not register this folder's .plur store.
-    const ask = folderAskOnce({ dir, policy, sessionId: conversationId, flags, plur: createAskPlur(flags) })
+    const ask = folderAskOnce({ dir: about, policy, sessionId: conversationId, flags, plur: createAskPlur(flags) })
     if (!ask) return
-    writeContextRule(ask, rulePath)
+    if (dir) writeContextRule(ask, cursorContextRulePath(dir))
     process.stdout.write(JSON.stringify({ additional_context: ask }))
     return
   }
+  if (!dir) return
+  const rulePath = cursorContextRulePath(dir)
 
   // markSessionStarted (not a bare sentinel write) so the reminder timer also
   // resets here — otherwise hook-cursor-post-tool's isReminderDue() sees no
