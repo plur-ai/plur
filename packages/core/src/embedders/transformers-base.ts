@@ -90,7 +90,14 @@ export function downloadsOffByEnv(): boolean {
  */
 function requiredFiles(weights: string, config: unknown): string[] {
   const files = [join('onnx', weights), 'tokenizer.json', 'tokenizer_config.json', 'config.json']
-  const ext = (config as { 'transformers.js_config'?: { use_external_data_format?: unknown } } | null)?.['transformers.js_config']?.use_external_data_format
+  // transformers.js merges `device_config[<device>]` over the top-level
+  // settings (models/session.js); in Node the device is the CPU (#1586 round
+  // 7, D-4).
+  const tjs = (config as { 'transformers.js_config'?: { use_external_data_format?: unknown; device_config?: Record<string, { use_external_data_format?: unknown }> } } | null)?.['transformers.js_config']
+  const cpu = tjs?.device_config?.cpu
+  const ext = cpu && Object.prototype.hasOwnProperty.call(cpu, 'use_external_data_format')
+    ? cpu.use_external_data_format
+    : tjs?.use_external_data_format
   let chunks = 0
   if (ext && typeof ext === 'object') {
     const map = ext as Record<string, unknown>
@@ -119,7 +126,11 @@ function completeIn(cacheRoot: string | null, localRoot: string | null, weights:
   const roots = [cacheRoot, localRoot].filter((r): r is string => !!r)
   if (roots.length === 0) return false
   const configPath = roots.map(r => join(r, 'config.json')).find(p => existsSync(p))
-  const files = requiredFiles(weights, configPath ? readJson(configPath) : null)
+  const config = configPath ? readJson(configPath) : null
+  // A config.json that does not parse cannot be loaded: that location does
+  // not hold a usable model (#1586 round 7, D-4), so the fallback can apply.
+  if (configPath && config === null) return false
+  const files = requiredFiles(weights, config)
   return files.every(f => roots.some(r => existsSync(join(r, f))))
 }
 

@@ -40,7 +40,7 @@ export { LEARN_CONTEXT_FIELD_ROLES, LEARN_CONTENT_FIELDS, learnContextContent, e
 // SP5 imports (deferred — vault-export, registry not yet merged)
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
-import { atomicWrite, CONFIG_FILE_MODE, sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
+import { atomicWrite, CONFIG_FILE_MODE, sync as gitSync, getSyncStatus, withLock, ensureStoreIgnoreLines, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
 import { detectSecrets, detectSensitive, detectPromptInjection, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
@@ -1343,6 +1343,9 @@ export class Plur {
   }) {
     this.paths = detectPlurStorage(options?.path)
     this._readonly = options?.readonly === true
+    // An existing store's .gitignore gains the embedding-cache delta and lock
+    // lines (#1586 round 7, D-5); a missing one is never created.
+    if (!this._readonly) ensureStoreIgnoreLines(this.paths.root)
     const baseStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this._primaryStore = this._readonly ? new ReadonlyStoreGuard(baseStore) : baseStore
     // Owner decision P1 (2026-09-27, "keep both, rename one — nothing lost or

@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, chmodSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, chmodSync, appendFileSync } from 'fs'
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
@@ -56,6 +56,7 @@ agent-keystore.json
 embeddings/
 .embeddings-cache.json
 .embeddings-cache.delta.jsonl
+.embeddings-cache.json.lock
 *.db
 *.sqlite
 store.pglite/
@@ -67,6 +68,27 @@ exchange/
 backups/
 *.superseded-*
 `
+
+/** Lines a store's .gitignore gained after it was first written (#1586 round 7, D-5). */
+const LATER_IGNORE_LINES = ['.embeddings-cache.delta.jsonl', '.embeddings-cache.json.lock']
+
+/**
+ * Add the embedding-cache delta and lock files to a store's EXISTING
+ * .gitignore (#1586 round 7, D-5). Never creates the file and never changes a
+ * line that is there: only appends the lines it lacks. PLUR sync stages an
+ * explicit list anyway; this is for people who run `git add -A` themselves.
+ */
+export function ensureStoreIgnoreLines(root: string): void {
+  const path = join(root, '.gitignore')
+  try {
+    if (!existsSync(path)) return
+    const text = readFileSync(path, 'utf8')
+    const have = new Set(text.split(/\r?\n/).map(l => l.trim()))
+    const missing = LATER_IGNORE_LINES.filter(l => !have.has(l))
+    if (missing.length === 0) return
+    appendFileSync(path, (text.length > 0 && !text.endsWith('\n') ? '\n' : '') + missing.join('\n') + '\n')
+  } catch { /* advisory: never fail opening a store */ }
+}
 
 /**
  * Files that constitute the syncable engram store. ONLY these are ever staged by

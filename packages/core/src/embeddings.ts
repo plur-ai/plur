@@ -2,7 +2,7 @@ import type { Engram } from './schemas/engram.js'
 import type { EmbedRole } from './embedders/types.js'
 import { downloadsOffByEnv, envOf } from './embedders/transformers-base.js'
 import { engramSearchText } from './fts.js'
-import { existsSync, readFileSync, mkdirSync, appendFileSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, statSync, openSync, readSync, closeSync } from 'fs'
 import { join, dirname } from 'path'
 import { createHash } from 'crypto'
 import { atomicWrite, withLock } from './sync.js'
@@ -444,7 +444,47 @@ function appendEntries(cachePath: string, meta: { name: string; dim: number }, e
   const ids = Object.keys(entries)
   if (ids.length === 0) return true
   const lines = ids.map(id => JSON.stringify({ id, hash: entries[id].hash, embedding: entries[id].embedding, embedder: meta.name, dim: meta.dim })).join('\n') + '\n'
-  return withCacheLock(cachePath, () => { appendFileSync(deltaPath(cachePath), lines) })
+  return withCacheLock(cachePath, () => {
+    const dp = deltaPath(cachePath)
+    // A line cut short by a killed process has no newline: start on a fresh
+    // line, so it never swallows this record (#1586 round 7, D-1).
+    appendFileSync(dp, (endsTorn(dp) ? '\n' : '') + lines)
+  })
+}
+
+/** Does the file exist, non-empty, without a trailing newline? */
+function endsTorn(path: string): boolean {
+  let fd: number | undefined
+  try {
+    const size = statSync(path).size
+    if (size === 0) return false
+    fd = openSync(path, 'r')
+    const b = Buffer.alloc(1)
+    readSync(fd, b, 0, 1, size - 1)
+    return b[0] !== 0x0a
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) try { closeSync(fd) } catch { /* closed */ }
+  }
+}
+
+/** Compact once the delta file passes this size, whether or not a search
+ *  ever completes (#1586 round 7, D-2). About 1,000 vectors of 384 floats. */
+const DEFAULT_DELTA_COMPACT_BYTES = 8 * 1024 * 1024
+let deltaCompactBytes = DEFAULT_DELTA_COMPACT_BYTES
+
+/** Test seam: the compaction threshold in bytes (undefined restores). */
+export function _setDeltaCompactBytes(bytes: number | undefined): void {
+  deltaCompactBytes = bytes ?? DEFAULT_DELTA_COMPACT_BYTES
+}
+
+/** Fold the delta into the main file when it has grown past the threshold.
+ *  Under the cache lock; when the lock is busy, nothing happens (fail open). */
+function compactIfLarge(cachePath: string, meta: { name: string; dim: number }): void {
+  let size = 0
+  try { size = statSync(deltaPath(cachePath)).size } catch { return }
+  if (size > deltaCompactBytes) compactCache(cachePath, meta)
 }
 
 /** Fold the delta file and `extra` into the main cache file, under the lock:
@@ -454,8 +494,30 @@ function compactCache(cachePath: string, meta: { name: string; dim: number }, ex
     const onDisk = loadCache(cachePath, meta)
     onDisk.entries = { ...onDisk.entries, ...extra }
     saveCache(cachePath, onDisk)
-    try { unlinkSync(deltaPath(cachePath)) } catch { /* none */ }
+    // Records of another model or dimension stay in the delta (#1586 round
+    // 7, D-3): during a model switch, a process still on the old model must
+    // not throw away the new model's vectors.
+    const dp = deltaPath(cachePath)
+    let others: string[] = []
+    try {
+      others = readFileSync(dp, 'utf8').split('\n').filter(line => {
+        if (!line) return false
+        try {
+          const e = JSON.parse(line) as { embedder?: string; dim?: number }
+          return e.embedder !== meta.name || e.dim !== meta.dim
+        } catch { return false }
+      })
+    } catch { /* no delta */ }
+    try {
+      if (others.length > 0) atomicWrite(dp, others.join('\n') + '\n', { durable: false })
+      else unlinkSync(dp)
+    } catch { /* none */ }
   })
+}
+
+/** Test seam (#1586 round 7, D-3). */
+export function _compactEmbeddingCache(cachePath: string, meta: { name: string; dim: number }): boolean {
+  return compactCache(cachePath, meta)
 }
 
 /** Test seam / child-process entry (#1586 round 6, L1). */
@@ -527,16 +589,19 @@ export function mergeEmbeddingsIntoCache(
 ): number {
   const cachePath = join(storagePath, '.embeddings-cache.json')
   const cache = loadCache(cachePath, active)
-  let written = 0
+  const fresh: EmbeddingCacheEntries = {}
   for (const imp of imports) {
     if (imp.embedding.length !== active.dim) continue
     const hash = hashStatement(imp.searchText)
     if (cache.entries[imp.engramId]?.hash === hash) continue
-    cache.entries[imp.engramId] = { hash, embedding: imp.embedding }
-    written++
+    fresh[imp.engramId] = { hash, embedding: imp.embedding }
   }
-  if (written > 0) saveCache(cachePath, cache)
-  return written
+  const written = Object.keys(fresh).length
+  if (written === 0) return 0
+  // Under the cache lock, with the delta folded in first and then removed
+  // (#1586 round 7, D-4): an older delta record can never be applied over an
+  // imported vector afterwards. Lock busy: nothing written, imported later.
+  return compactCache(cachePath, active, fresh) ? written : 0
 }
 
 /**
@@ -551,6 +616,7 @@ export function mergeEmbeddingsIntoCache(
  */
 function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortSignal): { added(id: string): void; done(): void } {
   const meta = { name: cache.meta.embedder_name, dim: cache.meta.embedder_dim }
+  compactIfLarge(cachePath, meta)
   /** Vectors not yet on disk. */
   let pending: EmbeddingCacheEntries = {}
   let lastFlush = Date.now()
@@ -571,7 +637,12 @@ function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortS
       pending[id] = cache.entries[id]
       // Save in steps while embedding (L2): what is left for the deadline is
       // small, whatever the size of the cache.
-      if (Object.keys(pending).length >= PROGRESS_FLUSH_EVERY || Date.now() - lastFlush > PROGRESS_FLUSH_MS) flush()
+      if (Object.keys(pending).length >= PROGRESS_FLUSH_EVERY || Date.now() - lastFlush > PROGRESS_FLUSH_MS) {
+        flush()
+        // Still inside the search (not at the deadline): the place to fold a
+        // delta that has grown past the threshold (D-2).
+        compactIfLarge(cachePath, meta)
+      }
     },
     done: () => {
       signal?.removeEventListener('abort', onAbort)
