@@ -78,7 +78,8 @@ describe('a pending .queue-ws turn is drained after an older worker lets go (R2-
     const statement = 'Probe R2-2 statement drained after the older worker let go'
     const reply = `Done.\n\n---\n🧠 I learned:\n- ${statement}\n---\n`
     expect(mod.enqueueTurn({ editor: 'cursor', sessionId: 'r22-b', reply, cwd: tmp, workspaceScope: null })).toBe(true)
-    // An "older worker": a live owner (this process) with another token.
+    // An "older worker": a live owner (this process) with an old-format token
+    // (no `qws` marker).
     const lock = join(dir, 'cursor-r22-b.worker')
     writeFileSync(lock, `${process.pid}:older-worker`)
     const release = setTimeout(() => { try { unlinkSync(lock) } catch { /* gone */ } }, 1500)
@@ -90,4 +91,23 @@ describe('a pending .queue-ws turn is drained after an older worker lets go (R2-
     expect(existsSync(join(dir, 'cursor-r22-b.queue-ws')), 'the .queue-ws turn was left behind').toBe(false)
     expect(readFileSync(join(tmp, 'store', 'engrams.yaml'), 'utf8')).toContain(statement)
   }, 60_000)
+
+  it('a current-version lock holder: the second worker leaves at once (that worker drains .queue-ws itself)', async () => {
+    const dir = join(tmp, 'plur-auto-rate')
+    expect(mod.enqueueTurn({ editor: 'cursor', sessionId: 'r22-c', reply: 'Done.', cwd: tmp, workspaceScope: null })).toBe(true)
+    // A live current-version worker: its token carries the qws marker.
+    const lock = join(dir, 'cursor-r22-c.worker')
+    writeFileSync(lock, `${process.pid}:current:worker:qws`)
+    // Released late only so a waiting worker cannot hang the test.
+    const release = setTimeout(() => { try { unlinkSync(lock) } catch { /* gone */ } }, 3000)
+    const t0 = Date.now()
+    try {
+      await mod.runWorker('cursor', 'r22-c', { path: join(tmp, 'store') } as never)
+    } finally {
+      clearTimeout(release)
+      try { unlinkSync(lock) } catch { /* gone */ }
+    }
+    expect(Date.now() - t0, 'the second worker waited for a current-version holder').toBeLessThan(1000)
+    expect(existsSync(join(dir, 'cursor-r22-c.queue-ws')), 'left for the holder to drain').toBe(true)
+  }, 30_000)
 })
