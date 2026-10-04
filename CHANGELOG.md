@@ -9,7 +9,7 @@ You decide where your agents remember.
 - plur folders repair
 - See which memories a reply used
 
-### A push claim that cannot be recorded no longer lets two processes push one engram (#1580)
+### A push claim that cannot be recorded no longer lets two processes push one engram (#1580, #1581)
 
 Found by the 0.21.1 Windows pre-release check (finding B1).
 
@@ -20,7 +20,7 @@ Found by the 0.21.1 Windows pre-release check (finding B1).
 - On a drive without hard links (FAT, exFAT, some network shares), a claim is created and then written in two steps. A second process could read it in between and take it for an abandoned claim. An empty or half-written claim younger than a minute now counts as taken.
 - One trade-off: a cache folder that cannot be written now holds queued engrams back until it can be, where before they were pushed without a claim. Doctor and `plur outbox` say so.
 
-### A team save no longer tells the agent to save it again; unscoped CLI recall and inject search the folder's team store (#1578)
+### A team save no longer tells the agent to save it again; unscoped CLI recall and inject search the folder's team store (#1578, #1579)
 
 Found by the third 0.21.1 pre-release check (findings L9 and L10).
 
@@ -30,7 +30,7 @@ Found by the third 0.21.1 pre-release check (findings L9 and L10).
 - With a broken `folders.yaml`, `plur recall` and `plur inject` said "PLUR memory is paused in every folder until the map is fixed" and then showed memory anyway. They now say that no team memory is used until the map is fixed and that only the memory on this machine was read, name the `plur folders repair` command, and contact no remote store.
 - The editor hooks are unchanged. They already take the folder's scope from the folder map (their own check of the folder the editor sends), not from this rule.
 
-### Each team store gets its own id prefix, so an engram id names one store (#1575)
+### Each team store gets its own id prefix, so an engram id names one store (#1575, #1576)
 
 Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0.21.1; not caused by #1570.
 
@@ -41,7 +41,7 @@ Found by the 0.21.1 pre-release check (audit of #1570, finding H1). Older than 0
 - Engram history, tensions and injection records written under the old form still match the engram under its new id. The local search index rebuilds itself once to pick up the new ids.
 - Checked against the enterprise server's code and data: one server never gives two scopes the same id, so the duplicate ids need two servers. Acting through the wrong store entry could happen on one server.
 
-### `plur doctor` fails when a team store's token variable is unset (#1572)
+### `plur doctor` fails when a team store's token variable is unset (#1572, #1573)
 
 A team store added with `--token-env` takes its token from an environment variable. When that variable was unset or empty, `plur doctor` still said "Healthy", reported `overall: ok` and exited 0, and the only sign was one line on stderr. Saves to that store waited in the outbox and recalls skipped it. The MCP `plur_doctor` already said not ok for the same setup.
 
@@ -51,7 +51,7 @@ A team store added with `--token-env` takes its token from an environment variab
 - The variable counts as set when it is in this shell or in the `env` of a PLUR MCP entry an editor launches the server with (Claude Code's `~/.claude.json` or project/local scope, Cursor, Codex and the others), since that is the environment the server runs in. `plur doctor` says where it found it (`tokenEnvFound` in `--json`), and notes when it is not in this shell, so `plur` commands run there queue that store's saves.
 - The closing list of fixes repeats the token fix.
 
-### `plur folders repair` works on a map with a team-scoped folder (#1567)
+### `plur folders repair` works on a map with a team-scoped folder (#1567, #1571)
 
 Found by the second 0.21.1 pre-release check. A broken `folders.yaml` that held one folder answered "Yes, with the team scope" could not be repaired, even for a one-character slip somewhere else in the file. The repair blamed that folder's line, which had no problem.
 
@@ -60,7 +60,7 @@ Found by the second 0.21.1 pre-release check. A broken `folders.yaml` that held 
 - A folder with a scope (or `trusted:`) and its own `plur: on`, `off` or `ask` line never stopped a repair, and still does not. This is now tested, and the repair's fuzz test also runs over team-style maps.
 - When the map cannot be repaired automatically, the warning on stderr says to fix the named line by hand, and that `plur folders repair` re-checks the file. It used to say to run `plur folders repair` to repair it.
 
-### A folder's team scope reaches unscoped recalls over MCP without plur_session_start (#1566)
+### A folder's team scope reaches unscoped recalls over MCP without plur_session_start (#1566, #1569)
 
 Found by the second 0.21.1 pre-release check. It is the read-side twin of the save fix below (#1562). In a folder mapped to a team scope (or answered "yes" with one), an unscoped save reached the team store without `plur_session_start`, but an unscoped recall searched only this machine. An agent could not find what it had just saved to the team unless it passed `scope` or started a session first.
 
@@ -68,7 +68,7 @@ Found by the second 0.21.1 pre-release check. It is the read-side twin of the sa
 - An explicit scope still wins, and so does a session's own default. `off` and undecided folders are unchanged. (`plur_inject`, the keyword-only injection, never dials a team store.)
 - An injection made with no session is still recorded with no session id.
 
-### A team engram keeps the id its save returned, in recall too (#1568)
+### A team engram keeps the id its save returned, in recall too (#1568, #1570)
 
 Found by the 0.21.1 pre-release check (finding F3, and low L1).
 
