@@ -166,11 +166,17 @@ describe('#1588 2. a repository store needs its own folder decision', () => {
     expect(registered()).toEqual([realpathSync(store)])
   })
 
-  it('a marker in the store’s own folder registers it as before', async () => {
+  it('a marker in the store’s own folder is not the user’s decision: no store until an exact entry (owner, 2026-10-05)', async () => {
     const proj = join(home, 'code', 'proj')
     mkdirSync(join(proj, '.git'), { recursive: true })
     writeFileSync(join(proj, '.mcp.json'), MCP)
-    const store = await seedStore(proj, 'Codeword OWNMARKER: the folder decided for itself')
+    const store = await seedStore(proj, 'Codeword OWNMARKER: the repository marked itself')
+    expect(resolveFolderPolicy(proj, { root, home }).mode).toBe('on')
+    expect(hasOwnFolderDecision(proj, { root, home })).toBe(false)
+    const plur = new Plur({ path: root, cwd: proj })
+    expect(registered()).toEqual([])
+    expect(plur.skippedProjectStores(proj).map(s => realpathSync(s.path))).toEqual([realpathSync(store)])
+    mapOn(proj)
     new Plur({ path: root, cwd: proj })
     expect(registered()).toEqual([realpathSync(store)])
   })
@@ -500,5 +506,33 @@ describe('#1589 audit round 2, R2-M1: the command that adds a skipped store is s
   it('names the store with --path when it is not the default one', () => {
     expect(folderSetOnCommand('/w/proj', '/data/my plur', 'linux')).toBe(`plur --path '/data/my plur' folders set /w/proj --on`)
     expect(folderSetOnCommand('/w/proj', '/data/a\nb', 'linux')).toBeNull()
+  })
+})
+
+describe('#1589 owner decision (2026-10-05): a repository\u2019s own files never count as the user\u2019s decision', () => {
+  it('P9: a fresh clone shipping .mcp.json naming plur, or an empty .plur.yaml, plus a store: nothing registered', async () => {
+    const a = join(home, 'code', 'a')
+    mkdirSync(join(a, '.git'), { recursive: true })
+    writeFileSync(join(a, '.mcp.json'), MCP)
+    await seedStore(a, 'Codeword CLONEMCP: shipped with an MCP config')
+    const b = join(home, 'code', 'b')
+    mkdirSync(join(b, '.git'), { recursive: true })
+    writeFileSync(join(b, '.plur.yaml'), '')
+    await seedStore(b, 'Codeword CLONEYAML: shipped with an empty .plur.yaml')
+    new Plur({ path: root, cwd: a })
+    new Plur({ path: root, cwd: b })
+    expect(registered()).toEqual([])
+    expect(hasOwnFolderDecision(a, { root, home })).toBe(false)
+    expect(hasOwnFolderDecision(b, { root, home })).toBe(false)
+  })
+
+  it('a trust grant for exactly that folder (plur trust) counts', async () => {
+    const proj = join(home, 'code', 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    writeFileSync(join(proj, '.mcp.json'), MCP)
+    const store = await seedStore(proj, 'Codeword TRUSTED: plur trust on the folder')
+    writeFileSync(join(root, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(proj)}\n    trusted: true\n`)
+    new Plur({ path: root, cwd: proj })
+    expect(registered()).toEqual([realpathSync(store)])
   })
 })

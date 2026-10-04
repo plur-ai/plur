@@ -241,3 +241,20 @@ describe('#1589 audit round 2, R2-L3: plur doctor imports no legacy trust.yaml',
     expect(existsSync(join(plurRoot, 'folders.yaml'))).toBe(false)
   }, 90_000)
 })
+
+describe.skipIf(!posix)('#1589 owner decision (2026-10-05): a clone\u2019s own marker does not adopt its store', () => {
+  it.skipIf(!hasPythonPty)('P9: a clone shipping .mcp.json plus a store injects none of its memories until plur folders set --on', () => {
+    const clone = join(home, 'clones', 'shipped')
+    mkdirSync(join(clone, '.git'), { recursive: true })
+    writeFileSync(join(clone, '.mcp.json'), MCP)
+    const seeded = cli(['learn', 'Codeword CLONEDSTORE: fixture deploys shipped by the clone', '--json'], '', base, { PLUR_PATH: join(clone, '.plur') })
+    expect(seeded.status, seeded.stderr).toBe(0)
+    const before = inject(clone, 'cc-clone-before')
+    expect(before).toContain('ZEPHYRQUILL')
+    expect(before).not.toContain('CLONEDSTORE')
+    expect(configText()).not.toContain(join(clone, '.plur'))
+    const set = ptySet(['folders', 'set', clone, '--on'], base)
+    expect(set.status, set.out).toBe(0)
+    expect(inject(clone, 'cc-clone-after')).toContain('CLONEDSTORE')
+  }, 90_000)
+})
