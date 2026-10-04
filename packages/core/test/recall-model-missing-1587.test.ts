@@ -157,6 +157,9 @@ describe('a missing model, long-lived process', () => {
     const local = tmp('plur-1587-local-models-')
     mkdirSync(join(local, 'Xenova', 'bge-small-en-v1.5', 'onnx'), { recursive: true })
     writeFileSync(join(local, 'Xenova', 'bge-small-en-v1.5', 'onnx', 'model.onnx'), 'x')
+    for (const f of ['tokenizer.json', 'tokenizer_config.json', 'config.json']) {
+      writeFileSync(join(local, 'Xenova', 'bge-small-en-v1.5', f), '{}')
+    }
     const t = await import('@huggingface/transformers') as unknown as { env: { localModelPath: string } }
     t.env.localModelPath = local
     expect(await emb.semanticModelState()).toBe('cached')

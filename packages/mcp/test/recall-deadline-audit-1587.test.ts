@@ -170,3 +170,26 @@ describe('D4 — the injection replies carry the degraded mode and its reason', 
     expect(res.degraded_reason).toBe('embedding_model_missing')
   })
 })
+
+describe('round 5 — degraded reasons in plur_recall', () => {
+  const patched = (extra: Record<string, unknown>) => {
+    const plur = new Plur({ path: storeDir(null) })
+    const orig = plur.recallHybridWithMeta.bind(plur)
+    ;(plur as any).recallHybridWithMeta = async (q: string, o: any) => ({ ...(await orig(q, o)), results_complete: false, ...extra })
+    return plur
+  }
+
+  it('a reranker cut by the deadline: degraded_reason is forwarded although mode stays hybrid', async () => {
+    const client = await makeClient(patched({ mode: 'hybrid', degraded_reason: 'reranker_deadline', embedderError: 'the reranker did not finish within the recall deadline — results are in fusion order' }))
+    const res = callResult(await client.callTool({ name: 'plur_recall', arguments: { query: 'anything' } }))
+    expect(res.mode).toBe('hybrid')
+    expect(res.degraded_reason).toBe('reranker_deadline')
+  })
+
+  it('the missing-model warning says "keyword results only" once', async () => {
+    const client = await makeClient(patched({ mode: 'hybrid-degraded', degraded_reason: 'embedding_model_missing', embedderError: 'the embedding model is not downloaded yet — keyword results only. Run `plur doctor` once to download it (~133 MB).' }))
+    const res = callResult(await client.callTool({ name: 'plur_recall', arguments: { query: 'anything' } }))
+    expect(String(res.warning)).toMatch(/plur doctor/)
+    expect((String(res.warning).match(/keyword results only/gi) ?? []).length).toBe(1)
+  })
+})
