@@ -15,7 +15,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import * as emb from '../src/embeddings.js'
-import { _resetTransformersPipelineCache } from '../src/embedders/transformers-base.js'
+import { _resetTransformersPipelineCache, _setDefaultModelCacheDir } from '../src/embedders/transformers-base.js'
 
 const dirs: string[] = []
 function tmp(prefix: string): string {
@@ -37,6 +37,7 @@ afterEach(async () => {
   vi.unstubAllGlobals()
   ;(emb as any)._resetBackgroundModelLoad?.()
   _resetTransformersPipelineCache()
+  _setDefaultModelCacheDir(undefined)
   emb.resetEmbedder()
   emb.setEmbeddingsEnabled(!wasDisabled)
   for (const k of ENV_KEYS) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k] }
@@ -68,10 +69,12 @@ async function storeWith(n: number): Promise<{ plur: Plur; dir: string }> {
   return { plur, dir }
 }
 
+/** Vectors on disk: the cache file plus its delta file (round 6, L2). */
 const cachedCount = (dir: string): number => {
   const p = join(dir, '.embeddings-cache.json')
-  if (!existsSync(p)) return 0
-  return Object.keys(JSON.parse(readFileSync(p, 'utf8')).entries ?? {}).length
+  const d = join(dir, '.embeddings-cache.delta.jsonl')
+  if (!existsSync(p) && !existsSync(d)) return 0
+  return Object.keys((emb as any)._readEmbeddingCacheEntries(p, { name: 'slow-test', dim: 384 })).length
 }
 
 describe('R3 — a cut-off recall keeps the vectors it computed', () => {
@@ -120,6 +123,7 @@ describe('L-learn — every embedding path honours the offline switches', () => 
       const plur = new Plur({ path: dir })
       await plur.learn('the deploy checklist lives in the release runbook')
       process.env.PLUR_MODEL_CACHE_DIR = tmp('plur-1587-r5-models-')
+      _setDefaultModelCacheDir(tmp('plur-1587-r5-default-'))
       process.env[key] = value
       emb.setEmbeddingsEnabled(true)
       emb.resetEmbedder()
@@ -138,6 +142,7 @@ describe('L-learn — every embedding path honours the offline switches', () => 
 describe('L-gemma and presence', () => {
   it('EmbeddingGemma with an empty cache is reported missing, not unknown', async () => {
     process.env.PLUR_MODEL_CACHE_DIR = tmp('plur-1587-r5-models-')
+    _setDefaultModelCacheDir(tmp('plur-1587-r5-default-'))
     process.env.PLUR_EMBEDDER = 'embedding-gemma'
     emb.setEmbeddingsEnabled(true)
     emb.resetEmbedder()
@@ -146,6 +151,7 @@ describe('L-gemma and presence', () => {
 
   it('weights without the tokenizer files do not count as present', async () => {
     const cache = tmp('plur-1587-r5-models-')
+    _setDefaultModelCacheDir(tmp('plur-1587-r5-default-'))
     process.env.PLUR_MODEL_CACHE_DIR = cache
     mkdirSync(join(cache, 'Xenova', 'bge-small-en-v1.5', 'onnx'), { recursive: true })
     writeFileSync(join(cache, 'Xenova', 'bge-small-en-v1.5', 'onnx', 'model.onnx'), 'x')

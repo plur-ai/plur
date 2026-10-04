@@ -28,7 +28,7 @@ import { _resetCrossEncoderCaches } from './rerankers/transformers-cross-encoder
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, rewriteLexicalQuery, isQueryRewriteDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
-import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, semanticModelState, backgroundModelLoadAllowed, fillEmbeddingCache, type EmbedderStatus } from './embeddings.js'
+import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, semanticModelState, backgroundModelLoadAllowed, fillEmbeddingCache, activeEmbedderIsRemote, type EmbedderStatus } from './embeddings.js'
 import type { DegradedReason } from './types.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
@@ -341,7 +341,7 @@ export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // vectors identically to core's hybrid search (same model + EMBED_DIM). The
 // model identity and EMBED_DIM are a stable contract; changing them is breaking
 // for any consumer that persists vectors. See embeddings.ts.
-export { embed, EMBED_DIM, activeEmbedderDim, embedderStatus, cosineSimilarity, semanticModelState, allowBackgroundModelLoad, type EmbedderStatus } from './embeddings.js'
+export { embed, EMBED_DIM, activeEmbedderDim, embedderStatus, cosineSimilarity, semanticModelState, allowBackgroundModelLoad, _appendEmbeddingCacheEntries, type EmbedderStatus } from './embeddings.js'
 export { EMBEDDER_NAMES, DEFAULT_EMBEDDER, resolveEmbedderName, type EmbedderName, type EmbedderAdapter } from './embedders/index.js'
 // Reranker surface (#220/#341) — factory + runtime status so MCP/CLI can
 // probe reranker health (plur_doctor) and surface non-engagement on recall.
@@ -6976,6 +6976,7 @@ export class Plur {
 
   /** Background embedding-cache fills this instance started (0 or 1, #1586 R3). */
   private _embeddingFillStarts = 0
+  private _embeddingFillChecking = false
 
   /**
    * In a long-lived process that opted in ({@link allowBackgroundModelLoad}),
@@ -6985,12 +6986,20 @@ export class Plur {
    * waiting for more recalls.
    */
   private _maybeFillEmbeddingCache(): void {
-    if (!backgroundModelLoadAllowed() || this._embeddingFillStarts > 0) return
-    this._embeddingFillStarts++
+    if (!backgroundModelLoadAllowed() || this._embeddingFillStarts > 0 || this._embeddingFillChecking) return
+    this._embeddingFillChecking = true
     void (async () => {
+      // Not for a remote embedder (#1586 round 6, L4): it has no cold start,
+      // and a fill would keep a host that exits on its own busy embedding the
+      // whole store through a paid API. A cut-off recall still keeps what it
+      // computed.
+      if (await activeEmbedderIsRemote()) return
+      if (this._embeddingFillStarts > 0) return
+      this._embeddingFillStarts++
       const engrams = (await this._loadAllEngrams()).filter(e => e.status === 'active')
       await fillEmbeddingCache(engrams, this.paths.root)
     })().catch(err => logger.debug(`[plur] background embedding fill stopped: ${(err as Error).message}`))
+      .finally(() => { this._embeddingFillChecking = false })
   }
 
   /** Why a hybrid recall or injection answered without its semantic leg, in

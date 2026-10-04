@@ -91,7 +91,10 @@ describe('D4 — a missing embedding model is reported by cause', { timeout: 600
     // Embeddings on, the model cache somewhere nothing can be downloaded to,
     // and offline: the model is missing and nothing is fetched.
     writeFileSync(join(home, 'blocker'), 'a file, so no cache folder can be created under it')
-    const env = { ...base, PLUR_DISABLE_EMBEDDINGS: '', PLUR_MODEL_CACHE_DIR: join(home, 'blocker', 'models'), HF_HUB_OFFLINE: '1' }
+    const env = { ...base, PLUR_DISABLE_EMBEDDINGS: '', PLUR_MODEL_CACHE_DIR: join(home, 'blocker', 'models'), HF_HUB_OFFLINE: '1',
+      // A model no cache on this machine holds (since round 6 a complete model
+      // in the library default cache is found, so bge-small may be present).
+      PLUR_EMBEDDER: 'embedding-gemma' }
     const r = spawnSync('node', [CLI, 'recall', 'anchors', '--path', dir, '--json'], { encoding: 'utf-8', timeout: 30000, env })
     const json = JSON.parse(r.stdout)
     expect(json.results.length).toBeGreaterThan(0)
@@ -113,7 +116,10 @@ describe('plur init on a fresh install without the embedding model', { timeout: 
       try {
         out = execSync(`node ${CLI} init --global --no-prompt --no-cursor --no-desktop --no-codex --no-antigravity`, {
           encoding: 'utf-8', timeout: 45000, cwd: home,
-          env: { ...isolatedHomeEnv(home), PLUR_PATH: join(home, '.plur'), PLUR_DISABLE_EMBEDDINGS: '', PLUR_MODEL_CACHE_DIR: join(home, 'blocker', 'models'), HF_HUB_OFFLINE: '1' },
+          env: { ...isolatedHomeEnv(home), PLUR_PATH: join(home, '.plur'), PLUR_DISABLE_EMBEDDINGS: '', PLUR_MODEL_CACHE_DIR: join(home, 'blocker', 'models'), HF_HUB_OFFLINE: '1',
+      // A model no cache on this machine holds (since round 6 a complete model
+      // in the library default cache is found, so bge-small may be present).
+      PLUR_EMBEDDER: 'embedding-gemma' },
         })
       } catch (err) {
         out = String((err as { stdout?: unknown }).stdout ?? '')

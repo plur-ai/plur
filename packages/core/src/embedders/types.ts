@@ -34,22 +34,11 @@ export interface EmbedderAdapter {
   embedBatch(texts: string[]): Promise<Float32Array[]>
   /** Optional (#1586 round 3): the model is loaded in this process. */
   isLoaded?(): boolean
-  /** Optional (#1586 round 3): where the model's weights live on disk, so a
-   *  caller can tell a one-time download from a load. Null when unknown. */
-  modelFile?(): Promise<ModelFiles | null>
+  /** Optional (#1586 rounds 3-6): are the model's files on disk where a load
+   *  would read them? Null when the adapter cannot tell. */
+  modelPresent?(): Promise<boolean | null>
+  /** Optional (#1586 round 6): the embedder is a remote API (no local model,
+   *  no cold start), so no background cache fill is started for it. */
+  readonly remote?: boolean
 }
 
-/** Where a model's files live on disk (#1586 rounds 3-5). The model counts as
- *  present when every file of one location exists. */
-export interface ModelFiles {
-  cacheDir: string | null
-  /** The weights in the model cache. */
-  file: string | null
-  /** Every file the load needs in the model cache (weights, tokenizer, config). */
-  files?: string[]
-  /** The weights under transformers.js's `localModelPath`, when set. */
-  localFile?: string | null
-  /** Every file the load needs under `localModelPath`. */
-  localFiles?: string[]
-  dtype?: string
-}

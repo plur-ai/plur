@@ -24,7 +24,7 @@ vi.mock('child_process', async (importOriginal) => {
 import * as childProcess from 'child_process'
 import { Plur } from '../src/index.js'
 import * as emb from '../src/embeddings.js'
-import { _resetTransformersPipelineCache } from '../src/embedders/transformers-base.js'
+import { _resetTransformersPipelineCache, _setDefaultModelCacheDir } from '../src/embedders/transformers-base.js'
 
 const dirs: string[] = []
 function tmp(prefix: string): string {
@@ -55,6 +55,7 @@ afterEach(async () => {
   vi.unstubAllGlobals()
   ;(emb as any)._resetBackgroundModelLoad?.()
   _resetTransformersPipelineCache()
+  _setDefaultModelCacheDir(undefined)
   emb.resetEmbedder()
   emb.setEmbeddingsEnabled(!wasDisabled)
   for (const k of ENV_KEYS) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k] }
@@ -76,6 +77,9 @@ async function seededPlur(): Promise<Plur> {
 /** Embeddings on, the real default adapter, and an empty model cache. */
 function modelMissing(): void {
   process.env.PLUR_MODEL_CACHE_DIR = tmp('plur-1587-models-')
+  // Missing everywhere: the library default cache is empty too (since round 6
+  // a complete model there is found, G1).
+  _setDefaultModelCacheDir(tmp('plur-1587-default-'))
   emb.setEmbeddingsEnabled(true)
   emb.resetEmbedder()
 }

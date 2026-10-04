@@ -28,10 +28,12 @@
  * benchmark numbers and keep first-run download manageable.
  */
 import type { EmbedderAdapter, EmbedRole } from './types.js'
-import { resolveModelCacheDir, modelFilesFor } from './transformers-base.js'
+import { importTransformers, resolveLoadCacheDir, modelPresence, downloadsOffByEnv } from './transformers-base.js'
 
 export const EMBEDDING_GEMMA_MODEL_ID = 'onnx-community/embeddinggemma-300m-ONNX'
 const DIM = 768
+/** q8 weights, as loaded below; external-data chunks come from its config. */
+const GEMMA_WEIGHTS = 'model_quantized.onnx'
 
 // Minimal callable shapes for the transformers.js tokenizer and model.
 // We extract `sentence_embedding` from the ONNX graph directly — the pipeline
@@ -47,14 +49,19 @@ async function load(): Promise<{ tokenizer: Tok; model: Mdl }> {
     loaded = (async () => {
       // Xet transfer protocol silently truncates ONNX files (#340). Disable it.
       process.env.HF_HUB_DISABLE_XET ??= '1'
-      const transformers = await import('@huggingface/transformers')
-      const { AutoTokenizer, AutoModel } = transformers
-      // The same cache placement as the other adapters (#845), so the presence
-      // check below looks where the load reads.
-      const cacheDir = await resolveModelCacheDir()
-      if (cacheDir) (transformers as { env?: { cacheDir?: string } }).env!.cacheDir = cacheDir
-      const tokenizer = (await AutoTokenizer.from_pretrained(EMBEDDING_GEMMA_MODEL_ID)) as unknown as Tok
-      const model = (await AutoModel.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, { dtype: 'q8' })) as unknown as Mdl
+      const transformers = await importTransformers()
+      const { AutoTokenizer, AutoModel } = transformers as unknown as {
+        AutoTokenizer: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
+        AutoModel: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
+      }
+      // The cache the presence check looked in (#1586 round 6, G1): the
+      // override when the model is complete there, else the library default
+      // where an existing user already has it.
+      const cacheDir = await resolveLoadCacheDir(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS)
+      if (cacheDir) transformers.env!.cacheDir = cacheDir
+      const offline = downloadsOffByEnv() ? { local_files_only: true } : {}
+      const tokenizer = (await AutoTokenizer.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, offline)) as unknown as Tok
+      const model = (await AutoModel.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, { dtype: 'q8', ...offline })) as unknown as Mdl
       gemmaLoaded = true
       return { tokenizer, model }
     })()
@@ -99,7 +106,7 @@ export function makeEmbeddingGemmaAdapter(): EmbedderAdapter {
     // #1586 round 5: say whether the model is here, so a recall never
     // downloads it (q8 weights, as loaded above).
     isLoaded: () => gemmaLoaded,
-    modelFile: () => modelFilesFor(EMBEDDING_GEMMA_MODEL_ID, 'model_quantized.onnx', 'q8'),
+    modelPresent: () => modelPresence(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS),
     async embedBatch(texts: string[]): Promise<Float32Array[]> {
       const out: Float32Array[] = []
       for (const t of texts) out.push(await embedOne(t))

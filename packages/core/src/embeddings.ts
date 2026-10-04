@@ -1,10 +1,11 @@
 import type { Engram } from './schemas/engram.js'
-import type { EmbedRole, ModelFiles } from './embedders/types.js'
+import type { EmbedRole } from './embedders/types.js'
+import { downloadsOffByEnv } from './embedders/transformers-base.js'
 import { engramSearchText } from './fts.js'
-import { existsSync, readFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, mkdirSync, appendFileSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { createHash } from 'crypto'
-import { atomicWrite } from './sync.js'
+import { atomicWrite, withLock } from './sync.js'
 import { logger } from './logger.js'
 
 /**
@@ -190,17 +191,13 @@ export async function semanticModelState(): Promise<'ready' | 'cached' | 'missin
   return 'missing'
 }
 
-/** Are the model's files on disk? Null when the embedder cannot say. The
- *  weights alone are not enough: the load would fetch the missing tokenizer
- *  and config files (#1586 round 5). */
-async function modelPresent(embedder: { modelFile?: () => Promise<ModelFiles | null> }): Promise<boolean | null> {
-  if (typeof embedder.modelFile !== 'function') return null
-  let where: ModelFiles | null = null
-  try { where = await embedder.modelFile() } catch { where = null }
-  if (!where) return null
-  const all = (files: string[] | undefined, single: string | null | undefined): boolean =>
-    files && files.length > 0 ? files.every(f => existsSync(f)) : !!single && existsSync(single)
-  return all(where.files, where.file) || all(where.localFiles, where.localFile)
+/** Are the model's files on disk where a load would read them? Null when the
+ *  embedder cannot say. The adapter checks weights, tokenizer, config and any
+ *  external-data chunks, per file, in the cache it would use and under
+ *  `localModelPath` (#1586 rounds 5-6). */
+async function modelPresent(embedder: { modelPresent?: () => Promise<boolean | null> }): Promise<boolean | null> {
+  if (typeof embedder.modelPresent !== 'function') return null
+  try { return await embedder.modelPresent() } catch { return null }
 }
 
 /**
@@ -210,7 +207,7 @@ async function modelPresent(embedder: { modelFile?: () => Promise<ModelFiles | n
  * PLUR_MODEL_DOWNLOAD=off, allowRemoteModels=false) a model that is not on
  * disk is not loaded at all, so nothing is fetched.
  */
-async function loadAllowed(embedder: { isLoaded?: () => boolean; modelFile?: () => Promise<ModelFiles | null> }): Promise<boolean> {
+async function loadAllowed(embedder: { isLoaded?: () => boolean; modelPresent?: () => Promise<boolean | null> }): Promise<boolean> {
   if (typeof embedder.isLoaded === 'function' && embedder.isLoaded()) return true
   const present = await modelPresent(embedder)
   if (present !== false) return true
@@ -248,8 +245,7 @@ const truthy = (v: string | undefined): boolean => !!v && ['1', 'true', 'yes', '
 /** Downloads are off: HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE, PLUR_MODEL_DOWNLOAD=off,
  *  or transformers.js configured with `allowRemoteModels = false`. */
 async function modelDownloadDisabled(): Promise<boolean> {
-  if (truthy(process.env.HF_HUB_OFFLINE) || truthy(process.env.TRANSFORMERS_OFFLINE)) return true
-  if ((process.env.PLUR_MODEL_DOWNLOAD ?? '').trim().toLowerCase() === 'off') return true
+  if (downloadsOffByEnv()) return true
   try {
     const transformers = await import('@huggingface/transformers') as { env?: { allowRemoteModels?: boolean } }
     if (transformers.env?.allowRemoteModels === false) return true
@@ -395,6 +391,84 @@ function emptyCache(meta: { name: string; dim: number }): EmbeddingCache {
  * config change takes longer.
  */
 function loadCache(cachePath: string, active: { name: string; dim: number }): EmbeddingCache {
+  const cache = loadMainCache(cachePath, active)
+  applyDelta(cache, cachePath, active)
+  return cache
+}
+
+/**
+ * The vectors saved since the cache file was last rewritten (#1586 round 6,
+ * L2): one JSON line per vector, appended. A cut-off recall appends only what
+ * it computed, instead of rewriting a cache file that grows with the store;
+ * a completed search or the background fill folds the lines back into the
+ * main file. A line cut short by a killed process is skipped.
+ */
+function deltaPath(cachePath: string): string {
+  return cachePath.replace(/\.json$/, '') + '.delta.jsonl'
+}
+
+function applyDelta(cache: EmbeddingCache, cachePath: string, active: { name: string; dim: number }): void {
+  const dp = deltaPath(cachePath)
+  if (!existsSync(dp)) return
+  let text = ''
+  try { text = readFileSync(dp, 'utf8') } catch { return }
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    try {
+      const e = JSON.parse(line) as { id?: string; hash?: string; embedding?: number[]; embedder?: string; dim?: number }
+      if (e.embedder !== active.name || e.dim !== active.dim) continue
+      if (typeof e.id !== 'string' || typeof e.hash !== 'string' || !Array.isArray(e.embedding)) continue
+      cache.entries[e.id] = { hash: e.hash, embedding: e.embedding }
+    } catch { /* a partial line from a killed process */ }
+  }
+}
+
+/** Short, bounded lock around cache writes (#1586 round 6, L1): about 150 ms
+ *  of retries; when it cannot be taken the save is skipped (the vectors are
+ *  recomputed later), never waited out. */
+const CACHE_LOCK_OPTS = { maxRetries: 4, baseDelay: 10 }
+
+function withCacheLock(cachePath: string, fn: () => void): boolean {
+  try {
+    const dir = dirname(cachePath)
+    if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true })
+    withLock(cachePath, fn, CACHE_LOCK_OPTS)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Append vectors to the cache's delta file, under the cache lock. */
+function appendEntries(cachePath: string, meta: { name: string; dim: number }, entries: EmbeddingCacheEntries): boolean {
+  const ids = Object.keys(entries)
+  if (ids.length === 0) return true
+  const lines = ids.map(id => JSON.stringify({ id, hash: entries[id].hash, embedding: entries[id].embedding, embedder: meta.name, dim: meta.dim })).join('\n') + '\n'
+  return withCacheLock(cachePath, () => { appendFileSync(deltaPath(cachePath), lines) })
+}
+
+/** Fold the delta file and `extra` into the main cache file, under the lock:
+ *  re-read what is on disk, so another process's vectors are kept. */
+function compactCache(cachePath: string, meta: { name: string; dim: number }, extra: EmbeddingCacheEntries = {}): boolean {
+  return withCacheLock(cachePath, () => {
+    const onDisk = loadCache(cachePath, meta)
+    onDisk.entries = { ...onDisk.entries, ...extra }
+    saveCache(cachePath, onDisk)
+    try { unlinkSync(deltaPath(cachePath)) } catch { /* none */ }
+  })
+}
+
+/** Test seam / child-process entry (#1586 round 6, L1). */
+export function _appendEmbeddingCacheEntries(cachePath: string, meta: { name: string; dim: number }, entries: EmbeddingCacheEntries): boolean {
+  return appendEntries(cachePath, meta, entries)
+}
+
+/** Test seam: every vector the cache holds (main file plus delta). */
+export function _readEmbeddingCacheEntries(cachePath: string, meta: { name: string; dim: number }): EmbeddingCacheEntries {
+  return loadCache(cachePath, meta).entries
+}
+
+function loadMainCache(cachePath: string, active: { name: string; dim: number }): EmbeddingCache {
   if (!existsSync(cachePath)) return emptyCache(active)
   try {
     const raw = JSON.parse(readFileSync(cachePath, 'utf8'))
@@ -475,33 +549,44 @@ export function mergeEmbeddingsIntoCache(
  * write lands before the reply and before a short-lived process exits), and
  * again when the search ends. Each cut-off recall makes progress.
  */
-function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortSignal): { added(): void; done(): void } {
-  let unsaved = 0
-  const save = (): void => {
-    if (unsaved === 0) return
-    unsaved = 0
-    try { saveCacheMerged(cachePath, cache) } catch { /* derived state: best effort */ }
+function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortSignal): { added(id: string): void; done(): void } {
+  const meta = { name: cache.meta.embedder_name, dim: cache.meta.embedder_dim }
+  /** Vectors not yet on disk. */
+  let pending: EmbeddingCacheEntries = {}
+  let lastFlush = Date.now()
+  /** Append what is pending to the delta file (cheap: only the new lines). */
+  const flush = (): void => {
+    if (Object.keys(pending).length === 0) return
+    const batch = pending
+    pending = {}
+    lastFlush = Date.now()
+    if (!appendEntries(cachePath, meta, batch)) {
+      // Lock busy: skipped; the vectors are recomputed by a later search.
+    }
   }
-  const onAbort = (): void => save()
+  const onAbort = (): void => flush()
   signal?.addEventListener('abort', onAbort, { once: true })
   return {
-    added: () => { unsaved++ },
-    done: () => { signal?.removeEventListener('abort', onAbort); save() },
+    added: (id: string) => {
+      pending[id] = cache.entries[id]
+      // Save in steps while embedding (L2): what is left for the deadline is
+      // small, whatever the size of the cache.
+      if (Object.keys(pending).length >= PROGRESS_FLUSH_EVERY || Date.now() - lastFlush > PROGRESS_FLUSH_MS) flush()
+    },
+    done: () => {
+      signal?.removeEventListener('abort', onAbort)
+      if (signal?.aborted) { flush(); return }
+      // A completed search folds everything into the main file (the reply
+      // was not cut, so this is the place for the full rewrite).
+      const all = pending
+      pending = {}
+      if (Object.keys(all).length > 0 || existsSync(deltaPath(cachePath))) compactCache(cachePath, meta, all)
+    },
   }
 }
 
-/**
- * Save `cache`, keeping the entries another search or the background fill
- * wrote to the file meanwhile (#1586 round 5): every entry is a valid vector
- * keyed by engram id and text hash, so the union is correct.
- */
-function saveCacheMerged(cachePath: string, cache: EmbeddingCache): void {
-  const onDisk = existsSync(cachePath) ? loadCache(cachePath, { name: cache.meta.embedder_name, dim: cache.meta.embedder_dim }) : null
-  if (onDisk && onDisk.meta.embedder_name === cache.meta.embedder_name) {
-    cache.entries = { ...onDisk.entries, ...cache.entries }
-  }
-  saveCache(cachePath, cache)
-}
+const PROGRESS_FLUSH_EVERY = 100
+const PROGRESS_FLUSH_MS = 2000
 
 /**
  * Embed every engram the cache does not hold yet, saving as it goes (#1586
@@ -516,8 +601,7 @@ export async function fillEmbeddingCache(engrams: Engram[], storagePath?: string
   const cachePath = storagePath ? join(storagePath, '.embeddings-cache.json') : '.embeddings-cache.json'
   const cache = loadCache(cachePath, activeMeta)
   let added = 0
-  let unsaved = 0
-  let lastSave = Date.now()
+  const progress = cacheProgress(cachePath, cache)
   for (const engram of engrams) {
     const text = engramSearchText(engram)
     const hash = hashStatement(text)
@@ -526,15 +610,16 @@ export async function fillEmbeddingCache(engrams: Engram[], storagePath?: string
     if (!v) break
     cache.entries[engram.id] = { hash, embedding: Array.from(v) }
     added++
-    unsaved++
-    if (unsaved >= 200 || Date.now() - lastSave > 5000) {
-      saveCacheMerged(cachePath, cache)
-      unsaved = 0
-      lastSave = Date.now()
-    }
+    progress.added(engram.id)
   }
-  if (unsaved > 0) saveCacheMerged(cachePath, cache)
+  progress.done()
   return added
+}
+
+/** Is the active embedder a remote API (no local model to warm or fill)? */
+export async function activeEmbedderIsRemote(): Promise<boolean> {
+  const embedder = await getEmbedder()
+  return !!embedder && (embedder as { remote?: boolean }).remote === true
 }
 
 /** Did this process opt in to background model work? */
@@ -600,11 +685,11 @@ export async function embeddingSearch(
       const emb = await embed(searchText)
       if (!emb) { progress.done(); return [] } // model unloaded mid-search
       engramEmbedding = emb
-      progress.added()
       cache.entries[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
       }
+      progress.added(engram.id)
     }
 
     const score = cosineSimilarity(queryEmbedding, engramEmbedding)
@@ -673,11 +758,11 @@ export async function embeddingSearchWithScores(
       const emb = await embed(searchText)
       if (!emb) { progress.done(); return [] } // model unloaded mid-search
       engramEmbedding = emb
-      progress.added()
       cache.entries[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
       }
+      progress.added(engram.id)
     }
 
     // Clamp to [0, 1] — cosine on normalized embeddings is [-1, 1] but
