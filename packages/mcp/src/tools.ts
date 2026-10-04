@@ -284,7 +284,12 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     mode: meta.mode,
   }
   if (meta.mode === 'hybrid-degraded') {
-    response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
+    // #1586 round 4: say why, by cause — a model that is simply not downloaded
+    // yet is not an "unavailable embedding layer".
+    response.warning = meta.degraded_reason
+      ? `Keyword results only: ${meta.embedderError ?? meta.degraded_reason}`
+      : `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
+    if (meta.degraded_reason) response.degraded_reason = meta.degraded_reason
   }
   // #341: reranker non-engagement surfacing. When PLUR_RERANKER requests
   // reranking, report how many candidates the cross-encoder actually
@@ -2227,7 +2232,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
           count: result.count,
           tokens_used: result.tokens_used,
           injected_ids: result.injected_ids,
-          mode: 'hybrid',
+          // #1586 round 4: a degraded injection says so, instead of a fixed 'hybrid'.
+          // (Kept as 'hybrid' otherwise, as this reply always said.)
+          mode: result.mode === 'hybrid-degraded' ? 'hybrid-degraded' : 'hybrid',
+          ...(result.degraded_reason ? { degraded_reason: result.degraded_reason } : {}),
+          ...(result.mode === 'hybrid-degraded' && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
           // #181: unresolved-tension warnings — flag contradicted context
           ...(result.warnings ? { warnings: result.warnings } : {}),
           // #1142: pinned engrams that did not fit. `pinned: true` reads as a
@@ -3731,7 +3740,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Inject relevant engrams
         let engrams: { text: string; count: number; injected_ids: string[] } | null = null
         // #1586 audit L6: what the injection's server leg did on THIS call.
-        let injectionReport: { remote?: RecallRemoteReport; results_complete?: boolean } = {}
+        let injectionReport: { remote?: RecallRemoteReport; results_complete?: boolean; degraded_reason?: string; embedder_error?: string } = {}
         try {
           const result = await plur.injectHybrid(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
@@ -3740,7 +3749,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
             remote_timeout_ms: 5000, // session_start warm budget (#776)
             deadline_at,
           })
-          injectionReport = { remote: result.remote, results_complete: result.results_complete }
+          injectionReport = {
+            remote: result.remote,
+            results_complete: result.results_complete,
+            ...(result.degraded_reason ? { degraded_reason: result.degraded_reason } : {}),
+            ...(result.mode === 'hybrid-degraded' && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
+          }
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
             // CONSTRAINTS FIRST — deliberate, do not "restore" the old order.
@@ -3988,6 +4002,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // #1586 audit L6: the injection's per-call remote report (added fields).
           remote: injectionReport.remote ?? { state: 'not_dialed', hosts: [] },
           results_complete: injectionReport.results_complete ?? false,
+          ...(injectionReport.degraded_reason ? { degraded_reason: injectionReport.degraded_reason } : {}),
+          ...(injectionReport.embedder_error ? { embedder_error: injectionReport.embedder_error } : {}),
           // Ask LLM to check back — MCP can't push, but we can request a follow-up
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'

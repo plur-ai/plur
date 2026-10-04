@@ -135,10 +135,18 @@ export function makeTransformersAdapter(config: TransformersAdapterConfig): Embe
     embed: embedOne,
     isLoaded: () => loadedKeys.has(keyOf(config.modelId, config.dtype)),
     async modelFile() {
-      const cacheDir = await resolveModelCacheDir()
-      if (!cacheDir) return null
       const suffix = DTYPE_SUFFIX[config.dtype ?? 'fp32'] ?? ''
-      return { cacheDir, file: join(cacheDir, config.modelId, 'onnx', `model${suffix}.onnx`), dtype: config.dtype }
+      const rel = join(config.modelId, 'onnx', `model${suffix}.onnx`)
+      const cacheDir = await resolveModelCacheDir()
+      // Weights an operator provisioned for transformers.js (air-gapped hosts).
+      let localFile: string | null = null
+      try {
+        const transformers = await import('@huggingface/transformers') as { env?: { localModelPath?: string; allowLocalModels?: boolean } }
+        const lp = transformers.env?.localModelPath
+        if (lp && transformers.env?.allowLocalModels !== false) localFile = join(lp, rel)
+      } catch { /* not installed: nothing provisioned either */ }
+      if (!cacheDir && !localFile) return null
+      return { cacheDir, file: cacheDir ? join(cacheDir, rel) : null, localFile, dtype: config.dtype }
     },
     async embedBatch(texts: string[]): Promise<Float32Array[]> {
       // The transformers pipeline supports batched input, but in practice the

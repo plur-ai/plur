@@ -36,5 +36,5 @@ export interface EmbedderAdapter {
   isLoaded?(): boolean
   /** Optional (#1586 round 3): where the model's weights live on disk, so a
    *  caller can tell a one-time download from a load. Null when unknown. */
-  modelFile?(): Promise<{ cacheDir: string; file: string; dtype?: string } | null>
+  modelFile?(): Promise<{ cacheDir: string | null; file: string | null; localFile?: string | null; dtype?: string } | null>
 }

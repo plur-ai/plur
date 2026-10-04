@@ -83,6 +83,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // The keyword path (--fast) never dials.
       remote: result.remote ?? { state: 'not_dialed', hosts: [] },
       results_complete: result.results_complete ?? true,
+      ...(result.mode ? { mode: result.mode } : {}),
+      ...(result.degraded_reason ? { degraded_reason: result.degraded_reason } : {}),
+      ...(result.mode === 'hybrid-degraded' && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
     })
   } else {
     // CONSTRAINTS FIRST — matches @plur-ai/mcp and @plur-ai/dsh. Consumers

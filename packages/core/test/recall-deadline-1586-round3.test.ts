@@ -32,8 +32,6 @@ afterEach(async () => {
   setEmbeddingsEnabled(!wasDisabled)
   if (savedCacheDir === undefined) delete process.env.PLUR_MODEL_CACHE_DIR
   else process.env.PLUR_MODEL_CACHE_DIR = savedCacheDir
-  const warm = await import('../src/model-warmup.js').catch(() => null) as any
-  warm?._setModelWarmupSpawner?.(undefined)
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
@@ -68,66 +66,6 @@ describe('R1 — a late semantic leg keeps the keyword results', () => {
     const arr = await plur.recallHybrid('deploy checklist', { deadline_ms: 200, remote: false })
     expect(arr.some(e => e.statement.includes('deploy checklist'))).toBe(true)
   }, 15_000)
-
-  it('a model not yet on disk: keyword results at once, the download is started in the background once', async () => {
-    const warm = await import('../src/model-warmup.js').catch(() => null) as any
-    const spawned: any[] = []
-    warm?._setModelWarmupSpawner?.((job: unknown) => { spawned.push(job); return true })
-    const plur = await seededPlur()
-    process.env.PLUR_MODEL_CACHE_DIR = tmp('plur-1587-models-') // empty: nothing downloaded
-    setEmbeddingsEnabled(true)
-    resetEmbedder()
-    const t0 = Date.now()
-    const res = await plur.recallHybridWithMeta('deploy checklist', { deadline_ms: 3000, remote: false })
-    expect(Date.now() - t0).toBeLessThan(2000)
-    expect(res.engrams.length).toBeGreaterThan(0)
-    expect(res.engrams.some(e => e.statement.includes('deploy checklist'))).toBe(true)
-    expect(res.results_complete).toBe(false)
-    expect(res.mode).toBe('hybrid-degraded')
-    expect(spawned).toHaveLength(1)
-    expect(spawned[0].modelId).toBe('Xenova/bge-small-en-v1.5')
-    // A second recall while that download runs does not start another one.
-    const again = await plur.recallHybridWithMeta('certificates', { deadline_ms: 3000, remote: false })
-    expect(again.engrams.length).toBeGreaterThan(0)
-    expect(spawned).toHaveLength(1)
-  }, 15_000)
-})
-
-describe('R1 — the background model download', () => {
-  it('one download at a time: a live lock skips, a dead holder\'s lock is taken over', async () => {
-    const warm = await import('../src/model-warmup.js').catch(() => null) as any
-    expect(warm).not.toBeNull()
-    const cacheDir = tmp('plur-1587-models-')
-    const spawned: any[] = []
-    const spawner = (job: unknown) => { spawned.push(job); return true }
-    const job = { modelId: 'Xenova/bge-small-en-v1.5', dtype: 'fp32', cacheDir }
-    expect(warm.startModelWarmup(job, spawner)).toBe(true)
-    expect(warm.startModelWarmup(job, spawner)).toBe(false) // lock held by this (live) pid
-    expect(spawned).toHaveLength(1)
-    // A lock left by a process that no longer exists does not block.
-    writeFileSync(warm.warmupLockPath(cacheDir), JSON.stringify({ pid: 999_999_999, at: Date.now() }))
-    expect(warm.startModelWarmup(job, spawner)).toBe(true)
-    expect(spawned).toHaveLength(2)
-  })
-
-  it('partial downloads left by a killed download are removed; one still being written is kept', async () => {
-    const warm = await import('../src/model-warmup.js').catch(() => null) as any
-    expect(warm).not.toBeNull()
-    const dir = join(tmp('plur-1587-models-'), 'Xenova', 'bge-small-en-v1.5', 'onnx')
-    mkdirSync(dir, { recursive: true })
-    const stale = join(dir, `model.onnx.tmp.${process.pid}.abc`) // live owner, but older than an hour
-    const orphan = join(dir, 'model.onnx.tmp.999999999.ghi') // owner gone
-    const fresh = join(dir, `model.onnx.tmp.${process.pid}.def`) // being written
-    const done = join(dir, 'model.onnx')
-    for (const f of [stale, orphan, fresh, done]) writeFileSync(f, 'x')
-    const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000
-    utimesSync(stale, old, old)
-    warm.cleanStaleDownloads(join(dir, '..', '..', '..'))
-    expect(existsSync(stale)).toBe(false)
-    expect(existsSync(orphan)).toBe(false)
-    expect(existsSync(fresh)).toBe(true)
-    expect(existsSync(done)).toBe(true)
-  })
 })
 
 describe('R2 — a host\'s earlier success does not overwrite a newer failure', () => {

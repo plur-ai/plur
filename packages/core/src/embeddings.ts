@@ -166,41 +166,84 @@ async function getEmbedder() {
 }
 
 /**
- * Is the semantic leg able to answer now, or would it first have to download
- * the model? (#1586 audit round 3, R1)
+ * Can the semantic leg answer now? (#1586 audit rounds 3-4, R1)
  *
- * - `ready`: loaded in this process.
- * - `cached`: on disk, not loaded yet — loading it is part of a recall's work
- *   (bounded by the recall deadline, with keyword results kept if it is late).
- * - `downloading`: not on disk. A recall must not wait for a ~130 MB download:
- *   this starts it in the background (a detached process, so a short-lived
- *   CLI or hook process exiting does not kill it) and the caller answers by
- *   keyword.
- * - `unknown`: embeddings off, or an embedder that cannot say — the caller
- *   proceeds as before.
+ * - `ready`: the model is loaded in this process.
+ * - `cached`: on disk (in the model cache, or under transformers.js's
+ *   `localModelPath`) but not loaded — loading it is part of a recall's work,
+ *   bounded by the recall deadline, with keyword results kept if it is late.
+ * - `missing`: not on disk. A recall never downloads it: it answers by keyword
+ *   and says so. `plur doctor` is the way to download it. A long-lived process
+ *   that opted in ({@link allowBackgroundModelLoad}) starts one in-process
+ *   load in the background, once per process, unless downloads are off.
+ * - `unknown`: embeddings off, or an embedder that cannot say — callers
+ *   proceed as before.
  */
-export async function semanticModelState(): Promise<'ready' | 'cached' | 'downloading' | 'unknown'> {
+export async function semanticModelState(): Promise<'ready' | 'cached' | 'missing' | 'unknown'> {
   const embedder = await getEmbedder()
   if (!embedder) return 'unknown'
   if (typeof embedder.isLoaded === 'function' && embedder.isLoaded()) return 'ready'
   if (typeof embedder.modelFile !== 'function') return 'unknown'
-  let where: { cacheDir: string; file: string; dtype?: string } | null = null
+  let where: { cacheDir: string | null; file: string | null; localFile?: string | null } | null = null
   try { where = await embedder.modelFile() } catch { where = null }
   if (!where) return 'unknown'
-  if (existsSync(where.file)) return 'cached'
-  const { startModelWarmup } = await import('./model-warmup.js')
-  const started = startModelWarmup({ modelId: embedder.modelId, dtype: where.dtype, cacheDir: where.cacheDir })
-  if (!started && !modelWarmupInProcess && !existsSync(warmupLockFile(where.cacheDir))) {
-    // No detached process could be started (and none is running): load in
-    // this process, in the background. A long-lived server finishes it.
-    modelWarmupInProcess = true
-    void embedder.embed('warm up').catch(() => { modelWarmupInProcess = false })
-  }
-  return 'downloading'
+  if (where.file && existsSync(where.file)) return 'cached'
+  if (where.localFile && existsSync(where.localFile)) return 'cached'
+  await maybeStartBackgroundModelLoad(embedder)
+  return 'missing'
 }
 
-let modelWarmupInProcess = false
-const warmupLockFile = (cacheDir: string) => join(cacheDir, '.plur-model-warmup.lock')
+let backgroundModelLoadAllowed = false
+let backgroundModelLoadStarted = false
+let backgroundModelLoadCount = 0
+
+/**
+ * Let THIS process load (and, if needed, download) the model in the background
+ * when a recall finds it missing. For long-lived processes only — the MCP
+ * server, the opencode plugin. A short-lived CLI or hook process never calls
+ * this, so it never downloads: it would be killed mid-download at exit.
+ */
+export function allowBackgroundModelLoad(allowed = true): void {
+  backgroundModelLoadAllowed = allowed
+}
+
+/** How many background model loads this process started (0 or 1). */
+export function backgroundModelLoadAttempts(): number {
+  return backgroundModelLoadCount
+}
+
+/** Test-only: forget the background-load state. */
+export function _resetBackgroundModelLoad(): void {
+  backgroundModelLoadAllowed = false
+  backgroundModelLoadStarted = false
+  backgroundModelLoadCount = 0
+}
+
+const truthy = (v: string | undefined): boolean => !!v && ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
+
+/** Downloads are off: HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE, PLUR_MODEL_DOWNLOAD=off,
+ *  or transformers.js configured with `allowRemoteModels = false`. */
+async function modelDownloadDisabled(): Promise<boolean> {
+  if (truthy(process.env.HF_HUB_OFFLINE) || truthy(process.env.TRANSFORMERS_OFFLINE)) return true
+  if ((process.env.PLUR_MODEL_DOWNLOAD ?? '').trim().toLowerCase() === 'off') return true
+  try {
+    const transformers = await import('@huggingface/transformers') as { env?: { allowRemoteModels?: boolean } }
+    if (transformers.env?.allowRemoteModels === false) return true
+  } catch { return true }
+  return false
+}
+
+/** At most once per process, never awaited by a recall, never retried. */
+async function maybeStartBackgroundModelLoad(embedder: { embed: (t: string) => Promise<unknown> }): Promise<void> {
+  if (!backgroundModelLoadAllowed || backgroundModelLoadStarted) return
+  if (await modelDownloadDisabled()) return
+  if (backgroundModelLoadStarted) return
+  backgroundModelLoadStarted = true
+  backgroundModelLoadCount++
+  // Nothing of ours keeps the process alive: no timer, no awaited promise.
+  // The MCP server exits explicitly when its client goes away.
+  void embedder.embed('warm up').catch(() => { /* reported by embedderStatus(); not retried */ })
+}
 
 /** Generate embedding for a text string. Returns the active embedder's native dim, or null if unavailable.
  *  Pass role='query' when embedding search terms; omit or pass 'passage' for stored engram text.

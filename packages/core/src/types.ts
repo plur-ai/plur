@@ -297,6 +297,13 @@ export interface RecallOptions {
   session?: string
 }
 
+/**
+ * Why a hybrid recall or injection answered without (part of) its semantic
+ * leg (#1586 rounds 3-4): the model is not on disk (run `plur doctor`), the
+ * semantic leg missed the recall deadline, or only the reranker did.
+ */
+export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline'
+
 export interface InjectOptions {
   budget?: number
   scope?: string
@@ -378,6 +385,8 @@ export interface InjectionResult {
    */
   mode?: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   embedder_error?: string
+  /** Set by `injectHybrid` when it ran without its semantic leg: why (#1586 round 4). */
+  degraded_reason?: DegradedReason
   /** Set by `injectHybrid` (#1586 audit L6): what the remote (server) leg
    *  did on THIS call, as on recall. */
   remote?: RecallRemoteReport

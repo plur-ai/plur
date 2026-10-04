@@ -54,23 +54,36 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     : await plur.recallHybridWithMeta(query, { limit, scope, domain, session, remote })
   // recallHybrid() sliced to the limit; recall() did not — unchanged.
   const engrams = flags.fast ? meta.engrams : meta.engrams.slice(0, limit ?? 20)
+  const hybrid = meta as { mode?: string; degraded_reason?: string; embedderError?: string | null }
   const report = {
     remote: meta.remote ?? { state: 'not_dialed' as const, hosts: [] },
     results_complete: meta.results_complete ?? true,
+    // #1586 round 4: which leg is missing and why (hybrid only; added fields).
+    ...(hybrid.mode ? { mode: hybrid.mode } : {}),
+    ...(hybrid.degraded_reason ? { degraded_reason: hybrid.degraded_reason } : {}),
+    ...(hybrid.mode === 'hybrid-degraded' && hybrid.embedderError ? { embedder_error: hybrid.embedderError } : {}),
   }
   // An incomplete answer is never presented as a plain "no results": say what
-  // is missing (stderr, so piped text output stays the results only).
+  // is missing, by cause (stderr, so piped text output stays the results only).
+  const remoteMissing = report.remote.state !== 'ok' && report.remote.state !== 'not_dialed'
   const incompleteNote = report.results_complete ? null
     : meta.local_complete === false
       ? 'Note: the local search did not finish within the recall deadline — results are incomplete; retrying is fine.'
-      : `Note: the team store did not answer this call (${report.remote.state}) — results may be missing team engrams.`
+      : hybrid.degraded_reason && hybrid.embedderError
+        ? `Note: ${hybrid.embedderError}`
+        : remoteMissing
+          ? `Note: the team store did not answer this call (${report.remote.state}) — results may be missing team engrams.`
+          : 'Note: results are incomplete.'
+
+  // The note goes to stderr in both output modes: stdout stays the results
+  // (JSON consumers parse stdout only), and a person or a log still sees why.
+  if (incompleteNote) process.stderr.write(`${incompleteNote}\n`)
 
   if (engrams.length === 0) {
     if (shouldOutputJson(flags)) {
       outputJson({ results: [], count: 0, ...report })
     } else {
       outputText(report.results_complete ? 'No results found.' : 'No results found — the search was incomplete.')
-      if (incompleteNote) process.stderr.write(`${incompleteNote}\n`)
     }
     exit(2)
   }
@@ -96,6 +109,5 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`${idx + 1}. [${e.id}] ${e.statement}`)
       outputText(`   Scope: ${e.scope} | Type: ${e.type}${e.domain ? ` | Domain: ${e.domain}` : ''} | Strength: ${e.activation.retrieval_strength.toFixed(3)}`)
     })
-    if (incompleteNote) process.stderr.write(`${incompleteNote}\n`)
   }
 }

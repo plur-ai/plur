@@ -29,6 +29,7 @@ import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisab
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, semanticModelState, type EmbedderStatus } from './embeddings.js'
+import type { DegradedReason } from './types.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
@@ -340,7 +341,7 @@ export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // vectors identically to core's hybrid search (same model + EMBED_DIM). The
 // model identity and EMBED_DIM are a stable contract; changing them is breaking
 // for any consumer that persists vectors. See embeddings.ts.
-export { embed, EMBED_DIM, activeEmbedderDim, embedderStatus, cosineSimilarity, type EmbedderStatus } from './embeddings.js'
+export { embed, EMBED_DIM, activeEmbedderDim, embedderStatus, cosineSimilarity, semanticModelState, allowBackgroundModelLoad, type EmbedderStatus } from './embeddings.js'
 export { EMBEDDER_NAMES, DEFAULT_EMBEDDER, resolveEmbedderName, type EmbedderName, type EmbedderAdapter } from './embedders/index.js'
 // Reranker surface (#220/#341) — factory + runtime status so MCP/CLI can
 // probe reranker health (plur_doctor) and surface non-engagement on recall.
@@ -5753,10 +5754,11 @@ export class Plur {
     /** Why the semantic leg was skipped this call, when it was. */
     let semanticSkipped: string | null = null
     const searchOpts = { signal: localAbort.signal, onFused: (r: HybridSearchResult) => { fused = r } }
-    const keywordOnly = (cands: Engram[], why: string): HybridSearchResult => ({
+    const keywordOnly = (cands: Engram[], reason: DegradedReason): HybridSearchResult => ({
       engrams: searchEngrams(cands, isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query), limit),
       mode: 'hybrid-degraded',
-      embedderError: why,
+      embedderError: Plur.DEGRADED_MESSAGES[reason],
+      degraded_reason: reason,
       topScore: null,
       reranked: 0,
     })
@@ -5764,11 +5766,11 @@ export class Plur {
       // #906: narrowed by the store when provably equivalent, else the full read.
       const filtered = await this._hybridCandidates(query, options)
       candidates = filtered
-      // The one-time model download is not charged to a recall (R1): while the
-      // model is fetched in the background, answer by keyword.
-      if (await semanticModelState() === 'downloading') {
-        semanticSkipped = Plur.MODEL_DOWNLOADING
-        return keywordOnly(filtered, Plur.MODEL_DOWNLOADING)
+      // A recall never downloads the model (#1586 rounds 3-4): when it is not
+      // on disk, answer by keyword and say how to get it (`plur doctor`).
+      if (await semanticModelState() === 'missing') {
+        semanticSkipped = 'embedding_model_missing'
+        return keywordOnly(filtered, 'embedding_model_missing')
       }
       const rerank = await this._resolveRerankOptions(options?.rerank)
       const intent = this._resolveIntentProfile(query, options?.intentOverride)
@@ -5808,8 +5810,8 @@ export class Plur {
     let lateFallback: HybridSearchResult | undefined
     if (!local.done) {
       localAbort.abort()
-      if (fused) lateFallback = { ...fused, embedderError: fused.embedderError ?? 'the reranker did not finish within the recall deadline' }
-      else if (candidates) lateFallback = keywordOnly(candidates, Plur.SEMANTIC_LATE)
+      if (fused) lateFallback = { ...fused, embedderError: fused.embedderError ?? Plur.DEGRADED_MESSAGES.reranker_deadline, degraded_reason: 'reranker_deadline' }
+      else if (candidates) lateFallback = keywordOnly(candidates, 'semantic_deadline')
     }
     if (local.done && local.error !== undefined) throw local.error
     const localComplete = local.done && semanticSkipped === null
@@ -6971,10 +6973,13 @@ export class Plur {
     return { result: waited.value, report: buildRecallRemoteReport(waited.value.outcomes) }
   }
 
-  /** Hybrid recall answered by keyword while the model downloads (#1586 R1). */
-  private static readonly MODEL_DOWNLOADING = 'the embedding model is downloading in the background — keyword results only until it is ready'
-  /** Hybrid recall answered by keyword because the semantic leg was late (#1586 R1). */
-  private static readonly SEMANTIC_LATE = 'semantic search did not finish within the recall deadline — keyword results only'
+  /** Why a hybrid recall or injection answered without its semantic leg, in
+   *  words, with the next step where there is one (#1586 rounds 3-4). */
+  private static readonly DEGRADED_MESSAGES: Record<DegradedReason, string> = {
+    embedding_model_missing: 'the embedding model is not downloaded yet — keyword results only. Run `plur doctor` once to download it (~133 MB).',
+    semantic_deadline: 'semantic search did not finish within the recall deadline — keyword results only',
+    reranker_deadline: 'the reranker did not finish within the recall deadline — results are in fusion order',
+  }
 
   /** How long past the deadline to wait for a remote leg that is already
    *  settling (it aborts its own requests just before the deadline). */
@@ -7593,10 +7598,10 @@ export class Plur {
     // Stops the abandoned semantic leg's remaining work (the embeddings cache
     // save in particular) once the deadline has passed (#1586 audit L3).
     const semanticAbort = new AbortController()
-    /** The model is being downloaded in the background: keyword only (#1586 R1). */
-    let modelDownloading = false
+    /** The model is not on disk: keyword only, never a download (#1586 R1). */
+    let modelMissing = false
     const semanticLeg = async (): Promise<void> => {
-    if (await semanticModelState() === 'downloading') { modelDownloading = true; return }
+    if (await semanticModelState() === 'missing') { modelMissing = true; return }
     try {
       const engrams = (await this._loadAllEngrams()).filter(e => e.status === 'active')
       // Route through PGLite/pgvector when active (#226 B-1), intersecting hits
@@ -7696,7 +7701,7 @@ export class Plur {
     // The semantic leg (corpus load, embedder, reranker) is bounded by the
     // deadline; past it the injection runs on keyword matching and says so.
     const semantic = await settleBy(semanticLeg(), deadlineAt)
-    const semanticComplete = semantic.done && !modelDownloading
+    const semanticComplete = semantic.done && !modelMissing
     if (!semanticComplete) {
       semanticAbort.abort()
       embeddingBoosts = undefined
@@ -7720,10 +7725,10 @@ export class Plur {
       if (st.disabled) {
         result.mode = 'bm25-only'
       } else {
+        const reason: DegradedReason = modelMissing ? 'embedding_model_missing' : 'semantic_deadline'
         result.mode = 'hybrid-degraded'
-        result.embedder_error = modelDownloading
-          ? Plur.MODEL_DOWNLOADING
-          : 'semantic search did not finish within the deadline'
+        result.embedder_error = Plur.DEGRADED_MESSAGES[reason]
+        result.degraded_reason = reason
       }
       return result
     }

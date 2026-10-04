@@ -47,6 +47,8 @@ export interface HybridSearchResult {
   /** Present (false) only when the local search did not finish within the
    *  recall deadline (#1586). */
   local_complete?: boolean
+  /** Why the semantic leg did not contribute, when it did not (#1586 round 4). */
+  degraded_reason?: import('./types.js').DegradedReason
 }
 
 /** Options for the optional cross-encoder rerank stage (#220). */
