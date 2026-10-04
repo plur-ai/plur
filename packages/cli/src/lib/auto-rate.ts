@@ -248,7 +248,21 @@ function pidAlive(pid: number): boolean {
 }
 
 /** This process's worker-lock token: pid first, so a reader can check liveness. */
-const WORKER_TOKEN = `${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`
+// The `:qws` suffix marks a worker that drains `.queue-ws` (R2-2 of the #1583
+// re-audit); a worker of an older version writes no such suffix. The leading
+// pid is what every version parses to tell a live owner from a dead one.
+const QWS_MARKER = ':qws'
+const WORKER_TOKEN = `${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}${QWS_MARKER}`
+
+/** True when the lock at `path` is held by a live worker of an older version (one that never reads `.queue-ws`). */
+function heldByOlderWorker(path: string): boolean {
+  try {
+    const observed = readFileSync(path, 'utf8')
+    return !observed.endsWith(QWS_MARKER) && pidAlive(parseInt(observed, 10))
+  } catch {
+    return false
+  }
+}
 
 /**
  * Take over a worker lock judged stale, atomically (decision H2). Mirrors
@@ -349,16 +363,17 @@ export async function runWorker(
   }
   const pendingQueue = (): string | undefined => queues.find(q => existsSync(q))
   // Across an upgrade (R2-2 of the #1583 re-audit) the lock may belong to an
-  // older worker, which drains `.queue` but never `.queue-ws`. While a
-  // `.queue-ws` turn is pending, wait for the lock (bounded) instead of
-  // leaving: if that was the session's last turn, no later hook would start
-  // a worker for it. A current worker holding the lock drains it itself, and
-  // this one then finds nothing and leaves.
+  // older worker, which drains `.queue` but never `.queue-ws`. Only then, and
+  // only while a `.queue-ws` turn is pending, wait for the lock (bounded)
+  // instead of leaving: if that was the session's last turn, no later hook
+  // would start a worker for it. A current worker holding the lock drains
+  // `.queue-ws` itself, so this one leaves at once, as before: in normal use
+  // every Cursor turn queues there, and waiters would pile up.
   const waitUntil = Date.now() + (opts.waitForLockMs ?? LOCK_WAIT_MS)
   const acquire = async (): Promise<boolean> => {
     for (;;) {
       if (acquireWorkerLock(lock)) return true
-      if (!existsSync(queues[1]) || Date.now() >= waitUntil) return false
+      if (!existsSync(queues[1]) || !heldByOlderWorker(lock) || Date.now() >= waitUntil) return false
       await new Promise(r => setTimeout(r, 250))
     }
   }
