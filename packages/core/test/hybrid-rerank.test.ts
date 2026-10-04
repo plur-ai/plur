@@ -243,11 +243,19 @@ describe('Plur.recallHybrid with rerank=true (integration)', () => {
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
   it('rerank: false returns the unmodified hybrid order', async () => {
-    const baseline = await plur.recallHybrid('capital France', { rerank: false, limit: 5 })
-    expect(baseline.length).toBeGreaterThan(0)
+    const baseline = await plur.recallHybridWithMeta('capital France', { rerank: false, limit: 5 })
+    expect(baseline.engrams.length).toBeGreaterThan(0)
     // baseline order is the RRF order — no assertion needed beyond stability.
-    const repeat = await plur.recallHybrid('capital France', { rerank: false, limit: 5 })
-    expect(repeat.map(e => e.id)).toEqual(baseline.map(e => e.id))
+    const repeat = await plur.recallHybridWithMeta('capital France', { rerank: false, limit: 5 })
+    expect(repeat.engrams.length).toBeGreaterThan(0)
+    // Stable when both calls ran the full hybrid search. A call cut by the
+    // recall deadline (a cold embedder under load, #1586) says so and answers
+    // by keyword — a different, but explicit, ranking.
+    if (baseline.results_complete && repeat.results_complete) {
+      expect(repeat.engrams.map(e => e.id)).toEqual(baseline.engrams.map(e => e.id))
+    } else {
+      expect([baseline.mode, repeat.mode]).toContain('hybrid-degraded')
+    }
   })
 
   // Gated: rerank:true loads the bge-reranker-v2-m3 model (~568M). Offline the
