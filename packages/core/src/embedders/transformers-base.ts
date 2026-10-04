@@ -39,7 +39,7 @@ const DTYPE_SUFFIX: Record<string, string> = {
   fp32: '', fp16: '_fp16', q8: '_quantized', int8: '_int8', uint8: '_uint8', q4: '_q4',
 }
 
-type TjsEnv = { cacheDir?: string | null; localModelPath?: string; allowLocalModels?: boolean }
+type TjsEnv = { cacheDir?: string | null; localModelPath?: string; allowLocalModels?: boolean; allowRemoteModels?: boolean }
 
 /** The library default cache, captured before PLUR ever changes `env.cacheDir`
  *  (undefined = not captured yet). */
@@ -51,11 +51,17 @@ export function _setDefaultModelCacheDir(dir: string | undefined): void {
   defaultCacheDirSeam = dir
 }
 
+/** `env` of the transformers.js module, or undefined — a test double may not
+ *  define it (reading a missing export of a vitest mock throws). */
+export function envOf(t: unknown): TjsEnv | undefined {
+  try { return (t as { env?: TjsEnv }).env } catch { return undefined }
+}
+
 /** Import transformers.js, capturing its default cache directory first. */
 export async function importTransformers(): Promise<{ env?: TjsEnv } & Record<string, unknown>> {
   const transformers = await import('@huggingface/transformers') as unknown as { env?: TjsEnv } & Record<string, unknown>
   if (libraryDefaultCacheDir === undefined) {
-    const d = transformers.env?.cacheDir
+    const d = envOf(transformers)?.cacheDir
     libraryDefaultCacheDir = typeof d === 'string' && d.length > 0 ? d : null
   }
   return transformers
@@ -120,8 +126,9 @@ function completeIn(cacheRoot: string | null, localRoot: string | null, weights:
 async function localRootFor(modelId: string): Promise<string | null> {
   try {
     const t = await importTransformers()
-    const lp = t.env?.localModelPath
-    return lp && t.env?.allowLocalModels !== false ? join(lp, modelId) : null
+    const env = envOf(t)
+    const lp = env?.localModelPath
+    return lp && env?.allowLocalModels !== false ? join(lp, modelId) : null
   } catch {
     return null
   }
@@ -190,10 +197,11 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
       // cache is used from there when the override has none.
       const weights = `model${DTYPE_SUFFIX[dtype ?? 'fp32'] ?? ''}.onnx`
       const cacheDir = await resolveLoadCacheDir(modelId, weights)
-      if (cacheDir) {
+      const env = envOf(transformers)
+      if (cacheDir && env) {
         // Assigned before pipeline() — after the first load the value is
         // already baked into the resolved paths and changing it does nothing.
-        transformers.env!.cacheDir = cacheDir
+        env.cacheDir = cacheDir
       }
       // Downloads off: the loader itself is told not to fetch anything.
       const opts = { ...(dtype ? { dtype } : {}), ...(downloadsOffByEnv() ? { local_files_only: true } : {}) }

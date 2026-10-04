@@ -28,7 +28,7 @@
  * benchmark numbers and keep first-run download manageable.
  */
 import type { EmbedderAdapter, EmbedRole } from './types.js'
-import { importTransformers, resolveLoadCacheDir, modelPresence, downloadsOffByEnv } from './transformers-base.js'
+import { importTransformers, resolveLoadCacheDir, modelPresence, downloadsOffByEnv, envOf } from './transformers-base.js'
 
 export const EMBEDDING_GEMMA_MODEL_ID = 'onnx-community/embeddinggemma-300m-ONNX'
 const DIM = 768
@@ -58,7 +58,8 @@ async function load(): Promise<{ tokenizer: Tok; model: Mdl }> {
       // override when the model is complete there, else the library default
       // where an existing user already has it.
       const cacheDir = await resolveLoadCacheDir(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS)
-      if (cacheDir) transformers.env!.cacheDir = cacheDir
+      const env = envOf(transformers)
+      if (cacheDir && env) env.cacheDir = cacheDir
       const offline = downloadsOffByEnv() ? { local_files_only: true } : {}
       const tokenizer = (await AutoTokenizer.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, offline)) as unknown as Tok
       const model = (await AutoModel.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, { dtype: 'q8', ...offline })) as unknown as Mdl

@@ -1,6 +1,6 @@
 import type { Engram } from './schemas/engram.js'
 import type { EmbedRole } from './embedders/types.js'
-import { downloadsOffByEnv } from './embedders/transformers-base.js'
+import { downloadsOffByEnv, envOf } from './embedders/transformers-base.js'
 import { engramSearchText } from './fts.js'
 import { existsSync, readFileSync, mkdirSync, appendFileSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
@@ -248,7 +248,7 @@ async function modelDownloadDisabled(): Promise<boolean> {
   if (downloadsOffByEnv()) return true
   try {
     const transformers = await import('@huggingface/transformers') as { env?: { allowRemoteModels?: boolean } }
-    if (transformers.env?.allowRemoteModels === false) return true
+    if (envOf(transformers)?.allowRemoteModels === false) return true
   } catch { return true }
   return false
 }
