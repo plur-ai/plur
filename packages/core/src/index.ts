@@ -156,6 +156,7 @@ export {
   workspaceFolderScope,
   findPlurMarker,
   hasOwnFolderDecision,
+  sameFolderPath,
   folderPatternMatches,
   folderPatternSpecificity,
   issueFolderNonce,
@@ -12893,21 +12894,29 @@ Generate an improved version of the procedure that prevents this failure. Return
     _answerFolderNotNow(this.paths.root, folder, options.nonce, { ...(options.session !== undefined ? { session: options.session } : {}) })
   }
 
-  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
-    const startDir = cwd || process.cwd()
-    const discovered: Array<{ path: string; scope: string }> = []
+  /**
+   * Whether discovery is skipped because the PLUR root is a temp folder (a
+   * test-safety guard, unchanged for users by #1588/#1589): the root as given
+   * (not resolved, so a user's symlink is not followed) starts with the OS
+   * temp folder or with `/tmp/`. `PLUR_TEST_DISCOVER_IN_TMP=1` is a TEST-ONLY
+   * switch that turns the skip off, so tests that build their tree under the
+   * system temp folder can exercise real discovery; nothing sets it for users.
+   */
+  private _discoverySkippedForTempRoot(): boolean {
+    if (process.env.PLUR_TEST_DISCOVER_IN_TMP === '1') return false
+    return this.paths.root.startsWith(tmpdir()) || this.paths.root.startsWith('/tmp/')
+  }
 
-    // Skip discovery if Plur storage is in a temp directory (test scenario).
-    // The literal /tmp check covers macOS, where the OS temp folder is under
-    // /var/folders and tests sometimes write to /tmp. On Linux /tmp IS the OS
-    // temp folder unless TMPDIR moves it, so the first check already covers
-    // it; a test that points TMPDIR elsewhere opts its tree back in (#1588).
-    const tmpDir = tmpdir()
-    if (this.paths.root.startsWith(tmpDir) || isUnder(canonicalize(this.paths.root), canonicalize(tmpDir)) ||
-        (process.platform === 'darwin' && this.paths.root.startsWith('/tmp/'))) {
-      return discovered
-    }
-
+  /**
+   * The `.plur/engrams.yaml` stores discovery looks at from `startDir`
+   * upward, with the same bounds as {@link autoDiscoverStores}: never the
+   * home folder or above it (#1588), stopping at the repository root (`.git`)
+   * or the filesystem root; never the active store or `~/.plur`; never a
+   * store config.yaml already lists. Read-only.
+   */
+  private _discoveryCandidates(startDir: string): Array<{ dir: string; candidate: string; key: string }> {
+    const out: Array<{ dir: string; candidate: string; key: string }> = []
+    if (this._discoverySkippedForTempRoot()) return out
     // Canonical paths (#1319): the walk sees kernel-canonical cwd spellings
     // while PLUR_PATH / $HOME are taken verbatim, so a raw string compare
     // missed the primary under a symlinked home and registered it as
@@ -12924,49 +12933,73 @@ Generate an improved version of the procedure that prevents this failure. Return
 
     let dir = startDir
     const visited = new Set<string>()
-
     while (dir && !visited.has(dir)) {
       visited.add(dir)
       const dirKey = canonicalize(dir)
       // Never enter the home folder or anything above it (#1588): a store
       // there is the user's own or no project's, whatever decided the folder.
       if (dirKey === home || isUnder(home, dirKey)) break
-
       const candidate = join(dir, '.plur', 'engrams.yaml')
-      const candidateKey = canonicalize(candidate)
-
-      // A store is registered only for a folder with its OWN decision (#1588):
-      // an exact folder-map entry, or a marker in that folder. On only through
-      // a parent is not enough — a repository's shipped store would otherwise
-      // become a shared, writable store read in every folder.
-      if (candidateKey !== primaryStore && candidateKey !== mainStore &&
-          fs.existsSync(candidate) && !knownPaths.has(candidateKey) &&
-          _hasOwnFolderDecision(dir, { root: this.paths.root })) {
-        // Infer scope from directory name or git remote
-        let scope = `project:${basename(dir)}`
-        try {
-          // Try .plur.yaml for explicit scope
-          const plurYaml = join(dir, '.plur.yaml')
-          if (fs.existsSync(plurYaml)) {
-            const raw = yaml.load(fs.readFileSync(plurYaml, 'utf8')) as any
-            if (raw?.scope) scope = raw.scope
-          }
-        } catch {}
-
-        this.addStore(candidate, scope, { shared: true, readonly: false })
-        discovered.push({ path: candidate, scope })
-        knownPaths.add(candidateKey)
-        logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
+      const key = canonicalize(candidate)
+      if (key !== primaryStore && key !== mainStore && !knownPaths.has(key) && fs.existsSync(candidate)) {
+        out.push({ dir, candidate, key })
       }
-
       // Stop at git root or filesystem root
       if (fs.existsSync(join(dir, '.git'))) break
       const parent = dirname(dir)
       if (parent === dir) break
       dir = parent
     }
+    return out
+  }
 
+  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
+    const discovered: Array<{ path: string; scope: string }> = []
+    const seen = new Set<string>()
+    for (const { dir, candidate, key } of this._discoveryCandidates(cwd || process.cwd())) {
+      if (seen.has(key)) continue
+      // A store is registered only for a folder with its OWN decision (#1588):
+      // an exact folder-map entry, or a marker in that folder that the
+      // decision came from. On only through a parent is not enough — a
+      // repository's shipped store would otherwise become a shared, writable
+      // store read in every folder.
+      if (!_hasOwnFolderDecision(dir, { root: this.paths.root })) continue
+
+      // The scope a `.plur.yaml` names is used only for a folder the user
+      // trusted (#1589 audit M1); an untrusted file does not choose where a
+      // store's memories are filed.
+      let scope = `project:${basename(dir)}`
+      try {
+        const plurYaml = join(dir, '.plur.yaml')
+        if (fs.existsSync(plurYaml) && this.isDirectoryTrusted(dir)) {
+          const raw = yaml.load(fs.readFileSync(plurYaml, 'utf8')) as any
+          if (raw?.scope) scope = raw.scope
+        }
+      } catch {}
+
+      this.addStore(candidate, scope, { shared: true, readonly: false })
+      discovered.push({ path: candidate, scope })
+      seen.add(key)
+      logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
+    }
     return discovered
+  }
+
+  /**
+   * Project stores discovery found from `cwd` but did not add because their
+   * folder has no decision of its own (#1588/#1589 audit L3): the folder is on
+   * only through a parent, or not decided yet. A folder turned off is not
+   * listed. Read-only; `plur doctor` and `plur stores list` show these with
+   * the command that adds them (`plur folders set <folder> --on`).
+   */
+  skippedProjectStores(cwd?: string): Array<{ path: string; folder: string }> {
+    const out: Array<{ path: string; folder: string }> = []
+    for (const { dir, candidate } of this._discoveryCandidates(cwd || process.cwd())) {
+      if (_hasOwnFolderDecision(dir, { root: this.paths.root })) continue
+      if (this.resolveFolderPolicy(dir).mode === 'off') continue
+      out.push({ path: candidate, folder: dir })
+    }
+    return out
   }
 
   /** Build the primary-store summary row. Shared by listStores +

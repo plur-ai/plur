@@ -676,26 +676,57 @@ export function findPlurMarker(cwd: string, home: string = homedir()): 'mcp-conf
 }
 
 /**
- * True when `dir` has a decision of its OWN that turns PLUR on (#1588): a
- * folder-map entry naming exactly this folder (not a parent, not a pattern),
- * or a project marker in this folder itself. A folder that is on only
- * through a parent (a parent's map entry or pattern, or a marker further up)
- * has no decision of its own. Store auto-discovery registers a folder's
- * `.plur/engrams.yaml` only when this is true, so a store shipped inside a
- * repository is never adopted because of a decision made for somewhere else.
+ * True when two folder paths name the same folder, compared the way the
+ * folder matcher compares them on `platform` (case-folded and with `\\` read
+ * as `/` on Windows, exact elsewhere; a trailing separator ignored). Exact:
+ * unlike `folderPatternMatches`, a parent does not match its children.
+ */
+export function sameFolderPath(a: string, b: string, platform: Platform = process.platform): boolean {
+  return norm(a, platform) === norm(b, platform)
+}
+
+/**
+ * Whether a project marker in the folder itself (an MCP config naming plur,
+ * or a trusted or request-free `.plur.yaml`) counts as that folder's own
+ * decision for store discovery (#1588). Set to `false` to require an exact
+ * folder-map entry (`plur folders set <folder> --on`, the folder question's
+ * yes, or `plur trust`) — the open owner question of the #1589 audit.
+ */
+const MARKER_IS_OWN_DECISION = true
+
+/**
+ * True when `dir` has a decision of its OWN that turns PLUR on (#1588):
+ *  - a folder-map entry naming exactly this folder (not a parent, not a
+ *    pattern), or
+ *  - a project marker in this folder itself, and only when the resolver's
+ *    decision actually came from that marker (#1589 audit M1). An untrusted
+ *    `.plur.yaml` that requests a scope, domain or remote is ignored by the
+ *    resolver; if a parent's map entry decides instead, that file is not this
+ *    folder's decision.
+ * A folder that is on only through a parent (a parent's map entry or
+ * pattern, or a marker further up) has no decision of its own. Store
+ * auto-discovery registers a folder's `.plur/engrams.yaml` only when this is
+ * true, so a store shipped inside a repository is never adopted because of a
+ * decision made for somewhere else.
  */
 export function hasOwnFolderDecision(dir: string, opts: FolderPolicyOptions): boolean {
   const home = opts.home ?? homedir()
-  if (resolveFolderPolicy(dir, opts).mode !== 'on') return false
-  const targets = new Set([canonicalize(dir), ...canonicalSpellings(dir)])
-  const entries = load(opts.root).map.folders
-  const exact = entries.some(e =>
+  const policy = resolveFolderPolicy(dir, opts)
+  if (policy.mode !== 'on') return false
+  if (hasExactOnEntry(dir, opts.root, home)) return true
+  if (!MARKER_IS_OWN_DECISION) return false
+  const canonical = canonicalize(dir)
+  return policy.source !== 'map' && policy.source !== 'default' &&
+    canonical !== canonicalize(home) && markerIn(canonical) !== null
+}
+
+/** A non-pattern folder-map entry that names exactly `dir` and turns it on (or trusts / scopes it). */
+function hasExactOnEntry(dir: string, root: string, home: string): boolean {
+  const targets = [...new Set([canonicalize(dir), ...canonicalSpellings(dir)])]
+  return load(root).map.folders.some(e =>
     (e.plur === 'on' || (e.plur === undefined && (e.scope !== undefined || e.trusted === true))) &&
     !entryIsGlob(e) &&
-    entryForms(e.path, home, false, e.literal === true).some(f => targets.has(f)))
-  if (exact) return true
-  const canonical = canonicalize(dir)
-  return canonical !== canonicalize(home) && markerIn(canonical) !== null
+    entryForms(e.path, home, false, e.literal === true).some(f => targets.some(t => sameFolderPath(f, t))))
 }
 
 // ---------------------------------------------------------------------------

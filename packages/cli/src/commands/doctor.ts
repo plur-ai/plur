@@ -4,6 +4,7 @@ import { join, extname, dirname } from 'path'
 import { homedir, platform } from 'os'
 import { createRequire } from 'module'
 import { createPlur, type GlobalFlags } from '../plur.js'
+import { skippedStoreLines } from './stores.js'
 import { outputText, outputInfo, outputJson, shouldOutputJson } from '../output.js'
 import {
   type ConfigFile,
@@ -205,6 +206,12 @@ interface DoctorReport {
    * the overall check.
    */
   ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
+  /**
+   * Project stores (`.plur/engrams.yaml`) found from this folder but not
+   * added, because their folder has no decision of its own (#1588, #1589
+   * audit L3). Advisory only: does not fail the overall check.
+   */
+  skippedProjectStores: Array<{ path: string; folder: string }>
   /**
    * Remote stores whose token comes from an environment variable
    * (`token_env`, #1561) that is unset or empty where doctor runs (#1572).
@@ -514,6 +521,19 @@ function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDu
     return classifyStoreDuplicates(stores, join(root, 'engrams.yaml')).ignored.map(d => ({
       path: d.entry.path ?? '', scope: d.entry.scope, duplicateOf: d.duplicateOf, primary: d.primary,
     }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Project stores found from the working folder but not added for lack of
+ * their folder's own decision (#1589 audit L3). Read-only: discovery is off
+ * for this instance, so nothing is registered by looking.
+ */
+function findSkippedProjectStores(flags: GlobalFlags): DoctorReport['skippedProjectStores'] {
+  try {
+    return createPlur(flags, { readonly: true, autoDiscover: false }).skippedProjectStores(process.cwd())
   } catch {
     return []
   }
@@ -1415,12 +1435,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       : null
 
     const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
+    const skippedProjectStores = findSkippedProjectStores(flags)
 
     return {
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall,
     }
   })
 }
@@ -1675,6 +1696,8 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('   Remove an entry that repeats another store\'s file and scope from config.yaml by hand.')
     }
   }
+
+  for (const line of skippedStoreLines(report.skippedProjectStores)) outputText(line.startsWith('Found') ? `⚠  ${line}` : line)
 
   if (report.tokenEnvUnset.length > 0) {
     outputText('')

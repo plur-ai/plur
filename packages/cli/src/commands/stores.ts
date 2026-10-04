@@ -217,20 +217,38 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (!subcommand || subcommand === 'list') {
     // Async variant — accurate remote store engram_count (issue #184)
     const storeList = await plur.listStoresAsync()
+    // Stores found from here that were not added because their folder has no
+    // decision of its own (#1588, #1589 audit L3), with the command that adds them.
+    let skipped: Array<{ path: string; folder: string }> = []
+    try { skipped = plur.skippedProjectStores(process.cwd()) } catch { /* a hint never fails the list */ }
     if (shouldOutputJson(flags)) {
-      outputJson({ stores: storeList, count: storeList.length })
+      outputJson({ stores: storeList, count: storeList.length, skipped })
     } else {
       if (storeList.length === 0) {
         outputText('No stores configured.')
-        return
       }
       storeList.forEach(s => {
         const flags_str = [s.shared ? 'shared' : '', s.readonly ? 'readonly' : ''].filter(Boolean).join(', ')
         outputText(`${s.path} [${s.scope}] ${s.engram_count} engrams${flags_str ? ` (${flags_str})` : ''}`)
       })
+      for (const line of skippedStoreLines(skipped)) outputText(line)
     }
     return
   }
 
   exit(1, 'Usage: plur stores <add|list|discover|prune>')
+}
+
+/**
+ * The text for project stores that were found but not added (#1589 audit L3).
+ * Shared with `plur doctor`.
+ */
+export function skippedStoreLines(skipped: Array<{ path: string; folder: string }>): string[] {
+  if (skipped.length === 0) return []
+  const lines = ['', `Found ${skipped.length === 1 ? 'a memory store that was' : `${skipped.length} memory stores that were`} not added, because ${skipped.length === 1 ? 'its folder has' : 'their folders have'} no decision of ${skipped.length === 1 ? 'its' : 'their'} own (#1588):`]
+  for (const s of skipped) {
+    lines.push(`   - ${s.path}`)
+    lines.push(`     To use it: plur folders set ${s.folder} --on`)
+  }
+  return lines
 }

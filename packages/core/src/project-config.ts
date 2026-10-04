@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from 'fs'
-import { basename, dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve, sep } from 'path'
 import { homedir } from 'os'
 
 /**
@@ -95,13 +95,24 @@ export interface ProjectConfig {
  *   - Refuse to consider a `.plur.yaml` that sits IN HOME itself.
  *
  * Paths are resolved (path.resolve) to normalize trailing slashes,
- * symlink components, and `..` segments.
+ * symlink components, and `..` segments. The walk also ends where it leaves
+ * the start's real repository (#1589 audit L1).
  */
 export function findProjectConfigPath(startDir: string = process.cwd()): string | null {
   const home = canonicalize(homedir())
   let dir = resolve(startDir)
+  // The REAL repository root of the start (#1589 audit L1). The walk below
+  // goes up the path as typed, so a symlink into a repository's sub-folder
+  // would reach a `.plur.yaml` above that repository without passing its
+  // `.git`. Leaving the real repository ends the walk, the same boundary the
+  // marker walk (`findPlurMarker`) applies to the real path.
+  const realRepo = realRepositoryRoot(dir)
   const MAX_DEPTH = 12  // hard ceiling — beyond ~12 dirs deep, give up
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
+    if (realRepo !== null) {
+      const real = canonicalize(dir)
+      if (real !== realRepo && !real.startsWith(realRepo.endsWith(sep) ? realRepo : realRepo + sep)) return null
+    }
     // Refuse to accept a .plur.yaml that lives directly in HOME.
     // That's the failure mode where a stray home-level config silently
     // intercepts every project the user opens. Canonical comparison so a
@@ -233,4 +244,15 @@ export function readProjectConfigFromPath(configPath: string | null): ProjectCon
  */
 export function readProjectConfig(startDir: string = process.cwd()): ProjectConfig {
   return readProjectConfigFromPath(findProjectConfigPath(startDir))
+}
+
+/** The nearest folder holding `.git` above the real (canonical) `dir`, or `null`. */
+function realRepositoryRoot(dir: string): string | null {
+  let cur = canonicalize(dir)
+  for (;;) {
+    if (existsSync(join(cur, '.git'))) return cur
+    const parent = dirname(cur)
+    if (parent === cur) return null
+    cur = parent
+  }
 }
