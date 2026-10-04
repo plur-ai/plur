@@ -165,6 +165,43 @@ async function getEmbedder() {
   }
 }
 
+/**
+ * Is the semantic leg able to answer now, or would it first have to download
+ * the model? (#1586 audit round 3, R1)
+ *
+ * - `ready`: loaded in this process.
+ * - `cached`: on disk, not loaded yet — loading it is part of a recall's work
+ *   (bounded by the recall deadline, with keyword results kept if it is late).
+ * - `downloading`: not on disk. A recall must not wait for a ~130 MB download:
+ *   this starts it in the background (a detached process, so a short-lived
+ *   CLI or hook process exiting does not kill it) and the caller answers by
+ *   keyword.
+ * - `unknown`: embeddings off, or an embedder that cannot say — the caller
+ *   proceeds as before.
+ */
+export async function semanticModelState(): Promise<'ready' | 'cached' | 'downloading' | 'unknown'> {
+  const embedder = await getEmbedder()
+  if (!embedder) return 'unknown'
+  if (typeof embedder.isLoaded === 'function' && embedder.isLoaded()) return 'ready'
+  if (typeof embedder.modelFile !== 'function') return 'unknown'
+  let where: { cacheDir: string; file: string; dtype?: string } | null = null
+  try { where = await embedder.modelFile() } catch { where = null }
+  if (!where) return 'unknown'
+  if (existsSync(where.file)) return 'cached'
+  const { startModelWarmup } = await import('./model-warmup.js')
+  const started = startModelWarmup({ modelId: embedder.modelId, dtype: where.dtype, cacheDir: where.cacheDir })
+  if (!started && !modelWarmupInProcess && !existsSync(warmupLockFile(where.cacheDir))) {
+    // No detached process could be started (and none is running): load in
+    // this process, in the background. A long-lived server finishes it.
+    modelWarmupInProcess = true
+    void embedder.embed('warm up').catch(() => { modelWarmupInProcess = false })
+  }
+  return 'downloading'
+}
+
+let modelWarmupInProcess = false
+const warmupLockFile = (cacheDir: string) => join(cacheDir, '.plur-model-warmup.lock')
+
 /** Generate embedding for a text string. Returns the active embedder's native dim, or null if unavailable.
  *  Pass role='query' when embedding search terms; omit or pass 'passage' for stored engram text.
  *  Adapters that support asymmetric prefixes (EmbeddingGemma) use this to pick the correct space. */

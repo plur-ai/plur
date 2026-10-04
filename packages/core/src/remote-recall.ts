@@ -663,10 +663,23 @@ function persistHostChanges(
     let dirty = false
     for (const { key, before, after, forced } of changes) {
       const cur: HostHealth = { ...(current.hosts[key] ?? {}) }
-      let changed = applyFieldChanges(
+      // #1586 round 3 (R2): a success this call saw is older than what the
+      // file now says about the host (another process recorded failures or
+      // opened the breaker after it — e.g. while a slower host of this same
+      // call was still pending). The newer record wins: this call's host-level
+      // fields are not written; per-token state still is.
+      const staleSuccess = after.last_state === 'ok'
+        && typeof cur.updated_at === 'number' && typeof after.updated_at === 'number'
+        && cur.updated_at > after.updated_at
+      let changed = staleSuccess ? false : applyFieldChanges(
         cur as Record<string, unknown>, before as Record<string, unknown>, after as Record<string, unknown>,
         new Set([...PRINT_FIELDS, 'tokens']), forced,
       )
+      // The record's time never moves backwards.
+      if (changed && typeof current.hosts[key]?.updated_at === 'number' && typeof cur.updated_at === 'number'
+        && cur.updated_at < current.hosts[key].updated_at!) {
+        cur.updated_at = current.hosts[key].updated_at
+      }
       const bt = before.tokens ?? {}
       const at = after.tokens ?? {}
       for (const tk of new Set([...Object.keys(bt), ...Object.keys(at)])) {

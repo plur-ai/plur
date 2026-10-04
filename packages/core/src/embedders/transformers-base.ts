@@ -10,6 +10,7 @@
  * the same name share the model instance — important because each load is
  * 100MB+ of WASM / ONNX setup.
  */
+import { join } from 'path'
 import type { EmbedderAdapter } from './types.js'
 
 /** Pooling strategies supported by @huggingface/transformers feature-extraction. */
@@ -27,9 +28,32 @@ export interface TransformersAdapterConfig {
 }
 
 const pipelineCache = new Map<string, Promise<unknown>>()
+/** Keys whose pipeline promise has resolved. */
+const loadedKeys = new Set<string>()
+
+const keyOf = (modelId: string, dtype: TransformersAdapterConfig['dtype']) => `${modelId}::${dtype ?? 'fp32'}`
+
+/** transformers.js file-name suffix per dtype (onnx/model<suffix>.onnx). */
+const DTYPE_SUFFIX: Record<string, string> = {
+  fp32: '', fp16: '_fp16', q8: '_quantized', int8: '_int8', uint8: '_uint8', q4: '_q4',
+}
+
+/** The cache directory transformers.js will use: the PLUR / HF override, else
+ *  the library's own default. Null when it has none (not running locally). */
+async function resolveModelCacheDir(): Promise<string | null> {
+  const override = process.env.PLUR_MODEL_CACHE_DIR || process.env.HF_HOME
+  if (override) return override
+  try {
+    const transformers = await import('@huggingface/transformers')
+    const dir = (transformers as { env?: { cacheDir?: string | null } }).env?.cacheDir
+    return typeof dir === 'string' && dir.length > 0 ? dir : null
+  } catch {
+    return null
+  }
+}
 
 async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['dtype']): Promise<unknown> {
-  const key = `${modelId}::${dtype ?? 'fp32'}`
+  const key = keyOf(modelId, dtype)
   let pending = pipelineCache.get(key)
   if (!pending) {
     pending = (async () => {
@@ -68,8 +92,12 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
         ;(transformers as { env?: { cacheDir?: string } }).env!.cacheDir = cacheDir
       }
 
-      return transformers.pipeline('feature-extraction', modelId, dtype ? { dtype } : undefined)
+      const pipe = await transformers.pipeline('feature-extraction', modelId, dtype ? { dtype } : undefined)
+      loadedKeys.add(key)
+      return pipe
     })()
+    // A failed load is not cached: the next call tries again.
+    pending.catch(() => { if (pipelineCache.get(key) === pending) pipelineCache.delete(key) })
     pipelineCache.set(key, pending)
   }
   return await pending
@@ -78,6 +106,7 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
 /** Reset the shared pipeline cache. Test-only. */
 export function _resetTransformersPipelineCache(): void {
   pipelineCache.clear()
+  loadedKeys.clear()
 }
 
 export function makeTransformersAdapter(config: TransformersAdapterConfig): EmbedderAdapter {
@@ -104,6 +133,13 @@ export function makeTransformersAdapter(config: TransformersAdapterConfig): Embe
     dim: config.dim,
     modelId: config.modelId,
     embed: embedOne,
+    isLoaded: () => loadedKeys.has(keyOf(config.modelId, config.dtype)),
+    async modelFile() {
+      const cacheDir = await resolveModelCacheDir()
+      if (!cacheDir) return null
+      const suffix = DTYPE_SUFFIX[config.dtype ?? 'fp32'] ?? ''
+      return { cacheDir, file: join(cacheDir, config.modelId, 'onnx', `model${suffix}.onnx`), dtype: config.dtype }
+    },
     async embedBatch(texts: string[]): Promise<Float32Array[]> {
       // The transformers pipeline supports batched input, but in practice the
       // batched-output reshape depends on the runtime version. Iterating

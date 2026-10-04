@@ -32,4 +32,9 @@ export interface EmbedderAdapter {
   embed(text: string, role?: EmbedRole): Promise<Float32Array>
   /** Embed N texts. Output order matches input order. */
   embedBatch(texts: string[]): Promise<Float32Array[]>
+  /** Optional (#1586 round 3): the model is loaded in this process. */
+  isLoaded?(): boolean
+  /** Optional (#1586 round 3): where the model's weights live on disk, so a
+   *  caller can tell a one-time download from a load. Null when unknown. */
+  modelFile?(): Promise<{ cacheDir: string; file: string; dtype?: string } | null>
 }

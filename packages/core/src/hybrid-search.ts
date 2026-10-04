@@ -150,7 +150,11 @@ export async function hybridSearchWithMeta(
   rerank?: RerankOptions,
   /** `signal` (#1586 audit L3): the caller stopped waiting — the embedding
    *  leg stops and does not save its cache. */
-  opts?: EmbeddingSearchOptions,
+  opts?: EmbeddingSearchOptions & {
+    /** Called with the fused ranking before the optional rerank, so a caller
+     *  that stops waiting keeps it (#1586 round 3). */
+    onFused?: (r: HybridSearchResult) => void
+  },
 ): Promise<HybridSearchResult> {
   if (engrams.length === 0) {
     return { engrams: [], mode: 'hybrid', embedderError: null, topScore: null, reranked: 0 }
@@ -196,6 +200,7 @@ export async function hybridSearchWithMeta(
   // optional rerank stage — the miss-signal reasons about fusion strength, not
   // the cross-encoder's reordering.
   const topScore = ranked.length > 0 ? ranked[0].score : null
+  opts?.onFused?.({ engrams: ranked.slice(0, limit).map(s => s.engram), mode, embedderError, topScore, reranked: 0 })
   // Optional cross-encoder rerank (#220): reorders the top-K by joint relevance.
   // Off by default; on failure applyReranker logs + falls back to RRF order, so
   // recall always returns something.

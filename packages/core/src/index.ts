@@ -28,7 +28,7 @@ import { _resetCrossEncoderCaches } from './rerankers/transformers-cross-encoder
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, rewriteLexicalQuery, isQueryRewriteDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
-import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
+import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, semanticModelState, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
@@ -5721,6 +5721,10 @@ export class Plur {
   async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const limit = options?.limit ?? 20
     const result = await this.recallHybridWithMeta(query, options)
+    if (result.engrams.length === 0 && result.local_complete === false) {
+      // A bare array cannot say it is incomplete; the log can (R1).
+      logger.warning('[plur] recall: the local search did not load its candidates within the recall deadline — this empty result is incomplete, not "no matches".')
+    }
     return result.engrams.slice(0, limit)
   }
 
@@ -5741,10 +5745,31 @@ export class Plur {
     // Stops the abandoned local search's remaining work — the embeddings
     // cache save in particular — once the deadline has passed (#1586 audit L3).
     const localAbort = new AbortController()
-    const searchOpts = { signal: localAbort.signal }
+    // #1586 round 3 (R1): what the local leg has so far, so the deadline never
+    // empties it — the candidates once loaded, and the fused ranking once the
+    // embedding leg is done (only the reranker can still be late then).
+    let candidates: Engram[] | undefined
+    let fused: HybridSearchResult | undefined
+    /** Why the semantic leg was skipped this call, when it was. */
+    let semanticSkipped: string | null = null
+    const searchOpts = { signal: localAbort.signal, onFused: (r: HybridSearchResult) => { fused = r } }
+    const keywordOnly = (cands: Engram[], why: string): HybridSearchResult => ({
+      engrams: searchEngrams(cands, isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query), limit),
+      mode: 'hybrid-degraded',
+      embedderError: why,
+      topScore: null,
+      reranked: 0,
+    })
     const localLeg = async (): Promise<HybridSearchResult> => {
       // #906: narrowed by the store when provably equivalent, else the full read.
       const filtered = await this._hybridCandidates(query, options)
+      candidates = filtered
+      // The one-time model download is not charged to a recall (R1): while the
+      // model is fetched in the background, answer by keyword.
+      if (await semanticModelState() === 'downloading') {
+        semanticSkipped = Plur.MODEL_DOWNLOADING
+        return keywordOnly(filtered, Plur.MODEL_DOWNLOADING)
+      }
       const rerank = await this._resolveRerankOptions(options?.rerank)
       const intent = this._resolveIntentProfile(query, options?.intentOverride)
       // When intent routing is on we over-fetch from the hybrid call WITHOUT the
@@ -5776,12 +5801,21 @@ export class Plur {
     // the same deadline. Past it the reply carries the remote rows and says
     // the local part is missing; the abandoned search finishes in the background.
     const local = await settleBy(localLeg(), deadlineAt)
-    if (!local.done) localAbort.abort()
+    // Past the deadline (R1): keep what the local leg already has — the fused
+    // ranking if only the reranker was late, else keyword results over the
+    // loaded candidates. Only when even the candidates were not loaded in time
+    // is the local part empty, and the reply says so (`local_complete: false`).
+    let lateFallback: HybridSearchResult | undefined
+    if (!local.done) {
+      localAbort.abort()
+      if (fused) lateFallback = { ...fused, embedderError: fused.embedderError ?? 'the reranker did not finish within the recall deadline' }
+      else if (candidates) lateFallback = keywordOnly(candidates, Plur.SEMANTIC_LATE)
+    }
     if (local.done && local.error !== undefined) throw local.error
-    const localComplete = local.done
+    const localComplete = local.done && semanticSkipped === null
     let result: HybridSearchResult = local.done
       ? local.value!
-      : { engrams: [], mode: 'bm25-only', embedderError: null, topScore: null, reranked: 0 }
+      : lateFallback ?? { engrams: [], mode: 'bm25-only', embedderError: null, topScore: null, reranked: 0 }
     // #776: fold the server leg in (RRF) before reactivation so displaced
     // local rows are not reactivated and server rows rank on merged order.
     const mergedLegs = await this._mergeRemoteRecall(result.engrams, remotePromise, options, limit, deadlineAt)
@@ -5790,7 +5824,7 @@ export class Plur {
       engrams: mergedLegs.engrams,
       remote: mergedLegs.remote,
       results_complete: localComplete && (mergedLegs.remote.state === 'ok' || mergedLegs.remote.state === 'not_dialed'),
-      ...(localComplete ? {} : { local_complete: false }),
+      ...(local.done || lateFallback ? {} : { local_complete: false }),
     }
     // Belt-and-suspenders: all inner paths apply slice(0, limit) before
     // returning, but recallHybridWithMeta is called directly by the MCP layer
@@ -6937,6 +6971,11 @@ export class Plur {
     return { result: waited.value, report: buildRecallRemoteReport(waited.value.outcomes) }
   }
 
+  /** Hybrid recall answered by keyword while the model downloads (#1586 R1). */
+  private static readonly MODEL_DOWNLOADING = 'the embedding model is downloading in the background — keyword results only until it is ready'
+  /** Hybrid recall answered by keyword because the semantic leg was late (#1586 R1). */
+  private static readonly SEMANTIC_LATE = 'semantic search did not finish within the recall deadline — keyword results only'
+
   /** How long past the deadline to wait for a remote leg that is already
    *  settling (it aborts its own requests just before the deadline). */
   private static readonly REMOTE_SETTLE_GRACE_MS = 100
@@ -7554,7 +7593,10 @@ export class Plur {
     // Stops the abandoned semantic leg's remaining work (the embeddings cache
     // save in particular) once the deadline has passed (#1586 audit L3).
     const semanticAbort = new AbortController()
+    /** The model is being downloaded in the background: keyword only (#1586 R1). */
+    let modelDownloading = false
     const semanticLeg = async (): Promise<void> => {
+    if (await semanticModelState() === 'downloading') { modelDownloading = true; return }
     try {
       const engrams = (await this._loadAllEngrams()).filter(e => e.status === 'active')
       // Route through PGLite/pgvector when active (#226 B-1), intersecting hits
@@ -7654,7 +7696,7 @@ export class Plur {
     // The semantic leg (corpus load, embedder, reranker) is bounded by the
     // deadline; past it the injection runs on keyword matching and says so.
     const semantic = await settleBy(semanticLeg(), deadlineAt)
-    const semanticComplete = semantic.done
+    const semanticComplete = semantic.done && !modelDownloading
     if (!semanticComplete) {
       semanticAbort.abort()
       embeddingBoosts = undefined
@@ -7679,7 +7721,9 @@ export class Plur {
         result.mode = 'bm25-only'
       } else {
         result.mode = 'hybrid-degraded'
-        result.embedder_error = 'semantic search did not finish within the deadline'
+        result.embedder_error = modelDownloading
+          ? Plur.MODEL_DOWNLOADING
+          : 'semantic search did not finish within the deadline'
       }
       return result
     }
