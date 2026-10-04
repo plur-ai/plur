@@ -110,19 +110,21 @@ describe('R1 — the background model download', () => {
     expect(spawned).toHaveLength(2)
   })
 
-  it('stale partial downloads (.tmp files older than an hour) are removed; fresh ones are kept', async () => {
+  it('partial downloads left by a killed download are removed; one still being written is kept', async () => {
     const warm = await import('../src/model-warmup.js').catch(() => null) as any
     expect(warm).not.toBeNull()
     const dir = join(tmp('plur-1587-models-'), 'Xenova', 'bge-small-en-v1.5', 'onnx')
     mkdirSync(dir, { recursive: true })
-    const stale = join(dir, 'model.onnx.tmp.123.abc')
-    const fresh = join(dir, 'model.onnx.tmp.456.def')
+    const stale = join(dir, `model.onnx.tmp.${process.pid}.abc`) // live owner, but older than an hour
+    const orphan = join(dir, 'model.onnx.tmp.999999999.ghi') // owner gone
+    const fresh = join(dir, `model.onnx.tmp.${process.pid}.def`) // being written
     const done = join(dir, 'model.onnx')
-    for (const f of [stale, fresh, done]) writeFileSync(f, 'x')
+    for (const f of [stale, orphan, fresh, done]) writeFileSync(f, 'x')
     const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000
     utimesSync(stale, old, old)
     warm.cleanStaleDownloads(join(dir, '..', '..', '..'))
     expect(existsSync(stale)).toBe(false)
+    expect(existsSync(orphan)).toBe(false)
     expect(existsSync(fresh)).toBe(true)
     expect(existsSync(done)).toBe(true)
   })

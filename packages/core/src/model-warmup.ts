@@ -90,7 +90,15 @@ export function startModelWarmup(job: ModelWarmupJob, spawner?: ModelWarmupSpawn
   return ok
 }
 
-/** Remove `.tmp` partial downloads older than an hour, anywhere under `root`. */
+/** The process id transformers.js writes into a partial file's name
+ *  (`<file>.tmp.<pid>.<random>`), or null. */
+function partialOwner(name: string): number | null {
+  const m = /\.tmp\.(\d+)\.[^.]+$/.exec(name)
+  return m ? Number(m[1]) : null
+}
+
+/** Remove `.tmp` partial downloads left by a killed download, anywhere under
+ *  `root`: those whose process is gone, and any older than an hour. */
 export function cleanStaleDownloads(root: string, now: number = Date.now()): void {
   const walk = (dir: string, depth: number): void => {
     if (depth > 6) return
@@ -101,7 +109,10 @@ export function cleanStaleDownloads(root: string, now: number = Date.now()): voi
       let st
       try { st = statSync(p) } catch { continue }
       if (st.isDirectory()) { walk(p, depth + 1); continue }
-      if (/\.tmp\.[^/]+$/.test(name) && now - st.mtimeMs > STALE_PARTIAL_MS) {
+      if (!/\.tmp\.[^/]+$/.test(name)) continue
+      const owner = partialOwner(name)
+      const orphaned = owner !== null && owner !== process.pid && !pidAlive(owner)
+      if (orphaned || now - st.mtimeMs > STALE_PARTIAL_MS) {
         try { unlinkSync(p) } catch { /* in use or gone */ }
       }
     }
@@ -139,12 +150,19 @@ try {
       const p = path.join(dir, n)
       let st; try { st = fs.statSync(p) } catch { continue }
       if (st.isDirectory()) walk(p, depth + 1)
-      else if (/\\.tmp\\.[^/]+$/.test(n) && Date.now() - st.mtimeMs > ${STALE_PARTIAL_MS}) { try { fs.unlinkSync(p) } catch {} }
+      else if (/\\.tmp\\.[^/]+$/.test(n)) {
+        const m = /\\.tmp\\.(\\d+)\\.[^.]+$/.exec(n)
+        const owner = m ? Number(m[1]) : null
+        let gone = false
+        if (owner !== null && owner !== process.pid) { try { process.kill(owner, 0) } catch (e) { gone = e.code !== 'EPERM' } }
+        if (gone || Date.now() - st.mtimeMs > ${STALE_PARTIAL_MS}) { try { fs.unlinkSync(p) } catch {} }
+      }
     }
   }
   walk(root, 0)
   const pipe = await t.pipeline('feature-extraction', job.modelId, job.dtype ? { dtype: job.dtype } : undefined)
   await pipe('warm up', { pooling: 'cls', normalize: true })
+  walk(root, 0)
 } catch {}
 finally {
   if (lock) { try { fs.unlinkSync(lock) } catch {} }
