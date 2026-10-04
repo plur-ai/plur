@@ -12,16 +12,16 @@
  *      never walks into or above the home folder.
  *
  * Everything runs under the system temp folder, with HOME, TMPDIR and the
- * PLUR root inside it. TMPDIR points at a sibling of the PLUR root, so core's
- * "PLUR root under the temp folder" test guard does not switch discovery off
- * and the assertions are not vacuous (the control cases prove it runs).
+ * PLUR root inside it. Core skips discovery for a PLUR root under the temp
+ * folder; PLUR_TEST_DISCOVER_IN_TMP=1 (a test-only switch) turns that skip
+ * off, so the assertions are not vacuous (the control cases prove it runs).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, findPlurMarker, resolveFolderPolicy } from '../src/index.js'
+import { Plur, findPlurMarker, resolveFolderPolicy, hasOwnFolderDecision, findProjectConfigPath, folderPatternMatches, sameFolderPath } from '../src/index.js'
 
 const MCP = JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } })
 
@@ -69,6 +69,7 @@ beforeEach(() => {
   setEnv('TMPDIR', join(base, 'tmp'))
   setEnv('PLUR_PATH', undefined)
   setEnv('PLUR_AUTO_DISCOVER', undefined)
+  setEnv('PLUR_TEST_DISCOVER_IN_TMP', '1')
 })
 
 afterEach(() => {
@@ -229,5 +230,185 @@ describe('#1588 3. discovery never adopts the main or active store, nor walks in
     mapOn(proj)
     new Plur({ path: root, cwd: join(proj) })
     expect(registered()).toEqual([realpathSync(store)])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Audit round (PR #1589).
+// ---------------------------------------------------------------------------
+
+function storeScopes(plurRoot: string = root): Array<{ path: string; scope: string }> {
+  const file = join(plurRoot, 'config.yaml')
+  if (!existsSync(file)) return []
+  const cfg = (yaml.load(readFileSync(file, 'utf8')) ?? {}) as { stores?: Array<{ path?: string; scope: string }> }
+  return (cfg.stores ?? []).filter(s => s.path).map(s => ({ path: realpathSync(s.path!), scope: s.scope }))
+}
+
+describe('#1589 audit M1: an untrusted .plur.yaml is not the folder\u2019s own decision', () => {
+  it('P8: parent map entry + untrusted .plur.yaml asking for a scope: no store registered', async () => {
+    const code = join(home, 'code')
+    const proj = join(code, 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    const store = await seedStore(proj, 'Codeword UNTRUSTEDYAML: shipped with a scope request')
+    writeFileSync(join(proj, '.plur.yaml'), 'scope: "group:acme/eng"\n')
+    mapOn(code)
+    const policy = resolveFolderPolicy(proj, { root, home })
+    expect(policy.mode).toBe('on')
+    expect(policy.source).toBe('map')
+    expect(hasOwnFolderDecision(proj, { root, home })).toBe(false)
+    new Plur({ path: root, cwd: proj })
+    expect(registered()).not.toContain(realpathSync(store))
+    expect(registered()).toEqual([])
+  })
+
+  it('an exact --on entry with an untrusted scope request: the store is registered, but not under the requested scope', async () => {
+    const proj = join(home, 'code', 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    const store = await seedStore(proj, 'Codeword EXACTUNTRUSTED: decided folder, untrusted scope')
+    writeFileSync(join(proj, '.plur.yaml'), 'scope: "group:acme/eng"\n')
+    mapOn(proj)
+    new Plur({ path: root, cwd: proj })
+    expect(storeScopes()).toEqual([{ path: realpathSync(store), scope: 'project:proj' }])
+  })
+
+  it('a trusted .plur.yaml still names the store\u2019s scope', async () => {
+    const proj = join(home, 'code', 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    const store = await seedStore(proj, 'Codeword TRUSTEDYAML: trusted scope')
+    writeFileSync(join(proj, '.plur.yaml'), 'scope: "project:trusted-name"\n')
+    writeFileSync(join(root, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(proj)}\n    trusted: true\n`)
+    new Plur({ path: root, cwd: proj })
+    expect(storeScopes()).toEqual([{ path: realpathSync(store), scope: 'project:trusted-name' }])
+  })
+})
+
+describe('#1589 audit L1: the .plur.yaml lookup stops at the real repository root', () => {
+  it('P12: a symlink into a repository sub-folder does not pick up a .plur.yaml above the repository', async () => {
+    const ws = join(home, 'ws')
+    const repo = join(ws, 'repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(join(repo, 'src'))
+    writeFileSync(join(ws, '.plur.yaml'), '')
+    const link = join(ws, 'link')
+    symlinkSync(join(repo, 'src'), link)
+    expect(findProjectConfigPath(link)).toBeNull()
+    expect(resolveFolderPolicy(link, { root, home }).mode).toBe('ask')
+    expect(resolveFolderPolicy(join(repo, 'src'), { root, home }).mode).toBe('ask')
+  })
+})
+
+describe('#1589 audit L2: one entry on an outer folder keeps every repository and worktree below it on', () => {
+  it('a workspace entry covers nested repositories, worktrees inside a repository, submodules and new worktree paths', () => {
+    const ws = join(home, 'ws')
+    const repo = join(ws, 'repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mapOn(ws)
+    const nested = [
+      repo,
+      join(ws, 'other-clone'),
+      join(repo, '.claude', 'worktrees', 'feat'),
+      join(repo, '.claude', 'worktrees', 'feat-2'),
+      join(repo, 'vendor', 'sub'),
+    ]
+    for (const d of nested.slice(1)) {
+      mkdirSync(d, { recursive: true })
+      writeFileSync(join(d, '.git'), 'gitdir: elsewhere\n')
+    }
+    for (const d of nested) {
+      const p = resolveFolderPolicy(d, { root, home })
+      expect(`${p.mode}/${p.source}`, d).toBe('on/map')
+    }
+  })
+
+  it('an entry on the outer repository does the same for worktrees and submodules inside it', () => {
+    const repo = join(home, 'code', 'repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    const wt = join(repo, '.claude', 'worktrees', 'feat')
+    mkdirSync(wt, { recursive: true })
+    writeFileSync(join(wt, '.git'), 'gitdir: elsewhere\n')
+    mapOn(repo)
+    expect(resolveFolderPolicy(wt, { root, home }).mode).toBe('on')
+  })
+
+  it('without an entry, a worktree inside a repository whose marker sits in the repository root asks once', () => {
+    const repo = join(home, 'code', 'repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    writeFileSync(join(repo, '.claude', 'settings.local.json'), MCP)
+    const wt = join(repo, '.claude', 'worktrees', 'feat')
+    mkdirSync(wt, { recursive: true })
+    writeFileSync(join(wt, '.git'), 'gitdir: elsewhere\n')
+    expect(resolveFolderPolicy(repo, { root, home }).mode).toBe('on')
+    expect(resolveFolderPolicy(wt, { root, home }).mode).toBe('ask')
+  })
+})
+
+describe('#1589 audit L3: stores skipped for lack of their own decision are listed', () => {
+  it('skippedProjectStores names the store and its folder; an off folder is not listed', async () => {
+    const mono = join(home, 'code', 'mono')
+    const pkg = join(mono, 'packages', 'app')
+    mkdirSync(join(mono, '.git'), { recursive: true })
+    mkdirSync(pkg, { recursive: true })
+    const store = await seedStore(pkg, 'Codeword MONOPKG: a sub-folder store')
+    mapOn(mono)
+    const plur = new Plur({ path: root, cwd: pkg })
+    expect(registered()).toEqual([])
+    const skipped = plur.skippedProjectStores(pkg)
+    expect(skipped.map(s => realpathSync(s.path))).toEqual([realpathSync(store)])
+    expect(realpathSync(skipped[0].folder)).toBe(realpathSync(pkg))
+    writeFileSync(join(root, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: ${JSON.stringify(mono)}\n    plur: on\n  - path: ${JSON.stringify(pkg)}\n    plur: off\n`)
+    expect(plur.skippedProjectStores(pkg)).toEqual([])
+  })
+
+  it('a registered store is not listed as skipped', async () => {
+    const proj = join(home, 'code', 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    await seedStore(proj, 'Codeword REGISTERED: decided')
+    mapOn(proj)
+    const plur = new Plur({ path: root, cwd: proj })
+    expect(registered().length).toBe(1)
+    expect(plur.skippedProjectStores(proj)).toEqual([])
+  })
+})
+
+describe('#1589 audit L4: the exact-entry check folds case where folder matching does', () => {
+  it('sameFolderPath agrees with the folder matcher on each platform', () => {
+    expect(sameFolderPath('C:/Work/REPO', 'c:/work/repo', 'win32')).toBe(true)
+    expect(folderPatternMatches('C:/Work/REPO', 'c:/work/repo', 'win32', true)).toBe(true)
+    expect(sameFolderPath('C:\\Work\\REPO\\', 'c:/work/repo', 'win32')).toBe(true)
+    expect(sameFolderPath('/w/REPO', '/w/repo', 'linux')).toBe(false)
+    expect(folderPatternMatches('/w/REPO', '/w/repo', 'linux', true)).toBe(false)
+    expect(sameFolderPath('/w/repo/', '/w/repo', 'linux')).toBe(true)
+    // Exact, not a subtree: the matcher covers children, this does not.
+    expect(sameFolderPath('/w', '/w/repo', 'linux')).toBe(false)
+  })
+})
+
+describe('#1589 audit L5: the temp-folder skip does not follow a user\u2019s symlink', () => {
+  it('without the test switch, a root under TMPDIR is skipped, as before', async () => {
+    setEnv('PLUR_TEST_DISCOVER_IN_TMP', undefined)
+    const tmpRoot = join(base, 'tmp', 'plur')
+    mkdirSync(tmpRoot, { recursive: true })
+    const proj = join(home, 'code', 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    await seedStore(proj, 'Codeword TMPROOT: skipped')
+    writeFileSync(join(tmpRoot, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(proj)}\n    plur: on\n`)
+    new Plur({ path: tmpRoot, cwd: proj })
+    expect(registered(tmpRoot)).toEqual([])
+  })
+
+  it.skipIf(process.platform !== 'darwin')('a PLUR_PATH that is a symlink into TMPDIR is not skipped (macOS, where the base is not under /tmp)', async () => {
+    setEnv('PLUR_TEST_DISCOVER_IN_TMP', undefined)
+    const real = join(base, 'tmp', 'plur')
+    mkdirSync(real, { recursive: true })
+    const link = join(home, 'linked-plur')
+    symlinkSync(real, link)
+    const proj = join(home, 'code', 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    const store = await seedStore(proj, 'Codeword LINKROOT: discovered as before')
+    writeFileSync(join(real, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(proj)}\n    plur: on\n`)
+    new Plur({ path: link, cwd: proj })
+    expect(registered(real)).toEqual([realpathSync(store)])
   })
 })

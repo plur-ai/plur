@@ -52,6 +52,9 @@ function setup(base: string): void {
     TMPDIR: join(dir, 'tmp'),
     PLUR_PATH: plurRoot,
     PLUR_HOOK_HYBRID: 'off',
+    // Core skips discovery for a PLUR root under the temp folder; this
+    // test-only switch turns that skip off so the discovery cases are real.
+    PLUR_TEST_DISCOVER_IN_TMP: '1',
   }
   delete env.CLAUDE_SESSION_ID
   delete env.PLUR_AUTO_DISCOVER
@@ -177,10 +180,10 @@ describe.skipIf(!posix)('a folder path with a line break is shown escaped, with 
  * The scratch tree lives under the system temp folder (#1588). It used to sit
  * next to the test, inside the checkout, so a PLUR marker in any folder above
  * the checkout decided the fixture's folders. Core's test-safety guard skips
- * discovery for a PLUR root under the temp folder; setup() points TMPDIR at a
- * sibling of the PLUR root, so the guard does not fire and the last case
- * below proves discovery does run here (otherwise this suite would pass
- * whether or not the hooks disable it).
+ * discovery for a PLUR root under the temp folder; setup() sets the
+ * test-only PLUR_TEST_DISCOVER_IN_TMP=1, so the guard does not fire and the
+ * last case below proves discovery does run here (otherwise this suite would
+ * pass whether or not the hooks disable it).
  */
 let SCRATCH = ''
 

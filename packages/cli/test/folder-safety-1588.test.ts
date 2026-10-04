@@ -11,8 +11,9 @@
  *
  * Everything lives under the system temp folder. HOME, USERPROFILE, TMPDIR and
  * PLUR_PATH point inside it in every spawn, so the real ~/.plur is never
- * touched; TMPDIR is a sibling of the PLUR root so core's temp-folder guard
- * does not switch discovery off (the explicit-decision case proves it runs).
+ * touched. PLUR_TEST_DISCOVER_IN_TMP=1 (a test-only switch) turns off core's
+ * skip of discovery for a PLUR root under the temp folder, so the cases are
+ * not vacuous (the explicit-decision case proves discovery runs).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync } from 'fs'
@@ -56,12 +57,12 @@ function configText(): string {
   return existsSync(p) ? readFileSync(p, 'utf8') : ''
 }
 
-/** `plur folders set` from an interactive terminal, where no nonce is needed. */
-function ptySet(args: string[], cwd: string): { status: number | null; out: string } {
+/** The CLI in an interactive terminal: no nonce needed, and text output, not JSON. */
+function ptySet(args: string[], cwd: string, extraEnv: NodeJS.ProcessEnv = {}): { status: number | null; out: string } {
   const r = spawnSync('python3', [
     '-c', 'import os,pty,sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))',
     'node', CLI, ...args,
-  ], { env, cwd, encoding: 'utf-8', timeout: 60_000, input: '' })
+  ], { env: { ...env, COLUMNS: '400', ...extraEnv }, cwd, encoding: 'utf-8', timeout: 60_000, input: '' })
   return { status: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') }
 }
 
@@ -78,7 +79,7 @@ beforeEach(() => {
   env = {
     ...process.env,
     HOME: home, USERPROFILE: home, TMPDIR: join(base, 'tmp'),
-    PLUR_PATH: plurRoot, PLUR_HOOK_HYBRID: 'off',
+    PLUR_PATH: plurRoot, PLUR_HOOK_HYBRID: 'off', PLUR_TEST_DISCOVER_IN_TMP: '1',
   }
   delete env.CLAUDE_SESSION_ID
   delete env.PLUR_AUTO_DISCOVER
@@ -136,5 +137,43 @@ describe.skipIf(!posix)('#1588 a repository store in a folder that is on only by
     const text = inject(proj, 'cc-after')
     expect(text).toContain('ORCHIDLANTERN')
     expect(configText()).toContain(join(proj, '.plur', 'engrams.yaml'))
+  }, 90_000)
+})
+
+describe.skipIf(!posix)('#1589 audit L2: one workspace entry keeps new worktrees on, with no question', () => {
+  it('a new worktree path inside a repository under a workspace entry gets memories, not the question', () => {
+    writeFileSync(join(plurRoot, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(code)}\n    plur: on\n`)
+    for (const name of ['feat-a', 'feat-b']) {
+      const wt = join(proj, '.claude', 'worktrees', name)
+      mkdirSync(wt, { recursive: true })
+      writeFileSync(join(wt, '.git'), 'gitdir: elsewhere\n')
+      const text = inject(wt, `cc-wt-${name}`)
+      expect(text, name).not.toContain('no decision for this folder yet')
+      expect(text, name).toContain('ZEPHYRQUILL')
+    }
+  }, 90_000)
+})
+
+describe.skipIf(!posix)('#1589 audit L3: a store skipped for lack of its own decision is listed with the command that adds it', () => {
+  beforeEach(() => {
+    writeFileSync(join(plurRoot, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(code)}\n    plur: on\n`)
+  })
+
+  it.skipIf(!hasPythonPty)('plur stores list', () => {
+    const out = ptySet(['stores', 'list'], proj)
+    expect(out.status, out.out).toBe(0)
+    expect(out.out.replace(/\r?\n/g, '')).toContain(join(proj, '.plur', 'engrams.yaml'))
+    expect(out.out).toContain(`plur folders set ${proj} --on`)
+    const json = JSON.parse(cli(['stores', 'list', '--json'], '', proj).stdout)
+    expect(json.skipped.map((s: { folder: string }) => s.folder)).toEqual([proj])
+    expect(configText()).not.toContain(join(proj, '.plur'))
+  }, 60_000)
+
+  it.skipIf(!hasPythonPty)('plur doctor', () => {
+    const out = ptySet(['doctor', '--no-handshake'], proj, { PLUR_DISABLE_EMBEDDINGS: '1' })
+    expect(out.out).toContain(join(proj, '.plur', 'engrams.yaml'))
+    expect(out.out).toContain(`plur folders set ${proj} --on`)
+    const json = JSON.parse(cli(['doctor', '--no-handshake', '--json'], '', proj, { PLUR_DISABLE_EMBEDDINGS: '1' }).stdout)
+    expect(json.skippedProjectStores.map((s: { folder: string }) => s.folder)).toEqual([proj])
   }, 90_000)
 })
