@@ -7313,6 +7313,40 @@ export class Plur {
     if (!waited.done) cancel.abandoned = true
   }
 
+  /**
+   * Run a bookkeeping write under the store lock, held to `deadlineAt`
+   * (#1586 re-audit N1) — the same rules as {@link _reactivateWithinDeadline}:
+   * the lock wait is at most {@link RECALL_BOOKKEEPING_LOCK_WAIT_MS} and never
+   * longer than the time left; with no time left the write is skipped; past
+   * the deadline it is abandoned (a lock that comes later is released at once,
+   * and `tooLate()` lets a running write stop before it writes). Without a
+   * deadline it waits for the lock as every writer does.
+   */
+  private async _bookkeepingWithinDeadline(
+    deadlineAt: number | undefined,
+    body: (tooLate: () => boolean) => Promise<void>,
+  ): Promise<void> {
+    if (deadlineAt === undefined || !Number.isFinite(deadlineAt)) {
+      await this._withStoreLock(this.paths.engrams, () => body(() => false))
+      return
+    }
+    const remaining = deadlineAt - Date.now()
+    if (!(remaining > 0)) return
+    let abandoned = false
+    const tooLate = (): boolean => abandoned || Date.now() >= deadlineAt
+    const locked = this._withStoreLock(this.paths.engrams, async () => {
+      if (tooLate()) return
+      await body(tooLate)
+    }, { acquireTimeout: Math.min(RECALL_BOOKKEEPING_LOCK_WAIT_MS, remaining), baseDelay: 25 })
+    const waited = await settleBy(locked, deadlineAt)
+    if (!waited.done) {
+      abandoned = true
+      locked.catch(() => { /* the abandoned waiter's give-up is expected */ })
+      return
+    }
+    if (waited.error !== undefined) throw waited.error
+  }
+
   /** Reactivate accessed engrams and update co-access associations.
    *  `lockWaitMs` (#1586): give up — skip the refresh — when the store lock is
    *  not taken within that time. Unset: wait as every writer does. */
@@ -7635,7 +7669,7 @@ export class Plur {
     // boost exists to resurrect a scope-excluded row.
     const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
     const remote = this._remoteInjectCandidates(remoteResult, options)
-    const result = await this._formatInjection(task, options, boosts, remote)
+    const result = await this._formatInjection(task, options, boosts, remote, deadlineAt)
     // #1586 audit L6: what the server leg did on THIS call, as on recall.
     result.remote = report
     result.results_complete = semanticComplete && (report.state === 'ok' || report.state === 'not_dialed')
@@ -7677,6 +7711,9 @@ export class Plur {
     // injectHybrid supplies this — the BM25-only inject() path NEVER makes a
     // remote call.
     remote?: { engrams: Engram[]; boosts: Map<string, number> },
+    /** injectHybrid's deadline (#1586 re-audit N1): the injection-counter
+     *  write is bounded by it, like recall's bookkeeping write. */
+    deadlineAt?: number,
   ): Promise<InjectionResult> {
     let allEngrams = await this._loadAllEngrams()
     const allPacks = loadAllPacks(this.paths.packs)
@@ -7993,7 +8030,7 @@ export class Plur {
       // but the corpus is the one loaded under this lock, so the fallback is
       // the same shape it always was.
       try {
-        await this._withStoreLock(this.paths.engrams, async () => {
+        await this._bookkeepingWithinDeadline(deadlineAt, async (tooLate) => {
           const primaryEngrams = await this._loadTargeted(injected_ids)
           const injectedSet = new Set(injected_ids)
           const touched: Engram[] = []
@@ -8003,6 +8040,7 @@ export class Plur {
               touched.push(e)
             }
           }
+          if (tooLate()) return
           await this._updateEngrams(primaryEngrams, touched)
         })
       } catch (err) {

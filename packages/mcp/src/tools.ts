@@ -3571,6 +3571,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['task'],
       },
       handler: async (args, plur) => {
+        // #1586 re-audit N4: the injection's deadline counts from when the
+        // request arrived, not from after the warm-up below.
+        const deadline_at = Date.now() + resolveRecallDeadlineMs()
         // #192: fresh canary window per session — health detection is
         // per-session, not per-process. Without this, a single learn_activity
         // signal kept the canary healthy for the whole server lifetime, and
@@ -3735,6 +3738,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             session_id, // stamped on the co_injection provenance event (#452)
             source: 'session_start',
             remote_timeout_ms: 5000, // session_start warm budget (#776)
+            deadline_at,
           })
           injectionReport = { remote: result.remote, results_complete: result.results_complete }
           _recordInjectionTelemetry(session_id, result.injected_packs)

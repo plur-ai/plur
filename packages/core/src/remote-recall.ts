@@ -606,12 +606,23 @@ function applyFieldChanges(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
   skip: ReadonlySet<string>,
+  /** Fields this call observed and must write even when its own value did not
+   *  change (#1586 re-audit N2): the host answered, so `failures`, the
+   *  cooldown and `last_state` are what it saw — whatever another process
+   *  wrote meanwhile. */
+  forced: ReadonlySet<string> = new Set(),
 ): boolean {
   let changed = false
-  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after), ...forced])) {
     if (skip.has(k)) continue
     const b = before[k]
     const a = after[k]
+    if (forced.has(k)) {
+      if (target[k] === a) continue
+      changed = true
+      if (a === undefined) delete target[k]; else target[k] = a
+      continue
+    }
     if (b === a) continue
     changed = true
     if (a === undefined) { delete target[k]; continue }
@@ -644,17 +655,17 @@ function applyFieldChanges(
  */
 function persistHostChanges(
   statePath: string,
-  changes: Array<{ key: string; before: HostHealth; after: HostHealth }>,
+  changes: Array<{ key: string; before: HostHealth; after: HostHealth; forced?: ReadonlySet<string> }>,
 ): void {
   if (changes.length === 0) return
   const readApplyWrite = (): void => {
     const current = readRemoteHealth(statePath)
     let dirty = false
-    for (const { key, before, after } of changes) {
+    for (const { key, before, after, forced } of changes) {
       const cur: HostHealth = { ...(current.hosts[key] ?? {}) }
       let changed = applyFieldChanges(
         cur as Record<string, unknown>, before as Record<string, unknown>, after as Record<string, unknown>,
-        new Set([...PRINT_FIELDS, 'tokens']),
+        new Set([...PRINT_FIELDS, 'tokens']), forced,
       )
       const bt = before.tokens ?? {}
       const at = after.tokens ?? {}
@@ -782,6 +793,8 @@ export function recordWriteOutcome(
       const h: HostHealth = { ...(health.hosts[key] ?? {}) }
       if (ok) {
         h.failures = 0
+        // The host answered: a run of client_slow results is over (re-audit N3).
+        h.client_slow_streak = 0
         // A save proves the host reachable, which ends a network cooldown
         // (timeout / unreachable). A host-wide 429 cooldown is the server's
         // own instruction to back off, not a reachability guess: a save does
@@ -1058,6 +1071,13 @@ export async function remoteRecall(
   const snapshots = new Map<string, HostHealth>()
   const dialedKeys = new Set<string>()
   const trialKeys = new Set<string>()
+  /** Per host, the fields this call observed directly (re-audit N2). */
+  const forcedKeys = new Map<string, Set<string>>()
+  const force = (key: string, ...fields: string[]) => {
+    const set = forcedKeys.get(key) ?? new Set<string>()
+    for (const f of fields) set.add(f)
+    forcedKeys.set(key, set)
+  }
   // #1586 audit L7: the recall deadline aborts what is still in flight.
   const deadlineAt = opts.deadlineAt
   const inflight = new Set<AbortController>()
@@ -1107,6 +1127,7 @@ export async function remoteRecall(
       h.cooldown_until = 0
       delete h.cooldown_opened_at
       delete h.half_open_trial_at
+      force(key, 'cooldown_until', 'cooldown_opened_at', 'half_open_trial_at')
     }
     const networkFailure = (state: 'timeout' | 'unreachable', detail?: string) => {
       h.failures = (h.failures ?? 0) + 1
@@ -1193,6 +1214,7 @@ export async function remoteRecall(
       cancelConnect = undefined
       // The host answered: a run of client_slow results is over (audit L4).
       h.client_slow_streak = 0
+      force(key, 'client_slow_streak')
       // Any answer below 500 proves the host reachable (a 5xx is counted below).
       if (res.status < 500) closeBreakerIfTrial()
 
@@ -1222,7 +1244,7 @@ export async function remoteRecall(
         // rule as the write leg (#1308): it neither counts toward the
         // per-host breaker nor resets it. Counting it let three refused
         // recalls park queued writes to every scope on the host.
-        h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
+        th.forbidden_count = 0 // a non-403 breaks the token's consecutive-403 streak (re-audit N5)
         return finish('unreachable', { detail: 'http_422_refused' })
       }
       if (res.status === 429) {
@@ -1254,6 +1276,10 @@ export async function remoteRecall(
       h.cooldown_until = 0
       delete h.cooldown_opened_at
       delete h.half_open_trial_at
+      // What this call saw: the host answered in full. Written even where the
+      // values look unchanged, so a cooldown another process opened while the
+      // request was in flight is closed (re-audit N2).
+      force(key, 'failures', 'cooldown_until', 'cooldown_opened_at', 'half_open_trial_at')
       const rows = processHostRows(envelope.data.results, host, today)
       const dropped = envelope.data.dropped_scopes
       return finish('ok', {
@@ -1357,9 +1383,13 @@ export async function remoteRecall(
   }
   // Persist, field by field under the file lock, only what this call changed
   // about the hosts it dialed (see persistHostChanges).
-  const changes: Array<{ key: string; before: HostHealth; after: HostHealth }> = []
+  const changes: Array<{ key: string; before: HostHealth; after: HostHealth; forced?: ReadonlySet<string> }> = []
   for (const key of dialedKeys) {
-    changes.push({ key, before: snapshots.get(key) ?? {}, after: JSON.parse(JSON.stringify(health.hosts[key] ?? {})) })
+    const after = JSON.parse(JSON.stringify(health.hosts[key] ?? {})) as HostHealth
+    const forced = new Set(forcedKeys.get(key) ?? [])
+    // last_state is what this call observed, when it observed the host at all.
+    if (after.last_state === 'ok') forced.add('last_state')
+    changes.push({ key, before: snapshots.get(key) ?? {}, after, forced })
   }
   persistHostChanges(statePath, changes)
   return { engrams, scores, outcomes }
