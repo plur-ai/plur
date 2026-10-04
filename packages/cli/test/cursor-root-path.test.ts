@@ -26,4 +26,20 @@ describe('cursorRootPath', () => {
     }
     expect(cursorRootPath('/home/me/proj', true), 'a POSIX path on Windows is not a drive path').toBeNull()
   })
+  // N7 (re-audit of #1583): the Windows forms Cursor may send, normalised.
+  // A real Windows Cursor payload has not been recorded: not verified.
+  it('Windows: /c:/… (VS Code style), c:/…, c:\\… and file:///c:/… all give c:\\…', () => {
+    expect(cursorRootPath('/c:/Users/me/proj', true)).toBe('c:\\Users\\me\\proj')
+    expect(cursorRootPath('/C:/Users/me/proj', true)).toBe('C:\\Users\\me\\proj')
+    expect(cursorRootPath('c:/Users/me/proj', true)).toBe('c:\\Users\\me\\proj')
+    expect(cursorRootPath('c:\\Users\\me\\proj', true)).toBe('c:\\Users\\me\\proj')
+    expect(cursorRootPath('file:///c:/Users/me/proj', true)).toBe('c:\\Users\\me\\proj')
+    expect(cursorRootPath('file:///c%3A/Users/me/proj', true)).toBe('c:\\Users\\me\\proj')
+    expect(cursorRootPath('\\\\server\\share\\proj', true)).toBe('\\\\server\\share\\proj')
+  })
+  it('Windows: forms that are not a drive or UNC path stay unusable', () => {
+    for (const v of ['/Users/me', '\\Users\\me', 'c:proj', '/c:', 'proj']) {
+      expect(cursorRootPath(v, true), v).toBeNull()
+    }
+  })
 })

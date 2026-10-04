@@ -283,19 +283,40 @@ describe('Cursor hooks reach the MCP decision for the workspace (audit of #1583)
     expect(hook('hook-cursor-guard', payload('preToolUse', [ws, gone], { tool_name: 'Shell' }))).toBe('')
   })
 
-  it('L3: roots [alpha, missing folder with no entry] → on, and no scope (the missing root breaks agreement)', () => {
+  it('L3: roots [alpha, missing folder mapped on] → on, and no scope (the missing root breaks agreement)', () => {
     const gone = join(base, 'not-mounted')
-    map([[ws, '    plur: on\n    scope: "project:alpha"\n']])
+    map([[ws, '    plur: on\n    scope: "project:alpha"\n'], [gone, '    plur: on\n    scope: "project:alpha"\n']])
     const out = hook('hook-cursor-session-start', payload('sessionStart', [ws, gone]))
     expect(out).toContain('session started')
     expect(out).not.toContain('Project scope:')
   })
 
+  // N3 (re-audit of #1583): a missing undecided root is asked about, as over MCP.
+  it('N3: roots [on, missing undecided folder] → the question is about the missing folder; nothing loaded, nothing created', () => {
+    const gone = join(base, 'not-mounted')
+    map([[ws, '    plur: on\n'], [plugin, '    plur: on\n']])
+    const out = hook('hook-cursor-session-start', payload('sessionStart', [ws, gone]))
+    expect(out).toContain('no decision for this folder yet')
+    expect(out).toContain(gone)
+    expect(out).not.toContain('session started')
+    expect(existsSync(gone), 'created the missing folder').toBe(false)
+    expect(readFileSync(rule(ws), 'utf8')).toContain('no decision for this folder yet')
+    expect(hook('hook-cursor-guard', payload('preToolUse', [ws, gone], { tool_name: 'Shell' }))).toBe('')
+    expect(captureScope('Probe N3 statement with both roots', [ws, gone])).toBeUndefined()
+  })
+
+  it('N3: roots [missing undecided, undecided] → the first root in order is asked about, as over MCP', () => {
+    const gone = join(base, 'not-mounted')
+    const out = hook('hook-cursor-session-start', payload('sessionStart', [gone, ws]))
+    expect(out).toContain(`Folder: \\"${gone}\\"`)
+  })
+
   // L4: the home folder is never asked about and never gives a scope.
-  it('L4: a single home-folder root, undecided → no question', () => {
+  it('L4/N2: a single home-folder root, undecided → no question; memory on without a scope, as over MCP', () => {
     const out = hook('hook-cursor-session-start', payload('sessionStart', [home]))
     expect(out).not.toContain('no decision for this folder yet')
-    expect(existsSync(rule(home))).toBe(false)
+    expect(out).toContain('session started')
+    expect(out).not.toContain('Project scope:')
   })
 
   it('L4: a single home-folder root mapped on with a scope → memory, but no scope', () => {
@@ -344,5 +365,21 @@ describe('Cursor hooks reach the MCP decision for the workspace (audit of #1583)
     expect(out).toContain('session started')
     expect(out).not.toContain('project:wrong')
     expect(existsSync(rule(real))).toBe(true)
+  })
+
+  // N1 (re-audit of #1583): off is checked on a root's path as given AND resolved.
+  it('N1: a root that is a link inside an off folder, pointing at an on+scoped folder → off in every hook', () => {
+    const blocked = join(base, 'blocked')
+    const target = join(base, 'projects', 'a')
+    mkdirSync(blocked)
+    mkdirSync(target, { recursive: true })
+    const link = join(blocked, 'link')
+    symlinkSync(target, link, 'dir')
+    map([[blocked, '    plur: off\n'], [target, '    plur: on\n    scope: "project:alpha"\n'], [plugin, '    plur: on\n']])
+    expect(hook('hook-cursor-session-start', payload('sessionStart', [link]))).toBe('')
+    expect(hook('hook-cursor-guard', payload('preToolUse', [link], { tool_name: 'Shell' }))).toBe('')
+    expect(captureScope('Probe N1 statement through a link in an off folder', [link])).toBeUndefined()
+    // The same through a payload cwd: the root is the target, the cwd the link.
+    expect(hook('hook-cursor-guard', payload('preToolUse', [target], { tool_name: 'Shell', cwd: link }))).toBe('')
   })
 })
