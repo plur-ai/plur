@@ -5492,12 +5492,12 @@ export class Plur {
     query: string,
     options?: Omit<RecallOptions, 'mode' | 'llm'>,
   ): Promise<{ engrams: Engram[]; remote: RecallRemoteReport; results_complete: boolean; local_complete?: boolean }> {
-    const deadlineAt = Date.now() + resolveRecallDeadlineMs(options?.deadline_ms)
+    const deadlineAt = this._recallDeadlineAt(options)
     const limit = options?.limit ?? 20
 
     // #776: start the remote leg BEFORE the local pipeline so the effective
     // added latency is max(0, remote − local), not remote + local.
-    const remotePromise = this._startRemoteRecall(query, options)
+    const remotePromise = this._startRemoteRecall(query, options, deadlineAt)
 
     const localLeg = async (): Promise<Engram[]> => {
 
@@ -5733,11 +5733,15 @@ export class Plur {
     query: string,
     options?: Omit<RecallOptions, 'mode' | 'llm'>,
   ): Promise<HybridSearchResult> {
-    const deadlineAt = Date.now() + resolveRecallDeadlineMs(options?.deadline_ms)
+    const deadlineAt = this._recallDeadlineAt(options)
     // #776: remote leg starts BEFORE the local pipeline (added latency =
     // max(0, remote − local)); merged below via RRF.
-    const remotePromise = this._startRemoteRecall(query, options)
+    const remotePromise = this._startRemoteRecall(query, options, deadlineAt)
     const limit = options?.limit ?? 20
+    // Stops the abandoned local search's remaining work — the embeddings
+    // cache save in particular — once the deadline has passed (#1586 audit L3).
+    const localAbort = new AbortController()
+    const searchOpts = { signal: localAbort.signal }
     const localLeg = async (): Promise<HybridSearchResult> => {
       // #906: narrowed by the store when provably equivalent, else the full read.
       const filtered = await this._hybridCandidates(query, options)
@@ -5752,7 +5756,7 @@ export class Plur {
       if (intent) {
         result = this.pgliteAdapter
           ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
-          : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
+          : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root, undefined, searchOpts)
         let routed = applyIntentRouting(result.engrams, intent.profile)
         let rerankedCount = result.reranked
         if (rerank) {
@@ -5764,7 +5768,7 @@ export class Plur {
       } else if (this.pgliteAdapter) {
         result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
       } else {
-        result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
+        result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank, searchOpts)
       }
       return result
     }
@@ -5772,6 +5776,7 @@ export class Plur {
     // the same deadline. Past it the reply carries the remote rows and says
     // the local part is missing; the abandoned search finishes in the background.
     const local = await settleBy(localLeg(), deadlineAt)
+    if (!local.done) localAbort.abort()
     if (local.done && local.error !== undefined) throw local.error
     const localComplete = local.done
     let result: HybridSearchResult = local.done
@@ -6855,6 +6860,9 @@ export class Plur {
   private _startRemoteRecall(
     query: string,
     options?: { scope?: string; scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
+    /** The recall's deadline (#1586 audit L7): requests still in flight are
+     *  aborted at it, and hosts that answered keep their rows. */
+    deadlineAt?: number,
   ): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null {
     if (options?.remote === false) return null
     if (isRemoteRecallDisabled()) return null
@@ -6867,6 +6875,7 @@ export class Plur {
       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
       limit: options?.limit,
       statePath: this.remoteHealthStatePath(),
+      ...(deadlineAt !== undefined && Number.isFinite(deadlineAt) ? { deadlineAt } : {}),
     }).then(result => {
       const observed_at = Date.now()
       for (const o of result.outcomes) {
@@ -6904,6 +6913,42 @@ export class Plur {
    * row); RRF scoring itself is order-independent, so this affects identity
    * only, not ranking.
    */
+  /**
+   * Wait for the remote leg until the recall's deadline (#1586). The leg
+   * itself stops at the deadline — it aborts what is still in flight and
+   * keeps what answered (audit L7) — so this normally gets its per-host
+   * outcomes. The fallback, for a leg that still has not settled a moment
+   * after the deadline, reports every dialed host as cut by the deadline.
+   */
+  private async _awaitRemote(
+    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null,
+    deadlineAt: number,
+  ): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
+    if (!remotePromise) return { report: { state: 'not_dialed', hosts: [] } }
+    const waited = Number.isFinite(deadlineAt)
+      ? await settleBy(remotePromise, deadlineAt + Plur.REMOTE_SETTLE_GRACE_MS)
+      : { done: true as const, value: await remotePromise }
+    if (!waited.done || !waited.value) {
+      const hosts = (remotePromise.hostUrls ?? []).map(u => ({
+        host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, detail: 'recall_deadline',
+      }))
+      return { report: { state: hosts.length > 0 ? 'timeout' : 'not_dialed', hosts } }
+    }
+    return { result: waited.value, report: buildRecallRemoteReport(waited.value.outcomes) }
+  }
+
+  /** How long past the deadline to wait for a remote leg that is already
+   *  settling (it aborts its own requests just before the deadline). */
+  private static readonly REMOTE_SETTLE_GRACE_MS = 100
+
+  /** The recall's absolute deadline: `deadline_at` when the caller took it,
+   *  else now + `deadline_ms` (env and default as {@link resolveRecallDeadlineMs}). */
+  private _recallDeadlineAt(options?: { deadline_ms?: number; deadline_at?: number }): number {
+    const at = options?.deadline_at
+    if (typeof at === 'number' && Number.isFinite(at)) return at
+    return Date.now() + resolveRecallDeadlineMs(options?.deadline_ms)
+  }
+
   private async _mergeRemoteRecall(
     local: Engram[],
     remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null,
@@ -6914,20 +6959,8 @@ export class Plur {
   ): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }> {
     // Team rows from a warm cache sit among the local results (#1532 re-audit R2).
     this._noteSeenRows(local)
-    if (!remotePromise) return { engrams: local, remote: { state: 'not_dialed', hosts: [] } }
-    const waited = Number.isFinite(deadlineAt)
-      ? await settleBy(remotePromise, deadlineAt)
-      : { done: true as const, value: await remotePromise }
-    if (!waited.done || !waited.value) {
-      // The recall deadline came first. The leg keeps running and records its
-      // own outcome for the breaker; THIS call says it did not get an answer.
-      const hosts = (remotePromise.hostUrls ?? []).map(u => ({
-        host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, detail: 'recall_deadline',
-      }))
-      return { engrams: local, remote: { state: hosts.length > 0 ? 'timeout' : 'not_dialed', hosts } }
-    }
-    const remote = waited.value
-    const report = buildRecallRemoteReport(remote.outcomes)
+    const { result: remote, report } = await this._awaitRemote(remotePromise, deadlineAt)
+    if (!remote) return { engrams: local, remote: report }
     const rows = this._filterRemoteRows(remote.engrams, options)
     if (rows.length === 0) return { engrams: local, remote: report }
     const merged = pgliteRrfMerge([rows, local]).slice(0, limit)
@@ -6944,12 +6977,11 @@ export class Plur {
    * anything > 0.5). Boost = 0.55 + 0.45·score, so every server-ranked row
    * clears the 0.5 semantic threshold and the server's top row maps to 1.0.
    */
-  private async _remoteInjectCandidates(
-    remotePromise: Promise<RemoteRecallResult> | null,
+  private _remoteInjectCandidates(
+    remote: RemoteRecallResult | undefined,
     options?: InjectOptions,
-  ): Promise<{ engrams: Engram[]; boosts: Map<string, number> } | undefined> {
-    if (!remotePromise) return undefined
-    const remote = await remotePromise
+  ): { engrams: Engram[]; boosts: Map<string, number> } | undefined {
+    if (!remote) return undefined
     if (remote.engrams.length === 0) return undefined
     const permitted = options?.scopes
     let rows = remote.engrams.filter(e => e.status === 'active')
@@ -7265,17 +7297,29 @@ export class Plur {
    * refresh lands before the reply.
    */
   private async _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void> {
-    const work = this._reactivateResults(results, { lockWaitMs: RECALL_BOOKKEEPING_LOCK_WAIT_MS })
-      .catch(err => {
-        logger.debug(`[plur:recall] activation refresh skipped: ${(err as Error).message}`)
-      })
-    await settleBy(work, deadlineAt)
+    // The lock wait is bounded by the time left (#1586 audit L3), so the lock
+    // is never taken after the reply; with no time left the refresh is skipped.
+    const remaining = deadlineAt - Date.now()
+    if (!(remaining > 0)) return
+    const cancel = { abandoned: false }
+    const work = this._reactivateResults(results, {
+      lockWaitMs: Math.min(RECALL_BOOKKEEPING_LOCK_WAIT_MS, remaining), deadlineAt, cancel,
+    }).catch(err => {
+      logger.debug(`[plur:recall] activation refresh skipped: ${(err as Error).message}`)
+    })
+    const waited = await settleBy(work, deadlineAt)
+    // Past the deadline the refresh is abandoned: a lock that comes later is
+    // released at once, and a refresh already running stops before its write.
+    if (!waited.done) cancel.abandoned = true
   }
 
   /** Reactivate accessed engrams and update co-access associations.
    *  `lockWaitMs` (#1586): give up — skip the refresh — when the store lock is
    *  not taken within that time. Unset: wait as every writer does. */
-  private async _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number }): Promise<void> {
+  private async _reactivateResults(
+    results: Engram[],
+    opts?: { lockWaitMs?: number; deadlineAt?: number; cancel?: { abandoned: boolean } },
+  ): Promise<void> {
     // Read-only instance: SKIP the activation refresh, silently (#731). Recall
     // is a read and must succeed on a read-only engine; the write it piggy-
     // backs (retrieval_strength / last_accessed / frequency / co-access edges)
@@ -7302,9 +7346,12 @@ export class Plur {
     const lockOptions: AsyncLockOptions | undefined = opts?.lockWaitMs !== undefined
       ? { acquireTimeout: opts.lockWaitMs, baseDelay: 25 }
       : undefined
+    /** The reply has gone (or is going) out: no write behind its back. */
+    const tooLate = (): boolean => abandoned || opts?.cancel?.abandoned === true
+      || (opts?.deadlineAt !== undefined && Date.now() >= opts.deadlineAt)
     const locked = this._withStoreLock(this.paths.engrams, async () => {
       acquired = true
-      if (abandoned) return
+      if (tooLate()) return
       const resultIds = new Set(primaryResults.map(e => e.id))
       // Read only the engrams this recall touched, when the store can.
       // Everything below is keyed by id — the reactivation targets `resultIds`
@@ -7405,6 +7452,7 @@ export class Plur {
       }
 
       if (touched.size === 0) return
+      if (tooLate()) return
 
       if (canTarget) {
         // Targeted: rewrites the handful of rows a recall actually touched.
@@ -7441,6 +7489,8 @@ export class Plur {
     // embedding work below and REPLACES the old hook `tryRemoteInject`
     // remote-first POST /inject path, so a prompt costs at most ONE remote
     // call per host.
+    // #1586 audit L6: the same end-to-end deadline as recall.
+    const deadlineAt = this._recallDeadlineAt(options)
     const remotePromise = this._startRemoteRecall(task, {
       scope: options?.scope,
       // The authorization allow-list bounds dialing too (#1515 audit F2).
@@ -7455,7 +7505,7 @@ export class Plur {
       remote: options?.remote,
       remote_timeout_ms: options?.remote_timeout_ms,
       remote_project: options?.remote_project,
-    })
+    }, deadlineAt)
     // Use actual cosine similarity scores as boosts so the 0.5 threshold in
     // selectAndSpread is meaningful. (Pre-0.9.4 used rank-based 1/(1+i*0.1)
     // which gave the top result boost=1.0 even when its cosine was 0.4 —
@@ -7467,6 +7517,10 @@ export class Plur {
     // failure and returns null, and this catch was silent, so the injection
     // quietly ran on keyword matching only and nobody could tell.
     let embedFailure: string | null = null
+    // Stops the abandoned semantic leg's remaining work (the embeddings cache
+    // save in particular) once the deadline has passed (#1586 audit L3).
+    const semanticAbort = new AbortController()
+    const semanticLeg = async (): Promise<void> => {
     try {
       const engrams = (await this._loadAllEngrams()).filter(e => e.status === 'active')
       // Route through PGLite/pgvector when active (#226 B-1), intersecting hits
@@ -7497,7 +7551,7 @@ export class Plur {
         }
       }
       if (results.length === 0) {
-        results = await embeddingSearchWithScores(engrams, task, engrams.length, this.paths.root)
+        results = await embeddingSearchWithScores(engrams, task, engrams.length, this.paths.root, { signal: semanticAbort.signal })
       }
       // Cross-encoder rerank stage (#220): replace the cosine boosts for the
       // top-K with the reranker's relevance, min-max normalized into [0,1] so
@@ -7562,15 +7616,39 @@ export class Plur {
       embedFailure = (err as Error)?.message ?? String(err)
       logger.warning(`[plur] injectHybrid: embeddings failed (${embedFailure}) — keyword-only injection.`)
     }
+    }
+    // The semantic leg (corpus load, embedder, reranker) is bounded by the
+    // deadline; past it the injection runs on keyword matching and says so.
+    const semantic = await settleBy(semanticLeg(), deadlineAt)
+    const semanticComplete = semantic.done
+    if (!semanticComplete) {
+      semanticAbort.abort()
+      embeddingBoosts = undefined
+    }
+    const boosts = embeddingBoosts
     // A swallowed failure shows in the embedder's status. Embeddings the USER
     // turned off (`disabled`) are a choice, not a degradation: never flagged.
     const st = embedderStatus()
-    if (!embedFailure && !st.disabled && !st.available) embedFailure = st.lastError ?? 'embedder unavailable'
+    if (semanticComplete && !embedFailure && !st.disabled && !st.available) embedFailure = st.lastError ?? 'embedder unavailable'
     // #776: server rows join the candidate pool + boost channel. Visibility/
     // authorization run over them INSIDE _remoteInjectCandidates, before any
     // boost exists to resurrect a scope-excluded row.
-    const remote = await this._remoteInjectCandidates(remotePromise, options)
-    const result = await this._formatInjection(task, options, embeddingBoosts, remote)
+    const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
+    const remote = this._remoteInjectCandidates(remoteResult, options)
+    const result = await this._formatInjection(task, options, boosts, remote)
+    // #1586 audit L6: what the server leg did on THIS call, as on recall.
+    result.remote = report
+    result.results_complete = semanticComplete && (report.state === 'ok' || report.state === 'not_dialed')
+    if (!semanticComplete) {
+      // Cut by the deadline — not an embedder fault, so no operator log line.
+      if (st.disabled) {
+        result.mode = 'bm25-only'
+      } else {
+        result.mode = 'hybrid-degraded'
+        result.embedder_error = 'semantic search did not finish within the deadline'
+      }
+      return result
+    }
     // Reported as structured fields mirroring `HybridSearchResult`, not as a
     // `warnings` line: `warnings` is rendered into the injected context on
     // every prompt, and an install without the model would repeat the same

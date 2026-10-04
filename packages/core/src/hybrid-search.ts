@@ -1,7 +1,7 @@
 import type { RecallRemoteReport } from './remote-recall.js'
 import type { Engram } from './schemas/engram.js'
 import { searchEngrams } from './fts.js'
-import { embeddingSearch, embedderStatus } from './embeddings.js'
+import { embeddingSearch, embedderStatus, type EmbeddingSearchOptions } from './embeddings.js'
 import { rewriteLexicalQuery, isQueryRewriteDisabled } from './intent/rewrite.js'
 import { logger } from './logger.js'
 import type { RerankerAdapter } from './rerankers/types.js'
@@ -148,6 +148,9 @@ export async function hybridSearchWithMeta(
   limit: number,
   storagePath?: string,
   rerank?: RerankOptions,
+  /** `signal` (#1586 audit L3): the caller stopped waiting — the embedding
+   *  leg stops and does not save its cache. */
+  opts?: EmbeddingSearchOptions,
 ): Promise<HybridSearchResult> {
   if (engrams.length === 0) {
     return { engrams: [], mode: 'hybrid', embedderError: null, topScore: null, reranked: 0 }
@@ -166,7 +169,7 @@ export async function hybridSearchWithMeta(
 
   const [bm25Results, embResults] = await Promise.all([
     Promise.resolve(searchEngrams(engrams, lexicalQuery, bm25Limit)),
-    embeddingSearch(engrams, query, embLimit, storagePath),
+    embeddingSearch(engrams, query, embLimit, storagePath, opts),
   ])
 
   const status = embedderStatus()

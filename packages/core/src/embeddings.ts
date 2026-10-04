@@ -357,6 +357,13 @@ export function mergeEmbeddingsIntoCache(
   return written
 }
 
+/** Options for the embedding searches (#1586 audit L3). */
+export interface EmbeddingSearchOptions {
+  /** Aborted when the caller stopped waiting (a recall past its deadline):
+   *  the search embeds nothing more and does not save the cache. */
+  signal?: AbortSignal
+}
+
 /**
  * Semantic search using embeddings.
  * Computes embedding for query, compares against cached engram embeddings.
@@ -367,6 +374,7 @@ export async function embeddingSearch(
   query: string,
   limit: number,
   storagePath?: string,
+  opts?: EmbeddingSearchOptions,
 ): Promise<Engram[]> {
   if (engrams.length === 0) return []
 
@@ -400,7 +408,9 @@ export async function embeddingSearch(
       // Cache hit
       engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
-      // Cache miss — compute embedding from enriched text
+      // Cache miss — compute embedding from enriched text. Nobody is waiting
+      // for an aborted search: stop here, and leave the cache as it was.
+      if (opts?.signal?.aborted) return []
       const emb = await embed(searchText)
       if (!emb) return [] // model unloaded mid-search
       engramEmbedding = emb
@@ -414,7 +424,9 @@ export async function embeddingSearch(
     similarities.push({ engram, score })
   }
 
-  // Save updated cache
+  // Save updated cache — unless the caller stopped waiting (#1586 audit L3):
+  // a write after the reply can be cut short by the process exiting.
+  if (opts?.signal?.aborted) return []
   saveCache(cachePath, cache)
 
   // Sort by similarity (descending) and return top N
@@ -437,6 +449,7 @@ export async function embeddingSearchWithScores(
   query: string,
   limit: number,
   storagePath?: string,
+  opts?: EmbeddingSearchOptions,
 ): Promise<SimilarityResult[]> {
   if (engrams.length === 0) return []
 
@@ -468,7 +481,9 @@ export async function embeddingSearchWithScores(
       // Cache hit
       engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
-      // Cache miss — compute embedding from enriched text
+      // Cache miss — compute embedding from enriched text. Nobody is waiting
+      // for an aborted search: stop here, and leave the cache as it was.
+      if (opts?.signal?.aborted) return []
       const emb = await embed(searchText)
       if (!emb) return [] // model unloaded mid-search
       engramEmbedding = emb
@@ -486,7 +501,9 @@ export async function embeddingSearchWithScores(
     similarities.push({ engram, score })
   }
 
-  // Save updated cache
+  // Save updated cache — unless the caller stopped waiting (#1586 audit L3):
+  // a write after the reply can be cut short by the process exiting.
+  if (opts?.signal?.aborted) return []
   saveCache(cachePath, cache)
 
   // Sort by similarity (descending) and return top N with scores

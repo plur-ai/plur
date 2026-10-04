@@ -1,5 +1,6 @@
 import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { InjectionSource } from './history.js'
+import type { RecallRemoteReport } from './remote-recall.js'
 export type { Engram, KnowledgeAnchor, Association, MeasuredUnder } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
@@ -277,6 +278,11 @@ export interface RecallOptions {
    *  within it with whatever is ready and reports what is missing. Default
    *  10 s; env PLUR_RECALL_DEADLINE_MS wins. */
   deadline_ms?: number
+  /** The same deadline as an absolute time (epoch ms), for a caller that
+   *  started its clock before calling — e.g. the MCP handler, whose own
+   *  awaits (workspace resolution) count against the reply (#1586 audit L1).
+   *  Wins over `deadline_ms`. */
+  deadline_at?: number
   /** `.plur.yaml` remote endpoint — establishes the org context for dialing
    *  on the hook path (#776). See {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig
@@ -335,6 +341,10 @@ export interface InjectOptions {
   remote?: boolean
   /** Per-call remote budget in ms — see {@link RecallOptions.remote_timeout_ms}. */
   remote_timeout_ms?: number
+  /** End-to-end deadline for `injectHybrid` — see {@link RecallOptions.deadline_ms} (#1586 audit L6). */
+  deadline_ms?: number
+  /** Absolute form — see {@link RecallOptions.deadline_at}. */
+  deadline_at?: number
   /** `.plur.yaml` remote endpoint (hook path org context) — see
    *  {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig
@@ -368,6 +378,13 @@ export interface InjectionResult {
    */
   mode?: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   embedder_error?: string
+  /** Set by `injectHybrid` (#1586 audit L6): what the remote (server) leg
+   *  did on THIS call, as on recall. */
+  remote?: RecallRemoteReport
+  /** Set by `injectHybrid`: false when a leg that should have contributed did
+   *  not — a dialed host was not ok, or the semantic leg was cut by the
+   *  deadline. */
+  results_complete?: boolean
   /**
    * Pinned engrams that did NOT make this injection, with what each would have
    * cost and which cap it lost to (#1142).
