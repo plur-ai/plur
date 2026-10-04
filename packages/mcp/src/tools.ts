@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
@@ -138,6 +138,10 @@ function attachRemoteStoreDegradation(response: Record<string, unknown>, plur: P
  * deprecation notice, so the two cannot drift before the 0.18 removal.
  */
 const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
+  // #1586 audit L1: the deadline starts HERE, before this handler awaits
+  // anything (workspace resolution asks the client for its roots), so the
+  // reply is bounded end to end, not from the moment core starts.
+  const deadline_at = Date.now() + resolveRecallDeadlineMs()
   const mode = (args.mode as string | undefined) ?? 'hybrid'
   if (mode === 'keyword') {
     // `await` added on merge: `recall()` is async as of the Phase 2 write-path
@@ -148,6 +152,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       domain: args.domain as string | undefined,
       limit: args.limit as number | undefined,
       remote_timeout_ms: 2000, // MCP recall remote budget (#776)
+      deadline_at,
       // #243: session default scope (incl. mid-session plur_session_scope
       // changes) establishes the remote dialing org context when no explicit
       // scope filter is passed. Same rule as writes (E7, formal R2): not
@@ -212,6 +217,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     domain: args.domain as string | undefined,
     limit: fetchLimit,
     remote_timeout_ms: 2000, // MCP recall remote budget (#776)
+    deadline_at,
     // #243: session default scope (incl. mid-session plur_session_scope
     // changes) establishes the remote dialing org context when no explicit
     // scope filter is passed. Same rule as writes (E7, formal R2), and the
@@ -2199,6 +2205,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['task'],
       },
       handler: async (args, plur) => {
+        // #1586 audit L6: one deadline from handler entry, as plur_recall.
+        const deadline_at = Date.now() + resolveRecallDeadlineMs()
         // E7: an ambiguous/absent session passes NO_SESSION (no session default).
         const session_id = _resolveWriteSession(args)
         const result = await plur.injectHybrid(args.task as string, {
@@ -2206,6 +2214,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: args.scope as string | undefined,
           source: 'inject',
           session_id,
+          deadline_at,
           // #1566: the dialing context follows the same rule as writes — the
           // workspace's scope when the session has no default of its own.
           // session_id above stays the caller's for attribution.
@@ -2228,6 +2237,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         // A4′ (#776): per-host remote degradation — only when non-ok.
         attachRemoteStoreDegradation(response, plur)
+        // #1586 audit L6: what the server leg did on THIS call.
+        attachRecallReport(response, result)
         return response
       },
     },
@@ -3716,6 +3727,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         // Inject relevant engrams
         let engrams: { text: string; count: number; injected_ids: string[] } | null = null
+        // #1586 audit L6: what the injection's server leg did on THIS call.
+        let injectionReport: { remote?: RecallRemoteReport; results_complete?: boolean } = {}
         try {
           const result = await plur.injectHybrid(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
@@ -3723,6 +3736,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             source: 'session_start',
             remote_timeout_ms: 5000, // session_start warm budget (#776)
           })
+          injectionReport = { remote: result.remote, results_complete: result.results_complete }
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
             // CONSTRAINTS FIRST — deliberate, do not "restore" the old order.
@@ -3967,6 +3981,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           ...(default_scope ? { default_scope, scope_source } : {}),
           ...(default_domain ? { default_domain, domain_source: 'project-config' as const } : {}),
           ...(projectConfig.warning ? { project_config_warning: projectConfig.warning } : {}),
+          // #1586 audit L6: the injection's per-call remote report (added fields).
+          remote: injectionReport.remote ?? { state: 'not_dialed', hosts: [] },
+          results_complete: injectionReport.results_complete ?? false,
           // Ask LLM to check back — MCP can't push, but we can request a follow-up
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'

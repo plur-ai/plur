@@ -79,6 +79,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       tokens_used: result.tokens_used,
       // #1142: pinned engrams the budget dropped. Absent when none were.
       ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
+      // #1586 audit L6: what the server leg did on this call (added fields).
+      // The keyword path (--fast) never dials.
+      remote: result.remote ?? { state: 'not_dialed', hosts: [] },
+      results_complete: result.results_complete ?? true,
     })
   } else {
     // CONSTRAINTS FIRST — matches @plur-ai/mcp and @plur-ai/dsh. Consumers

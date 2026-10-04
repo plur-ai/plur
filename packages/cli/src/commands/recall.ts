@@ -47,15 +47,30 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // An off folder, an undecided one (unscoped) or a broken folder map
   // contacts no store at all; local memory is read either way.
   const { session, remote } = folderReadContext(plur, scope)
-  const engrams = flags.fast
-    ? await plur.recall(query, { limit, scope, domain, session, remote })
-    : await plur.recallHybrid(query, { limit, scope, domain, session, remote })
+  // The *WithMeta forms (#1586 audit L6): same results, plus what the server
+  // leg did on this call and whether the results are complete.
+  const meta = flags.fast
+    ? await plur.recallWithMeta(query, { limit, scope, domain, session, remote })
+    : await plur.recallHybridWithMeta(query, { limit, scope, domain, session, remote })
+  // recallHybrid() sliced to the limit; recall() did not — unchanged.
+  const engrams = flags.fast ? meta.engrams : meta.engrams.slice(0, limit ?? 20)
+  const report = {
+    remote: meta.remote ?? { state: 'not_dialed' as const, hosts: [] },
+    results_complete: meta.results_complete ?? true,
+  }
+  // An incomplete answer is never presented as a plain "no results": say what
+  // is missing (stderr, so piped text output stays the results only).
+  const incompleteNote = report.results_complete ? null
+    : meta.local_complete === false
+      ? 'Note: the local search did not finish within the recall deadline — results are incomplete; retrying is fine.'
+      : `Note: the team store did not answer this call (${report.remote.state}) — results may be missing team engrams.`
 
   if (engrams.length === 0) {
     if (shouldOutputJson(flags)) {
-      outputJson({ results: [], count: 0 })
+      outputJson({ results: [], count: 0, ...report })
     } else {
-      outputText('No results found.')
+      outputText(report.results_complete ? 'No results found.' : 'No results found — the search was incomplete.')
+      if (incompleteNote) process.stderr.write(`${incompleteNote}\n`)
     }
     exit(2)
   }
@@ -74,11 +89,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         strength: e.activation.retrieval_strength,
       })),
       count: engrams.length,
+      ...report,
     })
   } else {
     engrams.forEach((e, idx) => {
       outputText(`${idx + 1}. [${e.id}] ${e.statement}`)
       outputText(`   Scope: ${e.scope} | Type: ${e.type}${e.domain ? ` | Domain: ${e.domain}` : ''} | Strength: ${e.activation.retrieval_strength.toFixed(3)}`)
     })
+    if (incompleteNote) process.stderr.write(`${incompleteNote}\n`)
   }
 }
