@@ -2,12 +2,11 @@
 
 ## 0.21.2
 
-Your folders, your memory, and recall that always answers.
+Your folders, your memory.
 
-- Cloned repos can't add memory without your OK
-- Recall replies within 10 seconds, every time
-- Each reply says what the team server did
-- Keyword answers while the model downloads
+- Cloned repos ask before adding memory
+- Recall always answers within 10 s
+- Replies show what the team server did
 
 ### A folder inherits less from the folders above it (#1588, #1589)
 
