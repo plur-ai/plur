@@ -1,8 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.21.2
 
-### A folder inherits less from the folders above it (#1588)
+Your folders, your memory.
+
+- Repos ask before adding memory
+- Recall answers within 10 s
+- Replies show the server's state
+- Search works during model download
+
+### A folder inherits less from the folders above it (#1588, #1589)
 
 - **Some folders that were on only through a parent now ask once.** A PLUR marker (an MCP config that names plur, or a `.plur.yaml`) used to switch memory on for every folder below it, including repositories cloned underneath. Now the search for a marker stops at the repository root, the same way the `.plur.yaml` lookup already did. A repository below a folder with a marker gets the one-time "no decision for this folder yet" question instead. Answer it once, or run `plur folders set <repo> --on`.
 - **Repositories inside another repository ask too.** This covers submodules and worktrees kept inside a repository, for example under `.claude/worktrees/`. A marker in the outer repository's root no longer reaches them, so each one asks once, and so does each new worktree path. Memory stays off there until someone answers.
@@ -14,7 +21,7 @@
 - **A folder reached through a symlink is checked at its real location.** Inside a repository, a symlinked folder finds the same `.plur.yaml` as its real path, and never one above the repository.
 - Stores already listed in `~/.plur/config.yaml` are kept. To remove one you did not mean to add, run `plur stores list` to find it, then remove its entry from `config.yaml`.
 
-### Team-memory recall no longer stalls or goes quiet on a slow start, and every recall says what the server did (#1586)
+### Team-memory recall no longer stalls or goes quiet on a slow start, and every recall says what the server did (#1586, #1587)
 
 Found by the 0.21.1 post-release smoke run: saves reached the team server while recalls hung, returned nothing after 7 s, or paused team memory for five minutes. The server was healthy; the causes were in the client.
 
