@@ -65,7 +65,7 @@ describe('commandSpawn (#1603)', () => {
     expect(spec.file).toBe('C:\\Windows\\system32\\cmd.exe')
     expect(spec.windowsVerbatimArguments).toBe(true)
     expect(spec.args).toEqual([
-      '/d', '/s', '/c',
+      '/d', '/v:off', '/s', '/c',
       `""${join(dir, 'codex.cmd')}" "mcp" "add" "plur" "--" "C:\\Program Files\\nodejs\\node.exe" "C:\\a&b (x)\\index.js" "C:\\dir\\\\""`,
     ])
   })
@@ -77,7 +77,7 @@ describe('commandSpawn (#1603)', () => {
       writeFileSync(join(dir, 'codex.cmd'), '')
       const spec = commandSpawn('codex', ['mcp', 'list'], undefined, { PATH: dir })
       expect(spec.file).toBe('cmd.exe')
-      expect(spec.args.slice(0, 3)).toEqual(['/d', '/s', '/c'])
+      expect(spec.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c'])
     } finally {
       Object.defineProperty(process, 'platform', { value: real })
     }
@@ -127,18 +127,18 @@ describe('resolveCodexBinary (#1603)', () => {
   it('picks codex.cmd over npm\'s extensionless sh shim on PATH', () => {
     writeFileSync(join(pathDir, 'codex'), '#!/bin/sh\n')
     writeFileSync(join(pathDir, 'codex.cmd'), '@echo off\r\n')
-    expect(resolveCodexBinary({ PATH: pathDir, PATHEXT: '.COM;.EXE;.BAT;.CMD', CODEX_HOME: codexHome }, 'win32'))
+    expect(resolveCodexBinary({ PATH: pathDir, PATHEXT: '.COM;.EXE;.BAT;.CMD', CODEX_HOME: codexHome }, 'win32', 'x64'))
       .toEqual({ path: join(pathDir, 'codex.cmd'), source: 'path' })
   })
 
   it('never uses the extensionless shim alone', () => {
     writeFileSync(join(pathDir, 'codex'), '#!/bin/sh\n')
-    expect(resolveCodexBinary({ PATH: pathDir, PATHEXT: '.COM;.EXE;.BAT;.CMD', CODEX_HOME: codexHome }, 'win32')).toBeNull()
+    expect(resolveCodexBinary({ PATH: pathDir, PATHEXT: '.COM;.EXE;.BAT;.CMD', CODEX_HOME: codexHome }, 'win32', 'x64')).toBeNull()
   })
 
   it('falls back to the Codex app\'s bundled codex.exe when none is on PATH', () => {
     const exe = appRelease('0.160.0-x86_64-pc-windows-msvc')
-    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32')).toEqual({ path: exe, source: 'app' })
+    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32', 'x64')).toEqual({ path: exe, source: 'app' })
   })
 
   it('chooses the newest app release by version, not by name', () => {
@@ -146,33 +146,33 @@ describe('resolveCodexBinary (#1603)', () => {
     const newest = appRelease('0.160.0-x86_64-pc-windows-msvc')
     appRelease('0.159.2-x86_64-pc-windows-msvc')
     mkdirSync(join(codexHome, 'packages', 'app-server-daemon', 'releases', '0.200.0-x86_64-pc-windows-msvc')) // no bin
-    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32')).toEqual({ path: newest, source: 'app' })
+    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32', 'x64')).toEqual({ path: newest, source: 'app' })
   })
 
   it('prefers a codex on PATH over the app binary', () => {
     appRelease('0.160.0-x86_64-pc-windows-msvc')
     writeFileSync(join(pathDir, 'codex.cmd'), '')
-    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32')?.source).toBe('path')
+    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32', 'x64')?.source).toBe('path')
   })
 
-  it('on darwin/linux, finds an executable codex on PATH, else the app binary without .exe', () => {
-    const app = appRelease('0.160.0-aarch64-apple-darwin', 'codex')
-    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'darwin')).toEqual({ path: app, source: 'app' })
+  it('on darwin/linux, finds an executable codex on PATH and never the app binary (audit M1)', () => {
+    appRelease('0.160.0-aarch64-apple-darwin', 'codex')
+    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'darwin', 'arm64')).toBeNull()
     writeFileSync(join(pathDir, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
-    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'darwin')).toEqual({ path: join(pathDir, 'codex'), source: 'path' })
+    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'darwin', 'arm64')).toEqual({ path: join(pathDir, 'codex'), source: 'path' })
   })
 
   it('returns null when Codex is nowhere', () => {
-    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32')).toBeNull()
+    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32', 'x64')).toBeNull()
   })
 
   it('codexInstalled (doctor): a Codex home, a codex on PATH, or neither', () => {
-    expect(codexInstalled({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32')).toBe(false)
+    expect(codexInstalled({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32', 'x64')).toBe(false)
     writeFileSync(join(pathDir, 'codex.cmd'), '')
-    expect(codexInstalled({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32')).toBe(true)
+    expect(codexInstalled({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32', 'x64')).toBe(true)
     rmSync(join(pathDir, 'codex.cmd'))
     appRelease('0.160.0-x86_64-pc-windows-msvc')
-    expect(codexInstalled({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32')).toBe(true)
+    expect(codexInstalled({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32', 'x64')).toBe(true)
   })
 })
 
@@ -201,8 +201,8 @@ describe('plur init --codex with an npm codex.cmd on PATH (#1603, win32 preload)
   it('registers plur through cmd.exe + codex.cmd, with node (not a .cmd) as the server command', () => {
     writeFileSync(join(bin, 'codex.cmd'), '@echo off\r\n')
     writeFileSync(join(bin, 'codex'), '#!/bin/sh\necho "sh shim must not run" >&2\nexit 7\n', { mode: 0o755 })
-    // Stand-in cmd.exe: records the /c command line; answers nothing.
-    writeFileSync(join(bin, 'cmd.exe'), `#!/bin/sh\nprintf '%s\\n' "$4" >> "${log}"\nexit 0\n`, { mode: 0o755 })
+    // Stand-in cmd.exe: records the /c command line (its last argument); answers nothing.
+    writeFileSync(join(bin, 'cmd.exe'), `#!/bin/sh\nfor a; do last="$a"; done\nprintf '%s\\n' "$last" >> "${log}"\nexit 0\n`, { mode: 0o755 })
     const out = run([bin, '/usr/bin', '/bin'])
     expect(out).toContain('MCP server: registered via `codex mcp add`')
     expect(out).toContain(`(${join(bin, 'codex.cmd')})`)
@@ -216,7 +216,8 @@ describe('plur init --codex with an npm codex.cmd on PATH (#1603, win32 preload)
   })
 
   it('falls back to the Codex app\'s bundled codex.exe when no codex is on PATH, and names it', () => {
-    const appBin = join(home, '.codex', 'packages', 'app-server-daemon', 'releases', '0.160.0-x86_64-pc-windows-msvc', 'bin')
+    const triple = process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc'
+    const appBin = join(home, '.codex', 'packages', 'app-server-daemon', 'releases', `0.160.0-${triple}`, 'bin')
     mkdirSync(appBin, { recursive: true })
     const appLog = join(home, 'app.log')
     writeFileSync(join(appBin, 'codex.exe'), `#!/bin/sh\necho "$*" >> "${appLog}"\nexit 0\n`, { mode: 0o755 })

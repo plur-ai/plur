@@ -29,6 +29,7 @@ import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier,
 import { plurRoot } from '../lib/folder-gate.js'
 import { repairAdvice, repairCommandFor } from './folders.js'
 import { codexInstalled } from '../lib/codex-binary.js'
+import { commandSpawn } from '../lib/command-spawn.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -757,8 +758,12 @@ async function mcpHandshake(
 
     let proc: ReturnType<typeof spawn>
     try {
-      proc = spawn(entry.command, entry.args, {
+      // On Windows a configured `npx` or `.cmd` cannot be spawned directly
+      // (ENOENT / EINVAL); resolve it the way init runs Codex (#1603).
+      const spec = commandSpawn(entry.command, entry.args)
+      proc = spawn(spec.file, spec.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
+        ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         ...(spawnEnv ? { env: spawnEnv } : {}),
       })
     } catch (err: unknown) {
@@ -1154,11 +1159,15 @@ export function embeddingNetworkHint(
   lastError: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
   nodeVersion: string = process.versions.node,
+  execArgv: string[] = process.execArgv,
 ): string[] {
   if (!lastError || !/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_CONNECT/i.test(lastError)) return []
   const [major, minor] = nodeVersion.split('.').map(Number)
   const supported = major >= 24 || (major === 22 && minor >= 21)
   const proxy = env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy
+  // The flag form (`--use-env-proxy`, Node 24.5+ / 22.21+) turns it on as well.
+  const useEnvProxy = env.NODE_USE_ENV_PROXY === '1' || execArgv.includes('--use-env-proxy') ||
+    /(^|\s)--use-env-proxy(\s|$)/.test(env.NODE_OPTIONS ?? '')
   const lines = [
     '  Network error. The model is downloaded with Node\'s built-in fetch, which ignores',
     '  HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 is also set.',
@@ -1166,10 +1175,10 @@ export function embeddingNetworkHint(
   if (!supported) {
     lines.push(`  This Node (v${nodeVersion}) has no NODE_USE_ENV_PROXY; behind a proxy, use Node 22.21+ or 24+`)
     lines.push('  and set HTTPS_PROXY=http://<proxy>:<port> plus NODE_USE_ENV_PROXY=1.')
-  } else if (proxy && env.NODE_USE_ENV_PROXY !== '1') {
+  } else if (proxy && !useEnvProxy) {
     lines.push('  HTTPS_PROXY is set, but the download will ignore it: set NODE_USE_ENV_PROXY=1 as well.')
   } else if (proxy) {
-    lines.push('  HTTPS_PROXY and NODE_USE_ENV_PROXY=1 are both set: check that the proxy is reachable')
+    lines.push('  HTTPS_PROXY is set and proxy use is on (NODE_USE_ENV_PROXY=1 or --use-env-proxy): check that the proxy is reachable')
     lines.push('  and allows huggingface.co.')
   } else {
     lines.push('  Behind a proxy? Set HTTPS_PROXY=http://<proxy>:<port> and NODE_USE_ENV_PROXY=1.')
