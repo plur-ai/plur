@@ -45,7 +45,7 @@ function cli(args: string[], input: unknown, cwd: string, extraEnv: NodeJS.Proce
 function context(stdout: string): string {
   if (!stdout) return ''
   const j = JSON.parse(stdout)
-  return j.hookSpecificOutput?.additionalContext ?? ''
+  return j.hookSpecificOutput?.additionalContext ?? j.additional_context ?? j.injectSteps?.[0]?.ephemeralMessage ?? ''
 }
 
 function inject(folder: string, sid: string): string {
@@ -307,4 +307,44 @@ describe.skipIf(!posix)('#1589 audit round 3, R3-L3: the prompt hook says once w
   it('no hint when the repository has its own decision, or nothing was skipped', () => {
     expect(inject(onProj, 'cc-hint-none')).not.toContain('was not added')
   }, 60_000)
+})
+
+describe.skipIf(!posix)('#1589: the skipped-store hint in the Codex, Cursor and Antigravity prompt hooks', () => {
+  beforeEach(() => {
+    writeFileSync(join(plurRoot, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(code)}\n    plur: on\n`)
+  })
+  const hint = (t: string) => t.split('\n').filter(l => l.includes('was not added'))
+  const expectOne = (t: string, who: string) => {
+    expect(hint(t), who).toHaveLength(1)
+    expect(hint(t)[0], who).toContain(`To use it: plur folders set ${proj} --on`)
+  }
+
+  it('Codex: once per session and folder', () => {
+    const codex = (sid: string) => context(cli(['hook-codex-inject'], { session_id: sid, cwd: proj, hook_event_name: 'UserPromptSubmit', prompt: PROMPT }, proj).stdout)
+    expectOne(codex('cx-hint-1'), 'first prompt')
+    expect(hint(codex('cx-hint-1'))).toHaveLength(0)
+    expectOne(codex('cx-hint-2'), 'new session')
+  }, 120_000)
+
+  it('Cursor: once per conversation, for the workspace root (not the hook process folder)', () => {
+    const cursor = (cid: string) => context(cli(['hook-cursor-session-start'], { conversation_id: cid, workspace_roots: [proj] }, base).stdout)
+    const first = cursor('cu-hint-1')
+    expectOne(first, 'first session start')
+    expect(readFileSync(join(proj, '.cursor', 'rules', 'plur-context.mdc'), 'utf8')).toContain(`plur folders set ${proj} --on`)
+    expect(hint(cursor('cu-hint-1'))).toHaveLength(0)
+    expectOne(cursor('cu-hint-2'), 'new conversation')
+  }, 120_000)
+
+  it('Antigravity: once per conversation and workspace', () => {
+    const transcript = join(base, 'agy-transcript.jsonl')
+    const say = (lines: string[]) => writeFileSync(transcript, lines.map((t, i) =>
+      JSON.stringify({ step_index: i * 2, type: 'USER_INPUT', content: `<USER_REQUEST>\n${t}\n</USER_REQUEST>` })).join('\n') + '\n')
+    const agy = (cid: string, n: number) => context(cli(['hook-agy-pre-invocation'], { conversationId: cid, invocationNum: n, workspacePaths: [proj], transcriptPath: transcript }, base).stdout)
+    say([PROMPT])
+    expectOne(agy('ag-hint-1', 0), 'first turn')
+    say([PROMPT, 'and the staging lane for fixture deploys again'])
+    expect(hint(agy('ag-hint-1', 1))).toHaveLength(0)
+    say([PROMPT])
+    expectOne(agy('ag-hint-2', 0), 'new conversation')
+  }, 120_000)
 })
