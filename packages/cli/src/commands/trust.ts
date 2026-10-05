@@ -55,9 +55,9 @@ export function refuseTrustWithoutNonce(nonce: string | undefined, json: boolean
  * `--list` prints every trusted directory; bare `plur trust` (no dir) trusts
  * the current directory, matching `direnv allow`'s no-argument default.
  */
-/** What a grant covers (#1589 audit round 2, R2-L4). */
+/** What a grant covers, and what it does not (#1589 audit rounds 2 and 3). */
 export const TRUST_COVERS =
-  'Trust covers every folder below it: the memory stores (.plur/engrams.yaml) of repositories below it are added when used there, with the scope their .plur.yaml names.'
+  'Trust covers the .plur.yaml files in every folder below it. A repository\'s own memory store (.plur/engrams.yaml) is still added only after you decide on that repository: plur folders set <repo> --on, or plur trust <repo>.'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--list')) {

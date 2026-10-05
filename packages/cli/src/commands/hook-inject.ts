@@ -6,7 +6,9 @@ import { randomUUID, randomBytes } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, plurRoot } from '../lib/folder-gate.js'
+import { claimSkippedStoreHint } from '@plur-ai/core'
+import { skippedStoreHint } from './stores.js'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
@@ -1143,6 +1145,11 @@ async function injectSession(
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
 
+    // A memory store here that was found but not added (#1589 audit round 3):
+    // one line, once per session and folder, with the paste-safe command.
+    const hint = skippedStoreHintOnce(plur, input, dir, flags)
+    if (hint) parts.push(hint)
+
     // Deferred wrap-up: notify about orphaned previous sessions (#216)
     const deferredNotice = processDeferredWrapups(plur, checkpointRoot(flags))
     if (deferredNotice) parts.push('', deferredNotice)
@@ -1171,4 +1178,21 @@ async function injectSession(
   const delivered = await emitContextConfirmed(hookEventName, parts.join('\n'))
   // Fail-open: an unwritable state dir just means the next prompt re-injects.
   if (delivered && pendingMarker && marker) try { writeFileSync(marker, pendingMarker, { mode: 0o600 }) } catch { /* fail-open */ }
+}
+
+/**
+ * The skipped-store hint for this session and folder, or null (#1589 audit
+ * round 3). Read-only lookup; the once-per-session-and-folder marker sits next
+ * to the folder question's. Never throws: a hint never breaks the prompt.
+ */
+function skippedStoreHintOnce(plur: ReturnType<typeof createPlur>, input: Record<string, unknown>, dir: string, flags: GlobalFlags): string | null {
+  try {
+    const skipped = plur.skippedProjectStores(dir)
+    if (skipped.length === 0) return null
+    const sid = typeof input.session_id === 'string' ? input.session_id : ''
+    if (!claimSkippedStoreHint(sid, dir)) return null
+    return skippedStoreHint(skipped, plurRoot(flags))
+  } catch {
+    return null
+  }
 }

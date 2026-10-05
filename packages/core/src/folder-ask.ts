@@ -52,11 +52,34 @@ const ASKED_SUFFIX = '.folder-asked'
  * session, even one asking about a different folder. The session part never
  * holds a dot (safeSessionKey), so `<session>.` is a safe prefix for clearing.
  */
-function askedPath(sessionId: string, folder: string): string {
+function askedPath(sessionId: string, folder: string, suffix: string = ASKED_SUFFIX): string {
   let real: string
   try { real = canonicalize(folder) } catch { real = resolve(folder) }
   const tag = createHash('sha256').update(real).digest('hex').slice(0, 16)
-  return join(tmpdir(), 'plur-sessions', `${safeSessionKey(sessionId)}.${tag}${ASKED_SUFFIX}`)
+  return join(tmpdir(), 'plur-sessions', `${safeSessionKey(sessionId)}.${tag}${suffix}`)
+}
+
+/** Marker suffix for the skipped-store hint (#1589 audit round 3). */
+const SKIPPED_STORE_HINT_SUFFIX = '.skipped-store-hint'
+
+/**
+ * Claim the once-per-session-and-folder slot for the prompt hook's
+ * "a memory store here was not added" line (#1589 audit round 3), on the same
+ * per-session, per-folder markers as the folder question. True the first
+ * time for this session and folder, false after. An unwritable temp folder
+ * answers false: the hint is optional, so silence beats repeating it.
+ * A resumed session is not hinted again (clearFolderAsk leaves these alone).
+ */
+export function claimSkippedStoreHint(sessionId: string, folder: string): boolean {
+  if (!sessionId) return false
+  const path = askedPath(sessionId, folder, SKIPPED_STORE_HINT_SUFFIX)
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, String(Date.now()), { flag: 'wx' })
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**

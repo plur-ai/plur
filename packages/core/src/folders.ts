@@ -467,10 +467,11 @@ function load(root: string, readOnly = false): LoadResult {
 
 /**
  * Load the folder map. A missing file is empty (after importing any
- * trust.yaml entries); a malformed one is empty with one warning. Never throws.
+ * trust.yaml entries; with `readOnly`, they are read into memory and nothing
+ * is written); a malformed one is empty with one warning. Never throws.
  */
-export function loadFolderMap(root: string): FolderMap {
-  return load(root).map
+export function loadFolderMap(root: string, readOnly = false): FolderMap {
+  return load(root, readOnly).map
 }
 
 /**

@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import { randomUUID, createHash } from 'crypto'
 import { tmpdir, hostname, homedir } from 'os'
-import { join, dirname, basename, sep } from 'path'
+import { join, dirname, basename, sep, resolve } from 'path'
 import yaml from 'js-yaml'
 import { collapseLineTerminators } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
@@ -82,6 +82,7 @@ import {
 import {
   resolveFolderPolicy as _resolveFolderPolicy,
   hasOwnFolderDecision as _hasOwnFolderDecision,
+  isTrustedInMap as _isTrustedInMap,
   loadFolderMap as _loadFolderMap,
   setFolderEntry as _setFolderEntry,
   removeFolderEntry as _removeFolderEntry,
@@ -208,6 +209,7 @@ export {
   isFolderAskText,
   folderRepairCommand,
   folderSetOnCommand,
+  claimSkippedStoreHint,
   type FolderAskOptions,
   type FolderAskScopeRanker,
   type FolderAsk,
@@ -12915,8 +12917,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    * or the filesystem root; never the active store or `~/.plur`; never a
    * store config.yaml already lists. Read-only.
    */
-  private _discoveryCandidates(startDir: string): Array<{ dir: string; candidate: string; key: string }> {
-    const out: Array<{ dir: string; candidate: string; key: string }> = []
+  private _discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | null; candidate: string; key: string }> {
+    const out: Array<{ dir: string; typed: string | null; candidate: string; key: string }> = []
     if (this._discoverySkippedForTempRoot()) return out
     // Canonical paths (#1319): the walk sees kernel-canonical cwd spellings
     // while PLUR_PATH / $HOME are taken verbatim, so a raw string compare
@@ -12932,6 +12934,18 @@ Generate an improved version of the procedure that prevents this failure. Return
     const home = canonicalize(homedir())
     const mainStore = canonicalize(join(homedir(), '.plur', 'engrams.yaml'))
 
+    // The spelling the caller typed for each real folder (#1589 audit round
+    // 3): an `off` entry may name the alias the user is in, and must still
+    // stop discovery there. First typed ancestor wins.
+    const typedFor = new Map<string, string>()
+    for (let t = resolve(startDir); ; ) {
+      const real = canonicalize(t)
+      if (!typedFor.has(real)) typedFor.set(real, t)
+      const parent = dirname(t)
+      if (parent === t) break
+      t = parent
+    }
+
     // The REAL path (#1589 audit round 2): through a symlink into a
     // repository's sub-folder, the typed parents are outside the repository.
     let dir = canonicalize(startDir)
@@ -12945,7 +12959,8 @@ Generate an improved version of the procedure that prevents this failure. Return
       const candidate = join(dir, '.plur', 'engrams.yaml')
       const key = canonicalize(candidate)
       if (key !== primaryStore && key !== mainStore && !knownPaths.has(key) && fs.existsSync(candidate)) {
-        out.push({ dir, candidate, key })
+        const typed = typedFor.get(dir)
+        out.push({ dir, typed: typed !== undefined && typed !== dir ? typed : null, candidate, key })
       }
       // Stop at git root or filesystem root
       if (fs.existsSync(join(dir, '.git'))) break
@@ -12959,8 +12974,10 @@ Generate an improved version of the procedure that prevents this failure. Return
   autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
     const discovered: Array<{ path: string; scope: string }> = []
     const seen = new Set<string>()
-    for (const { dir, candidate, key } of this._discoveryCandidates(cwd || process.cwd())) {
+    for (const { dir, typed, candidate, key } of this._discoveryCandidates(cwd || process.cwd())) {
       if (seen.has(key)) continue
+      // An `off` for either spelling wins (#1589 audit round 3, R3-L1).
+      if (typed !== null && _resolveFolderPolicy(typed, { root: this.paths.root, readOnly: true }).mode === 'off') continue
       // A store is registered only for a folder the USER decided on itself
       // (#1588; owner decision 2026-10-05): an exact folder-map entry. On only
       // through a parent, or through a marker the repository ships, is not
@@ -12977,7 +12994,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       let scope = `project:${basename(dir)}`
       try {
         const plurYaml = join(dir, '.plur.yaml')
-        if (fs.existsSync(plurYaml) && this.isDirectoryTrusted(dir)) {
+        // Read-only trust lookup (#1589 audit round 3, R3-L2): discovery never
+        // performs the one-time trust.yaml import; a legacy grant still counts.
+        if (fs.existsSync(plurYaml) && _isTrustedInMap(_loadFolderMap(this.paths.root, true).folders, dir)) {
           const raw = yaml.load(fs.readFileSync(plurYaml, 'utf8')) as any
           if (raw?.scope) scope = raw.scope
         }
@@ -13003,7 +13022,8 @@ Generate an improved version of the procedure that prevents this failure. Return
     // Looking writes nothing (#1589 audit round 2): readOnly keeps a legacy
     // trust.yaml in memory instead of importing it into folders.yaml.
     const opts = { root: this.paths.root, readOnly: true }
-    for (const { dir, candidate } of this._discoveryCandidates(cwd || process.cwd())) {
+    for (const { dir, typed, candidate } of this._discoveryCandidates(cwd || process.cwd())) {
+      if (typed !== null && _resolveFolderPolicy(typed, opts).mode === 'off') continue
       if (_hasOwnFolderDecision(dir, opts)) continue
       if (_resolveFolderPolicy(dir, opts).mode === 'off') continue
       out.push({ path: candidate, folder: dir })
