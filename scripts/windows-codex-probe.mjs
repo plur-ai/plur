@@ -3,22 +3,29 @@
  * Windows Codex probe (#1603). Run by .github/workflows/windows-init.yml on
  * windows-latest; never run against a real home directory.
  *
- * npm installs Codex on Windows as `codex.cmd`, which Node cannot run
- * without cmd.exe. This puts a stub `codex.cmd` on PATH, in a folder whose
- * path contains a space, then:
- *   1. runs `plur init --codex` into a fresh temporary HOME and requires
- *      "registered via `codex mcp add`";
- *   2. requires the stub to have received `mcp add plur -- <command> <args>`
- *      with every argument intact, and the command to be an existing .exe
- *      (not a .cmd, which Codex would have to spawn through a shell);
- *   3. asks the stub `codex mcp list` through cmd.exe and requires plur;
- *   4. spawns the registered command with no shell, as Codex does, and
- *      requires it to start (no ENOENT/EINVAL);
- *   5. re-runs init and requires "already registered".
+ * Two places Codex lives on Windows, each a scenario with a fresh temporary
+ * HOME whose path contains a space:
+ *
+ *   npm:  `codex.cmd` on PATH, next to npm's extensionless sh shim `codex`
+ *         (which Windows cannot run and init must never pick);
+ *   app:  no codex on PATH; the Codex app's bundled binary at
+ *         ~/.codex/packages/app-server-daemon/releases/<ver>-<triple>/bin/codex.exe,
+ *         with an older release beside it that must NOT be used.
+ *
+ * The app stub is a copy of node.exe named codex.exe, made to act as Codex by
+ * a NODE_OPTIONS preload that only acts when the running binary is named
+ * codex.exe. Both stubs record `mcp add` arguments one per line and answer
+ * `mcp list` with plur once added.
+ *
+ * Each scenario requires: init reports "registered via `codex mcp add`" and
+ * names the binary it used; the stub received `mcp add plur -- <command> <args>`
+ * with every argument intact; the command is an existing .exe (node.exe, not
+ * a .cmd) and the args existing files; the command spawns with no shell, as
+ * Codex does; and a re-run of init says "already registered".
  *
  * Exits 1 when any check fails.
  */
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync, copyFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve, dirname } from 'path'
 import { spawn, spawnSync } from 'child_process'
@@ -31,71 +38,126 @@ if (!existsSync(CLI)) { console.error(`built CLI not found at ${CLI}`); process.
 const failures = []
 const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${what}`); if (!ok) failures.push(what) }
 
-const home = mkdtempSync(join(tmpdir(), 'Test User-'))
-const bin = join(home, 'codex bin')
-mkdirSync(bin)
-mkdirSync(join(home, 'project'))
-const calls = join(bin, 'calls.log')
-const registered = join(bin, 'registered.txt')
-// `mcp add` records its arguments one per line (%~1 strips cmd's quotes);
-// `mcp list` prints the name of anything registered.
-writeFileSync(join(bin, 'codex.cmd'), [
-  '@echo off',
-  'echo %*>>"%~dp0calls.log"',
-  'if "%~1 %~2"=="mcp list" goto list',
-  'if "%~1 %~2"=="mcp add" goto add',
-  'exit /b 0',
-  ':list',
-  'if exist "%~dp0registered.txt" echo plur  registered',
-  'exit /b 0',
-  ':add',
-  'shift',
-  'shift',
-  ':addloop',
-  'if "%~1"=="" exit /b 0',
-  '>>"%~dp0registered.txt" echo(%~1',
-  'shift',
-  'goto addloop',
-  '',
-].join('\r\n'))
+// A PATH without any real codex, so only the stubs can answer.
+const basePath = (process.env.PATH ?? '').split(';').filter((d) => !['codex.cmd', 'codex.exe', 'codex.bat'].some((f) => existsSync(join(d, f)))).join(';')
 
-const env = {
-  ...process.env,
-  HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config'), OPENCODE_CONFIG_DIR: '',
-  CODEX_HOME: join(home, '.codex'), PLUR_PATH: join(home, '.plur'),
-  PATH: `${bin};${process.env.PATH}`,
+// Preload for the app stub (a node.exe copy named codex.exe). No space in its path.
+const preloadDir = mkdtempSync(join(tmpdir(), 'codexstub-'))
+const preload = join(preloadDir, 'codex-stub.cjs')
+writeFileSync(preload, `
+const { basename, dirname, join } = require('path')
+const fs = require('fs')
+if (basename(process.execPath).toLowerCase() === 'codex.exe') {
+  const here = dirname(process.execPath)
+  // Node has already resolved argv[1] to a path (cwd + "mcp"): keep its last segment.
+  const args = process.argv.slice(1)
+  if (args.length) args[0] = basename(args[0])
+  fs.appendFileSync(join(here, 'calls.log'), JSON.stringify(args) + '\\n')
+  if (args[0] === 'mcp' && args[1] === 'list') {
+    if (fs.existsSync(join(here, 'registered.txt'))) process.stdout.write('plur  registered\\n')
+  } else if (args[0] === 'mcp' && args[1] === 'add') {
+    fs.writeFileSync(join(here, 'registered.txt'), args.slice(2).join('\\n') + '\\n')
+  }
+  process.exit(0)
 }
-const runInit = () => spawnSync(process.execPath, [CLI, 'init', '--global', '--no-desktop', '--no-opencode', '--no-cursor', '--no-antigravity', '--codex', '--no-prompt'], {
-  cwd: join(home, 'project'), env, encoding: 'utf8', timeout: 180000,
+`)
+
+function npmStub(bin) {
+  // `mcp add` records its arguments one per line (%~1 strips cmd's quotes).
+  // HERE is captured first: `shift` also shifts %0.
+  writeFileSync(join(bin, 'codex.cmd'), [
+    '@echo off',
+    'set "HERE=%~dp0"',
+    'echo %*>>"%HERE%calls.log"',
+    'if "%~1 %~2"=="mcp list" goto list',
+    'if "%~1 %~2"=="mcp add" goto add',
+    'exit /b 0',
+    ':list',
+    'if exist "%HERE%registered.txt" echo plur  registered',
+    'exit /b 0',
+    ':add',
+    'shift',
+    'shift',
+    ':addloop',
+    'if "%~1"=="" exit /b 0',
+    '>>"%HERE%registered.txt" echo(%~1',
+    'shift',
+    'goto addloop',
+    '',
+  ].join('\r\n'))
+  // npm's extensionless sh shim, which Windows cannot execute.
+  writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 7\n')
+  return bin
+}
+
+function appStub(home, release) {
+  const dir = join(home, '.codex', 'packages', 'app-server-daemon', 'releases', release, 'bin')
+  mkdirSync(dir, { recursive: true })
+  copyFileSync(process.execPath, join(dir, 'codex.exe'))
+  return dir
+}
+
+async function scenario(name, setup) {
+  console.log(`\n=== Scenario: ${name} ===`)
+  const home = mkdtempSync(join(tmpdir(), 'Test User-'))
+  mkdirSync(join(home, 'project'))
+  const env = {
+    ...process.env,
+    HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config'), OPENCODE_CONFIG_DIR: '',
+    CODEX_HOME: join(home, '.codex'), PLUR_PATH: join(home, '.plur'),
+    PATH: basePath,
+    // Unquoted, forward slashes: NODE_OPTIONS treats a backslash in quotes as an escape.
+    NODE_OPTIONS: `--require ${preload.replace(/\\/g, '/')}`,
+  }
+  const { stubDir, extraPath, binary, notUsed } = setup(home)
+  if (extraPath) env.PATH = `${extraPath};${basePath}`
+  console.log(`HOME: ${home}`)
+
+  const runInit = () => spawnSync(process.execPath, [CLI, 'init', '--global', '--no-desktop', '--no-opencode', '--no-cursor', '--no-antigravity', '--codex', '--no-prompt'], {
+    cwd: join(home, 'project'), env, encoding: 'utf8', timeout: 180000,
+  })
+  const first = runInit()
+  console.log(first.stdout, first.stderr)
+  check(/MCP server: registered via `codex mcp add`/.test(first.stdout ?? ''), `${name}: init registers plur`)
+  check((first.stdout ?? '').includes(binary), `${name}: init names the binary it used (${binary})`)
+  const calls = join(stubDir, 'calls.log')
+  console.log('stub calls:\n' + (existsSync(calls) ? readFileSync(calls, 'utf8') : '(none)'))
+  if (notUsed) check(!existsSync(join(notUsed, 'calls.log')), `${name}: the older release was not used`)
+
+  const reg = join(stubDir, 'registered.txt')
+  const added = existsSync(reg) ? readFileSync(reg, 'utf8').split(/\r?\n/).filter(Boolean) : []
+  console.log('mcp add arguments:', added)
+  check(added[0] === 'plur' && added[1] === '--', `${name}: codex received \`mcp add plur --\``)
+  const [command, ...args] = added.slice(2)
+  check(typeof command === 'string' && /node\.exe$/i.test(command) && existsSync(command), `${name}: registered command is node.exe: ${command}`)
+  check(args.length > 0 && args.every((a) => existsSync(a)), `${name}: registered args are existing files: ${JSON.stringify(args)}`)
+
+  if (command && existsSync(command)) {
+    const { NODE_OPTIONS, ...plain } = env
+    const started = await new Promise((done) => {
+      const child = spawn(command, args, { env: plain, stdio: ['pipe', 'pipe', 'pipe'] })
+      child.on('error', (err) => done(`error: ${err.message}`))
+      child.on('spawn', () => { setTimeout(() => { child.kill(); done('started') }, 2000) })
+    })
+    check(started === 'started', `${name}: the registered command spawns with no shell (${started})`)
+  }
+
+  const second = runInit()
+  check(/MCP server: already registered/.test(second.stdout ?? ''), `${name}: re-running init reports already registered`)
+}
+
+await scenario('npm codex.cmd on PATH', (home) => {
+  const bin = join(home, 'npm bin')
+  mkdirSync(bin)
+  npmStub(bin)
+  return { stubDir: bin, extraPath: bin, binary: join(bin, 'codex.cmd') }
 })
 
-console.log(`HOME: ${home}`)
-const first = runInit()
-console.log(first.stdout, first.stderr)
-check(/MCP server: registered via `codex mcp add`/.test(first.stdout ?? ''), 'init registers plur via codex.cmd')
-console.log('codex.cmd calls:\n' + (existsSync(calls) ? readFileSync(calls, 'utf8') : '(none)'))
-
-const added = existsSync(registered) ? readFileSync(registered, 'utf8').split(/\r?\n/).filter(Boolean) : []
-console.log('mcp add arguments:', added)
-check(added[0] === 'plur' && added[1] === '--', 'codex.cmd received `mcp add plur --`')
-const [command, ...args] = added.slice(2)
-check(typeof command === 'string' && /\.exe$/i.test(command) && existsSync(command), `registered command is an existing .exe: ${command}`)
-check(args.length > 0 && args.every((a) => existsSync(a)), `registered args are existing paths: ${JSON.stringify(args)}`)
-
-const list = spawnSync('cmd.exe', ['/d', '/s', '/c', `""${join(bin, 'codex.cmd')}" mcp list"`], { env, encoding: 'utf8', windowsVerbatimArguments: true })
-check(/(^|\s)plur(\s|$)/m.test(list.stdout ?? ''), '`codex mcp list` shows plur')
-
-if (command && existsSync(command)) {
-  const started = await new Promise((done) => {
-    const child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] })
-    child.on('error', (err) => done(`error: ${err.message}`))
-    child.on('spawn', () => { setTimeout(() => { child.kill(); done('started') }, 2000) })
-  })
-  check(started === 'started', `the registered command spawns with no shell (${started})`)
-}
-
-const second = runInit()
-check(/MCP server: already registered/.test(second.stdout ?? ''), 're-running init reports already registered')
+await scenario('Codex app binary, nothing on PATH', (home) => {
+  const old = appStub(home, '0.99.0-x86_64-pc-windows-msvc')
+  const dir = appStub(home, '0.160.0-x86_64-pc-windows-msvc')
+  return { stubDir: dir, extraPath: null, binary: join(dir, 'codex.exe'), notUsed: old }
+})
 
 if (failures.length) { console.error(`\n${failures.length} check(s) failed`); process.exit(1) }
 console.log('\nall Codex checks passed')
