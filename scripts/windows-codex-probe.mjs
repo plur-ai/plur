@@ -67,29 +67,17 @@ if (basename(process.execPath).toLowerCase() === 'codex.exe') {
 `)
 
 function npmStub(bin) {
-  // `mcp add` records its arguments one per line (%~1 strips cmd's quotes).
-  // HERE is captured first: `shift` also shifts %0.
-  writeFileSync(join(bin, 'codex.cmd'), [
-    '@echo off',
-    'set "HERE=%~dp0"',
-    'echo %*>>"%HERE%calls.log"',
-    'if "%~1 %~2"=="mcp list" goto list',
-    'if "%~1 %~2"=="mcp add" goto add',
-    'exit /b 0',
-    ':list',
-    'if exist "%HERE%registered.txt" echo plur  registered',
-    'exit /b 0',
-    ':add',
-    'shift',
-    'shift',
-    ':addloop',
-    'if "%~1"=="" exit /b 0',
-    '>>"%HERE%registered.txt" echo(%~1',
-    'shift',
-    'goto addloop',
-    '',
-  ].join('\r\n'))
-  // npm's extensionless sh shim, which Windows cannot execute.
+  // Like npm's shim, forward %* to a native argv recorder. Do not unquote and
+  // echo arguments in batch: that would introduce the probe's own &/^ parsing.
+  writeFileSync(join(bin, 'codex-stub.cjs'), `
+const fs = require('fs')
+const { join } = require('path')
+const args = process.argv.slice(2)
+fs.appendFileSync(join(__dirname, 'calls.log'), JSON.stringify(args) + '\\n')
+if (args[0] === 'mcp' && args[1] === 'list' && fs.existsSync(join(__dirname, 'registered.txt'))) console.log('plur registered')
+if (args[0] === 'mcp' && args[1] === 'add') fs.writeFileSync(join(__dirname, 'registered.txt'), args.slice(2).join('\\n') + '\\n')
+`)
+  writeFileSync(join(bin, 'codex.cmd'), `@echo off\r\n"${process.execPath}" "%~dp0codex-stub.cjs" %*\r\n`)
   writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 7\n')
   return bin
 }
@@ -101,7 +89,7 @@ function appStub(home, release) {
   return dir
 }
 
-async function scenario(name, setup, { prefix = 'Test User-', expectRefused = false } = {}) {
+async function scenario(name, setup, { prefix = 'Test User-', expectRefused = false, copyNode = false } = {}) {
   console.log(`\n=== Scenario: ${name} ===`)
   const home = mkdtempSync(join(tmpdir(), prefix))
   mkdirSync(join(home, 'project'))
@@ -117,7 +105,9 @@ async function scenario(name, setup, { prefix = 'Test User-', expectRefused = fa
   if (extraPath) env.PATH = `${extraPath};${basePath}`
   console.log(`HOME: ${home}`)
 
-  const runInit = () => spawnSync(process.execPath, [CLI, 'init', '--global', '--no-desktop', '--no-opencode', '--no-cursor', '--no-antigravity', '--codex', '--no-prompt'], {
+  const initNode = copyNode ? join(home, 'node.exe') : process.execPath
+  if (copyNode) copyFileSync(process.execPath, initNode)
+  const runInit = () => spawnSync(initNode, [CLI, 'init', '--global', '--no-desktop', '--no-opencode', '--no-cursor', '--no-antigravity', '--codex', '--no-prompt'], {
     cwd: join(home, 'project'), env, encoding: 'utf8', timeout: 180000,
   })
   const first = runInit()
@@ -142,6 +132,8 @@ async function scenario(name, setup, { prefix = 'Test User-', expectRefused = fa
   check(added[0] === 'plur' && added[1] === '--', `${name}: codex received \`mcp add plur --\``)
   const [command, ...args] = added.slice(2)
   check(typeof command === 'string' && /node\.exe$/i.test(command) && existsSync(command), `${name}: registered command is node.exe: ${command}`)
+  check(command === initNode, `${name}: registered node argument is byte-for-byte intact`)
+  check(JSON.stringify(args) === JSON.stringify([join(repo, 'packages', 'mcp', 'dist', 'index.js')]), `${name}: registered script argument is byte-for-byte intact`)
   check(args.length > 0 && args.every((a) => existsSync(a)), `${name}: registered args are existing files: ${JSON.stringify(args)}`)
 
   if (command && existsSync(command)) {
@@ -186,6 +178,14 @@ await scenario('npm codex.cmd under a path with %OS%', (home) => {
   npmStub(bin)
   return { stubDir: bin, extraPath: bin, binary: join(bin, 'codex.cmd') }
 }, { prefix: 'Test %OS% User-', expectRefused: true })
+
+// Exercise both the shim path and a forwarded executable argument on real cmd.exe.
+await scenario('npm shim and node argument with spaces, ^ and &', (home) => {
+  const bin = join(home, 'npm bin')
+  mkdirSync(bin)
+  npmStub(bin)
+  return { stubDir: bin, extraPath: bin, binary: join(bin, 'codex.cmd') }
+}, { prefix: 'Test ^& User-', copyNode: true })
 
 if (failures.length) { console.error(`\n${failures.length} check(s) failed`); process.exit(1) }
 console.log('\nall Codex checks passed')

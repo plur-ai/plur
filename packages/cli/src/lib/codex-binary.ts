@@ -1,17 +1,13 @@
-import { accessSync, constants, existsSync, readdirSync, statSync } from 'fs'
-import { delimiter, join } from 'path'
+import { existsSync, readdirSync } from 'fs'
+import { join } from 'path'
 import { codexHome } from '../mcp-config.js'
-import { envGet, findWindowsCommand } from './command-spawn.js'
+import { findWindowsCommand } from './command-spawn.js'
 
 export interface CodexBinary {
   /** Absolute path of the binary to run. */
   path: string
   /** `path`: found on PATH; `app`: the Codex app's bundled binary (Windows only). */
   source: 'path' | 'app'
-}
-
-function isExecutableFile(p: string): boolean {
-  try { return statSync(p).isFile() && (accessSync(p, constants.X_OK), true) } catch { return false }
 }
 
 /** The target-triple architecture for a Node `process.arch`, or null for one Codex does not ship. */
@@ -78,8 +74,9 @@ export function codexAppBinary(
  * Which Codex binary to run (#1603).
  * Windows: a `codex` on PATH by PATHEXT order (`codex.exe`, `codex.cmd`, …),
  * never npm's extensionless sh shim; else the Codex app's codex.exe
- * (codexAppBinary). darwin/linux: an executable `codex` on PATH, as before.
- * Null when there is none.
+ * (codexAppBinary). On darwin/linux return null so runCodex keeps native
+ * bare-name lookup, including empty PATH entries and execvp fallback behavior.
+ * Null on Windows when there is no candidate.
  */
 export function resolveCodexBinary(
   env: NodeJS.ProcessEnv = process.env,
@@ -91,9 +88,6 @@ export function resolveCodexBinary(
     if (onPath) return { path: onPath, source: 'path' }
     const app = codexAppBinary(env, plat, arch)
     return app ? { path: app, source: 'app' } : null
-  }
-  for (const dir of (envGet(env, 'PATH') ?? '').split(delimiter)) {
-    if (dir && isExecutableFile(join(dir, 'codex'))) return { path: join(dir, 'codex'), source: 'path' }
   }
   return null
 }
