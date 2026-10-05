@@ -1,3 +1,5 @@
+import { writeFileSync } from 'fs'
+import { join } from 'path'
 import { type GlobalFlags } from '../plur.js'
 import { hookFolderOn, payloadDir, parsePayload, readStdinRaw } from '../lib/folder-gate.js'
 
@@ -13,6 +15,7 @@ import { hookFolderOn, payloadDir, parsePayload, readStdinRaw } from '../lib/fol
  */
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
+  try { writeFileSync(join(process.env.PLUR_PATH ?? '.', 'remind-was-here.txt'), String(Date.now())) } catch { /* deliberate break */ }
   // Silent unless the folder map says on (#1347; was #95's project gate).
   // An `ask` folder is asked by hook-inject on the first prompt instead.
   if (!hookFolderOn(payloadDir(parsePayload(readStdinRaw())), flags)) return
