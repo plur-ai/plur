@@ -75,7 +75,7 @@
  * covered (reason)". Results go to stdout and, in GitHub Actions, to the job
  * summary. Exits 1 when any check fails.
  */
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync, appendFileSync, realpathSync, readdirSync, statSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync, appendFileSync, realpathSync, readdirSync, lstatSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { spawn, spawnSync } from 'child_process'
@@ -519,7 +519,7 @@ const PAYLOADS = {
       ['hook-inject --event skill', { ...cc, hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: { skill: 'fixture-deploys' } }],
       ['hook-inject --event agent', { ...cc, hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'fixture-deploys', prompt: PROMPT } }],
       ['hook-observe', { ...cc, tool_name: 'Bash', tool_input: { command: 'ls' } }],
-      ['hook-session-mark', { session_id: sid }],
+      ['hook-session-mark', { ...cc, hook_event_name: 'PostToolUse', tool_name: 'mcp__plur__plur_session_start' }],
       ['hook-observe --post', { ...cc, tool_name: 'Bash', tool_input: { command: 'ls' } }],
       ['hook-inject --event subagent', { ...cc, hook_event_name: 'SubagentStart', agent_type: 'fixture-deploys', tool_input: { description: PROMPT } }],
       ['hook-learn-check', cc],
@@ -597,11 +597,19 @@ function verdictOf(stdout) {
   const reason = [j.hookSpecificOutput?.permissionDecisionReason, j.permissionDecisionReason, j.reason, j.user_message, j.agent_message, j.stopReason].filter(Boolean).join(' ')
   return { deny, reason }
 }
-/** Files under the PLUR store, with size and time: a write shows as a change. */
+/** Store and temporary session state: off hooks must not create, alter or delete either. */
 function storeState() {
   const out = {}
-  const walk = (d) => { for (const f of tryRead(() => readdirSync(d)) ?? []) { const p = join(d, f); const s = statSync(p); if (s.isDirectory()) walk(p); else out[p.slice(env.PLUR_PATH.length)] = `${s.size}:${s.mtimeMs}` } }
-  walk(env.PLUR_PATH)
+  const walk = (dir, prefix) => {
+    if (!existsSync(dir)) return
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name), key = `${prefix}/${name}`, s = lstatSync(path)
+      out[key] = s.isDirectory() ? 'directory' : `${s.size}:${s.mtimeMs}`
+      if (s.isDirectory()) walk(path, key)
+    }
+  }
+  walk(env.PLUR_PATH, 'store')
+  walk(env.TMPDIR, 'sessions')
   return out
 }
 const diffState = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => a[k] !== b[k])
@@ -654,12 +662,21 @@ for (const key of ['claude', 'codex', 'cursor', 'agy']) {
   let runs = 0
   for (const [state, folder] of Object.entries(folders)) {
     const sid = `ci-${key}-${state}-${RUN}`
+    // Build transcript fixtures before snapshotting: fixtures are not hook side effects.
+    const payloads = PAYLOADS[key](sid, folder)
+    if (state === 'off' && key === 'cursor') {
+      const rules = join(folder, '.cursor', 'rules')
+      mkdirSync(rules, { recursive: true })
+      const stale = readFileSync(join(folders.decided, '.cursor', 'rules', 'plur-context.mdc'), 'utf8')
+      for (const name of ['plur-context.mdc', 'plur-reminder.mdc']) writeFileSync(join(rules, name), stale)
+    }
     const storeBefore = state === 'off' ? storeState() : null
     let guardCalls = 0
-    for (const [k, payload] of PAYLOADS[key](sid, folder)) {
+    for (const [k, payload] of payloads) {
       const h = byKey.get(k)
       if (!h) continue // reported above as missing
       runs++
+      const beforeHook = state === 'off' ? storeState() : null
       const r = runHook(key, h, payload)
       const label = `${name} [${state}] ${k}`
       let problem = null
@@ -674,6 +691,15 @@ for (const key of ['claude', 'codex', 'cursor', 'agy']) {
         else if (v.deny && guardCalls > 1) problem = `the guard denies again after its one nudge: ${r.stdout.slice(0, 200)}`
         else if (v.deny && !NUDGE.test(v.reason)) problem = `the guard denies for another reason: ${r.stdout.slice(0, 200)}`
       }
+      if (beforeHook) {
+        const changed = diffState(beforeHook, storeState())
+        if (changed.length) problem = `off hook changed store/session state: ${changed.join(', ')}`
+      }
+      if (state === 'off' && key === 'cursor') {
+        for (const name of ['plur-context.mdc', 'plur-reminder.mdc']) {
+          if (existsSync(join(folder, '.cursor', 'rules', name))) problem = `stale generated ${name} survived while off`
+        }
+      }
       const judged = k === MAIN[key][state] && !(k === GUARD[key])
       if (!problem && judged) {
         const verdict = EXPECT[state](contextOf(r.stdout), r.stdout)
@@ -684,8 +710,8 @@ for (const key of ['claude', 'codex', 'cursor', 'agy']) {
     }
     if (state === 'off') {
       const changed = diffState(storeBefore, storeState())
-      ok = check(changed.length === 0, `${name} [off]: nothing written to the PLUR store${changed.length ? ` (changed: ${changed.join(', ')})` : ''}`) && ok
-      if (key === 'cursor') ok = check(!existsSync(join(folders.off, '.cursor', 'rules', 'plur-context.mdc')), 'Cursor [off]: no context rule written into the off folder') && ok
+      ok = check(changed.length === 0, `${name} [off]: nothing written to the PLUR store or session state${changed.length ? ` (changed: ${changed.join(', ')})` : ''}`) && ok
+      if (key === 'cursor') ok = check(!existsSync(join(folders.off, '.cursor', 'rules', 'plur-context.mdc')), 'Cursor [off]: stale generated context was removed') && ok
     }
   }
   cell(key, 'hooks', ok, `${byKey.size} hooks × 4 folders (${runs} runs)`)
@@ -758,7 +784,7 @@ if (editors.includes('opencode')) {
         const seen = out.system.slice(1).join('\n')
         const verdict = state === 'off' ? (seen === '' || `not silent: ${seen.slice(0, 200)}`) : EXPECT[state](seen, seen)
         ok = check(verdict === true, `opencode plugin [${state}]: ${verdict === true ? { decided: 'memory injected, no question', undecided: 'asks, no memory', off: 'does nothing' }[state] : verdict}`) && ok
-        if (before) ok = check(diffState(before, storeState()).length === 0, 'opencode plugin [off]: nothing written to the PLUR store') && ok
+        if (before) ok = check(diffState(before, storeState()).length === 0, 'opencode plugin [off]: nothing written to the PLUR store or session state') && ok
       }
     } catch (e) { ok = check(false, `opencode plugin could not be driven: ${e.message}`) }
     finally { process.chdir(project) }

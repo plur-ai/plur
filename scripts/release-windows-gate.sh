@@ -8,7 +8,9 @@
 #
 # Reads the workflow's runs for the commit through the Actions API, filtered
 # by that workflow file (so a same-named check from another workflow cannot
-# satisfy it), and requires the most recent completed one to have concluded
+# satisfy it). Only push/manual runs qualify: every editor and scenario
+# is required there.
+# It requires the most recently updated eligible run to have concluded
 # "success". Re-runs count: the newest attempt wins. No run, a run still in
 # progress, any other conclusion, or a failed query is a refusal (exit 1).
 # Prints one line per finding; never needs a token beyond `gh`'s read access.
@@ -26,8 +28,11 @@ RUNS=$(gh api --paginate "repos/$REPO/actions/workflows/windows-editors.yml/runs
   echo "  windows-editors: query-failed (gh api) — refusing"
   exit 1
 }
+# PR runs can skip all scenarios (docs only) and make Cursor optional. They
+# cannot certify a release, even when updated after a failed push run.
+RUNS=$(printf '%s\n' "$RUNS" | awk -F '\t' '$5 == "push" || $5 == "workflow_dispatch"')
 if [ -z "$RUNS" ]; then
-  echo "  windows-editors: missing — no Windows real-editor run on $SHA"
+  echo "  windows-editors: missing — no eligible push/manual Windows real-editor run on $SHA"
   exit 1
 fi
 LATEST=$(printf '%s\n' "$RUNS" | sort -t$'\t' -k4 | tail -1)

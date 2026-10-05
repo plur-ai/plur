@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Turning memory off for a Cursor workspace clears its generated memory and reminder rules at the next session start.** Previously, old recalled memory could remain in an always-applied rule. User-authored rules are preserved.
+
 ### Codex on Windows gets the PLUR MCP server (#1603)
 
 - **`plur init --codex` finds a Codex installed with npm on Windows.** npm installs Codex as `codex.cmd`, next to an extensionless shell script also named `codex`. `plur init` could not find or start the `.cmd`, so it reported "the `codex` binary is not on PATH" and Codex got hooks but no PLUR tools. Init now looks Codex up through `PATH` and `PATHEXT` the way Windows does, never picks the extensionless script, and runs a `.cmd` through `cmd.exe`, for `codex mcp list`, `codex mcp add` and `codex mcp remove`. A path containing `%` cannot be passed through `cmd.exe` unchanged, so init does not try: it says so and prints the table to add by hand (below).
