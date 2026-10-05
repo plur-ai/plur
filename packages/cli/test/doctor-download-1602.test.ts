@@ -27,3 +27,9 @@ it('respects explicitly disabled embeddings',async()=>{
   await run([],{json:true})
   expect(state.embed).not.toHaveBeenCalled()
 })
+it('does not mistake an initialized adapter for a downloaded model',async()=>{
+  state.embed.mockImplementation(async()=>{state.loaded=true;return null})
+  await run([],{json:true})
+  const text=(process.stdout.write as any).mock.calls.map((c:any[])=>c[0]).join('')
+  expect(JSON.parse(text).modelLoaded).toBe(false)
+})
