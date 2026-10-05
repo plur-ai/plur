@@ -155,11 +155,13 @@ describe('resolveCodexBinary (#1603)', () => {
     expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'win32', 'x64')?.source).toBe('path')
   })
 
-  it('on darwin/linux, finds an executable codex on PATH and never the app binary (audit M1)', () => {
+  it('on darwin/linux, leaves executable lookup to the native spawn (audit M1)', () => {
     appRelease('0.160.0-aarch64-apple-darwin', 'codex')
     expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'darwin', 'arm64')).toBeNull()
     writeFileSync(join(pathDir, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
-    expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, 'darwin', 'arm64')).toEqual({ path: join(pathDir, 'codex'), source: 'path' })
+    for (const plat of ['darwin', 'linux'] as const) {
+      expect(resolveCodexBinary({ PATH: pathDir, CODEX_HOME: codexHome }, plat)).toBeNull()
+    }
   })
 
   it('returns null when Codex is nowhere', () => {
