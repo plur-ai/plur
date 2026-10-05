@@ -904,6 +904,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     const correction = promptCorrection(input)
     if (correction) lines.push(correction)
+    // The skipped-store hint is keyed on session AND folder (#1589 audit
+    // round 4): a session that moves to another folder gets that folder's
+    // hint once. Cheap checks run first; the PLUR instance is built only when
+    // a store file is on the walk and the hint was not given here yet.
+    const hint = skippedStoreNotice(() => createAskPlur(flags), typeof input.session_id === 'string' ? input.session_id : '', dir)
+    if (hint) lines.push(hint)
     if (lines.length > 0) {
       emitContext(claudeHookEventName(input, { rehydrate: false, event: null }), lines.join('\n\n'))
     }

@@ -213,6 +213,8 @@ export {
   folderRepairCommand,
   folderSetOnCommand,
   claimSkippedStoreHint,
+  skippedStoreHintClaimed,
+  folderMarkerDir,
   skippedStoreHintLine,
   skippedStoreNotice,
   type FolderAskOptions,
@@ -13301,10 +13303,28 @@ Generate an improved version of the procedure that prevents this failure. Return
     return out
   }
 
+  /**
+   * True when the start folder is off by either its path as typed or its real
+   * path (#1589 audit round 4): then discovery adopts nothing and lists
+   * nothing, whatever the folders above it say. Through a link into a
+   * repository's sub-folder, the per-candidate spellings cannot see the
+   * alias that the user turned off.
+   */
+  private _startFolderOff(startDir: string): boolean {
+    const opts = { root: this.paths.root, readOnly: true }
+    return _resolveFolderPolicy(resolve(startDir), opts).mode === 'off' ||
+      _resolveFolderPolicy(canonicalize(startDir), opts).mode === 'off'
+  }
+
   autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
     const discovered: Array<{ path: string; scope: string }> = []
     const seen = new Set<string>()
-    for (const { dir, typed, candidate, key } of this._discoveryCandidates(cwd || process.cwd())) {
+    const startDir = cwd || process.cwd()
+    // Candidates first: with no store file on the walk, the folder map is not
+    // read at all (a broken map then warns only where it matters).
+    const candidates = this._discoveryCandidates(startDir)
+    if (candidates.length === 0 || this._startFolderOff(startDir)) return discovered
+    for (const { dir, typed, candidate, key } of candidates) {
       if (seen.has(key)) continue
       // An `off` for either spelling wins (#1589 audit round 3, R3-L1).
       if (typed !== null && _resolveFolderPolicy(typed, { root: this.paths.root, readOnly: true }).mode === 'off') continue
@@ -13352,7 +13372,10 @@ Generate an improved version of the procedure that prevents this failure. Return
     // Looking writes nothing (#1589 audit round 2): readOnly keeps a legacy
     // trust.yaml in memory instead of importing it into folders.yaml.
     const opts = { root: this.paths.root, readOnly: true }
-    for (const { dir, typed, candidate } of this._discoveryCandidates(cwd || process.cwd())) {
+    const startDir = cwd || process.cwd()
+    const candidates = this._discoveryCandidates(startDir)
+    if (candidates.length === 0 || this._startFolderOff(startDir)) return out
+    for (const { dir, typed, candidate } of candidates) {
       if (typed !== null && _resolveFolderPolicy(typed, opts).mode === 'off') continue
       if (_hasOwnFolderDecision(dir, opts)) continue
       if (_resolveFolderPolicy(dir, opts).mode === 'off') continue
