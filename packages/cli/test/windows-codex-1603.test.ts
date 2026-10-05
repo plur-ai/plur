@@ -201,8 +201,8 @@ describe('plur init --codex with an npm codex.cmd on PATH (#1603, win32 preload)
   it('registers plur through cmd.exe + codex.cmd, with node (not a .cmd) as the server command', () => {
     writeFileSync(join(bin, 'codex.cmd'), '@echo off\r\n')
     writeFileSync(join(bin, 'codex'), '#!/bin/sh\necho "sh shim must not run" >&2\nexit 7\n', { mode: 0o755 })
-    // Stand-in cmd.exe: records the /c command line; answers nothing.
-    writeFileSync(join(bin, 'cmd.exe'), `#!/bin/sh\nprintf '%s\\n' "$4" >> "${log}"\nexit 0\n`, { mode: 0o755 })
+    // Stand-in cmd.exe: records the /c command line (its last argument); answers nothing.
+    writeFileSync(join(bin, 'cmd.exe'), `#!/bin/sh\nfor a; do last="$a"; done\nprintf '%s\\n' "$last" >> "${log}"\nexit 0\n`, { mode: 0o755 })
     const out = run([bin, '/usr/bin', '/bin'])
     expect(out).toContain('MCP server: registered via `codex mcp add`')
     expect(out).toContain(`(${join(bin, 'codex.cmd')})`)

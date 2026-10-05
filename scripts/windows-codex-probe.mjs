@@ -23,6 +23,10 @@
  * a .cmd) and the args existing files; the command spawns with no shell, as
  * Codex does; and a re-run of init says "already registered".
  *
+ * Two more npm scenarios check the cmd.exe line on a real cmd: a HOME with
+ * `!OS!` registers (delayed expansion is off), and a HOME with `%OS%` is
+ * refused with the TOML table printed and the stub never run.
+ *
  * Exits 1 when any check fails.
  */
 import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync, copyFileSync } from 'fs'
@@ -97,9 +101,9 @@ function appStub(home, release) {
   return dir
 }
 
-async function scenario(name, setup) {
+async function scenario(name, setup, { prefix = 'Test User-', expectRefused = false } = {}) {
   console.log(`\n=== Scenario: ${name} ===`)
-  const home = mkdtempSync(join(tmpdir(), 'Test User-'))
+  const home = mkdtempSync(join(tmpdir(), prefix))
   mkdirSync(join(home, 'project'))
   const env = {
     ...process.env,
@@ -118,6 +122,14 @@ async function scenario(name, setup) {
   })
   const first = runInit()
   console.log(first.stdout, first.stderr)
+  if (expectRefused) {
+    // A `%` in the codex.cmd path cannot be carried through cmd.exe safely, so
+    // init refuses it, never runs the stub, and prints the TOML to add by hand.
+    check(/MCP server: FAILED \(argument cannot be passed through cmd\.exe/.test(first.stdout ?? ''), `${name}: init refuses the path instead of changing it`)
+    check((first.stdout ?? '').includes('[mcp_servers.plur]'), `${name}: init prints the TOML table`)
+    check(!existsSync(join(stubDir, 'calls.log')), `${name}: codex.cmd was never run`)
+    return
+  }
   check(/MCP server: registered via `codex mcp add`/.test(first.stdout ?? ''), `${name}: init registers plur`)
   check((first.stdout ?? '').includes(binary), `${name}: init names the binary it used (${binary})`)
   const calls = join(stubDir, 'calls.log')
@@ -158,6 +170,22 @@ await scenario('Codex app binary, nothing on PATH', (home) => {
   const dir = appStub(home, '0.160.0-x86_64-pc-windows-msvc')
   return { stubDir: dir, extraPath: null, binary: join(dir, 'codex.exe'), notUsed: old }
 })
+
+// L1 (audit of #1604): cmd.exe runs with /v:off, so `!OS!` in a path stays literal.
+await scenario('npm codex.cmd under a path with !OS!', (home) => {
+  const bin = join(home, 'npm bin')
+  mkdirSync(bin)
+  npmStub(bin)
+  return { stubDir: bin, extraPath: bin, binary: join(bin, 'codex.cmd') }
+}, { prefix: 'Test !OS! User-' })
+
+// L1: `%OS%` would be expanded inside the quotes, so it is refused.
+await scenario('npm codex.cmd under a path with %OS%', (home) => {
+  const bin = join(home, 'npm bin')
+  mkdirSync(bin)
+  npmStub(bin)
+  return { stubDir: bin, extraPath: bin, binary: join(bin, 'codex.cmd') }
+}, { prefix: 'Test %OS% User-', expectRefused: true })
 
 if (failures.length) { console.error(`\n${failures.length} check(s) failed`); process.exit(1) }
 console.log('\nall Codex checks passed')

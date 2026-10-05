@@ -26,7 +26,7 @@ import {
   type StringHookHost,
 } from '../lib/hook-command.js'
 import { spawnResolved } from '../lib/command-spawn.js'
-import { resolveCodexBinary, type CodexBinary } from '../lib/codex-binary.js'
+import { resolveCodexBinary, codexTomlSnippet, type CodexBinary } from '../lib/codex-binary.js'
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
@@ -1223,19 +1223,6 @@ function runCodex(bin: CodexBinary | null, args: string[], opts: ExecFileSyncOpt
   return String(execFileSync(spec.file, spec.args, {
     ...opts, ...('windowsVerbatimArguments' in spec && spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   }))
-}
-
-/** The `[mcp_servers.plur]` table for `entry`, as TOML literal strings (backslash-safe on Windows). */
-function codexTomlSnippet(entry: { command: string; args: string[]; env?: Record<string, string> }): string {
-  const lit = (v: string) => (v.includes("'") ? JSON.stringify(v) : `'${v}'`)
-  return [
-    '    [mcp_servers.plur]',
-    `    command = ${lit(entry.command)}`,
-    `    args = [${entry.args.map(lit).join(', ')}]`,
-    ...(entry.env && Object.keys(entry.env).length
-      ? [`    env = { ${Object.entries(entry.env).map(([k, v]) => `${k} = ${lit(v)}`).join(', ')} }`]
-      : []),
-  ].join('\n')
 }
 
 function installCodexMcp(): string {
