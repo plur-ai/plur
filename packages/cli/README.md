@@ -6,8 +6,10 @@ PLUR stores corrections, preferences, and patterns as **engrams** that strengthe
 
 ## Install
 
+Requires Node.js 20 or newer. Install MCP alongside the CLI for editor integration.
+
 ```bash
-npm install -g @plur-ai/cli
+npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
 ```
 
 Or use without installing:
@@ -19,7 +21,7 @@ npx @plur-ai/cli status
 ## Quick Start
 
 ```bash
-# Install Claude Code hooks + local hook binary (automatic memory injection)
+# Configure Claude Code and detected editors (Cursor, Codex, OpenCode, Antigravity)
 plur init
 
 # Store a learning
@@ -59,7 +61,7 @@ plur forget ENG-2026-0329-001
 | `plur packs list` | List installed engram packs |
 | `plur packs install <source>` | Install an engram pack |
 | `plur import --from <source> --path <file>` | Import memories from another system (see below) |
-| `plur init` | Install Claude Code hooks + local hook binary for automatic injection |
+| `plur init` | Configure editor hooks/plugins and MCP; force OpenCode setup with `--opencode` |
 | `plur doctor` | Diagnose installation health (hooks, MCP, shim, embedder) |
 
 ## The memory viewer

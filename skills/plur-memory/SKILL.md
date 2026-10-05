@@ -15,13 +15,25 @@ Persistent memory for AI agents. Corrections, preferences, and patterns are stor
 
 ## When to Use
 
-Always. Memory is not a feature you toggle — it's a layer that runs continuously.
+Use PLUR to recall relevant knowledge, learn durable corrections and close a memory session. Automatic injection depends on the installed editor adapter; an MCP connection alone does not install hooks.
 
-The plugin automatically injects relevant engrams into every conversation turn via the `pre_llm_call` hook. You don't need to call `plur_inject` manually unless you want full hybrid search (the automatic path uses fast BM25 search).
+## Discover the MCP tools
+
+The default **lean** profile exposes core tools directly, including `plur_session_start`, `plur_session_end`, `plur_learn`, `plur_recall`, `plur_feedback`, `plur_forget`, `plur_status` and `plur_doctor`. Less-common operations are actions on `plur_admin`:
+
+```json
+{ "action": "help" }
+```
+
+Send that object to `plur_admin` to get current action names and argument schemas. For example, call `plur_admin` with `{ "action": "plur_inject", "args": { "task": "the current task" } }`. Destructive tools stay direct and cannot be dispatched through `plur_admin`. With `PLUR_TOOL_PROFILE=full`, operations are exposed by their own names instead.
+
+Native integrations such as Hermes have their own tool surface. Use the names and schemas the current client exposes; the [Hermes skill](https://github.com/plur-ai/plur/blob/main/packages/hermes/plur_hermes/skills/plur-memory.SKILL.md) describes its native plugin.
 
 ## Memory Lifecycle
 
-- **Automatic injection** runs every turn — relevant engrams appear in your context as `<plur-memory>` blocks
+- Start an MCP memory session with `plur_session_start`; keep its session ID for later calls.
+- With an editor adapter installed, relevant engrams are injected automatically.
+- End the session with `plur_session_end` and a concise summary.
 - When you discover something worth remembering → call `plur_learn` with a clear statement
 - When corrected by the user → call `plur_learn` immediately with the correction
 - When an injected engram was helpful → call `plur_feedback` with signal "positive"
@@ -39,7 +51,7 @@ End your responses with a learning section when you discover reusable insights:
 - Insight two
 ```
 
-The plugin auto-captures these — no manual `plur_learn` call needed. This is a convenience fallback; calling `plur_learn` directly is preferred for important learnings.
+Adapters that support self-report learning can capture this format. MCP alone does not harvest response text; use `plur_learn` for an explicit save, and check its result.
 
 ## The Memory Line
 
@@ -54,21 +66,13 @@ Your first 5 sessions are the bootstrap period. Actively learn:
 - Call `plur_learn` for stated preferences ("always use X", "never do Y")
 - Call `plur_learn` for discovered patterns and conventions
 
-After ~20 engrams, injection starts returning useful context automatically. To accelerate, install a community pack via `plur_packs_install`.
+Recall becomes useful as relevant knowledge accumulates; there is no fixed engram-count threshold. For a pack, call `plur_admin` with `{ "action": "plur_packs_preview", "args": { "source": "/path/to/pack" } }`, review the contents, then install with action `plur_packs_install` and the same `source`. Use a directory or HTTPS archive URL, not a bare pack name.
 
 ## Meta-Engram Extraction
 
-Periodically run `plur_extract_meta` to distill cross-domain principles from your engrams.
+In MCP, `plur_extract_meta` runs the extraction pipeline using a configured LLM endpoint. In the lean profile, discover its schema through `plur_admin` help, then dispatch `{ "action": "plur_extract_meta", "args": { ... } }` with the required endpoint and API-key arguments. `dry_run: true` previews without saving. This operation can send selected memory to that endpoint; use it only for an authorized destination and task. It is not the native Hermes conversational pipeline.
 
-The extraction is a multi-turn conversation:
-1. Call `plur_extract_meta` — returns analysis prompts with `"status": "prompts_ready"`
-2. Process each prompt using your reasoning
-3. Call `plur_meta_submit_analysis` with your responses as `{"responses": [...]}`
-4. Repeat steps 2-3 until you receive `{"status": "complete"}`
-
-If you call `plur_meta_submit_analysis` with no active pipeline, you'll get `{"status": "no_active_pipeline"}` — call `plur_extract_meta` first.
-
-Meta-engrams are the highest-value knowledge: principles that transfer across domains.
+Read existing results through the `plur_meta_engrams` admin action. Meta-engrams describe principles that transfer across domains.
 
 ## What NOT to Learn
 
@@ -99,7 +103,7 @@ A `plur_learn` response may carry a `dedup` field reporting engrams close to wha
 
 ### 2. Resolve the ids to statements
 
-Entries are `{ id, score }` — **there is no statement text in the payload**, and no fetch-by-id tool. To see what you nearly duplicated, run `plur_similarity_search` with the same statement you just wrote: it uses the same cosine mechanism, so its `engram_id` values line up with `near_duplicates`, and it returns `statement` and `scope` alongside them.
+Current MCP near-duplicate entries include the neighbour's statement preview. Read that text before deciding. For more context, dispatch `plur_similarity_search` through `plur_admin` with `{ "query": "the statement you just wrote" }`; it returns matching statements and scopes. Inspect the live schema if your client runs an older version.
 
 Skipping this step means deciding on a number alone, which the next point explains is not enough.
 
@@ -121,8 +125,8 @@ For reference, the engine records a `dedup_near_duplicate` history event above `
 Whether you are restating or correcting, the sequence is the same:
 
 ```
-plur_forget <new-id>
-plur_learn "<statement>" supersedes: [<original-id>]
+plur_forget({ "id": "<new-id>" })
+plur_learn({ "statement": "<statement>", "supersedes": ["<original-id>"] })
 ```
 
 **Do not try to attach `supersedes` by re-learning the same statement.** That path hits exact content-hash dedup, which increments `write_count` and appends a source — it never writes `relations`. The edge is applied only when a *new* engram is created. So re-learning silently does nothing, and if you then forget the original you are left with a superseded fact archived and no record of what replaced it: worse than leaving it alone.

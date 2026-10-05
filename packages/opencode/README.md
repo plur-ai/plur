@@ -23,36 +23,28 @@ Everything is stored as plain YAML in `~/.plur/` — the same store `@plur-ai/mc
 
 ## Install
 
+Requires Node.js 20 or newer:
+
 ```sh
-npx @plur-ai/cli init
+npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
+plur init --opencode
+plur doctor
 ```
 
-When `~/.config/opencode` exists, this writes two things into opencode's global config (`~/.config/opencode/opencode.json`, or `.jsonc` if that's what you already have):
+Restart OpenCode after setup or an upgrade. Plain `plur init` auto-detects an existing OpenCode config directory; `--opencode` also sets up a new one, and `--no-opencode` skips it.
 
-- `plugin: ["@plur-ai/opencode"]` — the automatic layer described above.
-- `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`, for when you want the agent to query or teach memory on demand. On Windows it launches `node.exe` with `@plur-ai/mcp`'s js entry, not a bare `npx`.
+The default file is `~/.config/opencode/opencode.json`. An existing `opencode.jsonc` is used when no `.json` exists. `OPENCODE_CONFIG_DIR` takes precedence, then `$XDG_CONFIG_HOME/opencode`, then the default directory.
 
-Like `--cursor`/`--codex`/`--antigravity`, opencode is auto-detected. `--opencode` sets it up even when `~/.config/opencode` does not exist yet; `--no-opencode` skips it. Re-running `plur init` is safe: it changes nothing that is already in place.
+Init writes both layers:
 
-### Manual `opencode.json`
+- `plugin: ["@plur-ai/opencode"]` for automatic recall and learning.
+- `mcp.plur` for explicit memory tools. When MCP is installed, its command is the Node executable plus the installed package's JavaScript entry, on Unix and Windows. Let init resolve these machine-specific paths.
 
-If you'd rather edit the config by hand, or `plur init` reports your config is in a shape it won't touch (see below), the equivalent is:
+On an upgrade, init advances older exact plugin pins to the plugin version shipped with the CLI. It preserves comments, formatting, tuple options and unrelated fields in JSON or JSONC. Newer pins, tags and bare unpinned entries are left alone; `--keep-opencode-plugin` retains an intentional older pin. This does not force OpenCode to refresh its cache for a bare plugin name.
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@plur-ai/opencode"],
-  "mcp": {
-    "plur": {
-      "type": "local",
-      "command": ["npx", "-y", "@plur-ai/mcp@<version>"],
-      "enabled": true
-    }
-  }
-}
-```
+Init migrates PLUR's old npx MCP command to the installed package while preserving environment and other settings. Custom and remote MCP entries remain unchanged. Invalid or ambiguous JSONC and incompatible field shapes are refused without writing; correct the reported config problem before rerunning init.
 
-`plur init` merges into an existing config — it only ever adds to `plugin` and sets `mcp.plur`, never touching your other keys (`model`, `theme`, `permission`, …). If your existing `opencode.json`/`.jsonc` doesn't parse as JSON, or `plugin`/`mcp` already hold something other than an array/object, it refuses and leaves the file untouched rather than guessing — add the two keys above by hand in that case.
+Upgrade with the same install/init commands above. `plur doctor` reports plugin declarations, resolvability and any suggested pin upgrade; it also downloads a missing search model when downloads are allowed.
 
 ## Verified version
 

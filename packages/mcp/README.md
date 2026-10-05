@@ -4,35 +4,26 @@ Give your AI agent persistent memory. One line in your MCP config — correction
 
 Part of [PLUR](https://plur.ai) — where, in our tool-routing and local-knowledge benchmark, **Haiku with memory outperformed Opus without it** at 10x less cost.
 
-## Setup (30 seconds)
+## Setup
 
-### Claude Code
-
-One command — sets up storage, MCP config, and hooks:
+Requires Node.js 20 or newer. For Claude Code, Cursor, Codex and OpenCode, install the CLI and MCP server together:
 
 ```bash
-npx @plur-ai/mcp init
+npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
+plur init
+plur doctor
 ```
 
-Restart Claude Code. Done. Your agent now has persistent memory with automatic injection.
+Restart your editor. Use `plur init --cursor`, `--codex` or `--opencode` to set up an editor that was not auto-detected.
 
-### Cursor
+- **Claude Code:** user MCP registration in `~/.claude.json`; hooks in `~/.claude/settings.json`.
+- **Cursor:** `.cursor/mcp.json`, `.cursor/hooks.json` and `.cursor/rules/plur-memory.mdc` under the project root.
+- **Codex:** MCP registration through the Codex CLI and hooks in `~/.codex/hooks.json` (`CODEX_HOME` overrides that directory). Trust the hooks through Codex's `/hooks` once.
+- **OpenCode:** plugin plus MCP entry in `~/.config/opencode/opencode.json`, or the existing `.jsonc` when no `.json` exists. `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME/opencode`, override the directory. See the [OpenCode guide](../opencode/README.md).
 
-Add to `.cursor/mcp.json`:
+For other MCP clients, configure the installed `plur-mcp` executable as a stdio server using the client's configuration format. MCP tools alone do not provide automatic injection; that needs a supported editor adapter.
 
-```json
-{
-  "mcpServers": {
-    "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
-  }
-}
-```
-
-### Windsurf / any MCP client
-
-Same pattern — point it at `npx -y @plur-ai/mcp`.
-
-That's it. Your agent now has memory. Use your tools as usual — corrections accumulate automatically.
+The MCP package also provides `plur-mcp init` for its own Claude Code/Cursor setup and bundled pack installation. The [main setup guide](../../README.md#install) uses `plur init` for the broader editor setup. Upgrade both packages, rerun init, and restart the editor.
 
 ## What happens
 

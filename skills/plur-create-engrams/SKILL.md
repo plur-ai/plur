@@ -92,6 +92,10 @@ Choose a form that matches the knowledge:
 
 Avoid vague pronouns, "always obey", and urgency manufactured to imply authority. Never phrase a remedy as a disjunction whose second branch is cheaper — the cheap branch gets taken and the rule becomes a licence.
 
+## MCP tool profiles
+
+`plur_learn`, `plur_recall` and `plur_forget` are direct tools in the default lean profile. Less-common operations such as `plur_pin` are reached through `plur_admin` with `{ "action": "plur_pin", "args": { ... } }`. Call `plur_admin` with `{ "action": "help" }` for the current actions and schemas; use the live schema when serializing a call. With `PLUR_TOOL_PROFILE=full`, those actions are direct tools too.
+
 ## Before you write: check, and write once
 
 Inspect the existing bank first. `plur_learn` returns `dedup.near_duplicates` including **the neighbour's own statement** — read it before moving on; that is what it is for. High similarity is a reason to look, not a verdict: cosine cannot distinguish a duplicate from a correction of one, and nothing is suppressed on similarity alone.

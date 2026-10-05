@@ -1,6 +1,6 @@
 ---
 name: Effective Memory
-description: The essential habits for an AI agent with memory — session bookends, learning triggers, verification, safety, and the operational discipline that turns raw recall into compounding intelligence. Pinned, always-injected.
+description: The essential habits for an AI agent with memory — session bookends, learning triggers, verification, safety, and the operational discipline that turns raw recall into compounding intelligence. Keyword-matched after installation.
 version: "1.1.1"
 creator: plur-ai
 license: MIT
@@ -33,15 +33,26 @@ They were written to be **pinned** — always eligible for injection, bypassing 
 
 ## Install
 
-This pack ships inside `@plur-ai/mcp`. Install it from there by path:
+This pack ships inside `@plur-ai/mcp`. With both packages installed globally, preview it and install it by path (Bash or zsh):
 
 ```bash
+plur packs preview "$(npm root -g)/@plur-ai/mcp/packs/effective-memory"
 plur packs install "$(npm root -g)/@plur-ai/mcp/packs/effective-memory"
 ```
 
-This needs `@plur-ai/cli` and `@plur-ai/mcp` installed globally (`npm i -g @plur-ai/cli @plur-ai/mcp`). `plur packs install effective-memory`, by name, does not work: `packs install` takes a folder or an archive, not a pack name.
+In PowerShell:
 
-`plur init` does **not** install this pack. `npx @plur-ai/mcp init` (the MCP package's own setup) does install it, and upgrades it when a newer version ships.
+```powershell
+$packPath = Join-Path (npm root -g) '@plur-ai/mcp/packs/effective-memory'
+plur packs preview $packPath
+plur packs install $packPath
+```
+
+This needs `@plur-ai/cli` and `@plur-ai/mcp` installed globally (`npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest`). `plur packs install effective-memory`, by name, does not work: `packs install` takes a folder or an archive, not a pack name.
+
+`plur init` does **not** install this pack. `plur-mcp init` (the MCP package's own setup) does install it, and upgrades it when a newer version ships.
+
+In the default lean MCP profile, preview/install use `plur_admin` actions `plur_packs_preview` and `plur_packs_install`, with `{ "source": "/path/to/pack" }` as `args`. Use action `help` for the current schemas.
 
 ## What's inside
 
@@ -67,5 +78,6 @@ The consequence is that this pack's rules are keyword-gated, which is a weaker g
 
 | Version | Changes |
 |---|---|
+| 1.1.1 | Use the installed CLI with the bundled pack path; document preview, PowerShell and lean MCP dispatch. |
 | 1.1.0 | Consolidated `plur-required` meta-rules into this pack. All engrams now `pinned: true`. Added verification, safety, discipline, and time-handling rules. Engram count 8 → 12. |
 | 1.0.0 | Initial pack — 8 engrams covering session bookends, learning triggers, and feedback loops. |
