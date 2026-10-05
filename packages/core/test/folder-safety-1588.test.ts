@@ -536,3 +536,53 @@ describe('#1589 owner decision (2026-10-05): a repository\u2019s own files never
     expect(registered()).toEqual([realpathSync(store)])
   })
 })
+
+// ---------------------------------------------------------------------------
+// Audit round 3 (PR #1589).
+// ---------------------------------------------------------------------------
+
+describe('#1589 audit round 3', () => {
+  it('P14 / R3-M1: a trusted parent trusts the .plur.yaml below it, but the repository store still needs its own entry', async () => {
+    const code = join(home, 'code')
+    const proj = join(code, 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    const store = await seedStore(proj, 'Codeword PARENTTRUST: under a trusted parent')
+    writeFileSync(join(proj, '.plur.yaml'), 'scope: "project:requested"\n')
+    writeFileSync(join(root, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(code)}\n    plur: on\n    trusted: true\n`)
+    const p = resolveFolderPolicy(proj, { root, home })
+    expect(`${p.mode}/${p.source}/${p.scope}`).toBe('on/plur-yaml/project:requested')
+    const plur = new Plur({ path: root, cwd: proj })
+    expect(registered()).toEqual([])
+    expect(plur.skippedProjectStores(proj).map(s => realpathSync(s.path))).toEqual([realpathSync(store)])
+  })
+
+  it('P16 / R3-L1: an off entry that matches the folder as typed stops discovery, even when the real path is on', async () => {
+    const real = join(base, 'repos', 'r')
+    mkdirSync(join(real, '.git'), { recursive: true })
+    const store = await seedStore(real, 'Codeword ALIASOFF: reached through an alias that is off')
+    const aliases = join(home, 'aliases')
+    mkdirSync(aliases)
+    const alias = join(aliases, 'r')
+    symlinkSync(real, alias)
+    writeFileSync(join(root, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: ${JSON.stringify(join(aliases, '*'))}\n    plur: off\n  - path: ${JSON.stringify(real)}\n    plur: on\n`)
+    expect(resolveFolderPolicy(alias, { root, home }).mode).toBe('off')
+    const plur = new Plur({ path: root, cwd: alias })
+    expect(registered()).toEqual([])
+    expect(plur.skippedProjectStores(alias)).toEqual([])
+    // From the real path, the user's exact entry applies as before.
+    new Plur({ path: root, cwd: real })
+    expect(registered()).toEqual([realpathSync(store)])
+  })
+
+  it('P17 / R3-L2: discovery never imports a legacy trust.yaml, and still honours it', async () => {
+    const repo = join(home, 'code', 'legacy')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    const store = await seedStore(repo, 'Codeword LEGACYSCOPE: trusted in trust.yaml')
+    writeFileSync(join(repo, '.plur.yaml'), 'scope: "project:legacy-scope"\n')
+    writeFileSync(join(root, 'trust.yaml'), `trusted:\n  - ${JSON.stringify(repo)}\n`)
+    new Plur({ path: root, cwd: repo })
+    expect(existsSync(join(root, 'folders.yaml'))).toBe(false)
+    expect(storeScopes()).toEqual([{ path: realpathSync(store), scope: 'project:legacy-scope' }])
+  })
+})

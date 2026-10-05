@@ -266,3 +266,45 @@ describe.skipIf(!posix)('#1589 owner decision (2026-10-05): a clone\u2019s own m
     expect(inject(clone, 'cc-clone-after')).toContain('CLONEDSTORE')
   }, 90_000)
 })
+
+describe.skipIf(!hasPythonPty)('#1589 audit round 3, R3-M1: what plur trust and plur folders say matches what they do', () => {
+  it('trusting a parent: the text says repository stores still need their own entry, and none is added', () => {
+    writeFileSync(join(proj, '.plur.yaml'), 'scope: "project:requested"\n')
+    const t = ptySet(['trust', code], base)
+    expect(t.status, t.out).toBe(0)
+    const said = t.out.replace(/\r?\n\s*/g, ' ')
+    expect(said).toContain('plur folders set <repo> --on')
+    expect(said).toContain('plur trust <repo>')
+    expect(said).not.toMatch(/stores \(\.plur\/engrams\.yaml\) of repositories below it are added/)
+    // Behaviour matches: the repository's store is not added, its memory not injected.
+    const text = inject(proj, 'cc-trust-parent')
+    expect(text).not.toContain('ORCHIDLANTERN')
+    expect(configText()).not.toContain(join(proj, '.plur'))
+    // plur folders usage says the same.
+    const usage = cli(['folders', 'set'], '', base)
+    const u = (usage.stdout + usage.stderr).replace(/\r?\n\s*/g, ' ')
+    expect(u).toContain('plur folders set <repo> --on')
+    expect(u).not.toMatch(/memory stores of repositories below it are added/)
+  }, 120_000)
+})
+
+describe.skipIf(!posix)('#1589 audit round 3, R3-L3: the prompt hook says once when a store here was skipped', () => {
+  beforeEach(() => {
+    writeFileSync(join(plurRoot, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(code)}\n    plur: on\n`)
+  })
+
+  it('one line on the first prompt of a session, with the command; not again in that session; again in a new one', () => {
+    const hint = (t: string) => t.split('\n').filter(l => l.includes('was not added'))
+    const first = inject(proj, 'cc-hint-1')
+    expect(hint(first)).toHaveLength(1)
+    expect(hint(first)[0]).toContain(`To use it: plur folders set ${proj} --on`)
+    expect(first).not.toContain('ORCHIDLANTERN')
+    const second = context(cli(['hook-inject'], { session_id: 'cc-hint-1', cwd: proj, hook_event_name: 'UserPromptSubmit', prompt: PROMPT }, proj).stdout)
+    expect(hint(second)).toHaveLength(0)
+    expect(hint(inject(proj, 'cc-hint-2'))).toHaveLength(1)
+  }, 120_000)
+
+  it('no hint when the repository has its own decision, or nothing was skipped', () => {
+    expect(inject(onProj, 'cc-hint-none')).not.toContain('was not added')
+  }, 60_000)
+})
