@@ -163,7 +163,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason:
+      permissionDecisionReason: 'Blocked by policy.', _was:
         'Reminder: call mcp__plur__plur_session_start once before other tools ' +
         'so this session has memory. It is a deferred tool — first run ' +
         "ToolSearch 'select:mcp__plur__plur_session_start' as its own step, " +

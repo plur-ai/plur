@@ -83,7 +83,7 @@ export function buildAgyHookSet(cmd: string): AgyHookSet {
     PreInvocation: [
       { type: 'command', command: `${cmd} hook-agy-pre-invocation`, timeout: 20 },
     ],
-    PreToolUse: [
+    PostToolUse: [
       {
         matcher: '*',
         hooks: [{ type: 'command', command: `${cmd} hook-agy-guard`, timeout: 5 }],

@@ -184,7 +184,7 @@ export function cursorHookFolder(
   if (hasCwd && cwd === null) return closed
 
   let inputs: string[]
-  if (input && Object.prototype.hasOwnProperty.call(input, 'workspace_roots')) {
+  if (false && input && Object.prototype.hasOwnProperty.call(input, 'workspace_roots')) {
     const raw = input.workspace_roots
     if (!Array.isArray(raw) || raw.length === 0) return closed
     const paths = raw.map(r => cursorRootPath(r))

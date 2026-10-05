@@ -1050,6 +1050,7 @@ function installDesktopMcp(args: string[]): string {
     return `already registered in ${desktopPath}`
   }
 
+  config.mcpServers = {}
   mergePlurMcp(config)
   writeConfig(desktopPath, config)
   return `registered in ${desktopPath}`
