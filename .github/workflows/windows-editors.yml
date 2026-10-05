@@ -1,0 +1,106 @@
+name: Windows real editors
+
+# #1605, layer 1. On windows-latest, install the PR's PLUR CLI globally from
+# packed tarballs and the real editor CLIs that install headless (Claude Code,
+# Codex, opencode, and Cursor's agent CLI when its Windows installer works),
+# then run `plur init --no-prompt` with no `--no-*` flags and check, per editor:
+# the editor's own `mcp list` shows plur; the exact registered MCP command
+# completes an MCP handshake; every registered hook runs with that editor's
+# recorded payloads in a decided, an undecided, an off and a team-scoped
+# folder; and `plur doctor` reports the editor as wired
+# (scripts/windows-editors-probe.mjs). Claude Desktop and Antigravity have no
+# CLI: their config files are checked. The job summary lists every editor as
+# covered or "not covered (reason)".
+#
+# No logins, no API keys, no model calls. Required by release.sh --trust-ci.
+# Actions are pinned by commit SHA.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'packages/cli/**'
+      - 'packages/mcp/**'
+      - 'packages/core/**'
+      - 'scripts/windows-editors-probe.mjs'
+      - '.github/workflows/windows-editors.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-editors-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-editors:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build core, MCP server and CLI
+        run: pnpm --filter "@plur-ai/cli..." --filter "@plur-ai/mcp..." build
+
+      - name: Install the PR's PLUR globally (packed tarballs, as users get them)
+        shell: pwsh
+        run: |
+          $tb = Join-Path $env:RUNNER_TEMP 'plur-tarballs'
+          New-Item -ItemType Directory -Force $tb | Out-Null
+          foreach ($p in 'core','mcp','cli') {
+            Push-Location "packages/$p"
+            pnpm pack --pack-destination $tb
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            Pop-Location
+          }
+          # One command, so the CLI and MCP server resolve this build's core
+          # (installed beside them), never a published one from the registry.
+          npm install -g --no-audit --no-fund (Get-ChildItem $tb -Filter *.tgz).FullName
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $root = npm root -g
+          foreach ($p in 'cli','mcp') {
+            if (Test-Path "$root/@plur-ai/$p/node_modules/@plur-ai/core") { Write-Error "@plur-ai/$p got its own @plur-ai/core, not this build's"; exit 1 }
+          }
+          Get-Command plur | Format-List Source
+          plur --version
+
+      - name: Install editor CLIs (Claude Code, Codex, opencode)
+        shell: pwsh
+        run: |
+          npm install -g --no-audit --no-fund @anthropic-ai/claude-code @openai/codex opencode-ai
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          claude --version; codex --version; opencode --version
+
+      - name: Install Cursor's agent CLI (Windows installer)
+        id: cursor
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          try {
+            irm 'https://cursor.com/install?win32=true' | iex
+          } catch {
+            "PLUR_EDITOR_CURSOR_REASON=the Windows installer failed: $($_.Exception.Message -replace '[\r\n]+',' ')" >> $env:GITHUB_ENV
+            exit 1
+          }
+          # The installer adds itself to the user PATH, which this session does not see.
+          $bin = Get-ChildItem -Path $env:LOCALAPPDATA, $env:USERPROFILE -Recurse -Depth 4 -Include 'agent.cmd','agent.exe','cursor-agent.cmd','cursor-agent.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $bin) {
+            "PLUR_EDITOR_CURSOR_REASON=the Windows installer ran but left no agent binary" >> $env:GITHUB_ENV
+            exit 1
+          }
+          $bin.DirectoryName >> $env:GITHUB_PATH
+          & $bin.FullName --version
+
+      - name: Real-editor checks
+        env:
+          PLUR_EDITORS_REQUIRED: claude,codex,opencode
+        run: node scripts/windows-editors-probe.mjs
