@@ -1,7 +1,7 @@
 ---
 name: Effective Memory
 description: The essential habits for an AI agent with memory — session bookends, learning triggers, verification, safety, and the operational discipline that turns raw recall into compounding intelligence. Pinned, always-injected.
-version: "1.1.0"
+version: "1.1.1"
 creator: plur-ai
 license: MIT
 tags: [memory, learning, best-practices, session-management, feedback, safety, verification, discipline, time]
@@ -33,11 +33,15 @@ They were written to be **pinned** — always eligible for injection, bypassing 
 
 ## Install
 
+This pack ships inside `@plur-ai/mcp`. Install it from there by path:
+
 ```bash
-npx @plur-ai/cli@0.9.4 packs install effective-memory
+plur packs install "$(npm root -g)/@plur-ai/mcp/packs/effective-memory"
 ```
 
-(In 0.9.4+, `plur init` auto-installs this pack — manual install is rarely needed.)
+This needs `@plur-ai/cli` and `@plur-ai/mcp` installed globally (`npm i -g @plur-ai/cli @plur-ai/mcp`). `plur packs install effective-memory`, by name, does not work: `packs install` takes a folder or an archive, not a pack name.
+
+`plur init` does **not** install this pack. `npx @plur-ai/mcp init` (the MCP package's own setup) does install it, and upgrades it when a newer version ships.
 
 ## What's inside
 
