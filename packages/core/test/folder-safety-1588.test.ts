@@ -17,11 +17,11 @@
  * off, so the assertions are not vacuous (the control cases prove it runs).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync, symlinkSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync, symlinkSync, utimesSync, readdirSync, statSync, chmodSync, lstatSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, findPlurMarker, resolveFolderPolicy, hasOwnFolderDecision, findProjectConfigPath, folderPatternMatches, sameFolderPath, folderSetOnCommand } from '../src/index.js'
+import { Plur, findPlurMarker, resolveFolderPolicy, hasOwnFolderDecision, findProjectConfigPath, folderPatternMatches, sameFolderPath, folderSetOnCommand, skippedStoreHintLine, skippedStoreNotice, claimSkippedStoreHint, folderMarkerDir } from '../src/index.js'
 
 const MCP = JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } })
 
@@ -584,5 +584,94 @@ describe('#1589 audit round 3', () => {
     new Plur({ path: root, cwd: repo })
     expect(existsSync(join(root, 'folders.yaml'))).toBe(false)
     expect(storeScopes()).toEqual([{ path: realpathSync(store), scope: 'project:legacy-scope' }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Audit round 4 (PR #1589).
+// ---------------------------------------------------------------------------
+
+describe('#1589 audit round 4', () => {
+  it('P18 / R4-M1: a start folder that is off by its typed path discovers and lists nothing, even through a link into a repository sub-folder', async () => {
+    const real = join(base, 'repos', 'r')
+    mkdirSync(join(real, '.git'), { recursive: true })
+    mkdirSync(join(real, 'src'))
+    await seedStore(real, 'Codeword LINKSUB: the real repository root store')
+    const links = join(home, 'links')
+    mkdirSync(links)
+    const link = join(links, 'r')
+    symlinkSync(join(real, 'src'), link)
+    writeFileSync(join(root, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: ${JSON.stringify(join(links, '*'))}\n    plur: off\n  - path: ${JSON.stringify(real)}\n    plur: on\n`)
+    expect(resolveFolderPolicy(link, { root, home }).mode).toBe('off')
+    const plur = new Plur({ path: root, cwd: link })
+    expect(registered()).toEqual([])
+    expect(plur.autoDiscoverStores(link)).toEqual([])
+    expect(plur.skippedProjectStores(link)).toEqual([])
+  })
+
+  it('R4-L1: the command is the last thing on the hint line, so pasting it runs exactly the command', () => {
+    const line = skippedStoreHintLine([
+      { path: '/w/a/.plur/engrams.yaml', folder: '/w/a' },
+      { path: '/w/.plur/engrams.yaml', folder: '/w' },
+    ], join(home, '.plur'), 'linux')!
+    expect(line.endsWith('To use it: plur folders set /w/a --on')).toBe(true)
+    expect(line).toContain('(1 more: plur stores list)')
+    expect(line.indexOf('(1 more')).toBeLessThan(line.indexOf('To use it:'))
+  })
+
+  it('R4-L2: claiming a hint sweeps hint and question markers older than 7 days, and nothing else', () => {
+    const dir = folderMarkerDir()!
+    expect(dir).not.toBeNull()
+    const old = (Date.now() - 8 * 24 * 3600 * 1000) / 1000
+    const files = {
+      oldHint: join(dir, 'old.0123456789abcdef.skipped-store-hint'),
+      oldAsk: join(dir, 'old.0123456789abcdef.folder-asked'),
+      oldOther: join(dir, 'someone-elses-state.json'),
+      newHint: join(dir, 'new.0123456789abcdef.skipped-store-hint'),
+    }
+    for (const f of Object.values(files)) writeFileSync(f, 'x')
+    for (const f of [files.oldHint, files.oldAsk, files.oldOther]) utimesSync(f, old, old)
+    expect(claimSkippedStoreHint('sweep-session', join(home, 'code'))).toBe(true)
+    expect(existsSync(files.oldHint)).toBe(false)
+    expect(existsSync(files.oldAsk)).toBe(false)
+    expect(existsSync(files.oldOther)).toBe(true)
+    expect(existsSync(files.newHint)).toBe(true)
+  })
+
+  it.skipIf(process.platform === 'win32')('R4-L4: the marker folder is 0700, and a symlinked one is refused for hints and questions alike', () => {
+    const dir = folderMarkerDir()!
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    // A loose mode on our own folder is tightened, not refused (the upgrade case).
+    chmodSync(dir, 0o777)
+    expect(folderMarkerDir()).toBe(dir)
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    // A symlink planted at the marker folder is refused: nothing is written through it.
+    rmSync(dir, { recursive: true, force: true })
+    const target = join(base, 'elsewhere')
+    mkdirSync(target)
+    symlinkSync(target, dir)
+    expect(lstatSync(dir).isSymbolicLink()).toBe(true)
+    expect(folderMarkerDir()).toBeNull()
+    expect(claimSkippedStoreHint('sym-session', join(home, 'code'))).toBe(false)
+    expect(readdirSync(target)).toEqual([])
+  })
+
+  it('Info: the once-only marker is checked before searching, and no search runs where no store file exists', async () => {
+    const proj = join(home, 'code', 'proj')
+    mkdirSync(join(proj, '.git'), { recursive: true })
+    let searches = 0
+    const source = {
+      storageRoot: root,
+      skippedProjectStores: (_d: string) => { searches++; return [{ path: join(proj, '.plur', 'engrams.yaml'), folder: proj }] },
+    }
+    // No .plur/engrams.yaml anywhere: no search at all.
+    expect(skippedStoreNotice(source, 'info-1', proj)).toBeNull()
+    expect(searches).toBe(0)
+    await seedStore(proj, 'Codeword INFOSTORE: a store here')
+    expect(skippedStoreNotice(source, 'info-1', proj)).toContain('was not added')
+    expect(searches).toBe(1)
+    expect(skippedStoreNotice(source, 'info-1', proj)).toBeNull()
+    expect(searches).toBe(1)
   })
 })

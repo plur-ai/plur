@@ -348,3 +348,18 @@ describe.skipIf(!posix)('#1589: the skipped-store hint in the Codex, Cursor and 
     expectOne(agy('ag-hint-2', 0), 'new conversation')
   }, 120_000)
 })
+
+describe.skipIf(!posix)('#1589 audit round 4, R4-L3: Claude Code hints on the prompt that reaches the folder, not only the first', () => {
+  it('a session that starts elsewhere and moves to the repository gets its hint once there', () => {
+    writeFileSync(join(plurRoot, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(code)}\n    plur: on\n`)
+    const other = join(code, 'other')
+    mkdirSync(join(other, '.git'), { recursive: true })
+    const hint = (t: string) => t.split('\n').filter(l => l.includes('was not added'))
+    const say = (folder: string) => context(cli(['hook-inject'], { session_id: 'cc-move', cwd: folder, hook_event_name: 'UserPromptSubmit', prompt: PROMPT }, folder).stdout)
+    expect(hint(say(other))).toHaveLength(0)
+    const moved = say(proj)
+    expect(hint(moved)).toHaveLength(1)
+    expect(hint(moved)[0]).toContain(`To use it: plur folders set ${proj} --on`)
+    expect(hint(say(proj))).toHaveLength(0)
+  }, 120_000)
+})
