@@ -69,7 +69,10 @@ const cell = (editor, col, ok, note = '') => {
 }
 
 // ── temp HOME ────────────────────────────────────────────────────────────────
-const home = realpathSync(mkdtempSync(join(tmpdir(), 'Test User-')))
+// The long spelling (realpathSync.native expands Windows 8.3 names such as
+// RUNNER~1): hooks see a folder in its canonical form, and folders.yaml entries
+// are compared exactly as written, as `plur folders set` writes them.
+const home = realpathSync.native(mkdtempSync(join(tmpdir(), 'Test User-')))
 if (!/\s/.test(home)) { console.error(`temp HOME has no space: ${home}`); process.exit(1) }
 const folders = Object.fromEntries(['decided', 'undecided', 'off', 'team'].map((k) => {
   const p = join(home, k === 'decided' ? 'project' : k)
@@ -82,16 +85,21 @@ const env = {
   HOME: home, USERPROFILE: home,
   APPDATA: join(home, 'AppData', 'Roaming'), LOCALAPPDATA: join(home, 'AppData', 'Local'),
   PLUR_PATH: join(home, '.plur'),
+  // Codex (a native binary) finds its home through the OS profile API on
+  // Windows, not USERPROFILE, so it is pointed here the documented way.
+  // plur init honours CODEX_HOME too.
+  CODEX_HOME: join(home, '.codex'),
   // Hook session state lives in the temp folder: keep it inside this run.
   TMPDIR: join(home, 'tmp'), TEMP: join(home, 'tmp'), TMP: join(home, 'tmp'),
   // Deterministic, offline recall: BM25 only, no embedding model download.
   PLUR_HOOK_HYBRID: 'off', PLUR_DISABLE_EMBEDDINGS: '1',
   // Nothing outside the temp HOME decides where an editor keeps its config.
   XDG_CONFIG_HOME: '', XDG_DATA_HOME: '', XDG_STATE_HOME: '', XDG_CACHE_HOME: '',
-  CODEX_HOME: '', OPENCODE_CONFIG_DIR: '', CLAUDE_CONFIG_DIR: '', CLAUDE_SESSION_ID: '',
+  OPENCODE_CONFIG_DIR: '', CLAUDE_CONFIG_DIR: '', CLAUDE_SESSION_ID: '',
 }
 for (const k of Object.keys(env)) if (env[k] === '') delete env[k]
 mkdirSync(env.TMPDIR, { recursive: true })
+mkdirSync(env.CODEX_HOME, { recursive: true }) // Codex refuses a CODEX_HOME that does not exist
 mkdirSync(env.APPDATA, { recursive: true })
 mkdirSync(env.LOCALAPPDATA, { recursive: true })
 console.log(`HOME: ${home}`)
@@ -119,7 +127,9 @@ const cli = {
   claude: onPath('claude'),
   codex: onPath('codex'),
   opencode: onPath('opencode'),
-  cursor: onPath('agent') ? 'agent' : onPath('cursor-agent') ? 'cursor-agent' : null,
+  // The workflow names the installed binary instead of putting its folder on
+  // PATH: that folder carries its own node.exe, which would shadow the runner's.
+  cursor: process.env.PLUR_CURSOR_AGENT || (onPath('agent') ? 'agent' : onPath('cursor-agent') ? 'cursor-agent' : null),
 }
 const NAMES = { claude: 'Claude Code', codex: 'Codex', opencode: 'opencode', cursor: 'Cursor', desktop: 'Claude Desktop', agy: 'Antigravity' }
 const editors = []
@@ -169,17 +179,19 @@ const configs = {
 const listings = {
   claude: ['claude', ['mcp', 'list'], /^plur:.*(Connected|✓)/m],
   codex: ['codex', ['mcp', 'list'], /^plur\s+\S/m],
-  opencode: ['opencode', ['mcp', 'list'], /plur.*connected/i],
+  opencode: ['opencode', ['mcp', 'list', '--print-logs'], /plur.*connected/i],
   cursor: [cli.cursor, ['mcp', 'list'], /^plur:/m],
 }
 for (const key of editors) {
   const name = NAMES[key]
   if (listings[key]) {
     const [bin, args, re] = listings[key]
-    const r = run(bin, args)
+    const r = run(bin, args, { timeout: 300000 })
     const out = strip(r.stdout + r.stderr)
-    console.log(`--- ${bin} ${args.join(' ')}\n${out.trim()}`)
-    cell(key, 'listing', check(re.test(out), `${name}: \`${bin} ${args.join(' ')}\` lists plur`), `\`${bin} mcp list\``)
+    console.log(`--- ${bin} ${args.join(' ')} (exit ${r.status}${r.error ? `, ${r.error.message}` : ''})\n${out.trim().slice(-4000)}`)
+    const short = bin.split(/[\\/]/).pop().replace(/\.(cmd|exe)$/i, '')
+    // Judged on stdout only: opencode's --print-logs goes to stderr.
+    cell(key, 'listing', check(re.test(strip(r.stdout)), `${name}: \`${short} ${args.join(' ')}\` lists plur`), `\`${short} mcp list\``)
   } else {
     let entry = null
     try { entry = configs[key]() } catch { /* missing or unreadable */ }

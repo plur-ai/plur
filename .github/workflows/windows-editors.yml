@@ -91,13 +91,16 @@ jobs:
             "PLUR_EDITOR_CURSOR_REASON=the Windows installer failed: $($_.Exception.Message -replace '[\r\n]+',' ')" >> $env:GITHUB_ENV
             exit 1
           }
-          # The installer adds itself to the user PATH, which this session does not see.
+          # The installer adds itself to the user PATH, which this session does not
+          # see. Its folder is not added to PATH here either: it ships its own
+          # node.exe, which would shadow the runner's node for plur and its MCP
+          # entries. The probe gets the binary by its full path.
           $bin = Get-ChildItem -Path $env:LOCALAPPDATA, $env:USERPROFILE -Recurse -Depth 4 -Include 'agent.cmd','agent.exe','cursor-agent.cmd','cursor-agent.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $bin) {
             "PLUR_EDITOR_CURSOR_REASON=the Windows installer ran but left no agent binary" >> $env:GITHUB_ENV
             exit 1
           }
-          $bin.DirectoryName >> $env:GITHUB_PATH
+          "PLUR_CURSOR_AGENT=$($bin.FullName)" >> $env:GITHUB_ENV
           & $bin.FullName --version
 
       - name: Real-editor checks
