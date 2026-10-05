@@ -4,9 +4,10 @@
 
 Your folders, your memory.
 
-- Cloned repos ask before adding memory
-- Recall always answers within 10 s
-- Replies show what the team server did
+- Repos ask before adding memory
+- Recall answers within 10 s
+- Replies show the server's state
+- Search works during model download
 
 ### A folder inherits less from the folders above it (#1588, #1589)
 
