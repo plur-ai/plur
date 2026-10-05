@@ -28,6 +28,7 @@ import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCOD
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { repairAdvice, repairCommandFor } from './folders.js'
+import { codexInstalled } from '../lib/codex-binary.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -1348,7 +1349,9 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   )
 
   // Codex health, from Codex's OWN two files only.
-  const codexDetected = existsSync(codexHome())
+  // A Codex home, a codex on PATH, or the Codex app's bundled binary — the
+  // same places `plur init --codex` looks (#1603).
+  const codexDetected = codexInstalled()
   const codexHooksReport = configs.find((c) => c.label === 'Codex (~/.codex/hooks.json)')
   const codexTomlReport = configs.find((c) => c.label === 'Codex (~/.codex/config.toml)')
   // The `plur-mcp.cmd` entry an older init wrote on Windows is registered but

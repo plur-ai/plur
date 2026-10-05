@@ -230,7 +230,7 @@ describe('plur init --codex with an npm codex.cmd on PATH (#1603, win32 preload)
 
   it('still says Codex is absent, and prints the TOML to add by hand', () => {
     const out = run([bin, '/usr/bin', '/bin'])
-    expect(out).toContain('the `codex` binary is not on PATH')
+    expect(out).toContain('no `codex` on PATH and no Codex app binary')
     expect(out).toContain('[mcp_servers.plur]')
     expect(out).toContain(`command = '${process.execPath}'`)
     expect(out).toMatch(/args = \['[^']+'\]/)

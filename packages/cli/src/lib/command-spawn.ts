@@ -2,7 +2,7 @@ import { statSync } from 'fs'
 import { delimiter, join } from 'path'
 
 /** An env var by name, case-insensitively (Windows spells it `Path`). */
-function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
+export function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
   if (env[name] !== undefined) return env[name]
   const key = Object.keys(env).find(k => k.toUpperCase() === name)
   return key === undefined ? undefined : env[key]
@@ -62,7 +62,20 @@ export function commandSpawn(
   if (plat !== 'win32') return { file, args }
   const resolved = findWindowsCommand(file, env)
   if (!resolved) return { file, args }
-  if (!/\.(cmd|bat)$/i.test(resolved)) return { file: resolved, args }
+  return spawnResolved(resolved, args, plat, env)
+}
+
+/**
+ * How to spawn an already-resolved executable path: directly, or — for a
+ * Windows `.cmd`/`.bat` — through `cmd.exe /d /s /c "<quoted line>"`.
+ */
+export function spawnResolved(
+  resolved: string,
+  args: string[],
+  plat: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): { file: string; args: string[]; windowsVerbatimArguments?: boolean } {
+  if (plat !== 'win32' || !/\.(cmd|bat)$/i.test(resolved)) return { file: resolved, args }
   const line = [resolved, ...args].map(cmdArg).join(' ')
   return {
     file: envGet(env, 'COMSPEC') || 'cmd.exe',
