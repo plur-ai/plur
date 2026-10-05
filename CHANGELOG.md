@@ -1,8 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.21.2
 
-### Team-memory recall no longer stalls or goes quiet on a slow start, and every recall says what the server did (#1586)
+Recall that always answers.
+
+- Every recall replies within 10 seconds
+- Each reply says what the team server did
+- Keyword answers while the model downloads
+- Large stores become searchable as you go
+
+### Team-memory recall no longer stalls or goes quiet on a slow start, and every recall says what the server did (#1586, #1587)
 
 Found by the 0.21.1 post-release smoke run: saves reached the team server while recalls hung, returned nothing after 7 s, or paused team memory for five minutes. The server was healthy; the causes were in the client.
 
