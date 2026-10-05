@@ -24,7 +24,9 @@ describe('plur doctor', () => {
       const stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
         encoding: 'utf-8',
         timeout: 15000,
-        env: isolatedHomeEnv(home),
+        // These cases inspect configuration, not model downloads. The cold
+        // model path is covered separately in doctor-download-1602.test.ts.
+        env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
         cwd: home,
       })
       return { stdout, status: 0 }
