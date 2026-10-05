@@ -94,13 +94,29 @@ export interface ProjectConfig {
  *   - Stop at HOME or filesystem root as a hard ceiling.
  *   - Refuse to consider a `.plur.yaml` that sits IN HOME itself.
  *
- * Paths are resolved (path.resolve) to normalize trailing slashes,
- * symlink components, and `..` segments.
+ * Inside a repository the walk follows the REAL path (symlinks resolved) up
+ * to the real repository root (#1589 audit rounds 1 and 2), the same path the
+ * marker walk (`findPlurMarker`) takes: a symlinked sub-folder then finds the
+ * same `.plur.yaml` its real path does, and never one above the repository.
+ * The result is returned in the caller's spelling when an ancestor of the
+ * path as typed names the same folder (`/var/...` vs `/private/var/...`), so
+ * existing callers see the path they gave. Outside any repository the walk
+ * follows the path as typed (`path.resolve`), as before.
  */
 export function findProjectConfigPath(startDir: string = process.cwd()): string | null {
   const home = canonicalize(homedir())
-  let dir = resolve(startDir)
-  const MAX_DEPTH = 12  // hard ceiling — beyond ~12 dirs deep, give up
+  const typed = resolve(startDir)
+  const realRepo = realRepositoryRoot(typed)
+  const found = realRepo !== null ? walkForConfig(canonicalize(typed), home) : walkForConfig(typed, home)
+  if (found === null || realRepo === null) return found
+  return typedSpelling(found, typed)
+}
+
+const MAX_DEPTH = 12  // hard ceiling — beyond ~12 dirs deep, give up
+
+/** The `.plur.yaml` lookup proper: first one up from `start`, stopping at `.git`, HOME or the root. */
+function walkForConfig(start: string, home: string): string | null {
+  let dir = start
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     // Refuse to accept a .plur.yaml that lives directly in HOME.
     // That's the failure mode where a stray home-level config silently
@@ -120,6 +136,24 @@ export function findProjectConfigPath(startDir: string = process.cwd()): string 
     dir = parent
   }
   return null
+}
+
+/**
+ * `found` (a path on the real walk) in the spelling of `typed`: the first
+ * ancestor of the typed path (itself included) that resolves to the same
+ * folder as `found`'s folder. When none does (a symlink crossed on the way),
+ * the real path is the only honest answer.
+ */
+function typedSpelling(found: string, typed: string): string {
+  const realDir = dirname(found)
+  let dir = typed
+  for (let depth = 0; depth < MAX_DEPTH; depth++) {
+    if (canonicalize(dir) === realDir) return join(dir, basename(found))
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return found
 }
 
 /**
@@ -233,4 +267,15 @@ export function readProjectConfigFromPath(configPath: string | null): ProjectCon
  */
 export function readProjectConfig(startDir: string = process.cwd()): ProjectConfig {
   return readProjectConfigFromPath(findProjectConfigPath(startDir))
+}
+
+/** The nearest folder holding `.git` above the real (canonical) `dir`, or `null`. */
+function realRepositoryRoot(dir: string): string | null {
+  let cur = canonicalize(dir)
+  for (;;) {
+    if (existsSync(join(cur, '.git'))) return cur
+    const parent = dirname(cur)
+    if (parent === cur) return null
+    cur = parent
+  }
 }

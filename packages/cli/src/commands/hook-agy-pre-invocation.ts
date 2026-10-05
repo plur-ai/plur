@@ -1,3 +1,4 @@
+import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { hookFolderPolicy, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
 import type { FolderPolicy } from '@plur-ai/core'
@@ -179,6 +180,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // Only on the FIRST turn: the refusal persists until the user acts on it,
       // so repeating it every turn would be noise rather than information.
       message = refusal + (body ? `${header}\n\n${body}` : (isFirst ? header : ''))
+      // A store in the workspace that was found but not added (#1589): once
+      // per conversation and workspace folder.
+      const hint = workspace ? skippedStoreNotice(plur, conversationId, workspace) : null
+      if (hint) message = message ? `${hint}\n${message}` : hint
     } catch (err: unknown) {
       // Only worth a message on the FIRST turn — an honest "memory is broken"
       // beats silence there. Mid-session, stderr is enough.

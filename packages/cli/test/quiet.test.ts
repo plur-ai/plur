@@ -189,6 +189,7 @@ describe('doctor --quiet (#730)', () => {
       pgliteOrphan: null,
       staleContentHashes: 0,
       ignoredDuplicateStores: [],
+      skippedProjectStores: [],
       tokenEnvUnset: [],
       tokenEnvFound: [],
       opencode: null,
