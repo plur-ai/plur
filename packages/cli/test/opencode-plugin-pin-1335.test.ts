@@ -21,10 +21,10 @@ describe('opencode plugin entry compared by package name (#1335)', () => {
     ['the tuple form with options', [['@plur-ai/opencode', { injectLimit: 5 }]]],
     ['a pinned tuple', [['@plur-ai/opencode@0.1.1', { injectLimit: 5 }]]],
     ['the bare name among other plugins', ['other-plugin', '@plur-ai/opencode']],
-  ])('leaves %s exactly as it is, and doctor sees it as declared', (_label, plugin) => {
+  ])('with explicit preservation leaves %s exactly as it is, and doctor sees it as declared', (_label, plugin) => {
     const cfgPath = join(dir, 'opencode.json')
     writeFileSync(cfgPath, JSON.stringify({ plugin, mcp: { plur: { type: 'local', command: ['npx', '-y', '@plur-ai/mcp@0.21.0'], enabled: true } } }))
-    writeOpencodeConfig(cfgPath, '0.21.0')
+    writeOpencodeConfig(cfgPath, '0.21.0', { upgradePlugin: false })
     expect(JSON.parse(readFileSync(cfgPath, 'utf-8')).plugin).toEqual(plugin)
     expect(readOpencodeConfig(cfgPath).pluginDeclared).toBe(true)
   })

@@ -218,7 +218,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   // version-check.ts covers processes whose timers are throttled.
   const announceUpdate = (r: { updateAvailable: boolean; current: string; latest: string | null }) => {
     if (r.updateAvailable) {
-      console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest && plur init (configs pin versions)`)
+      console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest && plur init (configs pin versions)`)
     }
   }
   checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)

@@ -42,15 +42,16 @@ describe('writeOpencodeConfig', () => {
     expect(JSON.parse(readFileSync(p, 'utf8')).plugin).toEqual(['@plur-ai/opencode'])
   })
 
-  it('fails safe on a JSONC file with comments — reports, does not corrupt or discard it', () => {
+  it('adds PLUR to JSONC without discarding comments or existing settings', () => {
     const p = join(dir, 'opencode.jsonc')
     const original = '{\n  // keep this comment\n  "model": "anthropic/claude-sonnet-4-5"\n}\n'
     writeFileSync(p, original)
     const r = writeOpencodeConfig(p, '0.20.0')
-    expect(r.ok).toBe(false)
-    expect(r.changed).toBe(false)
-    // The file on disk is untouched byte-for-byte — no silent {} clobber.
-    expect(readFileSync(p, 'utf8')).toBe(original)
+    expect(r.ok).toBe(true)
+    expect(r.changed).toBe(true)
+    const output = readFileSync(p, 'utf8')
+    expect(output).toContain('// keep this comment')
+    expect(output).toContain('\"model\": \"anthropic/claude-sonnet-4-5\"')
   })
 
   // Reviewer-caught bug: a top-level array is syntactically valid JSON, so

@@ -808,21 +808,34 @@ if (cli.codex) {
   check(rep2?.codexDetected === true && rep2?.codexWired === false, `doctor names Codex once it is deliberately unwired (codexDetected=${rep2?.codexDetected}, codexWired=${rep2?.codexWired})`)
 }
 
-// ── #1602: an old pinned plugin in a commented opencode.jsonc ────────────────
-if (SCENARIO === 'fresh') {
-  console.log('\n=== #1602 (reported, not judged): a pinned @plur-ai/opencode@0.1.3 in a commented opencode.jsonc ===')
+// ── #1602: upgrade an old plugin and owned MCP command in JSONC ─────────────
+{
+  console.log('\n=== #1602: upgrade a pinned plugin and MCP entry without changing user text ===')
   const h2 = realpathSync.native(mkdtempSync(join(tmpdir(), 'Test User-oc-')))
   mkdirSync(join(h2, '.config', 'opencode'), { recursive: true })
   const jsonc = join(h2, '.config', 'opencode', 'opencode.jsonc')
-  writeFileSync(jsonc, '{\n  // my settings\n  "$schema": "https://opencode.ai/config.json",\n  "plugin": ["@plur-ai/opencode@0.1.3"]\n}\n')
-  const r = spawnSync(WIN ? 'plur.cmd' : 'plur', ['init', '--no-prompt', '--no-desktop', '--no-codex', '--no-cursor', '--no-antigravity'], {
-    cwd: h2, encoding: 'utf8', shell: WIN, timeout: 180000,
-    env: { ...env, HOME: h2, USERPROFILE: h2, PLUR_PATH: join(h2, '.plur'), APPDATA: join(h2, 'AppData', 'Roaming'), CODEX_HOME: join(h2, '.codex') },
+  const oldCommand = ['npx', '-y', '@plur-ai/mcp@0.19.4']
+  const original = '{\n  // my settings\n  "plugin": ["@plur-ai/opencode@0.1.3"],\n  "mcp": {"plur":{"type":"local","command":'+JSON.stringify(oldCommand)+',"enabled":true}},\n  "theme" : "custom"\n}\n'
+  writeFileSync(jsonc, original)
+  const isolatedEnv = { ...env, HOME: h2, USERPROFILE: h2, PLUR_PATH: join(h2, '.plur'), APPDATA: join(h2, 'AppData', 'Roaming'), CODEX_HOME: join(h2, '.codex') }
+  const init = () => spawnSync(WIN ? 'plur.cmd' : 'plur', ['init', '--no-prompt', '--no-desktop', '--no-codex', '--no-cursor', '--no-antigravity'], {
+    cwd: h2, encoding: 'utf8', shell: WIN, timeout: 180000, env: isolatedEnv,
   })
-  const line = (r.stdout ?? '').split(/\r?\n/).find((l) => /^Opencode:/.test(l)) ?? '(no opencode line)'
-  const after = readFileSync(jsonc, 'utf8').replace(/\s+/g, ' ').slice(0, 300)
-  console.log(`init: ${line}\nfile after: ${after}`)
-  notCovered.push(['opencode upgrade from a pinned @plur-ai/opencode@0.1.3 in a commented opencode.jsonc', `#1602 is open; observed: ${line.slice(0, 160)}`])
+  const r = init()
+  check(r.status === 0 && !r.error, '#1602: init completes on an older pin in commented JSONC')
+  const after = readFileSync(jsonc, 'utf8')
+  const cfg = tryRead(() => JSON.parse(after.replace('  // my settings\n', '')))
+  const command = cfg?.mcp?.plur?.command
+  const expectedPlugin = `@plur-ai/opencode@${CI_OPENCODE_VERSION ?? '0.2.1'}`
+  check(cfg?.plugin?.[0] === expectedPlugin, `#1602: plugin upgraded to ${expectedPlugin}`)
+  check(Array.isArray(command) && command.length === 2 && command[0] === process.execPath && existsSync(command[1]), '#1602: MCP uses Node and the installed package')
+  check(after === original.replace('@plur-ai/opencode@0.1.3', expectedPlugin).replace(JSON.stringify(oldCommand), JSON.stringify(command)), '#1602: all other JSONC bytes are unchanged')
+  if (Array.isArray(command)) {
+    const answer = await handshake({ command: command[0], args: command.slice(1), env: isolatedEnv })
+    check(answer.ok && (!CI_VERSION || answer.server?.version === CI_VERSION), '#1602: upgraded command completes MCP initialize/tools-list on this build')
+  }
+  const second = init()
+  check(second.status === 0 && readFileSync(jsonc, 'utf8') === after, '#1602: second init is byte-for-byte unchanged')
 }
 
 // ── summary ──────────────────────────────────────────────────────────────────

@@ -300,6 +300,7 @@ interface OpencodeReport {
   ok: boolean
   /** `plugin: [...]` includes `@plur-ai/opencode` — the automatic memory layer. */
   pluginDeclared: boolean
+  pluginUpgrade?: { from: string; to: string }
   /** `mcp.plur` is present — the explicit `plur_*` tool surface. */
   mcpPlurDeclared: boolean
   /**
@@ -1111,6 +1112,7 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
     exists: snapshot.exists,
     ok: snapshot.ok,
     pluginDeclared: snapshot.pluginDeclared,
+    ...(snapshot.pluginUpgrade ? { pluginUpgrade: snapshot.pluginUpgrade } : {}),
     mcpPlurDeclared: snapshot.mcpPlurDeclared,
     mcpPlurMissingPaths: snapshot.mcpPlurMissingPaths,
     pluginResolvable,
@@ -1640,6 +1642,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  Config exists but PLUR could not safely read it — invalid JSON/JSONC or a')
       outputText('  `plugin`/`mcp` field in an unexpected shape. Run `plur init --opencode` after')
       outputText('  fixing it by hand.')
+    }
+    if (oc.pluginUpgrade) {
+      outputText(`! opencode: ${oc.pluginUpgrade.from} is older than ${oc.pluginUpgrade.to}. Run \`plur init --opencode\` to upgrade (omit --keep-opencode-plugin).`)
     }
     if (oc.pluginDeclared) {
       if (oc.pluginResolvable === 'yes') {

@@ -15,7 +15,8 @@
     "pretest": "npm run build"
   },
   "dependencies": {
-    "@plur-ai/core": "workspace:*"
+    "@plur-ai/core": "workspace:*",
+    "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

@@ -87,6 +87,7 @@ Commands:
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
   login --status          Enterprise token validity per host (probe + expiry) (#587)
+  init --keep-opencode-plugin  Keep an intentionally older OpenCode plugin pin
   doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]

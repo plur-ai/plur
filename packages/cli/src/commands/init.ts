@@ -1494,19 +1494,19 @@ function shouldSetupOpencode(args: string[]): boolean {
  * unpinned spec re-resolves on every publish and races the npx cache
  * rewrite.
  */
-function installOpencode(cliVersion: string, autoDetected: boolean): string {
+function installOpencode(cliVersion: string, autoDetected: boolean, upgradePlugin = true): string {
   const configPath = opencodeConfigPath()
-  const result = writeOpencodeConfig(configPath, cliVersion)
+  const result = writeOpencodeConfig(configPath, cliVersion, { upgradePlugin })
 
   if (!result.ok) {
     // Same refusal shape as every other host leg (#1059 class): a config
-    // PLUR cannot safely merge into — either it doesn't parse (most likely
-    // an opencode.jsonc file using comments), its top level parses but isn't
+    // PLUR cannot safely merge into — either it does not parse, has duplicate
+    // keys, its top level parses but is not
     // a plain object (e.g. a top-level array — valid JSON, wrong shape), or
     // an existing `plugin`/`mcp` field is already the wrong shape to extend
     // — must never be coerced to {}/[] and written back over.
     return `Opencode: skipped — ${configPath} exists but PLUR could not safely write into it ` +
-      '(either invalid JSON — JSONC comments/trailing commas are not supported here — or a ' +
+      '(invalid or ambiguous JSONC, or a ' +
       'valid JSON document whose top level, or existing `plugin`/`mcp` field, is not the ' +
       `expected shape); add the entries by hand, then re-run \`plur init --opencode\`:\n` +
       `    "plugin": ["@plur-ai/opencode"]\n` +
@@ -1516,10 +1516,11 @@ function installOpencode(cliVersion: string, autoDetected: boolean): string {
   const status = result.created ? 'created' : result.changed ? 'updated' : 'already up to date'
   // The opencode config is global even on a project-scoped run, and the leg
   // runs whenever opencode's config directory exists, so say both (#1338).
+  const pinNote = upgradePlugin ? '' : '; existing plugin pin kept (--keep-opencode-plugin)'
   const scope = autoDetected
     ? 'auto-detected; global, applies to every opencode project; pass --no-opencode to skip'
     : 'global, applies to every opencode project'
-  return `Opencode: config ${status} (${configPath}) (${scope})${opencodeMcpNote(result)}`
+  return `Opencode: config ${status} (${configPath}) (${scope}${pinNote})${opencodeMcpNote(result)}`
 }
 
 function writeSettings(path: string, settings: Settings): void {
@@ -1867,7 +1868,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
 
   const opencodeStatus = shouldSetupOpencode(args)
-    ? containLeg('Opencode', () => installOpencode(CLI_VERSION, !args.includes('--opencode')))
+    ? containLeg('Opencode', () => installOpencode(CLI_VERSION, !args.includes('--opencode'), !args.includes('--keep-opencode-plugin')))
     : args.includes('--no-opencode')
       ? 'Opencode: skipped (--no-opencode)'
       : `Opencode: skipped (no ${opencodeConfigDir()} found — pass --opencode to force, --no-opencode to silence this)`

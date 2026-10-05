@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { writeOpencodeConfig, opencodeMcpCommand } from '../src/opencode-config.js'
+import { writeOpencodeConfig, opencodeMcpCommand, readOpencodeConfig } from '../src/opencode-config.js'
 import { parseJsonc } from '../src/lib/jsonc.js'
 
 let home: string
@@ -44,6 +44,14 @@ describe('OpenCode upgrade preserves the user document', () => {
     const p=join(home,'opencode.json');writeFileSync(p,original)
     expect(writeOpencodeConfig(p,'0.21.2').mcpPlurUpgraded).toBe(true)
     expect(readFileSync(p,'utf8')).toBe(original.replace(command,JSON.stringify([process.execPath,entry])))
+  })
+  it('reports an opted-out old plugin pin with its suggested upgrade', () => {
+    const p=join(home,'opencode.json')
+    const original='{"plugin":["@plur-ai/opencode@0.1.1"],"mcp":{"plur":{"type":"remote"}}}'
+    writeFileSync(p,original)
+    writeOpencodeConfig(p,'0.21.2',{upgradePlugin:false})
+    expect(readFileSync(p,'utf8')).toBe(original)
+    expect(readOpencodeConfig(p).pluginUpgrade).toEqual({from:'@plur-ai/opencode@0.1.1',to:'@plur-ai/opencode@0.2.1'})
   })
   it('adds missing PLUR fields without replacing existing comments or other plugins', () => {
     const p=join(home,'opencode.jsonc')
