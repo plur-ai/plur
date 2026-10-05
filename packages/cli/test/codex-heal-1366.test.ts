@@ -70,7 +70,7 @@ describe('plur init --codex leaves a shim entry with extra settings alone (#1366
     try {
       return execFileSync(process.execPath, ['--import', WIN32_PRELOAD, CLI, ...args], {
         encoding: 'utf-8', timeout: 30000, cwd: home,
-        env: { ...isolatedHomeEnv(home), PATH: `${bin}:${process.env.PATH}` },
+        env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1', PATH: `${bin}:${process.env.PATH}` },
       })
     } catch (err: any) { return err.stdout?.toString() ?? '' }
   }

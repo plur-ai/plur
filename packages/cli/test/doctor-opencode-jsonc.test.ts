@@ -46,7 +46,7 @@ describe('plur doctor — opencode.jsonc with comments and trailing commas', { t
     let stdout: string
     try {
       stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
-        encoding: 'utf-8', timeout: 15000, env: isolatedHomeEnv(home), cwd: home,
+        encoding: 'utf-8', timeout: 15000, env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' }, cwd: home,
       })
     } catch (err: any) {
       // A fresh HOME has no hooks/MCP for Claude Code, so doctor's overall

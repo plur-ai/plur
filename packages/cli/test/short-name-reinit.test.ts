@@ -63,7 +63,7 @@ describe('re-running init with 8.3 short names keeps one set of hooks (win32 stu
   })
   afterEach(() => { rmSync(home, { recursive: true, force: true }) })
 
-  const env = () => ({ ...isolatedHomeEnv(home), PATH: `${bin}:${process.env.PATH}` })
+  const env = () => ({ ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1', PATH: `${bin}:${process.env.PATH}` })
   function run(args: string[]): string {
     try {
       return execFileSync(process.execPath, ['--import', WIN32_PRELOAD, CLI, ...args], { encoding: 'utf-8', timeout: 30000, cwd: home, env: env() })
