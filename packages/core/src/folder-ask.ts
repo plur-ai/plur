@@ -183,6 +183,44 @@ export function folderSetOnCommand(folder: string, root: string, platform: NodeJ
 }
 
 /**
+ * The one-line hint a prompt hook shows when a memory store here was found
+ * but not added (#1589): the first skipped store, escaped, with its
+ * paste-safe command (or "by hand" for a folder name that cannot be offered),
+ * and how many more `plur stores list` shows.
+ */
+export function skippedStoreHintLine(
+  skipped: Array<{ path: string; folder: string }>, root: string, platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (skipped.length === 0) return null
+  const s = skipped[0]
+  const command = folderSetOnCommand(s.folder, root, platform)
+  const more = skipped.length > 1 ? ` (${skipped.length - 1} more: plur stores list)` : ''
+  return `[PLUR] A memory store here was not added, because its folder has no decision of its own: ${escapedPath(s.path)}.` +
+    (command ? ` To use it: ${command}` : ' Its folder name cannot be offered as a command; turn that folder on by hand from a terminal.') + more
+}
+
+/**
+ * The skipped-store hint for `sessionId` in `dir`, or null: at most once per
+ * session and folder (claimSkippedStoreHint), for every editor's prompt path
+ * (Claude Code, Codex, Cursor, Antigravity, opencode; #1589). Read-only
+ * lookup. Never throws: a hint never breaks a prompt.
+ */
+export function skippedStoreNotice(
+  source: { skippedProjectStores(dir: string): Array<{ path: string; folder: string }>; storageRoot: string },
+  sessionId: string, dir: string,
+): string | null {
+  try {
+    if (!sessionId) return null
+    const skipped = source.skippedProjectStores(dir)
+    if (skipped.length === 0) return null
+    if (!claimSkippedStoreHint(sessionId, dir)) return null
+    return skippedStoreHintLine(skipped, source.storageRoot)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Characters that can end or rewrite a line of the model's context: C0
  * controls (newline, carriage return, tab, ...), DEL, C1 controls (NEL is
  * U+0085), and the Unicode line and paragraph separators. A folder path

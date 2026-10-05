@@ -213,6 +213,8 @@ export {
   folderRepairCommand,
   folderSetOnCommand,
   claimSkippedStoreHint,
+  skippedStoreHintLine,
+  skippedStoreNotice,
   type FolderAskOptions,
   type FolderAskScopeRanker,
   type FolderAsk,

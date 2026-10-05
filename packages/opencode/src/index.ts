@@ -7,6 +7,7 @@ import {
   resolveProjectRemoteFromConfig,
   folderAskOnce,
   sessionSettings,
+  skippedStoreNotice,
   type FolderPolicy,
   type ProjectRemote,
 } from '@plur-ai/core'
@@ -278,13 +279,18 @@ export const PlurPlugin: Plugin = async (ctx) => {
           })
           pending.catch(() => {}) // a late rejection after the timeout must not go unhandled
           const injection = await withTimeout(pending, INJECT_TIMEOUT_MS)
+          // A store in this folder that was found but not added (#1589): one
+          // line, once per session and folder, like the CLI prompt hooks.
+          const hint = skippedStoreNotice(plur, input.sessionID, folderDir)
           if (injection === TIMED_OUT) {
             // No memory this turn rather than the previous turn's block, which
             // answered a different query.
-            blocks.clear(input.sessionID)
+            if (hint) blocks.set(input.sessionID, hint)
+            else blocks.clear(input.sessionID)
             warn(`recall took longer than ${INJECT_TIMEOUT_MS} ms — continuing this turn without memory`)
           } else {
-            blocks.set(input.sessionID, renderMemoryBlock({ injection }))
+            const block = renderMemoryBlock({ injection })
+            blocks.set(input.sessionID, hint ? (block ? `${hint}\n\n${block}` : hint) : block)
             log(`recall for ${input.sessionID}: ${injection?.count ?? 0} engrams`)
           }
 

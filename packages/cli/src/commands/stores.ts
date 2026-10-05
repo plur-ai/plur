@@ -261,17 +261,3 @@ export function skippedStoreLines(skipped: Array<{ path: string; folder: string 
   }
   return lines
 }
-
-/**
- * The prompt hook's one-line version of {@link skippedStoreLines} (#1589
- * audit round 3): the first skipped store, escaped, with its paste-safe
- * command, and how many more `plur stores list` shows.
- */
-export function skippedStoreHint(skipped: Array<{ path: string; folder: string }>, root: string): string | null {
-  if (skipped.length === 0) return null
-  const s = skipped[0]
-  const command = folderSetOnCommand(s.folder, root)
-  const more = skipped.length > 1 ? ` (${skipped.length - 1} more: plur stores list)` : ''
-  return `[PLUR] A memory store here was not added, because its folder has no decision of its own: ${folderEscapedPath(s.path)}.` +
-    (command ? ` To use it: ${command}` : ' Its folder name cannot be offered as a command; turn that folder on by hand from a terminal.') + more
-}

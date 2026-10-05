@@ -1,3 +1,4 @@
+import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, isSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
@@ -76,8 +77,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const body = [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
       // A refusal is emitted even with nothing recalled: silence is exactly the
       // failure mode this is meant to end — once per session, not per prompt.
-      const notices = !firstForSession ? [] : [
-        projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
+      const notices = [
+        firstForSession && projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
+        // A store here that was found but not added (#1589): once per session and folder.
+        sessionId ? skippedStoreNotice(plur, sessionId, dir) : null,
       ].filter((n): n is string => n !== null)
       if (result.count === 0 || !body) {
         if (notices.length > 0) emitContext('UserPromptSubmit', notices.join('\n'))
