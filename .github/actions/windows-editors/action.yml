@@ -1,0 +1,148 @@
+name: Windows real-editor checks
+description: >
+  Build this checkout with a CI-only version, install it globally from packed
+  tarballs, install the real editor CLIs, and run scripts/windows-editors-probe.mjs
+  for one scenario (#1605). Used by windows-editors.yml (pinned editors) and
+  windows-editors-latest.yml (latest editors, drift report).
+
+inputs:
+  scenario:
+    description: fresh, from-0.19.4 or from-0.21.2
+    required: true
+  channel:
+    description: pinned (the versions below) or latest
+    default: pinned
+  cursor-required:
+    description: "'true' when a Cursor CLI that fails to install fails the job"
+    default: 'false'
+  # The pinned editor versions. Changing one is a reviewed change; the latest
+  # channel reports when they drift.
+  claude-code-version:
+    default: 2.1.289
+  codex-version:
+    default: 0.160.0
+  opencode-version:
+    default: 1.18.34
+  cursor-agent-version:
+    default: 2026.10.01-e373342
+  cursor-agent-sha256:
+    description: SHA-256 of downloads.cursor.com/lab/<version>/windows/x64/agent-cli-package.zip
+    default: 31896ce9a43f63c8ae7ff3c4bee868213d6d02d60fb49908bef6dc91d582f6ee
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      with:
+        version: 9
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - shell: pwsh
+      run: pnpm install --frozen-lockfile
+
+    - name: Stamp a CI-only version (nothing on npm has it)
+      shell: pwsh
+      run: node scripts/ci-stamp-version.mjs "ci.$($env:GITHUB_SHA.Substring(0,8))" >> $env:GITHUB_ENV
+
+    - name: Build core, MCP server, CLI and the opencode plugin
+      shell: pwsh
+      run: pnpm --filter "@plur-ai/cli..." --filter "@plur-ai/mcp..." --filter "@plur-ai/opencode..." build
+
+    - name: Install this build globally (packed tarballs, as users get them)
+      shell: pwsh
+      run: |
+        $tb = Join-Path $env:RUNNER_TEMP 'plur-tarballs'
+        New-Item -ItemType Directory -Force $tb | Out-Null
+        foreach ($p in 'core','mcp','cli','opencode') {
+          Push-Location "packages/$p"
+          pnpm pack --pack-destination $tb
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Pop-Location
+        }
+        "PLUR_TARBALLS=$tb" >> $env:GITHUB_ENV
+        # One command, so the CLI and MCP server resolve this build's core
+        # (installed beside them), never a published one from the registry.
+        $tgz = Get-ChildItem $tb -Filter *.tgz | Where-Object { $_.Name -match '^plur-ai-(core|mcp|cli)-' }
+        npm install -g --no-audit --no-fund $tgz.FullName
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        $root = npm root -g
+        foreach ($p in 'cli','mcp') {
+          if (Test-Path "$root/@plur-ai/$p/node_modules/@plur-ai/core") { Write-Error "@plur-ai/$p got its own @plur-ai/core, not this build's"; exit 1 }
+        }
+        $v = plur --version
+        if ($v -notmatch [regex]::Escape($env:PLUR_CI_VERSION)) { Write-Error "plur --version is $v, expected $env:PLUR_CI_VERSION"; exit 1 }
+        "plur $v"
+
+    - name: Install editor CLIs (Claude Code, Codex, opencode)
+      shell: pwsh
+      env:
+        CHANNEL: ${{ inputs.channel }}
+        CLAUDE_V: ${{ inputs.claude-code-version }}
+        CODEX_V: ${{ inputs.codex-version }}
+        OPENCODE_V: ${{ inputs.opencode-version }}
+      run: |
+        if ($env:CHANNEL -eq 'latest') { $specs = '@anthropic-ai/claude-code@latest','@openai/codex@latest','opencode-ai@latest' }
+        else { $specs = "@anthropic-ai/claude-code@$env:CLAUDE_V","@openai/codex@$env:CODEX_V","opencode-ai@$env:OPENCODE_V" }
+        npm install -g --no-audit --no-fund @specs
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        claude --version; codex --version; opencode --version
+
+    - name: Install Cursor's agent CLI
+      shell: pwsh
+      continue-on-error: true
+      env:
+        CHANNEL: ${{ inputs.channel }}
+        CURSOR_V: ${{ inputs.cursor-agent-version }}
+        CURSOR_SHA: ${{ inputs.cursor-agent-sha256 }}
+      run: |
+        $dest = Join-Path $env:RUNNER_TEMP 'cursor-agent'
+        try {
+          if ($env:CHANNEL -eq 'latest') {
+            # Latest: Cursor's own Windows installer, as a user runs it.
+            irm 'https://cursor.com/install?win32=true' | iex
+            $bin = Get-ChildItem "$env:LOCALAPPDATA\cursor-agent\versions" -Recurse -Filter 'cursor-agent.cmd' | Select-Object -First 1
+          } else {
+            # Pinned: the package that installer downloads, by version, checked against its SHA-256.
+            $zip = Join-Path $env:RUNNER_TEMP 'agent-cli-package.zip'
+            Invoke-WebRequest -Uri "https://downloads.cursor.com/lab/$env:CURSOR_V/windows/x64/agent-cli-package.zip" -OutFile $zip
+            $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+            if ($sha -ne $env:CURSOR_SHA) { throw "agent-cli-package.zip SHA-256 is $sha, expected $env:CURSOR_SHA" }
+            Expand-Archive -Path $zip -DestinationPath $dest -Force
+            $bin = Get-Item (Join-Path $dest 'dist-package\cursor-agent.cmd')
+          }
+          if (-not $bin) { throw 'no cursor-agent.cmd after install' }
+        } catch {
+          "PLUR_EDITOR_CURSOR_REASON=the Cursor CLI did not install: $($_.Exception.Message -replace '[\r\n]+',' ')" >> $env:GITHUB_ENV
+          exit 1
+        }
+        # Not put on PATH: its folder ships its own node.exe, which would
+        # shadow the runner's node for plur and its MCP entries.
+        "PLUR_CURSOR_AGENT=$($bin.FullName)" >> $env:GITHUB_ENV
+        & $bin.FullName --version
+
+    - name: Real-editor checks (${{ inputs.scenario }})
+      shell: pwsh
+      env:
+        PLUR_EDITORS_REQUIRED: ${{ inputs.cursor-required == 'true' && 'claude,codex,opencode,cursor' || 'claude,codex,opencode' }}
+      run: node scripts/windows-editors-probe.mjs --scenario ${{ inputs.scenario }}
+
+    - name: Editor drift (latest channel)
+      if: always() && inputs.channel == 'latest'
+      shell: pwsh
+      env:
+        CLAUDE_V: ${{ inputs.claude-code-version }}
+        CODEX_V: ${{ inputs.codex-version }}
+        OPENCODE_V: ${{ inputs.opencode-version }}
+        CURSOR_V: ${{ inputs.cursor-agent-version }}
+      run: |
+        $rows = @(
+          @('Claude Code', $env:CLAUDE_V, ((claude --version) -split ' ')[0]),
+          @('Codex', $env:CODEX_V, ((codex --version) -split ' ')[-1]),
+          @('opencode', $env:OPENCODE_V, (opencode --version)),
+          @('Cursor agent', $env:CURSOR_V, $(if ($env:PLUR_CURSOR_AGENT) { & $env:PLUR_CURSOR_AGENT --version } else { 'not installed' }))
+        )
+        $out = @('## Editor drift', '', '| Editor | Pinned | Latest | |', '|---|---|---|---|')
+        foreach ($r in $rows) { $out += "| $($r[0]) | $($r[1]) | $($r[2]) | $(if ($r[1] -eq $r[2]) { 'same' } else { '**drifted**' }) |" }
+        $out -join "`n" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY

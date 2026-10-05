@@ -1,109 +1,108 @@
 name: Windows real editors
 
-# #1605, layer 1. On windows-latest, install the PR's PLUR CLI globally from
-# packed tarballs and the real editor CLIs that install headless (Claude Code,
-# Codex, opencode, and Cursor's agent CLI when its Windows installer works),
-# then run `plur init --no-prompt` with no `--no-*` flags and check, per editor:
-# the editor's own `mcp list` shows plur; the exact registered MCP command
-# completes an MCP handshake; every registered hook runs with that editor's
-# recorded payloads in a decided, an undecided, an off and a team-scoped
-# folder; and `plur doctor` reports the editor as wired
-# (scripts/windows-editors-probe.mjs). Claude Desktop and Antigravity have no
-# CLI: their config files are checked. The job summary lists every editor as
-# covered or "not covered (reason)".
+# #1605, layer 1. On windows-latest, install this build (stamped with a
+# CI-only version) globally from packed tarballs and the real editor CLIs at
+# pinned versions (Claude Code, Codex, opencode, Cursor's agent CLI by version
+# and SHA-256), then check per editor: the editor's own `mcp list` shows plur
+# healthy; the exact registered MCP command completes a handshake with this
+# build; the registered hooks are exactly the expected set and run, from a
+# neutral folder, with that editor's recorded payloads in a decided, an
+# undecided, an off and a team-scoped folder; `plur doctor` reports the editor
+# wired; the PR's opencode plugin loads in opencode and injects / asks / stays
+# silent; a second init changes nothing; the user's own entries survive.
+# Claude Desktop and Antigravity have no CLI: their config files are checked.
+# Three scenarios: a fresh install, and upgrades from the published 0.19.4 and
+# 0.21.2 (scripts/windows-editors-probe.mjs). The job summary lists everything
+# covered and everything "not covered (reason)".
 #
-# No logins, no API keys, no model calls. Required by release.sh --trust-ci.
+# It runs on every PR, so `windows-editors` can be a required check: when a PR
+# changes nothing the job installs or builds, the scenarios are skipped and
+# `windows-editors` passes at once. Cursor is required on main, on manual
+# runs and in the release gate (scripts/release.sh); on PRs a failed Cursor
+# download is reported as not covered. No logins, no tokens, no model calls.
+# The latest editor versions run on a schedule (windows-editors-latest.yml).
 # Actions are pinned by commit SHA.
 
 on:
   push:
     branches: [main]
   pull_request:
-    paths:
-      - 'packages/cli/**'
-      - 'packages/mcp/**'
-      - 'packages/core/**'
-      - 'scripts/windows-editors-probe.mjs'
-      - '.github/workflows/windows-editors.yml'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        default: pinned
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-editors-${{ github.ref }}
+  group: windows-editors-${{ github.workflow }}-${{ github.ref }}-${{ inputs.channel || 'pinned' }}
   cancel-in-progress: true
 
 jobs:
-  windows-editors:
-    runs-on: windows-latest
-    timeout-minutes: 45
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 9
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Build core, MCP server and CLI
-        run: pnpm --filter "@plur-ai/cli..." --filter "@plur-ai/mcp..." build
-
-      - name: Install the PR's PLUR globally (packed tarballs, as users get them)
-        shell: pwsh
-        run: |
-          $tb = Join-Path $env:RUNNER_TEMP 'plur-tarballs'
-          New-Item -ItemType Directory -Force $tb | Out-Null
-          foreach ($p in 'core','mcp','cli') {
-            Push-Location "packages/$p"
-            pnpm pack --pack-destination $tb
-            if ($LASTEXITCODE -ne 0) { exit 1 }
-            Pop-Location
-          }
-          # One command, so the CLI and MCP server resolve this build's core
-          # (installed beside them), never a published one from the registry.
-          npm install -g --no-audit --no-fund (Get-ChildItem $tb -Filter *.tgz).FullName
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          $root = npm root -g
-          foreach ($p in 'cli','mcp') {
-            if (Test-Path "$root/@plur-ai/$p/node_modules/@plur-ai/core") { Write-Error "@plur-ai/$p got its own @plur-ai/core, not this build's"; exit 1 }
-          }
-          Get-Command plur | Format-List Source
-          plur --version
-
-      - name: Install editor CLIs (Claude Code, Codex, opencode)
-        shell: pwsh
-        run: |
-          npm install -g --no-audit --no-fund @anthropic-ai/claude-code @openai/codex opencode-ai
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          claude --version; codex --version; opencode --version
-
-      - name: Install Cursor's agent CLI (Windows installer)
-        id: cursor
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          try {
-            irm 'https://cursor.com/install?win32=true' | iex
-          } catch {
-            "PLUR_EDITOR_CURSOR_REASON=the Windows installer failed: $($_.Exception.Message -replace '[\r\n]+',' ')" >> $env:GITHUB_ENV
-            exit 1
-          }
-          # The installer adds itself to the user PATH, which this session does not
-          # see. Its folder is not added to PATH here either: it ships its own
-          # node.exe, which would shadow the runner's node for plur and its MCP
-          # entries. The probe gets the binary by its full path.
-          $bin = Get-ChildItem -Path $env:LOCALAPPDATA, $env:USERPROFILE -Recurse -Depth 4 -Include 'agent.cmd','agent.exe','cursor-agent.cmd','cursor-agent.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $bin) {
-            "PLUR_EDITOR_CURSOR_REASON=the Windows installer ran but left no agent binary" >> $env:GITHUB_ENV
-            exit 1
-          }
-          "PLUR_CURSOR_AGENT=$($bin.FullName)" >> $env:GITHUB_ENV
-          & $bin.FullName --version
-
-      - name: Real-editor checks
+          persist-credentials: false
+          fetch-depth: 0
+      - id: decide
         env:
-          PLUR_EDITORS_REQUIRED: claude,codex,opencode
-        run: node scripts/windows-editors-probe.mjs
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          changed=$(git diff --name-only "$BASE"..."$HEAD")
+          echo "$changed"
+          # What this job builds, installs or runs.
+          if echo "$changed" | grep -qE '^(packages/(cli|mcp|core|opencode)/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig[^/]*\.json$|scripts/(windows-editors-probe|ci-stamp-version)\.mjs$|\.github/workflows/windows-editors(-latest)?\.yml$|\.github/actions/windows-editors/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  scenario:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [fresh, from-0.19.4, from-0.21.2]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/windows-editors
+        with:
+          scenario: ${{ matrix.scenario }}
+          channel: ${{ inputs.channel || 'pinned' }}
+          cursor-required: ${{ github.event_name != 'pull_request' }}
+
+  # The required check and the one release.sh reads. Passes when the
+  # scenarios were not needed; otherwise only when every scenario passed (a
+  # skipped or cancelled scenario fails it, never reads as passing).
+  windows-editors:
+    needs: [changes, scenario]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RUN: ${{ needs.changes.outputs.run }}
+          CHANGES: ${{ needs.changes.result }}
+          SCENARIOS: ${{ needs.scenario.result }}
+        run: |
+          if [ "$CHANGES" != "success" ]; then echo "deciding what changed failed ($CHANGES)"; exit 1; fi
+          if [ "$RUN" != "true" ]; then
+            echo "No change to anything this job builds or installs: real-editor scenarios not needed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "scenarios: $SCENARIOS"
+          [ "$SCENARIOS" = "success" ]
