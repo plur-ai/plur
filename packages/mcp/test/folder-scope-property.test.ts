@@ -214,6 +214,21 @@ describe('a team delivery happens only when every workspace input agrees on that
     expect(failures).toEqual([])
   }, 300_000)
 
+  it('observes episode delivery after the background push completes (#1584)', async () => {
+    const w = world()
+    const fetch = globalThis.fetch
+    // Delay the transport before the stub sees the request. Other save tools
+    // await their remote write; episode promotion deliberately queues its push.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (...args) => {
+      if (String(args[0]).startsWith(baseUrl) && args[1]?.method === 'POST') {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      return fetch(...args)
+    })
+    const c = await connect(w, [w.path.teamA])
+    expect(judge('delayed remote', await saveAll(c), A)).toEqual([])
+  }, 30_000)
+
   it('no roots: the start folder alone decides, by the same rule', async () => {
     const w = world()
     const failures: string[] = []
