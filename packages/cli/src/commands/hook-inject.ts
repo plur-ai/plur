@@ -50,7 +50,7 @@ function logRemoteAttempt(entry: {
   // #776: the recall leg's per-host states join the legacy outcome values so
   // old log tooling keeps parsing the same field.
   outcome:   'ok' | 'http_error' | 'timeout' | 'network_error' | 'bad_response' | 'oversize'
-           | 'unreachable' | 'auth_expired' | 'forbidden' | 'rate_limited' | 'unsupported' | 'skipped_cooldown'
+           | 'unreachable' | 'auth_expired' | 'forbidden' | 'rate_limited' | 'unsupported' | 'skipped_cooldown' | 'client_slow'
   ms:        number
   http?:     number
   engrams?:  number
@@ -675,10 +675,11 @@ export function settleWithin(p: Promise<unknown>, ms: number): Promise<boolean> 
 /**
  * Background build of the embedding cache (#1313 audit).
  *
- * Core saves `.embeddings-cache.json` only when a hybrid search runs to the
- * end. A first prompt whose search misses the deadline exits before that, so
- * on a store with a cold cache every session's first prompt missed the
- * deadline again and never got faster. After such a fallback the hook starts
+ * Core used to save `.embeddings-cache.json` only when a hybrid search ran to
+ * the end, so on a store with a cold cache every session's first prompt
+ * missed the deadline again and never got faster. (Since #1586 round 6 a
+ * cut-off search also keeps its vectors, appended to
+ * `.embeddings-cache.delta.jsonl`; this build still finishes the job.) After such a fallback the hook starts
  * `hook-inject --warm-embeddings`: detached, lowest CPU priority, one at a
  * time per store (the `.embeddings-warming` marker), bounded by
  * PLUR_WARM_CEILING_MS. It runs core's `similaritySearch`, which embeds every

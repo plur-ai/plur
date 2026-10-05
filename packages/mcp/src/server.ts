@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
+import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad } from '@plur-ai/core'
 import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
@@ -652,6 +652,10 @@ export async function runStdio(): Promise<void> {
   // of this ternary is how doctor comes to describe a profile nobody is running.
   const profile: ToolProfile = resolveToolProfile()
   const server = await createServer(undefined, { profile })
+  // A long-lived process: when a recall finds the embedding model missing, it
+  // may load (and download) it in the background, once (#1586 round 4).
+  // Short-lived CLI and hook processes never do.
+  allowBackgroundModelLoad(true)
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
   // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out
   // install registers the handler but flushes nothing. Registered in runStdio,

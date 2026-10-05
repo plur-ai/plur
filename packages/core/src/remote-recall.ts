@@ -96,6 +96,59 @@ export const DEFAULT_REMOTE_RECALL_TIMEOUT_MS = 2000
 export const BREAKER_FAILURE_THRESHOLD = 3
 export const BREAKER_COOLDOWN_MS = 5 * 60 * 1000
 
+/**
+ * How long an open breaker waits before it lets ONE trial read through
+ * (#1586). Without it the cooldown was all-or-nothing for the full
+ * {@link BREAKER_COOLDOWN_MS}: a host that recovered a few seconds after the
+ * breaker opened stayed parked for five minutes. One trial per cooldown, claimed
+ * under the health-file lock so concurrent processes do not all dial at once. A
+ * success closes the breaker; a network failure re-opens it for a full cooldown.
+ */
+export const BREAKER_HALF_OPEN_AFTER_MS = 60 * 1000
+
+/**
+ * End-to-end deadline for one recall call (#1586). Only the remote leg was
+ * bounded before; the local pipeline and the post-recall bookkeeping write were
+ * not, and that write waits up to 180 s for the store lock. A recall returns
+ * within this deadline with whatever is ready and says what is missing.
+ * `PLUR_RECALL_DEADLINE_MS` overrides it.
+ */
+export const DEFAULT_RECALL_DEADLINE_MS = 10_000
+
+/**
+ * How long a recall waits for the store lock before it skips its freshness
+ * bookkeeping (#1586). The bookkeeping (frequency, last_accessed, co-access
+ * edges) is not the answer to the read; a read must not queue behind a writer
+ * for it. Uncontended, the lock is taken in milliseconds and nothing changes.
+ */
+export const RECALL_BOOKKEEPING_LOCK_WAIT_MS = 500
+
+/**
+ * How many `client_slow` results in a row a host is given before further ones
+ * count as host timeouts (#1586 audit L4). A `client_slow` result is not the
+ * host's fault on its own; but a process whose loop is blocked on EVERY call
+ * would otherwise never open the breaker against a server that is really
+ * dead, and would pay the full hard cap on each call. After this many in a
+ * row the host has had its chances: the next one is evidence about it too.
+ * Any answer from the host resets the run.
+ */
+export const CLIENT_SLOW_STREAK_LIMIT = 3
+
+/** How long before a recall's deadline the remote leg aborts the requests
+ *  still in flight, so their outcome is recorded before the reply (#1586 L7). */
+const DEADLINE_ABORT_LEAD_MS = 25
+
+/** Resolve the effective recall deadline: env override → caller value → default. */
+export function resolveRecallDeadlineMs(
+  callerMs?: number,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const envMs = parseInt(env.PLUR_RECALL_DEADLINE_MS ?? '', 10)
+  if (Number.isFinite(envMs) && envMs > 0) return envMs
+  if (typeof callerMs === 'number' && callerMs > 0) return callerMs
+  return DEFAULT_RECALL_DEADLINE_MS
+}
+
 /** How long a 404 parks a host on `unsupported` — bounded, NOT process
  *  lifetime: a long-lived MCP server must not park a healthy host on the
  *  legacy path after one LB hiccup until restart. */
@@ -154,9 +207,24 @@ export const MAX_STARVATION_CREDIT_MS = 5000
  *
  * Returns a cancel function.
  */
+/** Why a {@link startBudgetTimer} fired (#1586). */
+export interface BudgetExpiry {
+  /** Extra wall time credited back because this process's loop was blocked. */
+  creditMs: number
+  /** Wall time since the timer started. */
+  wallMs: number
+  /**
+   * True when the timer fired (at the wall-clock hard cap) BEFORE the request
+   * had its full serviced budget — the time was lost to this process's own
+   * blocked event loop, not to the host. Such a timeout is `client_slow` and
+   * is never counted against the host's breaker.
+   */
+  clientSlow: boolean
+}
+
 export function startBudgetTimer(
   budgetMs: number,
-  onExpire: () => void,
+  onExpire: (info: BudgetExpiry) => void,
   opts: { tickMs?: number; maxCreditMs?: number; now?: () => number } = {},
 ): () => void {
   const now = opts.now ?? Date.now
@@ -165,13 +233,20 @@ export function startBudgetTimer(
   const started = now()
   let last = started
   let credit = 0
+  /** All blocked time observed, uncapped — tells a client-side expiry apart
+   *  (#1586): `credit` stops at the cap, the loop does not stop blocking. */
+  let blocked = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let done = false
+  /** The delay the pending tick was scheduled for — a late tick is measured
+   *  against it, not against the full `tickMs` (#1586 round 8, C-2). */
+  let scheduled = tickMs
 
   const schedule = (): void => {
     if (done) return
     const serviced = (now() - started) - credit
     const remaining = Math.max(1, Math.min(tickMs, budgetMs - serviced))
+    scheduled = remaining
     timer = setTimeout(tick, remaining)
     // Never hold the process open on account of a timeout sampler.
     ;(timer as { unref?: () => void }).unref?.()
@@ -182,12 +257,17 @@ export function startBudgetTimer(
     const t = now()
     // Anything beyond the interval we asked for is time the loop was busy
     // elsewhere — the request was not being serviced, so it is not charged.
-    credit = Math.min(maxCredit, credit + Math.max(0, (t - last) - tickMs))
+    const overshoot = Math.max(0, (t - last) - scheduled)
+    blocked += overshoot
+    credit = Math.min(maxCredit, credit + overshoot)
     last = t
     const wall = t - started
     if ((wall - credit) >= budgetMs || wall >= budgetMs + maxCredit) {
       done = true
-      onExpire()
+      // Client-side when the time the request was actually serviced — wall
+      // time minus ALL blocked time — is still short of the budget: the
+      // budget ran out on this process's loop, not on the host.
+      onExpire({ creditMs: credit, wallMs: wall, clientSlow: (wall - blocked) < budgetMs })
       return
     }
     schedule()
@@ -226,7 +306,30 @@ export const REMOTE_STATUS_TTL_MS = BREAKER_COOLDOWN_MS
  * failure, which is the worse of the two.
  */
 export const PROBE_CLEARABLE_STATES: ReadonlySet<RemoteHostState> =
-  new Set<RemoteHostState>(['timeout', 'unreachable', 'skipped_cooldown'])
+  new Set<RemoteHostState>(['timeout', 'unreachable', 'skipped_cooldown', 'client_slow'])
+
+/**
+ * Wait for `p` until the epoch-ms `deadlineAt` (#1586). Never rejects: a
+ * rejection reads as `{ done: true, error }`. The promise keeps running when
+ * the deadline wins — callers that abandon it must not need its result.
+ */
+export async function settleBy<T>(
+  p: Promise<T>,
+  deadlineAt: number,
+): Promise<{ done: true; value?: T; error?: unknown } | { done: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<{ done: false }>(resolve => {
+    timer = setTimeout(() => resolve({ done: false }), Math.max(0, deadlineAt - Date.now()))
+  })
+  try {
+    return await Promise.race([
+      p.then(value => ({ done: true as const, value }), error => ({ done: true as const, error })),
+      timeout,
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Env knobs
@@ -264,6 +367,44 @@ export type RemoteHostState =
   | 'rate_limited'
   | 'unsupported'
   | 'skipped_cooldown'
+  /** #1586: the request timed out because THIS process's event loop was
+   *  blocked (cold start, busy machine) — not counted against the host. */
+  | 'client_slow'
+
+/** One host's part in one recall call (#1586). */
+export interface RecallRemoteHostReport {
+  host: string
+  state: RemoteHostState
+  ms: number
+  count: number
+  detail?: string
+}
+
+/**
+ * What the remote (server) leg did on ONE recall call (#1586). Unlike
+ * `remote_stores` / {@link RemoteStoreStatusEntry}, which report the latest
+ * outcome per host for the whole process, this describes this call only.
+ * `state` is `ok` when every dialed host answered, the first non-ok host's
+ * state otherwise, and `not_dialed` when no host was dialed (no store
+ * configured or implicated, `remote: false`, or the kill-switch).
+ */
+export interface RecallRemoteReport {
+  state: RemoteHostState | 'not_dialed'
+  hosts: RecallRemoteHostReport[]
+}
+
+/** Build the per-call report from host outcomes. */
+export function buildRecallRemoteReport(outcomes: HostRecallOutcome[]): RecallRemoteReport {
+  const hosts: RecallRemoteHostReport[] = outcomes.map(o => ({
+    host: normalizeEndpointUrl(o.url),
+    state: o.state,
+    ms: o.ms,
+    count: o.count,
+    ...(o.detail ? { detail: o.detail } : {}),
+  }))
+  if (hosts.length === 0) return { state: 'not_dialed', hosts }
+  return { state: hosts.find(h => h.state !== 'ok')?.state ?? 'ok', hosts }
+}
 
 export interface HostRecallOutcome {
   url: string
@@ -322,6 +463,18 @@ export interface RemoteRecallOptions {
   now?: () => number
   fetchImpl?: typeof fetch
   env?: NodeJS.ProcessEnv
+  /** Starvation-credit ceiling for the budget timers (default
+   *  {@link MAX_STARVATION_CREDIT_MS}); a test seam. */
+  maxStarvationCreditMs?: number
+  /**
+   * The recall's end-to-end deadline (epoch ms, #1586 L7). Requests still in
+   * flight are aborted just before it and reported `timeout` with detail
+   * `recall_deadline` — without counting against the host's breaker, since
+   * the recall's deadline is not the host's budget. Hosts that answered keep
+   * their rows and outcomes. The call resolves by this time even when a
+   * request ignores its abort signal.
+   */
+  deadlineAt?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -351,8 +504,15 @@ interface HostHealth {
    *  that split may still carry a 429 cooldown here; it is honored until it
    *  expires. */
   cooldown_until?: number
+  /** When the breaker cooldown opened (epoch ms) — #1586 trial read. A file
+   *  written before this field derives it as `cooldown_until − cooldown`. */
+  cooldown_opened_at?: number
+  /** When this cooldown's one trial read was claimed (epoch ms) — #1586. */
+  half_open_trial_at?: number
   /** 404 TTL — `unsupported` while in force. */
   unsupported_until?: number
+  /** Consecutive `client_slow` results (#1586 audit L4); reset by any answer. */
+  client_slow_streak?: number
   /** Legacy host-wide 403 streak, from before the per-token split. Ignored
    *  and dropped on the next dial: a streak built from several tokens'
    *  403s is not evidence that any one of them was revoked. */
@@ -401,16 +561,20 @@ export function readRemoteHealth(path: string): RemoteHealthFile {
  * Atomic unique-tmp write: two concurrent one-shot hook processes must never
  * interleave partial writes. Unique tmp name (pid + random) then rename.
  * Atomicity alone is not enough against LOST UPDATES — callers that mutate
- * state they read earlier must go through {@link mergeWriteRemoteHealth} or
+ * state they read earlier must go through {@link persistHostChanges} or
  * {@link withRemoteHealthLock}, which re-read under the file lock.
  */
-function writeRemoteHealth(path: string, file: RemoteHealthFile): void {
+function writeRemoteHealth(path: string, file: RemoteHealthFile): boolean {
   try {
     fs.mkdirSync(dirname(path), { recursive: true })
     const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(file))
     fs.renameSync(tmp, path)
-  } catch { /* health persistence is best-effort — never break recall */ }
+    return true
+  } catch {
+    // health persistence is best-effort — never break recall
+    return false
+  }
 }
 
 /** Lock options for remote-health.json — the critical section is a
@@ -434,36 +598,146 @@ function withRemoteHealthLock<T>(statePath: string, fn: () => T, fallback: () =>
   }
 }
 
+/** Counters: a change is applied as a delta against the current file, so two
+ *  processes' increments add up; a reset to 0 is applied as 0. */
+const COUNTER_FIELDS: ReadonlySet<string> = new Set(['failures', 'client_slow_streak', 'forbidden_count'])
+/** Never written by a recall — owned by {@link claimHookDegradationLines}. */
+const PRINT_FIELDS: ReadonlySet<string> = new Set(['printed_state', 'printed_at'])
+
+/** Apply the field changes `before → after` onto `target` (in place). */
+function applyFieldChanges(
+  target: Record<string, unknown>,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  skip: ReadonlySet<string>,
+  /** Fields this call observed and must write even when its own value did not
+   *  change (#1586 re-audit N2): the host answered, so `failures`, the
+   *  cooldown and `last_state` are what it saw — whatever another process
+   *  wrote meanwhile. */
+  forced: ReadonlySet<string> = new Set(),
+): boolean {
+  let changed = false
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after), ...forced])) {
+    if (skip.has(k)) continue
+    const b = before[k]
+    const a = after[k]
+    if (forced.has(k)) {
+      if (target[k] === a) continue
+      changed = true
+      if (a === undefined) delete target[k]; else target[k] = a
+      continue
+    }
+    if (b === a) continue
+    changed = true
+    if (a === undefined) { delete target[k]; continue }
+    if (COUNTER_FIELDS.has(k) && typeof a === 'number' && a !== 0) {
+      const base = typeof target[k] === 'number' ? target[k] as number : 0
+      target[k] = Math.max(0, base + a - (typeof b === 'number' ? b : 0))
+      continue
+    }
+    target[k] = a
+  }
+  return changed
+}
+
 /**
- * Merge-persist the host entries this process touched (lost-update fix).
+ * Persist what this call CHANGED about each host, field by field, against the
+ * current file under the lock (#1586 audit M1/M2; the lost-update fix).
  *
  * The naive end-of-call `writeRemoteHealth(path, healthReadAtEntry)` loses
- * concurrent updates: two processes read the same base, each writes its
- * whole in-memory copy, and the second write erases the first's breaker /
- * cooldown / suppression progress. Instead: re-read the CURRENT file inside
- * the lock and overlay only the entries in `touched`, so writers touching
- * different hosts both survive. Same-host collisions resolve last-writer-wins
- * at host granularity — acceptable for advisory state.
+ * concurrent updates: two processes read the same base, each writes its whole
+ * in-memory copy, and the second write erases the first's breaker / cooldown /
+ * suppression progress. The `printed_state` / `printed_at` fields are never
+ * written here: a recall does not own them, and clobbering them would undo a
+ * concurrent {@link claimHookDegradationLines} claim and double-print headers.
  *
- * The overlay deliberately KEEPS the current file's `printed_state` /
- * `printed_at`: remoteRecall never modifies those fields, and clobbering
- * them with the entry-time snapshot would undo a concurrent
- * {@link claimHookDegradationLines} claim and double-print headers.
+ * Writing back a whole host entry — even merged at host granularity — puts
+ * this call's entry-time snapshot over every field another process changed
+ * meanwhile: a winner's trial claim (`half_open_trial_at`), a save's cooldown
+ * clear, another token's 429. Only the fields this call itself changed are
+ * written; everything else stays as the file has it. Counters apply as deltas.
  */
-function mergeWriteRemoteHealth(statePath: string, touched: Record<string, HostHealth>): void {
-  const readMergeWrite = (): void => {
+function persistHostChanges(
+  statePath: string,
+  changes: Array<{ key: string; before: HostHealth; after: HostHealth; forced?: ReadonlySet<string> }>,
+): void {
+  if (changes.length === 0) return
+  const readApplyWrite = (): void => {
     const current = readRemoteHealth(statePath)
-    for (const [key, h] of Object.entries(touched)) {
-      const cur = current.hosts[key]
-      current.hosts[key] = cur
-        ? { ...h, printed_state: cur.printed_state, printed_at: cur.printed_at }
-        : h
+    let dirty = false
+    for (const { key, before, after, forced } of changes) {
+      const cur: HostHealth = { ...(current.hosts[key] ?? {}) }
+      // #1586 round 3 (R2): a success this call saw is older than what the
+      // file now says about the host (another process recorded failures or
+      // opened the breaker after it — e.g. while a slower host of this same
+      // call was still pending). The newer record wins: this call's host-level
+      // fields are not written; per-token state still is.
+      const staleSuccess = after.last_state === 'ok'
+        && typeof cur.updated_at === 'number' && typeof after.updated_at === 'number'
+        && cur.updated_at > after.updated_at
+      let changed = staleSuccess ? false : applyFieldChanges(
+        cur as Record<string, unknown>, before as Record<string, unknown>, after as Record<string, unknown>,
+        new Set([...PRINT_FIELDS, 'tokens']), forced,
+      )
+      // The record's time never moves backwards.
+      if (changed && typeof current.hosts[key]?.updated_at === 'number' && typeof cur.updated_at === 'number'
+        && cur.updated_at < current.hosts[key].updated_at!) {
+        cur.updated_at = current.hosts[key].updated_at
+      }
+      const bt = before.tokens ?? {}
+      const at = after.tokens ?? {}
+      for (const tk of new Set([...Object.keys(bt), ...Object.keys(at)])) {
+        const target: TokenHealth = { ...(cur.tokens?.[tk] ?? {}) }
+        if (applyFieldChanges(target as Record<string, unknown>, (bt[tk] ?? {}) as Record<string, unknown>,
+          (at[tk] ?? {}) as Record<string, unknown>, new Set())) {
+          cur.tokens = { ...(cur.tokens ?? {}), [tk]: target }
+          changed = true
+        }
+      }
+      if (changed) { current.hosts[key] = cur; dirty = true }
     }
-    writeRemoteHealth(statePath, current)
+    if (dirty) writeRemoteHealth(statePath, current)
   }
-  // Unlocked fallback is the same read-merge-write — still narrower than the
-  // old whole-file overwrite even when the lock is unavailable.
-  withRemoteHealthLock(statePath, readMergeWrite, readMergeWrite)
+  // Unlocked fallback is the same field-level read-apply-write — still far
+  // narrower than a whole-entry overwrite when the lock is unavailable.
+  withRemoteHealthLock(statePath, readApplyWrite, readApplyWrite)
+}
+
+/** When the current breaker cooldown opened. */
+function cooldownOpenedAt(h: HostHealth): number {
+  return h.cooldown_opened_at ?? ((h.cooldown_until ?? 0) - BREAKER_COOLDOWN_MS)
+}
+
+/**
+ * Claim this cooldown's one trial read (#1586), under the health-file lock so
+ * that of several processes past the trial interval only one dials. Re-reads
+ * the file inside the lock: a claim against the entry-time snapshot would let
+ * two processes both see "unclaimed".
+ *
+ * - `trial`: this caller claimed the trial and may dial it.
+ * - `free`: the cooldown already ended (or a save cleared it) — dial normally;
+ *   `current` is the file's entry, to resync the caller's snapshot.
+ * - `denied`: not due, already claimed, or the claim could not be made safely
+ *   — the lock was not taken or the claim was not persisted (audit L8). Fails
+ *   closed: without the lock every caller would be told it may dial.
+ */
+function claimHalfOpenTrial(
+  statePath: string, key: string, now: number,
+): { result: 'trial' | 'free' | 'denied'; current?: HostHealth } {
+  const claim = (): { result: 'trial' | 'free' | 'denied'; current?: HostHealth } => {
+    const cur = readRemoteHealth(statePath)
+    const ch: HostHealth = cur.hosts[key] ?? {}
+    if (!((ch.cooldown_until ?? 0) > now)) return { result: 'free', current: { ...ch } }
+    // A legacy host-wide 429 is honoured to its end (see remoteRecall).
+    if (ch.last_state === 'rate_limited') return { result: 'denied' }
+    const openedAt = cooldownOpenedAt(ch)
+    if (now - openedAt < BREAKER_HALF_OPEN_AFTER_MS) return { result: 'denied' }
+    if ((ch.half_open_trial_at ?? -Infinity) >= openedAt) return { result: 'denied' }
+    ch.half_open_trial_at = now
+    cur.hosts[key] = ch
+    return writeRemoteHealth(statePath, cur) ? { result: 'trial' } : { result: 'denied' }
+  }
+  return withRemoteHealthLock(statePath, claim, () => ({ result: 'denied' }))
 }
 
 /**
@@ -529,19 +803,40 @@ export function recordWriteOutcome(
 ): void {
   try {
     const key = normalizeEndpointUrl(url)
-    const health = readRemoteHealth(statePath)
-    const h: HostHealth = { ...(health.hosts[key] ?? {}) }
-    if (ok) {
-      h.failures = 0
-      delete h.cooldown_until
-      h.last_state = 'ok'
-    } else {
-      h.failures = (h.failures ?? 0) + 1
-      h.last_state = 'unreachable'
-      if (h.failures >= BREAKER_FAILURE_THRESHOLD) h.cooldown_until = now + BREAKER_COOLDOWN_MS
+    // Read-modify-write of the CURRENT entry under the lock: the change is
+    // made against what the file says now, never against an earlier snapshot.
+    const update = (): void => {
+      const health = readRemoteHealth(statePath)
+      const h: HostHealth = { ...(health.hosts[key] ?? {}) }
+      if (ok) {
+        h.failures = 0
+        // The host answered: a run of client_slow results is over (re-audit N3).
+        h.client_slow_streak = 0
+        // A save proves the host reachable, which ends a network cooldown
+        // (timeout / unreachable). A host-wide 429 cooldown is the server's
+        // own instruction to back off, not a reachability guess: a save does
+        // not end it (#1586 audit L5).
+        const rateLimited = h.last_state === 'rate_limited' && (h.cooldown_until ?? 0) > now
+        if (!rateLimited) {
+          delete h.cooldown_until
+          delete h.cooldown_opened_at
+          delete h.half_open_trial_at
+          h.last_state = 'ok'
+        }
+      } else {
+        h.failures = (h.failures ?? 0) + 1
+        h.last_state = 'unreachable'
+        if (h.failures >= BREAKER_FAILURE_THRESHOLD) {
+          h.cooldown_until = now + BREAKER_COOLDOWN_MS
+          h.cooldown_opened_at = now
+          delete h.half_open_trial_at
+        }
+      }
+      h.updated_at = now
+      health.hosts[key] = h
+      writeRemoteHealth(statePath, health)
     }
-    h.updated_at = now
-    mergeWriteRemoteHealth(statePath, { [key]: h })
+    withRemoteHealthLock(statePath, update, update)
   } catch {
     // Same reasoning as above: never let health bookkeeping fail a write.
   }
@@ -763,10 +1058,11 @@ function parseRetryAfterMs(header: string | null, now: number): number | null {
  * Dial every host in parallel (`Promise.allSettled`), each within its own
  * AbortController budget (connect-phase budget shorter than total), and
  * return validated/namespaced rows + per-host outcomes. Never throws; never
- * blocks past the budget. Health state is read once at entry; at exit only
- * the touched host entries are persisted, read-merge-write under the file
- * lock (see {@link mergeWriteRemoteHealth}) so concurrent processes don't
- * lose each other's updates.
+ * blocks past the budget (nor past `opts.deadlineAt`). Health state is read
+ * once at entry; at exit only the fields this call changed, for the hosts it
+ * dialed, are written — against the current file, under the file lock (see
+ * {@link persistHostChanges}) — so concurrent processes don't lose each
+ * other's updates.
  */
 export async function remoteRecall(
   hosts: RemoteRecallHost[],
@@ -781,10 +1077,28 @@ export async function remoteRecall(
   const connectMs = opts.connectTimeoutMs ?? Math.max(1, Math.floor(timeoutMs * 2 / 3))
   const now = opts.now ?? Date.now
   const fetchImpl = opts.fetchImpl ?? fetch
+  const timerOpts = opts.maxStarvationCreditMs !== undefined ? { maxCreditMs: opts.maxStarvationCreditMs } : {}
   const statePath = opts.statePath ?? remoteHealthPath(env)
   const health = readRemoteHealth(statePath)
   const today = new Date().toISOString().slice(0, 10)
   const truncatedQuery = query.length > MAX_REMOTE_QUERY_CHARS ? query.slice(0, MAX_REMOTE_QUERY_CHARS) : query
+  // #1586 audit M1/M2: each host's entry as read at entry, so the end of the
+  // call can persist only what THIS call changed — and only for hosts it
+  // actually dialed. A call that did not dial has nothing new to say.
+  const snapshots = new Map<string, HostHealth>()
+  const dialedKeys = new Set<string>()
+  const trialKeys = new Set<string>()
+  /** Per host, the fields this call observed directly (re-audit N2). */
+  const forcedKeys = new Map<string, Set<string>>()
+  const force = (key: string, ...fields: string[]) => {
+    const set = forcedKeys.get(key) ?? new Set<string>()
+    for (const f of fields) set.add(f)
+    forcedKeys.set(key, set)
+  }
+  // #1586 audit L7: the recall deadline aborts what is still in flight.
+  const deadlineAt = opts.deadlineAt
+  const inflight = new Set<AbortController>()
+  let deadlineHit = false
 
   const dialHost = async (host: RemoteRecallHost): Promise<{
     outcome: HostRecallOutcome
@@ -794,6 +1108,7 @@ export async function remoteRecall(
     const key = normalizeEndpointUrl(host.url)
     const h: HostHealth = health.hosts[key] ?? {}
     health.hosts[key] = h
+    if (!snapshots.has(key)) snapshots.set(key, JSON.parse(JSON.stringify(h)) as HostHealth)
     // Credential state lives under the token's key (core-policy#3): hosts
     // sharing a url are dialed in parallel here, and one shared counter let a
     // healthy token reset a revoked token's streak, two tokens' single 403s
@@ -814,28 +1129,80 @@ export async function remoteRecall(
         scores: rows.scores,
       }
     }
+    /** This dial is a cooldown's one trial read (#1586). */
+    let trial = false
+    const openBreaker = () => {
+      h.cooldown_until = now() + BREAKER_COOLDOWN_MS
+      h.cooldown_opened_at = now()
+      delete h.half_open_trial_at
+      h.failures = 0
+    }
+    /** The host answered: a trial read that got any HTTP answer closes the
+     *  breaker — the breaker is about reachability, and the host is reachable. */
+    const closeBreakerIfTrial = () => {
+      if (!trial) return
+      h.cooldown_until = 0
+      delete h.cooldown_opened_at
+      delete h.half_open_trial_at
+      force(key, 'cooldown_until', 'cooldown_opened_at', 'half_open_trial_at')
+    }
     const networkFailure = (state: 'timeout' | 'unreachable', detail?: string) => {
       h.failures = (h.failures ?? 0) + 1
       // Any observed non-403 response/failure breaks a 403 streak — the
       // forbidden threshold means 2 CONSECUTIVE 403s, not 2 total.
       th.forbidden_count = 0
-      if (h.failures >= BREAKER_FAILURE_THRESHOLD) {
-        h.cooldown_until = now() + BREAKER_COOLDOWN_MS
-        h.failures = 0
-      }
+      // A failed trial re-opens the breaker for a full cooldown at once.
+      if (trial || h.failures >= BREAKER_FAILURE_THRESHOLD) openBreaker()
       return finish(state, detail ? { detail } : {})
     }
 
-    if ((h.cooldown_until ?? 0) > t0 || (th.rate_limited_until ?? 0) > t0) return finish('skipped_cooldown')
+    if ((th.rate_limited_until ?? 0) > t0) return finish('skipped_cooldown')
+    if ((h.cooldown_until ?? 0) > t0) {
+      // A legacy host-wide 429 cooldown is honoured to the end — Retry-After
+      // is the server's own instruction, not a reachability guess.
+      if (h.last_state === 'rate_limited') return finish('skipped_cooldown')
+      // A trial that could not be dialed anyway would burn the cooldown's one
+      // trial on nothing.
+      if ((h.unsupported_until ?? 0) > t0) return finish('skipped_cooldown')
+      const openedAt = cooldownOpenedAt(h)
+      const due = t0 - openedAt >= BREAKER_HALF_OPEN_AFTER_MS
+        && (h.half_open_trial_at ?? -Infinity) < openedAt
+      if (!due) return finish('skipped_cooldown')
+      const claim = claimHalfOpenTrial(statePath, key, t0)
+      if (claim.result === 'denied') return finish('skipped_cooldown')
+      const snap = snapshots.get(key)!
+      if (claim.result === 'free') {
+        // The cooldown ended or a save cleared it meanwhile: take the file's
+        // view of the breaker, so this call neither restores the cooldown nor
+        // treats an ordinary dial as a trial.
+        for (const f of ['cooldown_until', 'cooldown_opened_at', 'half_open_trial_at', 'failures'] as const) {
+          const v = claim.current?.[f]
+          if (v === undefined) { delete h[f]; delete snap[f] } else { h[f] = v; snap[f] = v }
+        }
+      } else {
+        trial = true
+        trialKeys.add(key)
+        // The claim is in the file now; record it as the base, so releasing or
+        // clearing it later is a change this call writes.
+        h.half_open_trial_at = t0
+        snap.half_open_trial_at = t0
+      }
+    }
     if ((h.unsupported_until ?? 0) > t0) return finish('unsupported', { detail: 'unsupported_ttl' })
 
     const ctrl = new AbortController()
+    dialedKeys.add(key)
+    inflight.add(ctrl)
+    if (deadlineHit) ctrl.abort()
+    // Why the request was aborted, when a budget timer did it (#1586).
+    let expiry: BudgetExpiry | undefined
+    const abortFor = (info: BudgetExpiry) => { expiry ??= info; ctrl.abort() }
     // Starvation-aware (#864 follow-up): a cold process spends its first
     // seconds initialising the embedder, and a wall-clock timer would abort a
     // request the loop never got round to servicing.
-    const cancelOverall = startBudgetTimer(timeoutMs, () => ctrl.abort())
+    const cancelOverall = startBudgetTimer(timeoutMs, abortFor, timerOpts)
     let cancelConnect: (() => void) | undefined =
-      startBudgetTimer(Math.min(connectMs, timeoutMs), () => ctrl.abort())
+      startBudgetTimer(Math.min(connectMs, timeoutMs), abortFor, timerOpts)
     try {
       const res = await fetchImpl(`${key}/api/v1/recall`, {
         method: 'POST',
@@ -862,6 +1229,11 @@ export async function remoteRecall(
       // the body read.
       cancelConnect?.()
       cancelConnect = undefined
+      // The host answered: a run of client_slow results is over (audit L4).
+      h.client_slow_streak = 0
+      force(key, 'client_slow_streak')
+      // Any answer below 500 proves the host reachable (a 5xx is counted below).
+      if (res.status < 500) closeBreakerIfTrial()
 
       if (res.status === 401) {
         h.failures = 0
@@ -889,7 +1261,7 @@ export async function remoteRecall(
         // rule as the write leg (#1308): it neither counts toward the
         // per-host breaker nor resets it. Counting it let three refused
         // recalls park queued writes to every scope on the host.
-        h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
+        th.forbidden_count = 0 // a non-403 breaks the token's consecutive-403 streak (re-audit N5)
         return finish('unreachable', { detail: 'http_422_refused' })
       }
       if (res.status === 429) {
@@ -919,6 +1291,12 @@ export async function remoteRecall(
       h.failures = 0
       th.forbidden_count = 0
       h.cooldown_until = 0
+      delete h.cooldown_opened_at
+      delete h.half_open_trial_at
+      // What this call saw: the host answered in full. Written even where the
+      // values look unchanged, so a cooldown another process opened while the
+      // request was in flight is closed (re-audit N2).
+      force(key, 'failures', 'cooldown_until', 'cooldown_opened_at', 'half_open_trial_at')
       const rows = processHostRows(envelope.data.results, host, today)
       const dropped = envelope.data.dropped_scopes
       return finish('ok', {
@@ -928,15 +1306,67 @@ export async function remoteRecall(
       }, rows)
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError'
+      if (isAbort && !expiry && deadlineHit) {
+        // #1586 audit L7: the RECALL's deadline, not this host's budget,
+        // stopped the request. No evidence about the host either way: the
+        // breaker neither counts nor resets, and a trial claim is released.
+        if (trial) delete h.half_open_trial_at
+        return finish('timeout', { detail: 'recall_deadline' })
+      }
+      if (isAbort && expiry?.clientSlow) {
+        // #1586: the budget ran out on this process's blocked event loop
+        // before the host had its serviced budget. Not the host's fault: the
+        // breaker neither counts nor resets, and a trial claim is released so
+        // the next call may try again — unless the run of such results is
+        // already longer than CLIENT_SLOW_STREAK_LIMIT (audit L4): then the
+        // host has had its chances, and this counts as a timeout.
+        h.client_slow_streak = (h.client_slow_streak ?? 0) + 1
+        if (h.client_slow_streak > CLIENT_SLOW_STREAK_LIMIT) return networkFailure('timeout', 'client_slow_streak')
+        if (trial) delete h.half_open_trial_at
+        return finish('client_slow', { detail: 'event_loop_blocked' })
+      }
+      h.client_slow_streak = 0
       return networkFailure(isAbort ? 'timeout' : 'unreachable',
         isAbort ? undefined : (err instanceof Error ? err.message.slice(0, 120) : undefined))
     } finally {
+      inflight.delete(ctrl)
       cancelConnect?.()
       cancelOverall()
     }
   }
 
-  const settled = await Promise.allSettled(hosts.map(dialHost))
+  type HostResult = Awaited<ReturnType<typeof dialHost>>
+  const startedAt = now()
+  let abortTimer: ReturnType<typeof setTimeout> | undefined
+  let stopTimer: ReturnType<typeof setTimeout> | undefined
+  let hardStop: Promise<void> | null = null
+  if (deadlineAt !== undefined && Number.isFinite(deadlineAt)) {
+    abortTimer = setTimeout(() => {
+      deadlineHit = true
+      for (const c of inflight) c.abort()
+    }, Math.max(0, deadlineAt - DEADLINE_ABORT_LEAD_MS - Date.now()))
+    // A request that ignores its abort signal still cannot hold the call.
+    hardStop = new Promise<void>(resolve => {
+      stopTimer = setTimeout(resolve, Math.max(0, deadlineAt - Date.now()))
+    })
+  }
+  const pending = new Set<number>()
+  const runs = hosts.map((host, i): Promise<HostResult> => {
+    const p = dialHost(host)
+    if (!hardStop) return p
+    return Promise.race([p, hardStop.then((): HostResult => {
+      pending.add(i)
+      return {
+        outcome: { url: host.url, state: 'timeout', ms: now() - startedAt, count: 0, detail: 'recall_deadline' },
+        engrams: [],
+        scores: new Map(),
+      }
+    })])
+  })
+
+  const settled = await Promise.allSettled(runs)
+  if (abortTimer) clearTimeout(abortTimer)
+  if (stopTimer) clearTimeout(stopTimer)
   const outcomes: HostRecallOutcome[] = []
   const engrams: Engram[] = []
   const scores = new Map<string, number>()
@@ -962,15 +1392,23 @@ export async function remoteRecall(
       scores.set(e.id, sc)
     }
   }
-  // Persist only the host entries this call touched, read-merge-write under
-  // the file lock — a concurrent process's updates to other hosts (or to the
-  // print-suppression fields) survive. See mergeWriteRemoteHealth.
-  const touched: Record<string, HostHealth> = {}
-  for (const host of hosts) {
-    const key = normalizeEndpointUrl(host.url)
-    if (health.hosts[key]) touched[key] = health.hosts[key]
+  // A host the deadline cut while its request ignored the abort: release a
+  // trial claim it held, so the next call may try again.
+  for (const i of pending) {
+    const key = normalizeEndpointUrl(hosts[i].url)
+    if (trialKeys.has(key)) delete health.hosts[key]?.half_open_trial_at
   }
-  mergeWriteRemoteHealth(statePath, touched)
+  // Persist, field by field under the file lock, only what this call changed
+  // about the hosts it dialed (see persistHostChanges).
+  const changes: Array<{ key: string; before: HostHealth; after: HostHealth; forced?: ReadonlySet<string> }> = []
+  for (const key of dialedKeys) {
+    const after = JSON.parse(JSON.stringify(health.hosts[key] ?? {})) as HostHealth
+    const forced = new Set(forcedKeys.get(key) ?? [])
+    // last_state is what this call observed, when it observed the host at all.
+    if (after.last_state === 'ok') forced.add('last_state')
+    changes.push({ key, before: snapshots.get(key) ?? {}, after, forced })
+  }
+  persistHostChanges(statePath, changes)
   return { engrams, scores, outcomes }
 }
 
@@ -1022,6 +1460,8 @@ export function mcpRemoteWarningLine(o: RemoteStoreStatusEntry): string {
       return `${host}: server has no live-recall endpoint (older server) — serving local only; team recall resumes automatically once the server is upgraded.`
     case 'skipped_cooldown':
       return `${host}: in cooldown after repeated failures — serving local only; dialing resumes automatically; run plur_doctor if this persists.`
+    case 'client_slow':
+      return `${host}: this client was too busy (slow start) to read the server's answer in time — results may be missing team engrams this call; the server is not at fault; retrying is fine.`
   }
 }
 
@@ -1050,6 +1490,9 @@ export function hookRemoteHeaderLine(o: RemoteStoreStatusEntry): string | null {
       return `[PLUR] ${host}: rate limited — team memory cooling down, back shortly.`
     case 'unsupported':
     case 'skipped_cooldown':
+    // A one-off local condition (cold start): printing it into every prompt
+    // header would habituate the user to warnings that are not about the server.
+    case 'client_slow':
       return null
   }
 }
@@ -1075,7 +1518,9 @@ export function doctorRemoteRemediation(o: RemoteStoreStatusEntry): string | nul
     case 'unsupported':
       return `Remote ${host}: no /api/v1/recall endpoint (older server) — live team recall is parked for ${Math.round(UNSUPPORTED_TTL_MS / 60000)} minutes at a time. Upgrade the enterprise server to enable server-authoritative recall. (An old server also cannot report scope narrowing — absence of a dropped-scopes warning from this host proves nothing.)`
     case 'skipped_cooldown':
-      return `Remote ${host}: circuit breaker open after ${BREAKER_FAILURE_THRESHOLD} consecutive failures — dialing paused ~${Math.round(BREAKER_COOLDOWN_MS / 60000)} minutes, then retried automatically. Investigate reachability if this persists.`
+      return `Remote ${host}: circuit breaker open after ${BREAKER_FAILURE_THRESHOLD} consecutive failures — dialing paused ~${Math.round(BREAKER_COOLDOWN_MS / 60000)} minutes (one trial read after ~${Math.round(BREAKER_HALF_OPEN_AFTER_MS / 1000)} s), then retried automatically. Investigate reachability if this persists.`
+    case 'client_slow':
+      return `Remote ${host}: the last live recall ran out of time while this process was blocked (cold start or a busy machine), before the server had its full budget. Not counted against the server. If it recurs, the client is starting slowly; raise PLUR_REMOTE_RECALL_TIMEOUT_MS or warm the process first.`
   }
 }
 

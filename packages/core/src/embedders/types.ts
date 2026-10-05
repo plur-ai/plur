@@ -32,4 +32,13 @@ export interface EmbedderAdapter {
   embed(text: string, role?: EmbedRole): Promise<Float32Array>
   /** Embed N texts. Output order matches input order. */
   embedBatch(texts: string[]): Promise<Float32Array[]>
+  /** Optional (#1586 round 3): the model is loaded in this process. */
+  isLoaded?(): boolean
+  /** Optional (#1586 rounds 3-6): are the model's files on disk where a load
+   *  would read them? Null when the adapter cannot tell. */
+  modelPresent?(): Promise<boolean | null>
+  /** Optional (#1586 round 6): the embedder is a remote API (no local model,
+   *  no cold start), so no background cache fill is started for it. */
+  readonly remote?: boolean
 }
+

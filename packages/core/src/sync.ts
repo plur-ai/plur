@@ -55,6 +55,8 @@ agent-keystore.json
 # PLUR — derived/cache files (regenerated automatically)
 embeddings/
 .embeddings-cache.json
+.embeddings-cache.delta.jsonl
+.embeddings-cache.json.lock
 *.db
 *.sqlite
 store.pglite/

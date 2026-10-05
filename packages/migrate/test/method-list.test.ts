@@ -41,7 +41,7 @@ const ALWAYS_ASYNC = new Set([
   'learnAsync', 'recallAsync', 'setPinnedAsync', 'updateEngramAsync',
   'reindexAsync', 'listStoresAsync',
   // Embedding/LLM-backed retrieval — always async, always awaited by callers.
-  'recallHybrid', 'recallHybridWithMeta', 'recallSemantic', 'recallAutoSearch',
+  'recallHybrid', 'recallHybridWithMeta', 'recallWithMeta', 'recallSemantic', 'recallAutoSearch',
   'recallExpanded', 'injectHybrid', 'similaritySearch', 'checkRerankerFit',
   'rerankerSelfEval',
   // Network / index plumbing.
