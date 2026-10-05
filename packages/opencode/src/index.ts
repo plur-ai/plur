@@ -1,5 +1,6 @@
 import {
   Plur,
+  allowBackgroundModelLoad,
   renderMemoryBlock,
   readProjectConfigFromPath,
   findProjectConfigPath,
@@ -85,6 +86,9 @@ export const PlurPlugin: Plugin = async (ctx) => {
     return {} satisfies Hooks
   }
   log(`scope root: ${scopeRoot}`)
+  // The plugin lives as long as the opencode process: when a recall finds the
+  // embedding model missing, it may load it in the background, once (#1586).
+  try { allowBackgroundModelLoad(true) } catch { /* optional */ }
 
   // Warnings about the repo's own settings are printed once per plugin
   // instance, and only in a folder that is `on`: an `off` folder is silent,

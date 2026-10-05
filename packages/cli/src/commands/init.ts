@@ -1950,6 +1950,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputInfo('', flags)
   }
   outputInfo('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.', flags)
+  // #1586 round 4: a fresh install has no embedding model, and no recall or
+  // hook downloads it. Say once how to get it; init itself does not download.
+  try {
+    const { semanticModelState } = await import('@plur-ai/core')
+    if (await semanticModelState() === 'missing') {
+      outputInfo('The embedding model is not downloaded yet: run `plur doctor` once to download it (~133 MB). Until then recall uses keyword search.', flags)
+    }
+  } catch { /* advisory only */ }
   if (!mcpOk) {
     // #1564 review L4: the point of init did not happen; scripts must see it.
     process.exitCode = 1
