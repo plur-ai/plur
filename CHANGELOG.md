@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Codex on Windows gets the PLUR MCP server (#1603)
+
+- **`plur init --codex` finds a Codex installed with npm on Windows.** npm installs Codex as `codex.cmd`, next to an extensionless shell script also named `codex`. `plur init` could not find or start the `.cmd`, so it reported "the `codex` binary is not on PATH" and Codex got hooks but no PLUR tools. Init now looks Codex up through `PATH` and `PATHEXT` the way Windows does, never picks the extensionless script, and runs a `.cmd` through `cmd.exe`, for `codex mcp list`, `codex mcp add` and `codex mcp remove`. A path containing `%` cannot be passed through `cmd.exe` unchanged, so init does not try: it says so and prints the table to add by hand (below).
+- **…or the Codex app's own binary (Windows).** When no `codex` is on PATH, init uses the `codex.exe` the Codex app keeps under `~/.codex/packages/app-server-daemon/releases/<version>/bin/`: the newest release built for this machine's processor, and a full release before its own pre-releases. Init's report names the binary it used. On macOS and Linux, init finds Codex on PATH as before.
+- **The server Codex starts is `node.exe` with the path of the PLUR MCP server's script**, which Codex runs without a shell, as before. No `.cmd` is registered.
+- **When Codex really is not installed**, init still says so, and now also prints the `[mcp_servers.plur]` table to add to `config.toml` by hand, with this machine's paths. A failed `codex mcp add` prints the same table.
+- **`plur doctor` on Windows sees Codex in the same places**: a `~/.codex` folder, a `codex` on PATH, or the Codex app's binary. On macOS and Linux it still looks for the `~/.codex` folder only.
+- **`plur doctor`'s MCP check on Windows starts a configured `npx` or `.cmd` command** the same way, instead of failing to start it.
+- **`plur doctor` names an unwired Codex in its last line.** With Codex installed but PLUR not wired into it, the summary used to end with "✓ Healthy. plur is ready to use in Claude Code." It now says plur is not ready in Codex and names `plur init --codex`. The exit code and `--json` output do not change, but a script that matches "✓ Healthy" in the text output no longer matches in that case.
+- **`plur doctor` explains proxies when the embedding model download fails on the network** (for example "fetch failed"). The model is downloaded with Node's built-in `fetch`, which ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is also set (Node 24 and later, or 22.21 and later). Starting Node with `--use-env-proxy` (directly or in `NODE_OPTIONS`) counts the same. Doctor says which of the two is missing, or that this Node is too old for it.
+- **`plur ui` on Windows opens the viewer the way `plur login` opens its page** (`rundll32 url.dll,FileProtocolHandler`), not through `cmd /c start`, which splits a URL at `&`.
+
 ## 0.21.2
 
 Your folders, your memory.

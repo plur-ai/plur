@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, readdirSync } from 'fs'
-import { execFileSync } from 'child_process'
+import { execFileSync, type ExecFileSyncOptions } from 'child_process'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
@@ -25,6 +25,8 @@ import {
   nextRecordedEntries,
   type StringHookHost,
 } from '../lib/hook-command.js'
+import { spawnResolved } from '../lib/command-spawn.js'
+import { resolveCodexBinary, codexTomlSnippet, type CodexBinary } from '../lib/codex-binary.js'
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
@@ -1210,18 +1212,35 @@ function shouldSetupCodex(args: string[], env: NodeJS.ProcessEnv = process.env):
  * PATH (perfectly possible — `~/.codex/` can exist from a since-removed
  * install), we say so and print the manual snippet instead of failing init.
  */
+/**
+ * Run the `codex` CLI found by resolveCodexBinary (#1603): a codex on PATH —
+ * on Windows npm's `codex.cmd`, run through cmd.exe, never the extensionless
+ * sh shim — else the Codex app's bundled binary. With neither, the bare name,
+ * so the caller still gets its ENOENT.
+ */
+function runCodex(bin: CodexBinary | null, args: string[], opts: ExecFileSyncOptions): string {
+  const spec = bin ? spawnResolved(bin.path, args) : { file: 'codex', args }
+  return String(execFileSync(spec.file, spec.args, {
+    ...opts, ...('windowsVerbatimArguments' in spec && spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  }))
+}
+
 function installCodexMcp(): string {
   const entry = buildMcpServerEntry()
+  const bin = resolveCodexBinary()
+  const used = bin ? `${bin.path}${bin.source === 'app' ? ', the Codex app\'s binary' : ''}` : 'codex'
 
   let listed = ''
   try {
-    listed = execFileSync('codex', ['mcp', 'list'], {
+    listed = runCodex(bin, ['mcp', 'list'], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000,
     })
   } catch (err: unknown) {
     const code = (err as { code?: string }).code
     if (code === 'ENOENT') {
-      return 'skipped — the `codex` binary is not on PATH. Install Codex, then re-run `plur init --codex`'
+      return 'skipped — no `codex` on PATH and no Codex app binary under ' +
+        `${join(codexHome(), 'packages', 'app-server-daemon', 'releases')}. Install Codex, then re-run \`plur init --codex\`, ` +
+        `or add this to ${codexConfigTomlPath()} by hand:\n${codexTomlSnippet(entry)}`
     }
     // `mcp list` can fail for reasons that don't block `mcp add` (an
     // unrelated broken server entry, for one). Fall through and try to add.
@@ -1264,7 +1283,7 @@ function installCodexMcp(): string {
       return 'already registered (run `codex mcp remove plur` first if you need to re-point it)'
     }
     try {
-      execFileSync('codex', ['mcp', 'remove', 'plur'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
+      runCodex(bin, ['mcp', 'remove', 'plur'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
     } catch (err: unknown) {
       const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
       return `already registered with the old plur-mcp.cmd entry, which fails to start (spawn EINVAL), and \`codex mcp remove plur\` failed (${stderr || (err as Error).message}). Fix: run \`codex mcp remove plur\`, then re-run \`plur init --codex\``
@@ -1276,14 +1295,14 @@ function installCodexMcp(): string {
     const args = ['mcp', 'add', 'plur']
     if (entry.env) for (const [k, v] of Object.entries(entry.env)) args.push('--env', `${k}=${v}`)
     args.push('--', entry.command, ...entry.args)
-    execFileSync('codex', args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
+    runCodex(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
     return healed
-      ? 'healed — replaced the old plur-mcp.cmd entry (spawn EINVAL) via `codex mcp remove` + `codex mcp add`'
-      : 'registered via `codex mcp add`'
+      ? `healed — replaced the old plur-mcp.cmd entry (spawn EINVAL) via \`codex mcp remove\` + \`codex mcp add\` (${used})`
+      : `registered via \`codex mcp add\` (${used})`
   } catch (err: unknown) {
     const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
-    return `FAILED (${stderr || (err as Error).message}) — add it by hand: ` +
-      `[mcp_servers.plur] command = "${entry.command}"`
+    return `FAILED (${stderr || (err as Error).message}) — add it by hand to ${codexConfigTomlPath()}:\n` +
+      codexTomlSnippet(entry)
   }
 }
 

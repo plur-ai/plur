@@ -28,6 +28,8 @@ import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCOD
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { repairAdvice, repairCommandFor } from './folders.js'
+import { codexInstalled } from '../lib/codex-binary.js'
+import { commandSpawn } from '../lib/command-spawn.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -756,8 +758,12 @@ async function mcpHandshake(
 
     let proc: ReturnType<typeof spawn>
     try {
-      proc = spawn(entry.command, entry.args, {
+      // On Windows a configured `npx` or `.cmd` cannot be spawned directly
+      // (ENOENT / EINVAL); resolve it the way init runs Codex (#1603).
+      const spec = commandSpawn(entry.command, entry.args)
+      proc = spawn(spec.file, spec.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
+        ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         ...(spawnEnv ? { env: spawnEnv } : {}),
       })
     } catch (err: unknown) {
@@ -1124,11 +1130,61 @@ export function hookHarnesses(configs: Array<{ label: string; hasPlurHooks: bool
   return [...new Set(names)]
 }
 
-/** The healthy verdict, naming only harnesses whose hooks are installed. */
-export function readyLine(harnesses: string[]): string {
-  if (harnesses.includes('Claude Code')) return '✓ Healthy. plur is ready to use in Claude Code.'
-  const where = harnesses.length ? harnesses.join(', ') : 'no harness'
-  return `✓ Healthy. plur is ready to use in ${where}. Claude Code has no plur hooks — run \`plur init\` to add them.`
+/**
+ * The healthy verdict, naming only harnesses whose hooks are installed.
+ * `unwired` names editors installed on this machine that PLUR is not wired
+ * into (today: Codex). They stay advisory — the exit code does not change —
+ * but the closing line names them instead of reading as plain "Healthy"
+ * (#1603: a Codex user was told plur was ready while Codex had no PLUR tools).
+ */
+export function readyLine(harnesses: string[], unwired: string[] = []): string {
+  if (!unwired.length) {
+    if (harnesses.includes('Claude Code')) return '✓ Healthy. plur is ready to use in Claude Code.'
+    const where = harnesses.length ? harnesses.join(', ') : 'no harness'
+    return `✓ Healthy. plur is ready to use in ${where}. Claude Code has no plur hooks — run \`plur init\` to add them.`
+  }
+  const where = harnesses.length ? harnesses.join(', ') : 'no editor'
+  const names = unwired.join(', ')
+  const fixes = unwired.map(n => `\`plur init --${n.toLowerCase()}\``).join(', ')
+  return `⚠ plur is ready to use in ${where}, but NOT in ${names}: it is installed and PLUR is not wired into it. Fix: run ${fixes}.`
+}
+
+/**
+ * Proxy advice for an embedding-model download that failed on the network
+ * (#1603). transformers.js downloads with Node's built-in fetch (undici),
+ * which ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 is set — supported
+ * from Node 24.0.0 and 22.21.0 (Node's cli.md). Empty for any other error.
+ */
+export function embeddingNetworkHint(
+  lastError: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  nodeVersion: string = process.versions.node,
+  execArgv: string[] = process.execArgv,
+): string[] {
+  if (!lastError || !/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_CONNECT/i.test(lastError)) return []
+  const [major, minor] = nodeVersion.split('.').map(Number)
+  const supported = major >= 24 || (major === 22 && minor >= 21)
+  const proxy = env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy
+  // The flag form (`--use-env-proxy`, Node 24.5+ / 22.21+) turns it on as well.
+  const useEnvProxy = env.NODE_USE_ENV_PROXY === '1' || execArgv.includes('--use-env-proxy') ||
+    /(^|\s)--use-env-proxy(\s|$)/.test(env.NODE_OPTIONS ?? '')
+  const lines = [
+    '  Network error. The model is downloaded with Node\'s built-in fetch, which ignores',
+    '  HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 is also set.',
+  ]
+  if (!supported) {
+    lines.push(`  This Node (v${nodeVersion}) has no NODE_USE_ENV_PROXY; behind a proxy, use Node 22.21+ or 24+`)
+    lines.push('  and set HTTPS_PROXY=http://<proxy>:<port> plus NODE_USE_ENV_PROXY=1.')
+  } else if (proxy && !useEnvProxy) {
+    lines.push('  HTTPS_PROXY is set, but the download will ignore it: set NODE_USE_ENV_PROXY=1 as well.')
+  } else if (proxy) {
+    lines.push('  HTTPS_PROXY is set and proxy use is on (NODE_USE_ENV_PROXY=1 or --use-env-proxy): check that the proxy is reachable')
+    lines.push('  and allows huggingface.co.')
+  } else {
+    lines.push('  Behind a proxy? Set HTTPS_PROXY=http://<proxy>:<port> and NODE_USE_ENV_PROXY=1.')
+  }
+  lines.push('  Set them where your editor starts PLUR as well (its MCP server env), not only in this shell.')
+  return lines
 }
 
 /** Config files Claude Code reads hooks and settings from, but never MCP servers (#1561). */
@@ -1302,7 +1358,9 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   )
 
   // Codex health, from Codex's OWN two files only.
-  const codexDetected = existsSync(codexHome())
+  // A Codex home, a codex on PATH, or the Codex app's bundled binary — the
+  // same places `plur init --codex` looks (#1603).
+  const codexDetected = codexInstalled()
   const codexHooksReport = configs.find((c) => c.label === 'Codex (~/.codex/hooks.json)')
   const codexTomlReport = configs.find((c) => c.label === 'Codex (~/.codex/config.toml)')
   // The `plur-mcp.cmd` entry an older init wrote on Windows is registered but
@@ -1766,6 +1824,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (report.embedder.lastError) {
       outputText(`  Last error: ${report.embedder.lastError}`)
     }
+    for (const line of embeddingNetworkHint(report.embedder.lastError)) outputText(line)
     outputText('  Likely causes:')
     outputText('    - First-run download not completed (try again in a few seconds)')
     outputText('    - Network blocked HuggingFace Hub — check huggingface.co connectivity')
@@ -1777,7 +1836,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   outputText('')
   if (report.overall === 'ok') {
-    outputText(readyLine(hookHarnesses(report.configs)))
+    outputText(readyLine(hookHarnesses(report.configs), report.codexDetected && !report.codexWired ? ['Codex'] : []))
   } else {
     outputText('✗ Issues detected.')
     if (!report.hooksInstalled || !report.mcpRegistered) {
