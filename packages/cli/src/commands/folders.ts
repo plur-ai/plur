@@ -13,7 +13,8 @@ const USAGE =
   '       plur folders set <folder> (--scope <s> | --on | --off | --ask) [--trusted | --no-trusted] [--nonce <n>] [--session <id>]\n' +
   '       plur folders set <folder> --not-now --nonce <n> [--session <id>]\n' +
   '       plur folders rm <folder> [--nonce <n>]\n' +
-  'Without --nonce, set and rm work only from an interactive terminal.'
+  'Without --nonce, set and rm work only from an interactive terminal.\n' +
+  '--trusted covers the .plur.yaml files in every folder below it. A repository\'s own memory store is still added only after plur folders set <repo> --on, or plur trust <repo>.'
 
 /**
  * Whether a `folders set`/`rm` or `trust` must carry a `--nonce`.

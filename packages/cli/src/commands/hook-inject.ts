@@ -7,6 +7,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
+import { skippedStoreNotice } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
@@ -903,6 +904,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     const correction = promptCorrection(input)
     if (correction) lines.push(correction)
+    // The skipped-store hint is keyed on session AND folder (#1589 audit
+    // round 4): a session that moves to another folder gets that folder's
+    // hint once. Cheap checks run first; the PLUR instance is built only when
+    // a store file is on the walk and the hint was not given here yet.
+    const hint = skippedStoreNotice(() => createAskPlur(flags), typeof input.session_id === 'string' ? input.session_id : '', dir)
+    if (hint) lines.push(hint)
     if (lines.length > 0) {
       emitContext(claudeHookEventName(input, { rehydrate: false, event: null }), lines.join('\n\n'))
     }
@@ -1143,6 +1150,11 @@ async function injectSession(
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
+
+    // A memory store here that was found but not added (#1589 audit round 3):
+    // one line, once per session and folder, with the paste-safe command.
+    const hint = skippedStoreNotice(plur, typeof input.session_id === 'string' ? input.session_id : '', dir)
+    if (hint) parts.push(hint)
 
     // Deferred wrap-up: notify about orphaned previous sessions (#216)
     const deferredNotice = processDeferredWrapups(plur, checkpointRoot(flags))

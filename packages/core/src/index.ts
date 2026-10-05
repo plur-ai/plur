@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import { randomUUID, createHash } from 'crypto'
-import { tmpdir, hostname } from 'os'
-import { join, dirname, basename } from 'path'
+import { tmpdir, hostname, homedir } from 'os'
+import { join, dirname, basename, sep, resolve } from 'path'
 import yaml from 'js-yaml'
 import { collapseLineTerminators } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
@@ -84,6 +84,8 @@ import {
 } from './trust.js'
 import {
   resolveFolderPolicy as _resolveFolderPolicy,
+  hasOwnFolderDecision as _hasOwnFolderDecision,
+  isTrustedInMap as _isTrustedInMap,
   loadFolderMap as _loadFolderMap,
   setFolderEntry as _setFolderEntry,
   removeFolderEntry as _removeFolderEntry,
@@ -157,6 +159,8 @@ export {
   coversHomeOrRoot,
   workspaceFolderScope,
   findPlurMarker,
+  hasOwnFolderDecision,
+  sameFolderPath,
   folderPatternMatches,
   folderPatternSpecificity,
   issueFolderNonce,
@@ -207,6 +211,12 @@ export {
   escapedPath as folderEscapedPath,
   isFolderAskText,
   folderRepairCommand,
+  folderSetOnCommand,
+  claimSkippedStoreHint,
+  skippedStoreHintClaimed,
+  folderMarkerDir,
+  skippedStoreHintLine,
+  skippedStoreNotice,
   type FolderAskOptions,
   type FolderAskScopeRanker,
   type FolderAsk,
@@ -13219,16 +13229,29 @@ Generate an improved version of the procedure that prevents this failure. Return
     _answerFolderNotNow(this.paths.root, folder, options.nonce, { ...(options.session !== undefined ? { session: options.session } : {}) })
   }
 
-  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
-    const startDir = cwd || process.cwd()
-    const discovered: Array<{ path: string; scope: string }> = []
+  /**
+   * Whether discovery is skipped because the PLUR root is a temp folder (a
+   * test-safety guard, unchanged for users by #1588/#1589): the root as given
+   * (not resolved, so a user's symlink is not followed) starts with the OS
+   * temp folder or with `/tmp/`. `PLUR_TEST_DISCOVER_IN_TMP=1` is a TEST-ONLY
+   * switch that turns the skip off, so tests that build their tree under the
+   * system temp folder can exercise real discovery; nothing sets it for users.
+   */
+  private _discoverySkippedForTempRoot(): boolean {
+    if (process.env.PLUR_TEST_DISCOVER_IN_TMP === '1') return false
+    return this.paths.root.startsWith(tmpdir()) || this.paths.root.startsWith('/tmp/')
+  }
 
-    // Skip discovery if Plur storage is in a temp directory (test scenario)
-    const tmpDir = tmpdir()
-    if (this.paths.root.startsWith(tmpDir) || this.paths.root.startsWith('/tmp/')) {
-      return discovered
-    }
-
+  /**
+   * The `.plur/engrams.yaml` stores discovery looks at from `startDir`
+   * upward, with the same bounds as {@link autoDiscoverStores}: never the
+   * home folder or above it (#1588), stopping at the repository root (`.git`)
+   * or the filesystem root; never the active store or `~/.plur`; never a
+   * store config.yaml already lists. Read-only.
+   */
+  private _discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | null; candidate: string; key: string }> {
+    const out: Array<{ dir: string; typed: string | null; candidate: string; key: string }> = []
+    if (this._discoverySkippedForTempRoot()) return out
     // Canonical paths (#1319): the walk sees kernel-canonical cwd spellings
     // while PLUR_PATH / $HOME are taken verbatim, so a raw string compare
     // missed the primary under a symlinked home and registered it as
@@ -13238,48 +13261,127 @@ Generate an improved version of the procedure that prevents this failure. Return
       (this.config.stores ?? []).filter(s => s.path !== undefined && !s.url).map(s => canonicalize(s.path!)),
     )
     const primaryStore = canonicalize(this.paths.engrams)
+    // The user's main store is never a project store either, whichever store
+    // is active (#1588): PLUR_PATH may point elsewhere while ~/.plur exists.
+    const home = canonicalize(homedir())
+    const mainStore = canonicalize(join(homedir(), '.plur', 'engrams.yaml'))
 
-    let dir = startDir
+    // The spelling the caller typed for each real folder (#1589 audit round
+    // 3): an `off` entry may name the alias the user is in, and must still
+    // stop discovery there. First typed ancestor wins.
+    const typedFor = new Map<string, string>()
+    for (let t = resolve(startDir); ; ) {
+      const real = canonicalize(t)
+      if (!typedFor.has(real)) typedFor.set(real, t)
+      const parent = dirname(t)
+      if (parent === t) break
+      t = parent
+    }
+
+    // The REAL path (#1589 audit round 2): through a symlink into a
+    // repository's sub-folder, the typed parents are outside the repository.
+    let dir = canonicalize(startDir)
     const visited = new Set<string>()
-
     while (dir && !visited.has(dir)) {
       visited.add(dir)
+      const dirKey = dir
+      // Never enter the home folder or anything above it (#1588): a store
+      // there is the user's own or no project's, whatever decided the folder.
+      if (dirKey === home || isUnder(home, dirKey)) break
       const candidate = join(dir, '.plur', 'engrams.yaml')
-
-      const candidateKey = canonicalize(candidate)
-
-      // Skip primary store
-      if (candidateKey === primaryStore) {
-        dir = dirname(dir)
-        continue
+      const key = canonicalize(candidate)
+      if (key !== primaryStore && key !== mainStore && !knownPaths.has(key) && fs.existsSync(candidate)) {
+        const typed = typedFor.get(dir)
+        out.push({ dir, typed: typed !== undefined && typed !== dir ? typed : null, candidate, key })
       }
-
-      if (fs.existsSync(candidate) && !knownPaths.has(candidateKey)) {
-        // Infer scope from directory name or git remote
-        let scope = `project:${basename(dir)}`
-        try {
-          // Try .plur.yaml for explicit scope
-          const plurYaml = join(dir, '.plur.yaml')
-          if (fs.existsSync(plurYaml)) {
-            const raw = yaml.load(fs.readFileSync(plurYaml, 'utf8')) as any
-            if (raw?.scope) scope = raw.scope
-          }
-        } catch {}
-
-        this.addStore(candidate, scope, { shared: true, readonly: false })
-        discovered.push({ path: candidate, scope })
-        knownPaths.add(candidateKey)
-        logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
-      }
-
       // Stop at git root or filesystem root
       if (fs.existsSync(join(dir, '.git'))) break
       const parent = dirname(dir)
       if (parent === dir) break
       dir = parent
     }
+    return out
+  }
 
+  /**
+   * True when the start folder is off by either its path as typed or its real
+   * path (#1589 audit round 4): then discovery adopts nothing and lists
+   * nothing, whatever the folders above it say. Through a link into a
+   * repository's sub-folder, the per-candidate spellings cannot see the
+   * alias that the user turned off.
+   */
+  private _startFolderOff(startDir: string): boolean {
+    const opts = { root: this.paths.root, readOnly: true }
+    return _resolveFolderPolicy(resolve(startDir), opts).mode === 'off' ||
+      _resolveFolderPolicy(canonicalize(startDir), opts).mode === 'off'
+  }
+
+  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
+    const discovered: Array<{ path: string; scope: string }> = []
+    const seen = new Set<string>()
+    const startDir = cwd || process.cwd()
+    // Candidates first: with no store file on the walk, the folder map is not
+    // read at all (a broken map then warns only where it matters).
+    const candidates = this._discoveryCandidates(startDir)
+    if (candidates.length === 0 || this._startFolderOff(startDir)) return discovered
+    for (const { dir, typed, candidate, key } of candidates) {
+      if (seen.has(key)) continue
+      // An `off` for either spelling wins (#1589 audit round 3, R3-L1).
+      if (typed !== null && _resolveFolderPolicy(typed, { root: this.paths.root, readOnly: true }).mode === 'off') continue
+      // A store is registered only for a folder the USER decided on itself
+      // (#1588; owner decision 2026-10-05): an exact folder-map entry. On only
+      // through a parent, or through a marker the repository ships, is not
+      // enough — the repository's store would otherwise become a shared,
+      // writable store read in every folder.
+      // readOnly: discovery reads the folder map but never performs the
+      // one-time trust.yaml import (#1589 audit round 2); that stays with the
+      // folder commands and the hooks, as before this gate existed.
+      if (!_hasOwnFolderDecision(dir, { root: this.paths.root, readOnly: true })) continue
+
+      // The scope a `.plur.yaml` names is used only for a folder the user
+      // trusted (#1589 audit M1); an untrusted file does not choose where a
+      // store's memories are filed.
+      let scope = `project:${basename(dir)}`
+      try {
+        const plurYaml = join(dir, '.plur.yaml')
+        // Read-only trust lookup (#1589 audit round 3, R3-L2): discovery never
+        // performs the one-time trust.yaml import; a legacy grant still counts.
+        if (fs.existsSync(plurYaml) && _isTrustedInMap(_loadFolderMap(this.paths.root, true).folders, dir)) {
+          const raw = yaml.load(fs.readFileSync(plurYaml, 'utf8')) as any
+          if (raw?.scope) scope = raw.scope
+        }
+      } catch {}
+
+      this.addStore(candidate, scope, { shared: true, readonly: false })
+      discovered.push({ path: candidate, scope })
+      seen.add(key)
+      logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
+    }
     return discovered
+  }
+
+  /**
+   * Project stores discovery found from `cwd` but did not add because their
+   * folder has no decision of its own (#1588/#1589 audit L3): the folder is on
+   * only through a parent, or not decided yet. A folder turned off is not
+   * listed. Read-only; `plur doctor` and `plur stores list` show these with
+   * the command that adds them (`plur folders set <folder> --on`).
+   */
+  skippedProjectStores(cwd?: string): Array<{ path: string; folder: string }> {
+    const out: Array<{ path: string; folder: string }> = []
+    // Looking writes nothing (#1589 audit round 2): readOnly keeps a legacy
+    // trust.yaml in memory instead of importing it into folders.yaml.
+    const opts = { root: this.paths.root, readOnly: true }
+    const startDir = cwd || process.cwd()
+    const candidates = this._discoveryCandidates(startDir)
+    if (candidates.length === 0 || this._startFolderOff(startDir)) return out
+    for (const { dir, typed, candidate } of candidates) {
+      if (typed !== null && _resolveFolderPolicy(typed, opts).mode === 'off') continue
+      if (_hasOwnFolderDecision(dir, opts)) continue
+      if (_resolveFolderPolicy(dir, opts).mode === 'off') continue
+      out.push({ path: candidate, folder: dir })
+    }
+    return out
   }
 
   /** Build the primary-store summary row. Shared by listStores +
@@ -14039,4 +14141,10 @@ Generate an improved version of the procedure that prevents this failure. Return
   trackedSessionScopes(): string[] {
     return this._sessionScopes.trackedSessions
   }
+}
+
+/** True when `child` is strictly inside `parent` (both already canonical). */
+function isUnder(child: string, parent: string): boolean {
+  if (child === parent) return false
+  return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
 }

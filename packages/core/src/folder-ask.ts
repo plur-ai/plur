@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync, rmSync, readdirSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync, readdirSync, existsSync, lstatSync, chmodSync, unlinkSync } from 'fs'
 import { createHash } from 'crypto'
-import { basename, dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve, sep } from 'path'
 import { homedir, tmpdir } from 'os'
 import { loadConfig } from './config.js'
 import { canonicalize, findProjectConfigPath } from './project-config.js'
@@ -52,33 +52,135 @@ const ASKED_SUFFIX = '.folder-asked'
  * session, even one asking about a different folder. The session part never
  * holds a dot (safeSessionKey), so `<session>.` is a safe prefix for clearing.
  */
-function askedPath(sessionId: string, folder: string): string {
+function markerTag(folder: string): string {
   let real: string
   try { real = canonicalize(folder) } catch { real = resolve(folder) }
-  const tag = createHash('sha256').update(real).digest('hex').slice(0, 16)
-  return join(tmpdir(), 'plur-sessions', `${safeSessionKey(sessionId)}.${tag}${ASKED_SUFFIX}`)
+  return createHash('sha256').update(real).digest('hex').slice(0, 16)
+}
+
+function markerName(sessionId: string, folder: string, suffix: string): string {
+  return `${safeSessionKey(sessionId)}.${markerTag(folder)}${suffix}`
+}
+
+/** The shared marker folder's path; see {@link folderMarkerDir} before writing to it. */
+function markerDirPath(): string {
+  return join(tmpdir(), 'plur-sessions')
+}
+
+/** May this folder's markers be read or swept: a real directory owned by this user (never created here). */
+function markerDirSafe(dir: string): boolean {
+  try {
+    const st = lstatSync(dir)
+    if (st.isSymbolicLink() || !st.isDirectory()) return false
+    if (process.platform !== 'win32' && typeof process.getuid === 'function' && st.uid !== process.getuid()) return false
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The folder the per-session markers live in (the folder question's and the
+ * skipped-store hint's), created 0700, or null when it cannot be trusted
+ * (#1589 audit round 4). On Linux the temp folder is usually the shared /tmp,
+ * so another local user could create `plur-sessions` first, or plant a
+ * symlink there, to suppress questions and hints or place files elsewhere.
+ * The same check as the CLI hooks' session folder (ensureSessionDir): a real
+ * directory owned by this user; our own folder with a loose mode (made before
+ * this check existed) is tightened rather than refused.
+ */
+export function folderMarkerDir(): string | null {
+  const dir = markerDirPath()
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    if (!markerDirSafe(dir)) return null
+    if (process.platform !== 'win32' && (lstatSync(dir).mode & 0o077) !== 0) {
+      try { chmodSync(dir, 0o700) } catch { return null }
+    }
+    return dir
+  } catch {
+    return null
+  }
+}
+
+/** Markers older than this are swept (the hooks' stale session-file age). */
+const MARKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+/** Marker suffix for the skipped-store hint (#1589 audit round 3). */
+const SKIPPED_STORE_HINT_SUFFIX = '.skipped-store-hint'
+
+/**
+ * Remove question and hint markers older than seven days from the marker
+ * folder (#1589 audit round 4): every editor's path claims markers here, so
+ * every one sweeps, not only the Claude Code hook. Only our own two kinds of
+ * marker file are touched, and only in a folder that passed the check.
+ */
+function sweepStaleMarkers(dir: string, now: number = Date.now()): void {
+  try {
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(ASKED_SUFFIX) && !name.endsWith(SKIPPED_STORE_HINT_SUFFIX)) continue
+      const p = join(dir, name)
+      try {
+        const st = lstatSync(p)
+        if (st.isFile() && now - st.mtimeMs > MARKER_MAX_AGE_MS) unlinkSync(p)
+      } catch { /* raced with another hook */ }
+    }
+  } catch { /* best-effort */ }
+}
+
+/** True when this session was already given the skipped-store hint for this folder. Never writes. */
+export function skippedStoreHintClaimed(sessionId: string, folder: string): boolean {
+  if (!sessionId) return false
+  const dir = markerDirPath()
+  if (!markerDirSafe(dir)) return false
+  return existsSync(join(dir, markerName(sessionId, folder, SKIPPED_STORE_HINT_SUFFIX)))
+}
+
+/**
+ * Claim the once-per-session-and-folder slot for the prompt hook's
+ * "a memory store here was not added" line (#1589 audit round 3), on the same
+ * per-session, per-folder markers as the folder question. True the first
+ * time for this session and folder, false after. An unusable marker folder
+ * answers false: the hint is optional, so silence beats repeating it.
+ * A resumed session is not hinted again (clearFolderAsk leaves these alone).
+ * Sweeps week-old markers on the way (#1589 audit round 4).
+ */
+export function claimSkippedStoreHint(sessionId: string, folder: string): boolean {
+  if (!sessionId) return false
+  const dir = folderMarkerDir()
+  if (!dir) return false
+  sweepStaleMarkers(dir)
+  try {
+    writeFileSync(join(dir, markerName(sessionId, folder, SKIPPED_STORE_HINT_SUFFIX)), String(Date.now()), { flag: 'wx', mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
  * Record that this session has been asked about this folder. True the first
- * time, false after (and false for a session the previous version asked). An unwritable temp dir answers true (the question may
- * then repeat, which is noisy but honest; never asking would hide the
- * folder's state).
+ * time, false after (and false for a session the previous version asked). An
+ * unusable marker folder (missing, foreign or a symlink, #1589 audit round 4)
+ * answers true: the question may then repeat, which is noisy but honest;
+ * never asking would hide the folder's state. Sweeps week-old markers.
  */
 function claimAsk(sessionId: string, folder: string): boolean {
-  const path = askedPath(sessionId, folder)
+  const dir = folderMarkerDir()
+  if (!dir) return true
+  sweepStaleMarkers(dir)
   // A session already asked by 0.21.0, whose marker was keyed by the session
   // alone (`<session>.folder-asked`), is not asked again after the upgrade
   // (audit L6 of #1583). A resume clears that marker too (clearFolderAsk).
-  if (existsSync(join(dirname(path), `${safeSessionKey(sessionId)}${ASKED_SUFFIX}`))) return false
+  if (existsSync(join(dir, `${safeSessionKey(sessionId)}${ASKED_SUFFIX}`))) return false
   try {
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, String(Date.now()), { flag: 'wx' })
+    writeFileSync(join(dir, markerName(sessionId, folder, ASKED_SUFFIX)), String(Date.now()), { flag: 'wx', mode: 0o600 })
     return true
   } catch (err) {
     return (err as NodeJS.ErrnoException)?.code !== 'EEXIST'
   }
 }
+
 
 /**
  * Forget that this session was asked, about every folder, so its next prompt
@@ -93,7 +195,9 @@ function claimAsk(sessionId: string, folder: string): boolean {
 export function clearFolderAsk(sessionId: string): void {
   if (!sessionId) return
   const key = safeSessionKey(sessionId)
-  const dir = join(tmpdir(), 'plur-sessions')
+  const dir = markerDirPath()
+  // Never delete through a folder that is a symlink or another user's (#1589 audit round 4).
+  if (!markerDirSafe(dir)) return
   try {
     for (const name of readdirSync(dir)) {
       if (name === `${key}${ASKED_SUFFIX}` || (name.startsWith(`${key}.`) && name.endsWith(ASKED_SUFFIX))) {
@@ -136,6 +240,78 @@ export function folderRepairCommand(root: string, platform: NodeJS.Platform = pr
   return `plur --path ${quoted(store, platform)} folders repair --yes`
 }
 
+
+/**
+ * The command that turns `folder` on in the folder map (`plur folders set
+ * <folder> --on`), as `plur doctor` and `plur stores list` suggest it for a
+ * store that was found but not added (#1589 audit round 2). The folder is
+ * quoted for the platform's shell, and the store is named with `--path` when
+ * it is not ~/.plur. Null for a folder the folder question refuses to offer
+ * a command for (#1418: line breaks, bidi and zero-width characters, Windows
+ * shell metacharacters, pattern characters) or a store path that cannot be
+ * printed safely; show the path with {@link escapedPath} instead.
+ */
+export function folderSetOnCommand(folder: string, root: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (unofferable(folder, platform)) return null
+  const store = resolve(root)
+  let prefix = 'plur'
+  if (store !== resolve(join(homedir(), '.plur'))) {
+    const blocked = unofferable(store, platform)
+    if (blocked && blocked !== 'pattern') return null
+    prefix = `plur --path ${quoted(store, platform)}`
+  }
+  return `${prefix} folders set ${quoted(folder, platform)} --on`
+}
+
+/**
+ * The one-line hint a prompt hook shows when a memory store here was found
+ * but not added (#1589): the first skipped store, escaped, with its
+ * paste-safe command (or "by hand" for a folder name that cannot be offered),
+ * and how many more `plur stores list` shows.
+ */
+export function skippedStoreHintLine(
+  skipped: Array<{ path: string; folder: string }>, root: string, platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (skipped.length === 0) return null
+  const s = skipped[0]
+  const command = folderSetOnCommand(s.folder, root, platform)
+  // The count comes before the command, so the command ends the line and
+  // pasting everything after "To use it:" runs exactly it (#1589 audit round 4).
+  const more = skipped.length > 1 ? ` (${skipped.length - 1} more: plur stores list)` : ''
+  return `[PLUR] A memory store here was not added, because its folder has no decision of its own: ${escapedPath(s.path)}.${more}` +
+    (command ? ` To use it: ${command}` : ' Its folder name cannot be offered as a command; turn that folder on by hand from a terminal.')
+}
+
+/**
+ * The skipped-store hint for `sessionId` in `dir`, or null: at most once per
+ * session and folder (claimSkippedStoreHint), for every editor's prompt path
+ * (Claude Code, Codex, Cursor, Antigravity, opencode; #1589). Read-only
+ * lookup. Never throws: a hint never breaks a prompt.
+ */
+type SkippedStoreSource = { skippedProjectStores(dir: string): Array<{ path: string; folder: string }>; storageRoot: string }
+
+export function skippedStoreNotice(
+  source: SkippedStoreSource | (() => SkippedStoreSource | null),
+  sessionId: string, dir: string,
+): string | null {
+  try {
+    if (!sessionId) return null
+    // Cheap checks first (#1589 audit round 4): the once-only marker, then
+    // whether any store file exists on the walk at all. Only then is the
+    // source built (lazily, for hooks that have no PLUR instance yet) and
+    // searched.
+    if (skippedStoreHintClaimed(sessionId, dir)) return null
+    if (!anyProjectStoreFile(dir)) return null
+    const src = typeof source === 'function' ? source() : source
+    if (!src) return null
+    const skipped = src.skippedProjectStores(dir)
+    if (skipped.length === 0) return null
+    if (!claimSkippedStoreHint(sessionId, dir)) return null
+    return skippedStoreHintLine(skipped, src.storageRoot)
+  } catch {
+    return null
+  }
+}
 
 /**
  * Characters that can end or rewrite a line of the model's context: C0
@@ -622,4 +798,23 @@ export function isFolderAskText(text: string): boolean {
   // The older untrusted wording is kept so a Cursor rule file written by an
   // earlier version is still recognised and removed.
   return /\[PLUR Memory — (no decision for this folder yet|the repo \.plur\.yaml is not trusted|this repo's \.plur\.yaml is not trusted|the folder map cannot be read|the folder decision could not be read)/.test(text)
+}
+
+/**
+ * Whether any `.plur/engrams.yaml` sits on the discovery walk from `dir`: the
+ * real path, up to the repository root, never into or above the home folder
+ * (the bounds of Plur's discovery). An over-approximation used only to skip
+ * the full lookup cheaply.
+ */
+function anyProjectStoreFile(dir: string): boolean {
+  const home = canonicalize(homedir())
+  let cur = canonicalize(dir)
+  for (;;) {
+    if (cur === home || home.startsWith(cur.endsWith(sep) ? cur : cur + sep)) return false
+    if (existsSync(join(cur, '.plur', 'engrams.yaml'))) return true
+    if (existsSync(join(cur, '.git'))) return false
+    const parent = dirname(cur)
+    if (parent === cur) return false
+    cur = parent
+  }
 }

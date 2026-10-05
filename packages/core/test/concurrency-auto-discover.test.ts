@@ -36,6 +36,9 @@ describe('Plur — constructor auto-discovery', () => {
     writeFileSync(projectStore, 'engrams: []\n')
     // Stop the upward walk here so it cannot escape the scratch tree.
     mkdirSync(join(SCRATCH, 'workspace', '.git'), { recursive: true })
+    // Discovery registers a folder's store only when the user decided on that
+    // folder itself (#1588), so the project has its own folder-map entry.
+    writeFileSync(join(root, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(projectDir)}\n    plur: on\n`)
   })
 
   afterEach(() => {

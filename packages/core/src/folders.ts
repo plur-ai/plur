@@ -439,14 +439,16 @@ function locked<T>(root: string, fn: () => T): T {
   }, { maxRetries: 12, baseDelay: 25 })
 }
 
-function load(root: string): LoadResult {
+function load(root: string, readOnly = false): LoadResult {
   const existing = readMapFile(root)
   if (existing) return existing
   // First read: import trust.yaml once, entries kept exactly as written.
   // trust.yaml itself is kept in step by the dual-write, not by the import.
+  // A read-only caller (#1589 audit round 2: listing skipped stores) uses the
+  // imported entries in memory and writes nothing.
   const legacy = readLegacyTrustEntries(root)
   const map: FolderMap = { version: 1, folders: legacy.map(path => ({ path, trusted: true })) }
-  if (legacy.length > 0) {
+  if (legacy.length > 0 && !readOnly) {
     try {
       // Under the lock, and only if nobody created folders.yaml meanwhile:
       // an import must never overwrite a concurrent writer's map.
@@ -465,10 +467,11 @@ function load(root: string): LoadResult {
 
 /**
  * Load the folder map. A missing file is empty (after importing any
- * trust.yaml entries); a malformed one is empty with one warning. Never throws.
+ * trust.yaml entries; with `readOnly`, they are read into memory and nothing
+ * is written); a malformed one is empty with one warning. Never throws.
  */
-export function loadFolderMap(root: string): FolderMap {
-  return load(root).map
+export function loadFolderMap(root: string, readOnly = false): FolderMap {
+  return load(root, readOnly).map
 }
 
 /**
@@ -636,11 +639,26 @@ function configHasPlur(path: string): boolean {
   }
 }
 
+/** The project marker in `dir` itself (no walk), or `null`. */
+function markerIn(dir: string): 'mcp-config' | 'plur-yaml' | null {
+  if (configHasPlur(join(dir, '.mcp.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.claude', 'settings.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return 'mcp-config'
+  if (existsSync(join(dir, '.plur.yaml'))) return 'plur-yaml'
+  return null
+}
+
 /**
  * The first project marker walking up from `cwd` — the same walk, order and
  * home rule as `isPlurConfigured` in packages/cli/src/lib/plur-configured.ts
  * (kept there without a core import so the lightweight hooks stay cheap; a
  * parity test holds the two together). `null` when there is none.
+ *
+ * The walk stops at the repository root (#1588), the same boundary as the
+ * `.plur.yaml` lookup (`findProjectConfigPath`): the folder holding `.git` is
+ * still checked, nothing above it is. A marker in a folder above a cloned
+ * repository does not decide for that repository.
  */
 export function findPlurMarker(cwd: string, home: string = homedir()): 'mcp-config' | 'plur-yaml' | null {
   const start = canonicalize(cwd)
@@ -649,17 +667,51 @@ export function findPlurMarker(cwd: string, home: string = homedir()): 'mcp-conf
   for (;;) {
     const atHome = dir === homeResolved
     if (!atHome || start === homeResolved) {
-      if (configHasPlur(join(dir, '.mcp.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.claude', 'settings.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return 'mcp-config'
-      if (existsSync(join(dir, '.plur.yaml'))) return 'plur-yaml'
+      const found = markerIn(dir)
+      if (found) return found
     }
     if (atHome) return null
+    if (existsSync(join(dir, '.git'))) return null
     const parent = dirname(dir)
     if (parent === dir) return null
     dir = parent
   }
+}
+
+/**
+ * True when two folder paths name the same folder, compared the way the
+ * folder matcher compares them on `platform` (case-folded and with `\\` read
+ * as `/` on Windows, exact elsewhere; a trailing separator ignored). Exact:
+ * unlike `folderPatternMatches`, a parent does not match its children.
+ */
+export function sameFolderPath(a: string, b: string, platform: Platform = process.platform): boolean {
+  return norm(a, platform) === norm(b, platform)
+}
+
+/**
+ * True when the USER decided on `dir` itself (#1588; owner decision
+ * 2026-10-05): the folder is on, and a non-pattern folder-map entry names
+ * exactly this folder — written by `plur folders set <folder> --on`, a yes to
+ * the folder question, or `plur trust`. Nothing a repository ships counts: a
+ * project marker in the folder (an MCP config naming plur, a `.plur.yaml`)
+ * can switch memory on there, but is not the user's decision about the
+ * repository's own store. A folder that is on only through a parent (a
+ * parent's entry or pattern, or a marker) has no decision of its own either.
+ * Store auto-discovery registers a folder's `.plur/engrams.yaml` only when
+ * this is true.
+ */
+export function hasOwnFolderDecision(dir: string, opts: FolderPolicyOptions): boolean {
+  if (resolveFolderPolicy(dir, opts).mode !== 'on') return false
+  return hasExactOnEntry(dir, opts.root, opts.home ?? homedir(), opts.readOnly === true)
+}
+
+/** A non-pattern folder-map entry that names exactly `dir` and turns it on (or trusts / scopes it). */
+function hasExactOnEntry(dir: string, root: string, home: string, readOnly: boolean): boolean {
+  const targets = [...new Set([canonicalize(dir), ...canonicalSpellings(dir)])]
+  return load(root, readOnly).map.folders.some(e =>
+    (e.plur === 'on' || (e.plur === undefined && (e.scope !== undefined || e.trusted === true))) &&
+    !entryIsGlob(e) &&
+    entryForms(e.path, home, false, e.literal === true).some(f => targets.some(t => sameFolderPath(f, t))))
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +723,11 @@ export interface FolderPolicyOptions {
   root: string
   /** Defaults to `os.homedir()`. */
   home?: string
+  /**
+   * Write nothing: a legacy `trust.yaml` is read into memory but not imported
+   * into `folders.yaml` (#1589 audit round 2). For callers that only look.
+   */
+  readOnly?: boolean
 }
 
 /** True when a `trusted: true` entry covers `dir` (canonical target, #1334 entry forms). */
@@ -712,7 +769,7 @@ export function folderOffEntries(dir: string, opts: FolderPolicyOptions): Folder
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const home = opts.home ?? homedir()
-  const loaded = load(opts.root)
+  const loaded = load(opts.root, opts.readOnly === true)
   if (loaded.malformed) {
     // Fail SAFE (audit F4 of #1517): an unreadable map could hold an `off`
     // for this folder, so nothing — not even a project marker — turns memory

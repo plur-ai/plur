@@ -1,3 +1,4 @@
+import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { cursorHookFolder, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur } from '../lib/folder-gate.js'
@@ -116,8 +117,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const count = result.count
     const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 
+    // A store in the workspace that was found but not added (#1589): once per
+    // conversation and workspace folder (the payload's root, not this process's).
+    const hint = skippedStoreNotice(plur, conversationId, dir)
     const header = `[PLUR Memory — session started, ${count} engrams injected]` +
-      (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
+      (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '') +
+      (hint ? `\n${hint}` : '')
 
     // A refused .plur.yaml is still worth saying: the user's scope routing is
     // unaffected, but they should know the remote settings were not honoured —

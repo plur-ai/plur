@@ -52,6 +52,9 @@ function setup(base: string): void {
     TMPDIR: join(dir, 'tmp'),
     PLUR_PATH: plurRoot,
     PLUR_HOOK_HYBRID: 'off',
+    // Core skips discovery for a PLUR root under the temp folder; this
+    // test-only switch turns that skip off so the discovery cases are real.
+    PLUR_TEST_DISCOVER_IN_TMP: '1',
   }
   delete env.CLAUDE_SESSION_ID
   delete env.PLUR_AUTO_DISCOVER
@@ -174,20 +177,23 @@ describe.skipIf(!posix)('a folder path with a line break is shown escaped, with 
 })
 
 /**
- * Discovery skips a PLUR root under the OS temp directory (a test-safety
- * guard in core), and on Linux that is /tmp. So this suite runs in a scratch
- * tree next to the test, as core's auto-discovery tests do; otherwise it
- * would pass whether or not the hooks disable discovery.
+ * The scratch tree lives under the system temp folder (#1588). It used to sit
+ * next to the test, inside the checkout, so a PLUR marker in any folder above
+ * the checkout decided the fixture's folders. Core's test-safety guard skips
+ * discovery for a PLUR root under the temp folder; setup() sets the
+ * test-only PLUR_TEST_DISCOVER_IN_TMP=1, so the guard does not fire and the
+ * last case below proves discovery does run here (otherwise this suite would
+ * pass whether or not the hooks disable it).
  */
-const SCRATCH = join(__dirname, '.scratch-ask-discover')
+let SCRATCH = ''
 
 describe('asking in an undecided folder does not register its .plur store (#1418 review)', () => {
   let proj: string
   let onProj: string
   beforeEach(() => {
-    rmSync(SCRATCH, { recursive: true, force: true })
+    SCRATCH = realpathSync(mkdtempSync(join(tmpdir(), 'plur-ask-discover-')))
     mkdirSync(join(SCRATCH, '.git'), { recursive: true }) // stops the upward walk here
-    setup(realpathSync(SCRATCH))
+    setup(SCRATCH)
     proj = join(dir, 'work', 'proj')
     onProj = join(dir, 'work', 'on-proj')
     mkdirSync(join(proj, '.git'), { recursive: true })
@@ -218,6 +224,15 @@ describe('asking in an undecided folder does not register its .plur store (#1418
     const on = context(cli(['hook-inject'], { session_id: 'cc-on', cwd: onProj, hook_event_name: 'UserPromptSubmit', prompt: 'codeword fixture deploys leaked repo store' }, onProj).stdout)
     expect(on).toContain('ZEPHYRQUILL')
     expect(on).not.toContain('ORCHIDLANTERN')
+  })
+
+  it('control: discovery runs in this tree, so the case above is not vacuous', () => {
+    // A store in a folder the user decided on for itself is registered (#1588).
+    const seeded = cli(['learn', 'Codeword MOSSBEACON: the decided folder\'s own store', '--json'], '', dir, { PLUR_PATH: join(onProj, '.plur') })
+    expect(seeded.status, seeded.stderr).toBe(0)
+    const on = context(cli(['hook-inject'], { session_id: 'cc-ctl', cwd: onProj, hook_event_name: 'UserPromptSubmit', prompt: 'codeword decided folder own store moss beacon' }, onProj).stdout)
+    expect(on).toContain('MOSSBEACON')
+    expect(readFileSync(join(plurRoot, 'config.yaml'), 'utf8')).toContain(join(onProj, '.plur', 'engrams.yaml'))
   })
 })
 
