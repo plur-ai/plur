@@ -115,6 +115,8 @@ export function cursorRootPath(raw: unknown, windows: boolean = process.platform
 
 /** What a Cursor hook decides for the workspace (see {@link cursorHookFolder}). */
 export interface CursorWorkspaceDecision {
+  /** Existing canonical workspace roots whose generated rules must be cleared when off. */
+  cleanupDirs?: string[]
   /**
    * The workspace root hook output belongs to (rule files, the question).
    * Null only when the decision is off and there is no usable root.
@@ -209,7 +211,7 @@ export function cursorHookFolder(
   ])]
   for (const p of offChecks) {
     const policy = hookFolderPolicy(p, flags)
-    if (policy.mode === 'off') return { dir: firstDir, policy }
+    if (policy.mode === 'off') return { dir: firstDir, policy, cleanupDirs: [...new Set(roots.flatMap(r => r.real ? [r.real] : []))] }
   }
 
   // The question, as over MCP: in root order, the first undecided root that

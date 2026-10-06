@@ -3,7 +3,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { cursorHookFolder, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
-import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
+import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule, removeGeneratedContextRules } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
 
@@ -57,9 +57,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // memories, and marks nothing, so the guard stays silent too.
   // G1: the workspace (workspace_roots), not this process's folder — the
   // same decision every Cursor hook reaches, see cursorHookFolder.
-  const { dir, policy, askAbout } = cursorHookFolder(input, flags)
-  if (dir && policy.mode !== 'on') removeStaleAsk(cursorContextRulePath(dir))
-  if (policy.mode === 'off') return
+  const { dir, policy, askAbout, cleanupDirs } = cursorHookFolder(input, flags)
+  if (policy.mode === 'off') {
+    for (const root of cleanupDirs ?? (dir ? [dir] : [])) removeGeneratedContextRules(root)
+    return
+  }
+  if (dir && policy.mode === 'ask') removeStaleAsk(cursorContextRulePath(dir))
 
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't track this session — stay silent rather than guess

@@ -37,7 +37,9 @@
 #                    passing in isolation). The tree still differs from the
 #                    verified commit by the version bumps this script just
 #                    made — the packaged-artifact smoke test downstream is what
-#                    covers those, as it does on every release.
+#                    covers those, as it does on every release. In every
+#                    mode, the Windows real-editor checks (windows-editors,
+#                    #1605) must be green on HEAD, which must be origin/main.
 #   --no-website     Skip website pre-flight (Step 3.8) and deploy (Step 8).
 #                    Normally a missing $WEBSITE_DIR is a hard abort — this flag
 #                    makes the skip explicit. Use only from worktrees or machines
@@ -503,6 +505,20 @@ echo ""
 
 # --- 3. Test ---
 echo "--- Step 3: Test ---"
+# Windows real-editor gate (#1605), in every mode: no local run can stand in
+# for it, so the release commit must be origin/main and the Windows real
+# editors workflow must have passed on it (scripts/release-windows-gate.sh).
+git fetch origin main --quiet
+GATE_SHA=$(git rev-parse HEAD)
+if [ "$GATE_SHA" != "$(git rev-parse origin/main)" ]; then
+  echo "ERROR: HEAD ($GATE_SHA) is not origin/main — the Windows real-editor checks run on pushed commits only. Push, wait for windows-editors, then release. Aborting."
+  exit 1
+fi
+if ! scripts/release-windows-gate.sh "$GATE_SHA"; then
+  echo "ERROR: the Windows real-editor checks (windows-editors) are not green on $GATE_SHA. Aborting."
+  exit 1
+fi
+echo "  ✓ windows-editors green on $GATE_SHA"
 if [ "$TRUST_CI" = true ]; then
   # Trust-CI mode: the gate's purpose is "never ship an untested tree". A
   # green required-context set on the identical commit satisfies that purpose

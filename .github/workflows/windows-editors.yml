@@ -1,0 +1,108 @@
+name: Windows real editors
+
+# #1605, layer 1. On windows-latest, install this build (stamped with a
+# CI-only version) globally from packed tarballs and the real editor CLIs at
+# pinned versions (Claude Code, Codex, opencode, Cursor's agent CLI by version
+# and SHA-256), then check per editor: the editor's own `mcp list` shows plur
+# healthy; the exact registered MCP command completes a handshake with this
+# build; the registered hooks are exactly the expected set and run, from a
+# neutral folder, with that editor's recorded payloads in a decided, an
+# undecided, an off and a team-scoped folder; `plur doctor` reports the editor
+# wired; the PR's opencode plugin loads in opencode and injects / asks / stays
+# silent; a second init changes nothing; the user's own entries survive.
+# Claude Desktop and Antigravity have no CLI: their config files are checked.
+# Three scenarios: a fresh install, and upgrades from the published 0.19.4 and
+# 0.21.2 (scripts/windows-editors-probe.mjs). The job summary lists everything
+# covered and everything "not covered (reason)".
+#
+# It runs on every PR, so `windows-editors` can be a required check: when a PR
+# changes nothing the job installs or builds, the scenarios are skipped and
+# `windows-editors` passes at once. Cursor is required on main, on manual
+# runs and in the release gate (scripts/release.sh); on PRs a failed Cursor
+# download is reported as not covered. No logins, no tokens, no model calls.
+# The latest editor versions run on a schedule (windows-editors-latest.yml).
+# Actions are pinned by commit SHA.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        default: pinned
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-editors-${{ github.workflow }}-${{ github.ref }}-${{ inputs.channel || 'pinned' }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          changed=$(git diff --name-only "$BASE"..."$HEAD")
+          echo "$changed"
+          # What this job builds, installs or runs.
+          if echo "$changed" | grep -qE '^(packages/(cli|mcp|core|opencode)/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig[^/]*\.json$|scripts/(windows-editors-probe|ci-stamp-version)\.mjs$|scripts/release(-windows-gate)?\.sh$|\.github/workflows/windows-editors(-latest)?\.yml$|\.github/actions/windows-editors/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  scenario:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [fresh, from-0.19.4, from-0.21.2]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/windows-editors
+        with:
+          scenario: ${{ matrix.scenario }}
+          channel: ${{ inputs.channel || 'pinned' }}
+          cursor-required: ${{ github.event_name != 'pull_request' }}
+
+  # The required check and the one release.sh reads. Passes when the
+  # scenarios were not needed; otherwise only when every scenario passed (a
+  # skipped or cancelled scenario fails it, never reads as passing).
+  windows-editors:
+    needs: [changes, scenario]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RUN: ${{ needs.changes.outputs.run }}
+          CHANGES: ${{ needs.changes.result }}
+          SCENARIOS: ${{ needs.scenario.result }}
+        run: |
+          if [ "$CHANGES" != "success" ]; then echo "deciding what changed failed ($CHANGES)"; exit 1; fi
+          if [ "$RUN" != "true" ]; then
+            echo "No change to anything this job builds or installs: real-editor scenarios not needed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "scenarios: $SCENARIOS"
+          [ "$SCENARIOS" = "success" ]
