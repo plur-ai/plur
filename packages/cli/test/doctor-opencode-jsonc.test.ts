@@ -15,8 +15,7 @@ const FIXTURE = readFileSync(join(__dirname, 'fixtures', 'opencode-jsonc', 'open
  * used a plain JSON.parse on the read path, so a JSONC config that declares
  * both the plugin and `mcp.plur` was reported as declaring neither, and
  * doctor's overall verdict went to fail. The read path now accepts JSONC.
- * The WRITE path (`plur init`) still refuses to rewrite a JSONC file it
- * cannot round-trip — comments would be lost (#1059 class).
+ * The writer now edits owned JSONC values in place, preserving comments.
  */
 describe('plur doctor — opencode.jsonc with comments and trailing commas', { timeout: 60000 }, () => {
   let home: string
@@ -47,7 +46,7 @@ describe('plur doctor — opencode.jsonc with comments and trailing commas', { t
     let stdout: string
     try {
       stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
-        encoding: 'utf-8', timeout: 15000, env: isolatedHomeEnv(home), cwd: home,
+        encoding: 'utf-8', timeout: 15000, env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' }, cwd: home,
       })
     } catch (err: any) {
       // A fresh HOME has no hooks/MCP for Claude Code, so doctor's overall
@@ -80,9 +79,9 @@ describe('plur doctor — opencode.jsonc with comments and trailing commas', { t
     expect(readOpencodeConfig(configPath).ok).toBe(false)
   })
 
-  it('init still refuses to rewrite the same JSONC file (write path unchanged)', () => {
+  it('init accepts JSONC and preserves an already configured document', () => {
     const r = writeOpencodeConfig(configPath, '0.21.0')
-    expect(r.ok).toBe(false)
+    expect(r.ok).toBe(true)
     expect(r.changed).toBe(false)
     expect(readFileSync(configPath, 'utf8')).toBe(FIXTURE)
   })

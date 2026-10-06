@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `plur init` upgrades older OpenCode plugin pins in JSON or JSONC while preserving comments and user settings, and uses the installed MCP package. `--keep-opencode-plugin` retains an intentional old pin; doctor reports the available upgrade.
+- `plur doctor --json` downloads a missing search model when downloads are enabled and verifies a real embedding before reporting it loaded. Upgrade hints install both CLI and MCP.
+
 - **Turning memory off for a Cursor workspace clears its generated memory and reminder rules at the next session start.** Previously, old recalled memory could remain in an always-applied rule. User-authored rules are preserved.
 
 ### Codex on Windows gets the PLUR MCP server (#1603)

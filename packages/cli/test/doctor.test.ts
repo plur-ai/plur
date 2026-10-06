@@ -24,7 +24,9 @@ describe('plur doctor', () => {
       const stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
         encoding: 'utf-8',
         timeout: 15000,
-        env: isolatedHomeEnv(home),
+        // These cases inspect configuration, not model downloads. The cold
+        // model path is covered separately in doctor-download-1602.test.ts.
+        env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
         cwd: home,
       })
       return { stdout, status: 0 }
@@ -800,7 +802,7 @@ describe('plur doctor', () => {
       try {
         return execSync(`node ${CLI} doctor --no-handshake --json`, {
           encoding: 'utf-8', timeout: 15000,
-          env: { ...isolatedHomeEnv(home), PLUR_PATH: plurDir, PLUR_DOCTOR_TIMEOUT: '2' },
+          env: { ...isolatedHomeEnv(home), PLUR_PATH: plurDir, PLUR_DISABLE_EMBEDDINGS: '1' },
           cwd: home,
         })
       } catch (err: any) { return err.stdout?.toString() ?? '' }
@@ -908,7 +910,7 @@ describe('plur doctor', () => {
         stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
           encoding: 'utf-8',
           timeout: 15000,
-          env: isolatedHomeEnv(home),
+          env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
           cwd: operatorCwd, // NOT `home` — the package is invisible from every real resolution root
         })
       } catch (err: any) {
