@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { writeOpencodeConfig, opencodeMcpCommand, readOpencodeConfig } from '../src/opencode-config.js'
+import { writeOpencodeConfig, opencodeMcpCommand, readOpencodeConfig, CURRENT_OPENCODE_PLUGIN_VERSION } from '../src/opencode-config.js'
 import { parseJsonc } from '../src/lib/jsonc.js'
 
 let home: string
@@ -22,11 +22,11 @@ describe('OpenCode upgrade preserves the user document', () => {
       writeFileSync(p, original)
       const result = writeOpencodeConfig(p, '0.21.2')
       expect(result.ok).toBe(true)
-      expect(readFileSync(p, 'utf8')).toBe(original.replace('"@plur-ai/opencode@0.1.1"', '"@plur-ai/opencode@0.2.1"'))
+      expect(readFileSync(p, 'utf8')).toBe(original.replace('"@plur-ai/opencode@0.1.1"', JSON.stringify('@plur-ai/opencode@'+CURRENT_OPENCODE_PLUGIN_VERSION)))
       expect(writeOpencodeConfig(p, '0.21.2').changed).toBe(false)
     })
   }
-  it.each(['@plur-ai/opencode', '@plur-ai/opencode@latest', '@plur-ai/opencode@0.2.1', '@plur-ai/opencode@9.0.0'])('keeps %s byte-for-byte', spec => {
+  it.each(['@plur-ai/opencode', '@plur-ai/opencode@latest', '@plur-ai/opencode@'+CURRENT_OPENCODE_PLUGIN_VERSION, '@plur-ai/opencode@9.0.0'])('keeps %s byte-for-byte', spec => {
     const p=join(home,'opencode.jsonc')
     const original = '{ // user choice\n "plugin": [ '+JSON.stringify(spec)+' ], "mcp": {"plur":{"type":"remote"}}\n}\n'
     writeFileSync(p,original)
@@ -51,7 +51,7 @@ describe('OpenCode upgrade preserves the user document', () => {
     writeFileSync(p,original)
     writeOpencodeConfig(p,'0.21.2',{upgradePlugin:false})
     expect(readFileSync(p,'utf8')).toBe(original)
-    expect(readOpencodeConfig(p).pluginUpgrade).toEqual({from:'@plur-ai/opencode@0.1.1',to:'@plur-ai/opencode@0.2.1'})
+    expect(readOpencodeConfig(p).pluginUpgrade).toEqual({from:'@plur-ai/opencode@0.1.1',to:'@plur-ai/opencode@'+CURRENT_OPENCODE_PLUGIN_VERSION})
   })
   it('adds missing PLUR fields without replacing existing comments or other plugins', () => {
     const p=join(home,'opencode.jsonc')

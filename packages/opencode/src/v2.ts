@@ -95,7 +95,7 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
     if (p.decision.mode !== 'on') return
     // Serialize writes separately: a remote write must not delay the host's context hook.
     s.jobs = s.jobs.catch(debug).then(async () => {
-      if (!await current(s, p.fingerprint, epoch)) return
+      if (!await current(s, p.fingerprint, epoch)) { debug('learning skipped: changed session policy'); return }
       // The extraction helpers can produce several writes. Recheck every one,
       // including after an earlier write awaited a slow store.
       const guarded = {
@@ -165,7 +165,7 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
       if (key !== s.cacheKey || !s.cacheKey) {
         s.cacheKey = key
         if (p.decision.mode === 'ask') {
-          const unreadable = p.decision.reason === 'unreadable-map' || p.decision.reason === 'resolver-error'
+          const unreadable = p.decision.reason === 'malformed-map' || p.decision.reason === 'resolver-error'
           if (s.offer && s.offer.unreadable !== unreadable) { endNonces(s); s.offer = undefined; s.asked = false }
           if (!s.offer && !unreadable && !plurOnPath()) {
             s.block = s.cliMissing ? '' : PLUR_CLI_MISSING; s.cliMissing = true
@@ -202,7 +202,9 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
       }
       if(event.type==='session.moved') { invalidate(s); return }
       if(event.type==='session.execution.failed' || event.type==='session.execution.interrupted') {s.texts.clear();return}
-      if(await folder(id)!==s.folder || policy(s).fingerprint!==s.fingerprint) {invalidate(s);return}
+      const p = policy(s)
+      if(await folder(id)!==s.folder || p.fingerprint!==s.fingerprint) {invalidate(s);return}
+      if(p.decision.mode !== 'on') {s.texts.clear();return}
       if(event.type==='session.text.ended' && typeof data.text==='string' && data.assistantMessageID && Number.isInteger(data.ordinal)) {
         s.texts.set(`assistant:${data.assistantMessageID}:${data.ordinal}`,data.text)
       }

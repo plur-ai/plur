@@ -300,9 +300,13 @@ interface OpencodeReport {
   ok: boolean
   /** `plugin: [...]` includes `@plur-ai/opencode` — the automatic memory layer. */
   pluginDeclared: boolean
+  pluginDisabled?: boolean
+  /** Resolution is not proof that the host loaded the plugin. */
+  pluginLoadVerified?: false
   pluginUpgrade?: { from: string; to: string }
   /** `mcp.plur` is present — the explicit `plur_*` tool surface. */
   mcpPlurDeclared: boolean
+  mcpPlurDisabled?: boolean
   /**
    * Paths PLUR's own win32 node-form `mcp.plur` entry names that no longer
    * exist — the version-specific node binary after a Node upgrade (#1339).
@@ -1112,6 +1116,9 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
     exists: snapshot.exists,
     ok: snapshot.ok,
     pluginDeclared: snapshot.pluginDeclared,
+    pluginLoadVerified: false,
+    ...(snapshot.pluginDisabled ? { pluginDisabled: true } : {}),
+    ...(snapshot.mcpPlurDisabled ? { mcpPlurDisabled: true } : {}),
     ...(snapshot.pluginUpgrade ? { pluginUpgrade: snapshot.pluginUpgrade } : {}),
     mcpPlurDeclared: snapshot.mcpPlurDeclared,
     mcpPlurMissingPaths: snapshot.mcpPlurMissingPaths,
@@ -1646,21 +1653,21 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (oc.pluginUpgrade) {
       outputText(`! opencode: ${oc.pluginUpgrade.from} is older than ${oc.pluginUpgrade.to}. Run \`plur init --opencode\` to upgrade (omit --keep-opencode-plugin).`)
     }
+    if (oc.mcpPlurDisabled) outputText('  The PLUR MCP server is explicitly disabled in OpenCode; plur init preserves that choice.')
     if (oc.pluginDeclared) {
+      outputText('  OpenCode V2 requires @plur-ai/opencode 0.21.4 or later. After upgrading, restart OpenCode and its background service.')
       if (oc.pluginResolvable === 'yes') {
-        outputText(`  ✓ ${PLUR_OPENCODE_PLUGIN} resolves (${oc.resolvedVia}) — the plugin will load.`)
+        outputText(`  ✓ ${PLUR_OPENCODE_PLUGIN} resolves (${oc.resolvedVia}) — package available; host loading is not verified.`)
       } else if (oc.pluginResolvable === 'no') {
         outputText(`  ✗ ${PLUR_OPENCODE_PLUGIN} does NOT resolve — the npm registry has no such package.`)
-        outputText('    The plugin entry is present but opencode will fail to load it SILENTLY: no error')
-        outputText('    appears anywhere in opencode\'s log, it starts normally, and PLUR memory simply')
-        outputText('    never activates for opencode sessions.')
-        outputText('    Fix: wait for the package to be published, then restart opencode — until then')
-        outputText('    this entry does nothing.')
+        outputText('    The configured package is unavailable. Check the version and restart OpenCode after installation.')
       } else {
         outputText(`  ? Could not verify whether ${PLUR_OPENCODE_PLUGIN} resolves (network unreachable,`)
         outputText('    timed out, or the check was skipped with --no-handshake). This is NOT a clean')
         outputText('    bill of health — re-run doctor with network access to confirm either way.')
       }
+    } else if (oc.pluginDisabled) {
+      outputText('  The plugin is disabled by an OpenCode removal directive; plur init preserves that choice.')
     } else if (oc.ok) {
       outputText('  opencode is configured but the plugin entry is not declared — memory is not')
       outputText('  automatic here. Run `plur init --opencode` to add it.')
