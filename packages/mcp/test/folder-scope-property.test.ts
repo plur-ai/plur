@@ -82,7 +82,7 @@ function world(): World {
   }
 }
 
-interface Conn { client: Client; setRoots(r: string[] | null): Promise<void> }
+interface Conn { plur: Plur; client: Client; setRoots(r: string[] | null): Promise<void> }
 
 async function connect(w: World, roots: string[] | null): Promise<Conn> {
   const server = await createServer(w.plur, { profile: 'full' })
@@ -95,6 +95,7 @@ async function connect(w: World, roots: string[] | null): Promise<Conn> {
   clients.push(client)
   return {
     client,
+    plur: w.plur,
     async setRoots(r) {
       current = r
       await (client as any).notification({ method: 'notifications/roots/list_changed' })
@@ -138,6 +139,10 @@ async function saveAll(c: Conn): Promise<Record<string, string | null>> {
   out.plur_learn_batch = delivered(`zebra-all-${n} batch note`) ? 'team' : null
   const ep = await call(c.client, 'plur_capture', { summary: `zebra-all-${n} episode note about the deploy` })
   const e2e = await call(c.client, 'plur_episode_to_engram', { episode_id: ep.id })
+  // Promotion returns after its durable local save; the remote push is
+  // asynchronous. Wait on completion for EVERY scope, including personal
+  // ones, so a late forbidden delivery cannot escape the negative assertions.
+  await vi.waitFor(async () => expect(await c.plur.outboxCount()).toBe(0), { timeout: 5000, interval: 10 })
   out.plur_episode_to_engram = delivered(`zebra-all-${n} episode note`) ? (e2e.scope ?? 'team') : null
   await call(c.client, 'plur_ingest', { content: `Always run zebra-all-${n} ingest checks before every deploy.` })
   out.plur_ingest = delivered(`zebra-all-${n} ingest`) ? 'team' : null
@@ -213,6 +218,21 @@ describe('a team delivery happens only when every workspace input agrees on that
     }
     expect(failures).toEqual([])
   }, 300_000)
+
+  it('observes episode delivery after the background push completes (#1584)', async () => {
+    const w = world()
+    const fetch = globalThis.fetch
+    // Delay the transport before the stub sees the request. Other save tools
+    // await their remote write; episode promotion deliberately queues its push.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (...args) => {
+      if (String(args[0]).startsWith(baseUrl) && args[1]?.method === 'POST') {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      return fetch(...args)
+    })
+    const c = await connect(w, [w.path.teamA])
+    expect(judge('delayed remote', await saveAll(c), A)).toEqual([])
+  }, 30_000)
 
   it('no roots: the start folder alone decides, by the same rule', async () => {
     const w = world()
