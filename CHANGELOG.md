@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.21.4 (unreleased)
+
+- The OpenCode plugin now loads in OpenCode V2. Its native adapter recalls into model context, learns admitted user corrections and successfully completed assistant self-reports, and preserves recall through compaction. The existing V1 adapter remains supported. (#1615)
+- V2 sessions use their own actual folders and recheck memory consent, project trust and scope before recall rendering and every learning write. Interrupted assistant text is discarded; processed identifiers survive normal plugin reloads. Offered folder commands explicitly bind their session.
+- `plur init --opencode` understands V2 `plugins` objects and `mcp.servers`, preserving JSONC comments, options, disabled choices and custom MCP entries. `plur doctor` distinguishes package availability from verified host loading and advises restarting the V2 background service.
+- The standard PLUR packages and OpenCode plugin are both prepared at **0.21.4**. The previous plugin version was 0.2.1; this version jump aligns the names for this release.
+
 ## 0.21.3 (2026-10-06)
 
 - `plur init` upgrades older OpenCode plugin pins in JSON or JSONC while preserving comments and user settings, and uses the installed MCP package. `--keep-opencode-plugin` retains an intentional old pin; doctor reports the available upgrade. (#1612)
