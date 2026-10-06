@@ -178,4 +178,58 @@ describe('V2 canonical lifecycle', () => {
     } finally { release() }
   })
 
+  it('drops a slow recall and its correction when the folder is turned off while awaiting it', async () => {
+    const h = host(); h.history.set('s1', [user('u0', 'hello')]); await h.start(); await h.context()
+    let release!: (value: any) => void
+    const pending = new Promise(r => { release = r })
+    fake.instances[0].injectHybrid.mockImplementationOnce(() => pending)
+    h.history.set('s1', [user('u1')])
+    const request = h.context()
+    await tick()
+    fake.policy.set('/project/one', { mode: 'off', source: 'map', remoteAllowed: false })
+    release({ marker: 'must-not-render' })
+    expect((await request).system).toEqual([])
+    await tick()
+    expect(fake.instances[0].learnRouted).not.toHaveBeenCalled()
+  })
+  it('never redirects buffered assistant text to a newly selected team scope', async () => {
+    const h = host(); h.history.set('s1', [user('u0', 'hello')]); await h.start(); await h.context()
+    await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'a1', ordinal: 0, text: report })
+    fake.policy.set('/project/one', { mode: 'on', source: 'map', scope: 'group:example/new', remoteAllowed: true })
+    await h.context()
+    await h.event('session.execution.succeeded', { sessionID: 's1' })
+    expect(fake.instances[0].learnRouted).not.toHaveBeenCalled()
+    expect(fake.instances[0].injectHybrid.mock.calls.at(-1)[1].scope).toBe('group:example/new')
+  })
+  it('lets another session render while a learning write is pending and drains that write at cleanup', async () => {
+    const h = host(); h.history.set('s1', [user('u0', 'hello')]); const close = await h.start(); await h.context()
+    let release!: () => void
+    const pending = new Promise<void>(r => { release = r })
+    fake.instances[0].learnRouted.mockImplementationOnce(() => pending)
+    try {
+      await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'a1', ordinal: 0, text: report })
+      await h.event('session.execution.succeeded', { sessionID: 's1' })
+      expect((await h.context('s2')).system).toEqual([{ type: 'text', text: 'memory:/project/two' }])
+      let closed = false
+      const closing = close().then(() => { closed = true })
+      await tick(); expect(closed).toBe(false)
+      release(); await closing
+      expect(fake.instances[0].close).toHaveBeenCalledTimes(1)
+    } finally { release() }
+  })
+  it('unregisters the first hook if registering the second fails', async () => {
+    const h = host()
+    h.ctx.session.hook.mockImplementationOnce(async (name, cb) => {
+      h.hooks.set(name, cb); return { dispose: async () => { h.hooks.delete(name) } }
+    }).mockRejectedValueOnce(new Error('registration refused'))
+    await h.start()
+    expect(h.hooks.size).toBe(0)
+  })
+  it('deleting a session removes its persisted identifiers and closes its owned memory instance', async () => {
+    const h = host(); await h.start(); await h.context()
+    await h.event('session.deleted', { sessionID: 's1' })
+    expect(h.storage.has('sessions/s1/processed-v2')).toBe(false)
+    expect(fake.instances[0].close).toHaveBeenCalledTimes(1)
+  })
+
 })

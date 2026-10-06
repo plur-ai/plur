@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import {
   Plur, allowBackgroundModelLoad, renderMemoryBlock, folderAskOnce,
   findProjectConfigPath, readProjectConfigFromPath, resolveProjectRemoteFromConfig,
-  sessionSettings, skippedStoreNotice,
+  sessionSettings, skippedStoreNotice, loadConfig,
 } from '@plur-ai/core'
 import { folderPolicy, resolveTrustedScope, projectRemoteRefusalNotice } from './scope.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
@@ -61,8 +61,9 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
       remote = resolveProjectRemoteFromConfig(s.plur, raw, path)
       if (remote.refusedFrom) warn(projectRemoteRefusalNotice(remote.refusedFrom, s.plur.storageRoot))
     }
-    return { decision, settings, remote,
-      fingerprint: JSON.stringify([s.folder, decision, settings, remote, s.plur.config.auto_learn]) }
+    const autoLearn = loadConfig(resolve(s.plur.storageRoot, 'config.yaml')).auto_learn
+    return { decision, settings, remote, autoLearn,
+      fingerprint: JSON.stringify([s.folder, decision, settings, remote, autoLearn]) }
   }
   const invalidate = (s: State) => {
     s.epoch++; s.cacheKey = ''; s.block = ''; s.texts.clear()
@@ -99,7 +100,7 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
       // The extraction helpers can produce several writes. Recheck every one,
       // including after an earlier write awaited a slow store.
       const guarded = {
-        get config() { return s.plur.config },
+        config: { auto_learn: p.autoLearn },
         async learnRouted(...args: Parameters<Plur['learnRouted']>) {
           if (!await current(s, p.fingerprint, epoch)) throw Error('Session policy changed during learning')
           return s.plur.learnRouted(...args)
@@ -143,7 +144,10 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
         return
       }
       const history = await ctx.session.context({ sessionID: s.id })
-      const move = history.findLastIndex(m => m.type === 'location-switched')
+      let move = -1
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].type === 'location-switched') { move = i; break }
+      }
       const messages = history.slice(move + 1)
       // Only the current admitted batch is eligible at first observation.
       // Earlier history and pre-move prompts are never bulk-imported.
@@ -152,7 +156,7 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
         if (messages[i].type === 'assistant' || messages[i].type === 'location-switched') boundary = i
       }
       const users = messages.filter(m => m.type === 'user')
-      const batch = messages.slice(boundary + 1).filter(m => m.type === 'user' && !s.seen.has(m.id))
+      const batch = messages.slice(boundary + 1).filter(m => m.type === 'user').filter(m => !s.seen.has(m.id))
       const observed = history.filter(m => m.type === 'user')
       const changed = observed.some(m => !s.seen.has(m.id))
       for (const m of observed) s.seen.add(m.id)

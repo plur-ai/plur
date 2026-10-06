@@ -1,0 +1,67 @@
+name: OpenCode actual hosts
+
+on:
+  pull_request:
+    paths:
+      - 'packages/opencode/**'
+      - 'packages/core/**'
+      - 'packages/cli/src/opencode-config.ts'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/opencode-hosts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: 'opencode-ai@1.18.0'
+            adapter: v1
+          - package: '@opencode/cli@2.0.23'
+            adapter: v2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.13.0'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm --filter @plur-ai/opencode exec tsc --noEmit
+      - name: Pack and install outside the workspace
+        env:
+          HOST_PACKAGE: ${{ matrix.package }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tarballs" "$RUNNER_TEMP/packed" "$RUNNER_TEMP/host"
+          for package in core cli mcp opencode; do
+            (cd "packages/$package" && pnpm pack --pack-destination "$RUNNER_TEMP/tarballs")
+          done
+          npm install --prefix "$RUNNER_TEMP/packed" --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/tarballs/*.tgz
+          npm install --prefix "$RUNNER_TEMP/host" --no-audit --no-fund "$HOST_PACKAGE"
+      - name: Actual host lifecycle with a local model
+        env:
+          ADAPTER: ${{ matrix.adapter }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--packed "$RUNNER_TEMP/packed" --host "$RUNNER_TEMP/host/node_modules/.bin/opencode" --node "$(command -v node)")
+          if [[ "$ADAPTER" == v1 ]]; then args+=(--v1); fi
+          for mode in on off ask; do
+            python3 packages/opencode/test/host.manual.py "${args[@]}" --mode "$mode"
+          done
+          if [[ "$ADAPTER" == v2 ]]; then
+            python3 packages/opencode/test/host.manual.py "${args[@]}" --mode ask --accept-consent --mcp
+          fi
