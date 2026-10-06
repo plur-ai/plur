@@ -151,4 +151,31 @@ describe('V2 canonical lifecycle', () => {
     await closers[0](); await closers[0]()
     expect(fake.instances[0].close).toHaveBeenCalledTimes(1)
   })
+  it('reports an unreadable folder map even when the CLI is missing', async () => {
+    fake.policy.set('/project/one', { mode: 'ask', source: 'default', remoteAllowed: false, reason: 'malformed-map' })
+    const oldPath = process.env.PATH
+    process.env.PATH = ''
+    try {
+      const h = host(); await h.start()
+      const result = await h.context()
+      expect(JSON.stringify(result.system)).toContain('folder map cannot be read')
+      expect(fake.instances[0].injectHybrid).not.toHaveBeenCalled()
+    } finally { process.env.PATH = oldPath }
+  })
+  it('rechecks policy between separate writes from one completed assistant message', async () => {
+    const h = host(); h.history.set('s1', [user('u1', 'hello')]); await h.start(); await h.context()
+    let release!: () => void
+    const pending = new Promise<void>(r => { release = r })
+    fake.instances[0].learnRouted.mockImplementationOnce(() => pending)
+    try {
+      await h.event('session.text.ended', { sessionID:'s1', assistantMessageID:'a1', ordinal:0,
+        text: report + '\n- Always review the public artifact before publishing.' })
+      await h.event('session.execution.succeeded', { sessionID:'s1' })
+      expect(fake.instances[0].learnRouted).toHaveBeenCalledTimes(1)
+      fake.policy.set('/project/one', { mode:'off', source:'map', remoteAllowed:false })
+      release(); await tick()
+      expect(fake.instances[0].learnRouted).toHaveBeenCalledTimes(1)
+    } finally { release() }
+  })
+
 })
