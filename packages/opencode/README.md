@@ -62,7 +62,7 @@ request, including its subpath. It rechecks consent, trust and scope before
 rendering or saving. Processed message identifiers survive normal plugin
 reloads in OpenCode's plugin storage; conversation text is not copied there.
 This prevents ordinary replay, but does not promise exactly-once learning
-across a crash between separate stores. Shutdown drains owned learning work.
+across a crash between separate stores. Both adapters drain accepted learning work at shutdown. V1 can also invoke the definition through its compatibility service; that setup remains inactive when native session hooks are absent.
 
 ## Diagnostics
 

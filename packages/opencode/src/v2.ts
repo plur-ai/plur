@@ -22,6 +22,9 @@ const debug = (e: unknown) => { if (process.env.PLUR_DEBUG) console.error('[plur
 
 /** Native V2 host adapter. No pre-admission prompt hook and no synthetic history. */
 export const setupV2: Plugin.Plugin['setup'] = async ctx => {
+  // V1's compatibility service also calls setup with its older context. The
+  // server factory owns V1; only the native V2 context exposes session hooks.
+  if (typeof ctx.session?.hook !== 'function') return async () => {}
   const states = new Map<ID, State>()
   const locks = new Map<ID, Promise<unknown>>()
   const warnings = new Set<string>()

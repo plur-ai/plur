@@ -78,6 +78,7 @@ try:
  host_args=[host,'run']+([] if args.v1 else ['--standalone'])+['--print-logs','--format','json']
  first=command(host_args+['No, use cyan, not violet for the release codename. What is the release codename?'],'first')
  assert 'PluginModule.LoadError' not in first
+ assert not re.search(r'\[plur:opencode\].*(TypeError|ReferenceError)',first),'Adapter runtime error in actual host'
  if args.accept_consent:
   assert consent_results[0][1]!=0 and consent_results[1][1]==0 and consent_results[2][1]!=0,consent_results
   print('Actual offered consent command: wrong session refused, accepted once, replay refused.',flush=True)
