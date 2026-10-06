@@ -111,6 +111,7 @@ describe('V2 canonical lifecycle', () => {
   })
   it('does not construct memory for unrelated events', async () => {
     const h=host(); await h.start()
+    await h.event('session.step.started', { sessionID: 'foreign', assistantMessageID: 'a', started: Date.now() })
     await h.event('session.text.ended',{sessionID:'foreign',assistantMessageID:'a',ordinal:0,text:report})
     await h.event('session.execution.succeeded',{sessionID:'foreign'})
     expect(fake.instances).toEqual([])
@@ -118,6 +119,7 @@ describe('V2 canonical lifecycle', () => {
   it('learns complete assistant snapshots once at execution success, without idle', async () => {
     const h=host(); h.history.set('s1',[user('u1','hello')]); await h.start(); await h.context()
     const data={sessionID:'s1',assistantMessageID:'a1',ordinal:0,text:report}
+    await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
     await h.event('session.text.ended',data); await h.event('session.text.ended',data)
     expect(fake.instances[0].learnRouted).not.toHaveBeenCalled()
     await h.event('session.execution.succeeded',{sessionID:'s1'})
@@ -126,6 +128,7 @@ describe('V2 canonical lifecycle', () => {
   })
   it.each(['failed','interrupted'])('does not learn assistant text from %s executions', async outcome => {
     const h=host(); h.history.set('s1',[user('u1','hello')]); await h.start(); await h.context()
+    await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
     await h.event('session.text.ended',{sessionID:'s1',assistantMessageID:'a1',ordinal:0,text:report})
     await h.event(`session.execution.${outcome}`,{sessionID:'s1'})
     await h.event('session.execution.succeeded',{sessionID:'s1'})
@@ -133,6 +136,7 @@ describe('V2 canonical lifecycle', () => {
   })
   it('carries recall into compaction without harvesting unfinished text', async () => {
     const h=host(); h.history.set('s1',[user('u1','hello')]); await h.start(); await h.context()
+    await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
     await h.event('session.text.ended',{sessionID:'s1',assistantMessageID:'a1',ordinal:0,text:report})
     expect((await h.context('s1','compaction')).system).toEqual([{type:'text',text:'memory:/project/one'}])
     expect(fake.instances[0].learnRouted).not.toHaveBeenCalled()
@@ -168,7 +172,8 @@ describe('V2 canonical lifecycle', () => {
     const pending = new Promise<void>(r => { release = r })
     fake.instances[0].learnRouted.mockImplementationOnce(() => pending)
     try {
-      await h.event('session.text.ended', { sessionID:'s1', assistantMessageID:'a1', ordinal:0,
+      await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
+    await h.event('session.text.ended', { sessionID:'s1', assistantMessageID:'a1', ordinal:0,
         text: report + '\n- Always review the public artifact before publishing.' })
       await h.event('session.execution.succeeded', { sessionID:'s1' })
       expect(fake.instances[0].learnRouted).toHaveBeenCalledTimes(1)
@@ -194,6 +199,7 @@ describe('V2 canonical lifecycle', () => {
   })
   it('never redirects buffered assistant text to a newly selected team scope', async () => {
     const h = host(); h.history.set('s1', [user('u0', 'hello')]); await h.start(); await h.context()
+    await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
     await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'a1', ordinal: 0, text: report })
     fake.policy.set('/project/one', { mode: 'on', source: 'map', scope: 'group:example/new', remoteAllowed: true })
     await h.context()
@@ -207,7 +213,8 @@ describe('V2 canonical lifecycle', () => {
     const pending = new Promise<void>(r => { release = r })
     fake.instances[0].learnRouted.mockImplementationOnce(() => pending)
     try {
-      await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'a1', ordinal: 0, text: report })
+      await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
+    await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'a1', ordinal: 0, text: report })
       await h.event('session.execution.succeeded', { sessionID: 's1' })
       expect((await h.context('s2')).system).toEqual([{ type: 'text', text: 'memory:/project/two' }])
       let closed = false
@@ -230,6 +237,23 @@ describe('V2 canonical lifecycle', () => {
     await h.event('session.deleted', { sessionID: 's1' })
     expect(h.storage.has('sessions/s1/processed-v2')).toBe(false)
     expect(fake.instances[0].close).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a late assistant completion after a scope change even when the new context has rendered', async () => {
+    const h = host(); h.history.set('s1', [user('u0', 'hello')]); await h.start(); await h.context()
+    await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'old', started: Date.now() })
+    fake.policy.set('/project/one', { mode: 'on', source: 'map', scope: 'group:example/new', remoteAllowed: true })
+    await h.context()
+    await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'old', ordinal: 0, text: report })
+    await h.event('session.execution.succeeded', { sessionID: 's1' })
+    expect(fake.instances[0].learnRouted).not.toHaveBeenCalled()
+  })
+  it('rejects a delayed step start from before the current folder policy was observed', async () => {
+    const h = host(); h.history.set('s1', [user('u0', 'hello')]); await h.start(); await h.context()
+    await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'old', started: 1 })
+    await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'old', ordinal: 0, text: report })
+    await h.event('session.execution.succeeded', { sessionID: 's1' })
+    expect(fake.instances[0].learnRouted).not.toHaveBeenCalled()
   })
 
 })
