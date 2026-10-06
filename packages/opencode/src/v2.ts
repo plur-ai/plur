@@ -16,7 +16,7 @@ type Offer = { question: string; reminder: string; delivered: number; unreadable
 type State = {
   id: ID; folder: string; plur: Plur; seen: Set<string>; fingerprint: string
   cacheKey: string; block: string; offer?: Offer; asked: boolean; cliMissing: boolean
-  texts: Map<string, string>; jobs: Promise<void>; epoch: number
+  texts: Map<string, string>; steps: Set<string>; activatedAt: number; jobs: Promise<void>; epoch: number
 }
 const debug = (e: unknown) => { if (process.env.PLUR_DEBUG) console.error('[plur:opencode]', String(e)) }
 
@@ -66,7 +66,7 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
       fingerprint: JSON.stringify([s.folder, decision, settings, remote, autoLearn]) }
   }
   const invalidate = (s: State) => {
-    s.epoch++; s.cacheKey = ''; s.block = ''; s.texts.clear()
+    s.epoch++; s.cacheKey = ''; s.block = ''; s.texts.clear(); s.steps.clear(); s.activatedAt = Date.now()
     endNonces(s); s.offer = undefined; s.asked = false; s.cliMissing = false
   }
   const current = async (s: State, fingerprint: string, epoch: number) =>
@@ -87,7 +87,7 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
       const seen = new Set(Array.isArray(saved) ? saved.filter((v): v is string => typeof v === 'string') : [])
       const plur = new Plur({ path: process.env.PLUR_PATH, cwd: dir, autoDiscover: false })
       s = { id, folder: dir, plur, seen, fingerprint: '', cacheKey: '', block: '', asked: false,
-        cliMissing: false, texts: new Map(), jobs: Promise.resolve(), epoch: 0 }
+        cliMissing: false, texts: new Map(), steps: new Set(), activatedAt: Date.now(), jobs: Promise.resolve(), epoch: 0 }
       states.set(id, s)
     }
     return s
@@ -196,7 +196,7 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
     }).catch(debug)
   }
   const handle = async (event: { type: string; data: unknown }) => {
-    const data = event.data as { sessionID?: ID; assistantMessageID?: string; ordinal?: number; text?: string }
+    const data = event.data as { sessionID?: ID; assistantMessageID?: string; ordinal?: number; text?: string; started?: number }
     const id = data?.sessionID
     if (!id || !states.has(id) || closing) return
     await serial(id, async () => {
@@ -205,15 +205,20 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
         invalidate(s); await s.jobs; s.plur.close(); states.delete(id); await ctx.storage.remove(storageKey(id)); return
       }
       if(event.type==='session.moved') { invalidate(s); return }
-      if(event.type==='session.execution.failed' || event.type==='session.execution.interrupted') {s.texts.clear();return}
+      if(event.type==='session.execution.failed' || event.type==='session.execution.interrupted') {s.texts.clear();s.steps.clear();return}
       const p = policy(s)
       if(await folder(id)!==s.folder || p.fingerprint!==s.fingerprint) {invalidate(s);return}
-      if(p.decision.mode !== 'on') {s.texts.clear();return}
-      if(event.type==='session.text.ended' && typeof data.text==='string' && data.assistantMessageID && Number.isInteger(data.ordinal)) {
+      if(p.decision.mode !== 'on') {s.texts.clear();s.steps.clear();return}
+      // A completed text event may arrive after a folder/scope switch. Only
+      // accept steps begun under this policy; delayed old starts are excluded too.
+      if(event.type==='session.step.started' && data.assistantMessageID && typeof data.started==='number' && data.started >= s.activatedAt) {
+        s.steps.add(data.assistantMessageID)
+      }
+      if(event.type==='session.text.ended' && typeof data.text==='string' && data.assistantMessageID && s.steps.has(data.assistantMessageID) && Number.isInteger(data.ordinal)) {
         s.texts.set(`assistant:${data.assistantMessageID}:${data.ordinal}`,data.text)
       }
       if(event.type==='session.execution.succeeded') {
-        const parts=[...s.texts].filter(([key])=>!s.seen.has(key));s.texts.clear()
+        const parts=[...s.texts].filter(([key])=>!s.seen.has(key));s.texts.clear();s.steps.clear()
         if(parts.length) {
           for(const [key] of parts)s.seen.add(key)
           queueLearning(s,parts.map(([key])=>key),parts.map(([,text])=>text),'assistant')

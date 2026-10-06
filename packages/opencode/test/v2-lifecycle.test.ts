@@ -173,7 +173,7 @@ describe('V2 canonical lifecycle', () => {
     fake.instances[0].learnRouted.mockImplementationOnce(() => pending)
     try {
       await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
-    await h.event('session.text.ended', { sessionID:'s1', assistantMessageID:'a1', ordinal:0,
+      await h.event('session.text.ended', { sessionID:'s1', assistantMessageID:'a1', ordinal:0,
         text: report + '\n- Always review the public artifact before publishing.' })
       await h.event('session.execution.succeeded', { sessionID:'s1' })
       expect(fake.instances[0].learnRouted).toHaveBeenCalledTimes(1)
@@ -214,7 +214,7 @@ describe('V2 canonical lifecycle', () => {
     fake.instances[0].learnRouted.mockImplementationOnce(() => pending)
     try {
       await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
-    await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'a1', ordinal: 0, text: report })
+      await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'a1', ordinal: 0, text: report })
       await h.event('session.execution.succeeded', { sessionID: 's1' })
       expect((await h.context('s2')).system).toEqual([{ type: 'text', text: 'memory:/project/two' }])
       let closed = false
