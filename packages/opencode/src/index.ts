@@ -16,6 +16,7 @@ import {
 // require. Typechecking the hook map against it turns a renamed/changed
 // `experimental.` hook into a build failure instead of a silent no-op.
 import type { Plugin, Hooks } from '@opencode-ai/plugin'
+import { setupV2 } from './v2.js'
 import { BlockCache } from './block.js'
 import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
@@ -430,4 +431,5 @@ export const PlurPlugin: Plugin = async (ctx) => {
   } satisfies Hooks
 }
 
-export default PlurPlugin
+// V1 >=1.18.0 selects server; V2 >=2.0.23 selects setup. SDK imports stay type-only.
+export default { id: 'plur', server: PlurPlugin, setup: setupV2 }

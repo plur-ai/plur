@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.18.30",
+    "@opencode/plugin": "2.0.23",
     "@types/node": "^22.0.0"
   },
   "license": "Apache-2.0",

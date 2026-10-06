@@ -33,7 +33,7 @@ function host(storage = new Map<string, any>()) {
   const ctx = {
     location: { directory: '/wrong/plugin-load-folder' },
     session: {
-      hook: vi.fn(async (name: string, cb: any) => { hooks.set(name, cb); return () => hooks.delete(name) }),
+      hook: vi.fn(async (name: string, cb: any) => { hooks.set(name, cb); return { dispose: async () => { hooks.delete(name) } } }),
       get: vi.fn(async ({ sessionID }: any) => ({ id: sessionID, location: { directory: locations.get(sessionID) } })),
       context: vi.fn(async ({ sessionID }: any) => history.get(sessionID) ?? []),
     },
