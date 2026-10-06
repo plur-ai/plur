@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const fake = vi.hoisted(() => ({ instances: [] as any[], policy: new Map<string, any>() }))
 vi.mock('@plur-ai/core', async original => {
@@ -62,8 +65,19 @@ function host(storage = new Map<string, any>()) {
     async event(type: string, data: any) { queue.push({ type, data }); wake?.(); await tick() },
   }
 }
-beforeEach(() => { fake.instances.length = 0; fake.policy.clear() })
-afterEach(async () => { for (const close of closers.splice(0)) await close() })
+let fixtureRoot: string
+beforeEach(() => {
+  fake.instances.length = 0
+  fake.policy.clear()
+  fixtureRoot = mkdtempSync(join(tmpdir(), 'plur-v2-lifecycle-'))
+  for (const name of ['home', 'store']) mkdirSync(join(fixtureRoot, name))
+  vi.stubEnv('HOME', join(fixtureRoot, 'home'))
+  vi.stubEnv('PLUR_PATH', join(fixtureRoot, 'store'))
+})
+afterEach(async () => {
+  try { for (const close of closers.splice(0)) await close() }
+  finally { vi.unstubAllEnvs(); rmSync(fixtureRoot, { recursive: true, force: true }) }
+})
 
 describe('V2 canonical lifecycle', () => {
   it('registers context/compaction, learns only admitted messages, and never injects into history', async () => {
