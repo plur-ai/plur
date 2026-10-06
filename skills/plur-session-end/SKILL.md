@@ -58,22 +58,24 @@ Bad: `"We talked about the publish issue."`
 
 For each learning, determine:
 
-- `type`: `correction` | `preference` | `convention` | `decision` | `gotcha` | `fact`
+- `type`: `behavioral` | `terminological` | `procedural` | `architectural` — choose the MCP schema category; correction/preference/gotcha can be tags
 - `domain`: the project, library, or topic area (e.g., `"plur"`, `"typescript"`, `"project:acme"`)
 - `scope`: the scope of applicability (e.g., `"global"`, `"project:acme"`)
 - `tags`: 2–5 descriptive tags
 
 ### Step 5 — Save
 
-If `plur_learn` is available:
+`plur_learn` and `plur_session_end` are direct tools in both lean and full MCP profiles. For less-common operations, use `plur_admin` with `{ "action": "help" }` to discover the current actions and schemas.
+
+Save with `plur_learn`:
 
 ```
-plur_learn(statement, { type, domain, scope, tags })
+plur_learn({ statement, type, domain, scope, tags })
 ```
 
 Call once per learning. Do not batch into one call — separate engrams decay and strengthen independently.
 
-If `plur_session_end` is available, pass learnings as `engram_suggestions` for batch review.
+Alternatively, pass unsaved learnings as `engram_suggestions` to `plur_session_end`, following its live schema. Do not submit the same learnings through both paths.
 
 ## Quality bar
 
@@ -104,7 +106,7 @@ Keep the user-facing summary short. Show what you saved; do not narrate your rea
 
 This skill pairs with `plur-memory`:
 
-- `plur-memory` runs continuously — it injects relevant engrams at the start of each turn
+- `plur-memory` guides recall and learning; automatic injection depends on the installed editor adapter
 - `plur-session-end` runs once — it extracts and saves what the session produced
 
 Together they close the memory loop: inject at start, learn at end.

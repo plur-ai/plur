@@ -12,7 +12,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/plur-ai/plur?style=social)](https://github.com/plur-ai/plur/stargazers)
 [![Glama score](https://glama.ai/mcp/servers/plur-ai/plur/badges/score.svg)](https://glama.ai/mcp/servers/plur-ai/plur)
 
-Persistent, **open** memory for AI agents — local-first, zero-cost, shared across MCP tools (Claude Code, Codex, Cursor, Hermes, OpenClaw). Your agent's memory is plain-text **engrams** you can read, correct, and delete — not weights you can't.
+Persistent, **open** memory for AI agents — local-first, zero-cost, shared across MCP tools (Claude Code, Codex, Cursor, OpenCode, Hermes, OpenClaw). Your agent's memory is plain-text **engrams** you can read, correct, and delete — not weights you can't.
 
 [plur.ai](https://plur.ai) · [Benchmark](https://plur.ai/benchmark.html) · [Engram Spec](https://plur.ai/spec.html) · [npm](https://www.npmjs.com/org/plur-ai) · [Comparisons](comparisons/)
 
@@ -25,7 +25,7 @@ PLUR is memory, not just retrieval — so we measure it on more than one axis, o
 | Stack | R@5 | Notes |
 |-------|-----|-------|
 | BM25 only | 92.2% | no embedder — fully airgapped |
-| Hybrid (BGE-small, shipping default) | 95.6% | bundled local embedder, zero downloads |
+| Hybrid (BGE-small, shipping default) | 95.6% | local embedder; one-time model download |
 | **+ BGE-reranker-v2-m3** | **97.6%** | local cross-encoder, max quality — opt-in, ≈5s p50 on CPU |
 
 Numbers come from [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench),
@@ -57,65 +57,79 @@ The interesting part: in our tool-routing and local-knowledge benchmark, **Haiku
 
 ## Install
 
-### Tell your agent
-
-Paste this to your coding agent (Claude Code, Cursor, Windsurf, OpenClaw):
-
-```text
-Set up PLUR memory for me: run `npx @plur-ai/mcp init`, then check my PLUR status to confirm it works.
-```
-
-Prefer a guided setup? [plur.ai](https://plur.ai) has the exact config for your tool — Claude Code, Cursor, Windsurf, or OpenClaw.
-
-### Manual setup (Claude Code)
-
-One command sets up everything — storage, MCP config, and Claude Code hooks:
+Requires **Node.js 20 or newer**. Install both packages so editor configurations can use the installed MCP server:
 
 ```bash
-npx @plur-ai/mcp init
+npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
+plur init
+plur doctor
 ```
 
-This creates `~/.plur/` for storage, adds PLUR to your `.mcp.json`, and installs Claude Code hooks for automatic engram injection. The hooks also **auto-close the memory lifecycle**: a `SessionEnd` hook captures a closing episode and cleans up session state when a conversation ends, so memory closes cleanly even if the agent forgets to call `plur_session_end`. PLUR is installed **globally** — one MCP server, one store, available in every project. You only run init once.
+Restart your editor after setup. `plur doctor` checks the configuration and MCP handshake, and downloads the search model if it is missing and downloads are allowed. Search runs locally after that download; without the model it falls back to keyword search.
+
+### Tell your agent
+
+```text
+Set up PLUR memory for me: install @plur-ai/cli@latest and @plur-ai/mcp@latest globally, run `plur init`, then `plur doctor`. Show me any checks that fail.
+```
+
+### Claude Code
+
+`plur init` creates the local store at `~/.plur/`, registers the user-scoped MCP server in `~/.claude.json`, and writes global hooks to `~/.claude/settings.json`. A project `.mcp.json` is a separate project-scoped configuration; `~/.claude/mcp.json` is not the user-scoped registration path. The hooks inject memory and close session state when Claude Code emits `SessionEnd`. Run init again after upgrading PLUR to refresh its configuration.
 
 For **multi-project setups**, use domain/scope to separate knowledge:
 
 ```bash
 cd ~/projects/my-app
-npx @plur-ai/cli init --domain myapp --scope project:my-app
+plur init --domain myapp --scope project:my-app
 ```
 
 This creates a `.plur.yaml` in the project with defaults that hooks apply automatically. Engrams learned in that project are tagged; recall filters by scope but always includes global knowledge.
 
 **Set scope per engram, by content.** Scope is not a once-per-session setting — every `plur_learn` call takes its own `scope`, chosen from what the engram is about. Team/shared knowledge goes to a team scope (e.g. `group:<org>/<team>`, used by PLUR Enterprise); project details to `project:<name>`; personal preferences stay local. Don't let team-relevant knowledge fall back to `global` by omitting scope — `global` leaks into every project and (with a team store configured) never reaches the team. `plur_session_start` lists the remote scopes a token can write to.
 
-### Global install (faster startup)
+### Upgrade
 
 ```bash
-npm install -g @plur-ai/mcp
-plur-mcp init
+npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
+plur init
+plur doctor
 ```
+
+Restart the editor so it launches the updated MCP server.
 
 ### Cursor
 
-Run init from your project root — it sets up Cursor's `.cursor/mcp.json` (plus Cursor hooks and a context rule):
+From your project root:
 
 ```bash
-npx @plur-ai/mcp init
+plur init --cursor
 ```
 
-PLUR runs under a **lean tool profile** in Cursor (`PLUR_TOOL_PROFILE=cursor`) — Cursor caps the tools a workspace can expose, so PLUR surfaces a curated core set (learn / recall / inject / status) instead of all 43, with the rest reachable through `plur_admin`. Cursor support shipped in v0.13.
+This writes `.cursor/mcp.json`, `.cursor/hooks.json` and `.cursor/rules/plur-memory.mdc`. Cursor uses the reduced `cursor` tool profile: core tools are direct, and other operations are available through `plur_admin`. Call `plur_admin` with `{ "action": "help" }` to discover their current names and arguments.
 
 ### Codex
 
 ```bash
-npx @plur-ai/cli init --codex
+plur init --codex
 ```
 
-Registers the MCP server via `codex mcp add`, writes lifecycle hooks to `~/.codex/hooks.json`, and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.codex/` exists.
+Registers the MCP server via `codex mcp add` in `~/.codex/config.toml`, writes lifecycle hooks to `~/.codex/hooks.json` (`CODEX_HOME` overrides the directory), and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.codex/` exists.
 
 Injection uses hybrid search (BM25 + embeddings) with an automatic BM25 fallback if the embedder is slow or unavailable. Set `PLUR_HOOK_HYBRID=0` to force BM25 (applies to the Antigravity hooks too; `PLUR_CODEX_HYBRID` is honoured as an alias). `PLUR_HOOK_HYBRID_DEADLINE_MS` tunes the fallback deadline — keep it below your harness's hook timeout (Codex 25s, Antigravity 20s).
 
 **One manual step after install:** open Codex, run `/hooks`, and trust the PLUR entries. Codex fingerprints every hook and refuses to run untrusted ones — *silently*, with no warning and a zero exit code. Until you trust them, memory simply never loads. `plur doctor` says so too.
+
+### OpenCode
+
+```bash
+plur init --opencode
+plur doctor
+```
+
+This adds the memory plugin and MCP tools to `~/.config/opencode/opencode.json`, or to the existing `opencode.jsonc` when no `.json` exists. `OPENCODE_CONFIG_DIR` takes precedence; otherwise `XDG_CONFIG_HOME/opencode` overrides the default directory.
+
+The MCP command uses Node and the installed `@plur-ai/mcp` entry when available. Init updates an older exact `@plur-ai/opencode` pin to the plugin version shipped with the CLI while preserving comments, formatting and unrelated settings. Newer pins, tags and unpinned entries remain unchanged. Use `--keep-opencode-plugin` to retain an intentional old pin. Restart OpenCode to load the changed configuration. [Plugin details](packages/opencode/README.md).
 
 ### Which integration you get
 
@@ -129,6 +143,7 @@ model choosing to call the tools, which degrades badly under context pressure.
 | Claude Code | ✅ | ✅ hooks + `CLAUDE.md` |
 | Codex | ✅ | ✅ hooks + `AGENTS.md` (trust `/hooks` once) |
 | Cursor | ✅ | ✅ hooks + rules |
+| OpenCode | ✅ | ✅ memory plugin + MCP tools |
 | OpenClaw | ✅ | ✅ ContextEngine plugin |
 | Hermes | ✅ | ✅ plugin |
 | Antigravity CLI (`agy`) | ✅ | ✅ hooks + `AGENTS.md` |
@@ -141,7 +156,7 @@ restores the instruction layer, though not automatic injection.
 ### Antigravity CLI (agy)
 
 ```bash
-npx @plur-ai/cli init --antigravity
+plur init --antigravity
 ```
 
 Writes hooks and the MCP server into agy's global config (`~/.gemini/config/`) and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.gemini/antigravity-cli/` exists. No trust step — agy runs configured hooks on first invocation; just restart agy.
@@ -211,7 +226,7 @@ context = plur.inject("write a streaming endpoint", limit=10)
 
 ### Verify it works
 
-Ask your agent: *"What's my PLUR status?"* — it should call `plur_status` and return your engram count and storage path.
+Run `plur doctor`, then ask your agent to call `plur_status` and show its engram count and storage path. The default lean MCP profile exposes core tools directly; use `plur_admin` with `{ "action": "help" }` for the remaining operations and their schemas.
 
 ### Read your memory
 
