@@ -1,13 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.21.3 (2026-10-06)
 
-- `plur init` upgrades older OpenCode plugin pins in JSON or JSONC while preserving comments and user settings, and uses the installed MCP package. `--keep-opencode-plugin` retains an intentional old pin; doctor reports the available upgrade.
-- `plur doctor --json` downloads a missing search model when downloads are enabled and verifies a real embedding before reporting it loaded. Upgrade hints install both CLI and MCP.
+- `plur init` upgrades older OpenCode plugin pins in JSON or JSONC while preserving comments and user settings, and uses the installed MCP package. `--keep-opencode-plugin` retains an intentional old pin; doctor reports the available upgrade. (#1612)
+- `plur doctor --json` downloads a missing search model when downloads are enabled and verifies a real embedding before reporting it loaded. Upgrade hints install both CLI and MCP. (#1612)
+- Setup and skill instructions use the installed CLI and the current MCP tool names. (#1613)
 
-- **Turning memory off for a Cursor workspace clears its generated memory and reminder rules at the next session start.** Previously, old recalled memory could remain in an always-applied rule. User-authored rules are preserved.
+The native OpenCode plugin remains at 0.2.1 for OpenCode V1. OpenCode V2 support is planned for 0.21.4.
 
-### Codex on Windows gets the PLUR MCP server (#1603)
+- **Turning memory off for a Cursor workspace clears its generated memory and reminder rules at the next session start.** Previously, old recalled memory could remain in an always-applied rule. User-authored rules are preserved. (#1605, #1607)
+
+### Codex on Windows gets the PLUR MCP server (#1603, #1604)
 
 - **`plur init --codex` finds a Codex installed with npm on Windows.** npm installs Codex as `codex.cmd`, next to an extensionless shell script also named `codex`. `plur init` could not find or start the `.cmd`, so it reported "the `codex` binary is not on PATH" and Codex got hooks but no PLUR tools. Init now looks Codex up through `PATH` and `PATHEXT` the way Windows does, never picks the extensionless script, and runs a `.cmd` through `cmd.exe`, for `codex mcp list`, `codex mcp add` and `codex mcp remove`. A path containing `%` cannot be passed through `cmd.exe` unchanged, so init does not try: it says so and prints the table to add by hand (below).
 - **…or the Codex app's own binary (Windows).** When no `codex` is on PATH, init uses the `codex.exe` the Codex app keeps under `~/.codex/packages/app-server-daemon/releases/<version>/bin/`: the newest release built for this machine's processor, and a full release before its own pre-releases. Init's report names the binary it used. On macOS and Linux, init finds Codex on PATH as before.

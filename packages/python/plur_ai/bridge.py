@@ -34,7 +34,7 @@ from typing import Any, Sequence
 # the client uses `--` ONLY for text that begins with "-" (every other query or
 # task keeps its old argv) and sends such a statement to `learn` on stdin. The
 # bump is release.sh's job (RELEASING.md), not a hand edit.
-_NPX_CLI_VERSION = "0.21.2"
+_NPX_CLI_VERSION = "0.21.3"
 _DEFAULT_TIMEOUT = 30
 
 
