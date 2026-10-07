@@ -68,16 +68,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
 
     // Per-prompt injection — the load-bearing hook. Verified reaching the
     // model on codex-cli 0.149.1.
-    UserPromptSubmit: [
-      {
-        hooks: [{
-          type: 'command',
-          command: `${cmd} hook-codex-inject`,
-          timeout: 25,
-          statusMessage: 'PLUR: recalling',
-        }],
-      },
-    ],
+    UserPromptSubmit: [],
 
     // Session guard. Codex accepts `permissionDecision: "deny"` from a
     // PreToolUse hook and surfaces the reason to the model (verified), but
