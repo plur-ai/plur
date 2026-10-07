@@ -5,6 +5,7 @@
 - `plur init --codex` repairs older MCP version pins and older installed MCP paths in place, preserving comments, environment overrides, timeouts and tool policies. Newer pins and custom launchers remain intact; `--keep-codex-mcp` preserves an intentional launcher. (#1624)
 - `plur remote --token-env NAME` and `plur init --codex` configure Codex to forward required token variables, including stores selected by explicit home/storage overrides. Token values are never copied into Codex configuration. (#1624)
 - `plur doctor --codex` verifies the registered MCP runtime version and token availability using Codex-style subprocess environment filtering. Failed explicit Codex setup exits nonzero; skipped handshakes report unverified. (#1624)
+- Core and CLI require js-yaml 4.3.2 or later to include the fix for excessive CPU use from empty YAML merge sources (GHSA-2883-xcg3-v3hh). (#1624)
 - Standard packages and the OpenCode plugin are aligned at **0.21.5**. Upgrade CLI and MCP together, rerun `plur init --codex`, then restart Codex.
 - Native Windows CLI and WSL2 upgrade flows are tested. Actual Windows Codex desktop acceptance remains unverified and is tracked in #1625; terminal diagnostics do not establish the desktop application's environment or hook trust.
 

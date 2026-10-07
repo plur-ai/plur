@@ -15,7 +15,7 @@ overrides:
   fast-xml-parser: '>=5.7.0'
   hono: '>=4.12.34'
   ip-address: '>=10.3.1'
-  js-yaml: '>=4.3.1 <5'
+  js-yaml: '>=4.3.2 <5'
   linkify-it: '>=5.0.1'
   minimatch: '>=10.0.3'
   openclaw: '>=2026.6.5'
@@ -79,8 +79,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       js-yaml:
-        specifier: '>=4.3.1 <5'
-        version: 4.3.1
+        specifier: '>=4.3.2 <5'
+        version: 4.3.2
       jsonc-parser:
         specifier: 3.3.1
         version: 3.3.1
@@ -107,8 +107,8 @@ importers:
         specifier: ^0.4.6
         version: 0.4.6
       js-yaml:
-        specifier: '>=4.3.1 <5'
-        version: 4.3.1
+        specifier: '>=4.3.2 <5'
+        version: 4.3.2
       tar:
         specifier: '>=7.5.21'
         version: 7.5.22
@@ -163,8 +163,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       js-yaml:
-        specifier: '>=4.3.1 <5'
-        version: 4.3.1
+        specifier: '>=4.3.2 <5'
+        version: 4.3.2
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -2517,8 +2517,8 @@ packages:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
     engines: {node: '>=10'}
 
-  js-yaml@4.3.1:
-    resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
+  js-yaml@4.3.2:
+    resolution: {integrity: sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA==}
     hasBin: true
 
   json-bigint@1.0.0:
@@ -4273,7 +4273,7 @@ snapshots:
       '@deepseek-ai/cordis': 4.0.1(@deepseek-ai/cordis-plugin-include@1.0.6)(@deepseek-ai/cordis-plugin-loader@1.0.2)
       '@deepseek-ai/cordis-plugin-loader': 1.0.2(@deepseek-ai/cordis@4.0.1)
       '@deepseek-ai/cosmokit': 1.8.2
-      js-yaml: 4.3.1
+      js-yaml: 4.3.2
     optional: true
 
   '@deepseek-ai/cordis-plugin-loader@1.0.2(@deepseek-ai/cordis@4.0.1)':
@@ -6291,7 +6291,7 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  js-yaml@4.3.1:
+  js-yaml@4.3.2:
     dependencies:
       argparse: 2.0.1
 

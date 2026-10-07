@@ -70,6 +70,14 @@ describe('Codex upgrades preserve user configuration (#1623)', () => {
     expect(() => update()).toThrow('not valid TOML')
     expect(readFileSync(path, 'utf8')).toBe(original)
   })
+  it('bounds empty YAML merge sources and leaves Codex configuration unchanged', () => {
+    // GHSA-2883-xcg3-v3hh: empty maps used to evade the parser's merge budget.
+    const yaml = 'sources: &sources [' + Array(100).fill('{}').join(',') + ']\nrows:\n' + '  - <<: *sources\n'.repeat(101)
+    writeFileSync(join(root, 'config.yaml'), yaml)
+    writeFileSync(path, pin)
+    expect(() => update()).toThrow('not valid YAML')
+    expect(readFileSync(path, 'utf8')).toBe(pin)
+  })
   it('uses the registered PLUR_PATH, not a different CLI store', () => {
     const other = join(root, 'other'); mkdirSync(other)
     writeFileSync(join(other, 'config.yaml'), 'stores: []\n')

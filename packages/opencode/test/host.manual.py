@@ -19,6 +19,7 @@ packed=args.packed.resolve()
 case=Path(tempfile.mkdtemp(prefix='plur-v2-packed-model-'));home=case/'home';home.mkdir();project=case/'project';project.mkdir()
 requests=[]
 consent_results=[]
+mcp_startup_errors=[]
 class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args):pass
  def do_POST(self):
@@ -35,6 +36,17 @@ class Handler(BaseHTTPRequestHandler):
      r=subprocess.run(argv,cwd=project,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace',timeout=30)
      consent_results.append((label,r.returncode));(case/('consent-'+label+'.txt')).write_text(r.stdout,encoding='utf-8')
     break
+  # A synthetic provider can finish before asynchronous MCP startup. Keep the
+  # real main-model request open until the host itself reports readiness.
+  if args.mcp and body.get('tools'):
+   deadline=time.monotonic()+20
+   while time.monotonic()<deadline:
+    log=active_log.read_text(encoding='utf-8',errors='replace') if active_log.exists() else ''
+    if re.search(r'mcp connected.*server=plur.*tools=14',log):break
+    time.sleep(0.05)
+   else:
+    mcp_startup_errors.append('MCP did not become ready within 20 seconds')
+    raise AssertionError(mcp_startup_errors[-1])
   text='PACKED_MODEL_OK\n\n---\n🧠 I learned:\n- The signed release marker is PLUR_V2_ASSISTANT_GREEN.'
   self.send_response(200);self.send_header('Content-Type','text/event-stream' if body.get('stream') else 'application/json');self.end_headers()
   choice={'index':0,'message':{'role':'assistant','content':text},'finish_reason':'stop'}
@@ -63,10 +75,13 @@ env.update(TEMP=str(case),TMP=str(case),APPDATA=str(home/'AppData/Roaming'),LOCA
 if not args.model_cache: env['PLUR_DISABLE_EMBEDDINGS']='1'
 node=str(args.node);cli=packed/'node_modules/@plur-ai/cli/dist/index.js'
 def command(args,name,timeout=180):
- r=subprocess.run(args,cwd=project,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace',timeout=timeout)
- (case/(name+'.txt')).write_text(r.stdout,encoding='utf-8')
- assert r.returncode==0,(name,r.returncode,r.stdout[-2000:])
- return r.stdout
+ global active_log
+ active_log=case/(name+'.txt')
+ with active_log.open('w',encoding='utf-8') as log:
+  r=subprocess.run(args,cwd=project,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=timeout)
+ output=active_log.read_text(encoding='utf-8',errors='replace')
+ assert r.returncode==0,(name,r.returncode,output[-2000:])
+ return output
 print('Probe root:',case,flush=True)
 print('Host:',args.host,'mode:',args.mode,'v1:',args.v1,flush=True)
 try:
@@ -81,6 +96,7 @@ try:
  host=str(args.host)
  host_args=[host,'run']+([] if args.v1 else ['--standalone'])+['--print-logs','--format','json']
  first=command(host_args+['No, use cyan, not violet for the release codename. What is the release codename?'],'first')
+ assert not mcp_startup_errors,mcp_startup_errors
  assert 'PluginModule.LoadError' not in first
  assert not re.search(r'\[plur:opencode\].*(TypeError|ReferenceError)',first),'Adapter runtime error in actual host'
  if args.accept_consent:
@@ -120,6 +136,7 @@ try:
   assert (case/'plur/engrams.yaml').read_text(encoding='utf-8')==store,'Disabled memory wrote to the store after restart'
  if args.accept_consent:
   assert any('PLUR_V2_CANARY_CYAN' in json.dumps(r) for r in requests[before:]),'Accepted consent did not enable recall after restart'
+ assert not mcp_startup_errors,mcp_startup_errors
  print('Actual host restart PASS.',flush=True)
  result={'passed':True,'os':platform.platform(),'arch':platform.machine(),'node':command([node,'--version'],'node-version').strip(),'host':command([host,'--version'],'host-version').strip(),'mode':args.mode,'v1':args.v1,'model_requests':len(requests),'consent':consent_results,'mcp':args.mcp}
  (case/'result.json').write_text(json.dumps(result),encoding='utf-8');print(json.dumps(result),flush=True)
