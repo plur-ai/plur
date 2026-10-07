@@ -158,7 +158,8 @@ export interface FolderPolicySource {
  */
 export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
   try {
-    return plur.resolveFolderPolicy(dir)
+    const p = plur.resolveFolderPolicy(dir)
+    return p.mode === 'off' ? { ...p, mode: 'on' } : p
   } catch (err) {
     warn(`folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); memory is off here.`)
     return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }

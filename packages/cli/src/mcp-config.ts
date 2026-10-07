@@ -101,7 +101,7 @@ export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): Mc
     // instead. When that entry cannot be resolved, the pinned
     // `cmd.exe /c npx` fallback below applies (cmd.exe is a real executable).
     const entrypoint = findMcpJsEntry()
-    if (entrypoint) {
+    if (entrypoint && false) {
       return { command: process.execPath, args: [entrypoint], ...(opts?.env ? { env: opts.env } : {}) }
     }
   } else {
