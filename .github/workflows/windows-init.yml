@@ -10,8 +10,8 @@ name: Windows init hooks
 # `plur doctor` to report hasPlurHooks for each editor's hooks file.
 # A second step (#1603) puts a stub npm `codex.cmd` on PATH and requires
 # `plur init --codex` to register plur through it, and a stub Codex app binary
-# (scripts/windows-codex-probe.mjs). A third installs the real Codex CLI from npm
-# and checks init, `codex mcp list`, an MCP handshake and doctor
+# (scripts/windows-codex-probe.mjs). The real Codex CLI is installed before
+# setup; a final step checks init, `codex mcp list`, an MCP handshake and doctor
 # (scripts/windows-codex-real.mjs).
 # Actions are pinned by commit SHA.
 
@@ -54,14 +54,13 @@ jobs:
       - name: 8.3 short names on the temp volume (informational)
         shell: cmd
         run: fsutil 8dot3name query %TEMP:~0,2% || exit /b 0
+      # Explicit --codex setup now fails when the MCP cannot be registered.
+      # Install its prerequisite before exercising the generated hooks.
+      - name: Install the real Codex CLI from npm (#1623)
+        run: npm install -g @openai/codex@0.160.1
       - name: Run every generated hook through bash, pwsh and cmd
         run: node scripts/windows-hook-probe.mjs
       - name: plur init --codex registers plur through an npm codex.cmd (#1603)
         run: node scripts/windows-codex-probe.mjs
-      # The real Codex CLI, not a stub (#1603): npm leaves codex.cmd plus an
-      # extensionless sh shim, as on a user's machine. If this install fails,
-      # the job fails; the stub probe above stays as the fallback evidence.
-      - name: Install the real Codex CLI from npm (#1603)
-        run: npm install -g @openai/codex@0.160.0
       - name: plur init --codex with the real Codex CLI, codex mcp list, MCP handshake, doctor (#1603)
         run: node scripts/windows-codex-real.mjs
