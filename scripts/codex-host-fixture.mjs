@@ -43,6 +43,12 @@ export async function codexHostFixture({env,project,root,stub}){
  console.log('CODEX_HOST',JSON.stringify({code,requests:requests.length,error,log:join(root,'codex-host.log')}));
  assert.equal(code,0);assert.equal(error,null);assert(stub.appendStatements.includes(marker),'actual Codex did not save memory through MCP');
  assert(requests.length>=2,'tool result did not reach model');
+ const learnResults=requests.flatMap(r=>Array.isArray(r.input)?r.input:[])
+  .filter(item=>item.type==='function_call_output')
+  .flatMap(item=>typeof item.output==='string'?[item.output]:(Array.isArray(item.output)?item.output.map(part=>part.text):[]))
+  .flatMap(text=>{try{return [JSON.parse(text)]}catch{return []}});
+ assert(learnResults.some(result=>result?.statement===marker&&result.scope==='group:fixture/eng'&&result.delivery==='remote'),
+  'actual Codex did not receive a successful remote write result with the default scope');
  assert(JSON.stringify(requests[0].input).includes('LOCALQUILL'),'automatic recall hook did not reach model input');
  console.log('PASS actual Codex runs PLUR prompt hook and includes stored memory in model input');
  console.log('PASS actual Codex host invokes PLUR learn and receives remote delivery result');
