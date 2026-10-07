@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -97,6 +97,32 @@ describe('V2 canonical lifecycle', () => {
     const [a,b]=await Promise.all([h.context('s1'),h.context('s2')])
     expect(a.system).toEqual([{ type:'text',text:'memory:/project/one' }])
     expect(b.system).toEqual([{ type:'text',text:'memory:/project/two' }])
+  })
+  it('applies the private subfolder decision instead of the parent location decision', async () => {
+    const h = host()
+    h.ctx.session.get.mockResolvedValue({ id: 's1', location: { directory: '/project/one' }, subpath: 'private' } as any)
+    fake.policy.set('/project/one/private', { mode: 'off', source: 'map', remoteAllowed: false })
+    await h.start()
+    expect((await h.context()).system).toEqual([])
+    await tick()
+    expect(fake.instances[0].options.cwd).toBe('/project/one/private')
+    expect(fake.instances[0].injectHybrid).not.toHaveBeenCalled()
+    expect(fake.instances[0].learnRouted).not.toHaveBeenCalled()
+  })
+  it('honors a live auto_learn disable for user corrections and buffered assistant text', async () => {
+    const h = host(); h.history.set('s1', [user('u0', 'hello')])
+    await h.start(); await h.context()
+    await h.event('session.step.started', { sessionID: 's1', assistantMessageID: 'a1', started: Date.now() })
+    await h.event('session.text.ended', { sessionID: 's1', assistantMessageID: 'a1', ordinal: 0, text: report })
+    writeFileSync(join(process.env.PLUR_PATH!, 'config.yaml'), 'auto_learn: false\n')
+    h.history.set('s1', [user('u1')])
+    expect((await h.context()).system).toEqual([{ type: 'text', text: 'memory:/project/one' }])
+    await h.event('session.execution.succeeded', { sessionID: 's1' })
+    expect(fake.instances[0].learnRouted).not.toHaveBeenCalled()
+    writeFileSync(join(process.env.PLUR_PATH!, 'config.yaml'), 'auto_learn: true\n')
+    h.history.set('s1', [user('u1'), user('u2')])
+    await h.context(); await tick()
+    expect(fake.instances[0].learnRouted).toHaveBeenCalledTimes(1)
   })
   it('does not harvest old history, but captures every newly admitted user in a batch', async () => {
     const h=host(); h.history.set('s1',[user('old'),{id:'a0',type:'assistant'},user('u1'),user('u3')])
