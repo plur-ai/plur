@@ -1,12 +1,5 @@
-/**
- * #1366 — `plur init --codex` heals the old `plur-mcp.cmd` registration
- * through `codex mcp remove` + `codex mcp add`, which re-adds only the
- * command and args. A table that carries anything else (env, another key, a
- * subtable, a multi-line args array) is therefore not treated as PLUR's own
- * entry and is left alone, so nothing in it is lost.
- *
- * Windows behaviour is exercised with the win32 platform preload and a
- * stand-in `codex` binary, not on real Windows.
+/** #1366/#1623: repair known launch entries in place, keeping all other fields.
+ * Platform preload covers config transformations; native Windows runs in CI.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
@@ -15,6 +8,7 @@ import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
 import { execFileSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
+import { readCodexEntry } from '../src/codex-config.js'
 import { readCodexPlurMcpEntry } from '../src/mcp-config.js'
 import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
@@ -44,7 +38,7 @@ describe('readCodexPlurMcpEntry: only a bare command + args table is PLUR\'s (#1
   })
 })
 
-describe('plur init --codex leaves a shim entry with extra settings alone (#1366, win32 stub)', { timeout: 90000 }, () => {
+describe('plur init --codex preserves settings when repairing a shim entry (#1366, win32 stub)', { timeout: 90000 }, () => {
   let home: string
   let bin: string
   let log: string
@@ -75,19 +69,27 @@ describe('plur init --codex leaves a shim entry with extra settings alone (#1366
     } catch (err: any) { return err.stdout?.toString() ?? '' }
   }
 
-  it.each(SHAPES)('does not remove + re-add %s, and prints the lines to change by hand', (_label, toml) => {
+  it.each(SHAPES)('does not remove + re-add %s; preserves every non-launch setting', (_label, toml) => {
     mkdirSync(join(home, '.codex'), { recursive: true })
     writeFileSync(join(home, '.codex', 'config.toml'), toml)
     const out = run(['init', '--global', '--no-desktop', '--no-cursor', '--no-antigravity', '--no-opencode', '--codex', '--no-prompt'])
     const calls = existsSync(log) ? readFileSync(log, 'utf-8') : ''
-    expect(calls).toContain('mcp list')
     expect(calls).not.toContain('mcp remove')
     expect(calls).not.toContain('mcp add')
-    expect(readFileSync(join(home, '.codex', 'config.toml'), 'utf-8')).toBe(toml)
-    // Refs #1366 (re-review): the refusal names the fault and the manual fix.
-    expect(out).toContain('old plur-mcp.cmd entry, which fails to start (spawn EINVAL)')
-    expect(out).toMatch(/under \[mcp_servers\.plur\], replace the command and args lines with\s+command = /)
-    expect(out).toContain('keep every other setting (env included)')
+    const after = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8')
+    const previous = readCodexEntry(toml)!
+    if (previous.args.length) {
+      // Unrecognized arguments are an intentional custom launcher.
+      expect(after).toBe(toml)
+      expect(out).toContain('custom/remote Codex MCP entry preserved')
+    } else {
+      const next = readCodexEntry(after)!
+      expect(next.command).not.toBe(previous.command)
+      const { command: _oldCommand, args: _oldArgs, ...oldSettings } = previous
+      const { command: _newCommand, args: _newArgs, ...newSettings } = next
+      expect(newSettings).toEqual(oldSettings)
+      expect(out).toContain('updated Codex MCP registration in place')
+    }
   })
 
   it.each(SHAPES)('doctor still flags %s as the broken shim (codexCmdShimMcp, not wired)', (_label, toml) => {

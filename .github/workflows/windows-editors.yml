@@ -61,7 +61,7 @@ jobs:
           changed=$(git diff --name-only "$BASE"..."$HEAD")
           echo "$changed"
           # What this job builds, installs or runs.
-          if echo "$changed" | grep -qE '^(packages/(cli|mcp|core|opencode)/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig[^/]*\.json$|scripts/(windows-editors-probe|ci-stamp-version)\.mjs$|scripts/release(-windows-gate)?\.sh$|\.github/workflows/windows-editors(-latest)?\.yml$|\.github/actions/windows-editors/)'; then
+          if echo "$changed" | grep -qE '^(packages/(cli|mcp|core|opencode)/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig[^/]*\.json$|scripts/(windows-editors-probe|ci-stamp-version|codex-upgrade-probe|codex-host-fixture)\.mjs$|scripts/release(-windows-gate)?\.sh$|\.github/workflows/windows-editors(-latest)?\.yml$|\.github/actions/windows-editors/)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"

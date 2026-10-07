@@ -6,6 +6,7 @@ import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputInfo, outputText } from '../output.js'
+import { updateCodexRegistration } from '../codex-config.js'
 import { CLI_VERSION } from '../version.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import { plurRoot } from '../lib/folder-gate.js'
@@ -42,10 +43,6 @@ import {
   codexHome,
   codexHooksConfigPath,
   codexConfigTomlPath,
-  readCodexPlurMcpEntry,
-  readCodexPlurMcpCommand,
-  isOwnWin32CmdShimEntry,
-  isOwnWin32CmdShimCommand,
   agyConfigDir,
   agyHooksConfigPath,
   agyMcpConfigPath,
@@ -1199,20 +1196,6 @@ function shouldSetupCodex(args: string[], env: NodeJS.ProcessEnv = process.env):
 }
 
 /**
- * Register the plur MCP server with Codex by shelling out to `codex mcp add`
- * rather than editing `config.toml` ourselves.
- *
- * Codex's config is TOML, and hand-writing TOML would mean either taking a
- * dependency or doing string surgery on a file that also holds the user's
- * model, profiles, projects and other MCP servers — the exact shape of edit
- * that eats a hand-authored config when it goes wrong. `codex mcp add` is a
- * supported, versioned interface that does it correctly.
- *
- * Returns a status string; never throws. If the `codex` binary is not on
- * PATH (perfectly possible — `~/.codex/` can exist from a since-removed
- * install), we say so and print the manual snippet instead of failing init.
- */
-/**
  * Run the `codex` CLI found by resolveCodexBinary (#1603): a codex on PATH —
  * on Windows npm's `codex.cmd`, run through cmd.exe, never the extensionless
  * sh shim — else the Codex app's bundled binary. With neither, the bare name,
@@ -1225,10 +1208,14 @@ function runCodex(bin: CodexBinary | null, args: string[], opts: ExecFileSyncOpt
   }))
 }
 
-function installCodexMcp(): string {
+function installCodexMcp(root: string, keepLaunch: boolean): string {
   const entry = buildMcpServerEntry()
   const bin = resolveCodexBinary()
   const used = bin ? `${bin.path}${bin.source === 'app' ? ', the Codex app\'s binary' : ''}` : 'codex'
+
+  // Existing tables are edited in place: remove/add would lose env and policy.
+  const updated = updateCodexRegistration({ root, version: CLI_VERSION, replacement: entry, keepLaunch })
+  if (updated.status !== 'absent') return updated.message
 
   let listed = ''
   try {
@@ -1246,49 +1233,8 @@ function installCodexMcp(): string {
     // unrelated broken server entry, for one). Fall through and try to add.
   }
 
-  // Codex has no "update this server" verb, and `add` on an existing name
-  // errors rather than replacing. Detecting the existing entry lets us
-  // report honestly instead of swallowing that error as a failure.
-  let healed = false
   if (/(^|\s)plur(\s|$)/m.test(listed)) {
-    // init cannot edit TOML safely (see docstring), but it CAN detect the
-    // #1069 race and say so instead of a bare "already registered" — the
-    // one leg where 'run plur init again' does not heal.
-    let toml = ''
-    try { toml = readFileSync(codexConfigTomlPath(), 'utf8') } catch { /* unreadable — the bare message is still true */ }
-    if (toml.includes('@plur-ai/mcp@latest')) {
-      return 'already registered, but the entry uses @plur-ai/mcp@latest — the npx cache-rewrite race (#1069). Fix: `codex mcp remove plur`, then re-run `plur init --codex`'
-    }
-    // The `plur-mcp.cmd` entry an older init wrote on Windows fails with
-    // `spawn EINVAL` (#1267). Heal it through Codex's own CLI — remove, then
-    // the add below — rather than editing TOML. Only that exact entry: our
-    // shim path and no args. Anything else is the user's.
-    const existing = readCodexPlurMcpEntry(toml)
-    if (!existing || !isOwnWin32CmdShimEntry(existing)) {
-      // The shim command with anything else in the entry (env, other keys, a
-      // multi-line args array): still broken, but `codex mcp add` would drop
-      // those settings — a lost PLUR_PATH moves the user's memory to the
-      // default store — so say what to change by hand instead (#1366).
-      const command = readCodexPlurMcpCommand(toml)
-      if (command !== null && isOwnWin32CmdShimCommand(command)) {
-        const lit = (v: string) => (v.includes("'") ? JSON.stringify(v) : `'${v}'`)
-        return 'already registered with the old plur-mcp.cmd entry, which fails to start (spawn EINVAL). ' +
-          'The entry also carries other settings (env, other keys or a multi-line args array) that ' +
-          '`codex mcp remove` + `codex mcp add` would drop, so init left it alone. Fix by hand: in ' +
-          `${codexConfigTomlPath()}, under [mcp_servers.plur], replace the command and args lines with\n` +
-          `    command = ${lit(entry.command)}\n` +
-          `    args = [${entry.args.map(lit).join(', ')}]\n` +
-          '  and keep every other setting (env included)'
-      }
-      return 'already registered (run `codex mcp remove plur` first if you need to re-point it)'
-    }
-    try {
-      runCodex(bin, ['mcp', 'remove', 'plur'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
-    } catch (err: unknown) {
-      const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
-      return `already registered with the old plur-mcp.cmd entry, which fails to start (spawn EINVAL), and \`codex mcp remove plur\` failed (${stderr || (err as Error).message}). Fix: run \`codex mcp remove plur\`, then re-run \`plur init --codex\``
-    }
-    healed = true
+    return 'already registered outside the user config; preserved — run `plur doctor --codex` to verify the user registration'
   }
 
   try {
@@ -1296,9 +1242,8 @@ function installCodexMcp(): string {
     if (entry.env) for (const [k, v] of Object.entries(entry.env)) args.push('--env', `${k}=${v}`)
     args.push('--', entry.command, ...entry.args)
     runCodex(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
-    return healed
-      ? `healed — replaced the old plur-mcp.cmd entry (spawn EINVAL) via \`codex mcp remove\` + \`codex mcp add\` (${used})`
-      : `registered via \`codex mcp add\` (${used})`
+    const forwarding = updateCodexRegistration({ root, version: CLI_VERSION })
+    return `registered via \`codex mcp add\` (${used})` + (forwarding.status === 'updated' ? '; token variable forwarding configured' : '')
   } catch (err: unknown) {
     const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
     return `FAILED (${stderr || (err as Error).message}) — add it by hand to ${codexConfigTomlPath()}:\n` +
@@ -1306,7 +1251,7 @@ function installCodexMcp(): string {
   }
 }
 
-function installCodex(cmd: string, env: NodeJS.ProcessEnv = process.env): string {
+function installCodex(cmd: string, root: string, keepLaunch: boolean, env: NodeJS.ProcessEnv = process.env): string {
   const hooksPath = codexHooksConfigPath(env)
 
   // Same refusal as the Cursor path: readCodexHooksConfig() treats
@@ -1338,7 +1283,7 @@ function installCodex(cmd: string, env: NodeJS.ProcessEnv = process.env): string
     hooksWritten = true
   }
 
-  const mcpStatus = installCodexMcp()
+  const mcpStatus = installCodexMcp(root, keepLaunch)
   const agentsStatus = installAgentsMd(process.cwd(), join(codexHome(env), 'AGENTS.md'))
 
   return [
@@ -1860,7 +1805,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     : 'skipped (no ~/.gemini/antigravity-cli found — pass --antigravity to force, --no-antigravity to silence this)'
 
   const codexStatus = shouldSetupCodex(args)
-    ? containLeg('Codex', () => installCodex(stringHookCmd('codex')))
+    ? containLeg('Codex', () => installCodex(stringHookCmd('codex'), plurRoot(flags), args.includes('--keep-codex-mcp')))
     : 'skipped (no ~/.codex found — pass --codex to force, --no-codex to silence this)'
 
   const cursorStatus = shouldSetupCursor(args)
@@ -1978,6 +1923,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputInfo('The embedding model is not downloaded yet: run `plur doctor` once to download it (~133 MB). Until then recall uses keyword search.', flags)
     }
   } catch { /* advisory only */ }
+  if (args.includes('--codex') && (codexStatus.includes('FAILED') || codexStatus.includes('skipped —'))) process.exitCode = 1
   if (!mcpOk) {
     // #1564 review L4: the point of init did not happen; scripts must see it.
     process.exitCode = 1

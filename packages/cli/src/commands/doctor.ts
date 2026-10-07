@@ -1,6 +1,9 @@
+import { readCodexEntry, configuredTokenVariables, codexMcpEnvironment, codexStorageRoot } from '../codex-config.js'
+import { CLI_VERSION } from '../version.js'
+import { codexConfigTomlPath } from '../mcp-config.js'
 import { spawn } from 'child_process'
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
-import { join, extname, dirname } from 'path'
+import { join, extname, dirname, resolve } from 'path'
 import { homedir, platform } from 'os'
 import { createRequire } from 'module'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -739,13 +742,14 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
 async function mcpHandshake(
   timeoutMs = 20000,
   envOverride?: Record<string, string>,
+  target?: { entry: McpServerEntry; source: string; env: NodeJS.ProcessEnv; cwd?: string },
 ): Promise<{ ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string; probed?: string; command?: string }> {
-  const { entry, source } = resolveProbeTarget()
+  const { entry, source } = target ?? resolveProbeTarget()
   // The entry's own env matters: a config pinning PLUR_TOOL_PROFILE=full gets a
   // different tool surface, and probing without it would report a count the
   // user never sees. envOverride still wins — it is how the cursor-profile
   // probe asks a deliberate what-if.
-  const spawnEnv = (entry.env || envOverride)
+  const spawnEnv = target ? target.env : (entry.env || envOverride)
     ? { ...process.env, ...(entry.env ?? {}), ...(envOverride ?? {}) }
     : undefined
 
@@ -765,11 +769,12 @@ async function mcpHandshake(
     try {
       // On Windows a configured `npx` or `.cmd` cannot be spawned directly
       // (ENOENT / EINVAL); resolve it the way init runs Codex (#1603).
-      const spec = commandSpawn(entry.command, entry.args)
+      const spec = target ? { file: entry.command, args: entry.args, windowsVerbatimArguments: false } : commandSpawn(entry.command, entry.args)
       proc = spawn(spec.file, spec.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         ...(spawnEnv ? { env: spawnEnv } : {}),
+        ...(target?.cwd ? { cwd: target.cwd } : {}),
       })
     } catch (err: unknown) {
       finish({ ok: false, error: `spawn failed: ${(err as Error).message}` })
@@ -793,6 +798,7 @@ async function mcpHandshake(
           const msg = JSON.parse(line)
           if (msg.id === 1 && msg.result) {
             serverInfo = msg.result.serverInfo ?? {}
+            proc.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
             proc.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n')
             continue
           }
@@ -812,6 +818,7 @@ async function mcpHandshake(
             return
           }
           if (msg.id === 2 && msg.error) {
+            if (target) { finish({ ok: false, error: 'tools/list failed' }); return }
             // tools/list failed but initialize succeeded — still report as healthy, just without a count.
             clearTimeout(timeout)
             finish({ ok: true, serverName: serverInfo?.name, serverVersion: serverInfo?.version })
@@ -1882,8 +1889,71 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   }
 }
 
+/** Explicit Codex check: never substitute another editor or a recommended entry. */
+async function codexReport(skipHandshake: boolean) {
+  const path = codexConfigTomlPath()
+  const report = {
+    target: 'codex', configPath: path, cliVersion: CLI_VERSION,
+    verificationScope: 'User config, local stdio, and this process environment. Project/profile overrides, desktop environment, hook trust and end-to-end remote writes require verification in the actual Codex session.',
+    registered: false, enabled: true, storageRoot: null as string | null,
+    tokenVariables: [] as Array<{ name: string; available: boolean; fix?: string }>,
+    handshake: { ok: false, skipped: skipHandshake } as { ok: boolean; skipped: boolean; serverVersion?: string; toolCount?: number; error?: string },
+    versionMatches: null as boolean | null,
+    problems: [] as string[], overall: 'fail' as 'ok' | 'fail' | 'unverified',
+  }
+  try {
+    const entry = existsSync(path) ? readCodexEntry(readFileSync(path, 'utf8')) : null
+    if (!entry) { report.problems.push('Codex has no user PLUR MCP registration. Run `plur init --codex`.'); return report }
+    report.registered = true
+    if (entry.url) { report.problems.push('HTTP MCP registration preserved; this diagnostic checks local stdio only. Verify this server in Codex.'); return report }
+    report.enabled = entry.enabled !== false
+    if (!report.enabled) { report.problems.push('Codex PLUR MCP is explicitly disabled.'); return report }
+    const env = codexMcpEnvironment(entry)
+    // Codex does not inherit arbitrary PLUR_PATH from the invoking shell.
+    const envValue = (name: string) => process.platform === 'win32'
+      ? Object.entries(env).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1] : env[name]
+    const inheritedRoot = envValue('PLUR_PATH')
+      ? resolve(entry.cwd ?? process.cwd(), envValue('PLUR_PATH')!)
+      : join(envValue(process.platform === 'win32' ? 'USERPROFILE' : 'HOME') || homedir(), '.plur')
+    report.storageRoot = codexStorageRoot(entry, inheritedRoot)
+    for (const name of configuredTokenVariables(report.storageRoot)) {
+      const available = !!envValue(name)?.trim()
+      const forwarded = Object.hasOwn(entry.env ?? {}, name) || (entry.env_vars ?? []).some(v => (typeof v === 'string' ? v : v.name) === name)
+      report.tokenVariables.push({ name, available, ...(!available ? { fix: forwarded
+        ? `Set ${name} in the environment that launches Codex, then restart Codex. A terminal variable does not establish desktop availability.`
+        : `Run plur init --codex to add ${name} to env_vars, then restart Codex.` } : {}) })
+    }
+    if (report.tokenVariables.some(v => !v.available)) report.problems.push('Remote token variables are unavailable to the configured Codex subprocess; writes may remain queued.')
+    if (!skipHandshake) {
+      const result = await mcpHandshake(20000, undefined, { entry, source: `Codex user config (${path})`, env, cwd: entry.cwd })
+      // No command, server errors or stderr: custom arguments may contain secrets.
+      report.handshake = { ok: result.ok, skipped: false, serverVersion: result.serverVersion, toolCount: result.toolCount,
+        ...(!result.ok ? { error: 'Configured Codex MCP failed initialize/tools/list. Check its command, paths and environment.' } : {}) }
+      report.versionMatches = result.ok && result.serverVersion === CLI_VERSION
+      if (!result.ok) report.problems.push(report.handshake.error!)
+      else if (!report.versionMatches) report.problems.push(`Codex MCP version ${result.serverVersion ?? 'unknown'} differs from CLI ${CLI_VERSION}. Run plur init --codex and restart Codex; check deliberate newer/custom pins manually.`)
+    }
+    report.overall = report.problems.length ? 'fail' : skipHandshake ? 'unverified' : 'ok'
+  } catch {
+    report.problems.push('Codex configuration or storage could not be read safely. Check config.toml and PLUR config.yaml; nothing was changed.')
+  }
+  return report
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const skipHandshake = args.includes('--no-handshake')
+  if (args.includes('--codex')) {
+    const report = await codexReport(skipHandshake)
+    if (shouldOutputJson(flags)) outputJson(report)
+    else {
+      outputText(`Codex MCP: ${report.overall} (${report.configPath})`)
+      outputText(`CLI ${report.cliVersion}; MCP ${report.handshake.serverVersion ?? 'not verified'}`)
+      for (const problem of report.problems) outputText(problem)
+      for (const variable of report.tokenVariables) if (variable.fix) outputText(variable.fix)
+      outputText(report.verificationScope)
+    }
+    process.exit(report.overall === 'ok' ? 0 : 1)
+  }
   const report = await buildReport(skipHandshake, flags)
 
   if (shouldOutputJson(flags)) {
