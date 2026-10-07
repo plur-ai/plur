@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.21.5 (unreleased)
+## 0.21.5 (2026-10-07)
 
 - `plur init --codex` repairs older MCP version pins and older installed MCP paths in place, preserving comments, environment overrides, timeouts and tool policies. Newer pins and custom launchers remain intact; `--keep-codex-mcp` preserves an intentional launcher. (#1624)
 - `plur remote --token-env NAME` and `plur init --codex` configure Codex to forward required token variables, including stores selected by explicit home/storage overrides. Token values are never copied into Codex configuration. (#1624)
