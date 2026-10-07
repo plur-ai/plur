@@ -32,7 +32,7 @@
     "@types/node": "^22.0.0"
   },
   "license": "Apache-2.0",
-  "description": "PLUR memory plugin for opencode \u2014 persistent learning across sessions",
+  "description": "PLUR memory plugin for opencode — persistent learning across sessions",
   "keywords": [
     "ai",
     "memory",
