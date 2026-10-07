@@ -118,10 +118,49 @@ function unambiguousJsonc(text: string): boolean {
  * Another package (`@plur-ai/opencode-extra`) does not match.
  */
 export function isPlurOpencodePluginEntry(entry: unknown): boolean {
-  const spec = Array.isArray(entry) ? entry[0] : entry
+  const spec = pluginSpec(entry)
   if (typeof spec !== 'string') return false
   const at = spec.indexOf('@', 1)
   return (at === -1 ? spec : spec.slice(0, at)) === PLUGIN
+}
+
+function pluginSpec(entry: unknown): unknown {
+  return Array.isArray(entry) ? entry[0] : isPlainObject(entry) ? entry.package : entry
+}
+
+function validContainers(cfg: Record<string, unknown>): boolean {
+  for (const key of ['plugin', 'plugins']) {
+    if (cfg[key] != null && !Array.isArray(cfg[key])) return false
+  }
+  if (cfg.mcp != null && !isPlainObject(cfg.mcp)) return false
+  if (isPlainObject(cfg.mcp) && cfg.mcp.servers != null && !isPlainObject(cfg.mcp.servers)) return false
+  return true
+}
+
+function pluginEntries(cfg: Record<string, unknown>): unknown[] {
+  return [...(Array.isArray(cfg.plugin) ? cfg.plugin : []), ...(Array.isArray(cfg.plugins) ? cfg.plugins : [])]
+}
+
+/** V2 removal directives are ordered. Preserve an explicit disabled choice. */
+function pluginIntent(entries: unknown[]): { declared: boolean; disabled: boolean } {
+  let declared = false, disabled = false
+  for (const entry of entries) {
+    if (isPlurOpencodePluginEntry(entry)) { declared = true; disabled = false; continue }
+    if (typeof entry !== 'string' || !entry.startsWith('-')) continue
+    const pattern = entry.slice(1).split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')
+    const match = new RegExp('^' + pattern + '$')
+    if (match.test('plur') || match.test(PLUGIN)) { declared = false; disabled = true }
+  }
+  return { declared, disabled }
+}
+
+function mcpLocation(cfg: Record<string, unknown>): { map: Record<string, unknown>; path: string[]; native: boolean } {
+  const mcp = isPlainObject(cfg.mcp) ? cfg.mcp : {}
+  const servers = isPlainObject(mcp.servers) ? mcp.servers : undefined
+  // Native declarations win, but an existing legacy declaration must not be
+  // shadowed just because unrelated native servers also exist.
+  if (servers && (servers.plur != null || mcp.plur == null)) return { map: servers, path: ['mcp', 'servers'], native: true }
+  return { map: mcp, path: ['mcp'], native: false }
 }
 
 /**
@@ -147,10 +186,12 @@ export interface OpencodeConfigSnapshot {
   ok: boolean
   /** `plugin` is an array containing `PLUR_OPENCODE_PLUGIN` in any form (`isPlurOpencodePluginEntry`). False when `ok` is false. */
   pluginDeclared: boolean
+  pluginDisabled?: boolean
   /** Older exact pin and the upgrade init would apply; tags/newer pins are omitted. */
   pluginUpgrade?: { from: string; to: string }
   /** `mcp.plur` is present (any non-null value). False when `ok` is false. */
   mcpPlurDeclared: boolean
+  mcpPlurDisabled?: boolean
   /**
    * The paths PLUR's own win32 node-form `mcp.plur` entry names that no
    * longer exist (`missingNodeEntryPaths`): typically the version-specific
@@ -183,25 +224,24 @@ export function readOpencodeConfig(configPath: string): OpencodeConfigSnapshot {
   if (!isPlainObject(parsed)) {
     return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
   }
-  if (parsed.plugin !== undefined && parsed.plugin !== null && !Array.isArray(parsed.plugin)) {
+  if (!validContainers(parsed)) {
     return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
   }
-  if (parsed.mcp !== undefined && parsed.mcp !== null && !isPlainObject(parsed.mcp)) {
-    return { exists: true, ok: false, pluginDeclared: false, mcpPlurDeclared: false, mcpPlurMissingPaths: [] }
-  }
-
-  const pluginDeclared = Array.isArray(parsed.plugin) && (parsed.plugin as unknown[]).some(isPlurOpencodePluginEntry)
-  const mcpPlurDeclared = isPlainObject(parsed.mcp) && parsed.mcp.plur !== undefined && parsed.mcp.plur !== null
+  const entries = pluginEntries(parsed)
+  const intent = pluginIntent(entries)
+  const pluginDeclared = intent.declared
+  const { map } = mcpLocation(parsed)
+  const mcpPlurDeclared = map.plur != null
   let mcpPlurMissingPaths: string[] = []
-  const entry = mcpPlurDeclared ? (parsed.mcp as Record<string, unknown>).plur : null
+  const entry = mcpPlurDeclared ? map.plur : null
   if (isPlainObject(entry) && entry.type === 'local' && Array.isArray(entry.command) && entry.command.length === 2 &&
       typeof entry.command[0] === 'string' && typeof entry.command[1] === 'string') {
     mcpPlurMissingPaths = missingNodeEntryPaths({ command: entry.command[0], args: [entry.command[1]] })
   }
-  const oldSpec = Array.isArray(parsed.plugin)
-    ? parsed.plugin.map(entry => Array.isArray(entry) ? entry[0] : entry).find(spec => upgradePluginSpec(spec) !== spec)
-    : undefined
+  const oldSpec = entries.map(pluginSpec).find(spec => upgradePluginSpec(spec) !== spec)
   return { exists: true, ok: true, pluginDeclared, mcpPlurDeclared, mcpPlurMissingPaths,
+    ...(intent.disabled ? { pluginDisabled: true } : {}),
+    ...(isPlainObject(entry) && (entry.disabled === true || entry.enabled === false) ? { mcpPlurDisabled: true } : {}),
     ...(typeof oldSpec === 'string' ? { pluginUpgrade: { from: oldSpec, to: upgradePluginSpec(oldSpec) as string } } : {}),
   }
 }
@@ -352,35 +392,39 @@ export function writeOpencodeConfig(
   // both fields, consistently — that's every fresh/untouched config, plus
   // the (uncommon but real) case of a user writing `null` to mean "nothing
   // here yet." Neither is refused.
-  if (cfg.plugin !== undefined && cfg.plugin !== null && !Array.isArray(cfg.plugin)) {
-    return { created: false, changed: false, ok: false, mcpPlurPreserved: false, mcpPlurUpgraded: false, mcpPlurRepaired: false }
-  }
-  if (cfg.mcp !== undefined && cfg.mcp !== null && !isPlainObject(cfg.mcp)) {
+  if (!validContainers(cfg)) {
     return { created: false, changed: false, ok: false, mcpPlurPreserved: false, mcpPlurUpgraded: false, mcpPlurRepaired: false }
   }
 
   const before = JSON.stringify(cfg)
 
-  const plugins = Array.isArray(cfg.plugin) ? cfg.plugin as unknown[] : []
   if (options.upgradePlugin !== false) {
-    for (let i = 0; i < plugins.length; i++) {
-      const entry = plugins[i]
-      const spec = Array.isArray(entry) ? entry[0] : entry
-      const upgraded = upgradePluginSpec(spec)
-      if (upgraded !== spec) {
-        if (Array.isArray(entry)) entry[0] = upgraded
-        else plugins[i] = upgraded
-        edits.push({ path: Array.isArray(entry) ? ['plugin', i, 0] : ['plugin', i], value: upgraded })
+    for (const key of ['plugin', 'plugins']) {
+      const entries = Array.isArray(cfg[key]) ? cfg[key] as unknown[] : []
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i], spec = pluginSpec(entry), upgraded = upgradePluginSpec(spec)
+        if (upgraded === spec) continue
+        let path: JSONPath = [key, i]
+        if (Array.isArray(entry)) { entry[0] = upgraded; path = [...path, 0] }
+        else if (isPlainObject(entry)) { entry.package = upgraded; path = [...path, 'package'] }
+        else entries[i] = upgraded
+        edits.push({ path, value: upgraded })
       }
     }
   }
-  if (!plugins.some(isPlurOpencodePluginEntry)) {
-    plugins.push(PLUGIN)
-    edits.push({ path: Array.isArray(cfg.plugin) ? ['plugin', plugins.length - 1] : ['plugin'], value: Array.isArray(cfg.plugin) ? PLUGIN : plugins })
+  const intent = pluginIntent(pluginEntries(cfg))
+  if (!intent.declared && !intent.disabled) {
+    const key = Array.isArray(cfg.plugins) ? 'plugins' : 'plugin'
+    const existing = Array.isArray(cfg[key])
+    const entries = existing ? cfg[key] as unknown[] : []
+    entries.push(PLUGIN); cfg[key] = entries
+    edits.push({ path: existing ? [key, entries.length - 1] : [key], value: existing ? PLUGIN : entries })
   }
-  cfg.plugin = plugins
 
-  const mcp: Record<string, unknown> = isPlainObject(cfg.mcp) ? cfg.mcp : {}
+  const rootMcp: Record<string, unknown> = isPlainObject(cfg.mcp) ? cfg.mcp : {}
+  const location = mcpLocation(cfg)
+  const mcp = location.map
+  const mcpPath = location.path
   // B2 (0.20.0 audit): see WriteOpencodeConfigResult.mcpPlurPreserved for the
   // full rationale. A PRESENT, non-null `mcp.plur` is left completely alone;
   // PLUR's entry is written only when there is nothing there to lose.
@@ -390,7 +434,7 @@ export function writeOpencodeConfig(
   if ((platform() === 'win32' || findMcpJsEntry()) && isOwnLegacyNpxEntry(mcp.plur)) {
     mcp.plur = { ...mcp.plur, command: opencodeMcpCommand(cliVersion) }
     mcpPlurUpgraded = true
-    edits.push({ path: ['mcp', 'plur', 'command'], value: (mcp.plur as { command: string[] }).command })
+    edits.push({ path: [...mcpPath, 'plur', 'command'], value: (mcp.plur as { command: string[] }).command })
   }
   // #1311: and PLUR's own win32 node-form entry, once it has gone stale.
   let mcpPlurRepaired = false
@@ -398,7 +442,7 @@ export function writeOpencodeConfig(
   if (repaired) {
     mcp.plur = { ...(mcp.plur as Record<string, unknown>), command: repaired }
     mcpPlurRepaired = true
-    edits.push({ path: ['mcp', 'plur', 'command'], value: repaired })
+    edits.push({ path: [...mcpPath, 'plur', 'command'], value: repaired })
   }
   const rewritten = mcpPlurUpgraded || mcpPlurRepaired
   const mcpPlurPreserved = !rewritten && mcp.plur !== undefined && mcp.plur !== null
@@ -406,11 +450,12 @@ export function writeOpencodeConfig(
     mcp.plur = {
       type: 'local',
       command: opencodeMcpCommand(cliVersion),
-      enabled: true,
+      ...(location.native ? { disabled: false } : { enabled: true }),
     }
-    edits.push({ path: cfg.mcp === null || cfg.mcp === undefined ? ['mcp'] : ['mcp', 'plur'], value: cfg.mcp === null || cfg.mcp === undefined ? mcp : mcp.plur })
+    edits.push({ path: cfg.mcp === null || cfg.mcp === undefined ? ['mcp'] : [...mcpPath, 'plur'], value: cfg.mcp === null || cfg.mcp === undefined ? mcp : mcp.plur })
   }
-  cfg.mcp = mcp
+  if (location.native) rootMcp.servers = mcp
+  cfg.mcp = location.native ? rootMcp : mcp
 
   const changed = JSON.stringify(cfg) !== before
   if (created || changed) {

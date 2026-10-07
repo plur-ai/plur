@@ -486,6 +486,8 @@ export interface FolderAskOptions {
    * does, through shell.env; the editor hooks' hosts cannot.
    */
   bindSession?: boolean
+  /** Print the bound session explicitly when the host has no session-aware shell hook. */
+  commandSession?: boolean
   /**
    * The MCP server asks (#1525): offer "not now" as a command, name the
    * session in every command (`--session <id>`), and speak of the next memory
@@ -645,7 +647,7 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; 
   // A store path is never a folder rule, so glob characters in it are fine.
   const storeBlocked = !folderBlocked && customStore ? unofferable(resolve(root)) : null
   // The session id is printed in an MCP command too; it gets the same check.
-  const sessionBlocked = !folderBlocked && !storeBlocked && (mcp || reuse) ? unofferable(sessionId) : null
+  const sessionBlocked = !folderBlocked && !storeBlocked && (mcp || reuse || opts.commandSession) ? unofferable(sessionId) : null
   const blocked = folderBlocked ?? (storeBlocked === 'pattern' ? null : storeBlocked) ?? sessionBlocked
   if (blocked && reuse) return null
   if (blocked) {
@@ -675,7 +677,7 @@ function buildFolderAsk(opts: FolderAskOptions, host: { hosts: FolderAskHost[]; 
   const others = untrusted && ranked.suggested ? [ranked.suggested, ...ranked.others] : ranked.others.filter(o => o !== suggested)
   const f = quoted(folder)
   const storeArg = customStore ? `--path ${quoted(resolve(root))} ` : ''
-  const sessionArg = mcp || reuse ? ` --session ${quoted(sessionId)}` : ''
+  const sessionArg = mcp || reuse || opts.commandSession ? ` --session ${quoted(sessionId)}` : ''
 
   // Every offered answer gets its own nonce, issued for exactly that answer
   // (#1477, #1378): `plur folders set` refuses a nonce whose answer differs

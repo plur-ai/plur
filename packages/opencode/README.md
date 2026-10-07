@@ -4,11 +4,10 @@
 
 Part of [PLUR](https://plur.ai) — the engram exchange layer connecting agents across tools. Compatible with the MCP server ([`@plur-ai/mcp`](https://npmjs.com/package/@plur-ai/mcp)) for Claude Code, Cursor, and Windsurf, and with [`@plur-ai/claw`](https://npmjs.com/package/@plur-ai/claw) for OpenClaw. One store, shared across every PLUR-compatible tool.
 
-> opencode resolves a bare plugin name — `plugin: ["@plur-ai/opencode"]` — by
-> having Bun fetch it from the npm registry at plugin-load time, and logs **no
-> error anywhere** when that fetch finds nothing. The package is published, so
-> the entry resolves; if memory never reaches the model, run `plur doctor`,
-> which checks that the plugin name resolves.
+The 0.21.4 plugin supports OpenCode V1 and V2 through separate host adapters.
+OpenCode V2 requires this new plugin entrypoint; the older 0.2.1 plugin fails to
+load there. `plur doctor` checks configuration and package availability, but a
+successful check does not prove the host loaded a plugin.
 
 ## What it does
 
@@ -17,7 +16,7 @@ Once installed, opencode's agents get memory automatically:
 - **Recall** — relevant engrams from past sessions are found and rendered into a memory block once per user turn.
 - **Injection** — that block is placed in the system prompt on every model request, at no extra recall cost within the turn.
 - **Learning** — two paths, mirroring [`@plur-ai/claw`](../claw): the model's own `🧠 I learned:` self-report, and user corrections/preferences detected at confidence ≥ 0.7.
-- **Compaction survival** — before opencode compacts a session's context, the current memory block is carried into the compaction prompt and anything not yet learned is learned first.
+- **Compaction survival** — the current memory block is carried into the compaction prompt. V2 learns assistant text only after successful execution; interrupted or unfinished text is not harvested during compaction.
 
 Everything is stored as plain YAML in `~/.plur/` — the same store `@plur-ai/mcp`, `@plur-ai/claw`, and every other PLUR integration read and write. Teach it once in Claude Code, recall it in opencode.
 
@@ -26,31 +25,44 @@ Everything is stored as plain YAML in `~/.plur/` — the same store `@plur-ai/mc
 Requires Node.js 20 or newer:
 
 ```sh
-npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
+npm install -g @plur-ai/cli@0.21.4 @plur-ai/mcp@0.21.4
 plur init --opencode
 plur doctor
 ```
 
-Restart OpenCode after setup or an upgrade. Plain `plur init` auto-detects an existing OpenCode config directory; `--opencode` also sets up a new one, and `--no-opencode` skips it.
+Restart OpenCode after setup or an upgrade, including its background service on V2. Plain `plur init` auto-detects an existing OpenCode config directory; `--opencode` also sets up a new one, and `--no-opencode` skips it.
 
 The default file is `~/.config/opencode/opencode.json`. An existing `opencode.jsonc` is used when no `.json` exists. `OPENCODE_CONFIG_DIR` takes precedence, then `$XDG_CONFIG_HOME/opencode`, then the default directory.
 
 Init writes both layers:
 
-- `plugin: ["@plur-ai/opencode"]` for automatic recall and learning.
-- `mcp.plur` for explicit memory tools. When MCP is installed, its command is the Node executable plus the installed package's JavaScript entry, on Unix and Windows. Let init resolve these machine-specific paths.
+- The PLUR plugin declaration for automatic recall and learning. V1 uses `plugin`; V2 also accepts `plugins` with string or `{ "package": "@plur-ai/opencode@0.21.4", "options": {} }` entries.
+- `mcp.plur` (legacy) or an existing V2 `mcp.servers.plur` map for explicit memory tools. When MCP is installed, its command is the Node executable plus the installed package's JavaScript entry, on Unix and Windows. Let init resolve these machine-specific paths.
 
-On an upgrade, init advances older exact plugin pins to the plugin version shipped with the CLI. It preserves comments, formatting, tuple options and unrelated fields in JSON or JSONC. Newer pins, tags and bare unpinned entries are left alone; `--keep-opencode-plugin` retains an intentional older pin. This does not force OpenCode to refresh its cache for a bare plugin name.
+On an upgrade, init advances older exact plugin pins to the plugin version shipped with the CLI. It preserves comments, formatting, tuple/object options and unrelated fields in JSON or JSONC. Newer pins, tags and bare unpinned entries are left alone; `--keep-opencode-plugin` retains an intentional older pin. V2 removal directives such as `-plur` and `-*` are preserved; init does not override a deliberate disable. This does not force OpenCode to refresh its cache for a bare plugin name.
 
 Init migrates PLUR's old npx MCP command to the installed package while preserving environment and other settings. Custom and remote MCP entries remain unchanged. Invalid or ambiguous JSONC and incompatible field shapes are refused without writing; correct the reported config problem before rerunning init.
 
 Upgrade with the same install/init commands above. `plur doctor` reports plugin declarations, resolvability and any suggested pin upgrade; it also downloads a missing search model when downloads are allowed.
 
-## Verified version
+## Verified host versions
 
-Everything in this package was measured against a real binary, not documentation: **opencode 1.18.30** / **`@opencode-ai/plugin` 1.18.30**, 2026-09-15. See [ARCHITECTURE.md](ARCHITECTURE.md) for what was measured and why it shaped the code.
+The packed 0.21.4 artifact is tested with actual **OpenCode 2.0.23** and
+**OpenCode 1.18.0**, launched with **Node 24.13.0**. The V1 SDK remains pinned at
+1.18.30; the V2 adapter is typechecked against `@opencode/plugin` 2.0.23. Older
+V2 releases have not been verified. Existing V1 support starts at 1.18.0.
 
-Both of the hooks this plugin depends on carry opencode's `experimental.` prefix. If a future opencode release renames or removes one, the plugin degrades — see [Failure posture](ARCHITECTURE.md#failure-posture) — rather than breaking your agent, but the degraded mode (`chat.message` fallback) has a real cost: it re-accretes a stale memory block into session history every turn. `RenderPath` detects the fallback condition and logs it (`PLUR_DEBUG=1`); it does not fix it.
+V1 uses the original experimental hooks; V2 registers native context and
+compaction hooks and observes completed execution events. Both place memory
+in the model's request without adding persistent synthetic history messages.
+The V1 fallback behavior is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+V2 keys state by session and resolves that session's actual folder on each
+request, including its subpath. It rechecks consent, trust and scope before
+rendering or saving. Processed message identifiers survive normal plugin
+reloads in OpenCode's plugin storage; conversation text is not copied there.
+This prevents ordinary replay, but does not promise exactly-once learning
+across a crash between separate stores. Both adapters drain accepted learning work at shutdown. V1 can also invoke the definition through its compatibility service; that setup remains inactive when native session hooks are absent.
 
 ## Diagnostics
 
@@ -58,7 +70,7 @@ Both of the hooks this plugin depends on carry opencode's `experimental.` prefix
 PLUR_DEBUG=1 opencode run "..."
 ```
 
-Logs one line per hook invocation to stderr — scope root resolution, the session scope in an `on` folder, recall counts, and whether the `system.transform` fallback has latched. Silent otherwise; the plugin never writes to stdout or interrupts a turn on a memory-store failure.
+V1 logs hook activity, scope resolution and fallback state. V2 logs adapter failures and skipped learning after policy changes. Silent otherwise; the plugin never writes to stdout or interrupts a turn on a memory-store failure.
 
 ## What leaves your machine
 
@@ -87,7 +99,7 @@ A folder with no decision asks; your home folder is not a special case and asks 
 
 **The commands need the `plur` CLI** on the `PATH` of the shell the agent runs them in. Without it, the plugin says so and gives the install command (`npm install -g @plur-ai/cli`) instead of offering commands that would fail; once `plur` is on `PATH`, the next message offers them.
 
-Each offered command carries its own single-use nonce, issued by core for exactly that folder and that answer, and bound to the session that showed it: the plugin tells every shell the agent runs which session it belongs to (`PLUR_FOLDER_SESSION`, through opencode's `shell.env` hook), and `plur folders set` refuses a nonce from another session. A session's nonces end after the message that follows the question, when opencode deletes the session or the opencode process exits, and after 24 hours at most. A session continued in a new opencode process is asked again, with fresh nonces. The answer applies from the next prompt. You can always decide yourself instead, from any terminal:
+Each offered command carries its own single-use nonce, issued by core for exactly that folder and that answer, and bound to the session that showed it: V1 supplies `PLUR_FOLDER_SESSION` through `shell.env`; V2 prints an explicit `--session` in each offered command because its shell hook has no session identifier, and `plur folders set` refuses a nonce from another session. A session's nonces end after the message that follows the question, when opencode deletes the session or the opencode process exits, and after 24 hours at most. A session continued in a new opencode process is asked again, with fresh nonces. The answer applies from the next prompt. You can always decide yourself instead, from any terminal:
 
 ```sh
 plur folders set . --on                  # or --scope group:acme/eng
@@ -119,9 +131,38 @@ This is the same shape as `direnv allow`, `git config safe.directory`, and VS Co
 
 The `cwd` passed to the underlying `Plur` constructor is `autoDiscover: false` (2026-09 audit) — it never performs cwd-derived store discovery at all, so it cannot create a per-project store as a side effect of merely loading.
 
-The scope root itself prefers opencode's `worktree`, but falls back to `directory` — `worktree` was measured as `"/"` outside a git repository (opencode 1.18.30), which would otherwise scope every non-repo session to the filesystem root.
+On V1 the scope root prefers opencode's `worktree`, but falls back to `directory` — `worktree` was measured as `"/"` outside a git repository (opencode 1.18.30), which would otherwise scope every non-repo session to the filesystem root.
 
 ## Live acceptance gate
+
+`test/host.manual.py` exercises an installed packed artifact in a fresh HOME
+against a real V1 or V2 binary and a deterministic local HTTP model. It reads
+no provider credentials. It checks recall in model requests, user and completed
+assistant learning, restart/recall, off/ask behavior, and V2 consent commands.
+The `--mcp` option also checks the real packed MCP server connects with 14 tools;
+it does not claim a model-invoked MCP tool roundtrip.
+
+```sh
+python3 packages/opencode/test/host.manual.py \
+  --packed /path/to/isolated/npm-prefix \
+  --host /path/to/opencode --node /path/to/node --mode on
+# Also run --mode off, --mode ask, and V2 --mode ask --accept-consent --mcp.
+# Add --v1 when testing the V1 binary.
+```
+
+The prefix must contain packed core, CLI, MCP and OpenCode packages. By default
+the fixture disables embeddings and uses local keyword recall. Pass
+`--model-cache /path/to/bge-small-en-v1.5` to exercise the public BGE model too.
+Evidence is retained in the temporary directory printed by the script. The
+`opencode-hosts` CI workflow runs this gate against both pinned host versions
+on native macOS, Linux and Windows runners. It checks off/ask isolation again
+after restart, and the V2 MCP case uses a tool-capable model so the host waits
+for tool discovery. Each result records the OS, architecture, Node and host
+versions. Windows runs the installed native executable directly, with a
+fresh profile and platform-correct paths.
+
+The older provider-backed acceptance gate remains available separately:
+
 
 Unit tests prove the hooks return the right objects. They cannot prove memory actually reaches the model — the documented failure mode for PLUR plugin releases is a plugin that loads, registers, reports healthy, and injects nothing (this is exactly what happened here before publishing was fixed; see the warning at the top of this file). `test/e2e.manual.mjs` is a separate, manual gate that builds the real publishable artifact (packed tarballs, not a `dist/` copy — `tsup` does not bundle `@plur-ai/core`, so a bare directory copy can't resolve its own dependency), installs it the way a real user would, and drives a real opencode session against it.
 

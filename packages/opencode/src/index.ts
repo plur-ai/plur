@@ -16,6 +16,7 @@ import {
 // require. Typechecking the hook map against it turns a renamed/changed
 // `experimental.` hook into a build failure instead of a silent no-op.
 import type { Plugin, Hooks } from '@opencode-ai/plugin'
+import { setupV2 } from './v2.js'
 import { BlockCache } from './block.js'
 import { RenderPath } from './capability.js'
 import { TurnBuffer } from './turn.js'
@@ -87,6 +88,14 @@ export const PlurPlugin: Plugin = async (ctx) => {
     return {} satisfies Hooks
   }
   log(`scope root: ${scopeRoot}`)
+  // Keep turns responsive, but do not let host shutdown discard accepted writes.
+  const learning = new Set<Promise<void>>()
+  const backgroundLearning = (job: Promise<void>, label: string) => {
+    const pending = job.catch((e) => log(`learn (${label}) failed: ${(e as Error).message}`))
+    learning.add(pending)
+    void pending.then(() => learning.delete(pending))
+  }
+
   // The plugin lives as long as the opencode process: when a recall finds the
   // embedding model missing, it may load it in the background, once (#1586).
   try { allowBackgroundModelLoad(true) } catch { /* optional */ }
@@ -297,8 +306,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
           // Secondary learning path: corrections/preferences from the user's
           // own text — the same text the recall query above was built from.
           // Fire-and-forget: never stall the turn on a slow store.
-          void learnFromUserText(plur, query, settings).catch((e) =>
-            log(`learn (user) failed: ${(e as Error).message}`))
+          backgroundLearning(learnFromUserText(plur, query, settings), 'user')
         }
 
         // Safety net: system.transform is the preferred, non-accreting path.
@@ -372,8 +380,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
           // Fire-and-forget: never stall the turn on a slow store. One-shot
           // takeIfFresh already guards against session.idle's double-fire —
           // this only runs once per turn.
-          void learnFromTurn(plur, texts, state.settings).catch((e) =>
-            log(`learn (turn) failed: ${(e as Error).message}`))
+          backgroundLearning(learnFromTurn(plur, texts, state.settings), 'turn')
         }
         if (event.type === 'session.deleted') {
           const sessionID = event.properties?.info?.id
@@ -402,8 +409,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
         if (state.policy.mode !== 'on') return
         const block = blocks.get(input.sessionID)
         if (block) output.context.push(block)
-        if (texts) void learnFromTurn(plur, texts, state.settings).catch((e) =>
-          log(`learn (compacting) failed: ${(e as Error).message}`))
+        if (texts) backgroundLearning(learnFromTurn(plur, texts, state.settings), 'compacting')
       })
     },
 
@@ -419,6 +425,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
 
     dispose: async () => {
       await safe('dispose', async () => {
+        await Promise.allSettled([...learning])
         blocks.clearAll()
         // The process is going away: the question's nonces go with it.
         for (const sessionID of [...asked]) endNonces(sessionID)
@@ -430,4 +437,5 @@ export const PlurPlugin: Plugin = async (ctx) => {
   } satisfies Hooks
 }
 
-export default PlurPlugin
+// V1 >=1.18.0 selects server; V2 >=2.0.23 selects setup. SDK imports stay type-only.
+export default { id: 'plur', server: PlurPlugin, setup: setupV2 }
