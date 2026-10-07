@@ -114,7 +114,21 @@ This writes `.cursor/mcp.json`, `.cursor/hooks.json` and `.cursor/rules/plur-mem
 plur init --codex
 ```
 
-Registers the MCP server via `codex mcp add` in `~/.codex/config.toml`, writes lifecycle hooks to `~/.codex/hooks.json` (`CODEX_HOME` overrides the directory), and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.codex/` exists.
+Registers a new MCP server via `codex mcp add` in `~/.codex/config.toml`, writes lifecycle hooks to `~/.codex/hooks.json` (`CODEX_HOME` overrides the directory), and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.codex/` exists.
+
+To upgrade an existing Codex installation:
+
+```bash
+npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
+plur init --codex
+plur doctor --codex
+```
+
+Init updates recognized older PLUR launch pins in place, preserving environment settings, timeouts, tool policies and comments. It preserves newer pins and custom or HTTP servers. Use `--keep-codex-mcp` to retain an intentional older launch entry. Restart Codex after changing its configuration.
+
+For remote stores using `plur remote --token-env NAME`, both `remote` and `init --codex` add the required variable names to Codex's `env_vars`; they never copy token values into its config. The variable must also be available to the process that launches Codex. A variable exported in PowerShell does not prove that a separately launched desktop app inherited it.
+
+`plur doctor --codex` starts the MCP command from the Codex user config with Codex-style environment filtering, checks its reported version against the CLI, and reports missing token forwarding or values. It does not check project/profile overrides, another running application's environment, hook trust, or a remote write. `--no-handshake` reports the runtime as unverified and exits nonzero. Verify saving and recalling a test memory in the actual Codex session before treating desktop setup as complete. Native Windows and WSL2 have separate home directories and registrations; run setup in each environment you use.
 
 Injection uses hybrid search (BM25 + embeddings) with an automatic BM25 fallback if the embedder is slow or unavailable. Set `PLUR_HOOK_HYBRID=0` to force BM25 (applies to the Antigravity hooks too; `PLUR_CODEX_HYBRID` is honoured as an alias). `PLUR_HOOK_HYBRID_DEADLINE_MS` tunes the fallback deadline — keep it below your harness's hook timeout (Codex 25s, Antigravity 20s).
 

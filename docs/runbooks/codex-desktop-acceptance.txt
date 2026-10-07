@@ -1,0 +1,46 @@
+PLUR — Windows Codex desktop acceptance
+
+Status: not yet performed; tracked in #1625. Do not describe the desktop flow as verified.
+For desktop acceptance, download the plur-codex-candidate artifact from the passing
+Windows real editors workflow. Extract it into an empty directory. In
+PowerShell, from that directory:
+
+  $packages = Get-ChildItem -Filter *.tgz | Where-Object { $_.Name -match '^plur-ai-(core|cli|mcp)-' }
+  npm install -g --no-audit --no-fund $packages.FullName
+  plur --version
+  plur init --codex
+  plur doctor --codex
+
+The version must match candidate-version.txt. This is a test build, not a
+published release. Installing the eventual stable CLI and MCP together, then
+rerunning init, returns the registration to the stable installed packages.
+A global CLI version alone does not establish which MCP Codex is running.
+
+1. On the existing Windows installation, record Node and Codex versions and the
+   current PLUR launch command/pin. Do not include tokens in evidence.
+2. Upgrade CLI and MCP together, run plur init --codex, then restart the actual
+   Codex desktop app. If its hook review requests trust, inspect and approve
+   the PLUR entries through Codex's normal UI.
+3. In PowerShell run plur doctor --codex --json. Its target must be Codex, the
+   MCP and CLI versions must match, and required token variables must be
+   available. This is a terminal check, not desktop acceptance.
+4. If using --token-env, ensure the token variable is available to the desktop
+   application's launch environment, then fully restart the app. Never paste
+   its value into screenshots, reports, model prompts, or this checklist.
+5. In the desktop app, open the mapped project. Ask it to save a unique,
+   harmless test statement WITHOUT an explicit scope. Inspect the tool result:
+   expected remote store/scope and delivery=remote, not delivery=outbox.
+6. Start a fresh desktop session in that project and recall that statement.
+   Confirm its source is the remote store. Confirm automatic recall also
+   reaches the session after hook trust, without manually calling recall.
+7. Repeat the default write and fresh-session recall through the Codex CLI in
+   PowerShell. Use a second marker so the two paths cannot be confused.
+8. If WSL is used, run setup under WSL2 with Linux Node/npm and its own config,
+   then repeat in a fresh Codex session. Windows and WSL user homes differ.
+9. Verify an off folder still stays silent and an undecided folder still asks;
+   neither should silently send a test memory remotely.
+
+Record: OS, Codex desktop version, Codex CLI version, Node version, PLUR runtime
+version, project location type (native/WSL Linux/WSL mounted), steps passed or
+failed, and sanitized tool-result evidence. Desktop acceptance remains pending
+until these checks run in the actual application.

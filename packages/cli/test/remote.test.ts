@@ -220,6 +220,24 @@ describe('plur remote (#1413)', () => {
     expect(foldersText()).toBeNull()
   }, TEST_TIMEOUT_MS)
 
+  it('remote after Codex init adds token forwarding without a second init (#1623)', async () => {
+    const codexHome = join(home, '.codex')
+    mkdirSync(codexHome)
+    const codexPath = join(codexHome, 'config.toml')
+    writeFileSync(codexPath, '[mcp_servers.plur]\ncommand = "npx"\nargs = ["-y", "@plur-ai/mcp@0.21.4"]\nstartup_timeout_sec = 37\n')
+    const VAR = 'PLUR_REMOTE_TEST_TOKEN_1623'
+    const first = await cli(['remote', '--url', baseUrl, '--token-env', VAR, '--scope', SCOPE, '--json'], { env: { [VAR]: TOKEN, CODEX_HOME: codexHome } })
+    expect(first.status, first.stderr).toBe(0)
+    const bytes = readFileSync(codexPath, 'utf8')
+    expect(bytes).toContain(`env_vars = ["${VAR}"]`)
+    expect(bytes).toContain('startup_timeout_sec = 37')
+    expect(bytes).not.toContain(TOKEN)
+    expect(JSON.parse(first.stdout).codex.status).toBe('updated')
+    const again = await cli(['remote', '--url', baseUrl, '--token-env', VAR, '--scope', SCOPE, '--json'], { env: { [VAR]: TOKEN, CODEX_HOME: codexHome } })
+    expect(again.status, again.stderr).toBe(0)
+    expect(readFileSync(codexPath, 'utf8')).toBe(bytes)
+  }, TEST_TIMEOUT_MS)
+
   // #1561 (pre-release check L5): --token-env wrote the token's VALUE into
   // config.yaml. Only the variable's name may be stored; the token is read
   // from it at load, and no later write-back of the stores list (here: a

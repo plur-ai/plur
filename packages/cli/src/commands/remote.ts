@@ -1,3 +1,5 @@
+import { updateCodexRegistration } from '../codex-config.js'
+import { CLI_VERSION } from '../version.js'
 import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -305,9 +307,18 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
 
   const legacy = legacyRemote(canonicalize(folder))
   const root = plur.storageRoot
+  let codex: { status: string; message: string }
+  try {
+    codex = updateCodexRegistration({ root, version: CLI_VERSION })
+  } catch {
+    // Remote connection succeeded; distinguish partial local setup without
+    // exposing parser/OS diagnostics that might contain credential values.
+    codex = { status: 'failed', message: 'Remote store connected, but Codex configuration could not be updated. Run `plur init --codex`, then `plur doctor --codex` before using it in Codex.' }
+    process.exitCode = 1
+  }
   if (json) {
     outputJson(scrubDeep({
-      success: true, url, folder: mapped, scope: scopes[0], stores,
+      success: true, url, folder: mapped, scope: scopes[0], stores, codex,
       ...(username ? { username } : {}),
       ...(legacy ? { legacy_plur_yaml: { path: legacy.path, message: legacyMovedMessage(legacy.path) } } : {}),
     }, [tok, legacy?.remote_token]))
@@ -323,6 +334,7 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
   lines.push(parsed.tokenEnv
     ? `${join(root, 'config.yaml')} records only the variable name (${parsed.tokenEnv}), not the token; it must be set wherever PLUR runs. Nothing was written to this folder.`
     : `The token is kept in ${join(root, 'config.yaml')}; nothing was written to this folder.`)
+  if (codex.status !== 'absent') lines.push(`Codex: ${codex.message}`)
   for (const l of lines) outputInfo(scrubAll(l, [tok, legacy?.remote_token]), flags)
   // Not suppressed by --quiet: it says a file of yours still holds a token.
   if (legacy) outputText(scrubAll(legacyMovedMessage(legacy.path), [tok, legacy.remote_token]))

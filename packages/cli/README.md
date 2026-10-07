@@ -63,6 +63,7 @@ plur forget ENG-2026-0329-001
 | `plur import --from <source> --path <file>` | Import memories from another system (see below) |
 | `plur init` | Configure editor hooks/plugins and MCP; force OpenCode setup with `--opencode` |
 | `plur doctor` | Diagnose installation health (hooks, MCP, shim, embedder) |
+| `plur doctor --codex` | Check the Codex user MCP runtime version and token environment; desktop/session acceptance is separate |
 
 ## The memory viewer
 

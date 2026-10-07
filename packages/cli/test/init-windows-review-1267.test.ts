@@ -3,7 +3,7 @@
  *  1. the "machine-local path in .cursor/hooks.json" warning must still fire
  *     now that the shim path is quoted;
  *  2. an old Windows `plur-mcp.cmd` registration in Codex's config.toml is
- *     healed (via `codex mcp remove` + `codex mcp add`, never TOML surgery)
+ *     healed in place without losing user settings (#1623)
  *     and flagged by `plur doctor`;
  *  3. the opencode skip line says why it skipped.
  */
@@ -87,17 +87,18 @@ describe('#1267 review follow-ups (spawned CLI, win32 stub, home with a space)',
     expect(out).toContain('Committing .cursor/mcp.json')
   })
 
-  it('2a. init heals an old .cmd registration in Codex via remove + add', () => {
+  it('2a. init heals an old .cmd registration in Codex in place', () => {
     seedCodex(OLD_CMD)
     const out = run(['init', '--global', '--no-desktop', '--no-cursor', '--no-antigravity', '--no-opencode', '--codex'])
-    const calls = readFileSync(log, 'utf-8').trim().split('\n')
-    expect(calls).toContain('mcp remove plur')
-    const add = calls.find((c) => c.startsWith('mcp add plur -- '))
-    expect(add).toBeDefined()
-    expect(add).toContain(process.execPath)
-    expect(add).not.toContain('.cmd')
-    expect(calls.indexOf('mcp remove plur')).toBeLessThan(calls.indexOf(add!))
-    expect(out).toMatch(/Codex[\s\S]*MCP server: .*healed/)
+    const calls = existsSync(log) ? readFileSync(log, 'utf-8') : ''
+    expect(calls).not.toContain('mcp remove')
+    expect(calls).not.toContain('mcp add')
+    const entry = readCodexPlurMcpEntry(readFileSync(join(home, '.codex', 'config.toml'), 'utf8'))!
+    expect(entry.command).toBe(process.execPath)
+    expect(entry.args[0]).toMatch(/index\.js$/)
+    expect(entry.command).not.toContain('.cmd')
+    expect(out).toMatch(/Codex[\s\S]*MCP server: .*updated Codex MCP registration in place/)
+
   })
 
   it('2b. init leaves a custom Codex registration alone', () => {

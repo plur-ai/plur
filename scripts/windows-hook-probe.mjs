@@ -68,7 +68,7 @@ function scenario(name, { fakeClaude, expectClaudeExec }) {
   if (!/\s/.test(home)) { console.error(`temp HOME has no space: ${home}`); process.exit(1) }
   const project = join(home, 'project')
   mkdirSync(project, { recursive: true })
-  const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config'), OPENCODE_CONFIG_DIR: '' }
+  const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config'), OPENCODE_CONFIG_DIR: '', CODEX_HOME: join(home, '.codex'), PLUR_PATH: join(home, '.plur') }
   if (fakeClaude) {
     const bin = join(home, 'fakebin')
     mkdirSync(bin)

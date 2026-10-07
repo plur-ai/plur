@@ -20,7 +20,7 @@ inputs:
   claude-code-version:
     default: 2.1.289
   codex-version:
-    default: 0.160.0
+    default: 0.160.1
   opencode-version:
     default: 1.18.34
   cursor-agent-version:
@@ -127,6 +127,26 @@ runs:
       env:
         PLUR_EDITORS_REQUIRED: ${{ inputs.cursor-required == 'true' && 'claude,codex,opencode,cursor' || 'claude,codex,opencode' }}
       run: node scripts/windows-editors-probe.mjs --scenario ${{ inputs.scenario }}
+
+    - name: Codex upgrade and actual host memory roundtrip
+      shell: pwsh
+      run: node --experimental-transform-types scripts/codex-upgrade-probe.mjs
+
+    - name: Prepare desktop acceptance candidate
+      if: inputs.scenario == 'fresh' && inputs.channel != 'latest'
+      shell: pwsh
+      run: |
+        Copy-Item docs/runbooks/codex-desktop-acceptance.txt $env:PLUR_TARBALLS
+        "CLI version: $env:PLUR_CI_VERSION`nCommit: $env:GITHUB_SHA" | Set-Content (Join-Path $env:PLUR_TARBALLS 'candidate-version.txt')
+
+    - name: Upload tested desktop acceptance candidate
+      if: inputs.scenario == 'fresh' && inputs.channel != 'latest'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: plur-codex-candidate-${{ github.sha }}
+        path: ${{ env.PLUR_TARBALLS }}
+        if-no-files-found: error
+        retention-days: 14
 
     - name: Editor drift (latest channel)
       if: always() && inputs.channel == 'latest'

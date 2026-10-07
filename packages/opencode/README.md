@@ -156,9 +156,11 @@ the fixture disables embeddings and uses local keyword recall. Pass
 Evidence is retained in the temporary directory printed by the script. The
 `opencode-hosts` CI workflow runs this gate against both pinned host versions
 on native macOS, Linux and Windows runners. It checks off/ask isolation again
-after restart, and the V2 MCP case uses a tool-capable model so the host waits
-for tool discovery. Each result records the OS, architecture, Node and host
-versions. Windows runs the installed native executable directly, with a
+after restart. In the MCP case, host output is streamed to the evidence file
+and the synthetic main-model response waits up to 20 seconds for the host to
+report its real 14-tool MCP connection. A timeout fails the fixture even if the
+host retries; tool capability alone does not synchronize startup. Each result
+records the OS, architecture, Node and host versions. Windows runs the installed native executable directly, with a
 fresh profile and platform-correct paths.
 
 The older provider-backed acceptance gate remains available separately:
