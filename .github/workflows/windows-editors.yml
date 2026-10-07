@@ -1,108 +1,109 @@
-name: Windows real editors
-
-# #1605, layer 1. On windows-latest, install this build (stamped with a
-# CI-only version) globally from packed tarballs and the real editor CLIs at
-# pinned versions (Claude Code, Codex, opencode, Cursor's agent CLI by version
-# and SHA-256), then check per editor: the editor's own `mcp list` shows plur
-# healthy; the exact registered MCP command completes a handshake with this
-# build; the registered hooks are exactly the expected set and run, from a
-# neutral folder, with that editor's recorded payloads in a decided, an
-# undecided, an off and a team-scoped folder; `plur doctor` reports the editor
-# wired; the PR's opencode plugin loads in opencode and injects / asks / stays
-# silent; a second init changes nothing; the user's own entries survive.
-# Claude Desktop and Antigravity have no CLI: their config files are checked.
-# Three scenarios: a fresh install, and upgrades from the published 0.19.4 and
-# 0.21.2 (scripts/windows-editors-probe.mjs). The job summary lists everything
-# covered and everything "not covered (reason)".
-#
-# It runs on every PR, so `windows-editors` can be a required check: when a PR
-# changes nothing the job installs or builds, the scenarios are skipped and
-# `windows-editors` passes at once. Cursor is required on main, on manual
-# runs and in the release gate (scripts/release.sh); on PRs a failed Cursor
-# download is reported as not covered. No logins, no tokens, no model calls.
-# The latest editor versions run on a schedule (windows-editors-latest.yml).
-# Actions are pinned by commit SHA.
-
+name: Published 0.21.4 Windows and WSL verification
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      channel:
-        type: string
-        default: pinned
-
 permissions:
   contents: read
-
-concurrency:
-  group: windows-editors-${{ github.workflow }}-${{ github.ref }}-${{ inputs.channel || 'pinned' }}
-  cancel-in-progress: true
-
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      run: ${{ steps.decide.outputs.run }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - id: decide
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [ "$EVENT" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          changed=$(git diff --name-only "$BASE"..."$HEAD")
-          echo "$changed"
-          # What this job builds, installs or runs.
-          if echo "$changed" | grep -qE '^(packages/(cli|mcp|core|opencode)/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig[^/]*\.json$|scripts/(windows-editors-probe|ci-stamp-version)\.mjs$|scripts/release(-windows-gate)?\.sh$|\.github/workflows/windows-editors(-latest)?\.yml$|\.github/actions/windows-editors/)'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  scenario:
-    needs: changes
-    if: needs.changes.outputs.run == 'true'
-    runs-on: windows-latest
-    timeout-minutes: 45
+  native:
+    runs-on: windows-2025
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         scenario: [fresh, from-0.19.4, from-0.21.2]
+    env:
+      PLUR_CI_VERSION: 0.21.4
+      PLUR_EDITORS_REQUIRED: codex
+      PLUR_TEST_CODEX_HOST: '1'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: ./.github/actions/windows-editors
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          scenario: ${{ matrix.scenario }}
-          channel: ${{ inputs.channel || 'pinned' }}
-          cursor-required: ${{ github.event_name != 'pull_request' }}
-
-  # The required check and the one release.sh reads. Passes when the
-  # scenarios were not needed; otherwise only when every scenario passed (a
-  # skipped or cancelled scenario fails it, never reads as passing).
-  windows-editors:
-    needs: [changes, scenario]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - env:
-          RUN: ${{ needs.changes.outputs.run }}
-          CHANGES: ${{ needs.changes.result }}
-          SCENARIOS: ${{ needs.scenario.result }}
+          node-version: 24.13.0
+      - name: Install public packages exactly as a user does
+        shell: pwsh
         run: |
-          if [ "$CHANGES" != "success" ]; then echo "deciding what changed failed ($CHANGES)"; exit 1; fi
-          if [ "$RUN" != "true" ]; then
-            echo "No change to anything this job builds or installs: real-editor scenarios not needed." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
+          npm install -g --no-audit --no-fund @plur-ai/mcp @plur-ai/cli @openai/codex
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node --version
+          npm --version
+          codex --version
+          plur --version
+      - name: Public upgrade, registrations, and hook behavior
+        shell: pwsh
+        run: node scripts/public-editors-probe.mjs --scenario ${{ matrix.scenario }}
+      - name: Public MCP roundtrip and stale-pin audit
+        if: always()
+        shell: pwsh
+        run: node --experimental-transform-types scripts/public-memory-probe.mjs
+  wsl:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scenario: fresh
+            filesystem: linux
+          - scenario: from-0.19.4
+            filesystem: linux
+          - scenario: from-0.19.4
+            filesystem: mounted
+    steps:
+      - name: Preserve Unix line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          additional-packages: curl ca-certificates xz-utils git bubblewrap
+          use-cache: false
+      - name: Confirm real WSL2
+        shell: pwsh
+        run: wsl --list --verbose
+      - name: Install Linux Node and public packages
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          uname -a
+          mkdir -p /opt/plur-node
+          cd /opt/plur-node
+          curl -fsSLO https://nodejs.org/dist/v24.13.0/node-v24.13.0-linux-x64.tar.xz
+          curl -fsSLO https://nodejs.org/dist/v24.13.0/SHASUMS256.txt
+          grep ' node-v24.13.0-linux-x64.tar.xz$' SHASUMS256.txt | sha256sum -c -
+          tar -xJf node-v24.13.0-linux-x64.tar.xz --strip-components=1
+          export PATH=/opt/plur-node/bin:/usr/local/bin:/usr/bin:/bin
+          export PLUR_TEST_CODEX_HOST=1
+          npm install -g --no-audit --no-fund @plur-ai/mcp @plur-ai/cli @openai/codex
+          node --version
+          npm --version
+          codex --version
+          plur --version
+      - name: Public upgrade and hooks in WSL2
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          export PATH=/opt/plur-node/bin:/usr/local/bin:/usr/bin:/bin
+          export PLUR_TEST_CODEX_HOST=1
+          export PLUR_CI_VERSION=0.21.4 PLUR_EDITORS_REQUIRED=codex
+          if [ '${{ matrix.filesystem }}' = mounted ]; then
+            mkdir -p "$PWD/mounted-test-temp"
+            export TMPDIR="$PWD/mounted-test-temp"
           fi
-          echo "scenarios: $SCENARIOS"
-          [ "$SCENARIOS" = "success" ]
+          node scripts/public-editors-probe.mjs --scenario '${{ matrix.scenario }}'
+      - name: MCP roundtrip and stale-pin audit in WSL2
+        if: always()
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          export PATH=/opt/plur-node/bin:/usr/local/bin:/usr/bin:/bin
+          export PLUR_TEST_CODEX_HOST=1
+          if [ '${{ matrix.filesystem }}' = mounted ]; then
+            export TMPDIR="$PWD/mounted-test-temp"
+          fi
+          node --experimental-transform-types scripts/public-memory-probe.mjs

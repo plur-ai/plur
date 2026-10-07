@@ -1,0 +1,36 @@
+Verification-only branch for public PLUR 0.21.4. Do not merge this workflow replacement.
+
+The release source at v0.21.4 is unchanged. windows-editors.yml is replaced on
+this branch only so its existing manual-dispatch workflow can run published npm
+artifacts on native Windows and real WSL2 Ubuntu 24.04. No publishing steps.
+
+public-editors-probe.mjs copies the released windows-editors-probe.mjs assertions,
+changing the upgrade install to bare npm package names and the expected plugin
+version to 0.21.4. Only Codex is installed/required here; missing other editor CLIs
+are explicitly reported as not covered. Registration/config checks for their
+files still run. Windows Node 24.13.0; npm's current Codex version is logged.
+
+public-memory-probe.mjs uses the exact registered Codex MCP command to check
+server version, tools, remote writes, explicit local writes, and recall after
+restarting the MCP process. Remote storage is the repository's loopback stub,
+not a production enterprise service. Its recall endpoint returns the record
+received through its write endpoint. Embeddings are disabled for deterministic
+keyword checks. It also records whether an explicit old Codex npx pin survives
+init, then verifies recovery by re-registering this plain synthetic entry.
+
+codex-host-fixture.mjs runs real Codex exec against a loopback Responses fixture:
+it must dispatch the installed PLUR prompt hook, include stored memory in its
+model input, call the actual plur_learn MCP tool, and return remote delivery to
+the model. Only the synthetic learn operation is approved in command overrides;
+the known fixture hooks are allowed for this invocation. Those test flags are
+not client setup recommendations. No provider credentials or external model
+calls. This does not test the desktop GUI, interactive hook trust UI, paid
+provider behavior, a customer's server, or Windows/WSL ARM64.
+
+WSL2 jobs test both Linux temporary homes and homes on a Windows-mounted drive.
+The WSL distro version and kernel are printed; ordinary Linux CI is not used as
+a substitute for WSL. Each environment has its own isolated config and memory.
+
+Local preflight: public CLI/MCP/core resolve to 0.21.4; actual Codex 0.160.1
+fixture passes; explicit @plur-ai/mcp@0.19.4 pin remains after init (existing
+pin-preservation behavior), and re-registering the plain entry restores 0.21.4.
