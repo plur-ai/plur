@@ -1,6 +1,6 @@
 /** Codex MCP edits use TOML syntax ranges: never remove/re-add a user's table. */
 import { existsSync, readFileSync } from 'fs'
-import { join, resolve, isAbsolute } from 'path'
+import { join, resolve, isAbsolute, dirname } from 'path'
 import { homedir } from 'os'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
 import yaml from 'js-yaml'
@@ -97,7 +97,19 @@ export function codexLaunchKind(entry: CodexEntry, cliVersion: string): 'upgrade
   const normalized = entry.command.replace(/\\/g, '/')
   const bin = join(homedir(), '.plur', 'bin', 'plur-mcp').replace(/\\/g, '/')
   if (args.length === 0 && (normalized === bin || isOwnWin32CmdShimCommand(entry.command))) return 'current'
-  if (/(^|[/\\])node(?:\.exe)?$/i.test(entry.command) && args.length === 1 && /[/\\]@plur-ai[/\\]mcp[/\\]dist[/\\]index\.js$/.test(args[0])) return 'current'
+  if (/(^|[/\\])node(?:\.exe)?$/i.test(entry.command) && args.length === 1 && /[/\\]@plur-ai[/\\]mcp[/\\]dist[/\\]index\.js$/.test(args[0])) {
+    // A version-manager switch can leave a valid path to an older installation.
+    // Read metadata, never execute the old server to decide whether to replace it.
+    try {
+      const js = resolve(entry.cwd ?? process.cwd(), args[0])
+      const pkg = JSON.parse(readFileSync(join(dirname(dirname(js)), 'package.json'), 'utf8'))
+      if (pkg.name === '@plur-ai/mcp' && typeof pkg.version === 'string' && version(pkg.version)) {
+        if (!olderOrEqual(pkg.version, cliVersion)) return 'newer'
+        if (!olderOrEqual(cliVersion, pkg.version)) return 'upgrade'
+      }
+    } catch { /* missing/unreadable metadata: retain the existing path-repair rules */ }
+    return 'current'
+  }
   return 'custom'
 }
 
@@ -193,9 +205,10 @@ export function updateCodexRegistration(options: { root: string; version: string
     changes.command = options.replacement.command
     changes.args = options.replacement.args
     // Preserve intentional PATH-based Node selection while refreshing the JS entry.
-    if (/^node(?:\.exe)?$/i.test(entry.command) && kind === 'current') {
+    const refreshedJs = findMcpJsEntry()
+    if (/^node(?:\.exe)?$/i.test(entry.command) && refreshedJs) {
       changes.command = entry.command
-      changes.args = [findMcpJsEntry() ?? entry.args[0]]
+      changes.args = [refreshedJs]
     }
   }
   const declared = new Set((entry.env_vars ?? []).map(v => typeof v === 'string' ? v : v.name))
@@ -214,7 +227,20 @@ export function updateCodexRegistration(options: { root: string; version: string
 
 /** Resolve a server's own storage override before considering CLI storage flags. */
 export function codexStorageRoot(entry: CodexEntry, fallback: string): string {
-  return entry.env?.PLUR_PATH ? resolve(entry.cwd ?? process.cwd(), entry.env.PLUR_PATH) : fallback
+  const windows = process.platform === 'win32'
+  const equal = (a: string, b: string) => windows ? a.toUpperCase() === b.toUpperCase() : a === b
+  const selected = (name: string) => {
+    const explicit = Object.entries(entry.env ?? {}).find(([k]) => equal(k, name))
+    if (explicit) return explicit[1]
+    if ([...forwardedTokenVariables(entry)].some(k => equal(k, name))) {
+      return Object.entries(process.env).find(([k]) => equal(k, name))?.[1]
+    }
+    return undefined
+  }
+  const root = selected('PLUR_PATH')
+  if (root) return resolve(entry.cwd ?? process.cwd(), root)
+  const home = selected(windows ? 'USERPROFILE' : 'HOME')
+  return home ? resolve(entry.cwd ?? process.cwd(), home, '.plur') : fallback
 }
 
 /** Codex local stdio inheritance, upstream rmcp-client/src/utils.rs (0.160.1).

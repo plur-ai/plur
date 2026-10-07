@@ -1,7 +1,7 @@
 PLUR — Windows Codex desktop acceptance
 
-Status: not yet performed. Do not describe the desktop flow as verified.
-Before release, download the plur-codex-candidate artifact from the passing
+Status: not yet performed; tracked in #1625. Do not describe the desktop flow as verified.
+For desktop acceptance, download the plur-codex-candidate artifact from the passing
 Windows real editors workflow. Extract it into an empty directory. In
 PowerShell, from that directory:
 

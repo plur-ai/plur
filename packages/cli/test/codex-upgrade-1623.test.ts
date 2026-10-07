@@ -77,6 +77,31 @@ describe('Codex upgrades preserve user configuration (#1623)', () => {
     update()
     expect(readCodexEntry(readFileSync(path, 'utf8'))?.env_vars).toBeUndefined()
   })
+  it('repairs an older installed node entry even when its files still exist', () => {
+    const pkg = join(root, 'old-prefix', 'node_modules', '@plur-ai', 'mcp')
+    mkdirSync(join(pkg, 'dist'), { recursive: true })
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@plur-ai/mcp', version: '0.19.4' }))
+    const js = join(pkg, 'dist', 'index.js'); writeFileSync(js, '// fixture')
+    writeFileSync(path, `[mcp_servers.plur]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(js)}]\n`)
+    update()
+    expect(readCodexEntry(readFileSync(path, 'utf8'))).toMatchObject(replacement)
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@plur-ai/mcp', version: '0.22.0' }))
+    expect(codexLaunchKind({ command: process.execPath, args: [js] }, '0.21.5')).toBe('newer')
+  })
+  it.each(['home', 'forwarded-root'])('reads token names from the server override (%s)', kind => {
+    const other = join(root, 'other')
+    const storage = kind === 'home' ? join(other, '.plur') : other
+    mkdirSync(storage, { recursive: true })
+    writeFileSync(join(storage, 'config.yaml'), 'stores:\n  - url: http://127.0.0.1:9999\n    token_env: OTHER_REMOTE_TOKEN\n')
+    vi.stubEnv('PLUR_PATH', other)
+    writeFileSync(path, pin + (kind === 'home'
+      ? `env = { ${process.platform === 'win32' ? 'USERPROFILE' : 'HOME'} = ${JSON.stringify(other)} }\n`
+      : 'env_vars = ["PLUR_PATH"]\n'))
+    update()
+    const variables = readCodexEntry(readFileSync(path, 'utf8'))?.env_vars
+    expect(variables).toContain('OTHER_REMOTE_TOKEN')
+    expect(variables).not.toContain('TEST_REMOTE_TOKEN')
+  })
   it('keeps inline token overrides and never copies the parent token value', () => {
     vi.stubEnv('TEST_REMOTE_TOKEN', 'parent-synthetic-secret')
     writeFileSync(path, pin + 'env = { TEST_REMOTE_TOKEN = "inline-synthetic-secret" }\n')
