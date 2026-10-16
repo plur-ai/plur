@@ -1,0 +1,151 @@
+"tasks":
+  - "id": "T001"
+    "task": "Draft a review summary for a completed change and state the next action."
+    "scope": "global"
+    "must_include": ["M001"]
+    "must_exclude": ["M002"]
+  - "id": "T002"
+    "task": "Add the standard colored label to an irreversible cleanup operation."
+    "scope": "global"
+    "must_include": ["M004"]
+    "must_exclude": ["M003"]
+  - "id": "T003"
+    "task": "Configure the timeout for a test that integrates several components over a simulated transport."
+    "scope": "global"
+    "must_include": ["M006"]
+    "must_exclude": ["M005"]
+  - "id": "T004"
+    "task": "Prepare an access permission change for merging and arrange its required review."
+    "scope": "global"
+    "must_include": ["M009"]
+    "must_exclude": ["M010"]
+  - "id": "T005"
+    "task": "Rewrite the error messages in a tool so they follow the shared wording preference."
+    "scope": "global"
+    "must_include": ["M013"]
+    "must_exclude": ["M014"]
+  - "id": "T006"
+    "task": "File a defect report about misaligned visual elements and attach the expected evidence."
+    "scope": "global"
+    "must_include": ["M016"]
+    "must_exclude": ["M015"]
+  - "id": "T007"
+    "task": "Prepare Brindle for a public deployment and obtain the required authorization."
+    "scope": "project:brindle"
+    "must_include": ["M022"]
+    "must_exclude": ["M021"]
+  - "id": "T008"
+    "task": "Implement expiration for Brindle interactive sessions based on keyboard inactivity."
+    "scope": "project:brindle"
+    "must_include": ["M023"]
+    "must_exclude": ["M024"]
+  - "id": "T009"
+    "task": "Save Brindle aliases that are personal to the current operator."
+    "scope": "project:brindle"
+    "must_include": ["M026"]
+    "must_exclude": ["M025"]
+  - "id": "T010"
+    "task": "Choose the separator for a new nested Brindle command group."
+    "scope": "project:brindle"
+    "must_include": ["M027"]
+    "must_exclude": ["M028"]
+  - "id": "T011"
+    "task": "Implement success output for committed Brindle runs, including resource name formatting in exported results."
+    "scope": "project:brindle"
+    "must_include": ["M030", "M034"]
+    "must_exclude": ["M029", "M033"]
+  - "id": "T012"
+    "task": "Set the expiry policy for Brindle cache entries created on the local machine."
+    "scope": "project:brindle"
+    "must_include": ["M031"]
+    "must_exclude": ["M032"]
+  - "id": "T013"
+    "task": "Implement name rendering in Brindle exported results."
+    "scope": "project:brindle"
+    "must_include": ["M034"]
+    "must_exclude": ["M033"]
+  - "id": "T014"
+    "task": "Specify the correct retry pause after a failed Brindle write and prepare a command execution bug report with the required evidence."
+    "scope": "project:brindle"
+    "must_include": ["M038", "M015"]
+    "must_exclude": ["M037", "M016"]
+  - "id": "T015"
+    "task": "Implement time bucket assignment for Sablefin hourly aggregates."
+    "scope": "project:sablefin"
+    "must_include": ["M041"]
+    "must_exclude": ["M042"]
+  - "id": "T016"
+    "task": "Set the admission cutoff for late Sablefin payment readings."
+    "scope": "project:sablefin"
+    "must_include": ["M044"]
+    "must_exclude": ["M043"]
+  - "id": "T017"
+    "task": "Implement percentage formatting in Sablefin audit exports."
+    "scope": "project:sablefin"
+    "must_include": ["M046"]
+    "must_exclude": ["M045"]
+  - "id": "T018"
+    "task": "Implement delayed physical removal of deleted Sablefin tenant tables."
+    "scope": "project:sablefin"
+    "must_include": ["M047"]
+    "must_exclude": ["M048"]
+  - "id": "T019"
+    "task": "Handle rows lacking source identifiers in a Sablefin batch import."
+    "scope": "project:sablefin"
+    "must_include": ["M050"]
+    "must_exclude": ["M049"]
+  - "id": "T020"
+    "task": "Build a Sablefin weekly report with the correct comparison baseline and percentage precision for its dashboard export."
+    "scope": "project:sablefin"
+    "must_include": ["M051", "M045"]
+    "must_exclude": ["M052", "M046"]
+  - "id": "T021"
+    "task": "Prepare a Sablefin metric formula change for catalog publication and obtain approval."
+    "scope": "project:sablefin"
+    "must_include": ["M057"]
+    "must_exclude": ["M058"]
+  - "id": "T022"
+    "task": "Render absent Sablefin measurements in a line chart."
+    "scope": "project:sablefin"
+    "must_include": ["M059"]
+    "must_exclude": ["M060"]
+  - "id": "T023"
+    "task": "Set symbol map retention for Cairnleaf optimized builds."
+    "scope": "project:cairnleaf"
+    "must_include": ["M062"]
+    "must_exclude": ["M061"]
+  - "id": "T024"
+    "task": "Allocate processor shares and memory slabs to Cairnleaf packaging jobs."
+    "scope": "project:cairnleaf"
+    "must_include": ["M064"]
+    "must_exclude": ["M063"]
+  - "id": "T025"
+    "task": "Choose a deterministic entry order for Cairnleaf source archives."
+    "scope": "project:cairnleaf"
+    "must_include": ["M065"]
+    "must_exclude": ["M066"]
+  - "id": "T026"
+    "task": "Configure artifact reuse for an untrusted Cairnleaf branch."
+    "scope": "project:cairnleaf"
+    "must_include": ["M068"]
+    "must_exclude": ["M067"]
+  - "id": "T027"
+    "task": "Route a Cairnleaf signing failure notice to its responsible role."
+    "scope": "project:cairnleaf"
+    "must_include": ["M070"]
+    "must_exclude": ["M069"]
+  - "id": "T028"
+    "task": "Implement Cairnleaf cache eviction under disk pressure."
+    "scope": "project:cairnleaf"
+    "must_include": ["M073"]
+    "must_exclude": ["M074"]
+  - "id": "T029"
+    "task": "Implement the fingerprint handling for a clean Cairnleaf rebuild."
+    "scope": "project:cairnleaf"
+    "must_include": ["M078"]
+    "must_exclude": ["M077"]
+  - "id": "T030"
+    "task": "Enforce the authorization requirement for uploading Cairnleaf build artifacts."
+    "scope": "project:cairnleaf"
+    "must_include": ["M080"]
+    "must_exclude": ["M079"]
