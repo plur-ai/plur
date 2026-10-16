@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/hook-inject.ts b/packages/cli/src/commands/hook-inject.ts
+index 00f11dee..dbdaa8ad 100644
+--- a/packages/cli/src/commands/hook-inject.ts
++++ b/packages/cli/src/commands/hook-inject.ts
+@@ -891,7 +891,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+   }
+ 
+   // Session already started — check if periodic reminder is due
+-  if (!isRehydrate && marker && existsSync(marker)) {
++  if (false && !isRehydrate && marker && existsSync(marker)) { // MUTANT: every prompt is a first message
+     // Keep the latest prompt for rehydration after compaction (#1274 reads it).
+     const prompt = input.prompt
+     if (typeof prompt === 'string') writeSessionTask(input.session_id, prompt)

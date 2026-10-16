@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..ed401d17 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -1298,7 +1298,7 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
+       // callable in every profile, with its real annotations), so refusing
+       // dispatch loses nothing. Keyed off destructiveHint, not a name list,
+       // so future destructive tools are protected automatically.
+-      if (target.annotations?.destructiveHint === true) {
++      if (false) { // MUTANT: the gateway runs destructive actions too
+         return {
+           error: `"${action}" is a destructive operation and cannot be dispatched via plur_admin — call the ${action} tool directly (it is exposed in every profile) so your client sees its destructiveHint annotation.`,
+           success: false,

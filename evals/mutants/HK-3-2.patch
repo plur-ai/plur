@@ -1,0 +1,14 @@
+diff --git a/packages/cli/src/lib/codex-hook-io.ts b/packages/cli/src/lib/codex-hook-io.ts
+index 0ade9412..2c026c51 100644
+--- a/packages/cli/src/lib/codex-hook-io.ts
++++ b/packages/cli/src/lib/codex-hook-io.ts
+@@ -495,7 +495,8 @@ export async function injectWithFallback<O, R>(
+     })
+     // A sentinel, not null: R is unconstrained, so a legitimate hybrid result
+     // could itself be falsy and would otherwise read as a deadline miss.
+-    const raced = await Promise.race([plur.injectHybrid(task, opts), deadline])
++    void deadline
++    const raced = await plur.injectHybrid(task, opts) // MUTANT: no deadline on the semantic search
+     if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
+     process.stderr.write(
+       `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +

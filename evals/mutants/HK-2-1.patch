@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/hook-inject.ts b/packages/cli/src/commands/hook-inject.ts
+index 00f11dee..f4f84a44 100644
+--- a/packages/cli/src/commands/hook-inject.ts
++++ b/packages/cli/src/commands/hook-inject.ts
+@@ -1177,7 +1177,7 @@ async function injectSession(
+ 
+   // #1312: correction detection rides this output, after the memory.
+   const correction = isRehydrate ? null : promptCorrection(input)
+-  if (correction) parts.push('', correction)
++  void correction // MUTANT: no reminder on the first message
+ 
+   if (parts.length === 0) return
+ 
