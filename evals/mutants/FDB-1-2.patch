@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/feedback.ts b/packages/core/src/feedback.ts
+index 2c0c9fe3..f418a4ae 100644
+--- a/packages/core/src/feedback.ts
++++ b/packages/core/src/feedback.ts
+@@ -35,7 +35,7 @@ export interface ApplyFeedbackOptions {
+ }
+ 
+ /** Strength added on a positive signal. Capped at 1.0. */
+-export const POSITIVE_STRENGTH_DELTA = 0.05
++export const POSITIVE_STRENGTH_DELTA = 0.1 // MUTANT: step changed
+ /** Strength removed on a negative signal. Floored at 0.0. */
+ export const NEGATIVE_STRENGTH_DELTA = 0.1
+ 

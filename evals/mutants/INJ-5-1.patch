@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
+index ee45ea4a..45a3d584 100644
+--- a/packages/core/src/inject.ts
++++ b/packages/core/src/inject.ts
+@@ -614,7 +614,7 @@ export function scoreEngram(
+   // Feedback signal boost: positive feedback increases score, negative decreases
+   const feedback = engram.feedback_signals
+   if (feedback) {
+-    const netFeedback = feedback.positive - feedback.negative
++    const netFeedback = feedback.negative - feedback.positive // MUTANT: sign flipped
+     if (netFeedback > 0) score *= 1 + Math.min(netFeedback * 0.05, 0.3)
+     else if (netFeedback < 0) score *= Math.max(1 + netFeedback * 0.1, 0.5)
+   }
