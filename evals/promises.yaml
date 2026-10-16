@@ -1,0 +1,458 @@
+# What PLUR promises — one plain sentence each, grouped by what the product does.
+#
+# This file is the spec; the evals under evals/<capability>/ are its proof. How to
+# read and change it: evals/README.md. In short:
+#   * a promise is green only when it has at least one eval and every eval behind
+#     it passes; a promise with no eval is "no-eval", never a pass;
+#   * every eval is shown to bite: evals/mutants/<ID>-<n>.patch plants a bug that
+#     must turn it red (checked nightly);
+#   * `today` records what is true now (holds | broken | unknown), with evidence;
+#   * `decide` marks a promise whose wording is a product decision still open.
+# Ids are stable once used: a promise that changes meaning gets a new id.
+# Changing a promise or an eval needs the approval of a code owner (.github/CODEOWNERS).
+
+capabilities:
+
+- key: recall
+  name: Finding memories
+  what_it_does: When I or my agent ask about something, PLUR finds the memories that answer it, by meaning as well as by words.
+  promises:
+  - id: REC-1
+    promise: When I ask about something I taught it, the memory that answers it comes back in the top five.
+    kind: quality
+    today: broken
+    evidence: "Measured 2026-10-15 (real model, labelled set written by another model family): 52/80 = 65% in the top five on the dev set (95% CI 54-75%), 64/80 = 80% on the private holdout. Every lexical question is found; the misses are reworded questions (see REC-2). Floor 85% (owner, 2026-10-16)."
+
+  - id: REC-2
+    promise: A memory worded differently from my question is still found; matching words is not required.
+    kind: quality
+    today: broken
+    evidence: "Measured 2026-10-15 on questions that share no content word with their memory: 12/40 = 30% in the top five on the dev set (95% CI 18-45%), 24/40 = 60% on the private holdout. Keyword search alone finds 1/40, so the meaning model does contribute. Floor 60% (owner, 2026-10-16)."
+
+  - id: REC-3
+    promise: If the meaning model cannot load, I still get keyword results straight away, and the answer says the search was degraded.
+    kind: deterministic
+    today: holds
+    evidence: recall-model-missing-1587.test.ts, formal-r2-corea-inject-degraded.test.ts.
+  - id: REC-4
+    promise: A memory I forgot never comes back when I search, whichever search I use.
+    kind: deterministic
+    today: holds
+    evidence: evals/recall REC-4 covers keyword and hybrid search after forget, with embeddings off and with the word-count stand-in embedder; planted bug caught. plur.test.ts covers keyword recall only.
+  - id: REC-5
+    promise: Search never returns more results than I asked for, and an empty store answers with nothing rather than an error.
+    kind: deterministic
+    today: holds
+    evidence: hybrid-search.test.ts limit and empty-store cases (the limit case also passes on zero results).
+  - id: REC-6
+    promise: A memory that was replaced by a correction is not presented as current when I search.
+    kind: deterministic
+    today: holds
+    decide: "Suppression of replaced memories exists only in injection today; whether search hides them, marks them, or shows them is open (issues 997, 1249). The eval accepts hidden OR marked; if the answer is 'hide', it gets stricter and goes red."
+    evidence: "Eval 2026-10-15: search still returns the replaced memory, but it carries a 'superseded by' link to the correction, which the MCP recall tool shows as [superseded by ...]. Marked, not hidden."
+
+
+- key: learn
+  name: Saving memories
+  what_it_does: When I or my agent teach PLUR something, it keeps it once, warns about near-copies, and never silently drops what I said.
+  promises:
+  - id: LRN-1
+    promise: Saying exactly the same thing twice keeps one memory, not two.
+    kind: deterministic
+    today: holds
+    evidence: formal-r2-apply-core-always-store.test.ts, formal-r2-corea-refcount.test.ts.
+  - id: LRN-2
+    promise: Saying something new that merely resembles an existing memory saves it, and I am told which memory it resembles.
+    kind: deterministic
+    today: holds
+    evidence: dedup-cosine.test.ts ("never suppresses a write").
+  - id: LRN-3
+    promise: Telling apart a real duplicate from a different-but-similar statement is right on a labelled set of pairs.
+    kind: quality
+    today: broken
+    evidence: "Without a language model PLUR does not decide duplicates; it only reports a similarity score (learn-async.ts). Measured 2026-10-15 on 60 labelled pairs: a real duplicate scores above a similar-but-different statement 37% of the time on dev and 47% on holdout (0.5 is a coin toss). Reworded duplicates score lower than near-identical statements with one value changed."
+    decide: "Should PLUR decide duplicates without a language model at all, or should this promise only hold when one is configured? The similarity score cannot separate them."
+
+  - id: LRN-4
+    promise: After I forget a memory, saying the same thing again gives me a fresh memory instead of bringing the old one back.
+    kind: deterministic
+    today: holds
+    evidence: "Eval 2026-10-15, same scope, through learn and learnAsync."
+
+  - id: LRN-5
+    promise: Importing many memories at once catches duplicates inside the batch and still saves every item when the AI-check budget runs out.
+    kind: deterministic
+    today: holds
+    evidence: batch.test.ts, learn-batch-cap.test.ts.
+  - id: LRN-6
+    promise: A memory I locked is never rewritten by an automatic merge or update.
+    kind: deterministic
+    today: holds
+    evidence: formal-persistence-learn-async.test.ts; Lean theorem fixed_never_writes_locked.
+
+- key: corrections
+  name: Corrections and contradictions
+  what_it_does: When I correct something, the correction wins; when two memories contradict, PLUR shows me and lets me choose.
+  promises:
+  - id: COR-1
+    promise: After I save a correction, my agent is given the correction and no longer the memory it replaces.
+    kind: deterministic
+    today: holds
+    evidence: supersedes-inject.test.ts.
+  - id: COR-2
+    promise: If the correction itself cannot be delivered (a draft, expired, or not available here), the old memory is still given rather than nothing.
+    kind: deterministic
+    today: holds
+    evidence: "Eval 2026-10-15: holds for a draft, expired or not-yet-valid correction, and for one outside the scopes allow-list. Not tested: a correction in another project. There the agent gets nothing at all (probe 2026-10-15; inject.ts ~906-924, issue 1237)."
+    decide: "Does 'not available here' include a correction stored in another project? If yes, this is broken today."
+
+  - id: COR-3
+    promise: A correction and the memory it replaces are linked both ways, and the link survives a restart.
+    kind: deterministic
+    today: holds
+    evidence: supersedes.test.ts, provenance-supersession.test.ts.
+  - id: COR-4
+    promise: A correction and the memory it replaces are never reported to me as a contradiction.
+    kind: deterministic
+    today: holds
+    evidence: supersedes.test.ts.
+  - id: COR-5
+    promise: When I resolve a contradiction, the memory I picked stays and the other is retired, even if two people resolve it at the same time.
+    kind: deterministic
+    today: holds
+    evidence: tension-lifecycle.test.ts.
+
+- key: forget
+  name: Forgetting
+  what_it_does: When I tell PLUR to forget something, it is gone from everything my agent sees, and the forget is recorded.
+  promises:
+  - id: FGT-1
+    promise: A memory I forget no longer reaches my agent, in search or at session start.
+    kind: deterministic
+    today: holds
+    evidence: history-integration.test.ts, concurrency-write-path.test.ts.
+  - id: FGT-2
+    promise: One explicit forget removes a memory even if it was saved several times.
+    kind: deterministic
+    today: holds
+    evidence: "Eval 2026-10-15 through the user-facing forget (CLI and MCP pass force). A plain forget(id) in core on a memory saved 3 times only lowers its count and leaves it active."
+
+  - id: FGT-3
+    promise: When what I asked to forget matches more than one memory, PLUR refuses and asks, instead of forgetting the wrong one.
+    kind: deterministic
+    today: holds
+    evidence: forget-namespaced-walk-order.test.ts.
+
+- key: inject
+  name: What my agent is given
+  what_it_does: At the start of a session and on each task, PLUR gives my agent the memories that matter for it, within the space I allow.
+  promises:
+  - id: INJ-1
+    promise: For a given task, my agent is given the memories that matter for it, judged on a labelled set of tasks.
+    kind: quality
+    today: broken
+    evidence: "Measured 2026-10-15 on 30 labelled tasks: every needed memory was given for 29/30 (dev) and 29/30 (holdout), but about 24 of 150 memories are given per task, and the nearby not-applicable memory was given too in 24/30 (dev) and 27/30 (holdout). Coverage holds; leaving out what does not apply does not."
+    decide: "Is giving a not-applicable neighbour along with the right memory a failure? Ceiling set by the owner 2026-10-16: at most half the tasks. Today 80-90%."
+
+  - id: INJ-2
+    promise: What my agent is given never goes over the space I set for it.
+    kind: deterministic
+    today: holds
+    evidence: plur.test.ts budget case (two small memories, so a doubled budget would still pass); formal-apply-budget-inject.test.ts at unit level.
+  - id: INJ-3
+    promise: A rule I pinned is always given to my agent in its scope, even when it does not match the task.
+    kind: deterministic
+    today: holds
+    evidence: inject.test.ts pinned cases; the pinned share has its own cap and omissions are reported.
+  - id: INJ-4
+    promise: A memory waiting for my approval is never given to my agent, but I can still find it by searching.
+    kind: deterministic
+    today: holds
+    evidence: "Eval 2026-10-15, end to end through inject and injectHybrid; recall and recallHybrid still find the draft."
+
+  - id: INJ-5
+    promise: Memories I rated helpful are given to my agent ahead of equally relevant ones I rated unhelpful.
+    kind: deterministic
+    today: holds
+    evidence: "Eval 2026-10-15 with 1 and 3 ratings each. With one rating, a helpful rating can LOWER a new memory's score: it promotes the memory out of 'leaning' and so removes the recently-learned bonus (fresh-tail.ts). Worth a product look."
+
+
+- key: feedback
+  name: Ratings and fading
+  what_it_does: My ratings teach PLUR what helps; memories I never use fade gently; dated memories appear only while they are valid.
+  promises:
+  - id: FDB-1
+    promise: Rating a memory helpful raises it by a fixed small step and rating it unhelpful lowers it by a larger one, never past the limits.
+    kind: deterministic
+    today: holds
+    evidence: feedback.test.ts (expected values are taken from the exported constants, so changing them cannot fail it).
+  - id: FDB-2
+    promise: A rating never approves a draft, and an automatic rating never makes a memory more settled.
+    kind: deterministic
+    today: holds
+    evidence: feedback.test.ts, draft-approval-gate.test.ts, feedback-auto-source.test.ts.
+  - id: FDB-3
+    promise: A memory I do not use fades by half over a stated period and never fades away completely.
+    kind: deterministic
+    today: holds
+    evidence: "Eval 2026-10-15 pins a half-life of 14 days (measured about 13.9) with a floor above zero."
+
+  - id: FDB-4
+    promise: A memory I locked does not fade.
+    kind: deterministic
+    today: broken
+    evidence: "Eval 2026-10-15 red: after 60 days unused a locked memory ranks behind a fresh, weaker one. Confidence decay exempts locked memories (decay.ts) but recency decay in injection does not (inject.ts ~603)."
+
+  - id: FDB-5
+    promise: A memory outside its valid dates is hidden from search, listing and my agent, and an unreadable date never hides a memory.
+    kind: deterministic
+    today: holds
+    evidence: validity-instants.test.ts, formal-scopeinject-decay.test.ts.
+
+- key: privacy
+  name: Privacy and scopes
+  what_it_does: Every memory belongs to a scope that decides who sees it and where it is stored; private memories stay on my machine.
+  promises:
+  - id: PRV-1
+    promise: A memory I mark private is never sent to a team server, whichever way it is saved.
+    kind: deterministic
+    today: holds
+    evidence: formal-writepath-private.test.ts; Lean theorem explicit_private_stays_local.
+  - id: PRV-2
+    promise: Searching in one project never shows memories from another project, even one with a similar name.
+    kind: deterministic
+    today: holds
+    evidence: scope-routing.test.ts, read-side-scope-visibility.test.ts.
+  - id: PRV-3
+    promise: My agent is never given a memory from a scope it is not allowed to see.
+    kind: deterministic
+    today: holds
+    evidence: formal-scopeinject-visibility.test.ts; Lean theorem selected_visible.
+  - id: PRV-4
+    promise: When PLUR picks a scope for an unscoped memory, it never files it into a shared team scope on its own.
+    kind: deterministic
+    today: holds
+    evidence: route-unscoped.test.ts; Lean theorem autoRoute_leaving_is_scanned.
+  - id: PRV-5
+    promise: A memory saved to a team scope without saying whether it is private is kept on my machine until I say it may be shared.
+    kind: deterministic
+    today: broken
+    decide: Today a team write with no visibility is pushed (Lean theorem team_write_still_pushed; issue 1225). Keep this promise and change the behaviour, or replace it with "team-scoped memories are shared unless marked private".
+    evidence: WritePath.lean section 4.
+
+- key: folders
+  name: Folders where memory is off
+  what_it_does: I can turn memory off for a folder; there, nothing is read or written and the agent is told so plainly.
+  promises:
+  - id: OFF-1
+    promise: In a folder where I turned memory off, nothing is read from or written to memory, including team servers.
+    kind: deterministic
+    today: holds
+    evidence: mcp/test/folder-off.test.ts.
+  - id: OFF-2
+    promise: Starting PLUR in a folder where memory is off does not touch memory at all.
+    kind: deterministic
+    today: broken
+    evidence: Issue 1523 (server startup touches memory in an off folder).
+  - id: OFF-3
+    promise: If my folder settings are broken, memory pauses and tells me which line is wrong and how to fix it.
+    kind: deterministic
+    today: holds
+    evidence: mcp/test/folder-off.test.ts.
+
+- key: team
+  name: Team stores and being offline
+  what_it_does: Team memories on a server are searched alongside mine; when the server is slow or gone, I still get my own answers and am told what was missing.
+  promises:
+  - id: TEAM-1
+    promise: If the team server is down or slow, I still get my local answers within a bounded time.
+    kind: deterministic
+    today: holds
+    evidence: recall-deadline-1586.test.ts, remote-recall.test.ts.
+  - id: TEAM-2
+    promise: An answer never claims to be complete when the team server was not reached, and says what happened.
+    kind: deterministic
+    today: holds
+    evidence: recall-deadline-1586.test.ts; ADR-0006.
+  - id: TEAM-3
+    promise: A team memory saved while the server is down is delivered later, exactly once.
+    kind: deterministic
+    today: holds
+    evidence: outbox.test.ts, outbox-idempotency.test.ts; Lean theorem honour_at_most_once. Open issues 1628, 1509, 1321 on stuck deliveries.
+  - id: TEAM-4
+    promise: A search limited to my personal scopes never sends my question to a team server.
+    kind: deterministic
+    today: holds
+    evidence: "Eval 2026-10-15: a search with a personal allow-list or scope global sends zero requests to the team server. A search scoped to a project of a team's org (project:<org>/x) does ask that org's server, by design."
+    decide: "Is a project scope inside a team's org 'personal' for this promise? Today it reaches the team server."
+
+  - id: TEAM-5
+    promise: With no internet at all, I can still save and find memories, and PLUR makes no network calls.
+    kind: deterministic
+    today: broken
+    evidence: "Eval 2026-10-15 red: the MCP server checks npm for updates on every start, with no way to turn it off (packages/mcp/src/server.ts ~224). The engine itself, with fetch, sockets and DNS blocked, saves, finds and injects with zero network calls. First-run model download not covered."
+    decide: "Is the update check exempt from this promise, or does it need an offline switch?"
+
+
+- key: sync
+  name: Sync
+  what_it_does: Sync keeps my memories in a git repository; a shared repository gets only what is cleared for sharing.
+  promises:
+  - id: SYN-1
+    promise: Syncing to a shared repository publishes only memories cleared for sharing, never private or personal ones.
+    kind: deterministic
+    today: holds
+    evidence: evals/sync SYN-1 (includes a shared-scope memory with no visibility field); 2 planted bugs caught. Older note — sync.test.ts mixed fixture lacked that case.
+  - id: SYN-2
+    promise: Secrets and machine settings are never synced.
+    kind: deterministic
+    today: holds
+    evidence: evals/sync SYN-2, also a repository where an older client had committed config.yaml; 2 planted bugs caught. secrets.test.ts.
+  - id: SYN-3
+    promise: When a sync cannot push, it says so instead of reporting success, and a damaged store is never published.
+    kind: deterministic
+    today: holds
+    evidence: evals/sync SYN-3; 2 planted bugs caught. sync-push-failure.test.ts, sync-corrupt-push-guard.test.ts.
+  - id: SYN-4
+    promise: Private memories never leave my machine through sync, even to my own personal repository.
+    kind: deterministic
+    today: broken
+    decide: A personal repository receives private memories by design today, with a warning (sync.ts). Keep the promise and change the default, or narrow it to shared repositories (then SYN-1 covers it and SYN-4 is retired).
+    evidence: "evals/sync SYN-4 is red: a private personal memory left the machine through sync to a personal repository. The shared-repository case is green. sync.ts header comment; sync.test.ts warning case."
+
+- key: packs
+  name: Packs
+  what_it_does: I can install other people's memory packs and share my own; packs stay separate from my memories and are checked before install.
+  promises:
+  - id: PCK-1
+    promise: Exporting a pack never includes my private memories, secrets or personal details.
+    kind: deterministic
+    today: holds
+    evidence: evals/packs PCK-1 covers private memories, a secret, an email address and a home-folder path; 3 planted bugs caught.
+  - id: PCK-2
+    promise: A pack that was changed after it was made is refused unless I deliberately override.
+    kind: deterministic
+    today: holds
+    evidence: evals/packs PCK-2; 2 planted bugs caught. pack-integrity-verify.test.ts, pack-integrity-v2.test.ts; Lean theorems in PacksV2.
+  - id: PCK-3
+    promise: Installing or removing a pack never changes or deletes my own memories or another pack.
+    kind: deterministic
+    today: broken
+    evidence: "evals/packs PCK-3 is red: installing a second, different pack removed the first (issue 1188, the install folder is the source folder's name). Own memories, another pack's removal and path traversal are green."
+  - id: PCK-4
+    promise: Text inside a pack cannot pass itself off as one of my own memories or as an instruction to my agent.
+    kind: deterministic
+    today: broken
+    decide: Memory ids are minted per store from the date and a sequence number, and pack memories keep their own ids, so an ordinary pack made the same day can carry my ids and is injected with no pack marker. Give pack memories a distinct id space (or prefix), or narrow the promise to text only.
+    evidence: "evals/packs PCK-4: forged text and boundaries are refused (green, 2 planted bugs caught by hand); a pack memory with the same id as mine is shown to my agent under my id (red). The receipt then counts one of the two, and after I forget mine the pack's still answers to that id. pack-forged-boundary.test.ts, pack-double-injection.test.ts."
+
+- key: durability
+  name: Keeping memories safe
+  what_it_does: My memories survive crashes, several writers at once, damaged files and upgrades.
+  promises:
+  - id: DUR-1
+    promise: Many saves at the same moment all persist; none is lost.
+    kind: deterministic
+    today: holds
+    evidence: evals/durability DUR-1, 30 saves through one instance and 15 + 15 through two; planted bug caught. concurrency-write-path.test.ts; Lean theorem fixed_mutex.
+  - id: DUR-2
+    promise: A crash in the middle of saving never leaves a half-written or empty store.
+    kind: deterministic
+    today: holds
+    evidence: "evals/durability DUR-2 kills a saving child process five times on a slowed disk; the store stays whole every time. With a plain (non-atomic) write planted it is left unparseable or missing acknowledged memories."
+  - id: DUR-3
+    promise: A damaged store is refused rather than read as empty, and entries PLUR cannot read are kept, not deleted on the next save.
+    kind: deterministic
+    today: holds
+    evidence: evals/durability DUR-3; 3 planted bugs caught. store-corruption-guard.test.ts, corruption-matrix.test.ts.
+  - id: DUR-4
+    promise: A save that would wipe out most of my store is refused.
+    kind: deterministic
+    today: holds
+    evidence: evals/durability DUR-4, one big save and slow erosion; 2 planted bugs caught. store-corruption-guard.test.ts.
+  - id: DUR-5
+    promise: A store written by an older version still opens with everything in it, and a failed upgrade leaves it untouched with a backup.
+    kind: deterministic
+    today: holds
+    evidence: evals/durability DUR-5, a hand-written old-format store; 3 planted bugs caught. migrations.test.ts, audit-migration-preservation.test.ts. Open issues 1170, 1171 (migrations not applied by the MCP server).
+
+- key: history
+  name: History
+  what_it_does: Every change to a memory is recorded, so I can see where it came from and what happened to it.
+  promises:
+  - id: HIS-1
+    promise: Every memory's history shows when it was created, merged with a duplicate, renamed and forgotten.
+    kind: deterministic
+    today: holds
+    decide: '"Renamed" is read as the id-collision rename (engram_rekeyed). If it means a scope move or an edited statement, that needs its own eval.'
+    evidence: evals/history HIS-1; 3 planted bugs caught. history-integration.test.ts.
+  - id: HIS-2
+    promise: The usage receipt adds up, and forgotten memories do not inflate it.
+    kind: deterministic
+    today: holds
+    evidence: evals/history HIS-2; 2 planted bugs caught. The most-relied-on list keeps forgotten memories marked retired, which the eval accepts. receipt.test.ts. Open issue 1394.
+
+- key: agent-tools
+  name: The tools my agent uses
+  what_it_does: My agent reaches memory through a small set of tools; everything else is one call away, and failures are reported plainly.
+  promises:
+  - id: TOOL-1
+    promise: If my agent calls a tool by an old or hidden name, it is told exactly how to call it now, never just "unknown tool".
+    kind: deterministic
+    today: holds
+    evidence: mcp/test/tool-profile.test.ts, admin-gateway.test.ts.
+  - id: TOOL-2
+    promise: An operation that deletes or overwrites can never be run through the general gateway tool, so my client still asks me first.
+    kind: deterministic
+    today: holds
+    evidence: tools.ts destructive refusal; admin-gateway.test.ts.
+  - id: TOOL-3
+    promise: When team memories queued for sending could not be sent, my agent is told at session end; it is never a silent success.
+    kind: deterministic
+    today: broken
+    evidence: "Eval 2026-10-15: session end does not report team memories that could not be sent. outbox-failure-surfaced.test.ts covers session START, not session end."
+    decide: "The promise says session end; the existing test covers session start. Keep session end (code change) or reword to session start?"
+
+- key: hooks
+  name: Automatic memory in Claude Code
+  what_it_does: Once installed, my agent gets my memories on the first message of every session and is reminded to save corrections, without asking.
+  promises:
+  - id: HK-1
+    promise: My agent sees my relevant memories on the first message of every session without asking for them.
+    kind: deterministic
+    today: holds
+    evidence: cli hook-inject-*.test.ts (spawned process).
+  - id: HK-2
+    promise: When I correct my agent ("no, …", "from now on …"), it is reminded to save the correction, every time.
+    kind: deterministic
+    today: broken
+    evidence: "Issue 1385: the reminder is dropped when the store lock is busy and when the session hit its attempt cap."
+  - id: HK-3
+    promise: A slow or broken memory store never blocks or traps my session.
+    kind: deterministic
+    today: holds
+    evidence: "hook-session-guard.test.ts (one nudge, then tools pass); hook deadline fallback. Issue 1450: one watchdog test passes without the watchdog."
+  - id: INS-1
+    promise: Both ways of installing PLUR give my agent the same memory behaviour, and installing twice changes nothing the second time.
+    kind: deterministic
+    today: broken
+    evidence: plur-mcp init installs fewer hooks than plur init (mcp/src/index.ts buildPlurHooks vs cli init buildEnforcementHooks).
+
+- key: agent-behaviour
+  name: What an agent with PLUR actually does
+  what_it_does: With PLUR attached, a real agent uses what it was taught and keeps what it is told, across sessions.
+  promises:
+  - id: BEH-1
+    promise: An agent asked something that is in memory answers from memory, where the same agent without PLUR cannot.
+    kind: agent
+    today: holds
+    evidence: "Eval 2026-10-15, real Claude sessions, 3 of 3 runs: the agent recalled the seeded fact and answered from it; without PLUR, 3 of 3 did not. Holds only once the folder is switched on for memory: on a first visit the tools ask to turn memory on and the agent declines to answer. (The plur-bench agent arm sets PLUR_HOME, which core does not read, so its memory arm likely never loaded.)"
+    decide: "Should this also hold on the first visit to a folder, before memory is switched on there?"
+
+  - id: BEH-2
+    promise: When I correct an agent, it saves the correction, and in the next session it does not repeat the mistake.
+    kind: agent
+    today: holds
+    evidence: "Eval 2026-10-15, real Claude sessions, 3 of 3 runs: the correction was saved and the next session followed it. The planted bug (remove the correction instructions) SURVIVED: the scenario says 'Remember that.', so the eval cannot yet tell whether the instructions matter (evals/mutants/manual/README.md)."
+    decide: "Drop 'Remember that.' from the scenario, or plant the bug on the save path instead?"
+
