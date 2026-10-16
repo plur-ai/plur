@@ -1,0 +1,174 @@
+name: Evals
+
+# Promise evals (evals/README.md). Four jobs, four cadences:
+#   gate     every pull request: a promise that was green may not go red, and an
+#            eval may not change in the same pull request as the code it judges
+#   formal   every pull request touching the Lean models or the code they cover
+#   nightly  every planted bug must still turn its promise red (bite), the full
+#            scoreboard, and the private holdout set for the quality promises
+#   agents   weekly: real agent sessions with PLUR attached (costs money)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * *'    # nightly
+    - cron: '41 4 * * 1'    # weekly agent evals (Monday)
+  workflow_dispatch:
+    inputs:
+      agents:
+        description: 'Also run the agent-behaviour evals (real model runs, costs money)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.ref }}-${{ github.event.schedule || 'run' }}
+  cancel-in-progress: true
+
+env:
+  # The real embedding model, cached between runs (owner decision 2026-10-14:
+  # pull-request checks may use it).
+  PLUR_MODEL_CACHE_DIR: ${{ github.workspace }}/../plur-model-cache
+
+jobs:
+  gate:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: An eval and the code it judges never change in one pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/test_check_eval_separation.py
+          python3 scripts/check-eval-separation.py "origin/${{ github.base_ref }}"
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ env.PLUR_MODEL_CACHE_DIR }}
+          key: plur-models-bge-small-en-v1.5
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      # Fails when a promise recorded green in evals/baseline.json is red now.
+      - run: pnpm evals:gate
+      # The full board, for reading; not-yet-green promises do not fail the run.
+      - name: Scoreboard (informational)
+        if: always()
+        run: pnpm -s evals --json > scoreboard.json || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: evals-scoreboard
+          path: scoreboard.json
+
+  formal:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Skip unless the models or the code they cover changed
+        id: touched
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if python3 spec/formal/formal_check.py --project spec/formal --base "$base" --if-touched --no-build | grep -q "nothing verified changed"; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Lean (elan)
+        if: steps.touched.outputs.run == 'true'
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      # Build, no proof gaps, allowed axioms only. Drift (covered code changed,
+      # model did not) is reported but does not fail: index.ts is covered and
+      # changes in most pull requests.
+      - name: Proofs still hold
+        if: steps.touched.outputs.run == 'true'
+        run: python3 spec/formal/formal_check.py --project spec/formal --base "${{ github.event.pull_request.base.sha || github.event.before }}"
+
+  nightly:
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ env.PLUR_MODEL_CACHE_DIR }}
+          key: plur-models-bge-small-en-v1.5
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      # The private holdout set (owner decision 2026-10-14). Without the token
+      # this step fails: an unmeasured holdout is red, never skipped.
+      - name: Fetch the private holdout set
+        env:
+          TOKEN: ${{ secrets.PLUR_EVALS_HOLDOUT_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then echo "could not tell: secret PLUR_EVALS_HOLDOUT_TOKEN is not set"; exit 1; fi
+          git clone --depth 1 --filter=blob:none --sparse "https://x-access-token:${TOKEN}@github.com/plur-ai/plur-space.git" ../holdout-src
+          git -C ../holdout-src sparse-checkout set 1-tracks/engineering/evals-holdout
+          echo "PLUR_EVAL_HOLDOUT_DIR=$(cd ../holdout-src/1-tracks/engineering/evals-holdout/recall-v1 && pwd)" >> "$GITHUB_ENV"
+      - name: Scoreboard, including the holdout
+        if: always()
+        run: pnpm -s evals --json > scoreboard.json
+      - name: Every planted bug turns its promise red
+        if: always()
+        run: pnpm -s evals:bite --json > bite.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: evals-nightly
+          path: |
+            scoreboard.json
+            bite.json
+
+  agents:
+    if: (github.event_name == 'schedule' && github.event.schedule == '41 4 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.agents)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: npm install -g @anthropic-ai/claude-code@2.1.300
+      - name: Agent behaviour (pass^3 each)
+        timeout-minutes: 45
+        env:
+          PLUR_AGENT_EVALS: '1'
+          PLUR_AGENT_EVAL_LOG: ${{ github.workspace }}/agents-runs.log
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.PLUR_EVALS_CLAUDE_TOKEN }}
+        run: python3 .evals/run.py --config evals/evals.yaml --agents --only BEH-1,BEH-2 --json > agents.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: evals-agents
+          path: |
+            agents.json
+            agents-runs.log
