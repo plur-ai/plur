@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/sync.ts b/packages/core/src/sync.ts
+index a00c3a56..fde226a8 100644
+--- a/packages/core/src/sync.ts
++++ b/packages/core/src/sync.ts
+@@ -349,7 +349,7 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } |
+  */
+ function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
+   if (remoteType === 'shared') {
+-    return e => isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
++    return e => isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'public') !== 'private'
+   }
+   return e => e?.scope !== 'local'
+ }

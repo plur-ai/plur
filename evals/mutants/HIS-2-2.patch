@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/receipt.ts b/packages/core/src/receipt.ts
+index 646dec5b..572a10f0 100644
+--- a/packages/core/src/receipt.ts
++++ b/packages/core/src/receipt.ts
+@@ -283,7 +283,7 @@ export function computeReceipt(input: ReceiptInput): Receipt {
+     },
+     stored: { own: own.size, pack: packOnly.size, total: stored.size },
+     retrieved: {
+-      engrams: liveRetrieved.length,
++      engrams: retrievedIds.length, // MUTANT: every retrieved id counted, gone or not
+       activation_rate: stored.size > 0 ? liveRetrieved.length / stored.size : 0,
+       retrievals: inWindow.length,
+       // Local pairs only, so this equals taught + pack. Retired/external pairs
