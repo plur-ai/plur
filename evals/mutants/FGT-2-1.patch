@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..91e21d6d 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -9480,7 +9480,7 @@ export class Plur {
+       // force:true retires immediately, bypassing the decrement (#766) — this
+       // branch is on main and NOT on this branch's base, so taking the local
+       // side here would silently revert it.
+-      const newCount = options?.force ? 0 : Math.max(0, currentCount - 1)
++      const newCount = Math.max(0, currentCount - 1)
+       engram.write_count = newCount
+ 
+       if (newCount === 0) {

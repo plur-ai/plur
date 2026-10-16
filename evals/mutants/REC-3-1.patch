@@ -1,0 +1,16 @@
+diff --git a/packages/core/src/embeddings.ts b/packages/core/src/embeddings.ts
+index 8a6db17a..b5cb8d3b 100644
+--- a/packages/core/src/embeddings.ts
++++ b/packages/core/src/embeddings.ts
+@@ -282,10 +282,7 @@ export async function embed(text: string, role?: EmbedRole): Promise<Float32Arra
+     let vector: Float32Array | null
+     try {
+       vector = await embedder.embed(text, role)
+-    } catch (err) {
+-      transformersUnavailable = true
+-      lastLoadError = err instanceof Error ? err.message : String(err)
+-      embedPipeline = null
++    } catch {
+       return null
+     }
+     // Dimension-drift check (#290 generalized to the active embedder, #335):

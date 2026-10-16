@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..a0628ddf 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -2448,7 +2448,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
+           // targets; it must not fan the search phrase out to remote hosts.
+           const matches = await plur.recall(args.search as string, { limit: 100, remote: false })
+           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
+-          if (matches.length === 1) {
++          if (matches.length >= 1) {
+             const { warnings } = await plur.forget(matches[0].id, args.reason as string | undefined, { force: true })
+             return { success: true, retired: { id: matches[0].id, statement: matches[0].statement }, ...(warnings.length > 0 ? { warnings } : {}) }
+           }

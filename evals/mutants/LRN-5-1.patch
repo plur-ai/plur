@@ -1,0 +1,12 @@
+diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index 0d7f2901..97047f9d 100644
+--- a/packages/core/src/learn-async.ts
++++ b/packages/core/src/learn-async.ts
+@@ -614,6 +614,7 @@ export async function learnBatch(
+           logger.warning(`learnBatch: maxLlmCalls (${maxLlmCalls}) reached — remaining statements fall back to local cosine dedup (see each result's dedup.mode)`)
+           capWarned = true
+         }
++        continue
+       } else {
+         effectiveLlm = async (prompt: string) => { llmCallsUsed++; return stmtLlm(prompt) }
+       }
