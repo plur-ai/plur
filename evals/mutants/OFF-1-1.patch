@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/folder-gate.ts b/packages/mcp/src/folder-gate.ts
+index 46ec4607..c8ef1cb7 100644
+--- a/packages/mcp/src/folder-gate.ts
++++ b/packages/mcp/src/folder-gate.ts
+@@ -164,7 +164,7 @@ export function folderOffAnswer(plur: Plur, dirs: string[]): FolderOffAnswer | n
+       log(`folder map: ${why}; memory tools do nothing.`)
+       return unreadable({ file: `${root}/folders.yaml`, problem: why, fixable: false }, root)
+     }
+-    if (mode !== 'off') continue
++    if (mode !== 'off') return null
+     let entries: string[] = []
+     try { entries = folderOffEntries(dir, { root }).map(e => e.path) } catch { /* name the folder itself */ }
+     if (entries.length === 0) entries = [dir]
