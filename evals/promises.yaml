@@ -70,12 +70,6 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: dedup-cosine.test.ts ("never suppresses a write").
-  - id: LRN-3
-    promise: Telling apart a real duplicate from a different-but-similar statement is right on a labelled set of pairs.
-    kind: quality
-    today: broken
-    evidence: "Without a language model PLUR does not decide duplicates; it only reports a similarity score (learn-async.ts). Measured 2026-10-15 on 60 labelled pairs: a real duplicate scores above a similar-but-different statement 37% of the time on dev and 47% on holdout (0.5 is a coin toss). Reworded duplicates score lower than near-identical statements with one value changed."
-    decide: "Should PLUR decide duplicates without a language model at all, or should this promise only hold when one is configured? The similarity score cannot separate them."
 
   - id: LRN-4
     promise: After I forget a memory, saying the same thing again gives me a fresh memory instead of bringing the old one back.
@@ -92,7 +86,13 @@ capabilities:
     promise: A memory I locked is never rewritten by an automatic merge or update.
     kind: deterministic
     today: holds
-    evidence: formal-persistence-learn-async.test.ts; Lean theorem fixed_never_writes_locked.
+    evidence: 'Eval 2026-10-17: locked before the save, and locked by a second writer between the dedup read and the write (audit C-01), for UPDATE and MERGE. Planted bugs LRN-6-1/2 (both checks) and LRN-6-3 (only the under-lock recheck) are killed. Also formal-persistence-learn-async.test.ts; Lean theorem fixed_never_writes_locked.'
+  - id: LRN-7
+    promise: When an AI checker is configured, saying a real duplicate is merged or skipped, and a different-but-similar statement is saved as its own memory.
+    kind: agent
+    today: unknown
+    evidence: 'Eval written 2026-10-17 (replaces LRN-3, audit D-01). Configuration: learnAsync with an LLM checker (Claude via the claude CLI on the agent-eval auth path, PLUR''s own dedup prompt), real embedder for candidates. Grades what is stored after each save over the labelled pairs (dev; private holdout when configured): false-merge rate on different-but-similar pairs, missed-duplicate rate on duplicates. Outcome classifier proven with a scripted checker (evals/helpers/dedup-outcome.unit.test.ts). Not yet run (paid); floors are placeholders that fail.'
+    decide: What are the highest acceptable false-merge and missed-duplicate rates (and on which checker model — the MCP server ships gpt-4o-mini via OPENAI/OPENROUTER keys, the eval uses Claude)?
 
 - key: corrections
   name: Corrections and contradictions
@@ -435,17 +435,18 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: mcp/test/tool-profile.test.ts, admin-gateway.test.ts.
-  - id: TOOL-2
-    promise: An operation that deletes or overwrites can never be run through the general gateway tool, so my client still asks me first.
-    kind: deterministic
-    today: holds
-    evidence: tools.ts destructive refusal; admin-gateway.test.ts.
   - id: TOOL-3
     promise: When team memories queued for sending could not be sent, my agent is told at session end; it is never a silent success.
     kind: deterministic
     today: broken
     evidence: "Eval 2026-10-15: session end does not report team memories that could not be sent. outbox-failure-surfaced.test.ts covers session START, not session end."
     decide: "The promise says session end; the existing test covers session start. Keep session end (code change) or reword to session start?"
+  - id: TOOL-4
+    promise: Every tool that deletes a memory or overwrites its text is marked as destructive, so my client can ask me first, and the general gateway tool can never delete or overwrite. Moving a memory to another scope is not counted as overwriting.
+    kind: deterministic
+    today: holds
+    evidence: 'Eval 2026-10-17 (replaces TOOL-2): deleting/overwriting tools are enumerated from the handlers in packages/mcp/src/tools.ts (forget, pack uninstall, tension resolve, meta validation today; literal floor of 4), each must be listed directly with destructiveHint, absent from the gateway''s actions, and refused by plur_admin with the store unchanged. Rescope is a move and not required. Planted bugs TOOL-4-1/2/3 killed. Whether a given client actually asks is the client''s policy and is not claimed.'
+    decide: With an AI checker configured, plur_learn_batch can fold a new statement into an existing memory (UPDATE replaces its text, MERGE appends). Does that automatic merge count as 'overwrites its text'? If yes, plur_learn_batch must be marked destructive and TOOL-4 is broken today; the eval lists it as pending, not graded.
 
 - key: hooks
   name: Automatic memory in Claude Code
@@ -485,16 +486,19 @@ capabilities:
   - id: BEH-1
     promise: An agent asked something that is in memory answers from memory, where the same agent without PLUR cannot.
     kind: agent
-    today: holds
-    evidence: "Eval 2026-10-15, real Claude sessions, 3 of 3 runs: the agent recalled the seeded fact and answered from it; without PLUR, 3 of 3 did not. Holds only once the folder is switched on for memory: on a first visit the tools ask to turn memory on and the agent declines to answer. (The plur-bench agent arm sets PLUR_HOME, which core does not read, so its memory arm likely never loaded.)"
-    decide: "Should this also hold on the first visit to a folder, before memory is switched on there?"
+    today: unknown
+    evidence: 'Graders rebuilt 2026-10-17 (audit B-02): the answer is judged by meaning including negation (''Never Tuesday; deploy Friday'' fails), the fact must come back in a successful PLUR reply, memory is switched on for the folder before the run (consent is a prerequisite, checked), and fewer than 3 runs is non-certifying. Proven on synthetic transcripts (evals/helpers/agent-behaviour-graders.unit.test.ts). Not yet run with real agents under the new graders; the 2026-10-15 3/3 was under the old grader and does not count.'
 
   - id: BEH-2
     promise: When I correct an agent, it saves the correction, and in the next session it does not repeat the mistake.
     kind: agent
-    today: holds
-    evidence: "Eval 2026-10-15, real Claude sessions, 3 of 3 runs: the correction was saved and the next session followed it. The planted bug (remove the correction instructions) SURVIVED: the scenario says 'Remember that.', so the eval cannot yet tell whether the instructions matter (evals/mutants/manual/README.md)."
-    decide: "Drop 'Remember that.' from the scenario, or plant the bug on the save path instead?"
+    today: unknown
+    evidence: 'Rebuilt 2026-10-17 (audit B-02): the correction no longer says ''Remember that.'' (that is BEH-3); session 1 needs a SUCCESSFUL plur_learn whose statement carries the corrected rule (opposite rule fails, failed call fails) and the memory found on disk after reopening the store; session 2 must write exactly mailer.cfg with the requested line and retrieve the saved memory through PLUR. Graders proven on synthetic transcripts, including the audit''s three false positives. Planted bug evals/mutants/manual/BEH-2-2.patch (save acknowledged, never written) is rejected by the grader unit test; the real-agent kill is pending. Not yet run with real agents under the new graders.'
+  - id: BEH-3
+    promise: When I tell my agent to remember something, it is saved, and in the next session it uses it.
+    kind: agent
+    today: unknown
+    evidence: 'Eval written 2026-10-17 (explicit-save scenario: ''Remember this: Larkspur keeps its log files for 11 days.''). Session 1 needs a successful plur_learn carrying the fact and the memory on disk after reopening; session 2 must retrieve it through PLUR and write 11 into retention.txt; a no-PLUR control must not write 11. Same strict graders as BEH-2, three runs. Not yet run with real agents.'
 
 
 - key: clients
@@ -534,3 +538,11 @@ retired:
   replaced_by: INJ-6
   date: '2026-10-17'
   reason: 'Independent audit A-01: ''always given'' cannot hold for any number of pins under a finite space limit. INJ-6 promises priority within the space and names any pinned memory left out. The INJ-3 checks are kept inside the INJ-6 eval.'
+- id: LRN-3
+  replaced_by: LRN-7
+  date: '2026-10-17'
+  reason: 'Owner decision 2026-10-17: duplicate handling is promised only with an AI checker configured; similarity-score ranking (AUC) is a diagnostic, not a decision (audit D-01). Measurement kept at evals/diagnostics/learn_duplicate_score_auc.test.ts.'
+- id: TOOL-2
+  replaced_by: TOOL-4
+  date: '2026-10-17'
+  reason: The promise said 'my client still asks me first', which PLUR cannot guarantee (audit rewording 6). TOOL-4 promises the marking and the gateway refusal, finds every deleting tool from the handlers, and says moving a memory between scopes is not overwriting.
