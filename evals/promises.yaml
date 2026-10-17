@@ -45,11 +45,10 @@ capabilities:
     today: holds
     evidence: hybrid-search.test.ts limit and empty-store cases (the limit case also passes on zero results).
   - id: REC-6
-    promise: A memory that was replaced by a correction is not presented as current when I search.
+    promise: A memory that was replaced by a correction is either hidden or visibly marked as replaced when I search, in what I actually see.
     kind: deterministic
     today: holds
-    decide: "Suppression of replaced memories exists only in injection today; whether search hides them, marks them, or shows them is open (issues 997, 1249). The eval accepts hidden OR marked; if the answer is 'hide', it gets stricter and goes red."
-    evidence: "Eval 2026-10-15: search still returns the replaced memory, but it carries a 'superseded by' link to the correction, which the MCP recall tool shows as [superseded by ...]. Marked, not hidden."
+    evidence: 'Eval 2026-10-17: core recall/recallHybrid return the replaced memory with its superseded_by link, and the MCP replies (plur_recall hybrid and keyword, plur_recall_hybrid) show it with a visible ''[superseded by <correction id>]'' in the statement the agent reads. Marked, not hidden. 3 planted bugs caught (link not written; mark dropped from the hybrid reply; mark dropped from the keyword reply).'
   - id: REC-7
     promise: With a slow but working meaning model, search still answers within the normal deadline and says when the meaning part was cut short.
     kind: deterministic
@@ -107,9 +106,8 @@ capabilities:
   - id: COR-2
     promise: If the correction itself cannot be delivered (a draft, expired, or not available here), the old memory is still given rather than nothing.
     kind: deterministic
-    today: holds
-    evidence: "Eval 2026-10-15: holds for a draft, expired or not-yet-valid correction, and for one outside the scopes allow-list. Not tested: a correction in another project. There the agent gets nothing at all (probe 2026-10-15; inject.ts ~906-924, issue 1237)."
-    decide: "Does 'not available here' include a correction stored in another project? If yes, this is broken today."
+    today: broken
+    evidence: 'Eval 2026-10-17: holds for a draft, expired or not-yet-valid correction, and for one outside a scopes allow-list. Broken for a correction in another project with ordinary scope selection (global original, correction in project:other, inject in project:mine): ''the agent was given neither the correction nor the old memory (…); it got []'', for inject and injectHybrid, although before the correction existed the same injection gave the old memory (inject.ts ~906-924, issue 1237).'
 
   - id: COR-3
     promise: A correction and the memory it replaces are linked both ways, and the link survives a restart.
@@ -140,7 +138,7 @@ capabilities:
     promise: One explicit forget removes a memory even if it was saved several times.
     kind: deterministic
     today: holds
-    evidence: "Eval 2026-10-15 through the user-facing forget (CLI and MCP pass force). A plain forget(id) in core on a memory saved 3 times only lowers its count and leaves it active."
+    evidence: 'Eval 2026-10-17: a memory saved 3 times is gone after one plur_forget (MCP tool) and after one `plur forget <id>` (CLI), the eval passing no force flag itself; recall and inject no longer return it. A plain core forget(id) without force only lowers the count. 3 planted bugs caught (core ignores force; plur_forget drops force; CLI drops force).'
 
   - id: FGT-3
     promise: When what I asked to forget matches more than one memory, PLUR refuses and asks, instead of forgetting the wrong one.
@@ -164,11 +162,6 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: plur.test.ts budget case (two small memories, so a doubled budget would still pass); formal-apply-budget-inject.test.ts at unit level.
-  - id: INJ-3
-    promise: A rule I pinned is always given to my agent in its scope, even when it does not match the task.
-    kind: deterministic
-    today: holds
-    evidence: inject.test.ts pinned cases; the pinned share has its own cap and omissions are reported.
   - id: INJ-4
     promise: A memory waiting for my approval is never given to my agent, but I can still find it by searching.
     kind: deterministic
@@ -180,6 +173,18 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: "Eval 2026-10-15 with 1 and 3 ratings each. With one rating, a helpful rating can LOWER a new memory's score: it promotes the memory out of 'leaning' and so removes the recently-learned bonus (fresh-tail.ts). Worth a product look."
+  - id: INJ-6
+    promise: Pinned memories are given before anything else within the space I set, and PLUR names any pinned memory it could not fit.
+    kind: deterministic
+    today: broken
+    evidence: 'Eval 2026-10-17 (evals/inject INJ-6, replaces INJ-3; INJ-3 cases kept and green). Ten pinned rules under a 150-token budget: the agent stays within budget and every pinned rule left out is named (core omitted_pinned and both MCP inject replies). Fails ''before anything else'': ''pinned rules were left out (8 of 10 …) while 1 unpinned memories were given, taking space in the same budget''. Pins are capped at half the budget (PINNED_TOKEN_BUDGET_RATIO 0.5, inject.ts), so unpinned memories get the other half while pins are dropped.'
+    decide: Should pins be able to use the whole budget before any unpinned memory (the promise as written), or keep the 50% pinned share so task-relevant memories always get room? If the share stays, reword to e.g. 'Pinned memories get first claim on up to half the space I set …' under a new id.
+  - id: INJ-7
+    promise: A memory reported as given to my agent is in the actual tool or hook reply, with its text and where it came from.
+    kind: deterministic
+    today: broken
+    evidence: 'Eval 2026-10-17 (evals/inject INJ-7), driven over the in-memory MCP transport and the installed hook-inject run from source. plur_inject and plur_inject_hybrid report 3 memories (count 3, injected_ids) incl. a pinned ''Never …'' rule, but the reply carries none of them: ''reported as given, but the reply has no entry for it at all'' — both handlers omit the constraints section (packages/mcp/src/tools.ts plur_inject / plur_inject_hybrid). The hook carries the text, but no entry says where it came from: ''its entry does not say where it came from (scope "global")''.'
+    decide: What must a delivered entry show as 'where it came from'? The eval requires the memory's scope on its entry; a pack name or store label would need the eval widened. No reply shows either today.
 
 
 - key: feedback
@@ -238,12 +243,6 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: route-unscoped.test.ts; Lean theorem autoRoute_leaving_is_scanned.
-  - id: PRV-5
-    promise: A memory saved to a team scope without saying whether it is private is kept on my machine until I say it may be shared.
-    kind: deterministic
-    today: broken
-    decide: Today a team write with no visibility is pushed (Lean theorem team_write_still_pushed; issue 1225). Keep this promise and change the behaviour, or replace it with "team-scoped memories are shared unless marked private".
-    evidence: WritePath.lean section 4.
   - id: PRV-6
     promise: A memory saved to a team scope is shared with the team unless I mark it private, and the save tells me where it went.
     kind: deterministic
@@ -425,7 +424,7 @@ capabilities:
     promise: The usage receipt adds up, and forgotten memories do not inflate it.
     kind: deterministic
     today: holds
-    evidence: evals/history HIS-2; 2 planted bugs caught. The most-relied-on list keeps forgotten memories marked retired, which the eval accepts. receipt.test.ts. Open issue 1394.
+    evidence: 'Eval 2026-10-17, read from core and through the MCP plur_receipt tool. The most-relied-on list is checked non-vacuously: it is not empty, each entry''s count equals how many injections gave it, and an entry is marked forgotten exactly when its memory is forgotten. 3 planted bugs caught. receipt.test.ts. Open issue 1394.'
 
 - key: agent-tools
   name: The tools my agent uses
@@ -531,3 +530,7 @@ retired:
   replaced_by: PRV-6
   date: '2026-10-17'
   reason: 'Owner decision on the 2026-10-17 board: a team-scoped memory is shared unless marked private; safety rests on server-side review-by-default and the save line saying where each memory went. The old promise (kept local until cleared) is no longer what PLUR promises.'
+- id: INJ-3
+  replaced_by: INJ-6
+  date: '2026-10-17'
+  reason: 'Independent audit A-01: ''always given'' cannot hold for any number of pins under a finite space limit. INJ-6 promises priority within the space and names any pinned memory left out. The INJ-3 checks are kept inside the INJ-6 eval.'
