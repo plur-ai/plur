@@ -1,9 +1,12 @@
 import { isSharedScope } from './scope-util.js'
 import { logger } from './logger.js'
+import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import type { StoreEntry, ServerStoreEntry } from './schemas/config.js'
 
-/** In-memory marker added to each expanded entry. Value = raw YAML array index.
- * Stripped by storeEntryForDisk before any writeback. */
+/** In-memory marker added to each expanded entry. Value = the server entry's
+ * identity ({@link serverEntryIdentities}), never its array position: another
+ * process may insert or reorder entries between this load and the locked
+ * reread of a writeback. Stripped by storeEntryForDisk before any writeback. */
 export const EXPANDED_FROM = '_expanded_from' as const
 
 // Safe grammar for server-supplied scope strings (#426, #408).
@@ -20,16 +23,51 @@ export function isServerStoreEntry(raw: unknown): boolean {
 }
 
 /**
+ * The identity of a server entry, from its raw YAML: url, compat `scope`,
+ * `scopes`, `pinned_scopes`, `readonly` and `token_env` (never the token).
+ * These are what tell two server entries apart; metadata (`discovery`,
+ * `enterprise`, `scope_settings`) is not part of it, so a metadata change by
+ * another process does not orphan this process's entries.
+ */
+export function serverEntryIdentityBase(raw: unknown): string {
+  const o = raw as Record<string, unknown>
+  return JSON.stringify([o.url, o.scope, o.scopes, o.pinned_scopes, o.readonly, o.token_env])
+}
+
+/**
+ * One identity per position of a raw `stores` array (`undefined` for an entry
+ * that is not a server entry): the identity base plus `#n`, its occurrence
+ * among entries with the same base. Computed the same way at load and on the
+ * fresh read under the config lock, so an expanded entry finds its server
+ * entry wherever it now sits, and an inserted entry never matches.
+ */
+export function serverEntryIdentities(rawStores: unknown[]): (string | undefined)[] {
+  const seen = new Map<string, number>()
+  return rawStores.map((raw) => {
+    if (!isServerStoreEntry(raw)) return undefined
+    const base = serverEntryIdentityBase(raw)
+    const n = seen.get(base) ?? 0
+    seen.set(base, n + 1)
+    return `${base}#${n}`
+  })
+}
+
+/** The identity base of a `serverEntryIdentities` value. */
+export function identityBaseOf(identity: string): string {
+  return identity.slice(0, identity.lastIndexOf('#'))
+}
+
+/**
  * Expand one server entry into one in-memory `StoreEntry` per scope.
  *
  * Order: scopes[], then pinned_scopes[] entries not already seen, then the
  * compat `scope` if not already seen. Deduplication preserves first-seen order.
  * Scope strings failing the safe grammar are dropped with a warning.
  *
- * Each expanded entry carries `[EXPANDED_FROM]: rawIndex` so the writeback
- * collapse step (efi-b01w) can map it back to the original server entry.
+ * Each expanded entry carries `[EXPANDED_FROM]: identity` so the writeback
+ * collapse step can map it back to the original server entry.
  */
-export function expandServerEntry(entry: ServerStoreEntry, rawIndex: number): StoreEntry[] {
+export function expandServerEntry(entry: ServerStoreEntry, identity: string): StoreEntry[] {
   const seen = new Set<string>()
   const ordered: string[] = []
 
@@ -50,16 +88,21 @@ export function expandServerEntry(entry: ServerStoreEntry, rawIndex: number): St
     // Per-scope settings carry metadata only: a key that names the entry's
     // identity or credentials (url, scope, token, …) is ignored, so a
     // scope_settings value can never redirect a scope or swap its token.
-    const settings = Object.fromEntries(
-      Object.entries(entry.scope_settings?.[scope] ?? {}).filter(([k]) => !RESERVED_ENTRY_KEYS.has(k)),
-    )
+    const settings = metadataOnly(entry.scope_settings?.[scope])
+    // The compat `scope` also owns the entry's top-level metadata (dial,
+    // description, covers, sensitivity, unknown keys): an older client wrote
+    // it there for that scope, and dropping it would, for one, lose a
+    // `dial: never` and dial a server the user excluded. An explicit
+    // `scope_settings[scope]` value takes precedence.
+    const legacy = scope === entry.scope ? metadataOnly(entry) : {}
     const expanded: Record<string, unknown> = {
+      ...legacy,
       ...settings,
       url: entry.url,
       readonly: entry.readonly,
       shared: isSharedScope(scope),
       scope,
-      [EXPANDED_FROM]: rawIndex,
+      [EXPANDED_FROM]: identity,
     }
     if (entry.token !== undefined) expanded.token = entry.token
     if (entry.token_env !== undefined) expanded.token_env = entry.token_env
@@ -78,7 +121,12 @@ export function expandServerEntry(entry: ServerStoreEntry, rawIndex: number): St
 // Per-scope metadata fields managed by the collapse step.
 const SCOPE_META_KEYS = ['dial', 'description', 'covers', 'sensitivity'] as const
 
-/** Keys of an expanded entry that a `scope_settings` value must not set. */
+/** The metadata keys of a scope_settings value or of a server entry's top level. */
+function metadataOnly(obj: object | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj ?? {}).filter(([k, v]) => v !== undefined && !RESERVED_ENTRY_KEYS.has(k)))
+}
+
+/** Keys of an expanded entry that metadata (scope_settings or top level) must not set. */
 const RESERVED_ENTRY_KEYS = new Set<string>([
   'url', 'path', 'scope', 'scopes', 'pinned_scopes', 'token', 'token_env', 'readonly', 'shared',
   'enterprise', 'discovery', 'scope_settings', EXPANDED_FROM,
@@ -93,59 +141,77 @@ export function safeOrigin(url: string): string {
  * Collapse expanded per-scope entries back into the original server entries
  * before writing to disk.
  *
- * Typed entries carrying `EXPANDED_FROM = i` are collected per raw index.
- * For each server entry at position i in rawStores, the per-scope metadata
- * fields (dial, description, covers, sensitivity) from the corresponding
- * typed entries are folded into `scope_settings[scope]`; all other fields
- * on the raw entry (scope, scopes, pinned_scopes, discovery, enterprise,
- * url, token, token_env, readonly) are left byte-identical.
+ * Typed entries are grouped by their `EXPANDED_FROM` identity and matched to
+ * the raw entry with the same identity in the freshly read `rawStores`; an
+ * identity with no raw match (the entry was changed or removed since load)
+ * writes nothing. For each matched server entry the per-scope metadata
+ * fields (dial, description, covers, sensitivity) from its typed entries are
+ * written back; every other field (scope, scopes, pinned_scopes, discovery,
+ * enterprise, url, token, token_env, readonly) is left byte-identical.
+ *
+ * Where a field is written: `scope_settings[scope]`, except for the compat
+ * `scope`, whose field stays at the top level when that is where it already
+ * is (an older client reads it there) and no `scope_settings` value overrides it.
+ *
+ * `sensitivity` follows the per-scope writeback rule
+ * ({@link mergeSensitivityForWriteback}): unknown `forbid` categories and
+ * nested keys on disk survive, unless the scope is in
+ * `serverSensitivityScopes` (the server's policy was just synced).
  *
  * Returns a new rawStores array of the same length where server entry
  * positions carry the updated collapsed entry and non-server positions are
  * unchanged.
  */
-export function collapseExpandedStores(typed: StoreEntry[], rawStores: unknown[]): unknown[] {
+export function collapseExpandedStores(
+  typed: StoreEntry[],
+  rawStores: unknown[],
+  serverSensitivityScopes?: Set<string>,
+): unknown[] {
   if (!Array.isArray(rawStores) || !rawStores.length) return rawStores
 
-  // Group typed entries by their EXPANDED_FROM raw index.
-  const expandedByIndex = new Map<number, StoreEntry[]>()
+  // Group typed entries by their EXPANDED_FROM identity.
+  const expandedById = new Map<string, StoreEntry[]>()
   for (const entry of typed) {
-    const idx = (entry as unknown as Record<string, unknown>)[EXPANDED_FROM]
-    if (typeof idx === 'number') {
-      const arr = expandedByIndex.get(idx)
+    const id = (entry as unknown as Record<string, unknown>)[EXPANDED_FROM]
+    if (typeof id === 'string') {
+      const arr = expandedById.get(id)
       if (arr) arr.push(entry)
-      else expandedByIndex.set(idx, [entry])
+      else expandedById.set(id, [entry])
     }
   }
 
-  if (!expandedByIndex.size) return rawStores
+  if (!expandedById.size) return rawStores
+  const ids = serverEntryIdentities(rawStores)
 
   return rawStores.map((raw, i) => {
-    if (!isServerStoreEntry(raw)) return raw
-    const entries = expandedByIndex.get(i)
+    const id = ids[i]
+    if (id === undefined) return raw
+    const entries = expandedById.get(id)
     if (!entries?.length) return raw  // server entry with scopes: [] — no typed entries to process
 
     const rawObj = raw as Record<string, unknown>
+    const collapsed: Record<string, unknown> = { ...rawObj }
 
     // Build updated scope_settings by folding per-scope fields from typed entries.
     // Start from the existing raw scope_settings so unknown fields are preserved.
     const existingSettings = rawObj.scope_settings
-    const rawScopeSettings: Record<string, unknown> =
-      existingSettings && typeof existingSettings === 'object' && !Array.isArray(existingSettings)
-        ? { ...(existingSettings as Record<string, unknown>) }
-        : {}
+    const rawScopeSettings: Record<string, unknown> = isPlainObject(existingSettings)
+      ? { ...existingSettings }
+      : {}
 
     for (const te of entries) {
       const existing = rawScopeSettings[te.scope]
-      const perScope: Record<string, unknown> =
-        existing && typeof existing === 'object' && !Array.isArray(existing)
-          ? { ...(existing as Record<string, unknown>) }
-          : {}
+      const perScope: Record<string, unknown> = isPlainObject(existing) ? { ...existing } : {}
+      const isCompat = te.scope === rawObj.scope
 
       for (const key of SCOPE_META_KEYS) {
         const v = (te as unknown as Record<string, unknown>)[key]
-        if (v !== undefined) perScope[key] = v
-        // absent = keep whatever was in the raw scope_settings
+        if (v === undefined) continue  // absent = keep whatever is on disk
+        // The compat scope's legacy top-level field stays where it is.
+        const target = isCompat && !(key in perScope) && key in rawObj ? collapsed : perScope
+        target[key] = key === 'sensitivity'
+          ? mergeSensitivityForWriteback(target[key], v as object, serverSensitivityScopes?.has(te.scope) === true)
+          : v
       }
 
       if (Object.keys(perScope).length > 0) {
@@ -155,7 +221,6 @@ export function collapseExpandedStores(typed: StoreEntry[], rawStores: unknown[]
       }
     }
 
-    const collapsed: Record<string, unknown> = { ...rawObj }
     if (Object.keys(rawScopeSettings).length > 0) {
       collapsed.scope_settings = rawScopeSettings
     } else {
@@ -164,4 +229,8 @@ export function collapseExpandedStores(typed: StoreEntry[], rawStores: unknown[]
 
     return collapsed
   })
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === 'object' && !Array.isArray(v)
 }
