@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/receipt.ts b/packages/core/src/receipt.ts
+index 646dec5b..c9022be8 100644
+--- a/packages/core/src/receipt.ts
++++ b/packages/core/src/receipt.ts
+@@ -265,7 +265,7 @@ export function computeReceipt(input: ReceiptInput): Receipt {
+     .sort((a, b) => b[1] - a[1] || cmpId(a[0], b[0]))
+     .slice(0, 10)
+     .map(([id, count]) => {
+-      const entry: ReceiptTopEntry = { id: sanitizeDisplay(id), count, retired: !stored.has(id) }
++      const entry: ReceiptTopEntry = { id: sanitizeDisplay(id), count, retired: false } // MUTANT: a forgotten memory is listed as still stored
+       const s = snippet(id)
+       if (s) entry.statement = s
+       return entry

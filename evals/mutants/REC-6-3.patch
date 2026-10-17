@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..ff64da6b 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -165,7 +165,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
+     const response: Record<string, unknown> = {
+       results: results.map(e => {
+         const supersededBy = e.relations?.superseded_by
+-        const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
++        const annotation = '' // MUTANT: the replaced-by mark is not shown in keyword recall
+         const raw = e as any
+         // #869: surface measured_under so callers can see the measurement context.
+         const measuredUnder: Record<string, string> | undefined = raw.measured_under
