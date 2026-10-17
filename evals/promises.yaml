@@ -50,6 +50,11 @@ capabilities:
     today: holds
     decide: "Suppression of replaced memories exists only in injection today; whether search hides them, marks them, or shows them is open (issues 997, 1249). The eval accepts hidden OR marked; if the answer is 'hide', it gets stricter and goes red."
     evidence: "Eval 2026-10-15: search still returns the replaced memory, but it carries a 'superseded by' link to the correction, which the MCP recall tool shows as [superseded by ...]. Marked, not hidden."
+  - id: REC-7
+    promise: With a slow but working meaning model, search still answers within the normal deadline and says when the meaning part was cut short.
+    kind: deterministic
+    today: holds
+    evidence: 'evals/recall REC-7: with PLUR_RECALL_DEADLINE_MS unset and a stub model that answers correctly after 25 s, hybrid search returns the keyword match within 10 s + 5 s margin, with mode not ''hybrid'', degraded_reason ''semantic_deadline'', a plain embedderError and results_complete false. Control: the same store with a fast model gives mode ''hybrid'', complete results. 3 planted bugs killed (REC-7-1..3).'
 
 
 - key: learn
@@ -148,11 +153,11 @@ capabilities:
   what_it_does: At the start of a session and on each task, PLUR gives my agent the memories that matter for it, within the space I allow.
   promises:
   - id: INJ-1
-    promise: For a given task, my agent is given the memories that matter for it, judged on a labelled set of tasks.
+    promise: My agent gets the memories needed for its task without being given nearby rules that do not apply.
     kind: quality
     today: broken
+    measured: "On 30 labelled tasks (evals/gold): every needed memory given in at least 70% of tasks, and a nearby not-applicable memory given in at most 50% (floors set by the owner 2026-10-16; a not-applicable neighbour is a failure, owner 2026-10-17)."
     evidence: "Measured 2026-10-15 on 30 labelled tasks: every needed memory was given for 29/30 (dev) and 29/30 (holdout), but about 24 of 150 memories are given per task, and the nearby not-applicable memory was given too in 24/30 (dev) and 27/30 (holdout). Coverage holds; leaving out what does not apply does not."
-    decide: "Is giving a not-applicable neighbour along with the right memory a failure? Ceiling set by the owner 2026-10-16: at most half the tasks. Today 80-90%."
 
   - id: INJ-2
     promise: What my agent is given never goes over the space I set for it.
@@ -239,6 +244,16 @@ capabilities:
     today: broken
     decide: Today a team write with no visibility is pushed (Lean theorem team_write_still_pushed; issue 1225). Keep this promise and change the behaviour, or replace it with "team-scoped memories are shared unless marked private".
     evidence: WritePath.lean section 4.
+  - id: PRV-6
+    promise: A memory saved to a team scope is shared with the team unless I mark it private, and the save tells me where it went.
+    kind: deterministic
+    today: holds
+    evidence: 'Eval 2026-10-17 (replaces PRV-5, owner board 2026-10-17): with a stub team server, a team-scope save with no visibility reaches the server once through learn(), learnRouted() and MCP plur_learn; the answer says delivery remote (learn() returns before the send and says remote or queued for the team scope) and names the team scope. visibility private stays in the local store, nothing is sent, and the answer says delivery local with ''this machine'' in words. Mutants PRV-6-1..3 killed.'
+  - id: PRV-7
+    promise: Moving a memory to another scope keeps a usable copy and its history, and a preview or a failed move changes nothing.
+    kind: deterministic
+    today: holds
+    evidence: 'Eval 2026-10-17: rescope (packages/core rescope, MCP plur_rescope tools.ts ~4619, plur rescope cli/src/index.ts ~68). Local move keeps text, findable in the new scope, history keeps created + rescoped. Team move leaves exactly one copy on the team server, the retired original links to it, history records it. Dry run (engine, MCP, CLI) changes no file and sends nothing. Team server down and a secret-bearing memory: status error, file and history unchanged. Server-assigned id equal to another local memory''s id: that memory untouched. Mutants PRV-7-1..4 killed.'
 
 - key: folders
   name: Folders where memory is off
@@ -259,6 +274,11 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: mcp/test/folder-off.test.ts.
+  - id: OFF-4
+    promise: In a folder I have not decided about yet, nothing is read from or written to memory until I choose, and my choice applies only to that folder.
+    kind: deterministic
+    today: holds
+    evidence: 'Eval 2026-10-17 via the MCP server (packages/mcp/README.md ~79, ~92; folder-gate.ts; server.ts gate). Undecided folder A: learn, recall, recall_hybrid, inject, inject_hybrid, session_start and plur_admin (capture, timeline, similarity_search, learn, recall; lean profile) all answer the folder question, return no memory text, change no memory file, write no folders.yaml, send nothing to the team server, and call nothing on the engine but the folder lookup and config reads. After answering yes for A (the offered command, run as plur folders set runs it): memory runs in A directly and through plur_admin; the map gains an entry for A only; sibling B stays ask and a new session in B gets the question; A''s nonce is refused for B and from another session. Mutants OFF-4-1..3 killed.'
 
 - key: team
   name: Team stores and being offline
@@ -280,11 +300,10 @@ capabilities:
     today: holds
     evidence: outbox.test.ts, outbox-idempotency.test.ts; Lean theorem honour_at_most_once. Open issues 1628, 1509, 1321 on stuck deliveries.
   - id: TEAM-4
-    promise: A search limited to my personal scopes never sends my question to a team server.
+    promise: A search limited to my personal scopes (my user scope, and local project scopes not tied to a team store) never sends my question to a team server.
     kind: deterministic
     today: holds
-    evidence: "Eval 2026-10-15: a search with a personal allow-list or scope global sends zero requests to the team server. A search scoped to a project of a team's org (project:<org>/x) does ask that org's server, by design."
-    decide: "Is a project scope inside a team's org 'personal' for this promise? Today it reaches the team server."
+    evidence: 'Eval 2026-10-17: with a team server mounted and live recall on, keyword search, hybrid search and hybrid inject limited to user:me, to a local project scope (project:hobby, no team store), to an allow-list of both, to an allow-list of global + user:me, or to global, send zero requests to the team server and still find my memory. Controls: a search in the team scope and in project:acme/payments (a team''s org) do reach it. A project inside a team''s org is not personal under this definition. Mutants TEAM-4-1..3 killed.'
 
   - id: TEAM-5
     promise: With no internet at all, I can still save and find memories, and PLUR makes no network calls.
@@ -319,6 +338,17 @@ capabilities:
     today: broken
     decide: A personal repository receives private memories by design today, with a warning (sync.ts). Keep the promise and change the default, or narrow it to shared repositories (then SYN-1 covers it and SYN-4 is retired).
     evidence: "evals/sync SYN-4 is red: a private personal memory left the machine through sync to a personal repository. The shared-repository case is green. sync.ts header comment; sync.test.ts warning case."
+  - id: SYN-5
+    promise: After two devices save, correct or forget memories offline, syncing keeps both devices' changes and never brings back a forgotten memory.
+    kind: deterministic
+    today: broken
+    evidence: 'evals/sync SYN-5 is red in both orders: device A saves X and forgets Y, device B (joined by cloning the personal repository) saves Z and corrects W, then both sync. The second device''s sync throws: ''a sync failed: device B: Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.'' (A first; ''device A: ...'' when B syncs first). sync.ts merges engrams.yaml line by line through git (pullRebaseClean), so two devices appending memories offline always conflict. The same assertions pass when the devices sync one after the other (checked by hand, not committed).'
+  - id: SYN-6
+    promise: A shared sync never reveals a private memory through a side record (an episode, candidate, contradiction record or history entry), and memories kept to this machine are never synced anywhere.
+    kind: deterministic
+    today: broken
+    evidence: 'evals/sync SYN-6: the shared-repository arms are green (every file the shared repo receives is read; a private memory''s episode, failure report, contradiction record, legacy candidate and history stay home, while side records about cleared memories arrive). The personal-repository arm is red: ''the machine-local memory''s text or id (ENG-2026-10-17-001) reached the personal repository in: candidates.yaml, episodes.yaml, tensions.yaml''. The scope:local memory itself is stripped from engrams.yaml, but stageStrippedSiblings returns early for personal remotes (sync.ts: ''personal remotes are untouched''), so side records quoting it are pushed verbatim.'
+    decide: README says scope:local engrams 'never reach any remote'; it does not say whether side records quoting them may. Treat the personal-repo side-record push as a bug (strip side records about scope:local memories on every remote), or narrow the promise to the memory file only?
 
 - key: packs
   name: Packs
@@ -375,16 +405,21 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: evals/durability DUR-5, a hand-written old-format store; 3 planted bugs caught. migrations.test.ts, audit-migration-preservation.test.ts. Open issues 1170, 1171 (migrations not applied by the MCP server).
+  - id: DUR-6
+    promise: Switching to another supported storage backend, or upgrading PLUR, keeps every memory's text, scope and privacy, and it can still be found.
+    kind: deterministic
+    today: holds
+    evidence: 'evals/durability DUR-6: a mixed store (global, project, team, private, pinned, machine-local) keeps text, scope, visibility and pinned flag, and each memory is found by a scoped keyword search and a scoped meaning+keyword search (bag-of-words stub), through yaml -> sqlite -> pglite -> yaml switches made by editing backend: in config.yaml and reopening with new Plur. An older-format store keeps the same through opening with the current engine, the shipped `plur migrate` command (run from source in a child process, steps applied) and every embedded backend. postgres is not covered: it needs a Postgres server and evals are offline. 2 planted bugs (DUR-6-2 sqlite scope filter, DUR-6-3 load-time normaliser) killed.'
 
 - key: history
   name: History
   what_it_does: Every change to a memory is recorded, so I can see where it came from and what happened to it.
   promises:
   - id: HIS-1
-    promise: Every memory's history shows when it was created, merged with a duplicate, renamed and forgotten.
+    promise: Every memory's history shows when it was created, merged with a duplicate, given a new id, and forgotten.
     kind: deterministic
     today: holds
-    decide: '"Renamed" is read as the id-collision rename (engram_rekeyed). If it means a scope move or an edited statement, that needs its own eval.'
+    note: "Wording 2026-10-17 (independent audit): 'renamed' meant the id-collision repair (engram_rekeyed), which is what the eval proves. A history of scope moves is PRV-7; edited text has no promise yet."
     evidence: evals/history HIS-1; 3 planted bugs caught. history-integration.test.ts.
   - id: HIS-2
     promise: The usage receipt adds up, and forgotten memories do not inflate it.
@@ -437,6 +472,12 @@ capabilities:
     kind: deterministic
     today: broken
     evidence: plur-mcp init installs fewer hooks than plur init (mcp/src/index.ts buildPlurHooks vs cli init buildEnforcementHooks).
+  - id: INS-2
+    promise: Setting up PLUR keeps my other client settings, and the doctor reports a memory connection it could not verify as a failure.
+    kind: deterministic
+    today: broken
+    evidence: 'Eval 2026-10-17 red: plur doctor --no-handshake says overall ok and exits 0 without starting the memory server (cli/src/commands/doctor.ts ~1452, `skipHandshake || handshake.ok`); failure line: ''expected the doctor not to say "ok" for a memory connection it did not verify; it said ok (handshake: {"ok":false,"error":"skipped (--no-handshake)"})''. Green parts: plur init and plur-mcp init keep other MCP servers, unrelated ~/.claude.json keys, other hooks, permissions, env and statusLine; MCP plur_doctor fails an unreachable team store and says ok:false.'
+    decide: Should a doctor run that skipped the server check say 'unverified' (not ok, non-zero exit, as the Codex sub-check already does) or 'fail'? The eval accepts either, only not 'ok'.
 
 - key: agent-behaviour
   name: What an agent with PLUR actually does
@@ -456,3 +497,37 @@ capabilities:
     evidence: "Eval 2026-10-15, real Claude sessions, 3 of 3 runs: the correction was saved and the next session followed it. The planted bug (remove the correction instructions) SURVIVED: the scenario says 'Remember that.', so the eval cannot yet tell whether the instructions matter (evals/mutants/manual/README.md)."
     decide: "Drop 'Remember that.' from the scenario, or plant the bug on the save path instead?"
 
+
+- key: clients
+  name: Using PLUR from different tools
+  what_it_does: The same memory is there whichever way I reach PLUR, the command line, the MCP server or the automatic hooks.
+  promises:
+  - id: CLI-1
+    promise: A memory saved through one way of using PLUR (the CLI or the MCP server) is found through the other, and automatic loading picks it up without a manual recall.
+    kind: deterministic
+    today: holds
+    evidence: 'Eval 2026-10-17 on one PLUR home: plur learn (CLI, own process) -> MCP plur_recall finds it; MCP plur_learn -> plur recall (CLI, own process) finds it; a new Claude Code session''s first message (hook-inject, own process) carries both. Keyword search only. Covers Claude Code hooks; the other clients'' integrations (Cursor, Codex, opencode, Antigravity) are not covered. Mutants CLI-1-1..3 killed.'
+
+
+- key: episodes
+  name: Event timeline
+  what_it_does: PLUR keeps a timeline of what happened in my sessions; I can find events again by time, agent, channel or words, and preview the memories they would give.
+  promises:
+  - id: EPI-1
+    promise: Events I record can be found again with the timeline filters I ask for.
+    kind: deterministic
+    today: holds
+    evidence: 'evals/episodes EPI-1, through the MCP tools plur_capture and plur_timeline: since, until, agent, channel and search each return the matching event and leave out the other (which is first shown in the unfiltered timeline); two filters combine as AND; the agent filter still finds the event after a restart on the same store. 2 planted bugs: EPI-1-1, EPI-1-2 killed.'
+  - id: EPI-2
+    promise: Previewing memories extracted from my events saves nothing.
+    kind: deterministic
+    today: holds
+    evidence: 'evals/episodes EPI-2, through MCP: event summaries read back from plur_timeline are passed to plur_ingest with extract_only; it returns candidates and saved=false, and no file in the store changes (hash snapshot of the whole tree), the memory count is unchanged and no candidate is found by search. Control: without extract_only the same extraction saves. 2 planted bugs: EPI-2-1, EPI-2-2 killed.'
+
+# Promises retired on purpose: the meaning changed, so the id did (evals/README.md).
+# Only a retired id may leave the baseline (gate.py --base).
+retired:
+- id: PRV-5
+  replaced_by: PRV-6
+  date: '2026-10-17'
+  reason: 'Owner decision on the 2026-10-17 board: a team-scoped memory is shared unless marked private; safety rests on server-side review-by-default and the save line saying where each memory went. The old promise (kept local until cleared) is no longer what PLUR promises.'
