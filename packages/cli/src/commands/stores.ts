@@ -86,7 +86,9 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
     already_registered: `Already registered: ${url} (scope: ${result.scope}) — nothing changed.`,
     token_rotated: `Updated the token for ${url} (scope: ${result.scope}) after it verified.`,
     overwritten: `Reassigned scope ${result.scope} to ${url}.`,
-  }[result.status] + (result.status === 'already_registered' ? '' : kept)
+  }[result.status] + (result.status === 'already_registered' ? '' : kept) +
+    // A server entry has one key for all its scopes (#1631): say which ones it now serves.
+    (result.token_scopes ? ` The key is shared by every scope of that server entry: ${result.token_scopes.join(', ')}.` : '')
   if (shouldOutputJson(flags)) {
     outputJson(redactTokenDeep({
       success: true, status: result.status, url, scope: result.scope,
