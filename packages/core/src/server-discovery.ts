@@ -57,6 +57,17 @@ export function acceptDiscoveredScopes(input: {
     }
   }
 
+  // An empty org_id means the server's response cannot be checked against an
+  // org — treat it as degraded regardless of scopes_status.  not_synced is
+  // excluded because its scope list is always [], so there is nothing to check.
+  if (!org_id && scopes_status !== 'not_synced') {
+    const rejected = rawScopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' }))
+    if (cached.length > 0) {
+      return { status: 'degraded', replaceCache: false, scopes: [], rejected }
+    }
+    return { status: 'degraded', replaceCache: true, scopes: [], rejected }
+  }
+
   if (!replaceCache) {
     return { status, replaceCache: false, scopes: [], rejected: [] }
   }
@@ -73,12 +84,6 @@ export function acceptDiscoveredScopes(input: {
 
     const kind = scope.slice(0, colonIdx)
     const rest = scope.slice(colonIdx + 1)
-
-    // An empty org_id means the server is misconfigured — reject everything.
-    if (org_id === '') {
-      rejected.push({ scope, reason: 'org-prefix' })
-      continue
-    }
 
     let rejection: ScopeRejection['reason'] | null = null
 

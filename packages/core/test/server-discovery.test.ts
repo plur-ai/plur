@@ -253,14 +253,25 @@ describe('acceptDiscoveredScopes — scope filtering', () => {
     ])
   })
 
-  it('empty org_id rejects all scopes with org-prefix', () => {
+  it('empty org_id rejects all scopes with org-prefix and returns degraded', () => {
     const r = acceptDiscoveredScopes({
       me: me({ org_id: '', scopes: ['group:acme/team', 'user:acme:alice'] }),
       cached: [],
       otherServersScopes: none,
     })
+    expect(r.status).toBe('degraded')
     expect(r.scopes).toEqual([])
     expect(r.rejected.every((x) => x.reason === 'org-prefix')).toBe(true)
+  })
+
+  it('empty org_id with non-empty cache keeps cache (replaceCache: false)', () => {
+    const r = acceptDiscoveredScopes({
+      me: me({ org_id: '', scopes: ['group:acme/team'], scopes_status: 'ok' }),
+      cached: ['group:acme/team'],
+      otherServersScopes: none,
+    })
+    expect(r.status).toBe('degraded')
+    expect(r.replaceCache).toBe(false)
   })
 
   it('scope that is exactly <kind>:<org_id> (no sub-path) is accepted', () => {
