@@ -1,0 +1,15 @@
+diff --git a/packages/mcp/src/server.ts b/packages/mcp/src/server.ts
+index 9acfdd5d..fa205320 100644
+--- a/packages/mcp/src/server.ts
++++ b/packages/mcp/src/server.ts
+@@ -317,9 +317,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
+     // through plur_admin, touches no store in an `off` folder and says so, and
+     // in an undecided (`ask`) folder answers with the folder question (#1525).
+     // Before the canary tick: a refused call is not a turn of memory use.
+-    const gated = tool.name === 'plur_admin'
+-      ? (request.params.arguments as Record<string, unknown> | undefined)?.action
+-      : tool.name
++    const gated = tool.name
+     // The workspace the gate admitted this call in (#1566): a read's default
+     // scope comes from it, so a read costs no second roots request and is
+     // answered in the workspace it was admitted in.
