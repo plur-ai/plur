@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..62f88b8e 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -1588,7 +1588,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
+           attribution: args.attribution as LearnContext['attribution'],
+           claim_class: args.claim_class as LearnContext['claim_class'],
+           license: args.license as LearnContext['license'],
+-          visibility: args.visibility as LearnContext['visibility'],
++          // visibility not passed through
+           // #243: resolve which session's default scope governs this write —
+           // explicit session_id first, else the lone open session. Never
+           // persisted on the engram (LearnContext.session selects a scope, it
