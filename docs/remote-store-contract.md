@@ -1,3 +1,58 @@
+# Remote store contract
+
+## `GET /api/v1/me` — identity and scope discovery
+
+Called once per session to resolve the token's identity and authorized scope set
+(#292). Scope-independent: the `/me` endpoint is keyed on the token alone.
+
+### Success `200`
+
+```json
+{
+  "username": "alice",
+  "org_id": "acme",
+  "role": "developer",
+  "scopes": ["user:acme:alice", "group:acme/team", "project:acme/team/backend"],
+  "scopes_status": "ok",
+  "scope_metadata": [ /* array of scope metadata objects */ ],
+  "scope_metadata_status": "ok",
+  "gitlab_host": "gitlab.example.com",
+  "project_paths": { "project:acme/team/backend": "team/backend" },
+  "key_expires_at": null
+}
+```
+
+Field details:
+
+| Field | Type | Notes |
+|---|---|---|
+| `username` | string | Login name. |
+| `org_id` | string | Organization identifier; used as the org-prefix for scope validation. |
+| `role` | string | `"developer"`, `"admin"`, etc. |
+| `scopes` | string[] | All scopes the token may read and write. Validated to `/^[\w:./-]+$/` at the client trust boundary (#426). |
+| `scopes_status` | `"ok"` \| `"not_synced"` | `"ok"` = list is complete; `"not_synced"` = user not yet in the sync graph, list is `[]`. **Absent** on older servers → client treats as `"absent"`. |
+| `scope_metadata` | object[] | Self-describing metadata per scope (#345). Optional; `[]` when absent. |
+| `scope_metadata_status` | `"ok"` \| `"unavailable"` | `"unavailable"` = metadata read failed, `scope_metadata` is `[]`. **Absent** on older servers. |
+| `gitlab_host` | string \| null | Hostname of the connected GitLab instance (no scheme, no port unless non-default); `null` when GitLab is not configured; **absent** when not applicable. Validated to `/^[a-z0-9.-]+(:\d{1,5})?$/` (#426). |
+| `project_paths` | object | Maps each `project:` scope in `scopes` to its GitLab `path_with_namespace`. Entries whose key is not in `scopes` or whose value fails the path grammar are dropped at the client (#426). |
+| `key_expires_at` | string \| null | ISO-8601 expiry of the API key; `null` = no expiry; **absent** = unknown (e.g. authenticated with a JWT, not a key). **Absent and null are different values** — clients must not treat an absent field as `null`. |
+
+### Scope-read failure `503`
+
+```json
+{ "error": "scope_lookup_failed" }
+```
+
+The server could not read the scope list from the directory service. The client
+must not replace a non-empty cached scope list with an empty one on a 503 response.
+
+### Non-2xx
+
+Any non-2xx response causes the client to throw `RemoteHttpError(status, message)`.
+Callers treat 401/403 as an auth failure and other errors as transient.
+
+---
+
 # Remote store: retried writes
 
 How the client retries a write to a team store, and what a server does to make
