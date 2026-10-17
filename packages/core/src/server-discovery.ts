@@ -11,6 +11,9 @@
  * - `scopes_status: 'ok'` replaces the cache with the server's list, even [].
  * - `scopes_status: 'not_synced'`, or an older server (no `scopes_status`)
  *   answering an empty list, replaces only an empty cache (with []).
+ * - An answer with no `org_id` cannot be checked against an org, so every
+ *   scope is rejected (`org-prefix`) and the answer is `degraded`: it never
+ *   replaces a non-empty cache.
  * - Accepted scopes are filtered to the server's org; a scope another server
  *   entry already serves is refused.
  */
@@ -76,6 +79,15 @@ export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): Acce
   if (error || !me) {
     const status = error?.status
     return keep(status === 401 || status === 403 ? 'auth_failed' : 'failed')
+  }
+
+  // No org to check the list against: a malformed answer, never a real
+  // "you have no scopes". Report what was refused, keep a non-empty cache.
+  if (!me.org_id && me.scopes_status !== 'not_synced') {
+    const rejected = me.scopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' }))
+    return cached.length > 0
+      ? { ...keep('degraded'), rejected }
+      : { ...empty('degraded'), rejected }
   }
 
   switch (me.scopes_status) {

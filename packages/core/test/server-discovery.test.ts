@@ -110,12 +110,22 @@ describe('acceptDiscoveredScopes — org filter', () => {
     expect(r.rejected).toEqual([{ scope: 'user:other:alice', reason: 'foreign-personal' }, { scope: 'user:alice', reason: 'foreign-personal' }])
   })
 
-  it('an empty org_id rejects everything as org-prefix', () => {
+  it('an empty org_id rejects everything as org-prefix and is degraded: a non-empty cache stays', () => {
     const r = acceptDiscoveredScopes({ me: me({ org_id: '', scopes: ['group:/team', 'user::alice', 'group:acme/team'] }), cached: ['group:acme/team'], otherServersScopes: none })
     expect(r).toEqual({
-      status: 'ok', replaceCache: true, scopes: [],
+      status: 'degraded', replaceCache: false, scopes: ['group:acme/team'],
       rejected: [{ scope: 'group:/team', reason: 'org-prefix' }, { scope: 'user::alice', reason: 'org-prefix' }, { scope: 'group:acme/team', reason: 'org-prefix' }],
     })
+  })
+
+  it('an empty org_id from an older server (no scopes_status) is degraded too', () => {
+    expect(acceptDiscoveredScopes({ me: me({ org_id: '', scopes_status: 'absent', scopes: ['group:acme/team'] }), cached: ['group:acme/team'], otherServersScopes: none }))
+      .toMatchObject({ status: 'degraded', replaceCache: false, scopes: ['group:acme/team'] })
+  })
+
+  it('an empty org_id with an empty cache replaces it with [] (degraded)', () => {
+    expect(acceptDiscoveredScopes({ me: me({ org_id: '', scopes: ['group:acme/team'] }), cached: [], otherServersScopes: none }))
+      .toMatchObject({ status: 'degraded', replaceCache: true, scopes: [] })
   })
 
   it('a scope another server already serves is refused', () => {
