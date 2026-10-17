@@ -8,7 +8,8 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk } from './config.js'
-import { collapseExpandedStores, isServerStoreEntry, EXPANDED_FROM, safeOrigin } from './store-expand.js'
+import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin } from './store-expand.js'
+import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
@@ -1176,7 +1177,13 @@ export const DEFAULT_REMOTE_WRITE_TIMEOUT_MS = 10_000
  *  callers; `message` never contains the token. */
 /** True for an in-memory entry expanded from a multi-scope server entry (#1631). */
 function isFromServerEntry(entry: StoreEntry): boolean {
-  return typeof (entry as unknown as Record<string, unknown>)[EXPANDED_FROM] === 'number'
+  return typeof serverEntryIdOf(entry) === 'string'
+}
+
+/** The identity of the server entry an in-memory entry was expanded from (#1631). */
+function serverEntryIdOf(entry: StoreEntry): string | undefined {
+  const id = (entry as unknown as Record<string, unknown>)[EXPANDED_FROM]
+  return typeof id === 'string' ? id : undefined
 }
 
 /** Why one scope of a server entry cannot be replaced or removed on its own. */
@@ -12709,9 +12716,11 @@ Generate an improved version of the procedure that prevents this failure. Return
    *  read + merge + write only; the in-memory refresh happens after release. */
   private persistStores(stores: StoreEntry[], opts?: {
     serverSensitivityScopes?: Set<string>
-    /** A new key for a server entry (#1631): written onto the on-disk server
-     *  entry for this url, in place. The collapse step never writes a token. */
-    serverEntryToken?: { url: string; token: string; tokenEnv?: string }
+    /** A new key for a server entry (#1631): written in place onto the one
+     *  on-disk server entry `entry` was expanded from, found by identity on
+     *  the fresh read under the lock. No match, or more than one, is refused
+     *  and nothing is written. The collapse step never writes a token. */
+    serverEntryToken?: { entry: StoreEntry; token: string; tokenEnv?: string }
   }): void {
     withLock(this.paths.config, () => {
       let configData: Record<string, unknown> = {}
@@ -12732,19 +12741,31 @@ Generate an improved version of the procedure that prevents this failure. Return
       // resolved to at load (#1561): the typed entries carry that value.
       //
       // Collapse expanded per-scope entries back into their server entry (#1631):
-      // N in-memory entries with EXPANDED_FROM=i → one entry on disk at position i.
+      // N in-memory entries with one EXPANDED_FROM identity → the one entry on
+      // disk with that identity, wherever it sits now. Positions are never
+      // trusted: another process may have inserted or reordered entries since
+      // these were loaded.
       const rawArray = Array.isArray(configData.stores) ? (configData.stores as unknown[]) : []
-      const collapsedRaw = collapseExpandedStores(stores, rawArray)
+      const ids = serverEntryIdentities(rawArray)
+      const indexById = new Map<string, number>()
+      ids.forEach((id, i) => { if (id !== undefined) indexById.set(id, i) })
+      const collapsedRaw = collapseExpandedStores(stores, rawArray, opts?.serverSensitivityScopes)
       const rekey = opts?.serverEntryToken
       if (rekey) {
-        const target = normalizeEndpointUrl(rekey.url)
-        collapsedRaw.forEach((r, i) => {
-          const rawUrl = (r as { url?: unknown } | null)?.url
-          if (!isServerStoreEntry(r) || typeof rawUrl !== 'string' || normalizeEndpointUrl(rawUrl) !== target) return
-          // Spread keeps every key where it was; storeEntryForDisk drops an
-          // undefined token_env and a token that only repeats its variable.
-          collapsedRaw[i] = { ...(r as Record<string, unknown>), token: rekey.token, token_env: rekey.tokenEnv }
-        })
+        // Only the selected entry, validated here under the lock: same
+        // identity, exactly one on disk. Another entry on the same url keeps
+        // its own token and token_env.
+        const base = identityBaseOf(serverEntryIdOf(rekey.entry) ?? '#')
+        const matches = ids.flatMap((id, i) => (id !== undefined && identityBaseOf(id) === base ? [i] : []))
+        if (matches.length !== 1) {
+          throw new Error(`addStore: ${matches.length
+            ? `more than one server entry for ${safeOrigin(rekey.entry.url!)} has the same url and scopes, so which key to replace is ambiguous`
+            : `the server entry for ${safeOrigin(rekey.entry.url!)} changed on disk since it was loaded`}. Nothing was changed.`)
+        }
+        const i = matches[0]
+        // Spread keeps every key where it was; storeEntryForDisk drops an
+        // undefined token_env and a token that only repeats its variable.
+        collapsedRaw[i] = { ...(collapsedRaw[i] as Record<string, unknown>), token: rekey.token, token_env: rekey.tokenEnv }
       }
       // Per-scope entries merge onto per-scope raw entries only: a server entry
       // shares url+scope with its compat `scope`, so letting it be a merge target
@@ -12761,8 +12782,10 @@ Generate an improved version of the procedure that prevents this failure. Return
       let next = 0
       for (const s of stores) {
         if (!isFromServerEntry(s)) { out.push(merged[next++]); continue }
-        const idx = (s as unknown as Record<string, number>)[EXPANDED_FROM]
-        if (!emitted.has(idx) && isServerStoreEntry(collapsedRaw[idx])) {
+        const idx = indexById.get(serverEntryIdOf(s)!)
+        // No raw entry with this identity: it changed or went away since load.
+        // Nothing of ours is written for it; the raw entry is kept below.
+        if (idx !== undefined && !emitted.has(idx)) {
           emitted.add(idx)
           out.push(collapsedRaw[idx])
         }
@@ -12828,19 +12851,14 @@ Generate an improved version of the procedure that prevents this failure. Return
         if (!k) logger.warning(`[plur:persistStores] store entry for scope "${typed.scope}" has neither url nor path — writing typed entry as-is`)
         return typed
       }
-      const rawSensitivityValue = (raw as { sensitivity?: unknown }).sensitivity
       // The raw config is un-validated, un-salvaged on-disk YAML (persistStores
       // reads it via yaml.load, NOT loadConfig), so `sensitivity` can be ANYTHING
       // a hand-edit put there — including a truthy primitive (`sensitivity: 'oops'`,
       // `5`, `true`). loadConfig dedups nothing over `stores`, so a duplicate entry
       // on the same url+scope key can leave a primitive in rawMap (last-wins) while
-      // the typed entry carries a proper object. Only treat raw sensitivity as a
-      // mergeable object when it actually IS a plain object — otherwise the spreads
-      // and the `in` operator below corrupt the merge or throw a TypeError.
-      const rawSensitivity =
-        rawSensitivityValue && typeof rawSensitivityValue === 'object' && !Array.isArray(rawSensitivityValue)
-          ? (rawSensitivityValue as Record<string, unknown>)
-          : undefined
+      // the typed entry carries a proper object. mergeSensitivityForWriteback only
+      // treats raw sensitivity as mergeable when it actually IS a plain object.
+      //
       // R2-D (#14): `forbid` is a KNOWN field whose value is NORMALIZED at read
       // time (loadConfig's preprocess rewrites a forward-compat `forbid:['pii']`
       // to the safe default). A shallow `...typed.sensitivity` would then write
@@ -12857,15 +12875,13 @@ Generate an improved version of the procedure that prevents this failure. Return
       // `forbid` must win, or the server's policy change is silently discarded
       // on every writeback and the metadata change-detector can never converge
       // (config.yaml rewritten on every session_start).
-      const restoreRawForbid =
-        rawSensitivity && 'forbid' in rawSensitivity && !serverSensitivityScopes?.has(typed.scope)
-      const mergedSensitivity = typed.sensitivity
-        ? {
-            ...(rawSensitivity ?? {}),
-            ...typed.sensitivity,
-            ...(restoreRawForbid ? { forbid: rawSensitivity.forbid } : {}),
-          }
-        : rawSensitivity
+      // The same rule applies inside a server entry's scope_settings (#1631):
+      // collapseExpandedStores calls the same function.
+      const mergedSensitivity = mergeSensitivityForWriteback(
+        (raw as { sensitivity?: unknown }).sensitivity,
+        typed.sensitivity,
+        serverSensitivityScopes?.has(typed.scope) === true,
+      )
       const merged: Record<string, unknown> = {
         ...raw,
         ...typed,
@@ -12976,11 +12992,20 @@ Generate an improved version of the procedure that prevents this failure. Return
       if (isRemote && options?.token !== undefined && (options.token !== sameEntry.token || refChanged)) {
         // A scope of a server entry (#1631): the key is one per server, so the
         // new token goes onto that entry and serves every scope it lists.
+        // Only that one entry: another server entry on the same url may hold
+        // a different key for other scopes. A scope two server entries on this
+        // url both list does not say which key to replace: refused.
         if (isFromServerEntry(sameEntry)) {
-          this.persistStores(config.stores ?? [], { serverEntryToken: { url: sameEntry.url!, token: options.token, tokenEnv } })
-          const token_scopes = (this.config.stores ?? [])
-            .filter(s => isFromServerEntry(s) && normalizeEndpointUrl(s.url!) === normalizeEndpointUrl(sameEntry.url!))
-            .map(s => s.scope)
+          const id = serverEntryIdOf(sameEntry)
+          const listing = new Set((config.stores ?? [])
+            .filter(s => isFromServerEntry(s) && s.scope === sameEntry.scope && normalizeEndpointUrl(s.url!) === normalizeEndpointUrl(sameEntry.url!))
+            .map(serverEntryIdOf))
+          if (listing.size > 1) {
+            throw new Error(`addStore: scope "${sameEntry.scope}" is listed by more than one server entry for ${safeOrigin(sameEntry.url!)}, ` +
+              `so which entry's key to replace is ambiguous. Nothing was changed. Remove the duplicate from config.yaml or re-run the enterprise setup.`)
+          }
+          this.persistStores(config.stores ?? [], { serverEntryToken: { entry: sameEntry, token: options.token, tokenEnv } })
+          const token_scopes = (config.stores ?? []).filter(s => serverEntryIdOf(s) === id).map(s => s.scope)
           logger.info(`[plur:addStore] rotated the server key for ${safeOrigin(sameEntry.url!)} (${token_scopes.length} scope(s))`)
           return { status: 'token_rotated', scope: sameEntry.scope, token_scopes }
         }
