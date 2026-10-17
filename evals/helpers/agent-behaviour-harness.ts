@@ -51,6 +51,21 @@ export const MAX_TURNS = 8
 export const RUN_TIMEOUT_MS = 6 * 60_000
 /** pass^k: how many runs each arm makes. PLUR_AGENT_EVAL_RUNS may LOWER it (for a manual mutant check), never raise it. */
 export const RUNS = Math.max(1, Math.min(3, Number(process.env.PLUR_AGENT_EVAL_RUNS ?? 3) || 3))
+/** Runs a promise needs before it can go green. */
+export const CERTIFYING_RUNS = 3
+/** A run with fewer than three runs is diagnostic only: it can show red, never green. */
+export const CERTIFYING = RUNS >= CERTIFYING_RUNS
+
+/**
+ * Fail a diagnostic run that would otherwise pass. Call it AFTER the grading
+ * assertions, so a grader failure still reports itself first.
+ */
+export function requireCertifying(): void {
+  if (!CERTIFYING) {
+    throw new Error(`non-certifying run: PLUR_AGENT_EVAL_RUNS=${process.env.PLUR_AGENT_EVAL_RUNS} gave ${RUNS} run(s); ` +
+      `a promise needs all ${CERTIFYING_RUNS} runs to pass before it can be green. Use fewer runs only for a diagnostic or mutant check.`)
+  }
+}
 
 /** Fail — never skip — when agent evals are switched off. */
 export function requireEnabled(): void {
@@ -127,6 +142,18 @@ export async function folderOn(storeDir: string, folder: string, home: string): 
   const plur = new Plur({ path: storeDir, autoDiscover: false })
   await plur.ready()
   plur.setFolder(folder, { mode: 'on' }, { home })
+  // Folder consent is a prerequisite of the scenario, set by the user before
+  // the agent runs — never something the agent is expected to get past.
+  const mode = plur.resolveFolderPolicy(folder, { home }).mode
+  if (mode !== 'on') throw new Error(`precondition: memory should be on for ${folder} before the agent runs; the folder map says ${mode}`)
+}
+
+/** Every active memory's statement, read by a FRESH instance over `dir` — what a later session can really find. */
+export async function persistedStatements(dir: string): Promise<string[]> {
+  useEmbedder('off')
+  const plur = new Plur({ path: dir, autoDiscover: false })
+  await plur.ready()
+  return (await plur.list()).filter(e => e.status === 'active').map(e => e.statement)
 }
 
 /** Keyword recall on a FRESH instance over `dir` — what is really on disk. */
@@ -197,6 +224,13 @@ export function listFiles(dir: string): string[] {
   return out.sort()
 }
 
+/** Files under `dir` with their text (skipping dot-dirs). */
+export function readFiles(dir: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const f of listFiles(dir)) out[f] = readFileSync(join(dir, f), 'utf8')
+  return out
+}
+
 // ── running a session ───────────────────────────────────────────────────────
 
 export interface ToolCall { name: string; input: Record<string, unknown>; result: string; isError: boolean | null }
@@ -213,19 +247,8 @@ export interface AgentRun {
   stderrTail: string
 }
 
-/** Tools that are the plur MCP server's (direct, or via plur_admin { action }). */
-export function plurCalls(run: AgentRun): ToolCall[] {
-  return run.toolCalls
-    .filter(c => c.name.startsWith('mcp__plur__'))
-    .map(c => {
-      const short = c.name.slice('mcp__plur__'.length)
-      if (short === 'plur_admin' && typeof c.input.action === 'string') {
-        const args = (c.input.args && typeof c.input.args === 'object' ? c.input.args : {}) as Record<string, unknown>
-        return { ...c, name: String(c.input.action).replace(/^mcp__plur__/, ''), input: args }
-      }
-      return { ...c, name: short }
-    })
-}
+/** Tools that are the plur MCP server's (direct, or via plur_admin { action }). Lives with the graders. */
+export { plurCalls } from './agent-behaviour-graders.js'
 
 export function parseStream(stdout: string): Omit<AgentRun, 'exitCode' | 'timedOut' | 'stderrTail'> {
   const calls: ToolCall[] = []
@@ -307,6 +330,39 @@ export function runSession(o: SessionOpts): Promise<AgentRun> {
   })
 }
 
+// ── a language model for PLUR's AI checks (LRN-7) ───────────────────────────
+
+/**
+ * An LlmFunction (prompt in, text out) backed by the claude CLI, on the same
+ * auth path as the agent sessions (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY,
+ * passed to the child only). No tools, no MCP servers, no project settings, a
+ * fresh HOME: the model sees the prompt PLUR built and nothing else.
+ */
+export function claudeLlm(auth: Record<string, string>, model: string = MODEL): (prompt: string) => Promise<string> {
+  const exe = claudeExe()
+  return (prompt: string) => new Promise((res, rej) => {
+    const home = freshDir('llm-home')
+    const child = spawn(exe, ['-p', prompt, '--output-format', 'json', '--model', model, '--tools', '',
+      '--strict-mcp-config', '--setting-sources', 'project', '--no-session-persistence', '--max-budget-usd', String(MAX_BUDGET_USD)],
+    { cwd: home, env: childEnv(home, auth), stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', d => { out += d })
+    child.stderr.on('data', d => { err += d })
+    const timer = setTimeout(() => child.kill('SIGKILL'), RUN_TIMEOUT_MS)
+    child.on('close', code => {
+      clearTimeout(timer)
+      try {
+        const j = JSON.parse(out)
+        if (j.is_error || typeof j.result !== 'string') throw new Error(String(j.result ?? 'no result'))
+        res(j.result)
+      } catch (e) {
+        rej(new Error(`the claude CLI did not answer (exit ${code}): ${(e as Error).message} ${err.slice(-300)}`))
+      }
+    })
+  })
+}
+
 // ── verdicts ────────────────────────────────────────────────────────────────
 
 export interface Graded { ok: boolean; why: string; run: AgentRun }
@@ -320,7 +376,7 @@ export function logReport(text: string): void {
 
 /** A one-line-per-run report for failure messages and the eval log. */
 export function report(title: string, graded: Graded[]): string {
-  const lines = [`${title}: ${graded.filter(g => g.ok).length}/${graded.length} runs passed`]
+  const lines = [`${title}: ${graded.filter(g => g.ok).length}/${graded.length} runs passed${CERTIFYING ? '' : ` (NON-CERTIFYING: fewer than ${CERTIFYING_RUNS} runs, cannot turn the promise green)`}`]
   graded.forEach((g, i) => {
     const r = g.run
     const flag = g.ok ? 'PASS' : 'FAIL'
