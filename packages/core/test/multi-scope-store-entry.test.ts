@@ -15,6 +15,7 @@ import { loadConfig } from '../src/config.js'
 import { logger } from '../src/logger.js'
 import { StoreEntrySchema } from '../src/schemas/config.js'
 import { Plur, type RemoteScopeDiscovery } from '../src/index.js'
+import { StubServer } from './helpers/stub-server.js'
 
 const SERVER = `stores:
   - url: https://plur.example.com
@@ -306,3 +307,82 @@ describe('multi-scope server entry — writeback keeps the file as it was', () =
   })
 })
 
+
+describe('multi-scope server entry — store mutations write through or refuse', () => {
+  const TWO = `stores:
+  - url: https://legacy.example.com
+    token: t-legacy
+    scope: group:acme/legacy
+  - url: https://plur.example.com
+    token: t-old
+    scope: user:acme:alice
+    scopes: ["user:acme:alice", "group:acme/team"]
+    enterprise: { hello_engram_id: ENG-1 }
+    scope_settings:
+      group:acme/team: { description: "Team-wide" }
+`
+
+  it('a token rotation on a scope of a server entry writes the new token onto that server entry', () => {
+    const p = write(TWO)
+    const plur = new Plur({ path: dirname(p) })
+    const r = plur.addStore('', 'group:acme/team', { url: 'https://plur.example.com', token: 't-new' })
+    expect(r.status).toBe('token_rotated')
+    // The token is one per server: the result names every scope it now serves.
+    expect(r.token_scopes).toEqual(['user:acme:alice', 'group:acme/team'])
+    const raw = yaml.load(readFileSync(p, 'utf8')) as any
+    expect(raw.stores).toHaveLength(2)
+    expect(raw.stores[0]).toMatchObject({ url: 'https://legacy.example.com', token: 't-legacy', scope: 'group:acme/legacy' })
+    expect(raw.stores[1].token).toBe('t-new')
+    expect(raw.stores[1]).toMatchObject({
+      url: 'https://plur.example.com', scope: 'user:acme:alice',
+      scopes: ['user:acme:alice', 'group:acme/team'],
+      enterprise: { hello_engram_id: 'ENG-1' },
+      scope_settings: { 'group:acme/team': { description: 'Team-wide' } },
+    })
+    // Field order on the entry is kept: token stays where it was.
+    expect(Object.keys(raw.stores[1]).slice(0, 3)).toEqual(['url', 'token', 'scope'])
+    // Every expanded scope of the entry now loads with the new token.
+    const reloaded = loadConfig(p).stores ?? []
+    expect(reloaded.filter(s => s.url === 'https://plur.example.com').map(s => s.token)).toEqual(['t-new', 't-new'])
+    // A second call with the same token is a no-op.
+    expect(plur.addStore('', 'user:acme:alice', { url: 'https://plur.example.com', token: 't-new' }).status).toBe('already_registered')
+  })
+
+  it('a rotation to a token_env reference on a server entry keeps only the reference', () => {
+    process.env.ALICE_NEW_KEY = 't-env-new'
+    try {
+      const p = write(TWO)
+      const plur = new Plur({ path: dirname(p) })
+      const r = plur.addStore('', 'group:acme/team', { url: 'https://plur.example.com', token: 't-env-new', tokenEnv: 'ALICE_NEW_KEY' })
+      expect(r.status).toBe('token_rotated')
+      const raw = yaml.load(readFileSync(p, 'utf8')) as any
+      expect(raw.stores[1].token_env).toBe('ALICE_NEW_KEY')
+      expect(raw.stores[1].token).toBeUndefined()
+    } finally {
+      delete process.env.ALICE_NEW_KEY
+    }
+  })
+
+  it('replacing one scope of a server entry with another store is refused and changes nothing', () => {
+    const p = write(TWO)
+    const before = readFileSync(p, 'utf8')
+    const plur = new Plur({ path: dirname(p) })
+    expect(() => plur.addStore('', 'group:acme/team', { url: 'https://other.example.com', token: 'o', overwriteScope: true }))
+      .toThrow(/re-run the enterprise setup/)
+    expect(readFileSync(p, 'utf8')).toBe(before)
+  })
+
+  it('verifyRemoteStore refuses the same replacement before anything is written', async () => {
+    const server = new StubServer('o-token')
+    const { url } = await server.start()
+    try {
+      server.setMe({ username: 'bob', org_id: 'acme', role: 'developer', scopes: ['group:acme/team'] })
+      const p = write(TWO)
+      const plur = new Plur({ path: dirname(p) })
+      await expect(plur.verifyRemoteStore({ url, token: 'o-token', scope: 'group:acme/team', overwriteScope: true }))
+        .rejects.toMatchObject({ code: 'scope_conflict', message: expect.stringMatching(/re-run the enterprise setup/) })
+    } finally {
+      await server.stop()
+    }
+  })
+})
