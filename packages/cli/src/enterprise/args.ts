@@ -10,7 +10,10 @@ export type InitOptions = {
   noBrowser: boolean
 }
 
-const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
+// WHATWG URL keeps the brackets on an IPv6 hostname.
+const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+const VALUE_FLAGS = new Set(['--server', '--expect-version', '--ca-file', '--ca-sha256', '--proxy', '--mode'])
 
 export function parseInitArgs(
   argv: string[],
@@ -29,29 +32,35 @@ export function parseInitArgs(
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
-    if (arg === '--server' && i + 1 < args.length) {
-      server = args[++i]
-    } else if (arg === '--expect-version' && i + 1 < args.length) {
-      expectVersion = args[++i]
-    } else if (arg === '--ca-file' && i + 1 < args.length) {
-      caFile = args[++i]
-    } else if (arg === '--ca-sha256' && i + 1 < args.length) {
-      caSha256 = args[++i]
-    } else if (arg === '--proxy' && i + 1 < args.length) {
-      proxy = args[++i]
+    if (VALUE_FLAGS.has(arg)) {
+      // A flag without its value is an error: silently dropping e.g.
+      // --ca-sha256 would skip the CA check the caller asked for.
+      const value = args[i + 1]
+      if (value === undefined || value.startsWith('--')) {
+        return { error: `${arg} needs a value` }
+      }
+      i++
+      if (arg === '--server') server = value
+      else if (arg === '--expect-version') expectVersion = value
+      else if (arg === '--ca-file') caFile = value
+      else if (arg === '--ca-sha256') caSha256 = value
+      else if (arg === '--proxy') proxy = value
+      else if (arg === '--mode') {
+        if (value === 'remote-only') {
+          return {
+            error: 'remote-only mode is set up by the install script, not by plur-enterprise',
+          }
+        }
+        if (value !== 'full') return { error: `Unknown mode: ${value}` }
+      }
     } else if (arg === '--token-stdin') {
       tokenStdin = true
     } else if (arg === '--json') {
       json = true
     } else if (arg === '--no-browser') {
       noBrowser = true
-    } else if (arg === '--mode' && i + 1 < args.length) {
-      const mode = args[++i]
-      if (mode === 'remote-only') {
-        return {
-          error: 'remote-only mode is set up by the install script, not by plur-enterprise',
-        }
-      }
+    } else {
+      return { error: `Unknown option: ${arg}` }
     }
   }
 
@@ -70,7 +79,12 @@ export function parseInitArgs(
   try {
     parsed = new URL(server)
   } catch {
-    return { error: `Invalid server URL: ${server}` }
+    // Not echoed: the raw value may carry credentials.
+    return { error: 'Invalid server URL — give the full address, e.g. https://plur.example.com' }
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { error: `Unsupported server URL scheme ${parsed.protocol} — use https://` }
   }
 
   if (parsed.protocol === 'http:') {

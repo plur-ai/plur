@@ -56,4 +56,60 @@ describe('parseInitArgs', () => {
       ),
     ).toMatchObject({ expectVersion: '0.22.0', caSha256: 'a'.repeat(64) })
   })
+
+  it('allows http:// on [::1] and localhost', () => {
+    expect(parseInitArgs(['init', '--server', 'http://[::1]:59998'], {})).toMatchObject({
+      server: 'http://[::1]:59998',
+    })
+    expect(parseInitArgs(['init', '--server', 'http://localhost:59998/'], {})).toMatchObject({
+      server: 'http://localhost:59998',
+    })
+  })
+
+  it('rejects schemes other than https and loopback http', () => {
+    for (const url of ['ftp://plur.example.com', 'file:///etc/passwd', 'ws://plur.example.com']) {
+      expect(parseInitArgs(['init', '--server', url], {})).toHaveProperty('error')
+    }
+  })
+
+  it('strips userinfo and never echoes it in an error', () => {
+    expect(
+      parseInitArgs(['init', '--server', 'https://alice:s3cret@plur.example.com/x'], {}),
+    ).toMatchObject({ server: 'https://plur.example.com' })
+    const r = parseInitArgs(['init', '--server', 'http://alice:s3cret@plur.example.com'], {})
+    expect(JSON.stringify(r)).not.toContain('s3cret')
+    const bad = parseInitArgs(['init', '--server', 'alice:s3cret@not a url'], {})
+    expect(bad).toHaveProperty('error')
+    expect(JSON.stringify(bad)).not.toContain('s3cret')
+  })
+
+  it('a flag missing its value is an error, never silently dropped', () => {
+    expect(
+      parseInitArgs(['init', '--server', 'https://plur.example.com', '--ca-sha256'], {}),
+    ).toEqual({ error: '--ca-sha256 needs a value' })
+    expect(parseInitArgs(['init', '--server'], { PLUR_SERVER: 'https://plur.example.com' })).toEqual({
+      error: '--server needs a value',
+    })
+    expect(
+      parseInitArgs(['init', '--server', 'https://plur.example.com', '--ca-file', '--json'], {}),
+    ).toEqual({ error: '--ca-file needs a value' })
+  })
+
+  it('an unknown option is an error', () => {
+    expect(
+      parseInitArgs(['init', '--server', 'https://plur.example.com', '--ca-sha', 'a'.repeat(64)], {}),
+    ).toEqual({ error: 'Unknown option: --ca-sha' })
+  })
+
+  it('--mode full is accepted; any other mode is an error', () => {
+    expect(
+      parseInitArgs(['init', '--server', 'https://plur.example.com', '--mode', 'full'], {}),
+    ).toMatchObject({ mode: 'full' })
+    expect(
+      parseInitArgs(['init', '--server', 'https://plur.example.com', '--mode', 'remote-only'], {}),
+    ).toEqual({ error: 'remote-only mode is set up by the install script, not by plur-enterprise' })
+    expect(
+      parseInitArgs(['init', '--server', 'https://plur.example.com', '--mode', 'bogus'], {}),
+    ).toEqual({ error: 'Unknown mode: bogus' })
+  })
 })
