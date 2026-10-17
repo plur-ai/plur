@@ -36,17 +36,20 @@ describe('routing through the shared resolver (#1631)', () => {
   let originalFetch: typeof globalThis.fetch
   let posts: Array<{ host: string; body: string }>
   let bodies: string[]
+  let failPosts: boolean
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-resolver-'))
     originalFetch = globalThis.fetch
     posts = []
     bodies = []
+    failPosts = false
     globalThis.fetch = vi.fn(async (input: any, init?: { method?: string; body?: unknown }) => {
       const url = new URL(typeof input === 'string' ? input : input.url)
       const body = typeof init?.body === 'string' ? init.body : ''
       bodies.push(body)
       if ((init?.method ?? 'GET') === 'POST' && /\/engrams\/?$/.test(url.pathname)) {
+        if (failPosts) return { ok: false, status: 503, json: async () => ({}), text: async () => 'down' } as Response
         posts.push({ host: url.host, body })
         return { ok: true, status: 201, json: async () => ({ id: 'ENG-2026-10-18-901' }), text: async () => '' } as Response
       }
@@ -145,5 +148,24 @@ describe('routing through the shared resolver (#1631)', () => {
     expect(d.warning).toBe(
       'Scope "project:acme/other" is not granted to you on https://plur.example.com; this engram was saved on this machine only.',
     )
+  })
+  it('a queued save whose scope a second server now claims is not flushed to either', async () => {
+    writeConfig(dir, [{ url: SERVER, token: 'a', scope: 'group:acme/team', shared: true, readonly: false }])
+    failPosts = true
+    const plur = new Plur({ path: dir })
+    await plur.learnRouted('queued while the server was down', { scope: 'group:acme/team' })
+    const row = localRows(dir).find(r => r.statement === 'queued while the server was down')
+    expect(row?.structured_data?._outbox).toBeTruthy()
+    failPosts = false
+    writeConfig(dir, [
+      { url: OTHER, token: 'b', scope: 'group:acme/team', shared: true, readonly: false },
+      { url: SERVER, token: 'a', scope: 'group:acme/team', shared: true, readonly: false },
+    ])
+    const r = await plur.flushOutbox({ force: true })
+    expect(posts).toHaveLength(0)
+    expect(r.flushed).toBe(0)
+    expect(r.expired_warnings.join('\n')).toMatch(/claimed by two servers.*other\.example\.com.*plur\.example\.com.*stays queued/)
+    // still queued: nothing was dropped
+    expect(localRows(dir).find(x => x.statement === 'queued while the server was down')?.structured_data?._outbox).toBeTruthy()
   })
 })
