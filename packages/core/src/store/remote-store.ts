@@ -351,6 +351,35 @@ export function salvageRemoteRow(
  */
 export const FEEDBACK_SOURCE_CAPABILITY = 'feedback.source'
 
+/** Host grammar for server-supplied strings (#426, #408). */
+const HOST_RE = /^[a-z0-9.-]+(:\d{1,5})?$/
+/** Path grammar for server-supplied project paths (#426, #408).
+ *  Each segment must start with a word char to prevent path traversal (e.g. `..`). */
+const PATH_RE = /^[\w][\w.-]*(\/[\w][\w.-]*)*$/
+
+/**
+ * The resolved fields returned by GET /api/v1/me (contract C1, #1631).
+ * Older servers omit some fields; see per-field comments for the absent values.
+ */
+export interface MeResponse {
+  username: string
+  org_id: string
+  role: string
+  scopes: string[]
+  scope_metadata: ScopeMetadata[]
+  capabilities: string[]
+  /** 'absent' when the server sent no field (older server). */
+  scopes_status: 'ok' | 'not_synced' | 'absent'
+  /** 'absent' when the server sent no field (older server). */
+  scope_metadata_status: 'ok' | 'unavailable' | 'absent'
+  /** undefined = field absent; null = GitLab not configured. */
+  gitlab_host: string | null | undefined
+  /** Only entries whose key is in `scopes` and whose value passes the path grammar. */
+  project_paths: Record<string, string>
+  /** undefined = absent = unknown; null = no expiry; string = ISO-8601. */
+  key_expires_at: string | null | undefined
+}
+
 /**
  * Advertised capabilities per (url, token), for the life of the process
  * (#1310). Filled by every successful `me()` — session start already calls it
@@ -597,19 +626,25 @@ export class RemoteStore {
    * out-of-band (#292). Scope-independent: `/me` is keyed on the token alone,
    * so the driver's `scope` is irrelevant here.
    *
-   * Throws on a non-2xx response (caller decides whether to swallow per URL).
+   * Extended to read enterprise C1 fields (#1631): `scopes_status`,
+   * `scope_metadata_status`, `gitlab_host`, `project_paths`, `key_expires_at`.
+   * Server-supplied strings are validated at this trust boundary (#426, #408).
+   *
+   * Throws {@link RemoteHttpError} on a non-2xx response (caller decides whether
+   * to swallow per URL). The message keeps the `Remote /me failed: <status>`
+   * pattern so the `/\b40[13]\b/` auth-expired checks in callers still match.
    */
-  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[]; capabilities: string[] }> {
+  async me(): Promise<MeResponse> {
     const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded)
-    if (!r.ok) throw new Error(`Remote /me failed: ${r.status} ${r.text}`)
-    const body = (r.json ?? {}) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[]; capabilities: unknown[] }>
+    if (!r.ok) throw new RemoteHttpError(r.status, `Remote /me failed: ${r.status} ${r.text}`)
+    const body = (r.json ?? {}) as Record<string, unknown>
     // #1310: optional, additive. Older servers omit it → []. Same safe-grammar
     // filter as scope names: nothing malformed enters from a hostile remote.
-    const capabilities = Array.isArray(body.capabilities)
-      ? body.capabilities.filter((c): c is string => typeof c === 'string' && /^[\w.:-]{1,64}$/.test(c))
+    const capabilities = Array.isArray(body['capabilities'])
+      ? (body['capabilities'] as unknown[]).filter((c): c is string => typeof c === 'string' && /^[\w.:-]{1,64}$/.test(c))
       : []
     CAPABILITY_CACHE.set(this.capabilityKey(), Promise.resolve(capabilities))
-    const scopes = Array.isArray(body.scopes)
+    const scopes = Array.isArray(body['scopes'])
       // Validate every /me scope to a safe grammar at the trust boundary:
       //  - #427: a non-string element would later throw in isSharedScope's
       //    `scope.startsWith(...)` BEFORE the per-scope try/catch — drop non-strings.
@@ -617,14 +652,59 @@ export class RemoteStore {
       //    agent's directive surface); a name carrying newlines/control chars is a
       //    prompt-injection channel — require `[\w:./-]+` (allows group:org/team,
       //    user:*, etc.) so nothing malformed enters from a hostile/MITM remote.
-      ? body.scopes.filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
+      ? (body['scopes'] as unknown[]).filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
       : []
+
+    // C1: scopes_status — unknown values → 'absent' (forward-compat) (#1631)
+    const rawScopesStatus = body['scopes_status']
+    const scopes_status: MeResponse['scopes_status'] =
+      rawScopesStatus === 'ok' || rawScopesStatus === 'not_synced' ? rawScopesStatus : 'absent'
+
+    // C1: scope_metadata_status — unknown values → 'absent' (#1631)
+    const rawScopeMetadataStatus = body['scope_metadata_status']
+    const scope_metadata_status: MeResponse['scope_metadata_status'] =
+      rawScopeMetadataStatus === 'ok' || rawScopeMetadataStatus === 'unavailable'
+        ? rawScopeMetadataStatus : 'absent'
+
+    // C1: gitlab_host — must pass host grammar; null stays null; absent → undefined (#1631, #426)
+    const rawGitlabHost = body['gitlab_host']
+    const gitlab_host: MeResponse['gitlab_host'] =
+      rawGitlabHost === null ? null
+      : typeof rawGitlabHost === 'string' && HOST_RE.test(rawGitlabHost) ? rawGitlabHost
+      : undefined
+
+    // C1: project_paths — only entries whose key is in scopes AND whose value
+    // passes the path grammar; an absent field yields {} (#1631, #426)
+    const project_paths: Record<string, string> = {}
+    const rawPaths = body['project_paths']
+    if (rawPaths !== null && typeof rawPaths === 'object') {
+      for (const [k, v] of Object.entries(rawPaths as Record<string, unknown>)) {
+        if (scopes.includes(k) && typeof v === 'string' && PATH_RE.test(v)) {
+          project_paths[k] = v
+        }
+      }
+    }
+
+    // C1: key_expires_at — absent → undefined (unknown); null → null (no expiry);
+    // a string that is not valid ISO-8601 → undefined (#1631)
+    const rawKeyExpiry = body['key_expires_at']
+    const key_expires_at: MeResponse['key_expires_at'] =
+      !('key_expires_at' in body) ? undefined
+      : rawKeyExpiry === null ? null
+      : typeof rawKeyExpiry === 'string' && !isNaN(Date.parse(rawKeyExpiry)) ? rawKeyExpiry
+      : undefined
+
     return {
-      username: body.username ?? '',
-      org_id:   body.org_id ?? '',
-      role:     body.role ?? '',
+      username: typeof body['username'] === 'string' ? body['username'] : '',
+      org_id:   typeof body['org_id'] === 'string' ? body['org_id'] : '',
+      role:     typeof body['role'] === 'string' ? body['role'] : '',
       scopes,
       capabilities,
+      scopes_status,
+      scope_metadata_status,
+      gitlab_host,
+      project_paths,
+      key_expires_at,
       // #345 D2: self-describing scope metadata served by the enterprise
       // `scopes` table. Validate each entry through the SAME ScopeMetadataSchema
       // the local config path uses — a hostile/old remote can send anything, so
@@ -643,8 +723,8 @@ export class RemoteStore {
       // One warning on the first connection would have caught it. The authorized-
       // set drop stays quiet: that one is a deliberate refusal (a remote must not
       // smuggle metadata for a scope it did not grant), not an unexpected shape.
-      scope_metadata: Array.isArray(body.scope_metadata)
-        ? body.scope_metadata.flatMap((m) => {
+      scope_metadata: Array.isArray(body['scope_metadata'])
+        ? (body['scope_metadata'] as unknown[]).flatMap((m) => {
             const parsed = ScopeMetadataSchema.safeParse(m)
             if (!parsed.success) {
               // Log PATHS and CODES only, never server-controlled values (#408):
