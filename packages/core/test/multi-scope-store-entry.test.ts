@@ -1,14 +1,12 @@
 /**
- * Multi-scope server store entry — load half (#1631).
+ * Multi-scope server store entry (#1631).
  *
  * A store entry may carry `scopes: string[]` in addition to a single `scope`.
  * At load it is expanded into one in-memory entry per scope; per-scope
- * `scope_settings` fields are merged onto each expanded entry.
- *
- * This file covers the LOAD path only. Writeback/collapse is tested in a
- * separate task (efi-b01w).
+ * `scope_settings` fields are merged onto each expanded entry. On writeback
+ * the expanded entries collapse back into the one on-disk server entry.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
@@ -239,6 +237,72 @@ describe('multi-scope server entry — load hardening', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+describe('multi-scope server entry — writeback keeps the file as it was', () => {
+  const LEGACY_THEN_SERVER = `stores:
+  - url: https://legacy.example.com
+    token: t-legacy
+    scope: group:acme/legacy
+  - url: https://plur.example.com
+    token: t-alice
+    scope: user:acme:alice
+    scopes: ["user:acme:alice", "group:acme/team"]
+    enterprise: {}
+`
+
+  it('a writeback keeps the on-disk order of entries', () => {
+    const p = write(LEGACY_THEN_SERVER)
+    const plur = new Plur({ path: dirname(p) })
+    plur.addStore('', 'group:other/x', { url: 'https://other.example.com', token: 'o' })
+    const raw = yaml.load(readFileSync(p, 'utf8')) as any
+    expect(raw.stores.map((s: any) => s.url)).toEqual([
+      'https://legacy.example.com', 'https://plur.example.com', 'https://other.example.com',
+    ])
+  })
+
+  it('a per-scope entry on the same url and scope as the server entry stays a per-scope entry', () => {
+    // The upgrade path: an older per-scope entry for the personal scope, then
+    // the server entry whose compat scope is the same scope.
+    const p = write(`stores:
+  - url: https://plur.example.com
+    token: t-old
+    scope: user:acme:alice
+  - url: https://plur.example.com
+    token: t-alice
+    scope: user:acme:alice
+    scopes: ["user:acme:alice", "group:acme/team"]
+    enterprise: { hello_engram_id: ENG-1 }
+`)
+    const plur = new Plur({ path: dirname(p) })
+    plur.addStore('', 'group:other/x', { url: 'https://other.example.com', token: 'o' })
+    const raw = yaml.load(readFileSync(p, 'utf8')) as any
+    expect(raw.stores).toHaveLength(3)
+    expect(raw.stores[0]).not.toHaveProperty('scopes')
+    expect(raw.stores[0]).not.toHaveProperty('enterprise')
+    expect(raw.stores[0].token).toBe('t-old')
+    expect(raw.stores[1]).toMatchObject({ token: 't-alice', scopes: ['user:acme:alice', 'group:acme/team'], enterprise: { hello_engram_id: 'ENG-1' } })
+  })
+
+  it('an entry inserted on disk after load does not receive the server entry\'s scope_settings', () => {
+    const p = write(LEGACY_THEN_SERVER)
+    const plur = new Plur({ path: dirname(p) })
+    // Another process inserts a second server entry at the top after this one loaded.
+    const onDisk = yaml.load(readFileSync(p, 'utf8')) as any
+    onDisk.stores.unshift({ url: 'https://second.example.com', token: 't2', scopes: ['group:acme/second'], enterprise: {} })
+    writeFileSync(p, yaml.dump(onDisk))
+    const discovery: RemoteScopeDiscovery = {
+      url: 'https://plur.example.com', ok: true,
+      authorized: ['group:acme/team'], registered: ['group:acme/team'], unregistered: [],
+      metadata: [{ scope: 'group:acme/team', description: 'Team', covers: ['acme.team'] }],
+    }
+    plur.persistScopeMetadata([discovery])
+    const raw = yaml.load(readFileSync(p, 'utf8')) as any
+    const second = raw.stores.find((s: any) => s.url === 'https://second.example.com')
+    const server = raw.stores.find((s: any) => s.url === 'https://plur.example.com')
+    expect(second?.scope_settings).toBeUndefined()
+    expect(server?.scope_settings?.['group:acme/team']?.covers).toEqual(['acme.team'])
   })
 })
 

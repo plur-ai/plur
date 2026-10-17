@@ -12703,16 +12703,34 @@ Generate an improved version of the procedure that prevents this failure. Return
       // N in-memory entries with EXPANDED_FROM=i → one entry on disk at position i.
       const rawArray = Array.isArray(configData.stores) ? (configData.stores as unknown[]) : []
       const collapsedRaw = collapseExpandedStores(stores, rawArray)
-      // Build the stores list for mergeStoresForWriteback: collapsed server entries
-      // (each cast as a typed entry using their compat `scope`) plus any typed
-      // entries that were never expanded from a server entry.
-      const serverTyped = collapsedRaw
-        .filter(r => isServerStoreEntry(r))
-        .map(r => r as unknown as StoreEntry)
-      const nonExpandedTyped = stores.filter(
-        s => (s as unknown as Record<string, unknown>)[EXPANDED_FROM] === undefined,
+      // Per-scope entries merge onto per-scope raw entries only: a server entry
+      // shares url+scope with its compat `scope`, so letting it be a merge target
+      // would turn an older per-scope entry for that scope into a second server entry.
+      const isExpanded = (s: StoreEntry) => typeof (s as unknown as Record<string, unknown>)[EXPANDED_FROM] === 'number'
+      const merged = this.mergeStoresForWriteback(
+        collapsedRaw.filter(r => !isServerStoreEntry(r)),
+        stores.filter(s => !isExpanded(s)),
+        opts?.serverSensitivityScopes,
       )
-      configData.stores = this.mergeStoresForWriteback(collapsedRaw, [...serverTyped, ...nonExpandedTyped], opts?.serverSensitivityScopes)
+      // Write in the in-memory order, which is the on-disk order: each server
+      // entry takes the place of the first entry expanded from it.
+      const out: unknown[] = []
+      const emitted = new Set<number>()
+      let next = 0
+      for (const s of stores) {
+        if (!isExpanded(s)) { out.push(merged[next++]); continue }
+        const idx = (s as unknown as Record<string, number>)[EXPANDED_FROM]
+        if (!emitted.has(idx) && isServerStoreEntry(collapsedRaw[idx])) {
+          emitted.add(idx)
+          out.push(collapsedRaw[idx])
+        }
+      }
+      // A server entry with no in-memory entry (an empty `scopes`, rejected at
+      // load, or written by another process since) is kept, near its place.
+      collapsedRaw.forEach((r, i) => {
+        if (isServerStoreEntry(r) && !emitted.has(i)) out.splice(Math.min(i, out.length), 0, r)
+      })
+      configData.stores = (out as StoreEntry[])
         .map(e => storeEntryForDisk(e as unknown as Record<string, unknown>) as unknown as StoreEntry)
       // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
       // truncates in place, and loadConfig turns a parse failure into DEFAULT
