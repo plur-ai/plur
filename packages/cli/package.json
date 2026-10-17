@@ -35,7 +35,7 @@
     }
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "Apache-2.0",
   "description": "PLUR CLI — persistent memory for AI agents from the command line",

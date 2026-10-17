@@ -67,6 +67,9 @@
     "url": "https://github.com/plur-ai/plur",
     "directory": "packages/dsh"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "author": "PLUR <info@plur.ai>",
   "exports": {
     ".": {
