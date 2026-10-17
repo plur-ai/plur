@@ -1,13 +1,13 @@
 diff --git a/packages/cli/src/commands/hook-inject.ts b/packages/cli/src/commands/hook-inject.ts
-index 00f11dee..e2880ea8 100644
+index 00f11dee..652c8e06 100644
 --- a/packages/cli/src/commands/hook-inject.ts
 +++ b/packages/cli/src/commands/hook-inject.ts
-@@ -875,7 +875,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
-     // which is the large majority of all injections.
-     let eventSessionId: string | undefined
-     if (marker) try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
--    const result = await plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
-+    const result = await plur.inject(task, { budget: 30, source: 'hook', session_id: eventSessionId })
-     recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
-     if (result.count > 0) {
-       const parts: string[] = []
+@@ -1128,7 +1128,7 @@ async function injectSession(
+     if (result.directives) parts.push(result.directives)
+     if (result.constraints) parts.push(result.constraints)
+     if (result.consider) parts.push(result.consider)
+-    context = parts.join('\n')
++    context = parts.join('\n').slice(0, 120)
+     count = result.count
+   }
+ 
