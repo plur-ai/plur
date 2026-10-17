@@ -1,0 +1,13 @@
+{
+  "clientInfo": {
+    "name": "claude-code",
+    "version": "1.0.0"
+  },
+  "capabilities": {
+    "roots": {
+      "listChanged": true
+    }
+  },
+  "recorded": null,
+  "source": "unverified"
+}

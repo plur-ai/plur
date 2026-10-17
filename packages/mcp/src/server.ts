@@ -278,6 +278,22 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     priorOnClose?.()
   }
 
+  // PLUR_LOG_CLIENT_INFO=1: log one line to stderr on initialize so a human
+  // can record which capabilities each editor actually sends (#1635).
+  server.oninitialized = () => {
+    if (process.env.PLUR_LOG_CLIENT_INFO !== '1') return
+    const caps = server.getClientCapabilities()
+    const info = server.getClientVersion()
+    const name = (info?.name ?? 'unknown').replace(/\s+/g, '-') || 'unknown'
+    const version = (info?.version ?? 'unknown').replace(/\s+/g, '-') || 'unknown'
+    const rootsCap = (caps?.roots ?? null) as { listChanged?: boolean } | null
+    const hasRoots = rootsCap !== null
+    const listChanged = rootsCap?.listChanged === true
+    process.stderr.write(
+      `[plur] client ${name} ${version} roots=${hasRoots ? 'yes' : 'no'} listChanged=${listChanged ? 'yes' : 'no'}\n`,
+    )
+  }
+
   // --- Tools ---
 
   server.setRequestHandler('tools/list', async () => ({
