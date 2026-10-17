@@ -50,10 +50,15 @@ export function expandServerEntry(entry: ServerStoreEntry, rawIndex: number): St
     // Per-scope settings carry metadata only: a key that names the entry's
     // identity or credentials (url, scope, token, …) is ignored, so a
     // scope_settings value can never redirect a scope or swap its token.
-    const settings = Object.fromEntries(
-      Object.entries(entry.scope_settings?.[scope] ?? {}).filter(([k]) => !RESERVED_ENTRY_KEYS.has(k)),
-    )
+    const settings = metadataOnly(entry.scope_settings?.[scope])
+    // The compat `scope` also owns the entry's top-level metadata (dial,
+    // description, covers, sensitivity, unknown keys): an older client wrote
+    // it there for that scope, and dropping it would, for one, lose a
+    // `dial: never` and dial a server the user excluded. An explicit
+    // `scope_settings[scope]` value takes precedence.
+    const legacy = scope === entry.scope ? metadataOnly(entry) : {}
     const expanded: Record<string, unknown> = {
+      ...legacy,
       ...settings,
       url: entry.url,
       readonly: entry.readonly,
@@ -78,7 +83,12 @@ export function expandServerEntry(entry: ServerStoreEntry, rawIndex: number): St
 // Per-scope metadata fields managed by the collapse step.
 const SCOPE_META_KEYS = ['dial', 'description', 'covers', 'sensitivity'] as const
 
-/** Keys of an expanded entry that a `scope_settings` value must not set. */
+/** The metadata keys of a scope_settings value or of a server entry's top level. */
+function metadataOnly(obj: object | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj ?? {}).filter(([k, v]) => v !== undefined && !RESERVED_ENTRY_KEYS.has(k)))
+}
+
+/** Keys of an expanded entry that metadata (scope_settings or top level) must not set. */
 const RESERVED_ENTRY_KEYS = new Set<string>([
   'url', 'path', 'scope', 'scopes', 'pinned_scopes', 'token', 'token_env', 'readonly', 'shared',
   'enterprise', 'discovery', 'scope_settings', EXPANDED_FROM,
