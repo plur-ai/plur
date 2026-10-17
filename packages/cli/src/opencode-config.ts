@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { homedir, platform } from 'os'
 import { atomicWrite } from '@plur-ai/core'
-import { buildMcpServerEntry, findMcpJsEntry, isOwnWin32NodeEntry, isPathResolvedCommand, missingNodeEntryPaths } from './mcp-config.js'
+import { buildMcpServerEntry, findMcpJsEntry, findMcpShim, isOwnWin32NodeEntry, isPathResolvedCommand, missingNodeEntryPaths } from './mcp-config.js'
 import { parseJsonc } from './lib/jsonc.js'
 import { applyEdits, modify, parseTree, type Node as JsonNode, type JSONPath, type ParseError } from 'jsonc-parser'
 import opencodePackage from '../../opencode/package.json'
@@ -25,6 +25,8 @@ export interface WriteOpencodeConfigResult {
   mcpPlurUpgraded: boolean
   /** A stale owned Windows node command was repaired. */
   mcpPlurRepaired: boolean
+  /** True when the entry now in the file launches an installed binary, not npx. */
+  mcpPlurLocal: boolean
   mcpPlurCommand?: string[]
 }
 
@@ -247,25 +249,36 @@ export function readOpencodeConfig(configPath: string): OpencodeConfigSnapshot {
 }
 
 /**
- * The `mcp.plur.command` array PLUR writes for opencode (a single argv, not
- * `command` + `args` like the other hosts).
+ * The `mcp.plur.command` and local flag PLUR writes for opencode.
  *
- * Prefer Node plus the installed MCP entry recorded by init on every platform.
- * Without it, darwin/linux retain the version-pinned npx fallback (#1069).
+ * Resolution order:
+ * (1) js entry recorded by init (any platform) → [node, entry], local
+ * (2) non-win32 shim at ~/.plur/bin/plur-mcp → [shim], local (#1637)
+ * (3) win32 → buildMcpServerEntry() (cmd.exe /c npx …), not local
+ * (4) plain npx fallback, not local
  *
- * win32 (#1311): the same entry `buildMcpServerEntry` builds for every other
- * host since #1267 — `<node.exe> <@plur-ai/mcp js entry>` when the entry is
- * resolvable, else the pinned `cmd.exe /c npx …` fallback. Never a bare
- * `npx`: a shell-less spawn on Windows does not resolve it to `npx.cmd`.
+ * `local: true` means the entry launches an installed binary, not npx.
  */
-export function opencodeMcpCommand(cliVersion: string): string[] {
-  const local = findMcpJsEntry()
-  if (local) return [process.execPath, local]
+export function opencodeMcpLaunch(cliVersion: string): { command: string[]; local: boolean } {
+  const jsEntry = findMcpJsEntry()
+  if (jsEntry) return { command: [process.execPath, jsEntry], local: true }
+  if (platform() !== 'win32') {
+    const shim = findMcpShim()
+    if (shim) return { command: [shim], local: true }
+  }
   if (platform() === 'win32') {
     const entry = buildMcpServerEntry()
-    return [entry.command, ...(entry.args ?? [])]
+    return { command: [entry.command, ...(entry.args ?? [])], local: false }
   }
-  return ['npx', '-y', `@plur-ai/mcp@${cliVersion}`]
+  return { command: ['npx', '-y', `@plur-ai/mcp@${cliVersion}`], local: false }
+}
+
+/**
+ * The `mcp.plur.command` array PLUR writes for opencode (a single argv, not
+ * `command` + `args` like the other hosts). Wrapper around `opencodeMcpLaunch`.
+ */
+export function opencodeMcpCommand(cliVersion: string): string[] {
+  return opencodeMcpLaunch(cliVersion).command
 }
 
 /**
@@ -377,12 +390,12 @@ export function writeOpencodeConfig(
       if (!unambiguousJsonc(source)) throw new Error('Invalid or ambiguous JSONC')
       parsed = parseJsonc(source)
     } catch {
-      return { created: false, changed: false, ok: false, mcpPlurPreserved: false, mcpPlurUpgraded: false, mcpPlurRepaired: false }
+      return { created: false, changed: false, ok: false, mcpPlurPreserved: false, mcpPlurUpgraded: false, mcpPlurRepaired: false, mcpPlurLocal: false }
     }
     // Valid JSON, wrong shape (most commonly `[]`) — refuse rather than let
     // every property set below land as a silently-dropped non-index prop.
     // See WriteOpencodeConfigResult.ok for the full failure mode this closes.
-    if (!isPlainObject(parsed)) return { created: false, changed: false, ok: false, mcpPlurPreserved: false, mcpPlurUpgraded: false, mcpPlurRepaired: false }
+    if (!isPlainObject(parsed)) return { created: false, changed: false, ok: false, mcpPlurPreserved: false, mcpPlurUpgraded: false, mcpPlurRepaired: false, mcpPlurLocal: false }
     cfg = parsed
   }
 
@@ -393,7 +406,7 @@ export function writeOpencodeConfig(
   // the (uncommon but real) case of a user writing `null` to mean "nothing
   // here yet." Neither is refused.
   if (!validContainers(cfg)) {
-    return { created: false, changed: false, ok: false, mcpPlurPreserved: false, mcpPlurUpgraded: false, mcpPlurRepaired: false }
+    return { created: false, changed: false, ok: false, mcpPlurPreserved: false, mcpPlurUpgraded: false, mcpPlurRepaired: false, mcpPlurLocal: false }
   }
 
   const before = JSON.stringify(cfg)
@@ -430,9 +443,10 @@ export function writeOpencodeConfig(
   // PLUR's entry is written only when there is nothing there to lose.
   // Upgrade only the command of our old npx entry, preserving environment
   // and all other user fields. Use the installed package on every platform.
+  const launch = opencodeMcpLaunch(cliVersion)
   let mcpPlurUpgraded = false
-  if ((platform() === 'win32' || findMcpJsEntry()) && isOwnLegacyNpxEntry(mcp.plur)) {
-    mcp.plur = { ...mcp.plur, command: opencodeMcpCommand(cliVersion) }
+  if (launch.local && isOwnLegacyNpxEntry(mcp.plur)) {
+    mcp.plur = { ...mcp.plur, command: launch.command }
     mcpPlurUpgraded = true
     edits.push({ path: [...mcpPath, 'plur', 'command'], value: (mcp.plur as { command: string[] }).command })
   }
@@ -449,7 +463,7 @@ export function writeOpencodeConfig(
   if (!mcpPlurPreserved && !rewritten) {
     mcp.plur = {
       type: 'local',
-      command: opencodeMcpCommand(cliVersion),
+      command: launch.command,
       ...(location.native ? { disabled: false } : { enabled: true }),
     }
     edits.push({ path: cfg.mcp === null || cfg.mcp === undefined ? ['mcp'] : [...mcpPath, 'plur'], value: cfg.mcp === null || cfg.mcp === undefined ? mcp : mcp.plur })
@@ -471,6 +485,7 @@ export function writeOpencodeConfig(
   }
   return {
     created, changed, ok: true, mcpPlurPreserved, mcpPlurUpgraded, mcpPlurRepaired,
+    mcpPlurLocal: mcpPlurPreserved ? false : launch.local,
     ...(rewritten ? { mcpPlurCommand: (mcp.plur as { command: string[] }).command } : {}),
   }
 }
