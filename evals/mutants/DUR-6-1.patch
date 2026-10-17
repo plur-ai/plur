@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/storage-pglite.ts b/packages/core/src/storage-pglite.ts
+index 175c0277..8f10272e 100644
+--- a/packages/core/src/storage-pglite.ts
++++ b/packages/core/src/storage-pglite.ts
+@@ -450,7 +450,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
+       //      (scope-util.ts); keep all four arms in lockstep.
+       let clause =
+         `((NOT (${col}scope LIKE 'group:%' OR ${col}scope LIKE 'project:%' OR ${col}scope LIKE 'space:%' OR ${col}scope LIKE 'team:%' OR ${col}scope LIKE 'org:%' OR ${col}scope = 'public' OR ${col}scope LIKE 'public:%' OR ${col}scope LIKE 'public/%'))`
+-        + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
++        + ` OR ${col}scope = $${i++} AND ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
+       // Escaped for the same reason as the Postgres copy — these two clauses
+       // must stay identical; they have drifted before, and that drift was an
+       // authorization bypass.
