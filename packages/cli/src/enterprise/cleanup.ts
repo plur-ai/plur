@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, copyFileSync, mkdirSync, unlinkSync, chmodSync, lstatSync, realpathSync, constants as fsConstants } from 'fs'
+import { existsSync, readFileSync, mkdirSync, unlinkSync, chmodSync, lstatSync, realpathSync, openSync, closeSync, writeSync, fstatSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
 import { atomicWrite } from '@plur-ai/core'
@@ -6,6 +6,7 @@ import { readConfigForWrite, codexConfigTomlPath } from '../mcp-config.js'
 import { parseJsonc } from '../lib/jsonc.js'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
 import { applyEdits, modify } from 'jsonc-parser'
+import { currentWindowsAccount, protectOwnerOnlyWindows, type OwnerOnlyExec } from './owner-only.js'
 
 export type ToolId = 'claude-code' | 'codex' | 'opencode' | 'cursor'
 
@@ -18,10 +19,18 @@ export interface CleanupEntry {
 
 const ENTRY = 'plur-enterprise'
 
+/** Writes a backup of a file and returns its path; throws when it cannot be made safely. */
+type Backup = (source: string) => string
+
+const HEADER_FILE = 'mcp-enterprise-header'
+
 /**
  * Remove old `plur-enterprise` MCP entries and the header file after the
- * hello proof passes. Every removal is preceded by a backup in `backupDir`.
- * Only tools whose hello passed are included in `tools`.
+ * hello proof passes. Every removal is preceded by a backup in `backupDir`,
+ * which is made owner-only (and verified) before the first secret is copied.
+ * Only tools whose hello passed are included in `tools`. The shared header
+ * file is removed only when no editor config still has a legacy entry or
+ * names the file, and every editor config could be read.
  */
 export function cleanupLegacy(opts: {
   tools: ToolId[]
@@ -31,37 +40,119 @@ export function cleanupLegacy(opts: {
   home?: string
   /** Override for testing: process environment for path resolution */
   env?: NodeJS.ProcessEnv
+  /** Override for testing: the platform (default: process.platform) */
+  platform?: NodeJS.Platform
+  /** Override for testing: runs icacls on Windows */
+  exec?: OwnerOnlyExec
+  /** Override for testing: the Windows account (default: USERDOMAIN\\USERNAME from env) */
+  account?: string
 }): CleanupEntry[] {
   const home = opts.home ?? homedir()
   const env = opts.env ?? process.env
   const toolSet = new Set(opts.tools)
   const results: CleanupEntry[] = []
+  const backup = backupWriter(opts.backupDir, {
+    platform: opts.platform ?? process.platform,
+    exec: opts.exec,
+    account: opts.account ?? currentWindowsAccount(env),
+  })
 
   // One target's failure (unreadable file, backup dir not writable, …) is
   // reported as refused and never stops the others. A write happens only
   // after its backup succeeded, so a throw before that point changed nothing.
-  const run = (target: string, fn: (target: string, backupDir: string) => CleanupEntry): void => {
+  const run = (target: string, fn: (target: string, backup: Backup) => CleanupEntry): void => {
     try {
-      results.push(fn(target, opts.backupDir))
+      results.push(fn(target, backup))
     } catch (e) {
       results.push({ target, status: 'refused', detail: e instanceof Error ? e.message : String(e) })
     }
   }
 
-  if (toolSet.has('claude-code')) run(join(home, '.claude.json'), cleanupClaudeJson)
-  if (toolSet.has('cursor')) run(join(home, '.cursor', 'mcp.json'), cleanupJsonMcpFile)
-  if (toolSet.has('codex')) run(codexConfigTomlPath(env), cleanupCodexToml)
+  const paths = editorConfigPaths(home, env)
+  if (toolSet.has('claude-code')) run(paths.claude, cleanupClaudeJson)
+  if (toolSet.has('cursor')) run(paths.cursor, cleanupJsonMcpFile)
+  if (toolSet.has('codex')) run(paths.codex, cleanupCodexToml)
   if (toolSet.has('opencode')) run(resolveOpencodePath(home, env), cleanupOpencodeConfig)
 
-  // Header file: always cleaned regardless of tools
-  run(join(opts.plurDir, 'mcp-enterprise-header'), cleanupFile)
+  // The header file is shared by every legacy entry: it goes only when no
+  // editor still needs it — checked after the cleanups above, across ALL
+  // editors (proven or not).
+  run(join(opts.plurDir, HEADER_FILE), (target, b) => {
+    if (!existsSync(target)) return { target, status: 'absent' }
+    const holders = headerHolders(home, env)
+    if (holders.length > 0) return { target, status: 'refused', detail: `kept: ${holders.join('; ')}` }
+    return cleanupFile(target, b)
+  })
 
   return results
 }
 
+function editorConfigPaths(home: string, env: NodeJS.ProcessEnv): { claude: string; cursor: string; codex: string } {
+  return {
+    claude: join(home, '.claude.json'),
+    cursor: join(home, '.cursor', 'mcp.json'),
+    codex: codexConfigTomlPath(env),
+  }
+}
+
+/**
+ * Why the header file must stay: every editor config that still has a legacy
+ * entry, names the header file, or could not be read or parsed (it might).
+ * Empty when nothing can still use it.
+ */
+function headerHolders(home: string, env: NodeJS.ProcessEnv): string[] {
+  const paths = editorConfigPaths(home, env)
+  const dir = opencodeDir(home, env)
+  const checks: Array<{ tool: string; path: string; has: (text: string) => boolean }> = [
+    { tool: 'Claude Code', path: paths.claude, has: t => claudeHasEntry(JSON.parse(t)) },
+    { tool: 'Cursor', path: paths.cursor, has: t => mcpServersHas(JSON.parse(t)) },
+    { tool: 'Codex', path: paths.codex, has: t => definesEnterprise(parseTOML(t, { tomlVersion: '1.0' })) },
+    { tool: 'OpenCode', path: join(dir, 'opencode.json'), has: t => opencodeHasEntry(parseJsonc(t)) },
+    { tool: 'OpenCode', path: join(dir, 'opencode.jsonc'), has: t => opencodeHasEntry(parseJsonc(t)) },
+  ]
+  const holders: string[] = []
+  for (const c of checks) {
+    if (!existsSync(c.path)) continue
+    let text: string
+    try {
+      text = readFileSync(c.path, 'utf8')
+    } catch {
+      holders.push(`${c.tool}'s config ${c.path} could not be read`)
+      continue
+    }
+    let has: boolean
+    try {
+      has = c.has(text)
+    } catch {
+      holders.push(`${c.tool}'s config ${c.path} could not be parsed`)
+      continue
+    }
+    if (has) holders.push(`${c.tool} still has the old ${ENTRY} entry (${c.path})`)
+    else if (text.includes(HEADER_FILE)) holders.push(`${c.path} still names ${HEADER_FILE}`)
+  }
+  return holders
+}
+
+function mcpServersHas(config: unknown): boolean {
+  const servers = isPlainObject(config) ? config.mcpServers : undefined
+  return isPlainObject(servers) && ENTRY in servers
+}
+
+function claudeHasEntry(config: unknown): boolean {
+  if (mcpServersHas(config)) return true
+  const projects = isPlainObject(config) ? config.projects : undefined
+  return isPlainObject(projects) && Object.values(projects).some(p => mcpServersHas(p))
+}
+
+function opencodeHasEntry(config: unknown): boolean {
+  const mcp = isPlainObject(config) ? config.mcp : undefined
+  if (!isPlainObject(mcp)) return false
+  return ENTRY in mcp || (isPlainObject(mcp.servers) && ENTRY in mcp.servers)
+}
+
 // ─── Claude Code ─────────────────────────────────────────────────────────────
 
-function cleanupClaudeJson(target: string, backupDir: string): CleanupEntry {
+function cleanupClaudeJson(target: string, makeBackup: Backup): CleanupEntry {
   const { config, ok } = readConfigForWrite(target)
   if (!ok) return { target, status: 'refused', detail: 'file exists but could not be parsed' }
   if (!existsSync(target)) return { target, status: 'absent' }
@@ -91,14 +182,14 @@ function cleanupClaudeJson(target: string, backupDir: string): CleanupEntry {
 
   if (!changed) return { target, status: 'absent' }
 
-  const backup = writeBackup(target, backupDir)
+  const backup = makeBackup(target)
   writeInPlace(target, JSON.stringify(config, null, 2) + '\n')
   return { target, status: 'removed', backup }
 }
 
 // ─── Generic JSON mcpServers file (Cursor) ────────────────────────────────────
 
-function cleanupJsonMcpFile(target: string, backupDir: string): CleanupEntry {
+function cleanupJsonMcpFile(target: string, makeBackup: Backup): CleanupEntry {
   if (!existsSync(target)) return { target, status: 'absent' }
 
   const { config, ok } = readConfigForWrite(target)
@@ -108,14 +199,14 @@ function cleanupJsonMcpFile(target: string, backupDir: string): CleanupEntry {
   if (!servers || !(ENTRY in servers)) return { target, status: 'absent' }
 
   delete servers[ENTRY]
-  const backup = writeBackup(target, backupDir)
+  const backup = makeBackup(target)
   writeInPlace(target, JSON.stringify(config, null, 2) + '\n')
   return { target, status: 'removed', backup }
 }
 
 // ─── Codex config.toml ────────────────────────────────────────────────────────
 
-function cleanupCodexToml(target: string, backupDir: string): CleanupEntry {
+function cleanupCodexToml(target: string, makeBackup: Backup): CleanupEntry {
   if (!existsSync(target)) return { target, status: 'absent' }
 
   const original = readFileSync(target, 'utf8')
@@ -124,7 +215,7 @@ function cleanupCodexToml(target: string, backupDir: string): CleanupEntry {
   if (typeof result === 'object') return { target, status: 'refused', detail: result.refused }
   if (result === original) return { target, status: 'absent' }
 
-  const backup = writeBackup(target, backupDir)
+  const backup = makeBackup(target)
   writeInPlace(target, result)
   return { target, status: 'removed', backup }
 }
@@ -193,7 +284,7 @@ function removeTomlEnterpriseSection(text: string): string | null | { refused: s
 
 // ─── OpenCode config (JSONC) ──────────────────────────────────────────────────
 
-function cleanupOpencodeConfig(target: string, backupDir: string): CleanupEntry {
+function cleanupOpencodeConfig(target: string, makeBackup: Backup): CleanupEntry {
   if (!existsSync(target)) return { target, status: 'absent' }
 
   let source: string
@@ -234,16 +325,16 @@ function cleanupOpencodeConfig(target: string, backupDir: string): CleanupEntry 
 
   if (!changed) return { target, status: 'absent' }
 
-  const backup = writeBackup(target, backupDir)
+  const backup = makeBackup(target)
   writeInPlace(target, modified)
   return { target, status: 'removed', backup }
 }
 
 // ─── Header file ──────────────────────────────────────────────────────────────
 
-function cleanupFile(target: string, backupDir: string): CleanupEntry {
+function cleanupFile(target: string, makeBackup: Backup): CleanupEntry {
   if (!existsSync(target)) return { target, status: 'absent' }
-  const backup = writeBackup(target, backupDir)
+  const backup = makeBackup(target)
   unlinkSync(target)
   return { target, status: 'removed', backup }
 }
@@ -255,21 +346,85 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * Copy `source` into `backupDir` (created owner-only, 0700) and return the
- * backup path. An existing backup is never overwritten: a second backup of
- * the same file gets a numbered name. The copy is 0600 on non-Windows.
+ * A backup writer for `backupDir`. Before the first backup, the folder is
+ * created (or an existing one checked) and made owner-only, and that is
+ * verified: 0700 on Unix (a symlink, a non-folder or a folder owned by
+ * another account is refused), an owner-only ACL on Windows. Each backup is
+ * created owner-only from the outset — opened with mode 0600 on Unix, and on
+ * Windows created empty and given an owner-only ACL before the content is
+ * written — so a secret is never readable by anyone else, not even briefly.
+ * An existing backup is never overwritten: a second backup of the same file
+ * gets a numbered name. When protection cannot be established the writer
+ * throws, and the target is refused with nothing changed.
  */
-function writeBackup(source: string, backupDir: string): string {
-  if (!existsSync(backupDir)) {
-    mkdirSync(backupDir, { recursive: true, mode: 0o700 })
-    if (process.platform !== 'win32') chmodSync(backupDir, 0o700)
+function backupWriter(
+  backupDir: string,
+  o: { platform: NodeJS.Platform; exec?: OwnerOnlyExec; account: string | null },
+): Backup {
+  let dirReady: true | Error | null = null
+  const win = o.platform === 'win32'
+  const ensureDir = (): void => {
+    if (dirReady === null) {
+      try {
+        protectBackupDir(backupDir, o)
+        dirReady = true
+      } catch (e) {
+        dirReady = e instanceof Error ? e : new Error(String(e))
+      }
+    }
+    if (dirReady !== true) throw dirReady
   }
-  const name = basename(source)
-  let dest = join(backupDir, name)
-  for (let n = 1; existsSync(dest); n++) dest = join(backupDir, `${name}.${n}`)
-  copyFileSync(source, dest, fsConstants.COPYFILE_EXCL)
-  if (process.platform !== 'win32') chmodSync(dest, 0o600)
-  return dest
+  return (source: string): string => {
+    ensureDir()
+    const data = readFileSync(source)
+    const name = basename(source)
+    let dest = join(backupDir, name)
+    for (let n = 1; existsSync(dest); n++) dest = join(backupDir, `${name}.${n}`)
+    // 'wx': created new (O_EXCL), never an existing file or a planted link.
+    const fd = openSync(dest, 'wx', 0o600)
+    let written = false
+    try {
+      if (win) {
+        const r = protectOwnerOnlyWindows(dest, { directory: false, account: o.account, exec: o.exec })
+        if (!r.ok) throw new Error(`the backup ${dest} could not be made private: ${r.detail}`)
+      } else if ((fstatSync(fd).mode & 0o077) !== 0) {
+        throw new Error(`the backup ${dest} could not be made private`)
+      }
+      writeSync(fd, data)
+      written = true
+    } finally {
+      closeSync(fd)
+      if (!written) {
+        try { unlinkSync(dest) } catch { /* nothing was written to it */ }
+      }
+    }
+    return dest
+  }
+}
+
+function protectBackupDir(dir: string, o: { platform: NodeJS.Platform; exec?: OwnerOnlyExec; account: string | null }): void {
+  const fail = (why: string): never => {
+    throw new Error(`the backup folder ${dir} could not be made private: ${why}; nothing was changed`)
+  }
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const st = lstatSync(dir)
+  if (st.isSymbolicLink()) fail('it is a symbolic link')
+  if (!st.isDirectory()) fail('it is not a folder')
+  if (o.platform === 'win32') {
+    const r = protectOwnerOnlyWindows(dir, { directory: true, account: o.account, exec: o.exec })
+    if (!r.ok) fail(r.detail)
+    return
+  }
+  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) fail('it belongs to another account')
+  if ((st.mode & 0o777) !== 0o700) {
+    try {
+      chmodSync(dir, 0o700)
+    } catch (e) {
+      fail(`chmod failed (${e instanceof Error ? e.message : String(e)})`)
+    }
+  }
+  const mode = lstatSync(dir).mode & 0o777
+  if (mode !== 0o700) fail(`mode is ${mode.toString(8)}, expected 700`)
 }
 
 /**
@@ -287,11 +442,15 @@ function writeInPlace(path: string, content: string): void {
   atomicWrite(target, content)
 }
 
-/** Resolve the OpenCode config path from home + env, matching opencodeConfigDir logic. */
-function resolveOpencodePath(home: string, env: NodeJS.ProcessEnv): string {
-  const dir = env.OPENCODE_CONFIG_DIR
+function opencodeDir(home: string, env: NodeJS.ProcessEnv): string {
+  return env.OPENCODE_CONFIG_DIR
     ? env.OPENCODE_CONFIG_DIR
     : join(env.XDG_CONFIG_HOME || join(home, '.config'), 'opencode')
+}
+
+/** Resolve the OpenCode config path from home + env, matching opencodeConfigDir logic. */
+function resolveOpencodePath(home: string, env: NodeJS.ProcessEnv): string {
+  const dir = opencodeDir(home, env)
   const jsonPath = join(dir, 'opencode.json')
   const jsoncPath = join(dir, 'opencode.jsonc')
   if (!existsSync(jsonPath) && existsSync(jsoncPath)) return jsoncPath
