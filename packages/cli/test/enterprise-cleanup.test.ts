@@ -53,7 +53,7 @@ describe('claude-code cleanup', () => {
     }
     writeFileSync(claudeJson, JSON.stringify(original, null, 2) + '\n')
 
-    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home, env: makeEnv() })
 
     const r = results.find(e => e.target === claudeJson)
     expect(r?.status).toBe('removed')
@@ -75,14 +75,14 @@ describe('claude-code cleanup', () => {
   it('returns absent when plur-enterprise is not in the file', () => {
     const claudeJson = join(home, '.claude.json')
     writeFileSync(claudeJson, JSON.stringify({ mcpServers: { plur: {} } }, null, 2))
-    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home, env: makeEnv() })
     const r = results.find(e => e.target === claudeJson)
     expect(r?.status).toBe('absent')
     expect(r?.backup).toBeUndefined()
   })
 
   it('returns absent when file does not exist', () => {
-    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home, env: makeEnv() })
     const r = results.find(e => e.target === join(home, '.claude.json'))
     expect(r?.status).toBe('absent')
   })
@@ -208,7 +208,7 @@ describe('cursor cleanup', () => {
     }
     writeFileSync(cursorMcp, JSON.stringify(original, null, 2))
 
-    const results = cleanupLegacy({ tools: ['cursor'], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: ['cursor'], backupDir, plurDir, home, env: makeEnv() })
     const r = results.find(e => e.target === cursorMcp)
     expect(r?.status).toBe('removed')
 
@@ -224,7 +224,7 @@ describe('cursor cleanup', () => {
     const badJson = '{ nope'
     writeFileSync(cursorMcp, badJson)
 
-    const results = cleanupLegacy({ tools: ['cursor'], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: ['cursor'], backupDir, plurDir, home, env: makeEnv() })
     const r = results.find(e => e.target === cursorMcp)
     expect(r?.status).toBe('refused')
     expect(readFileSync(cursorMcp, 'utf8')).toBe(badJson)
@@ -232,7 +232,7 @@ describe('cursor cleanup', () => {
   })
 
   it('returns absent when file does not exist', () => {
-    const results = cleanupLegacy({ tools: ['cursor'], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: ['cursor'], backupDir, plurDir, home, env: makeEnv() })
     const cursorMcp = join(home, '.cursor', 'mcp.json')
     const r = results.find(e => e.target === cursorMcp)
     expect(r?.status).toBe('absent')
@@ -246,7 +246,7 @@ describe('header file cleanup', () => {
     const headerPath = join(plurDir, 'mcp-enterprise-header')
     writeFileSync(headerPath, 'Authorization: Bearer plur_sk_test_fake')
 
-    const results = cleanupLegacy({ tools: [], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() })
     const r = results.find(e => e.target === headerPath)
     expect(r?.status).toBe('removed')
     expect(r?.backup).toBeDefined()
@@ -259,7 +259,7 @@ describe('header file cleanup', () => {
   })
 
   it('returns absent when header file does not exist', () => {
-    const results = cleanupLegacy({ tools: [], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() })
     const headerPath = join(plurDir, 'mcp-enterprise-header')
     const r = results.find(e => e.target === headerPath)
     expect(r?.status).toBe('absent')
@@ -343,16 +343,16 @@ describe('second run', () => {
 describe('backups and writes', () => {
   it.skipIf(process.platform === 'win32')('creates the backup dir owner-only (0700)', () => {
     writeFileSync(join(plurDir, 'mcp-enterprise-header'), 'Authorization: Bearer plur_sk_test_fake')
-    cleanupLegacy({ tools: [], backupDir, plurDir, home })
+    cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() })
     expect(statSync(backupDir).mode & 0o777).toBe(0o700)
   })
 
   it('never overwrites an earlier backup in the same dir', () => {
     const headerPath = join(plurDir, 'mcp-enterprise-header')
     writeFileSync(headerPath, 'first')
-    const r1 = cleanupLegacy({ tools: [], backupDir, plurDir, home }).find(e => e.target === headerPath)
+    const r1 = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === headerPath)
     writeFileSync(headerPath, 'second')
-    const r2 = cleanupLegacy({ tools: [], backupDir, plurDir, home }).find(e => e.target === headerPath)
+    const r2 = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === headerPath)
     expect(r1?.backup).not.toBe(r2?.backup)
     expect(readFileSync(r1!.backup!, 'utf8')).toBe('first')
     expect(readFileSync(r2!.backup!, 'utf8')).toBe('second')
@@ -375,7 +375,7 @@ describe('backups and writes', () => {
     const claudeJson = join(home, '.claude.json')
     writeFileSync(claudeJson, JSON.stringify({ mcpServers: { 'plur-enterprise': {}, plur: {} } }))
     chmodSync(claudeJson, 0o600)
-    cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home })
+    cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home, env: makeEnv() })
     expect(statSync(claudeJson).mode & 0o777).toBe(0o600)
   })
 
@@ -395,7 +395,7 @@ describe('backups and writes', () => {
     const claudeJson = join(home, '.claude.json')
     const original = JSON.stringify({ mcpServers: { 'plur-enterprise': {} } })
     writeFileSync(claudeJson, original)
-    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home })
+    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home, env: makeEnv() })
     expect(results.map(r => r.status)).toEqual(['refused', 'refused'])
     expect(readFileSync(claudeJson, 'utf8')).toBe(original)
     expect(existsSync(headerPath)).toBe(true)
@@ -449,3 +449,207 @@ describe('codex TOML edge cases', () => {
   })
 })
 
+
+// ─── The shared header file stays while anything may still use it ────────────
+
+describe('header file is removed only when no legacy entry remains', () => {
+  const headerPath = () => join(plurDir, 'mcp-enterprise-header')
+  function writeHeader(): void {
+    writeFileSync(headerPath(), 'Authorization: Bearer plur_sk_test_fake')
+  }
+  function writeCodexEntry(): string {
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    const p = join(home, '.codex', 'config.toml')
+    writeFileSync(p, '[mcp_servers.plur-enterprise]\ncommand = "npx"\nargs = []\n')
+    return p
+  }
+  function writeOpencodeEntry(): string {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+    const p = join(home, '.config', 'opencode', 'opencode.json')
+    writeFileSync(p, '{"mcp":{"plur-enterprise":{"url":"https://plur.example.com/mcp"}}}')
+    return p
+  }
+
+  it('an unproven editor that still has its legacy entry keeps the header', () => {
+    writeHeader()
+    const codex = writeCodexEntry()
+    const opencode = writeOpencodeEntry()
+    const results = cleanupLegacy({ tools: ['codex'], backupDir, plurDir, home, env: makeEnv() })
+    expect(results.find(e => e.target === codex)?.status).toBe('removed')
+    const h = results.find(e => e.target === headerPath())
+    expect(h?.status).toBe('refused')
+    expect(h?.detail).toContain('OpenCode')
+    expect(existsSync(headerPath())).toBe(true)
+    expect(readFileSync(opencode, 'utf8')).toContain('plur-enterprise')
+  })
+
+  it('tools: [] with a legacy entry in any editor keeps the header', () => {
+    writeHeader()
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { '/w': { mcpServers: { 'plur-enterprise': {} } } } }))
+    const h = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === headerPath())
+    expect(h?.status).toBe('refused')
+    expect(h?.detail).toContain('Claude Code')
+    expect(existsSync(headerPath())).toBe(true)
+  })
+
+  it('a proven editor whose cleanup was refused keeps the header', () => {
+    writeHeader()
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(join(home, '.codex', 'config.toml'), '[mcp_servers]\nplur-enterprise = { command = "npx" }\n')
+    const results = cleanupLegacy({ tools: ['codex'], backupDir, plurDir, home, env: makeEnv() })
+    expect(results.find(e => e.target === headerPath())?.status).toBe('refused')
+    expect(existsSync(headerPath())).toBe(true)
+  })
+
+  it('an editor config that cannot be parsed keeps the header', () => {
+    writeHeader()
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    writeFileSync(join(home, '.cursor', 'mcp.json'), '{ not json')
+    const h = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === headerPath())
+    expect(h?.status).toBe('refused')
+    expect(h?.detail).toContain('Cursor')
+    expect(existsSync(headerPath())).toBe(true)
+  })
+
+  it('a config that names the header file under another entry keeps it', () => {
+    writeHeader()
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({
+      mcpServers: { 'my-bridge': { command: 'npx', args: ['mcp-remote', '--header-file', headerPath()] } },
+    }))
+    const h = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === headerPath())
+    expect(h?.status).toBe('refused')
+    expect(existsSync(headerPath())).toBe(true)
+  })
+
+  it('every editor proven and cleaned → the header is removed with a backup', () => {
+    writeHeader()
+    writeCodexEntry()
+    writeOpencodeEntry()
+    const results = cleanupLegacy({ tools: ['codex', 'opencode'], backupDir, plurDir, home, env: makeEnv() })
+    const h = results.find(e => e.target === headerPath())
+    expect(h?.status).toBe('removed')
+    expect(readFileSync(h!.backup!, 'utf8')).toContain('plur_sk_test_fake')
+    expect(existsSync(headerPath())).toBe(false)
+  })
+})
+
+// ─── Backups are owner-only before any secret is copied ──────────────────────
+
+describe('backup protection (unix)', () => {
+  it.skipIf(process.platform === 'win32')('an existing backup dir with broader permissions is tightened to 0700 before copying', () => {
+    mkdirSync(backupDir, { mode: 0o755 })
+    chmodSync(backupDir, 0o755)
+    writeFileSync(join(plurDir, 'mcp-enterprise-header'), 'Authorization: Bearer plur_sk_test_fake')
+    const r = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target.endsWith('mcp-enterprise-header'))
+    expect(r?.status).toBe('removed')
+    expect(statSync(backupDir).mode & 0o777).toBe(0o700)
+    expect(statSync(r!.backup!).mode & 0o777).toBe(0o600)
+  })
+
+  it.skipIf(process.platform === 'win32')('the backup is 0600 even under a permissive umask', () => {
+    const old = process.umask(0)
+    try {
+      const claudeJson = join(home, '.claude.json')
+      writeFileSync(claudeJson, JSON.stringify({ mcpServers: { 'plur-enterprise': {} } }), { mode: 0o644 })
+      const r = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === claudeJson)
+      expect(r?.status).toBe('removed')
+      expect(statSync(r!.backup!).mode & 0o777).toBe(0o600)
+      expect(statSync(backupDir).mode & 0o777).toBe(0o700)
+    } finally {
+      process.umask(old)
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('a backup dir that is a symbolic link is refused; nothing is changed', () => {
+    const elsewhere = join(home, 'elsewhere')
+    mkdirSync(elsewhere, { mode: 0o755 })
+    symlinkSync(elsewhere, backupDir)
+    const headerPath = join(plurDir, 'mcp-enterprise-header')
+    writeFileSync(headerPath, 'Authorization: Bearer plur_sk_test_fake')
+    const r = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === headerPath)
+    expect(r?.status).toBe('refused')
+    expect(existsSync(headerPath)).toBe(true)
+    expect(readdirSync(elsewhere)).toEqual([])
+  })
+})
+
+describe('backup protection (Windows, icacls mocked)', () => {
+  const ACCOUNT = 'ACME\\alice'
+  type Call = string[]
+  function fakeExec(answer: (args: string[]) => { status: number | null; stdout: string }) {
+    const calls: Call[] = []
+    const exec = (cmd: string, args: string[]) => { calls.push([cmd, ...args]); return answer(args) }
+    return { calls, exec }
+  }
+  /** icacls answers: a grant succeeds; a read lists only the account. */
+  const ownerOnly = (args: string[]) => args.length > 1
+    ? { status: 0, stdout: 'processed file: x\nSuccessfully processed 1 files; Failed processing 0 files\n' }
+    : { status: 0, stdout: `${args[0]} ${ACCOUNT}:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\n` }
+
+  it('protects the backup dir and each backup file owner-only, verified, with argument arrays', () => {
+    const { calls, exec } = fakeExec(ownerOnly)
+    const headerPath = join(plurDir, 'mcp-enterprise-header')
+    writeFileSync(headerPath, 'Authorization: Bearer plur_sk_test_fake')
+    const r = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv(), platform: 'win32', exec, account: ACCOUNT })
+      .find(e => e.target === headerPath)
+    expect(r?.status).toBe('removed')
+    expect(calls[0]).toEqual(['icacls', backupDir, '/inheritance:r', '/grant:r', `${ACCOUNT}:(OI)(CI)F`])
+    expect(calls[1]).toEqual(['icacls', backupDir])
+    expect(calls[2]).toEqual(['icacls', r!.backup!, '/inheritance:r', '/grant:r', `${ACCOUNT}:F`])
+    expect(calls[3]).toEqual(['icacls', r!.backup!])
+    expect(readFileSync(r!.backup!, 'utf8')).toContain('plur_sk_test_fake')
+  })
+
+  it('another principal on the backup dir → every cleanup refused, nothing changed, no backup', () => {
+    const { exec } = fakeExec(args => args.length > 1
+      ? { status: 0, stdout: '' }
+      : { status: 0, stdout: `${args[0]} ${ACCOUNT}:(OI)(CI)(F)\n          BUILTIN\\Users:(OI)(CI)(RX)\n\nSuccessfully processed 1 files; Failed processing 0 files\n` })
+    const headerPath = join(plurDir, 'mcp-enterprise-header')
+    writeFileSync(headerPath, 'Authorization: Bearer plur_sk_test_fake')
+    const claudeJson = join(home, '.claude.json')
+    const original = JSON.stringify({ mcpServers: { 'plur-enterprise': {} } })
+    writeFileSync(claudeJson, original)
+    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home, env: makeEnv(), platform: 'win32', exec, account: ACCOUNT })
+    expect(results.map(r => r.status)).toEqual(['refused', 'refused'])
+    expect(results[0].detail).toContain('BUILTIN\\Users')
+    expect(readFileSync(claudeJson, 'utf8')).toBe(original)
+    expect(existsSync(headerPath)).toBe(true)
+    expect(readdirSync(backupDir)).toEqual([])
+  })
+
+  it('icacls failing on the dir → refused with its exit code', () => {
+    const { exec } = fakeExec(() => ({ status: 5, stdout: '' }))
+    const headerPath = join(plurDir, 'mcp-enterprise-header')
+    writeFileSync(headerPath, 'x')
+    const r = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv(), platform: 'win32', exec, account: ACCOUNT })
+      .find(e => e.target === headerPath)
+    expect(r?.status).toBe('refused')
+    expect(r?.detail).toContain('exit 5')
+    expect(existsSync(headerPath)).toBe(true)
+  })
+
+  it('a backup file that cannot be protected is deleted before any secret is written, and the target is refused', () => {
+    // The dir protects fine; the file's grant fails.
+    const { exec } = fakeExec(args => (args.length > 1 && args[args.length - 1] === `${ACCOUNT}:F`)
+      ? { status: 5, stdout: '' }
+      : ownerOnly(args))
+    const headerPath = join(plurDir, 'mcp-enterprise-header')
+    writeFileSync(headerPath, 'Authorization: Bearer plur_sk_test_fake')
+    const r = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv(), platform: 'win32', exec, account: ACCOUNT })
+      .find(e => e.target === headerPath)
+    expect(r?.status).toBe('refused')
+    expect(existsSync(headerPath)).toBe(true)
+    expect(readdirSync(backupDir)).toEqual([])
+  })
+
+  it('no Windows account known → refused', () => {
+    const { exec } = fakeExec(ownerOnly)
+    const headerPath = join(plurDir, 'mcp-enterprise-header')
+    writeFileSync(headerPath, 'x')
+    const env = { ...makeEnv(), USERNAME: '', USERDOMAIN: '' }
+    const r = cleanupLegacy({ tools: [], backupDir, plurDir, home, env, platform: 'win32', exec })
+      .find(e => e.target === headerPath)
+    expect(r?.status).toBe('refused')
+    expect(existsSync(headerPath)).toBe(true)
+  })
+})
