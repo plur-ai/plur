@@ -7,9 +7,10 @@ import { collapseLineTerminators } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
-import { loadConfig, storeEntryForDisk } from './config.js'
+import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
 import { collapseExpandedStores, isServerStoreEntry, EXPANDED_FROM, safeOrigin } from './store-expand.js'
 import { canonicalize } from './project-config.js'
+import { acceptDiscoveredScopes, type DiscoveryStatus, type ScopeRejection } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
@@ -58,6 +59,7 @@ import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity
 import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
+import type { MeResponse } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
 import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
@@ -627,6 +629,26 @@ export interface RemoteScopeDiscovery {
   error?: string
 }
 
+export { acceptDiscoveredScopes } from './server-discovery.js'
+export type { DiscoveryStatus, ScopeRejection, AcceptedDiscovery } from './server-discovery.js'
+
+/**
+ * Result of {@link Plur.refreshServerScopes} for one server entry (#1631).
+ * `applied` is true when the answer replaced the cached `scopes` list.
+ */
+export interface ServerDiscoveryOutcome {
+  url: string
+  status: DiscoveryStatus
+  applied: boolean
+  /** The accepted list when `applied`, otherwise the cached list kept. */
+  scopes: string[]
+  rejected: ScopeRejection[]
+  /** `pinned_scopes` the server's list does not name (they stay registered). */
+  pinned_unlisted: string[]
+  username?: string
+  error?: string
+}
+
 /**
  * Health of one configured remote endpoint (#295). Combines a live `/me`
  * probe with a local JWT-expiry read so callers can distinguish "auth
@@ -1177,6 +1199,33 @@ function isFromServerEntry(entry: StoreEntry): boolean {
   return typeof (entry as unknown as Record<string, unknown>)[EXPANDED_FROM] === 'number'
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+/** The string members of a raw YAML list value ([] for anything else). */
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+}
+
+/** A raw config entry that {@link Plur.refreshServerScopes} may update (C6):
+ *  an http(s) `url`, a `scopes` list and an `enterprise` block. */
+function isEnterpriseServerEntry(raw: unknown): raw is Record<string, unknown> & { url: string } {
+  return isPlainObject(raw) && typeof raw.url === 'string' && Array.isArray(raw.scopes) && isPlainObject(raw.enterprise)
+}
+
+/** scope → url for every remote entry whose normalized url is not `exceptUrl`:
+ *  the scopes another server already serves (#1631). */
+function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const r of rawStores) {
+    if (!isPlainObject(r) || typeof r.url !== 'string' || normalizeEndpointUrl(r.url) === exceptUrl) continue
+    const scopes = [...stringList(r.scopes), ...stringList(r.pinned_scopes), ...(typeof r.scope === 'string' ? [r.scope] : [])]
+    for (const sc of scopes) if (!out.has(sc)) out.set(sc, r.url)
+  }
+  return out
+}
+
 /** Why one scope of a server entry cannot be replaced or removed on its own. */
 function serverEntryScopeRefusal(scope: string, url: string): string {
   return `scope "${scope}" belongs to the server entry for ${safeOrigin(url)}, which lists all its scopes in one entry ` +
@@ -1305,6 +1354,8 @@ export class Plur {
    *  disk; see {@link _loadConfig}. */
   private _ignoredDuplicates: Array<{ entry: StoreEntry; duplicateOf: string }> = []
   private _warnedDuplicateStores = new Set<string>()
+  /** url\0scope of pinned scopes already warned as unlisted by /me (#1631). */
+  private _warnedPinnedUnlisted = new Set<string>()
   /** Whether constructor-time cwd store discovery is enabled for this instance. */
   private _autoDiscover = true
   /**
@@ -13686,14 +13737,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     return Promise.all(endpoints.map(async ({ url, token }) => {
       const registered = this._storesForEndpoint(url).map(s => s.scope)
       try {
-        const driver = this._getRemoteDriver({ url, token, scope: registered[0] ?? '' })
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-        const me = await Promise.race([
-          driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
-          }),
-        ])
+        const me = await this._probeMe(url, token, timeoutMs, registered[0] ?? '')
         this._noteMeIdentity(url, token, me)
         const registeredSet = new Set(registered)
         // #647: scopes the user has dismissed from the offer are not "actionable"
@@ -13726,6 +13770,188 @@ Generate an improved version of the procedure that prevents this failure. Return
         }
       }
     }))
+  }
+
+  /**
+   * One `GET /api/v1/me` on this url's cached driver, raced against a timeout.
+   * Shared by {@link discoverRemoteScopes}, {@link checkRemoteHealth} and
+   * {@link refreshServerScopes}. Throws the driver's error (a
+   * {@link RemoteHttpError} for a non-2xx answer) or a timeout error.
+   */
+  private async _probeMe(url: string, token: string | undefined, timeoutMs: number, scope = ''): Promise<MeResponse> {
+    const driver = this._getRemoteDriver({ url, token, scope })
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([
+      driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
+      }),
+    ])
+  }
+
+  /**
+   * Discover each server entry's scopes from `GET /api/v1/me` and write the
+   * discovery cache into config.yaml (#1631).
+   *
+   * Only server entries are touched: a store entry with a `scopes` list and an
+   * `enterprise` block. Per-scope entries are left alone; with none, this
+   * returns [] without a request. Whether an answer replaces the cached list
+   * is {@link acceptDiscoveredScopes}' decision: a failed, unauthorised,
+   * not-synced or degraded answer never replaces a non-empty cache, and then
+   * only `discovery.status` and `discovery.checked_at` are written — `scope`,
+   * `scopes` and `discovery.discovered_at` stay exactly as they were.
+   *
+   * On an accepted answer it writes `scopes`, the compatibility `scope` (the
+   * accepted personal `user:<org>:<username>` scope, when there is one) and a
+   * fresh `discovery` block. It never writes `enterprise` or `pinned_scopes`;
+   * `scope_settings` changes only through {@link persistScopeMetadata}, and
+   * only when the server says its metadata is `ok` (#1173, #648).
+   *
+   * The requests run in parallel and one server's failure never affects
+   * another's outcome. The write is a raw read-modify-write of the server
+   * entries under the config lock, so every other key of the entry (unknown
+   * keys too) is kept as it is on disk.
+   */
+  async refreshServerScopes(opts?: { url?: string; timeoutMs?: number }): Promise<ServerDiscoveryOutcome[]> {
+    const timeoutMs = opts?.timeoutMs ?? 5000
+    this.reloadConfigIfChanged()
+    const wanted = opts?.url ? normalizeEndpointUrl(opts.url) : undefined
+    const servers = this._readRawStores()
+      .filter(isEnterpriseServerEntry)
+      .filter(r => !wanted || normalizeEndpointUrl(r.url) === wanted)
+    if (!servers.length) return []
+
+    // Network first, outside the lock; each answer is judged against the file
+    // as it is when the write happens.
+    const answers = await Promise.all(servers.map(async (r): Promise<{ url: string; me: MeResponse | null; error?: { status?: number; message: string } }> => {
+      const url = r.url
+      const tokenEnv = typeof r.token_env === 'string' ? r.token_env : undefined
+      const token = (typeof r.token === 'string' && r.token) ? r.token : tokenFromEnv(tokenEnv)
+      if (!token) {
+        const message = tokenEnv ? tokenEnvUnsetMessage(tokenEnv, safeOrigin(url)) : `no key is configured for ${safeOrigin(url)}`
+        return { url, me: null, error: { message } }
+      }
+      try {
+        const me = await this._probeMe(url, token, timeoutMs, typeof r.scope === 'string' ? r.scope : '')
+        this._noteMeIdentity(url, token, me)
+        return { url, me }
+      } catch (err) {
+        this._noteMeIdentity(url, token, null)
+        return { url, me: null, error: { status: err instanceof RemoteHttpError ? err.status : undefined, message: err instanceof Error ? err.message : String(err) } }
+      }
+    }))
+
+    const outcomes: ServerDiscoveryOutcome[] = []
+    const now = new Date().toISOString()
+    this._updateRawStores(rawStores => {
+      let changed = false
+      for (const { url, me, error } of answers) {
+        const key = normalizeEndpointUrl(url)
+        const idx = rawStores.findIndex(r => isEnterpriseServerEntry(r) && normalizeEndpointUrl(r.url) === key)
+        if (idx < 0) {
+          // Removed by another process since the read above: nothing to write.
+          outcomes.push({ url, status: 'failed', applied: false, scopes: [], rejected: [], pinned_unlisted: [], error: 'the server entry is no longer in config.yaml' })
+          continue
+        }
+        const entry = rawStores[idx] as Record<string, unknown> & { url: string }
+        const cached = stringList(entry.scopes)
+        const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key) })
+        const oldDiscovery = isPlainObject(entry.discovery) ? entry.discovery : {}
+        let next: Record<string, unknown>
+        if (decision.replaceCache && me) {
+          const personal = decision.scopes.find(sc => sc.toLowerCase() === `user:${me.org_id}:${me.username}`.toLowerCase())
+          next = {
+            ...entry,
+            ...(personal ? { scope: personal } : {}),
+            scopes: decision.scopes,
+            discovery: {
+              discovered_at: now,
+              ...(me.scopes_status !== 'absent' ? { scopes_status: me.scopes_status } : {}),
+              ...(me.gitlab_host !== undefined ? { gitlab_host: me.gitlab_host } : {}),
+              project_paths: me.project_paths,
+              username: me.username,
+              org_id: me.org_id,
+              ...(me.key_expires_at !== undefined ? { key_expires_at: me.key_expires_at } : {}),
+              status: decision.status,
+              checked_at: now,
+            },
+          }
+        } else {
+          next = { ...entry, discovery: { ...oldDiscovery, status: decision.status, checked_at: now } }
+        }
+        if (stableJson(next) !== stableJson(entry)) { rawStores[idx] = next; changed = true }
+
+        const pinned = stringList(entry.pinned_scopes)
+        const listed = new Set(me?.scopes ?? [])
+        const pinned_unlisted = decision.status === 'ok' ? pinned.filter(p => !listed.has(p)) : []
+        for (const p of pinned_unlisted) {
+          const once = `${key}\0${p}`
+          if (this._warnedPinnedUnlisted.has(once)) continue
+          this._warnedPinnedUnlisted.add(once)
+          logger.warning(`[plur:discovery] pinned scope "${p}" is not in the scope list ${safeOrigin(url)} sent; it stays registered because it is pinned`)
+        }
+        outcomes.push({
+          url, status: decision.status, applied: decision.replaceCache, scopes: decision.scopes,
+          rejected: decision.rejected, pinned_unlisted,
+          ...(me?.username ? { username: me.username } : {}),
+          ...(error ? { error: error.message } : {}),
+        })
+      }
+      return changed
+    })
+
+    // Server metadata lands in scope_settings through the existing sync, once
+    // the new scopes are expanded in memory (#1173, #648).
+    const metadata: RemoteScopeDiscovery[] = []
+    for (const { url, me } of answers) {
+      const o = outcomes.find(x => x.url === url)
+      if (!me || !o?.applied || me.scope_metadata_status !== 'ok') continue
+      const accepted = new Set(o.scopes)
+      metadata.push({
+        url, ok: true, username: me.username, org_id: me.org_id, role: me.role,
+        authorized: o.scopes, registered: o.scopes, unregistered: [],
+        metadata: (me.scope_metadata ?? []).filter(m => accepted.has(m.scope)),
+      })
+    }
+    if (metadata.length) this.persistScopeMetadata(metadata)
+    return outcomes
+  }
+
+  /** The raw `stores` array of config.yaml as on disk ([] when absent or unreadable). */
+  private _readRawStores(): unknown[] {
+    try {
+      const data = yaml.load(fs.readFileSync(this.paths.config, 'utf8')) as Record<string, unknown> | null
+      return Array.isArray(data?.stores) ? data!.stores as unknown[] : []
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Read-modify-write of the raw `stores` array under the config lock, written
+   * atomically only when `mutate` reports a change; every other top-level key
+   * and every untouched entry is kept. Same discipline as
+   * {@link persistDismissedScopes}: a read error other than ENOENT aborts.
+   */
+  private _updateRawStores(mutate: (rawStores: unknown[]) => boolean): void {
+    let wrote = false
+    withLock(this.paths.config, () => {
+      let configData: Record<string, unknown> = {}
+      try {
+        const raw = fs.readFileSync(this.paths.config, 'utf8')
+        if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+      }
+      const rawStores = Array.isArray(configData.stores) ? [...(configData.stores as unknown[])] : []
+      if (!mutate(rawStores)) return
+      configData.stores = rawStores
+      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
+      wrote = true
+    })
+    if (!wrote) return
+    this.config = this._loadConfig()
+    this.configMtimeMs = this.statConfigMtime()
   }
 
   /**
@@ -13793,14 +14019,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           reason: `token expired ${exp.expiresAt?.toISOString() ?? ''}`.trim(), ...expiryFields }
       }
       try {
-        const driver = this._getRemoteDriver({ url, token, scope: scopes[0] ?? '' })
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-        const me = await Promise.race([
-          driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
-          }),
-        ])
+        const me = await this._probeMe(url, token, timeoutMs, scopes[0] ?? '')
         // A host that just answered /me is not unreachable — retire any cached
         // network-class recall failure for it rather than reporting both (#864).
         this.noteRemoteHostReachable(url)
