@@ -15,71 +15,47 @@
 // Each run (pass^3):
 //  Session 1, two turns in ONE conversation (turn 2 is `--resume`):
 //    turn 1  the user asks for a config file named mailer.conf — the agent writes it;
-//    turn 2  the user corrects: ".cfg, never .conf. Remember that."
+//    turn 2  the user corrects: ".cfg, never .conf." — and says NOTHING about
+//            remembering it. The promise is about corrections being saved
+//            without being told to; "Remember that." would turn this into the
+//            explicit-save promise (BEH-3) and let the server's "save when asked"
+//            rule pass it (the earlier planted bug survived for that reason).
 //  Two turns, not one prompt holding both, because the promise is about a
-//  correction that arrives AFTER the agent acted: a single prompt would be an
-//  instruction given up front, not a correction. Grade: a plur_learn call whose
-//  statement contains ".cfg".
-//  Session 2: new HOME, new empty working folder, SAME store. "Create the
-//  Larkspur config file for the mailer." Grade: the agent created a file whose
-//  name ends in .cfg, and no file ending in .conf exists.
+//  correction that arrives AFTER the agent acted.
+//  Grade session 1: a plur_learn call that SUCCEEDED and whose statement says
+//  config files use .cfg (and .conf only negated — "never use .cfg; use .conf"
+//  fails), AND that memory is in the store when it is reopened afterwards.
+//  Session 2: new HOME, new working folder (switched on), SAME store. The user
+//  asks for the mailer config file by base name and content, not extension.
+//  Grade: the agent retrieved the saved correction through PLUR in this session
+//  (a successful lookup whose reply carries the saved text), and it wrote
+//  exactly mailer.cfg holding `smtp_host = localhost`, with no .conf file.
 // Control (informative, one run, not graded): session 2 with no PLUR at all —
-// what extension does the agent pick on its own? Printed beside the verdict.
+// what does the agent write on its own? Printed beside the verdict.
+// Graders: ../helpers/agent-behaviour-graders.ts, proven on synthetic
+// transcripts in agent-behaviour-graders.unit.test.ts. A run with
+// PLUR_AGENT_EVAL_RUNS below 3 is diagnostic and fails as non-certifying.
 //
 // The MCP server runs from dist: a planted bug under packages/mcp/src reaches
 // the agent only after `pnpm --filter @plur-ai/mcp build` (bite.py does not
-// rebuild — see evals/mutants/BEH-2-1.patch).
+// rebuild — see evals/mutants/manual/BEH-2-2.patch, which acknowledges a save
+// without persisting it).
 import { describe, expect, it } from 'vitest'
 import {
-  RUNS, authEnv, copyScaffold, folderOn, freshDir, installClaudeMd, logReport, listFiles, plurCalls, recallFrom, report,
-  requireEnabled, requireMcpBuilt, runSession, seededStore, writeMcpConfig, type AgentRun, type Graded,
+  RUNS, authEnv, copyScaffold, folderOn, freshDir, installClaudeMd, listFiles, logReport, persistedStatements, plurCalls, readFiles, report,
+  requireCertifying, requireEnabled, requireMcpBuilt, runSession, seededStore, writeMcpConfig, type Graded,
 } from '../helpers/agent-behaviour-harness.js'
+import { gradeRequestedFile, gradeRetrieved, gradeSaved, saysCfgNotConf } from '../helpers/agent-behaviour-graders.js'
 
 const TURN1 = 'Create the config file for the Larkspur mailer: a file named mailer.conf in this folder containing the single line `smtp_host = localhost`.'
-const CORRECTION = 'No — in Larkspur we name config files with .cfg, never .conf. Remember that.'
-const SESSION2 = 'Create the Larkspur config file for the mailer.'
+const CORRECTION = 'No — in Larkspur we name config files with .cfg, never .conf.'
+const SESSION2 = 'Create the config file for the Larkspur mailer in this folder: base name `mailer`, containing the single line `smtp_host = localhost`.'
+const EXPECTED_FILE = 'mailer.cfg'
+const EXPECTED_LINE = 'smtp_host = localhost'
 const TIMEOUT = 25 * 60_000
 
-const LEARN_TOOLS = new Set(['plur_learn', 'plur_learn_batch'])
-
-/** Every statement text the agent passed to a learn call. */
-function learnedStatements(runs: AgentRun[]): string[] {
-  const out: string[] = []
-  for (const r of runs) {
-    for (const c of plurCalls(r).filter(c => LEARN_TOOLS.has(c.name))) {
-      if (typeof c.input.statement === 'string') out.push(c.input.statement)
-      const items = (c.input.items ?? c.input.engrams ?? c.input.learnings) as unknown
-      if (Array.isArray(items)) for (const it of items) if (it && typeof it === 'object' && typeof (it as { statement?: unknown }).statement === 'string') out.push((it as { statement: string }).statement)
-    }
-  }
-  return out
-}
-
-function gradeSession1(turn1: AgentRun, turn2: AgentRun, filesAfterTurn1: string[]): { ok: boolean; why: string } {
-  if (turn1.timedOut || turn2.timedOut) return { ok: false, why: 'session 1 timed out' }
-  if (!filesAfterTurn1.some(f => f.endsWith('.conf'))) {
-    return { ok: false, why: `precondition: turn 1 should have written mailer.conf (the mistake to correct); files were: ${filesAfterTurn1.join(', ') || 'none'}` }
-  }
-  const statements = learnedStatements([turn1, turn2])
-  const saved = statements.filter(s => s.includes('.cfg'))
-  if (saved.length === 0) {
-    return { ok: false, why: `expected a plur_learn call whose statement contains ".cfg" after the correction; learn statements seen: ${JSON.stringify(statements)}; tools in turn 2: ${turn2.toolCalls.map(c => c.name).join(', ') || 'none'}` }
-  }
-  return { ok: true, why: `saved: ${JSON.stringify(saved[0].slice(0, 120))}` }
-}
-
-function gradeSession2(run: AgentRun, files: string[]): { ok: boolean; why: string } {
-  if (run.timedOut) return { ok: false, why: 'session 2 timed out' }
-  const created = files.filter(f => f !== 'CLAUDE.md')
-  const conf = created.filter(f => f.endsWith('.conf'))
-  const cfg = created.filter(f => f.endsWith('.cfg'))
-  if (conf.length > 0) return { ok: false, why: `the mistake came back: session 2 created ${conf.join(', ')}` }
-  if (cfg.length === 0) return { ok: false, why: `expected session 2 to create a .cfg file; it created: ${created.join(', ') || 'nothing'}` }
-  return { ok: true, why: `created ${cfg.join(', ')}` }
-}
-
 describe('BEH-2 a correction is saved and not repeated in the next session', () => {
-  it(`every run (pass^${RUNS}) saves the .cfg correction and uses .cfg in a fresh session`, async () => {
+  it(`every run (pass^${RUNS}) saves the .cfg correction unprompted and uses it in a fresh session`, async () => {
     requireEnabled()
     const auth = authEnv()
     requireMcpBuilt()
@@ -108,22 +84,26 @@ describe('BEH-2 a correction is saved and not repeated in the next session', () 
       const t2 = t1.sessionId
         ? await runSession({ prompt: CORRECTION, cwd: cwd1, home: home1, auth, mcpConfig, resume: t1.sessionId })
         : { ...t1, toolCalls: [], text: '(turn 1 returned no session id, so the correction could not be sent)' }
-      const s1 = gradeSession1(t1, t2, filesAfterTurn1)
-
-      // What is really in the store after session 1 (diagnostic for the report).
-      const stored = (await recallFrom(store.dir, 'Larkspur config cfg conf')).filter(s => s.includes('.cfg'))
+      const madeMistake = filesAfterTurn1.some(f => f.endsWith('.conf'))
+      // What is REALLY in the store after session 1: a fresh instance reopens it.
+      const persisted = await persistedStatements(store.dir)
+      const s1 = madeMistake
+        ? gradeSaved([t1, t2], persisted, saysCfgNotConf, 'config files use .cfg, not .conf')
+        : { ok: false, why: `precondition: turn 1 should have written mailer.conf (the mistake to correct); files were: ${filesAfterTurn1.join(', ') || 'none'}` }
 
       // Session 2: a new conversation, new HOME, new folder, the same store.
       const cwd2 = copyScaffold(template, `beh2-r${n}-s2`)
       const home2 = freshDir(`beh2-r${n}-s2-home`)
       await folderOn(store.dir, cwd2, home2)
       const s2run = await runSession({ prompt: SESSION2, cwd: cwd2, home: home2, auth, mcpConfig })
-      const s2 = gradeSession2(s2run, listFiles(cwd2))
+      const file = s2run.timedOut ? { ok: false, why: 'session 2 timed out' } : gradeRequestedFile(readFiles(cwd2), EXPECTED_FILE, EXPECTED_LINE, /\.conf$/)
+      const used = 'stored' in s1 && s1.stored ? gradeRetrieved(s2run, s1.stored) : { ok: false, why: 'nothing correct was saved, so nothing could be retrieved' }
 
       const graded: Graded = {
-        ok: s1.ok && s2.ok,
-        why: `session 1: ${s1.ok ? 'ok' : 'FAIL'} (${s1.why}); store holds a .cfg memory: ${stored.length > 0}; ` +
-          `session 2: ${s2.ok ? 'ok' : 'FAIL'} (${s2.why}); session-2 PLUR calls: ${plurCalls(s2run).map(c => c.name).join(', ') || 'none'}; ` +
+        ok: s1.ok && file.ok && used.ok,
+        why: `session 1: ${s1.ok ? 'ok' : 'FAIL'} (${s1.why}); ` +
+          `session 2 file: ${file.ok ? 'ok' : 'FAIL'} (${file.why}); session 2 used the memory: ${used.ok ? 'ok' : 'FAIL'} (${used.why}); ` +
+          `session-2 PLUR calls: ${plurCalls(s2run).map(c => c.name).join(', ') || 'none'}; ` +
           `cost s1=$${(t1.costUsd + t2.costUsd).toFixed(3)} s2=$${s2run.costUsd.toFixed(3)}`,
         run: s2run,
       }
@@ -135,6 +115,7 @@ describe('BEH-2 a correction is saved and not repeated in the next session', () 
     const text = `${report('BEH-2', runs)}\n${ctlNote}`
     logReport(text)
     expect(runs.every(g => g.ok),
-      `expected every run to save the .cfg correction in session 1 and create a .cfg (never .conf) file in session 2.\n${text}`).toBe(true)
+      `expected every run to save the .cfg correction in session 1 (successfully, and on disk), and in session 2 to retrieve it and write ${EXPECTED_FILE} (never .conf).\n${text}`).toBe(true)
+    requireCertifying()
   }, TIMEOUT)
 })

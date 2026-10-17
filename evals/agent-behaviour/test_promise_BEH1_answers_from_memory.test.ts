@@ -13,17 +13,26 @@
 // memories for a project has said yes to its folder.
 //
 // The memory arm: six memories seeded through Plur.learn, one of them a
-// fictional fact no model can know. Asked about it, every run (pass^3) must
-// (a) call PLUR recall / session start and get the fact back from memory, and
-// (b) answer "Tuesday".
-// The control arm: the same prompt with no PLUR at all. No run may answer
-// "Tuesday" — that is what proves the answer came from memory, not a guess.
-// The promise is green only when BOTH hold.
+// fictional fact no model can know. The folder is switched on for memory
+// FIRST — folder consent is a prerequisite the user gives, not something the
+// agent gets past (the harness checks the folder map says "on" before the run).
+// Asked about the fact, every run (pass^3) must
+// (a) call PLUR recall / session start and get the fact back in a reply that
+//     succeeded, and
+// (b) give an answer that MEANS Tuesday: it affirms Tuesday, never negates it,
+//     and affirms no other day. "Never Tuesday; deploy Friday" fails
+//     (graders: ../helpers/agent-behaviour-graders.ts, proven on synthetic
+//     transcripts in agent-behaviour-graders.unit.test.ts).
+// The control arm: the same prompt with no PLUR at all. No run may mention
+// Tuesday at all — that is what proves the answer came from memory, not a guess.
+// The promise is green only when BOTH hold, over three runs each; a run with
+// PLUR_AGENT_EVAL_RUNS below 3 is diagnostic and fails as non-certifying.
 import { describe, expect, it } from 'vitest'
 import {
-  RUNS, authEnv, copyScaffold, folderOn, freshDir, installClaudeMd, logReport, plurCalls, recallFrom, report, requireEnabled,
+  RUNS, authEnv, copyScaffold, folderOn, freshDir, installClaudeMd, logReport, recallFrom, report, requireCertifying, requireEnabled,
   requireMcpBuilt, runSession, seededStore, writeMcpConfig, type AgentRun, type Graded,
 } from '../helpers/agent-behaviour-harness.js'
+import { gradeAnswerFromMemory } from '../helpers/agent-behaviour-graders.js'
 
 const FACT = 'The Larkspur project deploys only on Tuesdays, never on Fridays.'
 const SEEDS = [
@@ -35,19 +44,10 @@ const SEEDS = [
   'Log timestamps are always written in UTC with an explicit Z suffix.',
 ]
 const PROMPT = 'Which day can I deploy Larkspur?'
-const RECALL_TOOLS = new Set(['plur_recall', 'plur_recall_hybrid', 'plur_session_start', 'plur_inject', 'plur_inject_hybrid', 'plur_similarity_search'])
 const TIMEOUT = 20 * 60_000
 
 function gradeMemory(run: AgentRun): { ok: boolean; why: string } {
-  if (run.timedOut) return { ok: false, why: 'the session timed out' }
-  const lookups = plurCalls(run).filter(c => RECALL_TOOLS.has(c.name))
-  if (lookups.length === 0) {
-    return { ok: false, why: `expected a PLUR recall or session_start call before answering; saw tools: ${run.toolCalls.map(c => c.name).join(', ') || 'none'}` }
-  }
-  const fromMemory = lookups.some(c => /tuesday/i.test(c.result))
-  if (!fromMemory) return { ok: false, why: `PLUR was asked (${lookups.map(c => c.name).join(', ')}) but no answer it returned contained the Larkspur fact` }
-  if (!/tuesday/i.test(run.text)) return { ok: false, why: `expected the final answer to say Tuesday; it said: ${JSON.stringify(run.text.slice(0, 200))}` }
-  return { ok: true, why: `recalled via ${lookups.map(c => c.name).join(', ')} and answered Tuesday` }
+  return gradeAnswerFromMemory(run, 'tuesday', /larkspur/i)
 }
 
 function gradeControl(run: AgentRun): { ok: boolean; why: string } {
@@ -83,6 +83,7 @@ describe('BEH-1 an agent answers from memory where the same agent without PLUR c
     const text = report('BEH-1 memory arm', runs)
     logReport(text)
     expect(runs.every(g => g.ok), `expected every run with PLUR to look in memory and answer Tuesday.\n${text}`).toBe(true)
+    requireCertifying()
   }, TIMEOUT)
 
   it(`without PLUR, no run (0/${RUNS}) answers Tuesday — the control arm`, async () => {
@@ -99,5 +100,6 @@ describe('BEH-1 an agent answers from memory where the same agent without PLUR c
     const text = report('BEH-1 control arm (no PLUR)', runs)
     logReport(text)
     expect(runs.every(g => g.ok), `expected no run without PLUR to answer Tuesday.\n${text}`).toBe(true)
+    requireCertifying()
   }, TIMEOUT)
 })

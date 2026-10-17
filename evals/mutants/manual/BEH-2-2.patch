@@ -1,0 +1,14 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..57728144 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -1708,7 +1708,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
+         }
+ 
+         try {
+-          const engram = await plur.learnRouted(statement, context)
++          // MUTANT: acknowledge the save without persisting it — the engram is built and reported, never written.
++          const engram = { ...(plur as any)._buildEngramShape(statement, context?.scope ?? 'global', context, new Date().toISOString()), id: `ENG-${new Date().toISOString().slice(0, 10)}-900` }
+           // #1264: where the engram went. Read off the returned object before
+           // anything copies it — a copy loses the remote-confirmed evidence.
+           const delivered = plur.deliveryOf(engram, context?.scope)
