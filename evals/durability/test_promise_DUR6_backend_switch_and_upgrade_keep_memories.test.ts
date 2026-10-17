@@ -48,6 +48,10 @@ async function check(p: Plur, wants: Want[], when: string): Promise<void> {
     expect(Boolean(got!.pinned), `${when}: the pinned flag of ${w.id} changed`).toBe(w.pinned)
     const hits = await p.recall(w.query, { limit: 10, scope: w.scope })
     expect(hits.map(e => e.id), `${when}: searching "${w.query}" (scope ${w.scope}) no longer finds ${w.id}`).toContain(w.id)
+    // The meaning search is where the indexed backends answer from their own
+    // index (pglite: pgvector) rather than from the YAML file.
+    const hybrid = await p.recallHybridWithMeta(w.query, { limit: 10, scope: w.scope })
+    expect(hybrid.engrams.map(e => e.id), `${when}: the meaning+keyword search "${w.query}" (scope ${w.scope}) no longer finds ${w.id} (mode ${hybrid.mode})`).toContain(w.id)
   }
 }
 
@@ -62,7 +66,7 @@ describe('DUR-6 a backend switch or an upgrade keeps every memory, its scope and
 
   it('switching yaml -> sqlite -> pglite -> yaml keeps a mixed store whole and searchable', async () => {
     delete process.env.PLUR_BACKEND
-    s = await tempStore({ embedder: 'off' })
+    s = await tempStore({ embedder: 'bag-of-words' })
     const mk = async (statement: string, scope: string, visibility: 'public' | 'private', query: string, pin = false): Promise<Want> => {
       const e = await s!.plur.learn(statement, { scope, visibility })
       if (pin) await s!.plur.setPinned(e.id, true)
@@ -87,7 +91,7 @@ describe('DUR-6 a backend switch or an upgrade keeps every memory, its scope and
 
   it('a store written by an older release keeps every memory through opening, the upgrade command, and every backend', async () => {
     delete process.env.PLUR_BACKEND
-    s = await tempStore({ embedder: 'off' })
+    s = await tempStore({ embedder: 'bag-of-words' })
     const old: Want[] = [
       { id: 'ENG-2026-0105-001', statement: 'Database migrations run before every deploy', scope: 'global', visibility: 'public', pinned: false, query: 'database migrations deploy' },
       { id: 'ENG-2026-0105-002', statement: 'The billing app reads its secrets from the vault sidecar', scope: 'project:billing', visibility: 'private', pinned: false, query: 'billing vault sidecar' },
