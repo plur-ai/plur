@@ -303,6 +303,11 @@ function isOwnLegacyNpxEntry(entry: unknown): entry is Record<string, unknown> {
     typeof cmd[2] === 'string' && /^@plur-ai\/mcp@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(cmd[2])
 }
 
+/** The entry's argv is exactly `expected`. */
+function sameCommand(cmd: unknown, expected: string[]): boolean {
+  return Array.isArray(cmd) && cmd.length === expected.length && cmd.every((c, i) => c === expected[i])
+}
+
 /** Windows paths compare without regard to slash style, quotes or case. */
 function sameWin32Path(a: string, b: string): boolean {
   const norm = (p: string) => p.replace(/\\/g, '/').replace(/"/g, '').toLowerCase()
@@ -442,10 +447,12 @@ export function writeOpencodeConfig(
   // full rationale. A PRESENT, non-null `mcp.plur` is left completely alone;
   // PLUR's entry is written only when there is nothing there to lose.
   // Upgrade only the command of our old npx entry, preserving environment
-  // and all other user fields. Use the installed package on every platform.
+  // and all other user fields. Repaired whenever an installed binary is
+  // there to launch (#1637), and on win32 always: a bare `npx` cannot be
+  // spawned shell-less there, so the cmd.exe fallback is a repair too (#1311).
   const launch = opencodeMcpLaunch(cliVersion)
   let mcpPlurUpgraded = false
-  if (launch.local && isOwnLegacyNpxEntry(mcp.plur)) {
+  if ((launch.local || platform() === 'win32') && isOwnLegacyNpxEntry(mcp.plur)) {
     mcp.plur = { ...mcp.plur, command: launch.command }
     mcpPlurUpgraded = true
     edits.push({ path: [...mcpPath, 'plur', 'command'], value: (mcp.plur as { command: string[] }).command })
@@ -485,7 +492,7 @@ export function writeOpencodeConfig(
   }
   return {
     created, changed, ok: true, mcpPlurPreserved, mcpPlurUpgraded, mcpPlurRepaired,
-    mcpPlurLocal: mcpPlurPreserved ? false : launch.local,
+    mcpPlurLocal: launch.local && sameCommand((mcp.plur as { command?: unknown } | undefined)?.command, launch.command),
     ...(rewritten ? { mcpPlurCommand: (mcp.plur as { command: string[] }).command } : {}),
   }
 }

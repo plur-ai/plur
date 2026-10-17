@@ -58,3 +58,17 @@ it("a user's own npx entry (unpinned or other package) is left alone", () => {
   expect(r.mcpPlurPreserved).toBe(true)
   expect(JSON.parse(readFileSync(cfg, 'utf8')).mcp.plur.command).toEqual(['npx', '-y', '@plur-ai/mcp'])
 })
+
+it.skipIf(process.platform === 'win32')('re-running init over the shim entry it wrote still reports mcpPlurLocal', () => {
+  installShim(fakeHome)
+  expect(writeOpencodeConfig(cfg, '0.22.0')).toMatchObject({ created: true, mcpPlurLocal: true })
+  const again = writeOpencodeConfig(cfg, '0.22.0')
+  expect(again).toMatchObject({ changed: false, mcpPlurPreserved: true, mcpPlurLocal: true })
+})
+
+it("a user's own entry that happens to be preserved is not reported as local", () => {
+  writeFileSync(cfg, JSON.stringify({
+    mcp: { plur: { type: 'local', command: ['/opt/acme/bin/plur-mcp'], enabled: true } },
+  }))
+  expect(writeOpencodeConfig(cfg, '0.22.0')).toMatchObject({ mcpPlurPreserved: true, mcpPlurLocal: false })
+})

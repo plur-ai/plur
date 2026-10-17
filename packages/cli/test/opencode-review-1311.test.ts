@@ -12,7 +12,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { execFileSync } from 'child_process'
 import { builtCliPath } from './helpers/built-cli.js'
-import { opencodeConfigDir, writeOpencodeConfig, opencodeMcpNote, opencodeMcpCommand } from '../src/opencode-config.js'
+import { opencodeConfigDir, writeOpencodeConfig, opencodeMcpNote } from '../src/opencode-config.js'
 
 const CLI = builtCliPath(join(__dirname, '..'))
 const realPlatform = process.platform
@@ -65,20 +65,17 @@ describe('the mcp.plur rewrite line says what was written (#1311 review)', () =>
     rmSync(home, { recursive: true, force: true })
   })
 
-  it('on win32 with no local binary, an old bare-npx entry is preserved and opencodeMcpCommand returns cmd.exe', () => {
-    // No ~/.plur/bin/plur-mcp.meta.json → no js entry → no local binary on win32.
-    // With #1637 the repair condition requires a local binary, so the old npx
-    // entry is left alone. opencodeMcpCommand still returns the cmd.exe form.
+  it('names the cmd.exe /c npx fallback when the js entry cannot be resolved', () => {
+    // No ~/.plur/bin/plur-mcp.meta.json → no js entry → fallback.
     const cfgPath = join(home, 'opencode.json')
     writeFileSync(cfgPath, JSON.stringify({ mcp: { plur: { type: 'local', command: ['npx', '-y', '@plur-ai/mcp@0.20.0'], enabled: true } } }))
     setPlatform('win32')
     const result = writeOpencodeConfig(cfgPath, '0.20.1')
-    expect(result.mcpPlurUpgraded).toBe(false)
-    expect(result.mcpPlurPreserved).toBe(true)
-    expect(JSON.parse(readFileSync(cfgPath, 'utf-8')).mcp.plur.command[0]).toBe('npx')
-    expect(opencodeMcpCommand('0.20.1')[0]).toBe('cmd.exe')
+    expect(result.mcpPlurUpgraded).toBe(true)
+    expect(JSON.parse(readFileSync(cfgPath, 'utf-8')).mcp.plur.command[0]).toBe('cmd.exe')
     const note = opencodeMcpNote(result)
-    expect(note).toContain('left as-is')
+    expect(note).toContain('cmd.exe /c npx')
+    expect(note).not.toContain('node.exe + @plur-ai/mcp')
   })
 
   it('names the node.exe launcher when that is what was written', () => {
