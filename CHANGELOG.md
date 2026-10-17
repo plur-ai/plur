@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **BREAKING: Node 20 is no longer supported. Every published package now requires Node 22 or later** (`engines.node` `>=22`), and CI no longer tests Node 20. Node 20 cannot send the remote store's requests through an HTTPS proxy without an extra dependency: its built-in `fetch` has no `NODE_USE_ENV_PROXY`. Behind a proxy, use Node 22.21 or later (or 24+) with `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1` set in the environment PLUR starts with.
+
 ## 0.21.5 (2026-10-07)
 
 - `plur init --codex` repairs older MCP version pins and older installed MCP paths in place, preserving comments, environment overrides, timeouts and tool policies. Newer pins and custom launchers remain intact; `--keep-codex-mcp` preserves an intentional launcher. (#1624)

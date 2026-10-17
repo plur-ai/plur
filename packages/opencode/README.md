@@ -22,7 +22,7 @@ Everything is stored as plain YAML in `~/.plur/` — the same store `@plur-ai/mc
 
 ## Install
 
-Requires Node.js 20 or newer:
+Requires Node.js 22 or newer:
 
 ```sh
 npm install -g @plur-ai/cli@0.21.4 @plur-ai/mcp@0.21.4

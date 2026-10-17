@@ -79,7 +79,7 @@ The plugin works with zero configuration. Optional env vars:
 
 - Hermes Agent v0.5.0+
 - Python 3.10+
-- Node.js 18+ (for CLI, auto-resolved via npx if not installed globally)
+- Node.js 22+ (for CLI, auto-resolved via npx if not installed globally)
 
 ## Links
 
