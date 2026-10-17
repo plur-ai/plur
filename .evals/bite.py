@@ -85,6 +85,18 @@ def dirty(root: Path) -> list[str]:
     return [line[3:] for line in out.stdout.splitlines() if line.strip()]
 
 
+INFRA = re.compile(r"could not tell|timeout after|outside any test case|SyntaxError|Transform failed"
+                   r"|Failed to load|Cannot find module|ERR_MODULE_NOT_FOUND|error TS\d+", re.I)
+
+
+def _not_behaviour(detail: str) -> bool:
+    """True when the red came from the run breaking, not from an eval's assertion.
+    A planted bug that stops the code compiling or hangs the run proves nothing about
+    the eval (audit, section 4)."""
+    lines = [ln for ln in detail.splitlines() if ln.strip()]
+    return bool(lines) and all(INFRA.search(ln) for ln in lines)
+
+
 def check(cfg, only=None, runner=None) -> list[Result]:
     run = _sibling("run")
     only = {run.norm(x) for x in (only or ())}
@@ -115,8 +127,12 @@ def check(cfg, only=None, runner=None) -> list[Result]:
                     raise RuntimeError(f"could not reverse {patch.name}: {undo.stderr.strip()} -- "
                                        f"restore the working tree by hand (git diff shows the mutant)")
             after = board.status.get(name, "no-eval")
-            if after == "red":
-                results.append(Result(patch.name, name, "killed", (board.details.get(name) or "")[:300]))
+            detail = board.details.get(name) or ""
+            if after == "red" and _not_behaviour(detail):
+                results.append(Result(patch.name, name, "could-not-tell",
+                                      f"red, but not from an assertion (crash, timeout or no report): {detail[:300]}"))
+            elif after == "red":
+                results.append(Result(patch.name, name, "killed", detail[:300]))
             else:
                 results.append(Result(patch.name, name, "survived",
                                       f"the promise stayed {after} with the bug planted"))

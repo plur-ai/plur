@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Fail a pull request that changes an eval and the code it judges together.
 
-An eval (evals/**/test_promise_*, evals/mutants/**, evals/gold/**,
-evals/promises.yaml, evals/baseline.json, .evals/**) is the judge; source under
-packages/*/src is the defendant. A change to both in one pull request is how a
+Everything that decides a verdict is the judge: all of evals/** (promises, evals,
+helpers, config, gold, mutants, baseline), .evals/**, this checker and its test, the
+evals workflow and CODEOWNERS, and fixtures under packages/*/test/helpers/ that evals
+import (the team stub server). Source under packages/*/src is the defendant. A change to both in one pull request is how a
 judge gets loosened on the day it would have gone red -- Datacore's first evals
 were weakened exactly that way. Eval changes go in their own pull request,
 approved by a code owner.
@@ -17,8 +18,12 @@ import re
 import subprocess
 import sys
 
-JUDGE = re.compile(r"^(?:evals/(?:.*/)?test_promise_[^/]+|evals/mutants/.+|evals/gold/.+|evals/promises\.yaml"
-                   r"|evals/baseline\.json|\.evals/.+)$")
+# A helper, the vitest config or evals.yaml (which names the baseline) can loosen a
+# verdict as surely as an eval can; leaving them out let a pull request point the
+# baseline at a missing file alongside the code change (audit E-03).
+JUDGE = re.compile(r"^(?:evals/.+|\.evals/.+|scripts/(?:check-eval-separation|test_check_eval_separation"
+                   r"|test_evals_harness)\.py|\.github/workflows/evals\.yml|\.github/CODEOWNERS"
+                   r"|packages/[^/]+/test/helpers/.+)$")
 CODE = re.compile(r"^packages/[^/]+/src/.+")
 
 

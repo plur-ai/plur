@@ -5,7 +5,11 @@ under `evals/<capability>/` are the proof. They are not part of `pnpm test`.
 
 ```bash
 pnpm evals                     # scoreboard: every promise green, red or no-eval
-pnpm evals:gate                # CI: fails when a promise that was green goes red
+pnpm evals:gate                # CI: fails when a promise that was green goes red,
+                               #     or the baseline is missing or unreadable
+pnpm evals:gate --base origin/main   # also: no promise green on main may leave the baseline unretired
+pnpm evals --exclude-kind agent      # nightly: the paid agent evals listed as not-run
+python3 scripts/test_evals_harness.py   # the harness's own tests
 pnpm evals:bite                # every planted bug must turn its promise red
 pnpm exec vitest run --config evals/vitest.config.ts evals/recall   # one folder
 ```
@@ -34,7 +38,9 @@ language-agnostic. Python 3.11 with PyYAML runs them.
      bugs that need a rebuild live in `evals/mutants/manual/` and are checked by
      hand.
 4. **The baseline records it.** `evals/baseline.json` lists the green promises.
-   From then on CI fails if one of them goes red.
+   From then on CI fails if one of them goes red. `--write-baseline` refuses to
+   drop a promise that was green unless it is retired (or `--allow-drop`, which
+   needs review); a missing or unreadable baseline fails the gate.
 
 ## Rules for every eval (each prevents a mistake that has been made before)
 
@@ -57,7 +63,12 @@ language-agnostic. Python 3.11 with PyYAML runs them.
   eval looks wrong, report it. Do not weaken it.
 - **A change to an eval goes in its own pull request**, never in the same one as
   the code it judges.
-- **A promise that changes meaning gets a new id.** The old id is retired.
+- **A promise that changes meaning gets a new id.** The old id is listed under
+  `retired:` in `evals/promises.yaml` with what replaced it and why, and its eval
+  file is moved to the new id. Only a retired id may leave the baseline.
+- **The judge is everything that decides a verdict**: all of `evals/`, `.evals/`,
+  the evals workflow, CODEOWNERS and shared test fixtures under
+  `packages/*/test/helpers/` (`scripts/check-eval-separation.py`).
 
 ## Kinds
 
@@ -66,4 +77,4 @@ language-agnostic. Python 3.11 with PyYAML runs them.
 | deterministic | the code decides it | every pull request (the gate) |
 | quality | "the right memory" on labelled data | dev set: every pull request; private holdout: nightly |
 | formal | "never / always" over all states | `spec/formal`, every pull request |
-| agent | what a real agent does with PLUR attached; it must pass all three runs | weekly and before each release (costs money) |
+| agent | what a real agent does with PLUR attached; it must pass all three runs (fewer runs never certify) | weekly, and by hand before each release (RELEASING.md, pre-release step 5); costs money |

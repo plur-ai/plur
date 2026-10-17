@@ -47,8 +47,11 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           python3 scripts/test_check_eval_separation.py
+          python3 scripts/test_evals_harness.py
           python3 scripts/check-eval-separation.py "origin/${{ github.base_ref }}"
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 9    # as ci.yml; without it the setup step fails (audit E-02)
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -59,8 +62,16 @@ jobs:
           key: plur-models-bge-small-en-v1.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
-      # Fails when a promise recorded green in evals/baseline.json is red now.
-      - run: pnpm evals:gate
+      # Fails when a promise recorded green in evals/baseline.json is red now, when the
+      # baseline is missing or unreadable, and (on a pull request) when a promise green
+      # in the target branch's baseline was dropped without being retired.
+      - name: Gate
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            pnpm evals:gate --base "origin/${{ github.base_ref }}"
+          else
+            pnpm evals:gate
+          fi
       # The full board, for reading; not-yet-green promises do not fail the run.
       - name: Scoreboard (informational)
         if: always()
@@ -109,6 +120,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 9    # as ci.yml; without it the setup step fails (audit E-02)
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -129,9 +142,17 @@ jobs:
           git clone --depth 1 --filter=blob:none --sparse "https://x-access-token:${TOKEN}@github.com/plur-ai/plur-space.git" ../holdout-src
           git -C ../holdout-src sparse-checkout set 1-tracks/engineering/evals-holdout
           echo "PLUR_EVAL_HOLDOUT_DIR=$(cd ../holdout-src/1-tracks/engineering/evals-holdout/recall-v1 && pwd)" >> "$GITHUB_ENV"
+      # The holdout is pinned by content hash: a changed private set is caught, not
+      # silently scored. Then both label sets are validated by the independent checker.
+      - name: Holdout is the pinned version, and the labels are valid
+        run: |
+          python3 evals/gold/hash_set.py "$PLUR_EVAL_HOLDOUT_DIR" --expect "$(cat evals/gold/holdout-recall-v1.sha256)"
+          python3 evals/gold/check.py evals/gold/recall-v1 --other "$PLUR_EVAL_HOLDOUT_DIR"
+      # The paid agent evals run weekly, not here: they are listed as not-run, so a
+      # healthy night can be green (audit E-05).
       - name: Scoreboard, including the holdout
         if: always()
-        run: pnpm -s evals --json > scoreboard.json
+        run: pnpm -s evals --exclude-kind agent --json > scoreboard.json
       - name: Every planted bug turns its promise red
         if: always()
         run: pnpm -s evals:bite --json > bite.json
@@ -151,6 +172,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 9    # as ci.yml; without it the setup step fails (audit E-02)
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -164,7 +187,7 @@ jobs:
           PLUR_AGENT_EVALS: '1'
           PLUR_AGENT_EVAL_LOG: ${{ github.workspace }}/agents-runs.log
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.PLUR_EVALS_CLAUDE_TOKEN }}
-        run: python3 .evals/run.py --config evals/evals.yaml --agents --only BEH-1,BEH-2 --json > agents.json
+        run: python3 .evals/run.py --config evals/evals.yaml --agents --only "$(python3 -c "import sys,yaml;d=yaml.safe_load(open('evals/promises.yaml'));print(','.join(p['id'] for c in d['capabilities'] for p in c['promises'] if p.get('kind')=='agent'))")" --json > agents.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

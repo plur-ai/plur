@@ -18,9 +18,19 @@ def test_mutants_gold_promises_baseline_and_tools_are_judge_files():
         assert sep.classify([p])[0] == [p], p
 
 
+def test_helpers_config_and_shared_fixtures_are_judge_files():
+    # audit E-03: these were outside the judge and could change with the source they judge
+    for p in ["evals/helpers/quality.ts", "evals/vitest.config.ts", "evals/evals.yaml", "evals/README.md",
+              "packages/core/test/helpers/stub-server.ts", ".github/workflows/evals.yml", ".github/CODEOWNERS",
+              "scripts/check-eval-separation.py"]:
+        assert sep.classify([p])[0] == [p], p
+    judge, code = sep.classify(["evals/evals.yaml", "packages/core/src/index.ts"])
+    assert judge and code
+
+
 def test_source_alone_and_tests_alone_pass():
     assert sep.classify(["packages/core/src/index.ts", "packages/core/test/x.test.ts"])[0] == []
-    assert sep.classify(["evals/README.md", "packages/core/test/x.test.ts"]) == ([], [])
+    assert sep.classify(["evals/README.md", "packages/core/test/x.test.ts"])[1] == []
 
 
 if __name__ == "__main__":

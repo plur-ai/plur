@@ -69,6 +69,38 @@ def promises(cfg) -> dict[str, str]:
     return out
 
 
+def _docs(cfg) -> list[dict]:
+    files: list[Path] = []
+    for g in cfg.promise_globs:
+        files += sorted(Path(p) for p in __import__("glob").glob(str(cfg.root / g)))
+    docs = [yaml.safe_load(f.read_text(encoding="utf-8")) or {} for f in files]
+    return [d for d in docs if isinstance(d, dict)]
+
+
+def kinds(cfg) -> dict[str, str]:
+    """{id: kind} (deterministic, quality, agent, ...); a promise without one is deterministic."""
+    out: dict[str, str] = {}
+    for doc in _docs(cfg):
+        for grp in [doc] + list(doc.get("capabilities") or []):
+            for p in grp.get("promises") or []:
+                if isinstance(p, dict) and "id" in p:
+                    out[str(p["id"])] = str(p.get("kind") or "deterministic")
+    return out
+
+
+def retired(cfg) -> dict[str, dict]:
+    """{normalized id: entry} for promises retired on purpose (`retired:` in a promises file).
+
+    A promise whose meaning changes gets a new id and its old id is listed here, so the
+    gate and the baseline can tell a deliberate retirement from a promise that vanished."""
+    out: dict[str, dict] = {}
+    for doc in _docs(cfg):
+        for r in doc.get("retired") or []:
+            if isinstance(r, dict) and "id" in r:
+                out[norm(r["id"])] = r
+    return out
+
+
 def eval_files(cfg) -> dict[str, list[tuple[str, Path]]]:
     """{normalized id: [(suite name, file)]}"""
     pat = re.compile(cfg.id_pattern)
@@ -101,7 +133,7 @@ def run_chunk(cwd: Path, files: list[Path], env: dict, timeout_s: int) -> dict[s
     with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as fh:
         xml = fh.name
     try:
-        subprocess.run([PY, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--continue-on-collection-errors",
+        proc = subprocess.run([PY, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--continue-on-collection-errors",
                         f"--junitxml={xml}", *[str(f) for f in files]],
                        cwd=cwd, env={**os.environ, **env}, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
@@ -130,7 +162,31 @@ def run_chunk(cwd: Path, files: list[Path], env: dict, timeout_s: int) -> dict[s
         seen[fname] = (ok, notes)
     for fname, (ok, notes) in seen.items():
         result[fname] = (ok, "\n".join(notes))
-    return result
+    return _process_failure(proc.returncode, proc.stdout + proc.stderr, result)
+
+
+def _process_failure(code: int, output: str, result: dict[str, tuple[bool, str]]) -> dict[str, tuple[bool, str]]:
+    """A run that exited with an error cannot prove a promise, whatever its report says.
+
+    vitest exits 1 on an unhandled rejection or a teardown error that happened outside
+    every test case, while its JUnit report lists each case as passed; reading only the
+    report turned such a run green (audit E-01). An error vitest attributes to a file
+    ("This error originated in <file>") reds that file; one nobody can attribute, or a
+    failed exit with no failing case at all, reds every file in the chunk. Failures the
+    report already attributes keep their attribution."""
+    if code == 0:
+        return result
+    tail = output.strip()[-600:]
+    named = {n for n in result if re.search(r"originated in \"?[^\n\"]*" + re.escape(n), output)}
+    unhandled = re.search(r"unhandled (error|rejection)", output, re.I) is not None
+    attributed = any(not ok for ok, _ in result.values())
+    if attributed and not unhandled:
+        return result
+    victims = named or set(result)
+    why = (f"the test process exited {code} with an error outside any test case "
+           f"(unhandled error, teardown or startup failure){'' if named else '; it could not be attributed to one file'}: {tail}")
+    return {n: ((False, (d + "\n" if d and not ok else "") + why) if n in victims else (ok, d))
+            for n, (ok, d) in result.items()}
 
 
 def run_vitest_chunk(cwd: Path, files: list[Path], env: dict, timeout_s: int,
@@ -182,7 +238,7 @@ def run_vitest_chunk(cwd: Path, files: list[Path], env: dict, timeout_s: int,
             seen[fname] = (ok, notes)
     for fname, (ok, notes) in seen.items():
         result[fname] = (ok, "\n".join(notes))
-    return result
+    return _process_failure(proc.returncode, (proc.stdout or "") + (proc.stderr or ""), result)
 
 
 def suite_runner(suite):
@@ -214,11 +270,14 @@ class Board:
         return dict(c)
 
 
-def score(cfg, only=None, agents: bool = False, runner=None, files=None) -> Board:
+def score(cfg, only=None, agents: bool = False, runner=None, files=None, exclude_kinds=()) -> Board:
+    """`exclude_kinds` promises are listed as `not-run` (never green, never counted red):
+    the nightly job leaves out the paid agent evals it does not run (audit E-05)."""
     ps = promises(cfg)
     files = eval_files(cfg) if files is None else files
     only = {norm(x) for x in (only or ())}
     wanted = {pid: t for pid, t in ps.items() if not only or norm(pid) in only}
+    skipped = {pid for pid, k in kinds(cfg).items() if k in set(exclude_kinds) and pid in wanted}
     env_base = dict(cfg.scoreboard_env)
     timeout = cfg.timeout_s
     if agents:
@@ -227,6 +286,8 @@ def score(cfg, only=None, agents: bool = False, runner=None, files=None) -> Boar
 
     by_suite: dict[str, list[Path]] = defaultdict(list)
     for pid in wanted:
+        if pid in skipped:
+            continue
         for suite, f in files.get(norm(pid), []):
             by_suite[suite].append(f)
     results: dict[str, tuple[bool, str]] = {}
@@ -239,6 +300,10 @@ def score(cfg, only=None, agents: bool = False, runner=None, files=None) -> Boar
     for pid in wanted:
         fs = files.get(norm(pid), [])
         board.files[pid] = [f"{s}:{f}" for s, f in fs]
+        if pid in skipped:
+            board.status[pid] = "not-run"
+            board.details[pid] = f"not run here: kind {kinds(cfg)[pid]} is excluded from this run"
+            continue
         if not fs:
             board.status[pid] = "no-eval"
             continue
@@ -248,12 +313,20 @@ def score(cfg, only=None, agents: bool = False, runner=None, files=None) -> Boar
     return board
 
 
-def write_baseline(cfg, board: Board, only: set[str]) -> list[str]:
-    """Record green promises; with --only, keep earlier greens. Returns the regressions."""
+def write_baseline(cfg, board: Board, only: set[str], allow_drop: bool = False) -> list[str]:
+    """Record green promises; with --only, keep earlier greens. Returns the regressions.
+
+    A promise green in the old baseline that is not green now is a regression, and the
+    baseline is NOT rewritten (a full rewrite used to drop it silently, audit E-03) --
+    unless it was retired on purpose (`retired:`) or `allow_drop` is given."""
     gate = _sibling("gate")
     greens = {norm(p) for p, st in board.status.items() if st == "green"}
-    prev = gate.green(cfg.baseline)
-    lost = sorted(prev - greens) if not only else []
+    prev = gate.green(cfg.baseline) if cfg.baseline and Path(cfg.baseline).exists() else set()
+    gone = retired(cfg)
+    lost = sorted(prev - greens - set(gone)) if not only else []
+    if lost and not allow_drop:
+        return lost
+    prev -= set(gone)
     cfg.baseline.parent.mkdir(parents=True, exist_ok=True)
     cfg.baseline.write_text(json.dumps({"green": sorted(greens | (prev if only else set()))}, indent=1) + "\n")
     return lost
@@ -268,6 +341,9 @@ def main(argv=None) -> int:
     ap.add_argument("--list", action="store_true", help="list promises and eval files, run nothing")
     ap.add_argument("--agents", action="store_true", help="also run agent-behaviour evals (real model runs)")
     ap.add_argument("--write-baseline", action="store_true", help="record the green promises (the CI gate)")
+    ap.add_argument("--allow-drop", action="store_true",
+                    help="with --write-baseline: drop promises that were green and are not now (needs review)")
+    ap.add_argument("--exclude-kind", default="", help="kinds to list as not-run instead of running, e.g. agent")
     args = ap.parse_args(argv)
     cfg = config.load(args.config, root=args.root)
     only = {norm(x) for x in args.only.split(",") if x.strip()}
@@ -289,11 +365,14 @@ def main(argv=None) -> int:
             print("\n" + "  ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
         return 1
 
-    board = score(cfg, only=only, agents=args.agents)
+    board = score(cfg, only=only, agents=args.agents,
+                  exclude_kinds=[k.strip() for k in args.exclude_kind.split(",") if k.strip()])
+    regressed = []
     if args.write_baseline:
-        lost = write_baseline(cfg, board, only)
-        if lost:
-            print(f"REGRESSED since the last baseline: {', '.join(lost)}")
+        regressed = write_baseline(cfg, board, only, allow_drop=args.allow_drop)
+        if regressed:
+            print(f"REGRESSED since the last baseline: {', '.join(regressed)}"
+                  + ("" if args.allow_drop else " -- baseline NOT written (retire them, or --allow-drop)"))
     counts = board.counts()
     if args.json:
         print(json.dumps({"counts": counts, "promises": board.status, "details": board.details,
@@ -302,6 +381,8 @@ def main(argv=None) -> int:
         for pid, st in board.status.items():
             print(f"{st:10} {pid:10} {board.text[pid][:90]}")
         print("\n" + "  ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
+    if regressed and not args.allow_drop:
+        return 1
     return 0 if counts.get("red", 0) == 0 and counts.get("no-eval", 0) == 0 else 1
 
 
