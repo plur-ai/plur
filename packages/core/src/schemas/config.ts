@@ -71,6 +71,83 @@ export const StoreEntrySchema = z.object({
 
 export type StoreEntry = z.infer<typeof StoreEntrySchema>
 
+// Per-scope metadata stored inside a ServerStoreEntry's `scope_settings` map.
+// Same shape-tolerance as StoreEntrySchema's dial/description/covers/sensitivity fields.
+export const ScopeSettingsSchema = z.object({
+  dial: z.enum(['always', 'never']).optional().catch(undefined),
+  description: z.string().optional(),
+  covers: z.preprocess(
+    (val) => (Array.isArray(val) ? val.filter((x) => typeof x === 'string') : undefined),
+    z.array(z.string()).optional(),
+  ),
+  sensitivity: z.preprocess(
+    (val) => (val != null && typeof val === 'object' && !Array.isArray(val) ? val : undefined),
+    ScopeSensitivitySchema.optional(),
+  ),
+}).passthrough()
+
+export type ScopeSettings = z.infer<typeof ScopeSettingsSchema>
+
+// C6 `discovery` — cached answer from the last successful /api/v1/me call.
+export const DiscoveryCacheSchema = z.object({
+  discovered_at: z.string().optional(),
+  scopes_status: z.enum(['ok', 'not_synced']).optional(),
+  gitlab_host: z.string().nullable().optional(),
+  project_paths: z.record(z.string()).optional(),
+  username: z.string().optional(),
+  org_id: z.string().optional(),
+  // absent = unknown; null = no expiry (these are different values — never conflate them)
+  key_expires_at: z.string().nullable().optional(),
+  status: z.enum(['ok', 'not_synced', 'failed', 'auth_failed', 'degraded']).optional(),
+  checked_at: z.string().optional(),
+}).passthrough()
+
+export type DiscoveryCache = z.infer<typeof DiscoveryCacheSchema>
+
+// C6 `enterprise` block — company-server-specific metadata on a store entry.
+export const EnterpriseBlockSchema = z.object({
+  hello_engram_id: z.string().optional(),
+}).passthrough()
+
+export type EnterpriseBlock = z.infer<typeof EnterpriseBlockSchema>
+
+/**
+ * A multi-scope server store entry (C6, #1631).
+ *
+ * One on-disk entry represents a company PLUR server and all the scopes it
+ * grants. At load it is expanded into one in-memory `StoreEntry` per scope so
+ * the ~270 existing code paths that work per-scope entry remain unchanged.
+ *
+ * Detection: an entry is a server entry when it has both `url` and an own
+ * `scopes` key (the `enterprise` block is NOT required, preserving the #1220
+ * fixture which has no `enterprise` object).
+ *
+ * `scopes` is shape-tolerant: a non-array value becomes `[]`; non-string
+ * elements are silently dropped. A scope string that fails the safe grammar
+ * (`/^[\w:./-]+$/`) is dropped with a warning at expansion time.
+ *
+ * `scope` (singular) is the C6 compatibility field — older clients (≤0.21.5)
+ * require it and would otherwise drop the entry on writeback.
+ */
+export const ServerStoreEntrySchema = z.object({
+  url: z.string().url(),
+  token: z.string().optional(),
+  token_env: z.string().optional(),
+  readonly: z.boolean().default(false),
+  shared: z.boolean().optional(),
+  scope: z.string().optional(),
+  scopes: z.preprocess(
+    (val) => (Array.isArray(val) ? val.filter((s) => typeof s === 'string') : []),
+    z.array(z.string()),
+  ),
+  pinned_scopes: z.array(z.string()).optional(),
+  enterprise: EnterpriseBlockSchema.default({}),
+  scope_settings: z.record(ScopeSettingsSchema).optional(),
+  discovery: DiscoveryCacheSchema.optional(),
+}).passthrough()
+
+export type ServerStoreEntry = z.infer<typeof ServerStoreEntrySchema>
+
 export const LlmTierConfigSchema = z.object({
   dedup_tier: z.enum(['fast', 'balanced', 'thorough']).default('fast'),
   profile_tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced'),
