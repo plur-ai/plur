@@ -24,15 +24,33 @@ export class StubServer {
   private port = 0
   // Identity returned by GET /api/v1/me (#292). Override per-test with setMe().
   // #345 D2: scope_metadata is optional (absent → older-server behavior).
-  private me: { username: string; org_id: string; role: string; scopes: string[]; scope_metadata?: unknown[] } = {
+  // #1631: C1 fields absent by default to simulate an older server.
+  private me: {
+    username: string; org_id: string; role: string; scopes: string[]
+    scope_metadata?: unknown[]
+    scopes_status?: string; scope_metadata_status?: string
+    gitlab_host?: string | null; project_paths?: Record<string, string>
+    key_expires_at?: string | null
+  } = {
     username: 'testuser', org_id: 'test-org', role: 'developer', scopes: ['group:test'],
   }
+  /** When set, GET /api/v1/me returns this HTTP status instead of 200 (#1631). */
+  meStatus: number | null = null
+  /** When set, GET /api/v1/me returns this as the response body (#1631). */
+  meBody: unknown = null
 
   constructor(private readonly validToken: string) {}
 
   /** Override the GET /api/v1/me response (authorized scope set, identity).
-   *  #345 D2: pass `scope_metadata` to simulate self-describing scopes. */
-  setMe(me: Partial<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: unknown[] }>): void {
+   *  #345 D2: pass `scope_metadata` to simulate self-describing scopes.
+   *  #1631: pass C1 fields (scopes_status, gitlab_host, etc.) for enterprise. */
+  setMe(me: Partial<{
+    username: string; org_id: string; role: string; scopes: string[]
+    scope_metadata: unknown[]
+    scopes_status: string; scope_metadata_status: string
+    gitlab_host: string | null; project_paths: Record<string, string>
+    key_expires_at: string | null
+  }>): void {
     this.me = { ...this.me, ...me }
   }
 
@@ -71,6 +89,8 @@ export class StubServer {
   reset(): void {
     this.engrams.clear()
     this.idCounter = 0
+    this.meStatus = null
+    this.meBody = null
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -86,6 +106,11 @@ export class StubServer {
 
     // GET /api/v1/me — resolved identity + authorized scopes (#292)
     if (method === 'GET' && path === '/api/v1/me') {
+      // #1631: meStatus/meBody override — simulate 503 scope_lookup_failed etc.
+      if (this.meStatus !== null) {
+        this.json(res, this.meStatus, this.meBody ?? { error: `forced ${this.meStatus}` })
+        return
+      }
       this.json(res, 200, this.me)
       return
     }
