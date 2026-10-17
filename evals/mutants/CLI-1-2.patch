@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/recall.ts b/packages/cli/src/commands/recall.ts
+index 82016f64..095a88c7 100644
+--- a/packages/cli/src/commands/recall.ts
++++ b/packages/cli/src/commands/recall.ts
+@@ -95,7 +95,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+         // prefix, so it never shares an id with a local engram, and
+         // `plur forget` / feedback / pin route it to its store.
+         id: e.id,
+-        statement: e.statement,
++        statement: e.statement.slice(0, 48),
+         scope: e.scope,
+         type: e.type,
+         domain: e.domain ?? null,
