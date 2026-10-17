@@ -4427,6 +4427,11 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           // On already_registered this is the EXISTING entry's scope — for
           // local stores (path-only identity) it may differ from the request.
           scope: result.scope,
+          // A server entry has one key for all its scopes (#1631).
+          ...(result.token_scopes ? {
+            token_scopes: result.token_scopes,
+            note: `The token belongs to the server entry for this url and is shared by all its scopes: ${result.token_scopes.join(', ')}.`,
+          } : {}),
           ...(scopeDropped ? {
             requested_scope: requestedScope,
             note: `This path is already registered under scope "${result.scope}". A local store is keyed by its path, so the requested scope "${requestedScope}" was NOT added. Use a separate store file for a different scope, or remove the existing entry first.`,

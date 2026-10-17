@@ -8,6 +8,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk } from './config.js'
+import { collapseExpandedStores, isServerStoreEntry, EXPANDED_FROM, safeOrigin } from './store-expand.js'
 import { canonicalize } from './project-config.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
@@ -1171,6 +1172,18 @@ export const DEFAULT_REMOTE_WRITE_TIMEOUT_MS = 10_000
 
 /** Refusal from {@link Plur.addRemoteStore} (#1265). `code` is stable for
  *  callers; `message` never contains the token. */
+/** True for an in-memory entry expanded from a multi-scope server entry (#1631). */
+function isFromServerEntry(entry: StoreEntry): boolean {
+  return typeof (entry as unknown as Record<string, unknown>)[EXPANDED_FROM] === 'number'
+}
+
+/** Why one scope of a server entry cannot be replaced or removed on its own. */
+function serverEntryScopeRefusal(scope: string, url: string): string {
+  return `scope "${scope}" belongs to the server entry for ${safeOrigin(url)}, which lists all its scopes in one entry ` +
+    `and shares one key between them. A single scope of it cannot be replaced or removed. Nothing was changed. ` +
+    `To change that server's scope list, re-run the enterprise setup.`
+}
+
 export class AddRemoteStoreError extends Error {
   constructor(
     readonly code: 'invalid_url' | 'missing_token' | 'missing_scope' | 'auth_rejected' | 'unreachable' | 'scope_not_authorised' | 'scope_conflict',
@@ -12679,7 +12692,12 @@ Generate an improved version of the procedure that prevents this failure. Return
    *  re-read the file and last-writer-wins away the other's change. Same
    *  lock discipline engrams.yaml has always had. Lock scope is kept tight —
    *  read + merge + write only; the in-memory refresh happens after release. */
-  private persistStores(stores: StoreEntry[], opts?: { serverSensitivityScopes?: Set<string> }): void {
+  private persistStores(stores: StoreEntry[], opts?: {
+    serverSensitivityScopes?: Set<string>
+    /** A new key for a server entry (#1631): written onto the on-disk server
+     *  entry for this url, in place. The collapse step never writes a token. */
+    serverEntryToken?: { url: string; token: string; tokenEnv?: string }
+  }): void {
     withLock(this.paths.config, () => {
       let configData: Record<string, unknown> = {}
       // Read the existing config to preserve other top-level keys (auto_learn,
@@ -12697,7 +12715,49 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
       // A `token_env` entry keeps its reference and never the token it was
       // resolved to at load (#1561): the typed entries carry that value.
-      configData.stores = this.mergeStoresForWriteback(configData.stores, stores, opts?.serverSensitivityScopes)
+      //
+      // Collapse expanded per-scope entries back into their server entry (#1631):
+      // N in-memory entries with EXPANDED_FROM=i → one entry on disk at position i.
+      const rawArray = Array.isArray(configData.stores) ? (configData.stores as unknown[]) : []
+      const collapsedRaw = collapseExpandedStores(stores, rawArray)
+      const rekey = opts?.serverEntryToken
+      if (rekey) {
+        const target = normalizeEndpointUrl(rekey.url)
+        collapsedRaw.forEach((r, i) => {
+          const rawUrl = (r as { url?: unknown } | null)?.url
+          if (!isServerStoreEntry(r) || typeof rawUrl !== 'string' || normalizeEndpointUrl(rawUrl) !== target) return
+          // Spread keeps every key where it was; storeEntryForDisk drops an
+          // undefined token_env and a token that only repeats its variable.
+          collapsedRaw[i] = { ...(r as Record<string, unknown>), token: rekey.token, token_env: rekey.tokenEnv }
+        })
+      }
+      // Per-scope entries merge onto per-scope raw entries only: a server entry
+      // shares url+scope with its compat `scope`, so letting it be a merge target
+      // would turn an older per-scope entry for that scope into a second server entry.
+      const merged = this.mergeStoresForWriteback(
+        collapsedRaw.filter(r => !isServerStoreEntry(r)),
+        stores.filter(s => !isFromServerEntry(s)),
+        opts?.serverSensitivityScopes,
+      )
+      // Write in the in-memory order, which is the on-disk order: each server
+      // entry takes the place of the first entry expanded from it.
+      const out: unknown[] = []
+      const emitted = new Set<number>()
+      let next = 0
+      for (const s of stores) {
+        if (!isFromServerEntry(s)) { out.push(merged[next++]); continue }
+        const idx = (s as unknown as Record<string, number>)[EXPANDED_FROM]
+        if (!emitted.has(idx) && isServerStoreEntry(collapsedRaw[idx])) {
+          emitted.add(idx)
+          out.push(collapsedRaw[idx])
+        }
+      }
+      // A server entry with no in-memory entry (an empty `scopes`, rejected at
+      // load, or written by another process since) is kept, near its place.
+      collapsedRaw.forEach((r, i) => {
+        if (isServerStoreEntry(r) && !emitted.has(i)) out.splice(Math.min(i, out.length), 0, r)
+      })
+      configData.stores = (out as StoreEntry[])
         .map(e => storeEntryForDisk(e as unknown as Record<string, unknown>) as unknown as StoreEntry)
       // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
       // truncates in place, and loadConfig turns a parse failure into DEFAULT
@@ -12813,7 +12873,12 @@ Generate an improved version of the procedure that prevents this failure. Return
        *  stores `token_env: <name>` and never the token itself. */
       tokenEnv?: string
     },
-  ): { status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string } {
+  ): {
+    status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
+    /** On `token_rotated` for a scope of a server entry (#1631): every scope
+     *  the new token now serves. The key is shared by all of them. */
+    token_scopes?: string[]
+  } {
     const isRemote = Boolean(options?.url)
 
     // Validation gate (#93): catch malformed URLs and duplicate scopes at
@@ -12894,6 +12959,16 @@ Generate an improved version of the procedure that prevents this failure. Return
       const tokenEnv = options?.tokenEnv || undefined
       const refChanged = isRemote && options?.token !== undefined && tokenEnv !== (sameEntry.token_env || undefined)
       if (isRemote && options?.token !== undefined && (options.token !== sameEntry.token || refChanged)) {
+        // A scope of a server entry (#1631): the key is one per server, so the
+        // new token goes onto that entry and serves every scope it lists.
+        if (isFromServerEntry(sameEntry)) {
+          this.persistStores(config.stores ?? [], { serverEntryToken: { url: sameEntry.url!, token: options.token, tokenEnv } })
+          const token_scopes = (this.config.stores ?? [])
+            .filter(s => isFromServerEntry(s) && normalizeEndpointUrl(s.url!) === normalizeEndpointUrl(sameEntry.url!))
+            .map(s => s.scope)
+          logger.info(`[plur:addStore] rotated the server key for ${safeOrigin(sameEntry.url!)} (${token_scopes.length} scope(s))`)
+          return { status: 'token_rotated', scope: sameEntry.scope, token_scopes }
+        }
         const rotated = (config.stores ?? []).map(s =>
           s === sameEntry ? { ...s, token: options.token, token_env: tokenEnv } : s,
         )
@@ -12916,6 +12991,10 @@ Generate an improved version of the procedure that prevents this failure. Return
     // with options.overwriteScope=true to replace the existing entry.
     const scopeConflict = config.stores?.find(s => s.scope === scope)
     if (scopeConflict) {
+      // One scope of a server entry cannot be replaced or removed on its own
+      // (#1631): the entry lists its scopes together, and dropping the
+      // expanded entry would leave it on disk while reporting success.
+      if (isFromServerEntry(scopeConflict)) throw new Error(`addStore: ${serverEntryScopeRefusal(scope, scopeConflict.url!)}`)
       if (options?.overwriteScope !== true) {
         const existingId = scopeConflict.url ?? scopeConflict.path
         throw new Error(
@@ -12985,15 +13064,15 @@ Generate an improved version of the procedure that prevents this failure. Return
      *  Never implied: without it such a conflict is refused (code
      *  `scope_conflict`). Applied only after /me has verified the token. */
     overwriteScope?: boolean
-  }): Promise<{ status: 'added' | 'already_registered' | 'token_rotated' | 'overwritten'; scope: string; username?: string; authorised: string[] }> {
+  }): Promise<{ status: 'added' | 'already_registered' | 'token_rotated' | 'overwritten'; scope: string; username?: string; authorised: string[]; token_scopes?: string[] }> {
     const { username, authorised } = await this.verifyRemoteStore(opts)
     const { url, token, scope } = opts
-    const { status } = this.addStore('', scope, {
+    const { status, token_scopes } = this.addStore('', scope, {
       url, token, shared: opts.shared, readonly: opts.readonly,
       ...(opts.tokenEnv ? { tokenEnv: opts.tokenEnv } : {}),
       ...(opts.overwriteScope === true ? { overwriteScope: true } : {}),
     })
-    return { status, scope, ...(username ? { username } : {}), authorised }
+    return { status, scope, ...(username ? { username } : {}), authorised, ...(token_scopes ? { token_scopes } : {}) }
   }
 
   /**
@@ -13057,13 +13136,17 @@ Generate an improved version of the procedure that prevents this failure. Return
     // Scope held by a different store: refuse here, as a typed error, unless
     // the caller asked to replace it. Mirrors addStore's identity rule (a
     // normalized url+scope match is the SAME entry, not a conflict).
-    if (opts.overwriteScope !== true) {
+    {
       this.reloadConfigIfChanged()
       const stores = loadConfig(this.paths.config).stores ?? []
       const same = stores.some(s => s.url !== undefined && s.scope === scope &&
         normalizeEndpointUrl(s.url) === normalizeEndpointUrl(url))
       const other = same ? undefined : stores.find(s => s.scope === scope)
-      if (other) {
+      // overwriteScope never reaches a scope of a server entry (#1631).
+      if (other && isFromServerEntry(other)) {
+        throw new AddRemoteStoreError('scope_conflict', serverEntryScopeRefusal(scope, other.url!), authorised)
+      }
+      if (other && opts.overwriteScope !== true) {
         throw new AddRemoteStoreError(
           'scope_conflict',
           `scope "${scope}" is already registered to a different store (${scrub(String(other.url ?? other.path))}). ` +
