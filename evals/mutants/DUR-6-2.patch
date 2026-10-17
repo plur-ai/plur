@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/storage-indexed.ts b/packages/core/src/storage-indexed.ts
+index e3085b4b..8eb9edac 100644
+--- a/packages/core/src/storage-indexed.ts
++++ b/packages/core/src/storage-indexed.ts
+@@ -193,7 +193,7 @@ export class IndexedStorage {
+         clauses.push("scope = ?", "scope LIKE ? || ':%' ESCAPE '\\'", "scope LIKE ? || '/%' ESCAPE '\\'")
+         params.push(g, escapeLikePattern(g), escapeLikePattern(g))
+       }
+-      conditions.push(`(${clauses.join(' OR ')})`)
++      conditions.push(`(${clauses.join(' AND ')})`)
+     }
+     if (filter.domain) {
+       conditions.push("domain LIKE ? || '%'")
