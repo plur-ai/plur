@@ -3,7 +3,7 @@ import yaml from 'js-yaml'
 import { PlurConfigSchema, StoreEntrySchema, ServerStoreEntrySchema, type PlurConfig } from './schemas/config.js'
 import { SENSITIVITY_CATEGORIES } from './schemas/scope-metadata.js'
 import { logger } from './logger.js'
-import { isServerStoreEntry, expandServerEntry, EXPANDED_FROM, safeOrigin } from './store-expand.js'
+import { isServerStoreEntry, expandServerEntry, serverEntryIdentities, EXPANDED_FROM, safeOrigin } from './store-expand.js'
 
 /**
  * Load config with per-entry tolerance for the `stores` array.
@@ -37,6 +37,8 @@ export function loadConfig(configPath: string): PlurConfig {
   // scope before the per-entry StoreEntrySchema check (#1631).
   if (Array.isArray(raw.stores)) {
     const validStores: unknown[] = []
+    // Computed on the raw entries, exactly as persistStores does under the lock.
+    const identities = serverEntryIdentities(raw.stores)
     for (let i = 0; i < raw.stores.length; i++) {
       const entry = raw.stores[i]
       if (isServerStoreEntry(entry)) {
@@ -48,7 +50,7 @@ export function loadConfig(configPath: string): PlurConfig {
           logger.warning(`[plur:config] dropping invalid server entry stores[${i}] (${label}) from ${configPath}: ${serverParsed.error.issues.map(it => `${it.path.join('.') || '(root)'}: ${it.code}`).join('; ')}`)
           continue
         }
-        for (const expanded of expandServerEntry(serverParsed.data, i)) {
+        for (const expanded of expandServerEntry(serverParsed.data, identities[i]!)) {
           validStores.push(expanded)
         }
       } else {
