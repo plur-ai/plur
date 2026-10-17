@@ -146,17 +146,20 @@ export async function flushOutboxForHook(
     if (opts.minIntervalMs) markFlushed(root, opts.hook)
 
     const budgetMs = budgetFromEnv(opts.budgetMs)
-    const plur = opts.plur ?? (await import('../plur.js')).createPlur(flags)
-    const flush = plur.flushOutbox({ timeoutMs: budgetMs })
-    // Observed either way, so a rejection after the outer timer won is not an
-    // unhandled rejection that takes the process down with a non-zero exit.
-    flush.catch(() => {})
-
+    // The outer deadline starts before the engine is built and the flush is
+    // called: on a large store the flush parses engrams.yaml synchronously
+    // (about 3s at 29MB, 16k engrams), and a timer armed after that let the
+    // hook run budget + parse — 5.75s against a 3s budget.
     let timer: NodeJS.Timeout | undefined
     const outer = new Promise<'timeout'>(resolve => {
       timer = setTimeout(() => resolve('timeout'), budgetMs + LOCAL_GRACE_MS)
     })
     try {
+      const plur = opts.plur ?? (await import('../plur.js')).createPlur(flags)
+      const flush = plur.flushOutbox({ timeoutMs: budgetMs })
+      // Observed either way, so a rejection after the outer timer won is not an
+      // unhandled rejection that takes the process down with a non-zero exit.
+      flush.catch(() => {})
       const result = await Promise.race([flush, outer])
       if (result === 'timeout') {
         process.stderr.write(

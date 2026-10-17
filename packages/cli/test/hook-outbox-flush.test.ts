@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync, readFileSync
 import { join } from 'path'
 import { tmpdir, hostname } from 'os'
 import { spawn } from 'child_process'
+import { createServer, type Socket, type AddressInfo } from 'net'
 import { Plur } from '@plur-ai/core'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
 import { isolateGitConfig } from '../../core/test/helpers/git-isolation.js'
@@ -155,6 +156,38 @@ describe('outbox flush from hooks and plur sync (#1269)', () => {
       })
     })
   }
+
+  // A store host that never finishes connecting (a VPN-only store while the
+  // VPN is down) left the connect pending after the hook's budget ran out:
+  // undici rejects an aborted fetch but keeps its connector going until its
+  // own 10s connect timeout. That open handle kept node alive — measured 16s
+  // on macOS against Claude Code's 5s SessionEnd budget, which reports the hook
+  // as "Hook cancelled". A local socket that accepts and never answers the TLS
+  // handshake holds the request in the same connect phase, deterministically.
+  it('Claude Code session-end exits within its budget when the store never finishes connecting', async () => {
+    await queue(1)
+    const held: Socket[] = []
+    const silent = createServer(sock => { held.push(sock) })
+    await new Promise<void>(r => silent.listen(0, '127.0.0.1', () => r()))
+    const port = (silent.address() as AddressInfo).port
+    try {
+      writeFileSync(
+        join(store, 'config.yaml'),
+        `index: false\nembeddings:\n  enabled: false\nstores:\n  - url: "https://127.0.0.1:${port}"\n    token: "${TOKEN}"\n    scope: "${SCOPE}"\n    shared: true\n    readonly: false\n`,
+      )
+      const r = await runCli(['hook-session-end'], {
+        cwd: project,
+        env: { ...env, PLUR_HOOK_OUTBOX_FLUSH_MS: '500' },
+        input: JSON.stringify({ session_id: 'cc-silent-1', cwd: '' }),
+      })
+      expect(r.code, r.stderr).toBe(0)
+      expect(r.ms).toBeLessThan(4_000)
+      expect(await pending()).toBe(1)
+    } finally {
+      for (const sock of held) sock.destroy()
+      await new Promise<void>(r => silent.close(() => r()))
+    }
+  })
 
   it('Cursor stop fires every turn, so it retries at most once per interval', async () => {
     await queue(1)
