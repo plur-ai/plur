@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, realpathSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { helloStatement, runHello, type ToolId, type McpLaunch as HelloMcpLaunch } from '../src/enterprise/hello.js'
@@ -10,6 +10,7 @@ function fakeLaunch(
   tool: ToolId,
   logPath: string,
   mode?: string,
+  extraEnv: Record<string, string> = {},
 ): { tool: ToolId; launch: HelloMcpLaunch } {
   return {
     tool,
@@ -20,6 +21,7 @@ function fakeLaunch(
         ...process.env,
         FAKE_LOG: logPath,
         ...(mode ? { FAKE_MODE: mode } : {}),
+        ...extraEnv,
       },
     },
   }
@@ -132,8 +134,9 @@ describe('runHello', () => {
     const cwdEntry = entries.find((e) => e.cwd)
     expect(cwdEntry).toBeDefined()
     const cwd: string = cwdEntry.cwd
-    // Must be under tmpdir
-    expect(cwd.startsWith(tmpdir())).toBe(true)
+    // Must be under tmpdir (the child reports the resolved path: on macOS
+    // tmpdir() is under /var, a symlink to /private/var)
+    expect(cwd.startsWith(realpathSync(tmpdir()))).toBe(true)
     // Must not be process.cwd()
     expect(cwd).not.toBe(process.cwd())
     // Must not be HOME
@@ -174,4 +177,108 @@ describe('runHello', () => {
       expect(result.saved.reason).toContain('did not start within')
     }
   })
+
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function waitDead(pid: number, ms = 3000): Promise<boolean> {
+    const end = Date.now() + ms
+    while (Date.now() < end) {
+      if (!isAlive(pid)) return true
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    return !isAlive(pid)
+  }
+
+  it('recalls through plur_recall (exposed by the default tool profile) in the personal scope', async () => {
+    const logPath = join(tempDir, 'log.ndjson')
+    const result = await runHello({
+      launches: [fakeLaunch('codex', logPath)],
+      personalScope: 'user:acme:alice',
+      statement: 'PLUR connected: alice',
+    })
+    expect(result.perTool).toEqual([{ tool: 'codex', recalled: true }])
+    const entries = readFileSync(logPath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    const recall = entries.find((e) => e.tool === 'plur_recall')
+    expect(recall?.args).toMatchObject({ query: 'PLUR connected: alice', scope: 'user:acme:alice' })
+  })
+
+  it('kills the child when initialize times out', async () => {
+    const pidPath = join(tempDir, 'pid')
+    const result = await runHello({
+      launches: [fakeLaunch('codex', join(tempDir, 'log'), 'no-start', { FAKE_PID: pidPath })],
+      personalScope: 'user:acme:alice',
+      statement: 'PLUR connected: alice',
+      timeoutMs: 800,
+    })
+    expect(result.saved.ok).toBe(false)
+    expect(existsSync(pidPath)).toBe(true)
+    expect(await waitDead(Number(readFileSync(pidPath, 'utf-8')))).toBe(true)
+  })
+
+  it('a tool call that never answers times out, and the child is killed', async () => {
+    const pidPath = join(tempDir, 'pid')
+    const started = Date.now()
+    const result = await runHello({
+      launches: [fakeLaunch('codex', join(tempDir, 'log'), 'hang-call', { FAKE_PID: pidPath })],
+      personalScope: 'user:acme:alice',
+      statement: 'PLUR connected: alice',
+      timeoutMs: 800,
+    })
+    expect(Date.now() - started).toBeLessThan(5000)
+    expect(result.saved.ok).toBe(false)
+    if (!result.saved.ok) expect(result.saved.reason).toContain('did not answer within')
+    expect(await waitDead(Number(readFileSync(pidPath, 'utf-8')))).toBe(true)
+  }, 10_000)
+
+  it('a launch command that does not exist is a failed save, not a crash', async () => {
+    const result = await runHello({
+      launches: [
+        {
+          tool: 'codex',
+          launch: { command: join(tempDir, 'no-such-plur-mcp'), args: [], env: { ...process.env } },
+        },
+      ],
+      personalScope: 'user:acme:alice',
+      statement: 'PLUR connected: alice',
+      timeoutMs: 2000,
+    })
+    expect(result.saved.ok).toBe(false)
+    if (!result.saved.ok) expect(result.saved.reason).toMatch(/could not start/)
+  })
+
+  it('a tool error result is reported with its text', async () => {
+    const result = await runHello({
+      launches: [fakeLaunch('codex', join(tempDir, 'log'), 'tool-error')],
+      personalScope: 'user:acme:alice',
+      statement: 'PLUR connected: alice',
+    })
+    expect(result.saved).toEqual({ ok: false, reason: 'scope user:acme:alice is not writable' })
+  })
+
+  it('a remote save without an id is not a confirmed save', async () => {
+    const result = await runHello({
+      launches: [fakeLaunch('codex', join(tempDir, 'log'), 'no-id')],
+      personalScope: 'user:acme:alice',
+      statement: 'PLUR connected: alice',
+    })
+    expect(result.saved.ok).toBe(false)
+  })
+
+  it('a server that writes a lot to stderr does not block, and stderr is not in the result', async () => {
+    const result = await runHello({
+      launches: [fakeLaunch('codex', join(tempDir, 'log'), 'noisy-stderr')],
+      personalScope: 'user:acme:alice',
+      statement: 'PLUR connected: alice',
+      timeoutMs: 10_000,
+    })
+    expect(result.saved).toEqual({ ok: true, id: 'ENG-HELLO-1' })
+    expect(JSON.stringify(result)).not.toContain('xxxx')
+  }, 20_000)
 })

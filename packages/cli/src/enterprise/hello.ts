@@ -45,7 +45,9 @@ function failReason(result: LearnResult): string | null {
     return 'PLUR is turned off in this environment'
   }
   if (result.delivery === 'remote') {
-    return null
+    return typeof result.id === 'string' && result.id.length > 0
+      ? null
+      : 'the server did not return an id for the saved memory'
   }
   if (result.delivery === 'outbox') {
     return 'queued on this device, not delivered to the server'
@@ -117,11 +119,14 @@ export async function runHello(opts: {
       }
     }
 
+    // plur_recall is exposed by the server's default tool profile
+    // (plur_recall_hybrid is not). The personal scope makes the recall dial
+    // the server that holds it, so a hit proves the round trip.
+    const recallArgs = { query: opts.statement, scope: opts.personalScope }
+
     // Recall from the first launch (session still open)
     try {
-      const recallResult = (await session.callTool('plur_recall_hybrid', {
-        query: opts.statement,
-      })) as RecallResult
+      const recallResult = (await session.callTool('plur_recall', recallArgs)) as RecallResult
       const recalled = recallResult?.results?.some((r) => r.id === savedId) ?? false
       if (recalled) {
         perTool.push({ tool: firstTool, recalled: true })
@@ -157,9 +162,7 @@ export async function runHello(opts: {
         continue
       }
       try {
-        const recallResult = (await s.callTool('plur_recall_hybrid', {
-          query: opts.statement,
-        })) as RecallResult
+        const recallResult = (await s.callTool('plur_recall', recallArgs)) as RecallResult
         await s.close()
         const recalled = recallResult?.results?.some((r) => r.id === savedId) ?? false
         if (recalled) {
@@ -183,6 +186,10 @@ export async function runHello(opts: {
 
     return { saved: { ok: true, id: savedId }, perTool }
   } finally {
-    rmSync(neutralCwd, { recursive: true, force: true })
+    try {
+      rmSync(neutralCwd, { recursive: true, force: true })
+    } catch {
+      // best effort (Windows can refuse while a handle is still closing)
+    }
   }
 }
