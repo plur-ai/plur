@@ -8,9 +8,22 @@ export type ExecFn = (
   opts?: { env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string }
 ) => { status: number; stdout: string }
 
-/** Returns true when the launch runs through npx rather than a pinned binary. */
+const NPX_NAMES = new Set(['npx', 'npx.cmd', 'npx.exe'])
+
+/**
+ * Returns true when the launch runs through npx rather than a pinned binary.
+ * Each word of the command and its args is checked by basename, case-
+ * insensitively, with both separators — this covers `npx`, an absolute
+ * `/opt/homebrew/bin/npx` or `C:\…\npx.cmd`, `cmd.exe /c npx …` and the
+ * `/bin/sh -lc 'exec npx -y …'` form `plur init` writes as its fallback.
+ */
 function isNpxLaunch(launch: LaunchConfig): boolean {
-  return [launch.command, ...launch.args].some(a => a === 'npx' || a.endsWith('npx.cmd'))
+  return [launch.command, ...launch.args]
+    .flatMap(a => a.split(/\s+/))
+    .some(word => {
+      const base = word.split(/[\\/]/).pop() ?? ''
+      return NPX_NAMES.has(base.toLowerCase())
+    })
 }
 
 /**
