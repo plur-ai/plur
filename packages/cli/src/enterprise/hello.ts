@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { openMcpSession, type McpLaunch } from './mcp-stdio.js'
@@ -79,6 +79,14 @@ export async function runHello(opts: {
   const neutralCwd = mkdtempSync(join(tmpdir(), 'plur-hello-'))
 
   try {
+    // A fresh folder has no decision, and the MCP server's folder gate answers
+    // an undecided folder with the folder question instead of saving. Memory
+    // is switched on for THIS folder only, by a project marker inside it: an
+    // empty `.plur.yaml` (requests no scope, domain or remote). The user's
+    // folder map is never written, the marker goes with the folder below, and
+    // a folder-map `off` that covers this folder still wins.
+    writeFileSync(join(neutralCwd, '.plur.yaml'), '# PLUR connection check: memory is on in this temporary folder\n')
+
     const { tool: firstTool, launch: firstLaunch } = opts.launches[0]
 
     // Open session for the first launch (save + recall)
