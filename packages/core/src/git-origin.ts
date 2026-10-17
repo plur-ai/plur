@@ -1,5 +1,5 @@
 import { existsSync } from 'fs'
-import { dirname } from 'path'
+import { dirname, join, resolve } from 'path'
 import { spawnSync } from 'child_process'
 
 export interface ParsedRemote {
@@ -59,8 +59,9 @@ function parseSchemeUrl(url: string): ParsedRemote | null {
   return result
 }
 
-// scp-like: [user@]host:path — must not start with a scheme, must have ':', must not be a Windows drive
-const SCP_RE = /^(?:[^/@:]+@)?([^/:@]+):([^/\\][^?#]*?)(?:\.git)?\/?$/
+// scp-like: [user@]host:path — must not start with a scheme, must have ':', must not be a Windows drive.
+// The path may be absolute on the host (`git@host:/srv/repo.git`); its leading '/' is dropped.
+const SCP_RE = /^(?:[^/@:]+@)?([^/:@]+):(?!\\)([^?#]*?)(?:\.git)?\/?$/
 
 function parseScpUrl(url: string): ParsedRemote | null {
   // scp-like has no ://; reject anything with a scheme
@@ -97,9 +98,11 @@ export function parseGitRemoteUrl(url: string): ParsedRemote | null {
 // ── readGitOrigin ──────────────────────────────────────────────────────────
 
 function findGitRoot(dir: string): string | null {
-  let current = dir
+  // Resolve first: a lexical walk up a relative path stops at '.', which would
+  // report the caller's cwd repo for a folder that is in no repo at all.
+  let current = resolve(dir)
   while (true) {
-    if (existsSync(`${current}/.git`)) return current
+    if (existsSync(join(current, '.git'))) return current
     const parent = dirname(current)
     if (parent === current) return null
     current = parent
@@ -130,7 +133,10 @@ export function readGitOrigin(dir: string, run?: GitRunner): OriginRead {
     if (code === 'ENOENT') {
       return { kind: 'error', detail: 'git is not installed or not on PATH' }
     }
-    return { kind: 'error', detail: 'git timed out reading remote.origin.url' }
+    if (code === 'ETIMEDOUT') {
+      return { kind: 'error', detail: 'git timed out reading remote.origin.url' }
+    }
+    return { kind: 'error', detail: `git could not run${code ? ` (${code})` : ''}` }
   }
 
   // exit 1 = config key not found (no origin configured)

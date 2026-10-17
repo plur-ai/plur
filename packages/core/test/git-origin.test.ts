@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync } from 'fs'
-import { join } from 'path'
+import { join, relative } from 'path'
 import { tmpdir } from 'os'
 import { spawnSync } from 'child_process'
 import { isolateGitConfig } from './helpers/git-isolation.js'
@@ -59,6 +59,10 @@ describe('parseGitRemoteUrl', () => {
     [
       'git@gitlab.example.com:acme/team/sub/backend.git',
       { protocol: 'scp', host: 'gitlab.example.com', path: 'acme/team/sub/backend' },
+    ],
+    [
+      'git@gitlab.example.com:/acme/team/backend.git',
+      { protocol: 'scp', host: 'gitlab.example.com', path: 'acme/team/backend' },
     ],
   ])('parses %s', (url, want) => {
     expect(parseGitRemoteUrl(url)).toEqual(want)
@@ -135,14 +139,31 @@ describe('readGitOrigin', () => {
   })
 
   it('folder path with spaces', () => {
-    const spacyDir = join(makeTmp(), 'My Repos')
-    const repoInSpacy = join(spacyDir, 'backend')
+    const parent = makeTmp()
+    const repoInSpacy = join(parent, 'My Repos', 'backend')
     mkdirSync(repoInSpacy, { recursive: true })
     initRepo(repoInSpacy)
     setOrigin(repoInSpacy, 'https://gitlab.example.com/team/backend.git')
     const r = readGitOrigin(repoInSpacy)
-    expect(r.kind).toBe('url')
-    rmSync(spacyDir, { recursive: true, force: true })
+    expect(r).toEqual({ kind: 'url', url: 'https://gitlab.example.com/team/backend.git' })
+    rmSync(parent, { recursive: true, force: true })
+  })
+
+  it('a relative path to a folder outside any repo is not-git, even when the cwd is in a repo', () => {
+    // The test process runs inside the plur checkout, so a lexical walk up a
+    // relative path ends at '.', which IS a git repo. The walk must resolve first.
+    const rel = relative(process.cwd(), tmpNoGit)
+    expect(readGitOrigin(rel)).toEqual({ kind: 'not-git' })
+  })
+
+  it('a spawn failure other than ENOENT or timeout is not reported as a timeout', () => {
+    const r = readGitOrigin(repoDir, () => ({
+      status: null,
+      stdout: '',
+      error: Object.assign(new Error('spawn git EACCES'), { code: 'EACCES' }),
+    }))
+    expect(r.kind).toBe('error')
+    expect((r as { kind: 'error'; detail: string }).detail).not.toMatch(/timed out/)
   })
 
   it('git missing → error, detail without the url', () => {
