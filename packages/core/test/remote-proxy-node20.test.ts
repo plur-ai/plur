@@ -1,132 +1,137 @@
 /**
- * Measurement: does the remote store's fetch go through HTTPS_PROXY?
+ * Does the remote store's fetch go through HTTPS_PROXY?
  *
- * Node's built-in fetch (undici-backed) does not read HTTPS_PROXY from the
- * environment on its own in Node 20 or 22. The fix requires undici 8.x
- * (EnvHttpProxyAgent / ProxyAgent), which demands Node >=22.19.0 — so Node 20
- * cannot support it without adding a runtime dependency.
+ * Node's built-in fetch reads HTTPS_PROXY / HTTP_PROXY / NO_PROXY only when
+ * NODE_USE_ENV_PROXY=1 (or --use-env-proxy) is set when the process STARTS;
+ * setting them on process.env later changes nothing. That switch exists from
+ * Node 22.21.0 and 24.0.0. Measured with this file's proxy:
  *
- * Measured result on Node 20 and 22: RED (proxy receives 0 requests; fetch
- * bypasses the proxy and connects directly to the target).
- * Node 20 is therefore no longer supported (engines.node ">=22").
+ *   Node 20.20.2, 22.20.0               with NODE_USE_ENV_PROXY=1  → direct (proxy unused)
+ *   Node 22.21.0, 22.22.2, 24.10, 26.10 with NODE_USE_ENV_PROXY=1  → through the proxy
+ *   any of them                          without it                 → direct
  *
- * The it.fails() marks document the desired end-state; remove them once
- * proxy support is wired into RemoteStore.
+ * So Node 20 cannot reach a remote store behind a proxy without a new
+ * dependency, and the floor is Node 22 (22.21 or later behind a proxy; on
+ * 22.0-22.20 the first case below fails). PLUR's installer puts
+ * NODE_USE_ENV_PROXY=1 in each editor's MCP env, which is what these tests
+ * reproduce: each case starts a fresh Node with that environment and runs
+ * RemoteStore.me() from source (through tsx, as other process tests here do).
  */
-import { it, expect, beforeAll, afterAll, afterEach, describe } from 'vitest'
-import { createServer, type Server, type IncomingMessage } from 'node:http'
-import { connect as netConnect } from 'node:net'
-import { RemoteStore } from '../src/store/remote-store.js'
-import { StubServer } from './helpers/stub-server.js'
+import { it, expect, beforeAll, afterAll, beforeEach, describe } from 'vitest'
+import { createServer, type Server } from 'node:http'
+import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const TOKEN = 'proxy-test-token-x7k9'
+const TSX = pathToFileURL(createRequire(__filename).resolve('tsx')).href
+const REMOTE_STORE = pathToFileURL(join(__dirname, '..', 'src', 'store', 'remote-store.ts')).href
 
-// ---------------------------------------------------------------------------
-// Minimal in-process HTTP+CONNECT counting proxy (no forwarding needed).
-//
-// Counts every connection attempt so tests can assert whether fetch routed
-// through the proxy or bypassed it. Does not forward: the it.fails() test
-// only needs the count; the NO_PROXY test expects zero and me() goes direct.
-// ---------------------------------------------------------------------------
-
-class CountingProxy {
-  /** Total connections received (plain HTTP or CONNECT). */
-  requests = 0
+/** A proxy that records what it was asked for and refuses all of it. */
+class RecordingProxy {
+  /** `host:port` of every CONNECT tunnel requested (https targets). */
+  connects: string[] = []
+  /** Absolute URL of every plain forwarded request (http targets). */
+  forwards: string[] = []
   url = ''
   private server: Server | null = null
 
+  get requests(): number { return this.connects.length + this.forwards.length }
+  reset(): void { this.connects = []; this.forwards = [] }
+
   async start(): Promise<void> {
-    const srv = createServer((req: IncomingMessage, res) => {
-      this.requests++
-      // Refuse the forwarded request so the caller errors cleanly.
-      res.writeHead(407, { 'Proxy-Authenticate': 'Basic realm="proxy"' })
+    const srv = createServer((req, res) => {
+      this.forwards.push(req.url ?? '')
+      res.writeHead(502)
       res.end()
     })
-    srv.on('connect', (req: IncomingMessage, clientSocket) => {
-      this.requests++
-      // Acknowledge the tunnel then immediately close — just counting.
-      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-      clientSocket.destroy()
+    srv.on('connect', (req, socket) => {
+      this.connects.push(req.url ?? '')
+      socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n')
     })
     this.server = srv
-    return new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
+      srv.once('error', reject)
       srv.listen(0, '127.0.0.1', () => {
         const addr = srv.address()
-        if (!addr || typeof addr === 'string') {
-          return reject(new Error('unexpected address'))
-        }
+        if (!addr || typeof addr === 'string') return reject(new Error('unexpected address'))
         this.url = `http://127.0.0.1:${addr.port}`
         resolve()
       })
-      srv.on('error', reject)
     })
   }
 
   async stop(): Promise<void> {
-    return new Promise<void>((resolve) => {
-      if (!this.server) return resolve()
-      this.server.closeAllConnections?.()
-      this.server.close(() => { this.server = null; resolve() })
-    })
+    const srv = this.server
+    if (!srv) return
+    srv.closeAllConnections?.()
+    await new Promise<void>(resolve => srv.close(() => resolve()))
+    this.server = null
   }
 }
 
-// ---------------------------------------------------------------------------
-// Test setup
-// ---------------------------------------------------------------------------
+/**
+ * Run `new RemoteStore(url, TOKEN, '').me()` in a fresh Node whose
+ * environment carries the proxy settings from its start, as an editor's MCP
+ * env does. Resolves with whether me() succeeded.
+ */
+function meInFreshNode(url: string, env: Record<string, string>): Promise<{ ok: boolean; detail: string }> {
+  const script = `
+    const { RemoteStore } = await import(${JSON.stringify(REMOTE_STORE)})
+    try {
+      const me = await new RemoteStore(${JSON.stringify(url)}, ${JSON.stringify(TOKEN)}, '').me()
+      process.stdout.write(JSON.stringify({ ok: true, detail: me.username }))
+    } catch (e) {
+      process.stdout.write(JSON.stringify({ ok: false, detail: String(e && e.message) }))
+    }
+  `
+  const base: Record<string, string> = {}
+  for (const k of ['PATH', 'HOME', 'USERPROFILE', 'SYSTEMROOT', 'TEMP', 'TMP']) {
+    if (process.env[k]) base[k] = process.env[k] as string
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', TSX, '--input-type=module', '-e', script], {
+      env: { ...base, NODE_USE_ENV_PROXY: '1', ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = '', err = ''
+    child.stdout.on('data', d => { out += d })
+    child.stderr.on('data', d => { err += d })
+    child.on('error', reject)
+    child.on('close', code => {
+      try { resolve(JSON.parse(out)) } catch { reject(new Error(`child exited ${code}: ${out}${err}`)) }
+    })
+  })
+}
 
-let proxy: CountingProxy
-let stub: StubServer
-let stubUrl: string
+let proxy: RecordingProxy
 
 beforeAll(async () => {
-  stub = new StubServer(TOKEN)
-  const { url } = await stub.start()
-  stubUrl = url
-
-  proxy = new CountingProxy()
+  proxy = new RecordingProxy()
   await proxy.start()
 })
 
 afterAll(async () => {
-  await stub.stop()
   await proxy.stop()
 })
 
-afterEach(() => {
-  proxy.requests = 0
-  delete process.env.HTTPS_PROXY
-  delete process.env.NO_PROXY
-})
+beforeEach(() => proxy.reset())
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+describe('RemoteStore behind HTTPS_PROXY (Node floor measurement)', () => {
+  it('with HTTPS_PROXY set, RemoteStore.me() goes through the proxy (Node 20 and current)', async () => {
+    // An https remote: the proxy must be asked for a tunnel to it. The name
+    // never resolves, so only a request that went through the proxy is seen.
+    await meInFreshNode('https://plur.example.com', { HTTPS_PROXY: proxy.url })
+    expect(proxy.connects).toContain('plur.example.com:443')
+  }, 30_000)
 
-describe('RemoteStore proxy behaviour (Node floor measurement)', () => {
-  /**
-   * Desired: RemoteStore.me() routes through HTTPS_PROXY.
-   * Actual on Node 20 and 22: global fetch bypasses proxy env vars entirely;
-   * proxy.requests stays 0 and the expect fails.
-   *
-   * it.fails() marks the expected gap. Remove it — and the "floor" comment in
-   * commit BREAKING/efi-b17 — once proxy support is wired in.
-   */
-  it.fails('with HTTPS_PROXY set, RemoteStore.me() goes through the proxy (Node 20 and current)', async () => {
-    process.env.HTTPS_PROXY = proxy.url
-    await new RemoteStore(stubUrl, TOKEN, '').me()
-    expect(proxy.requests).toBeGreaterThan(0)
-  })
-
-  /**
-   * A host listed in NO_PROXY must bypass the proxy.
-   * Passes today vacuously (fetch never uses the proxy). Stays as a guard
-   * that a future implementation honours NO_PROXY.
-   */
   it('a host listed in NO_PROXY is reached directly', async () => {
-    process.env.HTTPS_PROXY = proxy.url
-    process.env.NO_PROXY = '127.0.0.1'
-    await new RemoteStore(stubUrl, TOKEN, '').me()
+    // The same remote and proxy as the case above; only NO_PROXY differs, so
+    // an empty record here is the exclusion working, not the proxy being
+    // ignored. (The direct attempt fails: the name does not resolve.)
+    const r = await meInFreshNode('https://plur.example.com', { HTTPS_PROXY: proxy.url, NO_PROXY: 'plur.example.com' })
     expect(proxy.requests).toBe(0)
-  })
+    expect(r.ok).toBe(false)
+  }, 30_000)
 })
