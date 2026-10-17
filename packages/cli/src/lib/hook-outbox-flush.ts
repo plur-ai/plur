@@ -42,8 +42,9 @@ import type { GlobalFlags } from '../plur.js'
 /** Default network budget per harness, ms — leaves room for node start-up and
  *  the store load inside each harness's hook timeout. */
 export const HOOK_OUTBOX_BUDGET_MS = {
-  /** Claude Code SessionEnd, installed with a 5s timeout. */
-  claudeSessionEnd: 2_500,
+  /** Claude Code SessionEnd, installed with a 5s timeout. 2.5s ran 4.3s end to
+   *  end on a 16k-engram store (start-up, YAML parse, grace, exit): too close. */
+  claudeSessionEnd: 2_000,
   /** Codex SessionEnd, clamped by Codex to 3s. */
   codexSessionEnd: 1_200,
   /** Cursor stop, installed with a 3s timeout. */
