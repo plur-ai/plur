@@ -1,5 +1,5 @@
 diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..e85e2153 100644
+index d018e0d6..8a5b9fec 100644
 --- a/packages/core/src/index.ts
 +++ b/packages/core/src/index.ts
 @@ -6860,7 +6860,7 @@ export class Plur {
@@ -7,7 +7,7 @@ index d018e0d6..e85e2153 100644
        const shared = dialable.filter(e => isSharedScope(e.scope))
        const personal = dialable.filter(e => !isSharedScope(e.scope))
 -      const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
-+      const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : (dialScope ?? '').startsWith('project:') ? shared : []
++      const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg || (dialScope ?? '').startsWith('project:')) : []
        const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
        const personalExact = personalEntry && dialable.includes(personalEntry) ? [personalEntry] : []
        const orgContext = orgAffine.length > 0 || projectImplicated
