@@ -201,7 +201,7 @@ describe('server entry collapse — compat scope top-level metadata', () => {
     const discovery: RemoteScopeDiscovery = {
       url: 'https://plur.example.com', ok: true,
       authorized: ['group:acme/team'], registered: ['group:acme/team'], unregistered: [],
-      metadata: [{ scope: 'group:acme/team', description: 'New' }],
+      metadata: [{ scope: 'group:acme/team', description: 'New', covers: [] }],
     }
     plur.persistScopeMetadata([discovery])
     const srv = readRaw(p).stores[0]
