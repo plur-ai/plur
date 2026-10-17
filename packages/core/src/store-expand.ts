@@ -44,18 +44,21 @@ export function expandServerEntry(entry: ServerStoreEntry, rawIndex: number): St
   }
 
   const results: StoreEntry[] = []
+  let badScopes = 0
   for (const scope of ordered) {
-    if (!SCOPE_RE.test(scope)) {
-      logger.warning(`[plur:config] dropping scope "${scope}" from server entry ${entry.url}: fails safe grammar`)
-      continue
-    }
-    const settings = entry.scope_settings?.[scope] ?? {}
+    if (!SCOPE_RE.test(scope)) { badScopes++; continue }
+    // Per-scope settings carry metadata only: a key that names the entry's
+    // identity or credentials (url, scope, token, …) is ignored, so a
+    // scope_settings value can never redirect a scope or swap its token.
+    const settings = Object.fromEntries(
+      Object.entries(entry.scope_settings?.[scope] ?? {}).filter(([k]) => !RESERVED_ENTRY_KEYS.has(k)),
+    )
     const expanded: Record<string, unknown> = {
+      ...settings,
       url: entry.url,
       readonly: entry.readonly,
       shared: isSharedScope(scope),
       scope,
-      ...settings,
       [EXPANDED_FROM]: rawIndex,
     }
     if (entry.token !== undefined) expanded.token = entry.token
@@ -64,11 +67,27 @@ export function expandServerEntry(entry: ServerStoreEntry, rawIndex: number): St
     if (entry.discovery !== undefined) expanded.discovery = entry.discovery
     results.push(expanded as unknown as StoreEntry)
   }
+  // Never log the scope text itself: it may carry control characters that forge
+  // log lines (#408). The url is reduced to its origin, so no userinfo reaches the log.
+  if (badScopes) {
+    logger.warning(`[plur:config] dropping ${badScopes} scope(s) that fail the safe grammar from server entry ${safeOrigin(entry.url)}`)
+  }
   return results
 }
 
 // Per-scope metadata fields managed by the collapse step.
 const SCOPE_META_KEYS = ['dial', 'description', 'covers', 'sensitivity'] as const
+
+/** Keys of an expanded entry that a `scope_settings` value must not set. */
+const RESERVED_ENTRY_KEYS = new Set<string>([
+  'url', 'path', 'scope', 'scopes', 'pinned_scopes', 'token', 'token_env', 'readonly', 'shared',
+  'enterprise', 'discovery', 'scope_settings', EXPANDED_FROM,
+])
+
+/** `scheme://host[:port]` of a url, without userinfo, path or query. */
+export function safeOrigin(url: string): string {
+  try { return new URL(url).origin } catch { return '<invalid url>' }
+}
 
 /**
  * Collapse expanded per-scope entries back into the original server entries

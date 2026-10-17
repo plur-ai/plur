@@ -14,6 +14,7 @@ import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { loadConfig } from '../src/config.js'
+import { logger } from '../src/logger.js'
 import { StoreEntrySchema } from '../src/schemas/config.js'
 import { Plur, type RemoteScopeDiscovery } from '../src/index.js'
 
@@ -190,3 +191,54 @@ describe('multi-scope server entry — writeback collapse', () => {
     }
   })
 })
+
+describe('multi-scope server entry — load hardening', () => {
+  it('scope_settings cannot override the url, scope, token or readonly of an expanded entry', () => {
+    const cfg = loadConfig(write(`stores:
+  - url: https://plur.example.com
+    token: t-alice
+    scopes: ["group:acme/team"]
+    scope_settings:
+      group:acme/team: { url: "https://other.example.com", scope: "group:acme/other", token: "t-other", readonly: true, description: "Team" }
+`))
+    const stores = cfg.stores ?? []
+    expect(stores).toHaveLength(1)
+    expect(stores[0]).toMatchObject({ url: 'https://plur.example.com', scope: 'group:acme/team', token: 't-alice', readonly: false, description: 'Team' })
+  })
+
+  it('a future or malformed discovery, enterprise, pinned_scopes or scope_settings value keeps the entry and its token (#1220)', () => {
+    const cfg = loadConfig(write(`stores:
+  - url: https://plur.example.com
+    token: t-alice
+    scope: user:acme:alice
+    scopes: ["group:acme/team"]
+    pinned_scopes: "group:acme/pinned"
+    enterprise: yes
+    discovery: { status: expired, scopes_status: partial, discovered_at: "2026-10-16T12:00:00Z" }
+    scope_settings:
+      group:acme/team: 5
+`))
+    const stores = cfg.stores ?? []
+    expect(stores.map(s => s.scope)).toEqual(['group:acme/team', 'user:acme:alice'])
+    expect(stores.every(s => s.token === 't-alice')).toBe(true)
+  })
+
+  it('a scope that fails the safe grammar is dropped and its raw text never reaches the log', () => {
+    const warn = vi.spyOn(logger, 'warning')
+    try {
+      const cfg = loadConfig(write(`stores:
+  - url: https://plur.example.com
+    token: t-alice
+    scopes: ["group:acme/team", "group:x\nFORGED log line"]
+`))
+      expect((cfg.stores ?? []).map(s => s.scope)).toEqual(['group:acme/team'])
+      const joined = warn.mock.calls.map(c => String(c[0])).join('\n')
+      expect(joined).toContain('https://plur.example.com')
+      expect(joined).not.toContain('FORGED')
+      expect(joined).not.toContain('t-alice')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
