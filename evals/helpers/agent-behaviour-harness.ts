@@ -343,6 +343,8 @@ export function claudeLlm(auth: Record<string, string>, model: string = MODEL): 
   return (prompt: string) => new Promise((res, rej) => {
     const home = freshDir('llm-home')
     const child = spawn(exe, ['-p', prompt, '--output-format', 'json', '--model', model, '--tools', '',
+      // Replace the coding-agent system prompt: the checker answers PLUR's prompt, nothing else.
+      '--system-prompt', 'Answer the request exactly in the format it asks for.',
       '--strict-mcp-config', '--setting-sources', 'project', '--no-session-persistence', '--max-budget-usd', String(MAX_BUDGET_USD)],
     { cwd: home, env: childEnv(home, auth), stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
