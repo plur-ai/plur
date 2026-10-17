@@ -112,15 +112,21 @@ export function formatSummary(r: EnterpriseInitResult): string[] {
     const label = TOOL_LABEL[tool.tool]
     const padded = label.padEnd(width)
     let msg: string
+    // "wired — restart" is a claim that the proof passed for this tool, so it
+    // needs the evidence in this result, not only the `proven` flag: the save
+    // confirmed, and this tool's own recall returned it.
+    const perTool = r.hello?.perTool.find(p => p.tool === tool.tool)
+    const evidenced = tool.proven && r.hello?.saved.ok === true && perTool?.recalled === true
     if (tool.status === 'wired' && tool.version && !tool.version.ok) {
       // The tool launches the wrong PLUR (or npx): not proven, whatever the recall said.
       msg = `wired, but not proven: ${tool.version.detail}`
-    } else if (tool.status === 'wired' && tool.proven) {
+    } else if (tool.status === 'wired' && evidenced) {
       const extra = tool.tool === 'codex' ? ', then run /hooks and trust PLUR' : ''
       msg = `wired — restart ${label}${extra}`
-    } else if (tool.status === 'wired' && !tool.proven) {
-      const perTool = r.hello?.perTool.find(p => p.tool === tool.tool)
-      msg = `wired, but not proven: ${perTool?.reason ?? 'could not be verified'}`
+    } else if (tool.status === 'wired') {
+      // A failed save is named on its own line above; here it is only the cause.
+      const why = perTool?.reason ?? (r.hello && !r.hello.saved.ok ? 'the connection check did not save' : 'could not be verified')
+      msg = `wired, but not proven: ${why}`
     } else if (tool.status === 'other-side') {
       msg = 'runs in WSL — run the installer inside WSL'
     } else if (tool.status === 'refused') {

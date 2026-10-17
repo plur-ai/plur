@@ -1,7 +1,7 @@
 import { isSharedScope } from './scope-util.js'
 import { logger } from './logger.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
-import type { StoreEntry, ServerStoreEntry } from './schemas/config.js'
+import { ScopeSettingsSchema, type StoreEntry, type ServerStoreEntry } from './schemas/config.js'
 
 /** In-memory marker added to each expanded entry. Value = the server entry's
  * identity ({@link serverEntryIdentities}), never its array position: another
@@ -39,7 +39,11 @@ export function serverEntryIdentityBase(raw: unknown): string {
  * that is not a server entry): the identity base plus `#n`, its occurrence
  * among entries with the same base. Computed the same way at load and on the
  * fresh read under the config lock, so an expanded entry finds its server
- * entry wherever it now sits, and an inserted entry never matches.
+ * entry wherever it now sits, and an inserted entry with a different base
+ * never matches. Limit: the token is not part of the base, so an entry that
+ * differs only in its token and is inserted BEFORE this one takes `#0` and
+ * receives this entry's metadata (spec/formal/findings/store-entry.md, C3).
+ * Rotation is not affected: it refuses a base that occurs more than once.
  */
 export function serverEntryIdentities(rawStores: unknown[]): (string | undefined)[] {
   const seen = new Map<string, number>()
@@ -94,7 +98,12 @@ export function expandServerEntry(entry: ServerStoreEntry, identity: string): St
     // it there for that scope, and dropping it would, for one, lose a
     // `dial: never` and dial a server the user excluded. An explicit
     // `scope_settings[scope]` value takes precedence.
-    const legacy = scope === entry.scope ? metadataOnly(entry) : {}
+    // The top level is not validated by ServerStoreEntrySchema (passthrough),
+    // so it goes through the same shape tolerance as a scope_settings value:
+    // a malformed field (`description:` left empty, a number) is dropped. An
+    // unvalidated one would fail the whole config's parse, and loadConfig
+    // would fall back to defaults — losing every store registration.
+    const legacy = scope === entry.scope ? metadataOnly(legacyMetadata(entry)) : {}
     const expanded: Record<string, unknown> = {
       ...legacy,
       ...settings,
@@ -120,6 +129,13 @@ export function expandServerEntry(entry: ServerStoreEntry, identity: string): St
 
 // Per-scope metadata fields managed by the collapse step.
 const SCOPE_META_KEYS = ['dial', 'description', 'covers', 'sensitivity'] as const
+
+/** A server entry's top level, with its metadata fields shape-checked like a
+ *  scope_settings value (ScopeSettingsSchema never fails on a field's value). */
+function legacyMetadata(entry: ServerStoreEntry): object {
+  const parsed = ScopeSettingsSchema.safeParse(entry)
+  return parsed.success ? parsed.data : {}
+}
 
 /** The metadata keys of a scope_settings value or of a server entry's top level. */
 function metadataOnly(obj: object | undefined): Record<string, unknown> {
