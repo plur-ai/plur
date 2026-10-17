@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, rmSync, symlinkSync, lstatSync, readdirSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { cleanupLegacy } from '../src/enterprise/cleanup.js'
@@ -337,3 +337,115 @@ describe('second run', () => {
     }
   })
 })
+
+// ─── Review hardening ─────────────────────────────────────────────────────────
+
+describe('backups and writes', () => {
+  it.skipIf(process.platform === 'win32')('creates the backup dir owner-only (0700)', () => {
+    writeFileSync(join(plurDir, 'mcp-enterprise-header'), 'Authorization: Bearer plur_sk_test_fake')
+    cleanupLegacy({ tools: [], backupDir, plurDir, home })
+    expect(statSync(backupDir).mode & 0o777).toBe(0o700)
+  })
+
+  it('never overwrites an earlier backup in the same dir', () => {
+    const headerPath = join(plurDir, 'mcp-enterprise-header')
+    writeFileSync(headerPath, 'first')
+    const r1 = cleanupLegacy({ tools: [], backupDir, plurDir, home }).find(e => e.target === headerPath)
+    writeFileSync(headerPath, 'second')
+    const r2 = cleanupLegacy({ tools: [], backupDir, plurDir, home }).find(e => e.target === headerPath)
+    expect(r1?.backup).not.toBe(r2?.backup)
+    expect(readFileSync(r1!.backup!, 'utf8')).toBe('first')
+    expect(readFileSync(r2!.backup!, 'utf8')).toBe('second')
+  })
+
+  it.skipIf(process.platform === 'win32')('a symlinked opencode.json stays a symlink; the target is cleaned', () => {
+    const opencodeDir = join(home, '.config', 'opencode')
+    mkdirSync(opencodeDir, { recursive: true })
+    const real = join(home, 'dotfiles-opencode.json')
+    writeFileSync(real, '{"mcp":{"plur":{},"plur-enterprise":{"url":"https://plur.example.com/mcp"}}}')
+    const link = join(opencodeDir, 'opencode.json')
+    symlinkSync(real, link)
+    const r = cleanupLegacy({ tools: ['opencode'], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === link)
+    expect(r?.status).toBe('removed')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readFileSync(real, 'utf8')).not.toContain('plur-enterprise')
+  })
+
+  it.skipIf(process.platform === 'win32')('a rewritten config keeps its mode (0600 stays 0600)', () => {
+    const claudeJson = join(home, '.claude.json')
+    writeFileSync(claudeJson, JSON.stringify({ mcpServers: { 'plur-enterprise': {}, plur: {} } }))
+    chmodSync(claudeJson, 0o600)
+    cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home })
+    expect(statSync(claudeJson).mode & 0o777).toBe(0o600)
+  })
+
+  it('leaves no temp files next to a rewritten config', () => {
+    const codexDir = join(home, '.codex')
+    mkdirSync(codexDir, { recursive: true })
+    writeFileSync(join(codexDir, 'config.toml'), '[mcp_servers.plur-enterprise]\ncommand = "npx"\n')
+    cleanupLegacy({ tools: ['codex'], backupDir, plurDir, home, env: makeEnv() })
+    expect(readdirSync(codexDir)).toEqual(['config.toml'])
+  })
+
+  it('a failure on one target is reported as refused and does not stop the others', () => {
+    // backupDir is a regular file: no backup can be written, so nothing may be removed
+    writeFileSync(backupDir, 'not a dir')
+    const headerPath = join(plurDir, 'mcp-enterprise-header')
+    writeFileSync(headerPath, 'Authorization: Bearer plur_sk_test_fake')
+    const claudeJson = join(home, '.claude.json')
+    const original = JSON.stringify({ mcpServers: { 'plur-enterprise': {} } })
+    writeFileSync(claudeJson, original)
+    const results = cleanupLegacy({ tools: ['claude-code'], backupDir, plurDir, home })
+    expect(results.map(r => r.status)).toEqual(['refused', 'refused'])
+    expect(readFileSync(claudeJson, 'utf8')).toBe(original)
+    expect(existsSync(headerPath)).toBe(true)
+  })
+})
+
+describe('codex TOML edge cases', () => {
+  function writeCodex(text: string): string {
+    const codexDir = join(home, '.codex')
+    mkdirSync(codexDir, { recursive: true })
+    const p = join(codexDir, 'config.toml')
+    writeFileSync(p, text)
+    return p
+  }
+
+  it('keeps the comment that introduces the next kept table', () => {
+    const p = writeCodex([
+      'model = "o3"',
+      '',
+      '[mcp_servers.plur-enterprise]',
+      'command = "npx"',
+      '',
+      '# my own server, keep this note',
+      '[mcp_servers.other]',
+      'command = "other-command"',
+      '',
+    ].join('\n'))
+    const r = cleanupLegacy({ tools: ['codex'], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === p)
+    expect(r?.status).toBe('removed')
+    const cleaned = readFileSync(p, 'utf8')
+    expect(cleaned).toContain('# my own server, keep this note\n[mcp_servers.other]\ncommand = "other-command"\n')
+    expect(cleaned).toContain('model = "o3"')
+    expect(cleaned).not.toContain('plur-enterprise')
+  })
+
+  it('an inline plur-enterprise entry is refused, never reported absent', () => {
+    const text = '[mcp_servers]\nplur-enterprise = { command = "npx", args = [] }\nother = { command = "x" }\n'
+    const p = writeCodex(text)
+    const r = cleanupLegacy({ tools: ['codex'], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === p)
+    expect(r?.status).toBe('refused')
+    expect(readFileSync(p, 'utf8')).toBe(text)
+  })
+
+  it('an unparsable config.toml is refused, bytes unchanged, no backup', () => {
+    const text = '[mcp_servers.plur-enterprise\ncommand = '
+    const p = writeCodex(text)
+    const r = cleanupLegacy({ tools: ['codex'], backupDir, plurDir, home, env: makeEnv() }).find(e => e.target === p)
+    expect(r?.status).toBe('refused')
+    expect(r?.backup).toBeUndefined()
+    expect(readFileSync(p, 'utf8')).toBe(text)
+  })
+})
+
