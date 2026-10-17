@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..e510c714 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -9871,7 +9871,7 @@ export class Plur {
+     // BLOCKS on a hit — no silent demote.
+     const ctx = this._engramContextFields(source)
+     const scanText = ctx ? `${source.statement}\n${JSON.stringify(ctx)}` : source.statement
+-    const offending = this._offendingHitsForScope(scanText, target)
++    const offending = this._offendingHitsForScope(scanText, source.scope)
+     if (offending.length > 0) {
+       const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
+       return {

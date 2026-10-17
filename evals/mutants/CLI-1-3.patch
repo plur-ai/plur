@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/hook-inject.ts b/packages/cli/src/commands/hook-inject.ts
+index 00f11dee..652c8e06 100644
+--- a/packages/cli/src/commands/hook-inject.ts
++++ b/packages/cli/src/commands/hook-inject.ts
+@@ -1128,7 +1128,7 @@ async function injectSession(
+     if (result.directives) parts.push(result.directives)
+     if (result.constraints) parts.push(result.constraints)
+     if (result.consider) parts.push(result.consider)
+-    context = parts.join('\n')
++    context = parts.join('\n').slice(0, 120)
+     count = result.count
+   }
+ 
