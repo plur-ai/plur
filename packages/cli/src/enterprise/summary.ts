@@ -89,8 +89,10 @@ export function formatSummary(r: EnterpriseInitResult): string[] {
       lines.push(
         '✗ Your account is not set up on the server yet (not synced). Ask your PLUR admin, or try again in 15 minutes.',
       )
+    } else if (r.failure?.step !== 'hello') {
+      // Any other failed save is named, unless the hello step failure below says it.
+      lines.push(`✗ Saves not confirmed: ${r.hello.saved.reason}`)
     }
-    // Generic save failures: no saves line shown
   }
 
   if (r.failure && r.failure.step === 'hello') {
@@ -110,7 +112,10 @@ export function formatSummary(r: EnterpriseInitResult): string[] {
     const label = TOOL_LABEL[tool.tool]
     const padded = label.padEnd(width)
     let msg: string
-    if (tool.status === 'wired' && tool.proven) {
+    if (tool.status === 'wired' && tool.version && !tool.version.ok) {
+      // The tool launches the wrong PLUR (or npx): not proven, whatever the recall said.
+      msg = `wired, but not proven: ${tool.version.detail}`
+    } else if (tool.status === 'wired' && tool.proven) {
       const extra = tool.tool === 'codex' ? ', then run /hooks and trust PLUR' : ''
       msg = `wired — restart ${label}${extra}`
     } else if (tool.status === 'wired' && !tool.proven) {

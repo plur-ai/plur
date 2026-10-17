@@ -267,4 +267,51 @@ describe('formatSummary', () => {
     expect(lines.some(l => l.startsWith('!'))).toBe(false)
     expect(lines.some(l => l.includes('nothing to check'))).toBe(false)
   })
+
+  it('a tool whose launch version check failed is not shown as plainly wired', () => {
+    const r: EnterpriseInitResult = {
+      ...freshMachine,
+      ok: false,
+      tools: [
+        {
+          tool: 'codex',
+          status: 'wired',
+          configPath: '/home/alice/.codex/config.toml',
+          proven: true,
+          version: { ok: false, reported: '0.21.5', detail: 'Codex launches PLUR 0.21.5, expected 0.22.0' },
+        },
+      ],
+      uploadCandidates: 0,
+    }
+    const lines = formatSummary(r)
+    expect(lines).toContain('• Codex  wired, but not proven: Codex launches PLUR 0.21.5, expected 0.22.0')
+    expect(lines.some(l => l.includes('wired — restart'))).toBe(false)
+  })
+
+  it('a failed hello save is named, with its reason', () => {
+    const r: EnterpriseInitResult = {
+      ok: false,
+      signIn: { username: 'alice', keyName: 'alice — ws-0142 (Windows)', reused: false },
+      hello: { saved: { ok: false, reason: 'queued on this device, not delivered to the server' }, perTool: [] },
+      tools: [],
+      writeCheck: [],
+      uploadCandidates: 0,
+    }
+    expect(formatSummary(r)).toContain('✗ Saves not confirmed: queued on this device, not delivered to the server')
+  })
+
+  it('a failed hello save is not named twice when the hello step failure says it', () => {
+    const r: EnterpriseInitResult = {
+      ok: false,
+      signIn: { username: 'alice', keyName: 'alice — ws-0142 (Windows)', reused: false },
+      hello: { saved: { ok: false, reason: 'did not start within 30000ms' }, perTool: [] },
+      tools: [],
+      writeCheck: [],
+      uploadCandidates: 0,
+      failure: { step: 'hello', message: 'The proof did not complete: did not start within 30000ms' },
+    }
+    const lines = formatSummary(r)
+    expect(lines.filter(l => l.startsWith('✗'))).toEqual(['✗ The proof did not complete: did not start within 30000ms'])
+  })
 })
+
