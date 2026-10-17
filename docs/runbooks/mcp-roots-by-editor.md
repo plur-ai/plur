@@ -38,9 +38,11 @@ Open a workspace with two folders (e.g. `/home/alice/project-a` and
 [plur] client <name> <version> roots=yes|no listChanged=yes|no
 ```
 
-Copy the `clientInfo` and `capabilities` fields from the logged line into
-the matching fixture file under `packages/mcp/test/fixtures/client-capabilities/`,
-set `"recorded"` to today's date, and change `"source"` to `"manual check"`.
+Update the matching fixture file under `packages/mcp/test/fixtures/client-capabilities/`
+from the logged line: `clientInfo.name` and `clientInfo.version` from `<name> <version>`
+(spaces in either are logged as `-`); `capabilities.roots` present when `roots=yes`
+(absent when `roots=no`), with `listChanged: true` when `listChanged=yes`. Set
+`"recorded"` to today's date and change `"source"` to `"manual check"`.
 
 ## Open items
 

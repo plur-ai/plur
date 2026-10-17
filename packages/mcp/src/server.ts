@@ -280,7 +280,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 
   // PLUR_LOG_CLIENT_INFO=1: log one line to stderr on initialize so a human
   // can record which capabilities each editor actually sends (#1635).
+  const priorOnInitialized = server.oninitialized
   server.oninitialized = () => {
+    priorOnInitialized?.()
     if (process.env.PLUR_LOG_CLIENT_INFO !== '1') return
     const caps = server.getClientCapabilities()
     const info = server.getClientVersion()

@@ -78,7 +78,12 @@ describe.skipIf(!existsSync(DIST_ENTRY))('PLUR_LOG_CLIENT_INFO', () => {
     for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
   })
 
-  it('PLUR_LOG_CLIENT_INFO=1 logs one client line on initialize', async () => {
+  /** Start the built server over stdio as `clientInfo`/`capabilities`; return its stderr after initialize. */
+  async function stderrAfterInitialize(
+    clientInfo: { name: string; version: string },
+    capabilities: Record<string, unknown>,
+    logClientInfo: boolean,
+  ): Promise<string> {
     const plurPath = mkdtempSync(join(tmpdir(), 'plur-b14-'))
     tmpDirs.push(plurPath)
     writeFileSync(join(plurPath, 'config.yaml'), 'embeddings:\n  enabled: false\n')
@@ -90,19 +95,38 @@ describe.skipIf(!existsSync(DIST_ENTRY))('PLUR_LOG_CLIENT_INFO', () => {
         ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
         ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
         PLUR_PATH: plurPath,
-        PLUR_LOG_CLIENT_INFO: '1',
+        ...(logClientInfo ? { PLUR_LOG_CLIENT_INFO: '1' } : {}),
       },
     })
     let stderrData = ''
     transport.stderr?.on('data', (d: Buffer) => { stderrData += d.toString() })
-    const client = new Client(
-      { name: 'test-editor', version: '9.9.9' },
-      { capabilities: { roots: { listChanged: true } } },
-    )
+    const client = new Client(clientInfo, { capabilities })
     clients.push(client)
     await client.connect(transport)
-    // Give the server a moment to write the stderr line after initialized notification
-    await new Promise(resolve => setTimeout(resolve, 300))
-    expect(stderrData).toMatch(/^\[plur\] client \S+ \S+ roots=(yes|no) listChanged=(yes|no)$/m)
+    // The line is written on the initialized notification, which connect()
+    // sends without waiting for; a round trip after it guarantees the server
+    // has processed it (stdio messages are handled in order).
+    await client.listTools()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    return stderrData
+  }
+
+  const clientLines = (stderr: string) => stderr.split('\n').filter(l => l.startsWith('[plur] client '))
+
+  it('PLUR_LOG_CLIENT_INFO=1 logs one client line on initialize', async () => {
+    const stderr = await stderrAfterInitialize({ name: 'test-editor', version: '9.9.9' }, { roots: { listChanged: true } }, true)
+    expect(stderr).toMatch(/^\[plur\] client \S+ \S+ roots=(yes|no) listChanged=(yes|no)$/m)
+    // Exactly one line, and it reports what this client actually declared.
+    expect(clientLines(stderr)).toEqual(['[plur] client test-editor 9.9.9 roots=yes listChanged=yes'])
+  }, 15_000)
+
+  it('a client without the roots capability is logged as roots=no listChanged=no', async () => {
+    const stderr = await stderrAfterInitialize({ name: 'plain editor', version: '1.2.3' }, {}, true)
+    expect(clientLines(stderr)).toEqual(['[plur] client plain-editor 1.2.3 roots=no listChanged=no'])
+  }, 15_000)
+
+  it('without PLUR_LOG_CLIENT_INFO=1 no client line is written', async () => {
+    const stderr = await stderrAfterInitialize({ name: 'test-editor', version: '9.9.9' }, { roots: {} }, false)
+    expect(clientLines(stderr)).toEqual([])
   }, 15_000)
 })
