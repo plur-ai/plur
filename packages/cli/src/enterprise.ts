@@ -13,7 +13,7 @@ Commands:
 
 Options for init:
   --server <url>          PLUR Enterprise server URL (required, or set PLUR_SERVER)
-  --expect-version <ver>  Expected @plur-ai/cli version on the server
+  --expect-version <ver>  PLUR version each tool must launch (default: this CLI's)
   --ca-file <path>        Path to company CA certificate
   --ca-sha256 <hex>       SHA-256 fingerprint of the company CA (64 hex chars)
   --proxy <url>           HTTPS proxy URL
