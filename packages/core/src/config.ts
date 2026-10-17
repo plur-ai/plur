@@ -3,7 +3,7 @@ import yaml from 'js-yaml'
 import { PlurConfigSchema, StoreEntrySchema, ServerStoreEntrySchema, type PlurConfig } from './schemas/config.js'
 import { SENSITIVITY_CATEGORIES } from './schemas/scope-metadata.js'
 import { logger } from './logger.js'
-import { isServerStoreEntry, expandServerEntry, EXPANDED_FROM } from './store-expand.js'
+import { isServerStoreEntry, expandServerEntry, EXPANDED_FROM, safeOrigin } from './store-expand.js'
 
 /**
  * Load config with per-entry tolerance for the `stores` array.
@@ -42,8 +42,10 @@ export function loadConfig(configPath: string): PlurConfig {
       if (isServerStoreEntry(entry)) {
         const serverParsed = ServerStoreEntrySchema.safeParse(entry)
         if (!serverParsed.success) {
-          const label = (entry as { url?: string })?.url ?? `index ${i}`
-          logger.warning(`[plur:config] dropping invalid server entry stores[${i}] (${label}) from ${configPath}: ${serverParsed.error.issues.map(it => it.message).join('; ')}`)
+          // Paths and codes only: a Zod message can embed the received value (#408).
+          const url = (entry as { url?: unknown })?.url
+          const label = typeof url === 'string' ? safeOrigin(url) : `index ${i}`
+          logger.warning(`[plur:config] dropping invalid server entry stores[${i}] (${label}) from ${configPath}: ${serverParsed.error.issues.map(it => `${it.path.join('.') || '(root)'}: ${it.code}`).join('; ')}`)
           continue
         }
         for (const expanded of expandServerEntry(serverParsed.data, i)) {
