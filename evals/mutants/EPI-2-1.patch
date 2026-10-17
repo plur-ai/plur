@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..5a9f9306 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -10519,7 +10519,7 @@ export class Plur {
+     }
+ 
+     // If not extract_only, save the candidates as actual engrams
+-    if (!options?.extract_only && candidates.length > 0) {
++    if (candidates.length > 0) {
+       // Sequential, not Promise.all: learn() serialises on the store lock
+       // anyway, and a fan-out here would just queue behind itself while making
+       // a partial failure harder to attribute to a candidate.

@@ -1,0 +1,12 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..5c3c8d40 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -2551,7 +2551,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
+       handler: async (args, plur) => {
+         const candidates = await plur.ingest(args.content as string, {
+           source: args.source as string | undefined,
+-          extract_only: args.extract_only as boolean | undefined,
+           scope: args.scope as string | undefined,
+           domain: args.domain as string | undefined,
+         })

@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/episodes.ts b/packages/core/src/episodes.ts
+index 88b6914a..2a1463df 100644
+--- a/packages/core/src/episodes.ts
++++ b/packages/core/src/episodes.ts
+@@ -56,7 +56,7 @@ export function captureEpisode(path: string, summary: string, context?: CaptureC
+ export function queryTimeline(path: string, query?: TimelineQuery): Episode[] {
+   let episodes = loadEpisodes(path)
+   if (query?.since) episodes = episodes.filter(e => new Date(e.timestamp) >= query.since!)
+-  if (query?.until) episodes = episodes.filter(e => new Date(e.timestamp) <= query.until!)
++  if (query?.until) episodes = episodes.filter(e => new Date(e.timestamp) >= query.until!)
+   if (query?.agent) episodes = episodes.filter(e => e.agent === query.agent)
+   if (query?.channel) episodes = episodes.filter(e => e.channel === query.channel)
+   if (query?.search) {
