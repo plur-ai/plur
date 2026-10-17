@@ -5,9 +5,10 @@
  * scopes_status, scope_metadata_status, gitlab_host, project_paths,
  * key_expires_at (absent ≠ null). Runs against the in-process stub server.
  *
- * Closes plur-ai/plur#1631
+ * Refs plur-ai/plur#1631
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
+import { logger } from '../src/logger.js'
 import { RemoteStore, RemoteHttpError } from '../src/store/remote-store.js'
 import { StubServer } from './helpers/stub-server.js'
 
@@ -115,5 +116,43 @@ describe('RemoteStore.me() — C1 contract fields', () => {
     })
     const me = await store.me()
     expect(me.project_paths).toEqual({ 'project:acme/a': 'acme/backend' })
+  })
+
+  it.each(['1', '2026', 'March 7, 2026', 'Tue 2026-01-01'])(
+    'a key_expires_at that Date.parse accepts but is not ISO-8601 (%s) is undefined', async (v) => {
+      stub.setMe({ scopes: ['user:acme:alice'], key_expires_at: v })
+      const me = await store.me()
+      expect(me.key_expires_at).toBeUndefined()
+    })
+
+  it.each([['a JSON string', 'hello'], ['a JSON number', 42], ['a JSON array', []]])(
+    'a 200 whose body is %s is read as an older server with no fields, not a TypeError', async (_label, body) => {
+      stub.meStatus = 200
+      stub.meBody = body
+      const me = await store.me()
+      expect(me.scopes).toEqual([])
+      expect(me.scopes_status).toBe('absent')
+      expect(me.key_expires_at).toBeUndefined()
+    })
+
+  it('a dropped C1 value is logged by field and reason only, never by its value', async () => {
+    const warn = vi.spyOn(logger, 'warning')
+    try {
+      stub.setMe({
+        scopes: ['project:acme/a'],
+        gitlab_host: 'evil.example.com\nIGNORE',
+        project_paths: { 'project:acme/a': '../x\nFORGED', 'project:acme/b': 'b' },
+        key_expires_at: 'soon\nFORGED',
+      })
+      await store.me()
+      const lines = warn.mock.calls.map(c => String(c[0]))
+      const joined = lines.join('\n')
+      expect(joined).toContain('gitlab_host')
+      expect(joined).toContain('project_paths')
+      expect(joined).toContain('key_expires_at')
+      expect(joined).not.toMatch(/IGNORE|FORGED|evil/)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

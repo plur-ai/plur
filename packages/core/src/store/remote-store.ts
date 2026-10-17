@@ -356,6 +356,8 @@ const HOST_RE = /^[a-z0-9.-]+(:\d{1,5})?$/
 /** Path grammar for server-supplied project paths (#426, #408).
  *  Each segment must start with a word char to prevent path traversal (e.g. `..`). */
 const PATH_RE = /^[\w][\w.-]*(\/[\w][\w.-]*)*$/
+/** ISO-8601 date or date-time. `Date.parse` alone also accepts '1', '2026' and 'March 7, 2026'. */
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?)?$/
 
 /**
  * The resolved fields returned by GET /api/v1/me (contract C1, #1631).
@@ -637,7 +639,12 @@ export class RemoteStore {
   async me(): Promise<MeResponse> {
     const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote /me failed: ${r.status} ${r.text}`)
-    const body = (r.json ?? {}) as Record<string, unknown>
+    // A 200 whose JSON body is not an object (a string, number, array or null) is
+    // read as an older server that sent no fields — never a TypeError from `in`.
+    const body = (r.json !== null && typeof r.json === 'object' && !Array.isArray(r.json)
+      ? r.json : {}) as Record<string, unknown>
+    // C1 values dropped at this boundary, as `field: reason` — never the value (#408).
+    const dropped: string[] = []
     // #1310: optional, additive. Older servers omit it → []. Same safe-grammar
     // filter as scope names: nothing malformed enters from a hostile remote.
     const capabilities = Array.isArray(body['capabilities'])
@@ -672,17 +679,22 @@ export class RemoteStore {
       rawGitlabHost === null ? null
       : typeof rawGitlabHost === 'string' && HOST_RE.test(rawGitlabHost) ? rawGitlabHost
       : undefined
+    if (rawGitlabHost !== undefined && gitlab_host === undefined) dropped.push('gitlab_host: invalid')
 
     // C1: project_paths — only entries whose key is in scopes AND whose value
     // passes the path grammar; an absent field yields {} (#1631, #426)
     const project_paths: Record<string, string> = {}
     const rawPaths = body['project_paths']
     if (rawPaths !== null && typeof rawPaths === 'object') {
+      let notGranted = 0
+      let badPath = 0
       for (const [k, v] of Object.entries(rawPaths as Record<string, unknown>)) {
-        if (scopes.includes(k) && typeof v === 'string' && PATH_RE.test(v)) {
-          project_paths[k] = v
-        }
+        if (!scopes.includes(k)) notGranted++
+        else if (typeof v !== 'string' || !PATH_RE.test(v)) badPath++
+        else project_paths[k] = v
       }
+      if (notGranted) dropped.push(`project_paths: ${notGranted} not-granted`)
+      if (badPath) dropped.push(`project_paths: ${badPath} invalid`)
     }
 
     // C1: key_expires_at — absent → undefined (unknown); null → null (no expiry);
@@ -691,8 +703,12 @@ export class RemoteStore {
     const key_expires_at: MeResponse['key_expires_at'] =
       !('key_expires_at' in body) ? undefined
       : rawKeyExpiry === null ? null
-      : typeof rawKeyExpiry === 'string' && !isNaN(Date.parse(rawKeyExpiry)) ? rawKeyExpiry
+      : typeof rawKeyExpiry === 'string' && ISO_8601_RE.test(rawKeyExpiry) && !isNaN(Date.parse(rawKeyExpiry)) ? rawKeyExpiry
       : undefined
+    if (rawKeyExpiry !== undefined && key_expires_at === undefined) dropped.push('key_expires_at: invalid')
+    if (dropped.length) {
+      logger.warning(`[plur:remote-store] ${this.url} sent /me fields that do not conform (${dropped.join('; ')}) — DROPPED (#426).`)
+    }
 
     return {
       username: typeof body['username'] === 'string' ? body['username'] : '',
