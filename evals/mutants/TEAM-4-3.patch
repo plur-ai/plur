@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..a547ac86 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -6863,7 +6863,7 @@ export class Plur {
+       const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
+       const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
+       const personalExact = personalEntry && dialable.includes(personalEntry) ? [personalEntry] : []
+-      const orgContext = orgAffine.length > 0 || projectImplicated
++      const orgContext = orgAffine.length > 0 || projectImplicated || (dialScope ?? '').startsWith('user:')
+       if (!orgContext && always.length === 0 && personalExact.length === 0) continue
+       const selected = new Set<StoreEntry>(orgAffine)
+       for (const e of personalExact) selected.add(e)
