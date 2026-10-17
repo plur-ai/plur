@@ -8,6 +8,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk } from './config.js'
+import { collapseExpandedStores, isServerStoreEntry, EXPANDED_FROM } from './store-expand.js'
 import { canonicalize } from './project-config.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
@@ -12697,7 +12698,21 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
       // A `token_env` entry keeps its reference and never the token it was
       // resolved to at load (#1561): the typed entries carry that value.
-      configData.stores = this.mergeStoresForWriteback(configData.stores, stores, opts?.serverSensitivityScopes)
+      //
+      // Collapse expanded per-scope entries back into their server entry (#1631):
+      // N in-memory entries with EXPANDED_FROM=i → one entry on disk at position i.
+      const rawArray = Array.isArray(configData.stores) ? (configData.stores as unknown[]) : []
+      const collapsedRaw = collapseExpandedStores(stores, rawArray)
+      // Build the stores list for mergeStoresForWriteback: collapsed server entries
+      // (each cast as a typed entry using their compat `scope`) plus any typed
+      // entries that were never expanded from a server entry.
+      const serverTyped = collapsedRaw
+        .filter(r => isServerStoreEntry(r))
+        .map(r => r as unknown as StoreEntry)
+      const nonExpandedTyped = stores.filter(
+        s => (s as unknown as Record<string, unknown>)[EXPANDED_FROM] === undefined,
+      )
+      configData.stores = this.mergeStoresForWriteback(collapsedRaw, [...serverTyped, ...nonExpandedTyped], opts?.serverSensitivityScopes)
         .map(e => storeEntryForDisk(e as unknown as Record<string, unknown>) as unknown as StoreEntry)
       // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
       // truncates in place, and loadConfig turns a parse failure into DEFAULT

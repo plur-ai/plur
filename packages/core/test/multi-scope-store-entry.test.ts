@@ -8,13 +8,14 @@
  * This file covers the LOAD path only. Writeback/collapse is tested in a
  * separate task (efi-b01w).
  */
-import { describe, it, expect, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { loadConfig } from '../src/config.js'
 import { StoreEntrySchema } from '../src/schemas/config.js'
+import { Plur, type RemoteScopeDiscovery } from '../src/index.js'
 
 const SERVER = `stores:
   - url: https://plur.example.com
@@ -113,5 +114,79 @@ describe('multi-scope server entry — backward compatibility guards', () => {
     const result = StoreEntrySchema.safeParse(raw.stores[0])
     expect(result.success).toBe(true)
     if (result.success) expect(result.data.scope).toBe('user:acme:alice')
+  })
+})
+
+describe('multi-scope server entry — writeback collapse', () => {
+  it('an empty scopes list loads as zero entries and is not dropped from disk on writeback', () => {
+    const p = write(`stores:\n  - url: https://plur.example.com\n    token: t\n    enterprise: {}\n    scopes: []\n`)
+    const plur = new Plur({ path: dirname(p) })
+    plur.addStore('', 'group:other/x', { url: 'https://other.example.com', token: 'o' })
+    const raw = yaml.load(readFileSync(p, 'utf8')) as any
+    expect(raw.stores[0]).toMatchObject({ url: 'https://plur.example.com', enterprise: {}, scopes: [] })
+    expect(raw.stores[0].scope).toBeUndefined()
+    expect(raw.stores).toHaveLength(2)
+  })
+
+  it('writeback keeps one server entry, never N per-scope entries', () => {
+    const p = write(SERVER)
+    const plur = new Plur({ path: dirname(p) })
+    // persistScopeMetadata triggers persistStores with the expanded entries
+    const discovery: RemoteScopeDiscovery = {
+      url: 'https://plur.example.com', ok: true,
+      authorized: ['project:acme/team/backend'], registered: ['project:acme/team/backend'], unregistered: [],
+      metadata: [{ scope: 'project:acme/team/backend', description: 'Backend', covers: ['acme.backend'] }],
+    }
+    plur.persistScopeMetadata([discovery])
+    const raw = yaml.load(readFileSync(p, 'utf8')) as any
+    expect(raw.stores).toHaveLength(1)
+    expect(raw.stores[0].scopes).toEqual(['user:acme:alice', 'group:acme/team', 'project:acme/team/backend'])
+    expect(raw.stores[0]).not.toHaveProperty('_expanded_from')
+  })
+
+  it('C6: scope, enterprise.hello_engram_id and discovery survive a load and a writeback', () => {
+    const p = write(SERVER)
+    const plur = new Plur({ path: dirname(p) })
+    plur.addStore('', 'group:other/x', { url: 'https://other.example.com', token: 'o' })
+    const raw = yaml.load(readFileSync(p, 'utf8')) as any
+    const srv = raw.stores[0]
+    expect(srv.scope).toBe('user:acme:alice')
+    expect(srv.enterprise?.hello_engram_id).toBe('ENG-1')
+    expect(srv.discovery).toMatchObject({
+      discovered_at: '2026-10-16T12:00:00Z',
+      scopes_status: 'ok',
+      gitlab_host: 'gitlab.example.com',
+    })
+  })
+
+  it('a per-scope metadata update lands in scope_settings', () => {
+    const p = write(SERVER)
+    const plur = new Plur({ path: dirname(p) })
+    const discovery: RemoteScopeDiscovery = {
+      url: 'https://plur.example.com', ok: true,
+      authorized: ['project:acme/team/backend'], registered: ['project:acme/team/backend'], unregistered: [],
+      metadata: [{ scope: 'project:acme/team/backend', description: '', covers: ['acme.backend'] }],
+    }
+    plur.persistScopeMetadata([discovery])
+    const raw = yaml.load(readFileSync(p, 'utf8')) as any
+    expect(raw.stores[0].scope_settings?.['project:acme/team/backend']?.covers).toEqual(['acme.backend'])
+    // Existing scope_settings for group:acme/team must be preserved too
+    expect(raw.stores[0].scope_settings?.['group:acme/team']?.covers).toEqual(['acme.team'])
+  })
+
+  it('token_env on a server entry is never written back as a resolved token', () => {
+    process.env.ALICE_KEY = 't-from-env'
+    try {
+      const p = write(
+        `stores:\n  - url: https://plur.example.com\n    token_env: ALICE_KEY\n    scopes: ["user:acme:alice", "group:acme/team"]\n`,
+      )
+      const plur = new Plur({ path: dirname(p) })
+      plur.addStore('', 'group:other/x', { url: 'https://other.example.com', token: 'o' })
+      const raw = yaml.load(readFileSync(p, 'utf8')) as any
+      expect(raw.stores[0].token_env).toBe('ALICE_KEY')
+      expect(raw.stores[0].token).toBeUndefined()
+    } finally {
+      delete process.env.ALICE_KEY
+    }
   })
 })

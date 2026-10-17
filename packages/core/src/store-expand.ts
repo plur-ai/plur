@@ -67,14 +67,82 @@ export function expandServerEntry(entry: ServerStoreEntry, rawIndex: number): St
   return results
 }
 
+// Per-scope metadata fields managed by the collapse step.
+const SCOPE_META_KEYS = ['dial', 'description', 'covers', 'sensitivity'] as const
+
 /**
  * Collapse expanded per-scope entries back into the original server entries
  * before writing to disk.
  *
- * STUB — implemented in efi-b01w (B1-writeback). Until then, persistStores
- * falls through to mergeStoresForWriteback, which writes per-scope entries;
- * this stub exists to satisfy the public interface.
+ * Typed entries carrying `EXPANDED_FROM = i` are collected per raw index.
+ * For each server entry at position i in rawStores, the per-scope metadata
+ * fields (dial, description, covers, sensitivity) from the corresponding
+ * typed entries are folded into `scope_settings[scope]`; all other fields
+ * on the raw entry (scope, scopes, pinned_scopes, discovery, enterprise,
+ * url, token, token_env, readonly) are left byte-identical.
+ *
+ * Returns a new rawStores array of the same length where server entry
+ * positions carry the updated collapsed entry and non-server positions are
+ * unchanged.
  */
 export function collapseExpandedStores(typed: StoreEntry[], rawStores: unknown[]): unknown[] {
-  return rawStores
+  if (!Array.isArray(rawStores) || !rawStores.length) return rawStores
+
+  // Group typed entries by their EXPANDED_FROM raw index.
+  const expandedByIndex = new Map<number, StoreEntry[]>()
+  for (const entry of typed) {
+    const idx = (entry as unknown as Record<string, unknown>)[EXPANDED_FROM]
+    if (typeof idx === 'number') {
+      const arr = expandedByIndex.get(idx)
+      if (arr) arr.push(entry)
+      else expandedByIndex.set(idx, [entry])
+    }
+  }
+
+  if (!expandedByIndex.size) return rawStores
+
+  return rawStores.map((raw, i) => {
+    if (!isServerStoreEntry(raw)) return raw
+    const entries = expandedByIndex.get(i)
+    if (!entries?.length) return raw  // server entry with scopes: [] — no typed entries to process
+
+    const rawObj = raw as Record<string, unknown>
+
+    // Build updated scope_settings by folding per-scope fields from typed entries.
+    // Start from the existing raw scope_settings so unknown fields are preserved.
+    const existingSettings = rawObj.scope_settings
+    const rawScopeSettings: Record<string, unknown> =
+      existingSettings && typeof existingSettings === 'object' && !Array.isArray(existingSettings)
+        ? { ...(existingSettings as Record<string, unknown>) }
+        : {}
+
+    for (const te of entries) {
+      const existing = rawScopeSettings[te.scope]
+      const perScope: Record<string, unknown> =
+        existing && typeof existing === 'object' && !Array.isArray(existing)
+          ? { ...(existing as Record<string, unknown>) }
+          : {}
+
+      for (const key of SCOPE_META_KEYS) {
+        const v = (te as unknown as Record<string, unknown>)[key]
+        if (v !== undefined) perScope[key] = v
+        // absent = keep whatever was in the raw scope_settings
+      }
+
+      if (Object.keys(perScope).length > 0) {
+        rawScopeSettings[te.scope] = perScope
+      } else {
+        delete rawScopeSettings[te.scope]
+      }
+    }
+
+    const collapsed: Record<string, unknown> = { ...rawObj }
+    if (Object.keys(rawScopeSettings).length > 0) {
+      collapsed.scope_settings = rawScopeSettings
+    } else {
+      delete collapsed.scope_settings
+    }
+
+    return collapsed
+  })
 }
