@@ -49,6 +49,7 @@ import { rankScopes, decideAutoRoute, SCOPE_MATCH_THRESHOLD, type ScopeSignals, 
 import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
 import { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
+import { resolveScopeTarget, urlGroupsForScope, ScopeConflictError } from './store-resolver.js'
 import { orderBySupersedes } from './outbox-order.js'
 import { loadTensions, loadTensionsWithQuarantine, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
@@ -274,6 +275,7 @@ import type { Receipt } from './receipt.js'
 import { gatherReceipt } from './receipt-io.js'
 export { computeContentHash, normalizeStatement, isHashable } from './content-hash.js'
 export { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
+export { resolveScopeTarget, ScopeConflictError, type ScopeTarget } from './store-resolver.js'
 export { orderBySupersedes } from './outbox-order.js'
 export {
   classifyOutboxFailure, summarizeOutbox, describeNeedsAction, describeHeld, statusFromErrorText, OUTBOX_CLAIM_ERROR_PREFIX,
@@ -2382,22 +2384,25 @@ export class Plur {
    * scope. Keeps routing predictable and prevents accidental cross-team writes.
    */
   private _resolveRemoteStoreForScope(scope: string): RemoteStore | null {
-    // A personal scope routes through the ONE selected entry (#1515 L1): when
-    // a local path store shares the exact scope, the write stays local.
-    const personal = this._exactPersonalStore(scope)
-    if (personal !== undefined) {
-      return personal?.url && personal.readonly !== true
-        ? this._getRemoteDriver({ url: personal.url, token: personal.token, scope: personal.scope })
-        : null
-    }
-    const stores = this.config.stores ?? []
-    for (const entry of stores) {
-      if (!entry.url) continue
-      if (entry.readonly === true) continue
-      if (entry.scope !== scope) continue
-      return this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
-    }
-    return null
+    // One resolver for routing and the leak guard (#1631). A personal scope
+    // routes through the ONE selected entry (#1515 L1): when a local path
+    // store shares the exact scope, the write stays local. A scope two
+    // servers claim is refused, never sent to whichever is listed first.
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers)
+    if (target.kind !== 'remote' || !target.writable) return null
+    const { entry } = target
+    return this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
+  }
+
+  /**
+   * Refuse a write to a scope two servers claim (#1631), BEFORE anything is
+   * saved: learn()'s dedup can record a recurrence before it reaches the
+   * router, so the router's own throw would come too late there.
+   */
+  private _refuseScopeConflict(scope: string): void {
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers)
   }
 
   /**
@@ -2418,9 +2423,9 @@ export class Plur {
    * {@link _isRemoteWriteScope}.
    */
   private _isRemoteBackedScope(scope: string): boolean {
-    const personal = this._exactPersonalStore(scope)
-    if (personal !== undefined) return !!personal?.url
-    return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
+    // Fail-safe (#1631): a scope two servers claim, or one under a company
+    // server's org that it has not granted, counts as remote-backed too.
+    return resolveScopeTarget(scope, this.config.stores ?? []).kind !== 'local'
   }
 
   /**
@@ -2433,15 +2438,14 @@ export class Plur {
    * only demote a write that would have stayed local; it never lets one out.
    */
   private _hasUrlStoreForScope(scope: string): boolean {
-    return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
+    return urlGroupsForScope(scope, this.config.stores ?? []).length > 0
   }
 
   /** Exactly the router's rule (`_resolveRemoteStoreForScope`): a writable URL
    *  store for exactly this scope, so a write to it leaves the machine. */
   private _isRemoteWriteScope(scope: string): boolean {
-    const personal = this._exactPersonalStore(scope)
-    if (personal !== undefined) return !!personal?.url && personal.readonly !== true
-    return (this.config.stores ?? []).some(s => !!s.url && s.readonly !== true && s.scope === scope)
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    return target.kind === 'remote' && target.writable
   }
 
   /**
@@ -4396,6 +4400,7 @@ export class Plur {
     this._assertWritable()
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
+    this._refuseScopeConflict(guarded.scope)
     context = guarded.context
     // #347: resolve the validity window up-front (pure) so malformed
     // valid_from/valid_until fail fast — even when the write would dedup
@@ -4894,6 +4899,7 @@ export class Plur {
     statement = this._validateLearnInput('learnRouted', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     const scope = guarded.scope
+    this._refuseScopeConflict(scope)
     context = guarded.context
     // #347: fail fast on malformed valid_from/valid_until (pure validation),
     // mirroring learn() — before dedup can short-circuit the write.
@@ -5176,7 +5182,14 @@ export class Plur {
     if (delivery !== 'local' || !isSharedScope(engram.scope)) return { delivery }
 
     const scope = engram.scope
-    const urlStores = stores.filter(s => !!s.url && s.scope === scope)
+    const target = resolveScopeTarget(scope, stores)
+    if (target.kind === 'unauthorized') {
+      return {
+        delivery,
+        warning: `Scope "${scope}" is not granted to you on ${target.server}; this engram was saved on this machine only.`,
+      }
+    }
+    const urlStores = urlGroupsForScope(scope, stores).flat()
     let why: string
     // `visibility` defaults to 'private' on every engram, so it cannot tell an
     // explicitly private write apart here; the store config can.
@@ -5260,7 +5273,9 @@ export class Plur {
   }
 
   readIdFor(engram: { id: string; scope: string }): string {
-    if (!this._isRemoteBackedScope(engram.scope)) return engram.id
+    // Only a scope a server actually holds: a conflict or an ungranted scope
+    // keeps its engram on this machine, under its local id (#1631).
+    if (resolveScopeTarget(engram.scope, this.config.stores ?? []).kind !== 'remote') return engram.id
     return namespaceEngramId(engram.id, engram.scope)
   }
 
@@ -10812,7 +10827,7 @@ export class Plur {
 
   /** A url store accepting writes for exactly this scope — the flush's own lookup. */
   private _hasWritableStoreFor(scope: string): boolean {
-    return (this.config.stores ?? []).some(s => s.url && s.scope === scope && !s.readonly)
+    return urlGroupsForScope(scope, this.config.stores ?? []).some(g => g.some(s => !s.readonly))
   }
 
   /**
