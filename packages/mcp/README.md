@@ -6,7 +6,7 @@ Part of [PLUR](https://plur.ai) — where, in our tool-routing and local-knowled
 
 ## Setup
 
-Requires Node.js 20 or newer. For Claude Code, Cursor, Codex and OpenCode, install the CLI and MCP server together:
+Requires Node.js 22 or newer. For Claude Code, Cursor, Codex and OpenCode, install the CLI and MCP server together:
 
 ```bash
 npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest

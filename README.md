@@ -572,7 +572,7 @@ longer selected automatically.
 
 ## Requirements
 
-- **Node.js 18+**
+- **Node.js 22+** (22.21+ or 24+ behind an HTTPS proxy, with `NODE_USE_ENV_PROXY=1`)
 - **2GB RAM minimum** — the embedding model (ONNX runtime) needs ~1GB for installation. On servers with less RAM, embeddings are skipped and search falls back to BM25 keyword matching.
 
 ## Development
