@@ -1,9 +1,9 @@
 import { X509Certificate, createHash } from 'crypto'
-import { chmodSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { closeSync, fchmodSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import * as tls from 'tls'
-import { atomicWrite } from '@plur-ai/core'
 import type { ExecFn } from './exec.js'
+import { currentWindowsAccount, protectOwnerOnlyWindows, type OwnerOnlyExec } from './owner-only.js'
 
 /**
  * The company CA, accepted only by its pinned fingerprint (#1638).
@@ -79,20 +79,20 @@ const WIN32_EXPORT_SCRIPT =
 
 const WIN32_POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-']
 
-/** A Windows folder we accept from SystemRoot: a plain `X:\\…` path with no `..`, quotes or separators. */
-const WIN_DRIVE_PATH = /^[A-Za-z]:\\[A-Za-z0-9 _().\\-]*$/
+/** The only SystemRoot we accept: `<drive>:\\Windows`, the folder Windows installs into on every drive. */
+const WIN_SYSTEM_ROOT = /^[A-Za-z]:\\Windows$/i
 
 /**
- * Windows PowerShell 5.1 by absolute path. Never the bare name: Windows
- * process creation looks in the current folder before PATH, so a
+ * Windows PowerShell 5.1 by absolute path, or null. Never the bare name:
+ * Windows process creation looks in the current folder before PATH, so a
  * `powershell.exe` planted in whatever folder `init` runs from would run
- * instead. SystemRoot is used only when it is a plain drive path.
+ * instead. A SystemRoot that is not `<drive>:\\Windows` (unset, a share, a
+ * user folder) runs nothing: the store is then simply not searched.
  */
-export function win32PowerShellPath(env: NodeJS.ProcessEnv): string {
+export function win32PowerShellPath(env: NodeJS.ProcessEnv): string | null {
   const root = env.SystemRoot
-  const ok = typeof root === 'string' && WIN_DRIVE_PATH.test(root) && !root.split('\\').includes('..')
-  const base = (ok ? root : 'C:\\Windows').replace(/\\+$/, '')
-  return `${base}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+  if (typeof root !== 'string' || !WIN_SYSTEM_ROOT.test(root)) return null
+  return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
 }
 
 /** macOS `security`, by absolute path (never looked up on PATH). */
@@ -127,7 +127,8 @@ export function systemCaSources(platform: NodeJS.Platform, exec: ExecFn, deps: C
   } else if (platform === 'darwin') {
     attempt(() => exec(DARWIN_SECURITY, ['find-certificate', '-a', '-p', ...DARWIN_KEYCHAINS], { timeoutMs: STORE_TIMEOUT_MS }).stdout)
   } else if (platform === 'win32') {
-    attempt(() => exec(win32PowerShellPath(deps.env ?? process.env), WIN32_POWERSHELL_ARGS, { input: WIN32_EXPORT_SCRIPT, timeoutMs: STORE_TIMEOUT_MS }).stdout)
+    const powershell = win32PowerShellPath(deps.env ?? process.env)
+    if (powershell) attempt(() => exec(powershell, WIN32_POWERSHELL_ARGS, { input: WIN32_EXPORT_SCRIPT, timeoutMs: STORE_TIMEOUT_MS }).stdout)
   }
   return sources
 }
@@ -156,7 +157,7 @@ export function findCompanyCa(sha256: string, sources: string[]): { pem: string;
 
 export type InstallCaResult =
   | { ok: true; path: string; subject: string }
-  | { ok: false; reason: 'not-found' | 'mismatch' | 'invalid-fingerprint' }
+  | { ok: false; reason: 'not-found' | 'mismatch' | 'invalid-fingerprint' | 'unprotected' }
 
 /**
  * Find the pinned CA and write it alone to `<plurDir>/company-ca.pem`.
@@ -165,6 +166,11 @@ export type InstallCaResult =
  * trusted: if it holds no certificate with the pinned fingerprint the result is
  * `mismatch` and the system stores are NOT searched — the script said where the
  * CA is, and a different answer elsewhere is not what it found.
+ *
+ * The file is owner-only before it holds a byte or sits at its final name
+ * (0600 on Unix; on Windows an icacls list naming only this account, read
+ * back and verified). When that cannot be established the result is
+ * `unprotected` and nothing is written.
  */
 export function installCompanyCa(opts: {
   sha256: string
@@ -175,6 +181,10 @@ export function installCompanyCa(opts: {
   systemCertificates?: () => string[]
   readFile?: (path: string) => string
   env?: NodeJS.ProcessEnv
+  /** win32: the account the file is restricted to (default: from USERNAME/USERDOMAIN). */
+  account?: string | null
+  /** win32: runs icacls (tests pass a fake). */
+  aclExec?: OwnerOnlyExec
 }): InstallCaResult {
   if (!CA_SHA256_RE.test(opts.sha256)) return { ok: false, reason: 'invalid-fingerprint' }
   let found: { pem: string; subject: string } | null
@@ -196,11 +206,53 @@ export function installCompanyCa(opts: {
     if (!found) return { ok: false, reason: 'not-found' }
   }
   const path = join(opts.plurDir, COMPANY_CA_FILE)
-  // Atomic, so a reader never sees a half-written file. Owner-only: the
-  // certificate is public, but only this account may read or replace the file
-  // every PLUR launch adds to its trust. atomicWrite keeps an existing file's
-  // mode, so a wider earlier copy is tightened explicitly.
-  atomicWrite(path, found.pem.endsWith('\n') ? found.pem : `${found.pem}\n`, { mode: CA_FILE_MODE })
-  if (process.platform !== 'win32') chmodSync(path, CA_FILE_MODE)
+  const content = found.pem.endsWith('\n') ? found.pem : `${found.pem}\n`
+  try {
+    writeOwnerOnly(path, content, {
+      platform: opts.platform,
+      account: opts.account !== undefined ? opts.account : currentWindowsAccount(opts.env ?? process.env),
+      aclExec: opts.aclExec,
+    })
+  } catch {
+    return { ok: false, reason: 'unprotected' }
+  }
   return { ok: true, path, subject: found.subject }
+}
+
+let tmpCounter = 0
+
+/**
+ * Write `content` to `path` so that it is owner-only from its first byte and
+ * replaces the old file in one rename: an exclusive temp file (never through a
+ * planted file or link), protected and checked while still empty, filled,
+ * synced, then renamed. Any failure removes the temp file and throws; the
+ * destination is then exactly as it was.
+ */
+function writeOwnerOnly(
+  path: string,
+  content: string,
+  o: { platform: NodeJS.Platform; account: string | null; aclExec?: OwnerOnlyExec },
+): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  const tmp = `${path}.${process.pid}.${Date.now()}.${tmpCounter++}.tmp`
+  const fd = openSync(tmp, 'wx', CA_FILE_MODE)
+  let closed = false
+  try {
+    if (o.platform === 'win32') {
+      const r = protectOwnerOnlyWindows(tmp, { directory: false, account: o.account, exec: o.aclExec })
+      if (!r.ok) throw new Error(r.detail)
+    } else {
+      fchmodSync(fd, CA_FILE_MODE)
+      if ((fstatSync(fd).mode & 0o077) !== 0) throw new Error('not owner-only')
+    }
+    writeFileSync(fd, content)
+    fsyncSync(fd)
+    closeSync(fd)
+    closed = true
+    renameSync(tmp, path)
+  } catch (err) {
+    if (!closed) try { closeSync(fd) } catch { /* already closed */ }
+    try { unlinkSync(tmp) } catch { /* already gone */ }
+    throw err
+  }
 }

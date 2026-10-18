@@ -42,12 +42,25 @@ export function resolveProxy(opts: { flag?: string; env: NodeJS.ProcessEnv }): P
   return out
 }
 
-/** A proxy address carries credentials when it has userinfo: anything before an `@` in its authority. */
+/**
+ * A proxy address carries credentials when it could hold userinfo. Any `@`
+ * counts (a proxy address is scheme, host and port; it has no use for one),
+ * and so does a user name or password as Node's own URL parser reads it.
+ * Checking a hand-split authority alone missed what the URL parser accepts:
+ * leading spaces, tabs, extra or back slashes.
+ */
 function carriesCredentials(proxy: string): boolean {
-  const afterScheme = proxy.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
-  const authority = afterScheme.split(/[/?#]/, 1)[0]
-  return authority.includes('@')
+  if (proxy.includes('@')) return true
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(proxy) ? proxy : `http://${proxy}`)
+    return u.username !== '' || u.password !== ''
+  } catch {
+    return false
+  }
 }
+
+/** Whitespace or a control character: never part of a proxy address, and a way to hide one from a check. */
+const BAD_PROXY_CHAR = /[\s\x00-\x1f\x7f]/
 
 function checkValue(name: string, value: string): void {
   if (/[\r\n\0]/.test(value)) {
@@ -67,6 +80,9 @@ export function buildToolMcpEnv(opts: { caPath?: string; proxy: ProxySettings })
   const env: Partial<Record<ToolEnvKey, string>> = {}
   const { caPath, proxy } = opts
   for (const [name, value] of [['HTTPS_PROXY', proxy.https], ['HTTP_PROXY', proxy.http]] as const) {
+    if (value && BAD_PROXY_CHAR.test(value)) {
+      throw new LaunchEnvError(`${name} contains whitespace or a control character and cannot be written into a tool config.`)
+    }
     if (value && carriesCredentials(value)) {
       throw new LaunchEnvError(
         `${name} names a proxy with a user name or password. PLUR does not write credentials into editor configs; ` +

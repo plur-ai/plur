@@ -35,6 +35,12 @@ describe('createExec', () => {
     expect(r).toEqual({ status: EXEC_START_FAILED_STATUS, stdout: '' })
   })
 
+  it('arguments spawnSync rejects before starting are a start failure, never a throw', () => {
+    expect(exec('node\0', [])).toEqual({ status: EXEC_START_FAILED_STATUS, stdout: '' })
+    expect(exec(node, ['a\0b'])).toEqual({ status: EXEC_START_FAILED_STATUS, stdout: '' })
+    expect(exec(node, ['-e', '1'], { timeoutMs: -1 })).toEqual({ status: EXEC_START_FAILED_STATUS, stdout: '' })
+  })
+
   it('a non-zero exit is reported as is', () => {
     expect(exec(node, ['-e', 'process.exit(3)']).status).toBe(3)
   })

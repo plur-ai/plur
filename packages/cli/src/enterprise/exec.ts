@@ -39,17 +39,24 @@ export function createExec(platform: NodeJS.Platform = process.platform): ExecFn
     if (platform === 'win32' && WINDOWS_BATCH.test(cmd)) {
       return { status: EXEC_REFUSED_STATUS, stdout: '' }
     }
-    const r = spawnSync(cmd, args, {
-      encoding: 'utf8',
-      shell: false,
-      windowsHide: true,
-      env: opts.env,
-      timeout: opts.timeoutMs,
-      input: opts.input,
-      stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
-      // A Windows or macOS certificate export runs to a few MB.
-      maxBuffer: 64 * 1024 * 1024,
-    })
+    let r: ReturnType<typeof spawnSync>
+    try {
+      r = spawnSync(cmd, args, {
+        encoding: 'utf8',
+        shell: false,
+        windowsHide: true,
+        env: opts.env,
+        timeout: opts.timeoutMs,
+        input: opts.input,
+        stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
+        // A Windows or macOS certificate export runs to a few MB.
+        maxBuffer: 64 * 1024 * 1024,
+      })
+    } catch {
+      // Rejected before anything started (a NUL in an argument, a bad
+      // option): a start failure, never a throw past the adapter.
+      return { status: EXEC_START_FAILED_STATUS, stdout: '' }
+    }
     const stdout = typeof r.stdout === 'string' ? r.stdout : ''
     const code = (r.error as NodeJS.ErrnoException | undefined)?.code
     if (code === 'ETIMEDOUT') return { status: EXEC_TIMEOUT_STATUS, stdout }

@@ -77,6 +77,28 @@ describe('buildToolMcpEnv', () => {
     }
   })
 
+  it('credentials hidden from a naive authority split are still refused (whitespace, tabs, extra slashes)', () => {
+    for (const https of [
+      ' http://alice:s3cret@proxy.example.com:3128',
+      'http://alice:s3cret@proxy.example.com:3128 ',
+      'http://ali\tce:s3cret@proxy.example.com:3128',
+      'http:///alice:s3cret@proxy.example.com:3128',
+      'http:\\\\alice:s3cret@proxy.example.com:3128',
+      'http://proxy.example.com:3128/@x',
+      'HTTP://alice:s3cret@proxy.example.com',
+    ]) {
+      let err: unknown
+      try { buildToolMcpEnv({ proxy: { https } }) } catch (e) { err = e }
+      expect(err, https).toBeInstanceOf(LaunchEnvError)
+      expect(String((err as Error).message)).not.toContain('s3cret')
+    }
+  })
+
+  it('a plain proxy address is written as given', () => {
+    expect(buildToolMcpEnv({ proxy: { https: 'http://proxy.example.com:3128', http: 'proxy.example.com:8080' } }))
+      .toEqual({ HTTPS_PROXY: 'http://proxy.example.com:3128', HTTP_PROXY: 'proxy.example.com:8080', NODE_USE_ENV_PROXY: '1' })
+  })
+
   it('a value with a line break is refused (it would inject a second setting into a config file)', () => {
     expect(() => buildToolMcpEnv({ caPath: '/c.pem\nNODE_TLS_REJECT_UNAUTHORIZED=0', proxy: {} })).toThrow(LaunchEnvError)
     expect(() => buildToolMcpEnv({ proxy: { noProxy: 'a\r\nb' } })).toThrow(LaunchEnvError)
