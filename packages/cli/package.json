@@ -3,7 +3,8 @@
   "version": "0.21.5",
   "type": "module",
   "bin": {
-    "plur": "dist/index.js"
+    "plur": "dist/index.js",
+    "plur-enterprise": "dist/enterprise.js"
   },
   "main": "dist/index.js",
   "files": [
@@ -35,7 +36,7 @@
     }
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "Apache-2.0",
   "description": "PLUR CLI — persistent memory for AI agents from the command line",

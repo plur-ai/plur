@@ -10,3 +10,8 @@ Scope: the outbox as merged on main by #1277 and carried into #1228 under owner 
 - §8 (#1299): a needs_action entry is only skipped, never dropped or rescoped (`held_untouched`, `kept_only_bookkeeping`, `verdict_only_skips`, `force_dials_needs_action`).
 
 Cross-process exclusion of pushers: `WritePath.lean` §1c (`claimed_at_most_once_across_processes`).
+
+## Drift review, #1631 (2026-10-18)
+
+§8b, updated: `routeFor` holds an entry whose target scope two servers claim. The hold comes before `heldBack`, so `force` does not lift it. Theorems: `conflict_untouched`, `conflict_never_delivered`, `keptC_only_bookkeeping`, `flushEntryC_off_conflict`, `force_delivers_unconflicted`. Replay: `routing-shared-resolver.test.ts`, the forced-flush conflict case. It passes.
+Mutation check: with the conflict branch removed, or with `conflict && !force`, `conflict_untouched` and `conflict_never_delivered` fail. Summary: `findings/drift-2026-10-18.md`.

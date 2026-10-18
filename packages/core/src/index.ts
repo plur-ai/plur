@@ -7,8 +7,11 @@ import { collapseLineTerminators } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
-import { loadConfig, storeEntryForDisk } from './config.js'
+import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
+import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope } from './store-expand.js'
+import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
+import { acceptDiscoveredScopes, type DiscoveryStatus, type ScopeRejection } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
@@ -48,6 +51,7 @@ import { rankScopes, decideAutoRoute, SCOPE_MATCH_THRESHOLD, type ScopeSignals, 
 import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
 import { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
+import { resolveScopeTarget, urlGroupsForScope, ScopeConflictError } from './store-resolver.js'
 import { orderBySupersedes } from './outbox-order.js'
 import { loadTensions, loadTensionsWithQuarantine, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
@@ -57,6 +61,7 @@ import { resolveValidity, buildTemporal, normalizeIsoDate, type ResolvedValidity
 import { isCurrentlyValid } from './validity.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
+import type { MeResponse } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
 import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
@@ -273,6 +278,7 @@ import type { Receipt } from './receipt.js'
 import { gatherReceipt } from './receipt-io.js'
 export { computeContentHash, normalizeStatement, isHashable } from './content-hash.js'
 export { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from './scope-target.js'
+export { resolveScopeTarget, ScopeConflictError, type ScopeTarget } from './store-resolver.js'
 export { orderBySupersedes } from './outbox-order.js'
 export {
   classifyOutboxFailure, summarizeOutbox, describeNeedsAction, describeHeld, statusFromErrorText, OUTBOX_CLAIM_ERROR_PREFIX,
@@ -623,6 +629,26 @@ export interface RemoteScopeDiscovery {
    */
   metadata: ScopeMetadata[]
   /** Present when `ok` is false. */
+  error?: string
+}
+
+export { acceptDiscoveredScopes } from './server-discovery.js'
+export type { DiscoveryStatus, ScopeRejection, AcceptedDiscovery } from './server-discovery.js'
+
+/**
+ * Result of {@link Plur.refreshServerScopes} for one server entry (#1631).
+ * `applied` is true when the answer replaced the cached `scopes` list.
+ */
+export interface ServerDiscoveryOutcome {
+  url: string
+  status: DiscoveryStatus
+  applied: boolean
+  /** The accepted list when `applied`, otherwise the cached list kept. */
+  scopes: string[]
+  rejected: ScopeRejection[]
+  /** `pinned_scopes` the server's list does not name (they stay registered). */
+  pinned_unlisted: string[]
+  username?: string
   error?: string
 }
 
@@ -1171,6 +1197,93 @@ export const DEFAULT_REMOTE_WRITE_TIMEOUT_MS = 10_000
 
 /** Refusal from {@link Plur.addRemoteStore} (#1265). `code` is stable for
  *  callers; `message` never contains the token. */
+/** True for an in-memory entry expanded from a multi-scope server entry (#1631). */
+function isFromServerEntry(entry: StoreEntry): boolean {
+  return typeof serverEntryIdOf(entry) === 'string'
+}
+
+/** The identity of the server entry an in-memory entry was expanded from (#1631). */
+function serverEntryIdOf(entry: StoreEntry): string | undefined {
+  const id = (entry as unknown as Record<string, unknown>)[EXPANDED_FROM]
+  return typeof id === 'string' ? id : undefined
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+/** The string members of a raw YAML list value ([] for anything else). */
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+}
+
+/** A raw config entry that {@link Plur.refreshServerScopes} may update (C6):
+ *  an http(s) `url`, a `scopes` list and an `enterprise` block. */
+function isEnterpriseServerEntry(raw: unknown): raw is Record<string, unknown> & { url: string } {
+  return isPlainObject(raw) && typeof raw.url === 'string' && Array.isArray(raw.scopes) && isPlainObject(raw.enterprise)
+}
+
+/** scope → url for every remote entry whose normalized url is not `exceptUrl`:
+ *  the scopes another server already serves (#1631). */
+function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const r of rawStores) {
+    if (!isPlainObject(r) || typeof r.url !== 'string' || normalizeEndpointUrl(r.url) === exceptUrl) continue
+    const scopes = [...stringList(r.scopes), ...stringList(r.pinned_scopes), ...(typeof r.scope === 'string' ? [r.scope] : [])]
+    for (const sc of scopes) if (!out.has(sc)) out.set(sc, r.url)
+  }
+  return out
+}
+
+/** The key a server entry's /me request is sent with, and its revision (#1631,
+ *  Codex round 2 finding 1): the source (`token`, or `token_env:<NAME>`) plus a
+ *  sha256 fingerprint of the resolved key — never the key. An answer may land
+ *  only on an entry whose revision is still the one it was requested with. */
+function serverCredential(r: Record<string, unknown>): { token: string | undefined; tokenEnv: string | undefined; revision: string } {
+  const tokenEnv = typeof r.token_env === 'string' ? r.token_env : undefined
+  const inline = typeof r.token === 'string' && r.token ? r.token : undefined
+  const token = inline ?? tokenFromEnv(tokenEnv)
+  const source = inline ? 'token' : tokenEnv ? `token_env:${tokenEnv}` : 'none'
+  const revision = `${source}:${token ? createHash('sha256').update(token).digest('hex') : '-'}`
+  return { token, tokenEnv, revision }
+}
+
+/** The known fields of a server entry's `discovery` snapshot that an accepted
+ *  answer replaces; every other key is kept as it is on disk (#1631, Codex
+ *  round 2 finding 5). */
+const DISCOVERY_SNAPSHOT_KEYS = [
+  'discovered_at', 'scopes_status', 'gitlab_host', 'project_paths', 'username',
+  'org_id', 'key_expires_at', 'status', 'checked_at',
+] as const
+
+/** How often an unchanged discovery answer refreshes its timestamp (#1631).
+ *  Well inside the 7-day stale-cache limit, so an unchanged answer keeps the
+ *  cache fresh while writing config.yaml at most once a day. */
+const DISCOVERY_TIMESTAMP_REFRESH_MS = 24 * 60 * 60 * 1000
+
+/** Whether `next` must be written over `entry`: anything but the discovery
+ *  timestamps changed, or the timestamp that answer would refresh (`stamp`) is
+ *  older than {@link DISCOVERY_TIMESTAMP_REFRESH_MS}, in the future or
+ *  unparsable. An unchanged answer otherwise never rewrites config.yaml. */
+function discoveryChanged(entry: Record<string, unknown>, next: Record<string, unknown>, stamp: 'discovered_at' | 'checked_at', now: number): boolean {
+  const strip = (e: Record<string, unknown>): Record<string, unknown> => {
+    if (!isPlainObject(e.discovery)) return e
+    const { discovered_at: _d, checked_at: _c, ...rest } = e.discovery
+    return { ...e, discovery: rest }
+  }
+  if (stableJson(strip(next)) !== stableJson(strip(entry))) return true
+  const prev = isPlainObject(entry.discovery) ? entry.discovery[stamp] : undefined
+  const at = typeof prev === 'string' ? Date.parse(prev) : NaN
+  return !Number.isFinite(at) || at > now || now - at >= DISCOVERY_TIMESTAMP_REFRESH_MS
+}
+
+/** Why one scope of a server entry cannot be replaced or removed on its own. */
+function serverEntryScopeRefusal(scope: string, url: string): string {
+  return `scope "${scope}" belongs to the server entry for ${safeOrigin(url)}, which lists all its scopes in one entry ` +
+    `and shares one key between them. A single scope of it cannot be replaced or removed. Nothing was changed. ` +
+    `To change that server's scope list, re-run the enterprise setup.`
+}
+
 export class AddRemoteStoreError extends Error {
   constructor(
     readonly code: 'invalid_url' | 'missing_token' | 'missing_scope' | 'auth_rejected' | 'unreachable' | 'scope_not_authorised' | 'scope_conflict',
@@ -1190,6 +1303,13 @@ export class Plur {
    * persisted.
    */
   private _remoteDelivered = new WeakSet<object>()
+  /**
+   * Which server holds a returned engram, per returned object, never on the
+   * row (a loaded row's fields are content-scanned, and a url is not content):
+   * the endpoint a write was POSTed to, or the url store a loaded row came
+   * from. Read by `deliveryOf` (Codex round 5, finding 2).
+   */
+  private _heldBy = new WeakMap<object, string>()
   private paths: PlurPaths
   private config: PlurConfig
   private indexedStorage: IndexedStorage | null = null
@@ -1292,6 +1412,8 @@ export class Plur {
    *  disk; see {@link _loadConfig}. */
   private _ignoredDuplicates: Array<{ entry: StoreEntry; duplicateOf: string }> = []
   private _warnedDuplicateStores = new Set<string>()
+  /** url\0scope of pinned scopes already warned as unlisted by /me (#1631). */
+  private _warnedPinnedUnlisted = new Set<string>()
   /** Whether constructor-time cwd store discovery is enabled for this instance. */
   private _autoDiscover = true
   /**
@@ -1705,7 +1827,10 @@ export class Plur {
         // boolean, not the url: every field of a loaded row is content-scanned
         // on the explicit-update path, and a url is not content. Set AFTER the
         // stamp, which drops `_`-prefixed keys a row ships.
-        if (store.url) cloned._fromRemoteStore = true
+        if (store.url) {
+          cloned._fromRemoteStore = true
+          this._heldBy.set(cloned, store.url)
+        }
         all.push(cloned)
       }
     }
@@ -2369,22 +2494,25 @@ export class Plur {
    * scope. Keeps routing predictable and prevents accidental cross-team writes.
    */
   private _resolveRemoteStoreForScope(scope: string): RemoteStore | null {
-    // A personal scope routes through the ONE selected entry (#1515 L1): when
-    // a local path store shares the exact scope, the write stays local.
-    const personal = this._exactPersonalStore(scope)
-    if (personal !== undefined) {
-      return personal?.url && personal.readonly !== true
-        ? this._getRemoteDriver({ url: personal.url, token: personal.token, scope: personal.scope })
-        : null
-    }
-    const stores = this.config.stores ?? []
-    for (const entry of stores) {
-      if (!entry.url) continue
-      if (entry.readonly === true) continue
-      if (entry.scope !== scope) continue
-      return this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
-    }
-    return null
+    // One resolver for routing and the leak guard (#1631). A personal scope
+    // routes through the ONE selected entry (#1515 L1): when a local path
+    // store shares the exact scope, the write stays local. A scope two
+    // servers claim is refused, never sent to whichever is listed first.
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers)
+    if (target.kind !== 'remote' || !target.writable) return null
+    const { entry } = target
+    return this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
+  }
+
+  /**
+   * Refuse a write to a scope two servers claim (#1631), BEFORE anything is
+   * saved: learn()'s dedup can record a recurrence before it reaches the
+   * router, so the router's own throw would come too late there.
+   */
+  private _refuseScopeConflict(scope: string): void {
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers)
   }
 
   /**
@@ -2405,9 +2533,9 @@ export class Plur {
    * {@link _isRemoteWriteScope}.
    */
   private _isRemoteBackedScope(scope: string): boolean {
-    const personal = this._exactPersonalStore(scope)
-    if (personal !== undefined) return !!personal?.url
-    return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
+    // Fail-safe (#1631): a scope two servers claim, or one under a company
+    // server's org that it has not granted, counts as remote-backed too.
+    return resolveScopeTarget(scope, this.config.stores ?? []).kind !== 'local'
   }
 
   /**
@@ -2420,15 +2548,14 @@ export class Plur {
    * only demote a write that would have stayed local; it never lets one out.
    */
   private _hasUrlStoreForScope(scope: string): boolean {
-    return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
+    return urlGroupsForScope(scope, this.config.stores ?? []).length > 0
   }
 
   /** Exactly the router's rule (`_resolveRemoteStoreForScope`): a writable URL
    *  store for exactly this scope, so a write to it leaves the machine. */
   private _isRemoteWriteScope(scope: string): boolean {
-    const personal = this._exactPersonalStore(scope)
-    if (personal !== undefined) return !!personal?.url && personal.readonly !== true
-    return (this.config.stores ?? []).some(s => !!s.url && s.readonly !== true && s.scope === scope)
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    return target.kind === 'remote' && target.writable
   }
 
   /**
@@ -2711,7 +2838,7 @@ export class Plur {
       if (!row) continue
       const rowScope = row.scope ?? 'global'
       if (rowScope !== 'global' && !isScopeWithin(rowScope, entry.scope)) continue
-      holders.push({ entry, rowScope, key: `url\0${entry.url.replace(/\/+$/, '')}\0${row.id}` })
+      holders.push({ entry, rowScope, key: `url\0${normalizeEndpointUrl(entry.url)}\0${row.id}` })
     }
     const rows = new Map<string, Holder[]>()
     for (const h of holders) rows.set(h.key, [...(rows.get(h.key) ?? []), h])
@@ -4383,6 +4510,7 @@ export class Plur {
     this._assertWritable()
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
+    this._refuseScopeConflict(guarded.scope)
     context = guarded.context
     // #347: resolve the validity window up-front (pure) so malformed
     // valid_from/valid_until fail fast — even when the write would dedup
@@ -4881,6 +5009,7 @@ export class Plur {
     statement = this._validateLearnInput('learnRouted', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     const scope = guarded.scope
+    this._refuseScopeConflict(scope)
     context = guarded.context
     // #347: fail fast on malformed valid_from/valid_until (pure validation),
     // mirroring learn() — before dedup can short-circuit the write.
@@ -5107,6 +5236,7 @@ export class Plur {
       )
     }
     this._remoteDelivered.add(serverEngram)
+    this._heldBy.set(serverEngram, remoteDriver.endpointUrl)
     return serverEngram
   }
 
@@ -5137,6 +5267,10 @@ export class Plur {
     /** Only for `outbox`: why it was queued, in plain words, with what to do. */
     reason?: string
     reason_code?: OutboxReasonCode
+    /** Only for `remote`: the server that holds it — the normalized endpoint
+     *  (no userinfo), as recall's `remote.hosts[].host` names it. Absent when
+     *  this process cannot tell (Codex round 5, finding 2). */
+    host?: string
   } {
     const e = engram as any
     const stores = this.config.stores ?? []
@@ -5160,10 +5294,21 @@ export class Plur {
       delivery = e._fromRemoteStore === true ? 'remote' : 'local'
     } else delivery = 'local'
     if (delivery === 'outbox') return { delivery, ...this._outboxReason(engram) }
-    if (delivery !== 'local' || !isSharedScope(engram.scope)) return { delivery }
+    if (delivery === 'remote') {
+      const held = this._heldBy.get(engram)
+      return held ? { delivery, host: normalizeEndpointUrl(held) } : { delivery }
+    }
+    if (!isSharedScope(engram.scope)) return { delivery }
 
     const scope = engram.scope
-    const urlStores = stores.filter(s => !!s.url && s.scope === scope)
+    const target = resolveScopeTarget(scope, stores)
+    if (target.kind === 'unauthorized') {
+      return {
+        delivery,
+        warning: `Scope "${scope}" is not granted to you on ${target.server}; this engram was saved on this machine only.`,
+      }
+    }
+    const urlStores = urlGroupsForScope(scope, stores).flat()
     let why: string
     // `visibility` defaults to 'private' on every engram, so it cannot tell an
     // explicitly private write apart here; the store config can.
@@ -5247,7 +5392,9 @@ export class Plur {
   }
 
   readIdFor(engram: { id: string; scope: string }): string {
-    if (!this._isRemoteBackedScope(engram.scope)) return engram.id
+    // Only a scope a server actually holds: a conflict or an ungranted scope
+    // keeps its engram on this machine, under its local id (#1631).
+    if (resolveScopeTarget(engram.scope, this.config.stores ?? []).kind !== 'remote') return engram.id
     return namespaceEngramId(engram.id, engram.scope)
   }
 
@@ -6977,7 +7124,7 @@ export class Plur {
       : { done: true as const, value: await remotePromise }
     if (!waited.done || !waited.value) {
       const hosts = (remotePromise.hostUrls ?? []).map(u => ({
-        host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, detail: 'recall_deadline',
+        host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, ids: [] as string[], detail: 'recall_deadline',
       }))
       return { report: { state: hosts.length > 0 ? 'timeout' : 'not_dialed', hosts } }
     }
@@ -8805,7 +8952,9 @@ export class Plur {
    *     (attempts reset). The leak guard has already run against the new
    *     scope (`_guardExplicitUpdate` above); a demotion lands on `local` and
    *     so takes the first branch;
-   *   - otherwise (no store, or only a readonly one) → cancelled, with a warning.
+   *   - otherwise (no store, or only a readonly one) → cancelled, with a warning;
+   *   - a scope two servers claim → the update is refused (ScopeConflictError)
+   *     before anything is written. The target comes from resolveScopeTarget.
    * The queue entry is read from the STORED row, never the caller's object,
    * and so is `_retireRemote` (decision D1) — a caller-set value of either
    * would otherwise direct a push or a remote DELETE. Mutates `toWrite`.
@@ -8824,11 +8973,14 @@ export class Plur {
       // A personal scope goes where the ONE selected store is (#1515 re-audit
       // 3): a local store sharing the identical scope keeps the row local, so
       // its pending delivery is cancelled rather than retargeted to the url.
-      const personal = this._exactPersonalStore(newScope)
-      const writable = personal !== undefined
-        ? (personal?.url && personal.readonly !== true ? personal : undefined)
-        : stores.find(st => !!st.url && st.scope === newScope && st.readonly !== true)
-      if (personal && !personal.url) {
+      // One resolver (#1631): the retarget is the store a fresh write would
+      // use, and a scope two servers claim refuses the whole update before
+      // anything is saved, as learn does (formal RoutingDiscovery D6).
+      const target = resolveScopeTarget(newScope, stores)
+      if (target.kind === 'conflict') throw new ScopeConflictError(newScope, target.servers)
+      const writable = target.kind === 'remote' && target.writable ? target.entry : undefined
+      const personalLocal = target.kind === 'local' && !!target.entry && newScope.toLowerCase().startsWith('user:')
+      if (personalLocal) {
         delete sd._outbox
         logger.warning(
           `[plur] update of ${stored.id} moved it to "${newScope}", which a local store holds, and cancelled its `
@@ -10055,7 +10207,7 @@ export class Plur {
     })
     if (cancelledOutbox) {
       logger.warning(
-        `[plur] rescope of ${id} cancelled a pending delivery to ${cancelledOutbox.target_url} ` +
+        `[plur] rescope of ${id} cancelled a pending delivery to ${safeOrigin(cancelledOutbox.target_url)} ` +
         `(scope "${cancelledOutbox.target_scope}"). That queued write would have re-delivered the engram to the ` +
         `store it was moved away from once the host recovered (#848).`,
       )
@@ -10799,7 +10951,7 @@ export class Plur {
 
   /** A url store accepting writes for exactly this scope — the flush's own lookup. */
   private _hasWritableStoreFor(scope: string): boolean {
-    return (this.config.stores ?? []).some(s => s.url && s.scope === scope && !s.readonly)
+    return urlGroupsForScope(scope, this.config.stores ?? []).some(g => g.some(s => !s.readonly))
   }
 
   /**
@@ -11012,6 +11164,17 @@ export class Plur {
             + `scope to cancel the delivery).`,
         }
       }
+      // A scope two servers now claim is held, never pushed to whichever is
+      // listed first (#1631): the same refusal as learn, non-destructively —
+      // the row stays queued until one of the entries is removed.
+      const target = resolveScopeTarget(outbox.target_scope, this.config.stores ?? [])
+      if (target.kind === 'conflict') {
+        return {
+          skip: 'failed',
+          warning: `${engram.id}: NOT pushed — scope "${outbox.target_scope}" is claimed by two servers `
+            + `(${target.servers.join(', ')}). Remove it from one of them in config.yaml; the save stays queued.`,
+        }
+      }
       // Resolve remote driver from current config (don't store tokens in outbox)
       const storeEntry = (this.config.stores ?? []).find(
         s => s.url && s.scope === outbox.target_scope && !s.readonly
@@ -11046,8 +11209,8 @@ export class Plur {
       // this url does not park this one.
       const cooldown = isHostInCooldown(storeEntry.url!, Date.now(), healthPath, storeEntry.token)
       if (cooldown.inCooldown) {
-        if (cooldownSkippedHosts.has(storeEntry.url!)) return { skip: 'skipped' }
-        cooldownSkippedHosts.add(storeEntry.url!)
+        if (cooldownSkippedHosts.has(normalizeEndpointUrl(storeEntry.url!))) return { skip: 'skipped' }
+        cooldownSkippedHosts.add(normalizeEndpointUrl(storeEntry.url!))
         const secs = Math.max(1, Math.ceil(((cooldown.until ?? 0) - Date.now()) / 1000))
         return {
           skip: 'skipped',
@@ -11364,7 +11527,7 @@ export class Plur {
         let refuse: string | null = null
         for (const t of targets) {
           const server = localToServer.get(t)
-            ?? (persistedIdMap[t]?.url === storeEntry.url ? persistedIdMap[t].server_id : undefined)
+            ?? (persistedIdMap[t]?.url !== undefined && normalizeEndpointUrl(persistedIdMap[t].url) === normalizeEndpointUrl(storeEntry.url!) ? persistedIdMap[t].server_id : undefined)
           if (server) { remapped.push(server); continue }
           const localTarget = engrams.find(e => e.id === t)
           if (localTarget && !pendingIds.has(t)) {
@@ -12679,7 +12842,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    *  re-read the file and last-writer-wins away the other's change. Same
    *  lock discipline engrams.yaml has always had. Lock scope is kept tight —
    *  read + merge + write only; the in-memory refresh happens after release. */
-  private persistStores(stores: StoreEntry[], opts?: { serverSensitivityScopes?: Set<string> }): void {
+  private persistStores(stores: StoreEntry[], opts?: {
+    serverSensitivityScopes?: Set<string>
+    /** A new key for a server entry (#1631): written in place onto the one
+     *  on-disk server entry `entry` was expanded from, found by identity on
+     *  the fresh read under the lock. No match, or more than one, is refused
+     *  and nothing is written. The collapse step never writes a token. */
+    serverEntryToken?: { entry: StoreEntry; token: string; tokenEnv?: string }
+  }): void {
     withLock(this.paths.config, () => {
       let configData: Record<string, unknown> = {}
       // Read the existing config to preserve other top-level keys (auto_learn,
@@ -12697,7 +12867,63 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
       // A `token_env` entry keeps its reference and never the token it was
       // resolved to at load (#1561): the typed entries carry that value.
-      configData.stores = this.mergeStoresForWriteback(configData.stores, stores, opts?.serverSensitivityScopes)
+      //
+      // Collapse expanded per-scope entries back into their server entry (#1631):
+      // N in-memory entries with one EXPANDED_FROM identity → the one entry on
+      // disk with that identity, wherever it sits now. Positions are never
+      // trusted: another process may have inserted or reordered entries since
+      // these were loaded.
+      const rawArray = Array.isArray(configData.stores) ? (configData.stores as unknown[]) : []
+      const ids = serverEntryIdentities(rawArray)
+      const indexById = new Map<string, number>()
+      ids.forEach((id, i) => { if (id !== undefined) indexById.set(id, i) })
+      const collapsedRaw = collapseExpandedStores(stores, rawArray, opts?.serverSensitivityScopes)
+      const rekey = opts?.serverEntryToken
+      if (rekey) {
+        // Only the selected entry, validated here under the lock: same
+        // identity, exactly one on disk. Another entry on the same url keeps
+        // its own token and token_env.
+        const base = identityBaseOf(serverEntryIdOf(rekey.entry) ?? '#')
+        const matches = ids.flatMap((id, i) => (id !== undefined && identityBaseOf(id) === base ? [i] : []))
+        if (matches.length !== 1) {
+          throw new Error(`addStore: ${matches.length
+            ? `more than one server entry for ${safeOrigin(rekey.entry.url!)} has the same url and scopes, so which key to replace is ambiguous`
+            : `the server entry for ${safeOrigin(rekey.entry.url!)} changed on disk since it was loaded`}. Nothing was changed.`)
+        }
+        const i = matches[0]
+        // Spread keeps every key where it was; storeEntryForDisk drops an
+        // undefined token_env and a token that only repeats its variable.
+        collapsedRaw[i] = { ...(collapsedRaw[i] as Record<string, unknown>), token: rekey.token, token_env: rekey.tokenEnv }
+      }
+      // Per-scope entries merge onto per-scope raw entries only: a server entry
+      // shares url+scope with its compat `scope`, so letting it be a merge target
+      // would turn an older per-scope entry for that scope into a second server entry.
+      const merged = this.mergeStoresForWriteback(
+        collapsedRaw.filter(r => !isServerStoreEntry(r)),
+        stores.filter(s => !isFromServerEntry(s)),
+        opts?.serverSensitivityScopes,
+      )
+      // Write in the in-memory order, which is the on-disk order: each server
+      // entry takes the place of the first entry expanded from it.
+      const out: unknown[] = []
+      const emitted = new Set<number>()
+      let next = 0
+      for (const s of stores) {
+        if (!isFromServerEntry(s)) { out.push(merged[next++]); continue }
+        const idx = indexById.get(serverEntryIdOf(s)!)
+        // No raw entry with this identity: it changed or went away since load.
+        // Nothing of ours is written for it; the raw entry is kept below.
+        if (idx !== undefined && !emitted.has(idx)) {
+          emitted.add(idx)
+          out.push(collapsedRaw[idx])
+        }
+      }
+      // A server entry with no in-memory entry (an empty `scopes`, rejected at
+      // load, or written by another process since) is kept, near its place.
+      collapsedRaw.forEach((r, i) => {
+        if (isServerStoreEntry(r) && !emitted.has(i)) out.splice(Math.min(i, out.length), 0, r)
+      })
+      configData.stores = (out as StoreEntry[])
         .map(e => storeEntryForDisk(e as unknown as Record<string, unknown>) as unknown as StoreEntry)
       // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
       // truncates in place, and loadConfig turns a parse failure into DEFAULT
@@ -12753,19 +12979,14 @@ Generate an improved version of the procedure that prevents this failure. Return
         if (!k) logger.warning(`[plur:persistStores] store entry for scope "${typed.scope}" has neither url nor path — writing typed entry as-is`)
         return typed
       }
-      const rawSensitivityValue = (raw as { sensitivity?: unknown }).sensitivity
       // The raw config is un-validated, un-salvaged on-disk YAML (persistStores
       // reads it via yaml.load, NOT loadConfig), so `sensitivity` can be ANYTHING
       // a hand-edit put there — including a truthy primitive (`sensitivity: 'oops'`,
       // `5`, `true`). loadConfig dedups nothing over `stores`, so a duplicate entry
       // on the same url+scope key can leave a primitive in rawMap (last-wins) while
-      // the typed entry carries a proper object. Only treat raw sensitivity as a
-      // mergeable object when it actually IS a plain object — otherwise the spreads
-      // and the `in` operator below corrupt the merge or throw a TypeError.
-      const rawSensitivity =
-        rawSensitivityValue && typeof rawSensitivityValue === 'object' && !Array.isArray(rawSensitivityValue)
-          ? (rawSensitivityValue as Record<string, unknown>)
-          : undefined
+      // the typed entry carries a proper object. mergeSensitivityForWriteback only
+      // treats raw sensitivity as mergeable when it actually IS a plain object.
+      //
       // R2-D (#14): `forbid` is a KNOWN field whose value is NORMALIZED at read
       // time (loadConfig's preprocess rewrites a forward-compat `forbid:['pii']`
       // to the safe default). A shallow `...typed.sensitivity` would then write
@@ -12782,15 +13003,13 @@ Generate an improved version of the procedure that prevents this failure. Return
       // `forbid` must win, or the server's policy change is silently discarded
       // on every writeback and the metadata change-detector can never converge
       // (config.yaml rewritten on every session_start).
-      const restoreRawForbid =
-        rawSensitivity && 'forbid' in rawSensitivity && !serverSensitivityScopes?.has(typed.scope)
-      const mergedSensitivity = typed.sensitivity
-        ? {
-            ...(rawSensitivity ?? {}),
-            ...typed.sensitivity,
-            ...(restoreRawForbid ? { forbid: rawSensitivity.forbid } : {}),
-          }
-        : rawSensitivity
+      // The same rule applies inside a server entry's scope_settings (#1631):
+      // collapseExpandedStores calls the same function.
+      const mergedSensitivity = mergeSensitivityForWriteback(
+        (raw as { sensitivity?: unknown }).sensitivity,
+        typed.sensitivity,
+        serverSensitivityScopes?.has(typed.scope) === true,
+      )
       const merged: Record<string, unknown> = {
         ...raw,
         ...typed,
@@ -12813,7 +13032,12 @@ Generate an improved version of the procedure that prevents this failure. Return
        *  stores `token_env: <name>` and never the token itself. */
       tokenEnv?: string
     },
-  ): { status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string } {
+  ): {
+    status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
+    /** On `token_rotated` for a scope of a server entry (#1631): every scope
+     *  the new token now serves. The key is shared by all of them. */
+    token_scopes?: string[]
+  } {
     const isRemote = Boolean(options?.url)
 
     // Validation gate (#93): catch malformed URLs and duplicate scopes at
@@ -12894,11 +13118,30 @@ Generate an improved version of the procedure that prevents this failure. Return
       const tokenEnv = options?.tokenEnv || undefined
       const refChanged = isRemote && options?.token !== undefined && tokenEnv !== (sameEntry.token_env || undefined)
       if (isRemote && options?.token !== undefined && (options.token !== sameEntry.token || refChanged)) {
+        // A scope of a server entry (#1631): the key is one per server, so the
+        // new token goes onto that entry and serves every scope it lists.
+        // Only that one entry: another server entry on the same url may hold
+        // a different key for other scopes. A scope two server entries on this
+        // url both list does not say which key to replace: refused.
+        if (isFromServerEntry(sameEntry)) {
+          const id = serverEntryIdOf(sameEntry)
+          const listing = new Set((config.stores ?? [])
+            .filter(s => isFromServerEntry(s) && s.scope === sameEntry.scope && normalizeEndpointUrl(s.url!) === normalizeEndpointUrl(sameEntry.url!))
+            .map(serverEntryIdOf))
+          if (listing.size > 1) {
+            throw new Error(`addStore: scope "${sameEntry.scope}" is listed by more than one server entry for ${safeOrigin(sameEntry.url!)}, ` +
+              `so which entry's key to replace is ambiguous. Nothing was changed. Remove the duplicate from config.yaml or re-run the enterprise setup.`)
+          }
+          this.persistStores(config.stores ?? [], { serverEntryToken: { entry: sameEntry, token: options.token, tokenEnv } })
+          const token_scopes = (config.stores ?? []).filter(s => serverEntryIdOf(s) === id).map(s => s.scope)
+          logger.info(`[plur:addStore] rotated the server key for ${safeOrigin(sameEntry.url!)} (${token_scopes.length} scope(s))`)
+          return { status: 'token_rotated', scope: sameEntry.scope, token_scopes }
+        }
         const rotated = (config.stores ?? []).map(s =>
           s === sameEntry ? { ...s, token: options.token, token_env: tokenEnv } : s,
         )
         this.persistStores(rotated)
-        logger.info(`[plur:addStore] rotated token for ${options.url} (scope "${sameEntry.scope}")`)
+        logger.info(`[plur:addStore] rotated token for ${safeOrigin(options.url ?? "")} (scope "${sameEntry.scope}")`)
         return { status: 'token_rotated', scope: sameEntry.scope }
       }
       // #766 heal: a local store registered BEFORE the materialization fix can
@@ -12916,6 +13159,10 @@ Generate an improved version of the procedure that prevents this failure. Return
     // with options.overwriteScope=true to replace the existing entry.
     const scopeConflict = config.stores?.find(s => s.scope === scope)
     if (scopeConflict) {
+      // One scope of a server entry cannot be replaced or removed on its own
+      // (#1631): the entry lists its scopes together, and dropping the
+      // expanded entry would leave it on disk while reporting success.
+      if (isFromServerEntry(scopeConflict)) throw new Error(`addStore: ${serverEntryScopeRefusal(scope, scopeConflict.url!)}`)
       if (options?.overwriteScope !== true) {
         const existingId = scopeConflict.url ?? scopeConflict.path
         throw new Error(
@@ -12985,15 +13232,15 @@ Generate an improved version of the procedure that prevents this failure. Return
      *  Never implied: without it such a conflict is refused (code
      *  `scope_conflict`). Applied only after /me has verified the token. */
     overwriteScope?: boolean
-  }): Promise<{ status: 'added' | 'already_registered' | 'token_rotated' | 'overwritten'; scope: string; username?: string; authorised: string[] }> {
+  }): Promise<{ status: 'added' | 'already_registered' | 'token_rotated' | 'overwritten'; scope: string; username?: string; authorised: string[]; token_scopes?: string[] }> {
     const { username, authorised } = await this.verifyRemoteStore(opts)
     const { url, token, scope } = opts
-    const { status } = this.addStore('', scope, {
+    const { status, token_scopes } = this.addStore('', scope, {
       url, token, shared: opts.shared, readonly: opts.readonly,
       ...(opts.tokenEnv ? { tokenEnv: opts.tokenEnv } : {}),
       ...(opts.overwriteScope === true ? { overwriteScope: true } : {}),
     })
-    return { status, scope, ...(username ? { username } : {}), authorised }
+    return { status, scope, ...(username ? { username } : {}), authorised, ...(token_scopes ? { token_scopes } : {}) }
   }
 
   /**
@@ -13057,13 +13304,17 @@ Generate an improved version of the procedure that prevents this failure. Return
     // Scope held by a different store: refuse here, as a typed error, unless
     // the caller asked to replace it. Mirrors addStore's identity rule (a
     // normalized url+scope match is the SAME entry, not a conflict).
-    if (opts.overwriteScope !== true) {
+    {
       this.reloadConfigIfChanged()
       const stores = loadConfig(this.paths.config).stores ?? []
       const same = stores.some(s => s.url !== undefined && s.scope === scope &&
         normalizeEndpointUrl(s.url) === normalizeEndpointUrl(url))
       const other = same ? undefined : stores.find(s => s.scope === scope)
-      if (other) {
+      // overwriteScope never reaches a scope of a server entry (#1631).
+      if (other && isFromServerEntry(other)) {
+        throw new AddRemoteStoreError('scope_conflict', serverEntryScopeRefusal(scope, other.url!), authorised)
+      }
+      if (other && opts.overwriteScope !== true) {
         throw new AddRemoteStoreError(
           'scope_conflict',
           `scope "${scope}" is already registered to a different store (${scrub(String(other.url ?? other.path))}). ` +
@@ -13603,14 +13854,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     return Promise.all(endpoints.map(async ({ url, token }) => {
       const registered = this._storesForEndpoint(url).map(s => s.scope)
       try {
-        const driver = this._getRemoteDriver({ url, token, scope: registered[0] ?? '' })
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-        const me = await Promise.race([
-          driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
-          }),
-        ])
+        const me = await this._probeMe(url, token, timeoutMs, registered[0] ?? '')
         this._noteMeIdentity(url, token, me)
         const registeredSet = new Set(registered)
         // #647: scopes the user has dismissed from the offer are not "actionable"
@@ -13643,6 +13887,224 @@ Generate an improved version of the procedure that prevents this failure. Return
         }
       }
     }))
+  }
+
+  /**
+   * One `GET /api/v1/me` on this url's cached driver, raced against a timeout.
+   * Shared by {@link discoverRemoteScopes}, {@link checkRemoteHealth} and
+   * {@link refreshServerScopes}. Throws the driver's error (a
+   * {@link RemoteHttpError} for a non-2xx answer) or a timeout error.
+   */
+  private async _probeMe(url: string, token: string | undefined, timeoutMs: number, scope = ''): Promise<MeResponse> {
+    const driver = this._getRemoteDriver({ url, token, scope })
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([
+      driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
+      }),
+    ])
+  }
+
+  /**
+   * Discover each server entry's scopes from `GET /api/v1/me` and write the
+   * discovery cache into config.yaml (#1631).
+   *
+   * Only server entries are touched: a store entry with a `scopes` list and an
+   * `enterprise` block. Per-scope entries are left alone; with none, this
+   * returns [] without a request. Whether an answer replaces the cached list
+   * is {@link acceptDiscoveredScopes}' decision: a failed, unauthorised,
+   * not-synced or degraded answer never replaces a non-empty cache, and then
+   * only `discovery.status` and `discovery.checked_at` are written — `scope`,
+   * `scopes` and `discovery.discovered_at` stay exactly as they were.
+   *
+   * On an accepted answer it writes `scopes`, the compatibility `scope` (the
+   * accepted personal `user:<org>:<username>` scope, when there is one) and a
+   * fresh `discovery` block. It never writes `enterprise` or `pinned_scopes`;
+   * `scope_settings` changes only through {@link persistScopeMetadata}, and
+   * only when the server says its metadata is `ok` (#1173, #648).
+   *
+   * An answer that changes nothing but the timestamps writes nothing: the
+   * timestamp it would set (`discovered_at` for an accepted answer,
+   * `checked_at` for a refused one) is refreshed at most once a day, so the
+   * 7-day stale-cache checks still see an unchanged answer as fresh.
+   *
+   * The requests run in parallel and one server's failure never affects
+   * another's outcome. The write is a raw read-modify-write of the server
+   * entries under the config lock, so every other key of the entry (unknown
+   * keys too) is kept as it is on disk.
+   */
+  async refreshServerScopes(opts?: { url?: string; timeoutMs?: number }): Promise<ServerDiscoveryOutcome[]> {
+    const timeoutMs = opts?.timeoutMs ?? 5000
+    this.reloadConfigIfChanged()
+    const wanted = opts?.url ? normalizeEndpointUrl(opts.url) : undefined
+    const servers = this._readRawStores()
+      .filter(isEnterpriseServerEntry)
+      .filter(r => !wanted || normalizeEndpointUrl(r.url) === wanted)
+    if (!servers.length) return []
+
+    // Network first, outside the lock; each answer is judged against the file
+    // as it is when the write happens.
+    type Answer = { url: string; revision: string; me: MeResponse | null; error?: { status?: number; message: string } }
+    const answers = await Promise.all(servers.map(async (r): Promise<Answer> => {
+      const url = r.url
+      const { token, tokenEnv, revision } = serverCredential(r)
+      if (!token) {
+        const message = tokenEnv ? tokenEnvUnsetMessage(tokenEnv, safeOrigin(url)) : `no key is configured for ${safeOrigin(url)}`
+        return { url, revision, me: null, error: { message } }
+      }
+      try {
+        const me = await this._probeMe(url, token, timeoutMs, typeof r.scope === 'string' ? r.scope : '')
+        this._noteMeIdentity(url, token, me)
+        return { url, revision, me }
+      } catch (err) {
+        this._noteMeIdentity(url, token, null)
+        // A server or proxy can echo the key back in its error body: every
+        // encoding of it is removed before the message is kept (finding 4).
+        const message = redactToken(err instanceof Error ? err.message : String(err), token)
+        return { url, revision, me: null, error: { status: err instanceof RemoteHttpError ? err.status : undefined, message } }
+      }
+    }))
+
+    const outcomes: ServerDiscoveryOutcome[] = []
+    const now = new Date().toISOString()
+    this._updateRawStores(rawStores => {
+      let changed = false
+      for (const { url, revision, me, error } of answers) {
+        const key = normalizeEndpointUrl(url)
+        const matches = rawStores.flatMap((r, i) => (isEnterpriseServerEntry(r) && normalizeEndpointUrl(r.url) === key ? [i] : []))
+        if (matches.length === 0) {
+          // Removed by another process since the read above: nothing to write.
+          outcomes.push({ url, status: 'failed', applied: false, scopes: [], rejected: [], pinned_unlisted: [], error: 'the server entry is no longer in config.yaml' })
+          continue
+        }
+        if (matches.length > 1) {
+          // Two server entries on one url (another key each): which one this
+          // answer belongs to cannot be told here, so neither is written — the
+          // same refusal as key rotation and owner decision 17. Applying it to
+          // the first one put another key's scopes on it (formal
+          // RoutingDiscovery D4).
+          outcomes.push({ url, status: 'failed', applied: false, scopes: [], rejected: [], pinned_unlisted: [],
+            error: `more than one server entry in config.yaml has the url ${safeOrigin(url)}; nothing was changed. Keep one of them.` })
+          continue
+        }
+        const idx = matches[0]
+        const entry = rawStores[idx] as Record<string, unknown> & { url: string }
+        if (serverCredential(entry).revision !== revision) {
+          // The entry's key was replaced (or its token_env now resolves to
+          // another key) while /me was in flight: this answer describes the
+          // old key, so it is not written to the new one (finding 1).
+          outcomes.push({ url, status: 'failed', applied: false, scopes: stringList(entry.scopes), rejected: [], pinned_unlisted: [],
+            error: `entry changed during refresh: the key for ${safeOrigin(url)} changed while its scopes were requested; nothing was changed. Run the refresh again.` })
+          continue
+        }
+        const cached = stringList(entry.scopes)
+        const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key) })
+        const oldDiscovery = isPlainObject(entry.discovery) ? entry.discovery : {}
+        let next: Record<string, unknown>
+        if (decision.replaceCache && me) {
+          const personal = decision.scopes.find(sc => sc.toLowerCase() === `user:${me.org_id}:${me.username}`.toLowerCase())
+          // Unknown discovery keys (a newer client's) are kept; every known
+          // snapshot key is replaced or, when this answer lacks it, removed.
+          const unknownDiscovery = Object.fromEntries(Object.entries(oldDiscovery)
+            .filter(([k]) => !(DISCOVERY_SNAPSHOT_KEYS as readonly string[]).includes(k)))
+          // A changed compat scope takes the old one's top-level metadata
+          // into scope_settings[old] first (Codex round 4, finding 2).
+          next = {
+            ...(personal ? withCompatScope(entry, personal) : entry),
+            scopes: decision.scopes,
+            discovery: {
+              ...unknownDiscovery,
+              discovered_at: now,
+              ...(me.scopes_status !== 'absent' ? { scopes_status: me.scopes_status } : {}),
+              ...(me.gitlab_host !== undefined ? { gitlab_host: me.gitlab_host } : {}),
+              project_paths: me.project_paths,
+              username: me.username,
+              org_id: me.org_id,
+              ...(me.key_expires_at !== undefined ? { key_expires_at: me.key_expires_at } : {}),
+              status: decision.status,
+              checked_at: now,
+            },
+          }
+        } else {
+          next = { ...entry, discovery: { ...oldDiscovery, status: decision.status, checked_at: now } }
+        }
+        if (discoveryChanged(entry, next, decision.replaceCache ? 'discovered_at' : 'checked_at', Date.now())) {
+          rawStores[idx] = next
+          changed = true
+        }
+
+        const pinned = stringList(entry.pinned_scopes)
+        const listed = new Set(me?.scopes ?? [])
+        const pinned_unlisted = decision.status === 'ok' ? pinned.filter(p => !listed.has(p)) : []
+        for (const p of pinned_unlisted) {
+          const once = `${key}\0${p}`
+          if (this._warnedPinnedUnlisted.has(once)) continue
+          this._warnedPinnedUnlisted.add(once)
+          logger.warning(`[plur:discovery] pinned scope "${p}" is not in the scope list ${safeOrigin(url)} sent; it stays registered because it is pinned`)
+        }
+        outcomes.push({
+          url, status: decision.status, applied: decision.replaceCache, scopes: decision.scopes,
+          rejected: decision.rejected, pinned_unlisted,
+          ...(me?.username ? { username: me.username } : {}),
+          ...(error ? { error: error.message } : {}),
+        })
+      }
+      return changed
+    })
+
+    // Server metadata lands in scope_settings through the existing sync, once
+    // the new scopes are expanded in memory (#1173, #648).
+    const metadata: RemoteScopeDiscovery[] = []
+    for (const { url, me } of answers) {
+      const o = outcomes.find(x => x.url === url)
+      if (!me || !o?.applied || me.scope_metadata_status !== 'ok') continue
+      const accepted = new Set(o.scopes)
+      metadata.push({
+        url, ok: true, username: me.username, org_id: me.org_id, role: me.role,
+        authorized: o.scopes, registered: o.scopes, unregistered: [],
+        metadata: (me.scope_metadata ?? []).filter(m => accepted.has(m.scope)),
+      })
+    }
+    if (metadata.length) this.persistScopeMetadata(metadata)
+    return outcomes
+  }
+
+  /** The raw `stores` array of config.yaml as on disk ([] when absent or unreadable). */
+  private _readRawStores(): unknown[] {
+    try {
+      const data = yaml.load(fs.readFileSync(this.paths.config, 'utf8')) as Record<string, unknown> | null
+      return Array.isArray(data?.stores) ? data!.stores as unknown[] : []
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Read-modify-write of the raw `stores` array under the config lock, written
+   * atomically only when `mutate` reports a change; every other top-level key
+   * and every untouched entry is kept. Same discipline as
+   * {@link persistDismissedScopes}: a read error other than ENOENT aborts.
+   */
+  private _updateRawStores(mutate: (rawStores: unknown[]) => boolean): void {
+    let wrote = false
+    withLock(this.paths.config, () => {
+      let configData: Record<string, unknown> = {}
+      try {
+        const raw = fs.readFileSync(this.paths.config, 'utf8')
+        if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+      }
+      const rawStores = Array.isArray(configData.stores) ? [...(configData.stores as unknown[])] : []
+      if (!mutate(rawStores)) return
+      configData.stores = rawStores
+      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
+      wrote = true
+    })
+    if (!wrote) return
+    this.config = this._loadConfig()
+    this.configMtimeMs = this.statConfigMtime()
   }
 
   /**
@@ -13710,14 +14172,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           reason: `token expired ${exp.expiresAt?.toISOString() ?? ''}`.trim(), ...expiryFields }
       }
       try {
-        const driver = this._getRemoteDriver({ url, token, scope: scopes[0] ?? '' })
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-        const me = await Promise.race([
-          driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
-          }),
-        ])
+        const me = await this._probeMe(url, token, timeoutMs, scopes[0] ?? '')
         // A host that just answered /me is not unreachable — retire any cached
         // network-class recall failure for it rather than reporting both (#864).
         this.noteRemoteHostReachable(url)
@@ -13779,7 +14234,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           // register it. (A registered scope stays reported as
           // already_registered even if a stale dismissal lingers.)
           skipped.push(scope)
-          logger.info(`[plur] skipping dismissed scope "${scope}" from ${d.url} — batch register respects dismissals; use \`plur scopes register ${scope}\` to override (it also clears the dismissal)`)
+          logger.info(`[plur] skipping dismissed scope "${scope}" from ${safeOrigin(d.url)} — batch register respects dismissals; use \`plur scopes register ${scope}\` to override (it also clears the dismissal)`)
           continue
         }
         // SECURITY (#382): never auto-register a PERSONAL-family scope returned
@@ -13792,7 +14247,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         if (!isSharedScope(scope)) {
           skipped.push(scope)
           logger.warning(
-            `[plur] refused to auto-register non-shared scope "${scope}" from ${d.url} — ` +
+            `[plur] refused to auto-register non-shared scope "${scope}" from ${safeOrigin(d.url)} — ` +
             `a /me-advertised personal-family scope is not auto-registered (it would route ` +
             `your default/unscoped writes to that endpoint). Add it explicitly if intended.`,
           )
@@ -13808,7 +14263,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           // and leave a partial registration. Record it as skipped and continue
           // with the remaining authorized scopes.
           skipped.push(scope)
-          logger.warning(`[plur] could not auto-register scope "${scope}" from ${d.url}: ${err instanceof Error ? err.message : String(err)}`)
+          logger.warning(`[plur] could not auto-register scope "${scope}" from ${safeOrigin(d.url)}: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
@@ -14049,7 +14504,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       if (!coversMatch && (entry.covers?.length ?? 0) > 0) clobbered.push('covers')
       if (!descMatch && entry.description !== undefined && entry.description !== '') clobbered.push('description')
       if (clobbered.length) {
-        logger.warning(`[plur:scope-metadata] scope "${entry.scope}": overwriting local ${clobbered.join(' + ')} with server values from ${discovery.url} (server-authoritative)`)
+        logger.warning(`[plur:scope-metadata] scope "${entry.scope}": overwriting local ${clobbered.join(' + ')} with server values from ${safeOrigin(discovery.url)} (server-authoritative)`)
       }
 
       changed = true

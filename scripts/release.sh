@@ -29,7 +29,7 @@
 #                    copy until the tweet fits 280 chars.
 #   --skip-tweet     Full release but don't post to X.
 #   --trust-ci       Replace the LOCAL test suite (step 3) with a verification
-#                    that HEAD equals origin/main and that the five required CI
+#                    that HEAD equals origin/main and that the four required CI
 #                    contexts are green on that exact commit. Same safety
 #                    purpose, different evidence: use when the release machine
 #                    is too contended for the timing-sensitive suites to pass
@@ -532,7 +532,7 @@ if [ "$TRUST_CI" = true ]; then
     exit 1
   fi
   CI_FAILED=false
-  for CTX in "test (20)" "test (22)" "test (24)" "test (26)" "smoke-packaged"; do
+  for CTX in "test (22)" "test (24)" "test (26)" "smoke-packaged"; do
     CONCLUSION=$(gh api "repos/plur-ai/plur/commits/$LOCAL_SHA/check-runs?per_page=100"       --jq "[.check_runs[] | select(.name == \"$CTX\")] | max_by(.started_at) | .conclusion // \"missing\"" 2>/dev/null || echo "query-failed")
     echo "  $CTX: $CONCLUSION"
     [ "$CONCLUSION" = "success" ] || CI_FAILED=true
@@ -541,7 +541,7 @@ if [ "$TRUST_CI" = true ]; then
     echo "ERROR: required CI is not uniformly green on $LOCAL_SHA. Run without --trust-ci, or fix CI. Aborting."
     exit 1
   fi
-  echo "  ✓ all five required contexts green on $LOCAL_SHA"
+  echo "  ✓ all four required contexts green on $LOCAL_SHA"
 else
 TEST_OUTPUT=$(pnpm test 2>&1 || true)
 PASS_COUNT=$(echo "$TEST_OUTPUT" | grep -o '[0-9]* passed' | head -1)
