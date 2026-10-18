@@ -184,6 +184,8 @@ export function returnedMemories(payload: unknown): string[] {
     if (Array.isArray(node)) { for (const n of node) walk(n, key); return }
     if (node && typeof node === 'object') {
       const o = node as Record<string, unknown>
+      // A failed record nested in the reply is not a returned memory (fourth audit A4-04).
+      if (o.success === false || ('error' in o && o.error)) return
       if (typeof o.statement === 'string' && typeof o.id === 'string' && o.id) out.push(o.statement)
       for (const [k, v] of Object.entries(o)) if (k !== 'statement') walk(v, k)
       return
@@ -345,8 +347,34 @@ const CONF = /\.conf\b/i
  * The corrected rule: config files use .cfg (affirmed, never negated or
  * prohibited anywhere in its clause), and .conf appears only negated.
  */
+const CONFIG_SUBJECT = /\bconfig(?:uration)?s?\b/i
+/** Other formats a config-file rule could name instead of .cfg. */
+const OTHER_FORMAT = /\.(?!cfg\b|conf\b)[a-z]{2,5}\b|\b(toml|yaml|yml|json|ini|xml)\b/i
+/** Sentences: a period before a space or the end, a semicolon or a line break (not a colon or a dash). */
+const sentences = (text: string) => text.split(/(?<=\.)\s+|[;\n]+/).map(t => t.trim()).filter(Boolean)
+
 export function saysCfgNotConf(statement: string): Verdict {
-  return saysOnly(statement, CFG, [CONF])
+  const v = saysOnly(statement, CFG, [CONF])
+  if (!v.ok) return v
+  // The .cfg must be affirmed in a sentence ABOUT config files, and no sentence about
+  // config files may name another format (fourth audit A4-04: ".cfg" as context, the
+  // rule saying TOML).
+  const about = sentences(statement).filter(t => CONFIG_SUBJECT.test(t))
+  if (!about.some(t => stance(t, CFG, [CONF]).affirmed > 0)) return { ok: false, why: '.cfg is not affirmed in a sentence about config files' }
+  const rival = about.find(t => OTHER_FORMAT.test(affirmedPart(t)))
+  if (rival) return { ok: false, why: `a sentence about config files names another format: ${JSON.stringify(rival.slice(0, 80))}` }
+  return v
+}
+
+/**
+ * What `t` affirms about other formats: "instead of .yaml" and "never .toml"
+ * bound to a format are removed, then every negated clause that does not carry
+ * the .cfg rule itself ("not .yaml" names no rival).
+ */
+function affirmedPart(t: string): string {
+  const unbound = stripBoundNegations(t, OTHER_FORMAT)
+  const negated = (c: { text: string; carried: boolean }) => c.carried || (NEGATORS.test(c.text) && !CFG.test(c.text))
+  return clauses(unbound).filter(c => !negated(c)).map(c => c.text).join(', ')
 }
 
 const ASSIGNMENT = /^([A-Za-z0-9_.-]+)\s*[=:]\s*(.*)$/
@@ -377,12 +405,19 @@ export function gradeRequestedFile(files: Record<string, string>, expected: stri
 // ── BEH-3: an explicit save is used next session ────────────────────────────
 
 /** The saved fact: Larkspur keeps logs for 11 days (Larkspur named, the number affirmed, no other day count). */
+const ELEVEN = /\b(11|eleven)\s*(?:-\s*)?days?\b/i
+const SPELLED = '(?:one|two|three|four|five|six|seven|eight|nine|ten|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)'
+
 export function saysElevenDays(statement: string): Verdict {
   if (!/\blarkspur\b/i.test(statement)) return { ok: false, why: 'does not name Larkspur' }
   if (!/\b(log|logs)\b/i.test(statement)) return { ok: false, why: 'does not mention logs' }
   const other = [...statement.matchAll(/\b(\d+)\s*(?:-\s*)?days?\b/gi)].map(m => m[1]).filter(n => n !== '11')
-  if (other.length) return { ok: false, why: `names another day count (${other.join(', ')})` }
-  return saysOnly(statement, /\b(11|eleven)\s*(?:-\s*)?days?\b/i)
+  const spelled = [...statement.matchAll(new RegExp(`\\b(${SPELLED}(?:[\\s-]${SPELLED})*)\\s*(?:-\\s*)?days?\\b`, 'gi'))].map(m => m[1])
+  if (other.length || spelled.length) return { ok: false, why: `names another day count (${[...other, ...spelled].join(', ')})` }
+  // The eleven days must be said of Larkspur's logs, in the same sentence (fourth audit A4-04).
+  const where = sentences(statement).filter(t => ELEVEN.test(t))
+  if (!where.some(t => /\blarkspur\b/i.test(t) && /\b(log|logs)\b/i.test(t))) return { ok: false, why: 'the eleven days are not said of Larkspur\'s logs in one sentence' }
+  return saysOnly(statement, ELEVEN)
 }
 
 /** BEH-3 session 2: retention.txt holds exactly the number 11 (surrounding whitespace aside). */
