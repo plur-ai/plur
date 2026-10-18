@@ -427,123 +427,184 @@ namespace Store
 inductive Existing | none | works | rejected | unknown
   deriving DecidableEq, Repr
 
-inductive Outcome | stored | refused | failed | stopped
+/-- `stored`: registered and the refresh returned (its discovery outcome may
+itself say failed, auth_failed or not_synced: the key stays and the
+installer's run decides, plan C task 10). `restoreFailed`: a failure after a
+possible write whose rollback could not be written. -/
+inductive Outcome | stored | refused | failed | restoreFailed | stopped
   deriving DecidableEq, Repr
+
+/-- What core's `registerEnterpriseServer` does: a refusal (B5's takeover,
+a held sign-in) that writes nothing; a throw after it may have written the
+config `c` (a reload after the write, say: gate review 2026-10-18); or the
+written config. -/
+inductive Reg (Cfg : Type) | refused | threw (c : Cfg) | ok (c : Cfg)
 
 variable {Cfg : Type}
 
-/-- `connectServerStore`. -/
-def connect (register : Cfg → Option Cfg) (refresh : Cfg → Option Cfg) (cfg : Cfg) : Outcome × Cfg × List Cfg :=
+/-- `connectServerStore`. `restoreOk`: whether `rollbackServerStore` could
+write the backup back. -/
+def connect (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (restoreOk : Bool) (cfg : Cfg) :
+    Outcome × Cfg × List Cfg :=
   let backup := cfg
+  let fail := fun (c : Cfg) => if restoreOk then (Outcome.failed, backup, [c]) else (Outcome.restoreFailed, c, [c])
   match register cfg with
-  | none => (.refused, cfg, [])
-  | some c => match refresh c with
+  | .refused => (.refused, cfg, [])
+  | .threw c => fail c
+  | .ok c => match refresh c with
     | some c' => (.stored, c', [c])
-    | none => (.failed, backup, [c])
+    | none => fail c
 
 /-- The store step: `unknown` stops before any sign-in; a working key is
 reused; otherwise a sign-in is asked for and its key stored. -/
-def step (ex : Existing) (signedIn : Bool) (register : Cfg → Option Cfg) (refresh : Cfg → Option Cfg)
-    (cfg : Cfg) : Outcome × Cfg × List Cfg × Bool :=
+def step (ex : Existing) (signedIn : Bool) (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg)
+    (restoreOk : Bool) (cfg : Cfg) : Outcome × Cfg × List Cfg × Bool :=
   match ex with
   | .unknown => (.stopped, cfg, [], false)
-  | .works => ((connect register refresh cfg).1, (connect register refresh cfg).2.1, (connect register refresh cfg).2.2, false)
+  | .works => let r := connect register refresh restoreOk cfg; (r.1, r.2.1, r.2.2, false)
   | .none | .rejected =>
-    if signedIn then ((connect register refresh cfg).1, (connect register refresh cfg).2.1, (connect register refresh cfg).2.2, true)
+    if signedIn then let r := connect register refresh restoreOk cfg; (r.1, r.2.1, r.2.2, true)
     else (.stopped, cfg, [], true)
 
-theorem connect_writes_le_one (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
-    (connect register refresh cfg).2.2.length ≤ 1 := by
+theorem connect_writes_le_one (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (restoreOk : Bool) (cfg : Cfg) :
+    (connect register refresh restoreOk cfg).2.2.length ≤ 1 := by
   unfold connect
   cases register cfg with
-  | none => simp
-  | some c => cases h : refresh c <;> simp [h]
+  | refused => simp
+  | threw c => cases restoreOk <;> simp
+  | ok c => cases h : refresh c <;> cases restoreOk <;> simp [h]
 
-/-- Any outcome but `stored` leaves the config exactly as it was. -/
-theorem connect_failure_unchanged (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
-    (connect register refresh cfg).1 ≠ .stored → (connect register refresh cfg).2.1 = cfg := by
+/-- Any outcome but `stored` and `restoreFailed` leaves the config exactly as
+it was — a throw from registration after it wrote included. -/
+theorem connect_failure_unchanged (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (restoreOk : Bool) (cfg : Cfg) :
+    (connect register refresh restoreOk cfg).1 ≠ .stored → (connect register refresh restoreOk cfg).1 ≠ .restoreFailed →
+    (connect register refresh restoreOk cfg).2.1 = cfg := by
   unfold connect
   cases register cfg with
-  | none => simp
-  | some c => cases h : refresh c <;> simp [h]
+  | refused => simp
+  | threw c => cases restoreOk <;> simp
+  | ok c => cases h : refresh c <;> cases restoreOk <;> simp [h]
+
+/-- `restoreFailed` happens only when the rollback itself could not be
+written; with a working rollback every failure leaves the config unchanged. -/
+theorem restore_failed_only_if_rollback_fails (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    (connect register refresh true cfg).1 ≠ .restoreFailed := by
+  unfold connect
+  cases register cfg with
+  | refused => simp
+  | threw c => simp
+  | ok c => cases h : refresh c <;> simp [h]
 
 /-- The key is stored at most once per run. -/
-theorem key_written_at_most_once (ex : Existing) (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
-    (step ex signedIn register refresh cfg).2.2.1.length ≤ 1 := by
+theorem key_written_at_most_once (ex : Existing) (signedIn : Bool) (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg)
+    (restoreOk : Bool) (cfg : Cfg) :
+    (step ex signedIn register refresh restoreOk cfg).2.2.1.length ≤ 1 := by
   unfold step
   cases ex <;> simp
   · cases signedIn <;> simp [connect_writes_le_one]
-  · exact connect_writes_le_one register refresh cfg
+  · exact connect_writes_le_one register refresh restoreOk cfg
   · cases signedIn <;> simp [connect_writes_le_one]
 
 /-- Review focus 1: a re-run while the server blips (no verdict on the stored
 key) mints no key, writes nothing and leaves the config as it was. -/
-theorem unknown_stops (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
-    step .unknown signedIn register refresh cfg = (.stopped, cfg, [], false) := by
+theorem unknown_stops (signedIn : Bool) (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (restoreOk : Bool) (cfg : Cfg) :
+    step .unknown signedIn register refresh restoreOk cfg = (.stopped, cfg, [], false) := by
   simp [step]
 
-/-- A failure anywhere (no key, a refused registration, a failure after the
-write) leaves the config byte-identical. -/
-theorem failure_unchanged (ex : Existing) (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
-    (step ex signedIn register refresh cfg).1 ≠ .stored → (step ex signedIn register refresh cfg).2.1 = cfg := by
+/-- With a working rollback, a failure anywhere (no key, a refused
+registration, a throw after the write) leaves the config byte-identical. -/
+theorem failure_unchanged (ex : Existing) (signedIn : Bool) (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    (step ex signedIn register refresh true cfg).1 ≠ .stored → (step ex signedIn register refresh true cfg).2.1 = cfg := by
   unfold step
+  have h := connect_failure_unchanged register refresh true cfg
+  have h2 := restore_failed_only_if_rollback_fails register refresh cfg
   cases ex <;> simp
-  · cases signedIn <;> simp; exact connect_failure_unchanged register refresh cfg
-  · exact connect_failure_unchanged register refresh cfg
-  · cases signedIn <;> simp; exact connect_failure_unchanged register refresh cfg
+  · cases signedIn <;> simp; intro hs; exact h hs h2
+  · intro hs; exact h hs h2
+  · cases signedIn <;> simp; intro hs; exact h hs h2
 
 /-- A key is stored only when it is known to work: the stored key `/me`
 accepted, or a fresh sign-in that passed §1's checks. -/
-theorem stored_only_after_ok (ex : Existing) (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
-    (step ex signedIn register refresh cfg).2.2.1 ≠ [] → ex = .works ∨ (ex ≠ .unknown ∧ signedIn = true) := by
+theorem stored_only_after_ok (ex : Existing) (signedIn : Bool) (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg)
+    (restoreOk : Bool) (cfg : Cfg) :
+    (step ex signedIn register refresh restoreOk cfg).2.2.1 ≠ [] → ex = .works ∨ (ex ≠ .unknown ∧ signedIn = true) := by
   unfold step
   cases ex <;> cases signedIn <;> simp
 
 /-- A working key is reused: no sign-in, no new key. -/
-theorem works_no_mint (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
-    (step .works signedIn register refresh cfg).2.2.2 = false := by
+theorem works_no_mint (signedIn : Bool) (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (restoreOk : Bool) (cfg : Cfg) :
+    (step .works signedIn register refresh restoreOk cfg).2.2.2 = false := by
   simp [step]
 
 /-- Reachable: a revoked key, a fresh sign-in, one write, scopes fetched. -/
 theorem stored_reachable :
-    step (Cfg := Nat) .rejected true (fun c => some (c + 1)) (fun c => some (c + 10)) 0 = (.stored, 11, [1], true) := by decide
+    step (Cfg := Nat) .rejected true (fun c => .ok (c + 1)) (fun c => some (c + 10)) true 0 = (.stored, 11, [1], true) := by decide
 
 /-- Reachable: the scope refresh throws after the key was written; the config
 is back to what it was. -/
 theorem rollback_reachable :
-    step (Cfg := Nat) .works false (fun c => some (c + 1)) (fun _ => none) 0 = (.failed, 0, [1], false) := by decide
+    step (Cfg := Nat) .works false (fun c => .ok (c + 1)) (fun _ => none) true 0 = (.failed, 0, [1], false) := by decide
+
+/-- Reachable: registration throws after it wrote; the config is back to what
+it was. -/
+theorem register_throw_rolled_back :
+    step (Cfg := Nat) .rejected true (fun c => .threw (c + 1)) (fun c => some c) true 0 = (.failed, 0, [1], true) := by decide
+
+/-- Reachable: the rollback itself cannot be written; the outcome says so
+(the error names the backup), never `failed` with a changed config. -/
+theorem restore_failed_reachable :
+    step (Cfg := Nat) .rejected true (fun c => .ok (c + 1)) (fun _ => none) false 0 = (.restoreFailed, 1, [1], true) := by decide
 
 /-! ### Counterexamples -/
 
 /-- A store step that reads "no verdict" as "the key does not work" (the
 plain reading of "reuse a working key"): a server blip mints a new key and
 overwrites a key that may still work. -/
-def naiveStep (ex : Existing) (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) : Outcome × Cfg × List Cfg × Bool :=
+def naiveStep (ex : Existing) (signedIn : Bool) (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    Outcome × Cfg × List Cfg × Bool :=
   match ex with
-  | .works => ((connect register refresh cfg).1, (connect register refresh cfg).2.1, (connect register refresh cfg).2.2, false)
-  | _ => if signedIn then ((connect register refresh cfg).1, (connect register refresh cfg).2.1, (connect register refresh cfg).2.2, true)
+  | .works => let r := connect register refresh true cfg; (r.1, r.2.1, r.2.2, false)
+  | _ => if signedIn then let r := connect register refresh true cfg; (r.1, r.2.1, r.2.2, true)
          else (.stopped, cfg, [], true)
 
 /-- Counterexample (replayed: enterprise-server-store.test.ts, "transient /me
 failure keeps the key and stops" and "503 … → unknown"). -/
 theorem naive_blip_overwrites :
-    naiveStep (Cfg := Nat) .unknown true (fun c => some (c + 1)) (fun c => some c) 0 = (.stored, 1, [1], true) ∧
-    step (Cfg := Nat) .unknown true (fun c => some (c + 1)) (fun c => some c) 0 = (.stopped, 0, [], false) := by decide
+    naiveStep (Cfg := Nat) .unknown true (fun c => .ok (c + 1)) (fun c => some c) 0 = (.stored, 1, [1], true) ∧
+    step (Cfg := Nat) .unknown true (fun c => .ok (c + 1)) (fun c => some c) true 0 = (.stopped, 0, [], false) := by decide
 
 /-- A rollback to a copy taken after registration wrote (or no copy at all):
 a failure after the write keeps the new key. -/
-def lateBackupConnect (register refresh : Cfg → Option Cfg) (cfg : Cfg) : Outcome × Cfg × List Cfg :=
+def lateBackupConnect (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (cfg : Cfg) : Outcome × Cfg × List Cfg :=
   match register cfg with
-  | none => (.refused, cfg, [])
-  | some c => match refresh c with
+  | .refused => (.refused, cfg, [])
+  | .threw c => (.failed, c, [c])
+  | .ok c => match refresh c with
     | some c' => (.stored, c', [c])
     | none => (.failed, c, [c])
 
 /-- Counterexample (replayed: "a failure after the key was written is rolled
 back: config.yaml is byte-identical"). -/
 theorem late_backup_keeps_key :
-    (lateBackupConnect (Cfg := Nat) (fun c => some (c + 1)) (fun _ => none) 0).2.1 = 1 ∧
-    (connect (Cfg := Nat) (fun c => some (c + 1)) (fun _ => none) 0).2.1 = 0 := by decide
+    (lateBackupConnect (Cfg := Nat) (fun c => .ok (c + 1)) (fun _ => none) 0).2.1 = 1 ∧
+    (connect (Cfg := Nat) (fun c => .ok (c + 1)) (fun _ => none) true 0).2.1 = 0 := by decide
+
+/-- Every registration throw read as a refusal that wrote nothing (the code
+before the gate review, 2026-10-18): a throw after the write keeps the new
+key. -/
+def throwAsRefusalConnect (register : Cfg → Reg Cfg) (refresh : Cfg → Option Cfg) (cfg : Cfg) : Outcome × Cfg × List Cfg :=
+  match register cfg with
+  | .refused => (.refused, cfg, [])
+  | .threw c => (.refused, c, [c])
+  | .ok c => match refresh c with
+    | some c' => (.stored, c', [c])
+    | none => (.failed, cfg, [c])
+
+/-- Counterexample (replayed: "registration that throws after it wrote is
+rolled back too: config.yaml is byte-identical"). -/
+theorem throw_as_refusal_keeps_key :
+    (throwAsRefusalConnect (Cfg := Nat) (fun c => .threw (c + 1)) (fun c => some c) 0).2.1 = 1 ∧
+    (connect (Cfg := Nat) (fun c => .threw (c + 1)) (fun c => some c) true 0).2.1 = 0 := by decide
 
 end Store
 

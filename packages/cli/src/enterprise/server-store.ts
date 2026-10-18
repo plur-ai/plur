@@ -13,10 +13,10 @@
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { dirname } from 'path'
 import {
-  normalizeEndpointUrl, redactToken, tokenFromEnv, withLock, writeConfigFile,
-  PersonalScopeTakenError, type FoldReport, type OwnerOnlyResult, type Plur, type ServerDiscoveryOutcome,
+  normalizeEndpointUrl, redactToken, redactTokenDeep, tokenFromEnv, withLock, writeConfigFile,
+  PersonalScopeTakenError, SignInHeldError, type FoldReport, type OwnerOnlyResult, type Plur, type ServerDiscoveryOutcome,
 } from '@plur-ai/core'
-import { backupSecretFile, fetchMe, takeoverMessage, type BackupHost, type FetchFn, type MeAnswer } from './sign-in-shared.js'
+import { backupSecretFile, fetchMe, redactConsoleWith, takeoverMessage, type BackupHost, type FetchFn, type MeAnswer } from './sign-in-shared.js'
 
 export type MeOk = Extract<MeAnswer, { status: 'ok' }>
 
@@ -104,10 +104,16 @@ export interface ConnectResult {
  *    its type so the caller can offer the cleanup ({@link storeRefusalLines}).
  * 3. `refreshServerScopes({ url: server })`.
  *
- * Any failure after step 2 wrote restores config.yaml's exact bytes from the
- * backup ({@link rollbackServerStore}) before the error is rethrown, so the
- * step either completes or leaves config.yaml as it was. Errors never carry
- * the key.
+ * Any failure after registration may have written — a throw from
+ * registration other than a refusal, or a throw from the refresh — restores
+ * config.yaml's exact bytes from the backup ({@link rollbackServerStore})
+ * before the error is rethrown. A discovery that RETURNS a failed,
+ * auth_failed or not_synced outcome is not a throw: the key stays and the
+ * outcome is returned, because the installer's run decides (it continues on
+ * not_synced, and rolls back with `backupPath` only when a newly minted key
+ * saved nothing). While the step runs, console output is redacted with the
+ * key (core logs server-supplied text, which could repeat it), and the
+ * result is redacted too. Errors never carry the key.
  */
 export async function connectServerStore(opts: {
   plur: Plur
@@ -132,30 +138,41 @@ export async function connectServerStore(opts: {
     }
   }
 
-  let registered: Awaited<ReturnType<Plur['registerEnterpriseServer']>>
+  const undoConsole = redactConsoleWith(token)
   try {
-    registered = await plur.registerEnterpriseServer(server, { token, personalScope: opts.personalScope })
-  } catch (err) {
-    // Core wrote nothing: a refused registration leaves config.yaml as it was.
-    throw scrub(err)
-  }
-
-  try {
-    const outcomes = await plur.refreshServerScopes({ url: server })
-    const discovery = outcomes[0] ?? {
-      url: server, status: 'failed' as const, applied: false, scopes: [], rejected: [], pinned_unlisted: [],
-      error: 'the server entry was not found after registration',
-    }
-    return { backupPath, status: registered.status, fold: registered.fold, discovery }
-  } catch (err) {
-    const e = scrub(err)
+    let registered: Awaited<ReturnType<Plur['registerEnterpriseServer']>>
     try {
-      rollbackServerStore(backupPath, configPath)
-    } catch (rb) {
-      throw new Error(`${e.message}; and config.yaml could not be restored (${scrub(rb).message})${backupPath ? `. The previous config.yaml is at ${backupPath}` : ''}`)
+      registered = await plur.registerEnterpriseServer(server, { token, personalScope: opts.personalScope })
+    } catch (err) {
+      // A refusal writes nothing. Any other throw may come after core wrote
+      // (a reload after the write, say): put the backup back first.
+      if (err instanceof PersonalScopeTakenError || err instanceof SignInHeldError) throw err
+      throw restoreThen(scrub(err), backupPath, configPath, scrub)
     }
-    throw e
+
+    try {
+      const outcomes = await plur.refreshServerScopes({ url: server })
+      const discovery = outcomes[0] ?? {
+        url: server, status: 'failed' as const, applied: false, scopes: [], rejected: [], pinned_unlisted: [],
+        error: 'the server entry was not found after registration',
+      }
+      return redactTokenDeep({ backupPath, status: registered.status, fold: registered.fold, discovery }, token)
+    } catch (err) {
+      throw restoreThen(scrub(err), backupPath, configPath, scrub)
+    }
+  } finally {
+    undoConsole()
   }
+}
+
+/** Roll back, then hand back `e` (or, when the restore failed, an error naming both and the backup). */
+function restoreThen(e: Error, backupPath: string | null, configPath: string, scrub: (err: unknown) => Error): Error {
+  try {
+    rollbackServerStore(backupPath, configPath)
+  } catch (rb) {
+    return new Error(`${e.message}; and config.yaml could not be restored (${scrub(rb).message})${backupPath ? `. The previous config.yaml is at ${backupPath}` : ''}`)
+  }
+  return e
 }
 
 /**
