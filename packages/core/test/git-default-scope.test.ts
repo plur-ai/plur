@@ -187,6 +187,13 @@ describe('gitDefaultScope', () => {
       expect(gitDefaultScope('/r', [{ ...SRC, gitlab_host: h }], { now, read: at(BACKEND) }))
         .toEqual({ kind: 'local', reason: 'not-company-gitlab' })
   })
+
+  it('a gitlab_host with an out-of-range port matches nothing, even for an ssh origin on that hostname', () => {
+    for (const h of ['gitlab.example.com:99999', 'gitlab.example.com:0', '[2001:db8::1]:99999'])
+      for (const url of ['git@gitlab.example.com:team/backend.git', 'ssh://git@[2001:db8::1]/team/backend.git'])
+        expect(gitDefaultScope('/r', [{ ...SRC, gitlab_host: h }], { now, read: at(url) }))
+          .toEqual({ kind: 'local', reason: 'not-company-gitlab' })
+  })
 })
 
 describe('loadGitScopeSources', () => {
