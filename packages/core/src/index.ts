@@ -1427,7 +1427,7 @@ export class Plur {
   private static _lockBinding = new AsyncLocalStorage<{ plur: Plur; binding: RemoteOnlyBinding | null }>()
   private _activeBinding(): RemoteOnlyBinding | null {
     const ctx = Plur._lockBinding.getStore()
-    return ctx && ctx.plur === this ? ctx.binding : this._remoteOnly
+    return ctx && ctx.plur === this ? ctx.binding : this._boundFolder
   }
 
   /**
@@ -1530,7 +1530,20 @@ export class Plur {
    * recall/inject read only that scope, dialled, plus installed packs. Null
    * everywhere else, where nothing below changes.
    */
-  private _remoteOnly: RemoteOnlyBinding | null = null
+  private _boundFolder: RemoteOnlyBinding | null = null
+  /**
+   * The binding in effect for THIS operation (Codex round 8 on #1663): the
+   * one a public mutator captured when it started, else the current one. A
+   * rebind while an operation waits on the network does not change it.
+   */
+  private get _remoteOnly(): RemoteOnlyBinding | null { return this._activeBinding() }
+
+  /** Run `fn` with the binding captured now, unless an outer operation of this instance already captured one. */
+  private _captured<T>(fn: () => Promise<T>): Promise<T> {
+    const ctx = Plur._lockBinding.getStore()
+    if (ctx?.plur === this) return fn()
+    return Plur._lockBinding.run({ plur: this, binding: this._boundFolder }, fn)
+  }
   /**
    * Cross-encoder reranker adapter (#220). Resolved lazily on first recall with
    * `rerank: true`. Defaults to the "off" sentinel when PLUR_RERANKER is unset,
@@ -2524,7 +2537,7 @@ export class Plur {
     // write. A nested lock keeps the outer operation's binding.
     const ctx = Plur._lockBinding.getStore()
     if (ctx?.plur === this) return await this._withStoreLockBound(path, fn, lockOptions)
-    return await Plur._lockBinding.run({ plur: this, binding: this._remoteOnly }, () => this._withStoreLockBound(path, fn, lockOptions))
+    return await Plur._lockBinding.run({ plur: this, binding: this._boundFolder }, () => this._withStoreLockBound(path, fn, lockOptions))
   }
 
   private async _withStoreLockBound<T>(path: string, fn: () => Promise<T>, lockOptions?: AsyncLockOptions): Promise<T> {
@@ -4751,6 +4764,8 @@ export class Plur {
   }
 
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.learn(statement, context))
     this._assertWritable()
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
@@ -5250,6 +5265,8 @@ export class Plur {
   }
 
   async learnRouted(statement: string, context?: LearnContext, options?: LearnRoutedOptions): Promise<Engram> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.learnRouted(statement, context, options))
     // 0.21.1: the caller's deadline for the server leg ONLY. Local work (load,
     // dedup, write, index) is never raced: a slow local save is a success. A
     // server that does not answer inside the deadline takes the existing
@@ -5858,6 +5875,8 @@ export class Plur {
 
   /** Async learn with LLM-driven deduplication (Ideas 1+2+19). */
   async learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.learnAsync(statement, context))
     this._assertWritable()
     // remote-only: fill/refuse the scope up front, so the LLM dedup pass only
     // ever compares against (and merges into) the folder's team scope.
@@ -5883,6 +5902,8 @@ export class Plur {
     llm?: LlmFunction,
     opts?: { maxLlmCalls?: number },
   ): Promise<LearnBatchResult> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.learnBatch(statements, llm, opts))
     this._assertWritable()
     // remote-only: every item is checked BEFORE any is written, so a refused
     // item never leaves the batch half-applied.
@@ -8733,6 +8754,8 @@ export class Plur {
     scope?: string,
     options?: { source?: FeedbackSource },
   ): Promise<MutationOutcome> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.feedback(id, signal, scope, options))
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Rating', scope)
     const warnings: string[] = []
@@ -9122,6 +9145,8 @@ export class Plur {
    * operation returning the written engram.
    */
   async updateEngram(updated: Engram): Promise<boolean> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.updateEngram(updated))
     return (await this._updateEngramReturning(updated)) !== null
   }
 
@@ -9448,6 +9473,8 @@ export class Plur {
    * than a placeholder — {@link setPinnedAsync} is the same call.
    */
   async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.setPinned(id, pinned, options))
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Pinning', options?.scope)
     // Which store holds it (0.21.1). Ids are minted per store, so a bare id
@@ -9925,6 +9952,8 @@ export class Plur {
    * dedup tracking (two agents learned the same fact; one forgets — the
    * other's reference should remain). */
   async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.forget(id, reason, options))
     this._assertWritable()
     // remote-only (audit of #1521, B2): a save queued from a remote-only
     // folder is DELETED, not retired — a retired row would keep its content
@@ -10405,6 +10434,8 @@ export class Plur {
     targetScope: string,
     options?: RescopeOptions,
   ): Promise<{ results: RescopeResult[]; success: boolean }> {
+    // One binding for the whole operation (Codex round 8 on #1663).
+    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.rescope(idOrIds, targetScope, options))
     // Public mutator (#731): both routes mutate — the remote push retires the
     // local source, the local route rewrites scope in place — so gate before
     // any routing, like every other mutator.
@@ -14120,10 +14151,10 @@ Generate an improved version of the procedure that prevents this failure. Return
         : where
           ? `the folder map ${folderEscaped(where.file)}${where.line !== undefined ? ` (line ${where.line})` : ''} could not be read`
           : 'the folder map could not be read'
-      this._remoteOnly = { folder: dir, scope: null, blocked: why }
+      this._boundFolder = { folder: dir, scope: null, blocked: why }
       return
     }
-    this._remoteOnly = policy.mode === 'remote-only' ? { folder: dir, scope: policy.scope ?? null } : null
+    this._boundFolder = policy.mode === 'remote-only' ? { folder: dir, scope: policy.scope ?? null } : null
   }
 
   /**
@@ -14132,7 +14163,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * succeeds.
    */
   bindFolderUnresolved(dir: string, why: string): void {
-    this._remoteOnly = { folder: dir, scope: null, blocked: `the folder decision for ${folderEscaped(dir)} could not be resolved (${folderEscaped(why)})` }
+    this._boundFolder = { folder: dir, scope: null, blocked: `the folder decision for ${folderEscaped(dir)} could not be resolved (${folderEscaped(why)})` }
   }
 
   private _remoteOnlyError(refusal: RemoteOnlyRefusal, requested?: string, detail?: string): RemoteOnlyWriteError {
