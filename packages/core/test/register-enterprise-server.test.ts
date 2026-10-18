@@ -544,3 +544,27 @@ describe('registerEnterpriseServer — Codex audit round 4', () => {
     expect(logs.join('\n')).not.toMatch(/sekrit/)
   })
 })
+
+describe('registerEnterpriseServer — Codex audit round 5', () => {
+  it('a per-scope entry the loader rejects is never folded, so its scope does not start going to the server', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: project:acme/private\n    readonly: "true"\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.kept_separate).toEqual([{ scope: 'project:acme/private', why: 'invalid-entry' }])
+    expect(resolveScopeTarget('project:acme/private', loadConfig(configPath()).stores ?? []).kind).toBe('local')
+  })
+
+  it('an entry whose dial differs from the server entry serving the scope (absent counts) is not folded', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n    scopes: []\n  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n    dial: never\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.kept_separate).toEqual([{ scope: ME, why: 'metadata-differs' }])
+    expect(rawConfig().stores).toHaveLength(2)
+  })
+
+  it('an unreadable outbox fails the registration before anything is written', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: old-key\n    scope: ${ME}\n    scopes: []\n`)
+    const before = readFileSync(configPath(), 'utf8')
+    vi.spyOn(plur, 'listOutbox').mockRejectedValue(new Error('engrams.yaml unreadable'))
+    await expect(plur.registerEnterpriseServer(URL_, { token: 'new-key', personalScope: ME })).rejects.toThrow(/unreadable/)
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+  })
+})
