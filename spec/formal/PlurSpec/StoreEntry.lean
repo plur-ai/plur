@@ -41,6 +41,13 @@ writes nothing and is read only by the MCP server; expand, collapse and rotation
 Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds.
 index.ts: `Plur.setFolder` also passes the expanded stores to the folder check; expand,
 collapse, registration and rotation are untouched.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+§6's `register` covers the run after any removal; its theorems hold for that input.
 -/
 
 set_option linter.deprecated false

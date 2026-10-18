@@ -50,6 +50,18 @@ act only on an exact entry and refuse a scope two servers claim (`lookup_exact`,
 `lookup_refuses_conflict`); counterexamples `containment_disagrees`,
 `folder_check_saw_no_stores`, `old_lookup_picks_first`. store-resolver.ts: only
 `ScopeConflictError` gains an optional wording argument; `resolveScopeTarget` is unchanged.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+Discovery and the cache write are untouched.
+Gate of #1665 (same day): two options added, both still within one locked write. `keepSignIn`
+refuses (`SignInHeldError`, nothing written) when any entry already has the server's url — the
+one-time config.json move uses it (Login.lean §3, `held`, now judged under the lock). `beforeRemove`
+runs under the lock before a write that removes holders, and a throw writes nothing (the
+owner-only backup of config.yaml). The holder rule itself is unchanged.
 -/
 
 set_option linter.unusedSimpArgs false

@@ -205,20 +205,73 @@ function sameRoute(x: string, scope: string): boolean {
  * serving it exactly would rank behind this one, when one serves it only in
  * another letter case, or when a path entry serves it only in another case.
  */
-function takesPersonalScope(stores: unknown[], si: number, scope: string): boolean {
+function personalScopeHolders(stores: unknown[], si: number, scope: string): number[] {
   const me = stores[si] as Record<string, unknown>
   const rank = (r: Record<string, unknown>): number => (r.readonly === true ? 2 : 1)
-  return stores.some((r, j) => {
-    if (!isPlainObj(r)) return false
+  return stores.flatMap((r, j) => {
+    if (!isPlainObj(r)) return []
     const served = servedScopes(r)
     // The entry itself, after the fold, serving it in another case: an entry
     // folded into it served the personal scope (case-folded) before.
-    if (j === si) return served.some(x => x !== scope && x.toLowerCase() === scope.toLowerCase())
+    if (j === si) return served.some(x => x !== scope && x.toLowerCase() === scope.toLowerCase()) ? [j] : []
     const exact = served.includes(scope)
-    if (!exact) return served.some(x => x.toLowerCase() === scope.toLowerCase())
-    if (typeof r.url !== 'string') return false
-    return rank(me) < rank(r) || (rank(me) === rank(r) && si < j)
+    if (!exact) return served.some(x => x.toLowerCase() === scope.toLowerCase()) ? [j] : []
+    if (typeof r.url !== 'string') return []
+    return rank(me) < rank(r) || (rank(me) === rank(r) && si < j) ? [j] : []
   })
+}
+
+/**
+ * An entry that holds the personal scope's writes, as `plur login` names it
+ * (#1638): the url's origin (never a user name, password or key) or the path,
+ * the scope as that entry spells it, and whether it is readonly. `sameServer`
+ * marks the server entry being registered itself, serving the scope in
+ * another letter case; that one is not removed for the caller.
+ */
+export interface ScopeHolder {
+  url?: string
+  path?: string
+  scope: string
+  readonly: boolean
+  sameServer?: true
+}
+
+/**
+ * Registration refused: another entry takes the personal scope's writes and
+ * registering would take them over (owner decision on B5: refuse; the
+ * installer offers to remove the stale entry). `holders` names those entries;
+ * `removable` is true when all of them are separate entries that
+ * `removeStale` can remove.
+ */
+export class PersonalScopeTakenError extends Error {
+  constructor(message: string, readonly personalScope: string, readonly holders: ScopeHolder[], readonly removable: boolean) {
+    super(message)
+    this.name = 'PersonalScopeTakenError'
+  }
+}
+
+function describeHolder(r: Record<string, unknown>, scope: string, sameServer: boolean): ScopeHolder {
+  const served = servedScopes(r)
+  const variant = served.find(x => x !== scope && x.toLowerCase() === scope.toLowerCase())
+  const spelled = (sameServer ? variant : served.find(x => x === scope) ?? variant) ?? scope
+  return {
+    ...(typeof r.url === 'string' ? { url: safeOrigin(r.url) } : typeof r.path === 'string' ? { path: r.path } : {}),
+    scope: spelled,
+    readonly: r.readonly === true,
+    ...(sameServer ? { sameServer: true as const } : {}),
+  }
+}
+
+/**
+ * Registration with `keepSignIn` refused: config.yaml already holds a sign-in
+ * (an entry with that server's url) for the server, which is never replaced
+ * (#1638: the one-time config.json move). Names the origin only.
+ */
+export class SignInHeldError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SignInHeldError'
+  }
 }
 
 /** True when a url string carries a user name or password. */
@@ -361,6 +414,14 @@ export interface ServerRegistration {
   personalScope: string
   /** Merged into the entry's `enterprise` block. */
   enterprise?: Record<string, string>
+  /** Remove the entries that hold the personal scope (the ones a
+   *  {@link PersonalScopeTakenError} names) and register, in one result
+   *  (#1638). Refused as before when one of them cannot be removed. */
+  removeStale?: boolean
+  /** Refuse with {@link SignInHeldError} when any entry for this server's
+   *  url already holds a key (token or token_env); judged on the file under
+   *  the lock. */
+  keepSignIn?: boolean
 }
 
 /**
@@ -381,8 +442,19 @@ export interface ServerRegistration {
  */
 export function registerServerEntry(rawStores: unknown[], reg: ServerRegistration): {
   stores: unknown[]; status: 'added' | 'updated' | 'unchanged'; report: Omit<FoldReport, 'queued_by_scope'>; entry: Record<string, unknown>
+  removed: ScopeHolder[]
 } {
+  // One object per position: YAML aliases load as the same object at several
+  // positions, and the holders are mapped back to their positions by identity
+  // (#1665 gate). A shallow copy changes no content.
+  rawStores = rawStores.map(r => (isPlainObj(r) ? { ...r } : r))
   const key = normalizeEndpointUrl(reg.url)
+  // A sign-in: an entry for the url with a key or a key reference (token or
+  // token_env, set or not); an entry with neither signs nothing in.
+  if (reg.keepSignIn && rawStores.some(r => isPlainObj(r) && typeof r.url === 'string' && normalizeEndpointUrl(r.url) === key &&
+    ((typeof r.token === 'string' && r.token !== '') || (typeof r.token_env === 'string' && r.token_env !== '')))) {
+    throw new SignInHeldError(`config.yaml already holds a sign-in for ${safeOrigin(reg.url)}; it is kept. Nothing was changed.`)
+  }
   const at = serverEntriesAt(rawStores, key)
   if (at.length > 1) {
     throw new Error(`more than one server entry in config.yaml is for ${safeOrigin(reg.url)}, so which key to replace is ambiguous. Nothing was changed. Keep one of them.`)
@@ -435,10 +507,44 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   const oldEntry = at.length ? rawStores[at[0]] : undefined
   const alreadyServed = ServerStoreEntrySchema.safeParse(oldEntry).success && servedScopes(oldEntry).includes(reg.personalScope)
   if (!alreadyServed) {
-    if (takesPersonalScope(folded, si, reg.personalScope)) {
-      throw new Error(`the personal scope ${reg.personalScope} is already served by another entry in config.yaml, and registering ${safeOrigin(reg.url)} would move its writes there. Nothing was changed. Remove that entry, then register again.`)
+    const holders = personalScopeHolders(folded, si, reg.personalScope)
+    if (holders.length) {
+      // Each holder as an entry of the input: a separate entry is the same
+      // object in `folded`; a holder that is the server entry itself comes
+      // from the input entries folded into it in another case (removable),
+      // or from that entry's own scopes (not removable for the caller).
+      const remove = new Set<number>()
+      const named: ScopeHolder[] = []
+      let removable = true
+      const lower = reg.personalScope.toLowerCase()
+      for (const j of holders) {
+        if (j !== si) {
+          const k = rawStores.indexOf(folded[j])
+          if (k < 0) removable = false
+          else remove.add(k)
+          named.push(describeHolder(folded[j] as Record<string, unknown>, reg.personalScope, false))
+          continue
+        }
+        const sources = rawStores.flatMap((r, k) => (k !== at[0] && !folded.includes(r) &&
+          servedScopes(r).some(x => x !== reg.personalScope && x.toLowerCase() === lower) ? [k] : []))
+        const own = at.length ? servedScopes(rawStores[at[0]]).some(x => x !== reg.personalScope && x.toLowerCase() === lower) : false
+        if (own || !sources.length) {
+          removable = false
+          named.push(describeHolder(entry, reg.personalScope, true))
+        }
+        for (const k of sources) {
+          remove.add(k)
+          named.push(describeHolder(rawStores[k] as Record<string, unknown>, reg.personalScope, false))
+        }
+      }
+      if (reg.removeStale && removable && remove.size) {
+        const rest = registerServerEntry(rawStores.filter((_, k) => !remove.has(k)), { ...reg, removeStale: false })
+        return { ...rest, status: rest.status === 'unchanged' ? 'updated' : rest.status, removed: named }
+      }
+      throw new PersonalScopeTakenError(`the personal scope ${reg.personalScope} is already served by another entry in config.yaml, and registering ${safeOrigin(reg.url)} would move its writes there. Nothing was changed. Remove that entry, then register again.`,
+        reg.personalScope, named, removable)
     }
   }
   const status = at.length === 0 ? 'added' : isDeepStrictEqual(folded, rawStores) ? 'unchanged' : 'updated'
-  return { stores: folded, status, report, entry }
+  return { stores: folded, status, report, entry, removed: [] }
 }

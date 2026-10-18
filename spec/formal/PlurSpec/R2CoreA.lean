@@ -57,6 +57,13 @@ writes nothing and is read only by the MCP server; no section here reads it.
 Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds.
 `_isRemoteWriteScope` now reads `_remoteWriteEntry`, the same resolver answer
 (`remote` and writable); provenance and the recurrence gate see no change.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+No section here reads registration.
 -/
 
 namespace PlurSpec.R2CoreA

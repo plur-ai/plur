@@ -56,6 +56,13 @@ pinnedQuota) and `_isOwnRemoteNamespace` read the resolver too (RoutingDiscovery
 `lookup`); `isLocalOnlyScope` for a `project:` scope is exact match (ScopeInject §3). No write
 branch modelled here changed: outside a conflict, which learn refuses before saving, the
 outbox entry is the same one the old first-writable `find` returned.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+No write-path branch changed: the entries left are routed as before.
 -/
 
 namespace PlurSpec.WritePath
