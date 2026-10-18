@@ -340,7 +340,7 @@ async function startStub(): Promise<Stub> {
       if (req.method === 'GET' && path === '/api/v1/me') {
         const bearer = (req.headers.authorization ?? '').replace(/^Bearer /, '')
         if (!stub.minted.includes(bearer) && bearer !== stub.legacyToken) { res.writeHead(401).end(); return }
-        return json(res, 200, { username: 'alice', org_id: 'acme', role: 'developer', scopes: ['user:acme:alice', 'group:acme/team'], scopes_status: 'ok', scope_metadata: stub.reflectMeta ? [{ scope: bearer }] : [], scope_metadata_status: 'ok', gitlab_host: null, project_paths: {} })
+        return json(res, 200, { username: 'alice', org_id: 'acme', role: 'developer', scopes: ['user:acme:alice', 'group:acme/team', ...(stub.reflectMeta ? [`group:acme/${bearer}`] : [])], scopes_status: 'ok', scope_metadata: stub.reflectMeta ? [{ scope: bearer }, { scope: `group:acme/${bearer}` }, { scope: 'group:acme/team', sensitivity: { forbid: [bearer] } }] : [], scope_metadata_status: 'ok', gitlab_host: null, project_paths: {} })
       }
       res.writeHead(404).end()
     })
@@ -471,6 +471,7 @@ describe('plur login <host> (process, contract server)', () => {
 
   it('a key the server reflects into /me scope metadata is not logged', async () => {
     stub.reflectMeta = true
+    // Granted scope names and sensitivity values that carry the key too.
     const r = await runCli(['login', stub.url, '--no-open'], home)
     expect(stub.minted).toHaveLength(1)
     expect(r.out).not.toContain(stub.minted[0])
