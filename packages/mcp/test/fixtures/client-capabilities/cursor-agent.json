@@ -1,0 +1,13 @@
+{
+  "clientInfo": {
+    "name": "Cursor",
+    "version": "1.0.0"
+  },
+  "capabilities": {
+    "elicitation": {
+      "form": {}
+    }
+  },
+  "recorded": "2026-10-18",
+  "source": "manual check"
+}

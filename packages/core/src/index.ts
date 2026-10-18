@@ -2562,23 +2562,62 @@ export class Plur {
   /** Exactly the router's rule (`_resolveRemoteStoreForScope`): a writable URL
    *  store for exactly this scope, so a write to it leaves the machine. */
   private _isRemoteWriteScope(scope: string): boolean {
-    const target = resolveScopeTarget(scope, this.config.stores ?? [])
-    return target.kind === 'remote' && target.writable
+    return this._remoteWriteEntry(scope) !== undefined
   }
 
   /**
-   * For a personal `user:` scope that exactly names a configured store: the
-   * ONE selected entry (`personalStoreEntry` — local first, then writable url,
-   * then readonly url). `undefined` when the scope is not personal or names
-   * no store exactly, so callers keep their previous exact-match rule. Pure
-   * config lookup (no reload): it runs per engram on some paths, after the
-   * caller's own reload.
+   * The entry a write to `scope` goes through when it leaves the machine: the
+   * resolver's `remote`, writable answer (#1631), else undefined. The learn
+   * path's outbox target reads it (#1633 row 34), so the queued `target_url`
+   * is always the server the router dials.
    */
-  private _exactPersonalStore(scope: string): StoreEntry | null | undefined {
-    if (!scope.toLowerCase().startsWith('user:')) return undefined
-    const stores = this.config.stores ?? []
-    if (!stores.some(s => s.scope === scope)) return undefined
-    return personalStoreEntry(scope, stores.filter(s => typeof s.scope === 'string'))
+  private _remoteWriteEntry(scope: string): StoreEntry | undefined {
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    return target.kind === 'remote' && target.writable ? target.entry : undefined
+  }
+
+  /**
+   * The url store an explicit `scope` argument names for an id lookup
+   * (forget, feedback, setPinned; #1633 row 34): the resolver's `remote`
+   * entry, so a lookup acts on the store a write to that scope goes to, and
+   * matching is exact. A scope two servers claim throws ScopeConflictError
+   * before any server is asked (`outcome` says what did not happen); acting
+   * on whichever server is listed first would rate, pin or retire a row on a
+   * server the caller may not mean. Any other answer → undefined: no url
+   * store claims exactly this scope.
+   */
+  private _scopedUrlEntry(scope: string, outcome: string): StoreEntry | undefined {
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers, outcome)
+    // Under a company server's org but not granted: no store claims it, so
+    // there is nothing to act on, and the remote walk must not act on a row
+    // of another store instead (gate of #1667).
+    if (target.kind === 'unauthorized') {
+      throw new Error(`"${scope}" is not granted to you on ${target.server}; ${outcome}. `
+        + 'Ask an admin for access, or pass a granted scope (plur stores list).')
+    }
+    return target.kind === 'remote' ? target.entry : undefined
+  }
+
+  /**
+   * The store a scoped pin PATCHes (#1633 row 34): {@link _scopedUrlEntry}
+   * over the writable stores only, so a readonly store listed for the same
+   * scope never competes (#1532 re-audit R6) and two writable servers are a
+   * refused conflict.
+   */
+  /**
+   * The stores a scoped pin resolves over: every path store (a local store
+   * keeps its place in the personal selection, even readonly) and the
+   * writable url stores (a readonly url store never receives the PATCH).
+   */
+  private _pinCandidateStores(): StoreEntry[] {
+    return (this.config.stores ?? []).filter(s => !s.url || s.readonly !== true)
+  }
+
+  private _pinTargetEntry(scope: string, outcome: string): StoreEntry | undefined {
+    const target = resolveScopeTarget(scope, this._pinCandidateStores())
+    if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers, outcome)
+    return target.kind === 'remote' ? target.entry : undefined
   }
 
   /**
@@ -2611,11 +2650,11 @@ export class Plur {
    * the user's own. Unknown identity → false (fail closed).
    */
   private _isOwnRemoteNamespace(scope: string): boolean {
-    // The entry the write lands on (#1515: one selection for a personal scope).
-    const personal = this._exactPersonalStore(scope)
-    const entry = personal !== undefined
-      ? personal
-      : (this.config.stores ?? []).find(s => !!s.url && s.scope === scope)
+    // The entry the write lands on: the resolver's answer (#1633 row 34),
+    // which for a personal scope is the ONE selected store (#1515). A scope
+    // two servers claim is nobody's own namespace (fail closed).
+    const target = resolveScopeTarget(scope, this.config.stores ?? [])
+    const entry = target.kind === 'remote' ? target.entry : undefined
     if (!entry?.url) return false
     const id = this._meIdentities.get(this._meKey(entry.url, entry.token))
     if (!id) return false
@@ -4692,11 +4731,11 @@ export class Plur {
         // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
         logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)
       } else if (remoteDriver) {
-        // Audit iter-1 fix (Dijkstra): defensive lookup. The resolver and
-        // this find use the same predicate semantically (writable + matching
-        // scope), but we still guard for null because config drift between
-        // resolver-time and outbox-time is possible if config is reloaded.
-        const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
+        // Audit iter-1 fix (Dijkstra): defensive lookup, kept for config
+        // drift between resolver-time and outbox-time. The target is the
+        // resolver's own writable entry (#1633 row 34), so it is the server
+        // the router dialled, never merely the first one listed.
+        const storeEntry = this._remoteWriteEntry(scope)
         // Idempotency key for this write (2026-09-29 audits): random, minted
         // once, persisted on the outbox entry, never derived from an id.
         const pushKey = randomUUID()
@@ -5172,7 +5211,8 @@ export class Plur {
       // graceful-fallback path that must never throw. If no writable entry
       // matches the scope (e.g. readonly remote), we still save the local
       // engram but omit the outbox marker — the retry path will skip it.
-      const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
+      // The resolver's writable entry (#1633 row 34); never throws.
+      const storeEntry = this._remoteWriteEntry(scope)
       const saveFallback = async () => {
         const engrams = await this._primaryStore.load()
         // Replace placeholder ID with a real local ID
@@ -8378,7 +8418,9 @@ export class Plur {
     // Scope-targeted routing (#850): when the caller knows which store the engram
     // lives in, route directly and skip the first-match-wins walk.
     if (scope && scope !== 'primary') {
-      const entry = (this.config.stores ?? []).find(s => s.url && s.scope === scope)
+      // The resolver's entry (#1633 row 34): exact match, and a scope two
+      // servers claim is refused before either is asked.
+      const entry = this._scopedUrlEntry(scope, 'nothing was rated')
       if (entry) {
         if (entry.readonly === true) throw new Error('Engram is in a readonly store')
         const serverId = this._stripForScope(id, entry.scope)
@@ -8529,7 +8571,10 @@ export class Plur {
     // 'primary')` on an id absent locally rated a REMOTE engram. One severity
     // band below the retire (a mis-targeted signal is recoverable), same
     // defect, same predicate.
-    if (scope && isLocalOnlyScope(scope, this.config.stores ?? [])) {
+    // An explicit scope the resolver keeps local (a path store, or the local
+    // store a personal scope selects) is local too (gate of #1667).
+    if (scope && (isLocalOnlyScope(scope, this.config.stores ?? [])
+      || resolveScopeTarget(scope, this.config.stores ?? []).kind === 'local')) {
       throw new Error(
         `Engram not found in the local store: ${id} (scope: "${scope}"). `
         + `That scope names a local target, so no remote store was searched. `
@@ -8542,6 +8587,9 @@ export class Plur {
     const unverifiedStores: string[] = []
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
+      // An explicit scope names its store exactly (#1633): the walk never
+      // rates a row of a store that does not claim that scope.
+      if (scope && entry.scope !== scope) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
       // Automatic feedback (#1310): a server that does not advertise
       // `feedback.source` is skipped before any engram lookup is spent on it.
@@ -9034,8 +9082,12 @@ export class Plur {
       throw new TypeError('plur.setPinned: scope must be a non-empty string')
     }
     if (targetScope) this.reloadConfigIfChanged()
+    // The resolver's entry over the stores a pin can write to (#1633 row 34):
+    // a readonly store never receives the PATCH, so it does not compete
+    // (#1532 re-audit R6), and a scope two WRITABLE servers claim is refused
+    // before either is asked.
     const scopedEntry = targetScope && targetScope !== 'primary'
-      ? (this.config.stores ?? []).find(s => s.url && s.scope === targetScope && s.readonly !== true)
+      ? this._pinTargetEntry(targetScope, `nothing was ${pinned ? 'pinned' : 'unpinned'}`)
       : undefined
     if (targetScope && targetScope !== 'primary' && !scopedEntry) {
       throw new Error(`Cannot pin in scope "${targetScope}": no writable url store is registered for it. Use scope "primary" for the local engram.`)
@@ -9363,16 +9415,23 @@ export class Plur {
     const used = entries.reduce((n, e) => n + e.cost, 0)
 
     let candidate: { id: string; cost: number; would_be: number; fits: boolean } | undefined
-    if (candidateId) {
+    // #1633 row 34: setPinned refuses a scope two servers claim, so there is
+    // no pin to cost — and no server is asked for the row.
+    const quotaScope = options?.scope
+    const quotaTarget = quotaScope && quotaScope !== 'primary'
+      ? resolveScopeTarget(quotaScope, this._pinCandidateStores())
+      : undefined
+    // An explicit non-primary scope costs a candidate only where setPinned
+    // would pin it: a writable url store the resolver selects.
+    const pinnable = !quotaTarget || (quotaTarget.kind === 'remote' && quotaTarget.writable)
+    if (candidateId && pinnable) {
       // #1532 review F6: cost the engram the pin will actually change. A bare
       // id can name a local engram and an unrelated remote one; with a scope,
       // look where that scope says, as setPinned will.
-      const scope = options?.scope
+      const scope = quotaScope
       // The store the pin WRITES to (#1532 re-audit R6): setPinned takes the
-      // first writable url store for the scope, so cost that one's row.
-      const entry = scope && scope !== 'primary'
-        ? (this.config.stores ?? []).find(s => s.url && s.scope === scope && s.readonly !== true)
-        : undefined
+      // resolver's writable entry for the scope (#1633), so cost that one's row.
+      const entry = quotaTarget?.kind === 'remote' && quotaTarget.writable ? quotaTarget.entry : undefined
       const e = scope === 'primary'
         ? (await this._loadTargeted([candidateId])).find(r => r.id === candidateId) ?? null
         : entry
@@ -9514,7 +9573,9 @@ export class Plur {
     // scope that is in fact configured (#864 is the same class of staleness).
     if (targetScope) this.reloadConfigIfChanged()
     if (targetScope && targetScope !== 'primary') {
-      const entry = (this.config.stores ?? []).find(s => s.url && s.scope === targetScope)
+      // The resolver's entry (#1633 row 34): exact match, and a scope two
+      // servers claim is refused before either is asked to delete.
+      const entry = this._scopedUrlEntry(targetScope, 'nothing was retired')
       if (entry) {
         if (entry.readonly === true) throw new Error('Cannot retire engram from readonly store')
         const serverId = this._stripForScope(id, entry.scope)
@@ -9758,9 +9819,13 @@ export class Plur {
     // remote DELETE each for global/local/project:foo, 0 for primary. The
     // predicate is shared with `feedback` now precisely so the two cannot
     // drift again — the drift was the bug (#855).
-    // Decision E4: stores are passed, so a `project:*` scope a URL store
-    // covers (equal or segment-contained) is NOT local-only and reaches it.
-    if (targetScope && isLocalOnlyScope(targetScope, this.config.stores ?? [])) {
+    // Decision E4 (amended by O5, #1633): stores are passed, so a `project:*`
+    // scope a URL store claims EXACTLY (the resolver) is NOT local-only and
+    // reaches it; one a store only contains stays local, as its writes do.
+    // An explicit scope the resolver keeps local (a path store, or the local
+    // store a personal scope selects) is local too (gate of #1667).
+    if (targetScope && (isLocalOnlyScope(targetScope, this.config.stores ?? [])
+      || resolveScopeTarget(targetScope, this.config.stores ?? []).kind === 'local')) {
       throw new Error(
         `Engram not found in the local store: ${id} (scope: "${targetScope}"). `
         + `That scope names a local target, so no remote store was searched. `
@@ -9784,6 +9849,9 @@ export class Plur {
     let pendingUnreachableError: string | null = null
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
+      // An explicit scope names its store exactly (#1633): the walk never
+      // retires a row of a store that does not claim that scope.
+      if (targetScope && entry.scope !== targetScope) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
       if (entry.readonly === true) {
         // Check if the engram exists here before throwing, so readonly
@@ -13574,8 +13642,12 @@ Generate an improved version of the procedure that prevents this failure. Return
     options?: { nonce?: string; session?: string; home?: string; literal?: boolean; refuseCoveringHome?: boolean },
   ): FolderEntry {
     this.reloadConfigIfChanged()
-    const configuredScopes = (this.config.stores ?? []).map(s => s.scope)
-    return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, ...options })
+    const stores = this.config.stores ?? []
+    const configuredScopes = stores.map(s => s.scope)
+    // The stores reach the check so a project scope is judged like write
+    // routing judges it (#1633): one a server serves needs it configured, one
+    // a company server withholds is refused naming the server.
+    return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, stores, ...options })
   }
 
   /** Remove the exact entry for `folder` (`plur folders rm`); `nonce` as for setFolder. */
