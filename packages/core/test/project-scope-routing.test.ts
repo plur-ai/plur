@@ -139,6 +139,49 @@ describe('explicit-scope lookups go through the resolver (#1633, row 34)', () =>
     expect(calls.filter(c => c.method === 'DELETE')).toHaveLength(0)
   })
 
+  describe('an explicit scope never reaches a store that does not claim it (gate of #1667)', () => {
+    // ENG-REMOTE-1 lives on the server in E.scope (the mock answers it for every GET).
+    it('forget with a project scope the company server withholds is refused, nothing deleted', async () => {
+      writeConfig(dir, [{ url: SERVER, token: 't', scopes: [E.scope], enterprise: {}, discovery: { status: 'ok', org_id: 'acme' } }])
+      const plur = new Plur({ path: dir })
+      await expect(plur.forget('ENG-REMOTE-1', 'x', { scope: 'project:acme/other', force: true }))
+        .rejects.toThrow(/not granted to you on https:\/\/plur\.example\.com.*nothing was retired/)
+      expect(mutating()).toHaveLength(0)
+    })
+
+    it('feedback with a project scope the company server withholds is refused, nothing rated', async () => {
+      writeConfig(dir, [{ url: SERVER, token: 't', scopes: [E.scope], enterprise: {}, discovery: { status: 'ok', org_id: 'acme' } }])
+      const plur = new Plur({ path: dir })
+      await expect(plur.feedback('ENG-REMOTE-1', 'positive', 'project:acme/other'))
+        .rejects.toThrow(/not granted to you on https:\/\/plur\.example\.com.*nothing was rated/)
+      expect(mutating()).toHaveLength(0)
+    })
+
+    it('forget with a personal scope a local store keeps does not retire a row of another url store', async () => {
+      writeFileSync(join(dir, 'personal.yaml'), 'engrams: []\n')
+      writeConfig(dir, [
+        { path: join(dir, 'personal.yaml'), scope: 'user:acme:me' },
+        { url: SERVER, token: 't', scope: 'user:acme:me', shared: false, readonly: false },
+        { url: SERVER, token: 't', scope: E.scope, shared: true, readonly: false },
+      ])
+      const plur = new Plur({ path: dir })
+      await expect(plur.forget('ENG-REMOTE-1', 'x', { scope: 'user:acme:me', force: true })).rejects.toThrow(/not found/i)
+      expect(mutating()).toHaveLength(0)
+    })
+
+    it('feedback with a personal scope a local store keeps does not rate a row of another url store', async () => {
+      writeFileSync(join(dir, 'personal.yaml'), 'engrams: []\n')
+      writeConfig(dir, [
+        { path: join(dir, 'personal.yaml'), scope: 'user:acme:me' },
+        { url: SERVER, token: 't', scope: 'user:acme:me', shared: false, readonly: false },
+        { url: SERVER, token: 't', scope: E.scope, shared: true, readonly: false },
+      ])
+      const plur = new Plur({ path: dir })
+      await expect(plur.feedback('ENG-REMOTE-1', 'positive', 'user:acme:me')).rejects.toThrow(/not found/i)
+      expect(mutating()).toHaveLength(0)
+    })
+  })
+
   describe('a scope two servers claim', () => {
     beforeEach(() => {
       writeConfig(dir, [
