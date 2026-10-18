@@ -11,6 +11,7 @@ import { resolveProjectRemoteFromConfig } from './project-remote.js'
 import { isSharedScope } from './scope-util.js'
 import { isLocalOnlyScope } from './scope-target.js'
 import { renderFolderMapText, surgicalFolderMapText } from './folder-map-text.js'
+import { escapedPath, folderCommandOfferable, quoted } from './folder-ask.js'
 
 /**
  * The folder map (#1347): `<PLUR home>/folders.yaml` holds the user's own
@@ -1244,10 +1245,14 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
       // to local memory; leaving remote-only takes --on/--off/--ask or rm. The
       // new scope must be served by a url store, like any remote-only scope.
       if (!(opts.remoteScopes ?? []).includes(change.scope)) {
+        // The folder as data, and a command only for a folder the folder
+        // question could offer one for (gate review of #1663, #1418 rules).
         throw new FolderMapError('scope-unconfigured',
-          `"${change.scope}" is not served by a remote store (a url store in config.yaml), and ${folder} is ` +
-          'remote-only, so its memory would have nowhere to go; nothing was changed. To keep memory on this ' +
-          `machine there instead, say so: plur folders set ${folder} --on.`)
+          `${escapedPath(change.scope)} is not served by a remote store (a url store in config.yaml), and ` +
+          `${escapedPath(folder)} is remote-only, so its memory would have nowhere to go; nothing was changed. ` +
+          (folderCommandOfferable(folder)
+            ? `To keep memory on this machine there instead, say so: plur folders set ${quoted(folder)} --on.`
+            : 'To keep memory on this machine there instead, change its entry to plur: on (plur folders list).'))
       }
     // `--scope` alone means on, written as a literal `plur: on` (#1567): the
     // folder resolves exactly as with no `plur:` line, but `plur folders
