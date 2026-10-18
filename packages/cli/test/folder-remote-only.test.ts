@@ -326,4 +326,16 @@ describe('gate review of #1663: nothing of the session is kept on this machine',
     expect(r.stdout + r.stderr).toMatch(/is remote-only[\s\S]*personal store/)
     expect(readFileSync(join(plurHome, 'engrams.yaml'), 'utf8')).toBe(before)
   }, 60_000)
+  it('the session-end outbox flush is bound to the payload folder, not the hook process folder', async () => {
+    const { flushOutboxForHook } = await import('../src/lib/hook-outbox-flush.js')
+    writeFileSync(join(plurHome, 'engrams.yaml'), 'engrams:\n  - id: X\n    structured_data:\n      _outbox: {}\n')
+    const calls: string[] = []
+    const fake = {
+      bindFolderPolicy: (d: string, p: { mode: string }) => { calls.push(`bind ${d} ${p.mode}`) },
+      flushOutbox: async () => { calls.push('flush'); return { flushed: 0, failed: 0, deferred: 0, skipped: 0 } },
+    }
+    const policy = { mode: 'remote-only' as const, scope: TEAM, remoteAllowed: false, source: 'map' as const }
+    await flushOutboxForHook({ path: plurHome } as never, { hook: 't', budgetMs: 1000, plur: fake as never, folder: { dir: repo, policy } } as never)
+    expect(calls).toEqual([`bind ${repo} remote-only`, 'flush'])
+  })
 })

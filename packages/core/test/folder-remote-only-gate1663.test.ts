@@ -181,3 +181,71 @@ describe('RemoteOnlyStoreGuard forwards afterCommit', () => {
     expect(callbacks).toEqual([cb])
   })
 })
+
+describe('Codex round 2 on #1663', () => {
+  it('provenance is not written to this machine for a save queued from a remote-only folder', async () => {
+    const cfg = yaml.load(readFileSync(join(root, 'config.yaml'), 'utf8')) as any
+    cfg.provenance = { generate: 'always' }
+    writeFileSync(join(root, 'config.yaml'), yaml.dump(cfg))
+    team.appendErrorResponse = { status: 503, body: 'down' }
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    const q = await plur.learnRouted('the client deploy key rotates PROVSECRET monthly', { type: 'procedural' })
+    await backgroundPushesSettled(root).catch(() => {})
+    await expect(plur.writeProvenance(q.id, { include_statement: true } as any)).rejects.toThrow(/remote-only/)
+    const walk = (d: string): string => !existsSync(d) ? '' : readdirSync(d, { withFileTypes: true })
+      .map(e => e.isDirectory() ? walk(join(d, e.name)) : readFileSync(join(d, e.name), 'utf8')).join('')
+    expect(walk(join(root, 'provenance'))).not.toContain('PROVSECRET')
+  })
+
+  it('a bare-id pin, feedback or forget contacts no other team server', async () => {
+    team.seedEngram({ id: 'ENG-2026-10-18-003', scope: TEAM, status: 'active', data: { statement: 'client rule', type: 'behavioral' } })
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    await plur.setPinned('ENG-2026-10-18-003', true).catch(() => null)
+    await plur.feedback('ENG-2026-10-18-003', 'positive').catch(() => null)
+    await plur.forget('ENG-2026-10-18-003', 'gone').catch(() => null)
+    expect(other.requests).toEqual([])
+  })
+
+  it('an explicit team scope does not reach a personal row on the same server', async () => {
+    team.seedEngram({ id: 'ENG-2026-10-18-004', scope: 'user:me', status: 'active', data: { statement: 'my own note', type: 'behavioral' } })
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    await plur.feedback('ENG-2026-10-18-004', 'positive', TEAM).catch(() => null)
+    await plur.forget('ENG-2026-10-18-004', 'x', { scope: TEAM }).catch(() => null)
+    await plur.setPinned('ENG-2026-10-18-004', true, { scope: TEAM }).catch(() => null)
+    expect(team.feedbackBodies).toEqual([])
+    const row = team.getEngram('ENG-2026-10-18-004')!
+    expect(row.status).toBe('active')
+    expect((row.data as any).pinned).not.toBe(true)
+  })
+
+  it('a personal url scope cannot be a remote-only scope, and a hand-written one dials nothing', async () => {
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({
+      index: false, embeddings: { enabled: false },
+      stores: [
+        { url: other.url, token: TOKEN, scope: 'user:me', readonly: false },
+        { url: teamUrl, token: TOKEN, scope: TEAM, shared: true, readonly: false },
+      ],
+    }))
+    expect(() => new Plur({ path: root }).setFolder(join(home, 'mine'), { mode: 'remote-only', scope: 'user:me' })).toThrow()
+    writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: work, plur: 'remote-only', scope: 'user:me' }] }))
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    await plur.inject('what is my note').catch(() => null)
+    await plur.recallHybrid('what is my note').catch(() => null)
+    expect(other.requests.filter(r => !r.startsWith('GET /api/v1/me'))).toEqual([])
+  })
+
+  it('a remote-only injection still records its query hash and source', async () => {
+    team.recallRows = [{ id: 'ENG-2026-10-18-005', scope: TEAM, status: 'active', statement: 'client deploys go through the blue lane', score: 1 }]
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    const r = await plur.inject('how do client deploys go', { source: 'session_start' } as any)
+    expect(r.count).toBeGreaterThan(0)
+    const ev = historyText().split('\n').filter(Boolean).map(l => JSON.parse(l)).find(e => e.event === 'co_injection')
+    expect(ev?.data?.query_hash).toEqual(expect.any(String))
+    expect(ev?.data?.source).toBe('session_start')
+  })
+})
