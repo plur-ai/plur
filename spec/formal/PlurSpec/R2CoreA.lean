@@ -53,6 +53,10 @@ Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
 writes nothing and is read only by the MCP server; no section here reads it.
+
+Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds.
+`_isRemoteWriteScope` now reads `_remoteWriteEntry`, the same resolver answer
+(`remote` and writable); provenance and the recurrence gate see no change.
 -/
 
 namespace PlurSpec.R2CoreA

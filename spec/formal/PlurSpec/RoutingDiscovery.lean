@@ -42,6 +42,14 @@ Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
 writes nothing and is read only by the MCP server; routing and the refresh's cache write are untouched.
+
+Checked against #1633 (plan B Task 7, owner decision O5 "exact match", 2026-10-18): extended.
+§5 proves project scopes are routed by exact match (`claimed_iff`, `route_claimed`,
+`unclaimed_stays_local`, `no_write_to_other_scope`) and that the explicit-scope id lookups
+act only on an exact entry and refuse a scope two servers claim (`lookup_exact`,
+`lookup_refuses_conflict`); counterexamples `containment_disagrees`,
+`folder_check_saw_no_stores`, `old_lookup_picks_first`. store-resolver.ts: only
+`ScopeConflictError` gains an optional wording argument; `resolveScopeTarget` is unchanged.
 -/
 
 set_option linter.unusedSimpArgs false
@@ -909,5 +917,181 @@ theorem rotated_answer_mistargets :
 /-- Non-vacuity: an unchanged entry still receives its answer. -/
 theorem target_good_case :
     targetBound [(⟨10, 1⟩ : Srv Nat), ⟨11, 2⟩] ⟨11, 2⟩ = some ⟨11, 2⟩ := by decide
+
+/-! ## 5. Project scopes by exact match (#1633, plan B Task 7, owner decision O5)
+
+Owner decision O5 (2026-10-18): "Project scopes — Exact match." `isLocalOnlyScope(scope,
+stores)` (scope-target.ts) now answers, for a `project:` scope, "the resolver keeps a write
+to it local": `resolveScopeTarget(scope, stores).kind === 'local'`. Its negation is `claimed`
+below. The folder check (folders.ts, through `Plur.setFolder`) and forget/feedback's network
+guard read it; the explicit-scope id lookups (forget, feedback, setPinned, pinnedQuota) and
+the learn path's outbox target read the resolver's `remote` entry (`lookup`, row 34).
+
+Proved here: `claimed` means exactly "a url entry with exactly this scope, or the scope's
+org on a company server" (`claimed_iff`); a write leaves only for a claimed scope and only to
+an entry with exactly that scope (`route_claimed`, `no_write_to_other_scope`); an unclaimed
+scope never leaves (`unclaimed_stays_local`); the id lookups act only on an exact entry and
+never on a scope two servers claim (`lookup_exact`, `lookup_refuses_conflict`). The
+counterexample `containment_disagrees` is the 2026-09-26 E4 rule this replaces.
+-/
+
+/-- `resolveScopeTarget(s, stores).kind !== 'local'` — the negation of `isLocalOnlyScope`'s
+store leg for a `project:` scope (ScopeInject `isLocalOnly`'s `claimed` oracle). -/
+def claimed (personal : S → Bool) (orgOf : S → Option O) (l : List (Entry S U O)) (s : S) : Bool :=
+  match resolve personal orgOf s l with
+  | .local _ => false
+  | _ => true
+
+/-- A non-empty group answers `remote`. -/
+theorem remoteOf_ne_local {g : List (Entry S U O)} (h : g ≠ []) (x : Option (Entry S U O)) :
+    remoteOf g ≠ .local x := by
+  unfold remoteOf
+  split
+  · simp
+  · cases g with
+    | nil => exact absurd rfl h
+    | cons a _ => simp
+
+/-- **O5, exact match:** outside the personal rule (every `project:` scope), a scope is
+claimed exactly when a url entry has exactly this scope, or a company server's org is the
+scope's org. No containment: an entry whose scope merely contains `s` does not count. -/
+theorem claimed_iff (personal : S → Bool) (orgOf : S → Option O) (s : S)
+    (l : List (Entry S U O)) (hp : personalHit personal s l = false) :
+    claimed personal orgOf l s = true ↔
+      ((∃ e ∈ l, e.scope = s ∧ e.url.isSome) ∨
+        ∃ o e, orgOf s = some o ∧ e ∈ l ∧ e.url.isSome ∧ e.org = some o) := by
+  unfold claimed resolve; rw [hp]; simp only [Bool.false_eq_true, ite_false]
+  match hs : servers s l with
+  | u :: v :: rest =>
+    simp only [true_iff]
+    obtain ⟨e, he, hse, hu⟩ := (mem_servers s l u).mp (by rw [hs]; simp)
+    exact Or.inl ⟨e, he, hse, by simp [hu]⟩
+  | [u] =>
+    obtain ⟨e, he, hse, hu⟩ := (mem_servers s l u).mp (by rw [hs]; simp)
+    have hg : group s u l ≠ [] := by
+      intro hn
+      have : e ∈ group s u l := by simp [group, he, hse, hu]
+      rw [hn] at this; simp at this
+    have hex : ∃ e ∈ l, e.scope = s ∧ e.url.isSome := ⟨e, he, hse, by simp [hu]⟩
+    simp only [hex, true_or, iff_true]
+    cases hr : remoteOf (group s u l) <;> first | rfl | exact absurd hr (remoteOf_ne_local hg _)
+  | [] =>
+    have hnone := (servers_nil_iff s l).mp hs
+    have hex : ¬ ∃ e ∈ l, e.scope = s ∧ e.url.isSome := by
+      rintro ⟨e, he, hse, hu⟩; rw [hnone e he hse] at hu; simp at hu
+    simp only [hex, false_or]
+    cases ho : orgOf s with
+    | none => simp
+    | some o =>
+      simp only
+      cases hf : l.find? (fun e => e.url.isSome && decide (e.org = some o)) with
+      | none =>
+        simp only [Bool.false_eq_true, false_iff]
+        rintro ⟨o', e, ho', he, hu, heo⟩
+        cases ho'
+        have := List.find?_eq_none.mp hf e he
+        simp [hu, heo] at this
+      | some e =>
+        have hp' := List.find?_some hf
+        simp at hp'
+        obtain ⟨hu, heo⟩ := hp'
+        obtain ⟨u, hu'⟩ := Option.isSome_iff_exists.mp hu
+        simp only [hu', true_iff]
+        exact ⟨o, e, rfl, List.mem_of_find?_eq_some hf, by simp [hu'], heo⟩
+
+/-- **O5:** a write leaves the machine only for a claimed scope, and only to an entry of
+the config with exactly that scope. -/
+theorem route_claimed (personal : S → Bool) (orgOf : S → Option O) (s : S)
+    (l : List (Entry S U O)) (e : Entry S U O) (h : route personal orgOf s l = some e) :
+    claimed personal orgOf l s = true ∧ e ∈ l ∧ e.scope = s ∧ e.url.isSome := by
+  have hr := route_only_remote personal orgOf s l e h
+  refine ⟨by unfold claimed; rw [hr], route_exact personal orgOf s l e h⟩
+
+/-- **O5:** an unclaimed (local-only) scope never leaves the machine. -/
+theorem unclaimed_stays_local (personal : S → Bool) (orgOf : S → Option O) (s : S)
+    (l : List (Entry S U O)) (h : claimed personal orgOf l s = false) :
+    route personal orgOf s l = none := by
+  cases hr : route personal orgOf s l with
+  | none => rfl
+  | some e => rw [(route_claimed personal orgOf s l e hr).1] at h; cases h
+
+/-- **O5:** no write lands on a store that does not claim exactly the written scope —
+in particular not on one whose scope only contains it. -/
+theorem no_write_to_other_scope (personal : S → Bool) (orgOf : S → Option O) (s : S)
+    (l : List (Entry S U O)) (e : Entry S U O) (he : e.scope ≠ s) :
+    route personal orgOf s l ≠ some e :=
+  fun h => he (route_exact personal orgOf s l e h).2.1
+
+/-- The explicit-scope id lookups (index.ts `_scopedUrlEntry`: forget, feedback, setPinned;
+row 34): `none` = refused (ScopeConflictError, no server asked); `some none` = no url store
+claims the scope exactly (the local paths and guards run); `some (some e)` = act on `e`. -/
+def lookup (personal : S → Bool) (orgOf : S → Option O) (s : S) (l : List (Entry S U O)) :
+    Option (Option (Entry S U O)) :=
+  match resolve personal orgOf s l with
+  | .conflict _ => none
+  | .remote e _ => some (some e)
+  | _ => some none
+
+/-- Pre-row-34: the first url entry with the scope, whatever else claims it. -/
+def lookupOld (s : S) (l : List (Entry S U O)) : Option (Entry S U O) :=
+  l.find? (fun e => e.url.isSome && decide (e.scope = s))
+
+/-- Row 34: a lookup acts only on a url entry with exactly the named scope. -/
+theorem lookup_exact (personal : S → Bool) (orgOf : S → Option O) (s : S)
+    (l : List (Entry S U O)) (e : Entry S U O) (h : lookup personal orgOf s l = some (some e)) :
+    e ∈ l ∧ e.scope = s ∧ e.url.isSome := by
+  unfold lookup at h
+  split at h
+  · cases h
+  · rename_i e' w hr; cases h
+    have := remote_is_exact_url personal orgOf s l _ _ hr
+    exact ⟨this.1, this.2.1, this.2.2.1⟩
+  · cases h
+
+/-- Row 34: a scope two servers claim is refused before any server is asked. -/
+theorem lookup_refuses_conflict (personal : S → Bool) (orgOf : S → Option O) (s : S)
+    (l : List (Entry S U O)) (hp : personalHit personal s l = false) (h2 : TwoServers s l) :
+    lookup personal orgOf s l = none := by
+  obtain ⟨xs, hx⟩ := (conflict_iff personal orgOf s l hp).mpr h2
+  unfold lookup; rw [hx]
+
+/-- REPLAYED (pre-row-34): forget/feedback/setPinned on a scope two servers claim acted on
+the first-listed server. -/
+theorem old_lookup_picks_first :
+    let a : Entry Nat Nat Nat := ⟨1, some 11, false, none⟩
+    let b : Entry Nat Nat Nat := ⟨1, some 10, false, none⟩
+    lookupOld 1 [a, b] = some a ∧ lookup (fun _ => false) (fun _ => none) 1 [a, b] = none := by
+  decide
+
+/-- The 2026-09-26 E4 rule: a url entry whose scope contains `s` (`within s e.scope`, an
+oracle for `isScopeWithin`) made `s` non-local. -/
+def claimedE4 (within : S → S → Bool) (l : List (Entry S U O)) (s : S) : Bool :=
+  l.any (fun e => e.url.isSome && within s e.scope)
+
+/-- **Counterexample the amendment closes (#1633):** scope 2 is a segment-descendant of
+store scope 1. Containment called 2 remote-backed (forget/feedback dialled the server), yet
+the router keeps a write to 2 local — the two disagreed. Under O5 both say local. -/
+theorem containment_disagrees :
+    let a : Entry Nat Nat Nat := ⟨1, some 10, false, none⟩
+    let within : Nat → Nat → Bool := fun s q => s == q || (s == 2 && q == 1)
+    claimedE4 within [a] 2 = true ∧
+    route (fun _ => false) (fun _ => none) 2 [a] = none ∧
+    claimed (fun _ => false) (fun _ => none) [a] 2 = false := by decide
+
+/-- **Counterexample the folder fix closes (#1633):** `folders.ts` called `isLocalOnlyScope`
+without stores, so every `project:` scope counted as unclaimed there — a scope the company
+server withholds was accepted for a folder although its memories could never reach it. -/
+theorem folder_check_saw_no_stores :
+    let c : Entry Nat Nat Nat := ⟨2, some 10, false, some 7⟩
+    claimed (fun _ => false) (fun _ => some 7) ([] : List (Entry Nat Nat Nat)) 3 = false ∧
+    claimed (fun _ => false) (fun _ => some 7) [c] 3 = true ∧
+    resolve (fun _ => false) (fun _ => some 7) 3 [c] = .unauthorized 10 := by decide
+
+/-- Non-vacuity: claimed and unclaimed project scopes both occur, and a claimed one leaves. -/
+theorem exact_reachable :
+    let a : Entry Nat Nat Nat := ⟨1, some 10, false, none⟩
+    claimed (fun _ => false) (fun _ => none) [a] 1 = true ∧
+    route (fun _ => false) (fun _ => none) 1 [a] = some a ∧
+    lookup (fun _ => false) (fun _ => none) 1 [a] = some (some a) := by decide
 
 end PlurSpec.RoutingDiscovery

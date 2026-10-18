@@ -55,6 +55,11 @@ Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
 writes nothing and is read only by the MCP server; the outbox and the push path are untouched.
+
+Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds. The
+`_outbox.target_url` learn writes is the resolver's writable entry; outside a conflict (refused
+before the save) it is the entry the old first-writable `find` returned. The flush, the
+retarget and the push path are unchanged.
 -/
 
 namespace PlurSpec.Outbox

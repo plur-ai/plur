@@ -47,6 +47,15 @@ Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
 writes nothing and is read only by the MCP server; no write-path branch changed.
+
+Checked against #1633 (plan B Task 7, owner decision O5 "exact match", 2026-10-18): still holds.
+index.ts: the learn path's outbox target is the resolver's writable remote entry
+(`_remoteWriteEntry`), which is the entry the router dials (§3c), so `target_url` names the
+server the push went to; the explicit-scope id lookups (feedback, forget, setPinned,
+pinnedQuota) and `_isOwnRemoteNamespace` read the resolver too (RoutingDiscovery §5,
+`lookup`); `isLocalOnlyScope` for a `project:` scope is exact match (ScopeInject §3). No write
+branch modelled here changed: outside a conflict, which learn refuses before saving, the
+outbox entry is the same one the old first-writable `find` returned.
 -/
 
 namespace PlurSpec.WritePath

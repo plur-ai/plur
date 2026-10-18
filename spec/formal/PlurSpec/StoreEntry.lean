@@ -37,6 +37,10 @@ Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
 writes nothing and is read only by the MCP server; expand, collapse and rotation are untouched.
+
+Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds.
+index.ts: `Plur.setFolder` also passes the expanded stores to the folder check; expand,
+collapse, registration and rotation are untouched.
 -/
 
 set_option linter.deprecated false
