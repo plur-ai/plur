@@ -42,6 +42,10 @@ row-origin or recall behaviour modelled here changed.
 Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
 exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
 this model covers changed.
+Checked against the gate of #1665 (`plur login`, 2026-10-18): still holds. `remote-store.ts`
+only changes a warning: a malformed `scope_metadata` entry is named only when its scope was
+granted (a server could put the bearer key there). Parsing, what is dropped and what is kept
+are unchanged.
 -/
 
 namespace PlurSpec.R2CoreB
