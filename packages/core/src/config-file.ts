@@ -1,6 +1,6 @@
 import { existsSync, chmodSync } from 'fs'
 import { basename } from 'path'
-import { atomicWrite, CONFIG_FILE_MODE, _atomicWriteAcl } from './sync.js'
+import { atomicWrite, ALLOW_UNPROTECTED_ENV, CONFIG_FILE_MODE, _atomicWriteAcl } from './sync.js'
 import { checkOwnerOnly, protectOwnerOnly, type OwnerOnlyResult } from './owner-only.js'
 
 /**
@@ -30,12 +30,19 @@ export function writeConfigFile(path: string, content: string): OwnerOnlyResult 
   if (_atomicWriteAcl.platform !== 'win32' && existsSync(path)) {
     try { chmodSync(path, CONFIG_FILE_MODE) } catch { /* reported by the check below */ }
   }
-  atomicWrite(path, content, { mode: CONFIG_FILE_MODE, secret: true })
+  // With PLUR_ALLOW_UNPROTECTED_CONFIG set, atomicWrite hands back why it
+  // wrote without protection instead of printing it, so one line is printed.
+  let unprotected: string | null = null
+  atomicWrite(path, content, { mode: CONFIG_FILE_MODE, secret: true, onUnprotected: cause => { unprotected = cause } })
   // On Windows the renamed file carries the temp file's verified list, so one
   // read usually settles it; anything but a clean owner-only reading is
   // re-protected (and verified) rather than trusted.
   const seen = _atomicWriteAcl.platform === 'win32' ? checkOwnerOnly(path) : null
   const r: OwnerOnlyResult = seen?.ok === true ? { ok: true } : protectOwnerOnly(path)
-  if (!r.ok) console.error(`[plur:config] could not restrict ${basename(path)} to your account: ${r.detail}`)
+  if (!r.ok) {
+    console.error(unprotected !== null
+      ? `[plur:config] wrote ${basename(path)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${unprotected}`
+      : `[plur:config] could not restrict ${basename(path)} to your account: ${r.detail}`)
+  }
   return r
 }

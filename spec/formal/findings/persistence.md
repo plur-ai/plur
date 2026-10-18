@@ -583,3 +583,12 @@ Tests: `config-owner-only.test.ts` (21 of the new or changed cases failed agains
 builder's code; the real-Windows case under a folder named `Müller Črt` failed on the
 runner before the change), `codex2-atomic-first-write.test.ts` (fake icacls answers by
 SID and `/save`; assertions unchanged), `enterprise-cleanup.test.ts` (same).
+
+Codex gate round 1 (FAIL, fixed the same day): icacls/whoami ran by bare name when the
+environment had no `SystemRoot`/`windir` (now: nothing runs on real Windows, fail closed);
+the SDDL reader accepted a prefix (an entry after a space, a second descriptor or record) —
+now exactly one record with one whole descriptor, else `unknown`; UTF-16 detection by zero
+share misread long non-Latin names — now any zero byte means UTF-16; an opted-out config
+write printed two lines — now one (`onUnprotected`); the static writer guard missed nested
+calls — now balanced-parenthesis scan with fixtures. Inside `aclOk` / reporting; no theorem
+changed.

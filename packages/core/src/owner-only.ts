@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process'
 import { randomBytes } from 'crypto'
 import { chmodSync, readFileSync, statSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, sep } from 'path'
 
 /**
  * Owner-only protection for files (and folders) that hold a secret (#1631,
@@ -57,15 +57,26 @@ export interface OwnerOnlyOptions {
   directory?: boolean
 }
 
-/** Full path of a Windows system tool, so a planted copy in the working folder is never run. Internal; exported for tests. */
-export function _systemTool(cmd: string, env: NodeJS.ProcessEnv): string {
+/**
+ * Full path of a Windows system tool, so a planted copy in the working folder
+ * is never run (Windows searches the working folder before PATH). On real
+ * Windows with no `SystemRoot`/`windir` in the environment there is no safe
+ * path: null, and nothing is run — the protection fails closed. Elsewhere
+ * (the CLI tests' Windows stub on macOS/Linux) the bare name finds the fake
+ * on PATH. Internal; exported for tests.
+ */
+export function _systemTool(cmd: string, env: NodeJS.ProcessEnv, realWindows: boolean = sep === '\\'): string | null {
+  if (cmd !== 'icacls' && cmd !== 'whoami') return cmd
   const root = env.SystemRoot || env.SYSTEMROOT || env.windir || env.WINDIR
-  return root && (cmd === 'icacls' || cmd === 'whoami') ? join(root, 'System32', `${cmd}.exe`) : cmd
+  if (root) return join(root, 'System32', `${cmd}.exe`)
+  return realWindows ? null : cmd
 }
 
 function defaultExec(cmd: string, args: string[]): { status: number | null; stdout: string } {
+  const file = _systemTool(cmd, process.env)
+  if (file === null) return { status: null, stdout: '' }
   try {
-    const stdout = execFileSync(_systemTool(cmd, process.env), args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+    const stdout = execFileSync(file, args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
     return { status: 0, stdout }
   } catch (e) {
     const err = e as { status?: number | null; stdout?: string }
@@ -151,21 +162,32 @@ type AclRead =
   | { kind: 'unknown'; detail: string }
 
 /**
- * UTF-16LE (what icacls writes) or UTF-8, BOM stripped. The SDDL line is
- * ASCII, so in UTF-16 at least a quarter of the bytes are zero whatever the
- * file's name; UTF-8 text has none.
+ * UTF-16LE (what icacls writes) or UTF-8, BOM stripped. UTF-8 text never
+ * holds a zero byte; UTF-16 of the (ASCII) SDDL always does, whatever script
+ * the file's name is in.
  */
 function decodeSaved(buf: Buffer): string {
-  let zeros = 0
-  for (const b of buf) if (b === 0) zeros++
-  const utf16 = (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) || (zeros > 0 && zeros * 4 >= buf.length)
-  return (utf16 ? buf.toString('utf16le') : buf.toString('utf8')).replace(/^﻿/, '')
+  const utf16 = (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) || buf.includes(0)
+  return (utf16 ? buf.toString('utf16le') : buf.toString('utf8')).replace(/^\uFEFF/, '')
 }
+
+const ACE = String.raw`\([^()]*\)`
+const TRUSTEE = String.raw`(?:S-1-[0-9-]+|[A-Z]{2})`
+/**
+ * One whole security descriptor: optional owner and group, the access list
+ * (`D:`), an optional audit list (`S:`), nothing else. A conditional entry
+ * (nested parentheses), a second list or any trailing text does not match.
+ */
+const DESCRIPTOR = new RegExp(
+  `^(?:O:${TRUSTEE})?(?:G:${TRUSTEE})?D:(NO_ACCESS_CONTROL|[A-Z]*)((?:${ACE})*)(?:S:(?:NO_ACCESS_CONTROL|[A-Z]*)(?:${ACE})*)?$`,
+  'i',
+)
 
 /**
  * Read `path`'s access list as SDDL (`icacls <path> /save <file>`) and classify
- * it against `sid`. A failed read, an unreadable file or a list with no entry
- * is `unknown`, never ok.
+ * it against `sid`. A failed read, an unreadable file, anything but exactly one
+ * record (the name, then one well-formed descriptor) or a list with no entry is
+ * `unknown`, never ok.
  */
 function readAcl(path: string, exec: OwnerOnlyExec, sid: string): AclRead {
   const saved = join(tmpdir(), `plur-acl-${process.pid}-${randomBytes(6).toString('hex')}.txt`)
@@ -181,16 +203,13 @@ function readAcl(path: string, exec: OwnerOnlyExec, sid: string): AclRead {
   } finally {
     try { unlinkSync(saved) } catch { /* not written */ }
   }
-  // Line 1 is the file's name, line 2 its SDDL (`D:<flags>(ace)(ace)…`).
-  const sddl = text.split(/\r?\n/).slice(1).join('\n')
-  const m = /D:([A-Z]*)((?:\([^()]*\))*)/.exec(sddl)
-  if (!m) return { kind: 'unknown', detail: 'icacls listed no access entries' }
+  // One record: the file's name, then its descriptor.
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '')
+  if (lines.length !== 2) return { kind: 'unknown', detail: 'icacls wrote an access list PLUR cannot read' }
+  const m = DESCRIPTOR.exec(lines[1])
+  if (!m) return { kind: 'unknown', detail: 'icacls wrote an access list PLUR cannot read' }
   // A null access list grants everyone everything.
-  if (/^NO_ACCESS_CONTROL/.test(sddl.slice(m.index + 2))) return { kind: 'shared', others: ['WD'] }
-  // The entries must end where the list does (end of line, or the next
-  // section). Anything else — a conditional entry with nested parentheses —
-  // is not read past: it could hide an entry, so the answer is unknown.
-  if (!/^(\s|$|[OGS]:)/.test(sddl.slice(m.index + m[0].length))) return { kind: 'unknown', detail: 'icacls listed an access entry PLUR cannot read' }
+  if (m[1].toUpperCase() === 'NO_ACCESS_CONTROL') return { kind: 'shared', others: ['WD'] }
   const aces = [...m[2].matchAll(/\(([^)]*)\)/g)].map(a => a[1].split(';'))
   if (aces.length === 0) return { kind: 'unknown', detail: 'icacls listed no access entries' }
   const others = new Set<string>()

@@ -369,7 +369,10 @@ whose name is not ASCII. The helper now works on SIDs: `acct` is the current acc
 (UTF-16), removal is `/remove *<SID>` (an SDDL abbreviation with no fixed SID refuses),
 and `norm` is the SID comparison (case-insensitive; `LA`/`LG` stand for the account's own
 SID when it ends in -500 or -501). The rule modelled — set, read back, non-empty, every
-trustee the account — is unchanged, so `protect_sound` holds as stated. -/
+trustee the account — is unchanged, so `protect_sound` holds as stated. Codex gate round 1
+(same day): the saved list is read only when it is exactly one record with one whole
+descriptor (anything else is `unknown`, i.e. `readStatus ≠ 0` here), and icacls/whoami run
+only by full path (no path known on Windows → nothing runs, a failed `setStatus`). -/
 namespace OwnerOnly
 
 /-- One icacls run pair. `principals` are the trustees `readAcl` parsed from the saved SDDL;

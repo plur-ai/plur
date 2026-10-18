@@ -233,6 +233,32 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
       return { status: 0, stdout: '' }
     }
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: wide, account: ACCT })).toEqual({ ok: false, detail: 'also readable by BUILTIN\\Users' })
+    // UTF-16 with a long name in a script with no zero bytes at all (Codex gate round 1).
+    const longName = (c: string, a: string[]) => {
+      if (c === 'whoami') return { status: 0, stdout: `"ACME\\alice","${SELF}"` }
+      realFs.writeFileSync(a[2], Buffer.from(`${'\u754c'.repeat(200)}.yaml\r\nD:PAI(A;;FA;;;${SELF})\r\n`, 'utf16le'))
+      return { status: 0, stdout: '' }
+    }
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: longName, account: ACCT })).toEqual({ ok: true })
+  })
+
+  it('a saved list that is not exactly one well-formed descriptor is unknown, never ok (Codex gate round 1)', () => {
+    const saving = (body: string) => (c: string, a: string[]) => {
+      if (c === 'whoami') return { status: 0, stdout: `"ACME\\alice","${SELF}"` }
+      realFs.writeFileSync(a[2], Buffer.from(`name.yaml\r\n${body}\r\n`, 'utf16le'))
+      return { status: 0, stdout: '' }
+    }
+    for (const body of [
+      `D:PAI(A;;FA;;;${SELF}) (A;;FA;;;WD)`,                 // an entry after a space
+      `D:PAI(A;;FA;;;${SELF})\r\nD:NO_ACCESS_CONTROL`,       // a second descriptor
+      `D:PAI(A;;FA;;;${SELF})\r\nother.yaml\r\nD:PAI(A;;FA;;;WD)`, // a second record
+      `D:PAI(A;;FA;;;${SELF})junk`,                           // trailing text
+      `D:PAI(A;;FA;;;${SELF})D:PAI(A;;FA;;;WD)`,              // two D: sections
+    ]) {
+      expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(body), account: ACCT }).ok, body).toBe('unknown')
+    }
+    // Well-formed variants are still read: owner and group sections, a SACL.
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`O:${SELF}G:SYD:PAI(A;;FA;;;${SELF})S:AI(ML;;NW;;;LW)`), account: ACCT })).toEqual({ ok: true })
   })
 
   it('a removal that fails → ok:false with its exit code', () => {
@@ -278,7 +304,11 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
   it('icacls and whoami run by full path from %SystemRoot%\\System32 (never a planted copy); other names unchanged', () => {
     expect(_systemTool('icacls', { SystemRoot: 'C:\\Windows' })).toBe(join('C:\\Windows', 'System32', 'icacls.exe'))
     expect(_systemTool('whoami', { SYSTEMROOT: 'D:\\Win' })).toBe(join('D:\\Win', 'System32', 'whoami.exe'))
-    expect(_systemTool('icacls', {})).toBe('icacls')   // not Windows (the test stub's fake on PATH)
+    expect(_systemTool('icacls', {}, false)).toBe('icacls')   // not Windows (the test stub's fake on PATH)
+    // Real Windows with no SystemRoot/windir in the environment: nothing is run by bare
+    // name (Windows searches the working folder first) — the protection fails closed.
+    expect(_systemTool('icacls', {}, true)).toBeNull()
+    expect(_systemTool('whoami', {}, true)).toBeNull()
     expect(_systemTool('git', { SystemRoot: 'C:\\Windows' })).toBe('git')
   })
 
@@ -375,7 +405,7 @@ describe('Windows (simulated host): every config write is a protected write', ()
     const noAcl = () => { _atomicWriteAcl.exec = (cmd, args) => { calls.push([cmd, ...args]); return { status: 1, stdout: '' } } }
 
     for (const v of ['1', 'true', 'YES']) {
-      it(`set to ${v}: an existing config.yaml is written without protection, and both steps say so on stderr`, () => {
+      it(`set to ${v}: an existing config.yaml is written without protection, and one stderr line says so`, () => {
         realFs.writeFileSync(cfg, 'stores: []\n')
         noAcl()
         _atomicWriteAcl.env = { USERNAME: 'alice', USERDOMAIN: 'CORP', PLUR_ALLOW_UNPROTECTED_CONFIG: v }
@@ -384,10 +414,10 @@ describe('Windows (simulated host): every config write is a protected write', ()
         expect(r.ok).toBe(false)
         expect(realFs.readFileSync(cfg, 'utf8')).toBe('token: x\n')
         const lines = err.mock.calls.map(c => String(c[0]))
-        // The temp file is still tried (and fails: no access lists on this drive).
-        expect(lines[0]).toMatch(/^\[plur:config\] writing config\.yaml WITHOUT owner-only protection \(PLUR_ALLOW_UNPROTECTED_CONFIG is set\): cannot make the temporary file owner-only/)
-        expect(lines[1]).toMatch(/^\[plur:config\] could not restrict config\.yaml to your account: /)
-        expect(lines).toHaveLength(2)
+        // One line (the temp file is still tried, and fails: no access lists on this drive).
+        expect(lines).toHaveLength(1)
+        expect(lines[0]).toMatch(/^\[plur:config\] wrote config\.yaml WITHOUT owner-only protection \(PLUR_ALLOW_UNPROTECTED_CONFIG is set\): /)
+        expect(lines[0]).not.toContain('\n')
       })
     }
 
@@ -441,6 +471,26 @@ describe('no config writer bypasses it', () => {
   it('index.ts has no atomicWrite(this.paths.config call left', () => {
     expect(read('index.ts')).not.toMatch(/atomicWrite\(this\.paths\.config/)
   })
+  /** Every `atomicWrite(...)` call (balanced parentheses) whose arguments name CONFIG_FILE_MODE. */
+  const callsWithConfigMode = (src: string): string[] => {
+    const found: string[] = []
+    for (let i = src.indexOf('atomicWrite('); i >= 0; i = src.indexOf('atomicWrite(', i + 1)) {
+      let depth = 0
+      let j = i + 'atomicWrite'.length
+      for (; j < src.length; j++) {
+        if (src[j] === '(') depth++
+        else if (src[j] === ')' && --depth === 0) break
+      }
+      const call = src.slice(i, j + 1)
+      if (call.includes('CONFIG_FILE_MODE')) found.push(call)
+    }
+    return found
+  }
+  it('the guard sees a bypass with nested calls in its arguments (Codex gate round 1)', () => {
+    expect(callsWithConfigMode('atomicWrite(configPath, yaml.dump(data), { mode: CONFIG_FILE_MODE })')).toHaveLength(1)
+    expect(callsWithConfigMode('atomicWrite(p, yaml.dump(x, { a: f(1) }),\n  { mode: CONFIG_FILE_MODE, durable: true })')).toHaveLength(1)
+    expect(callsWithConfigMode('atomicWrite(p, yaml.dump(x)); const m = CONFIG_FILE_MODE')).toHaveLength(0)
+  })
   it('no source file passes CONFIG_FILE_MODE to atomicWrite except the shared helper', () => {
     const offenders: string[] = []
     const walk = (d: string) => {
@@ -448,7 +498,7 @@ describe('no config writer bypasses it', () => {
         const p = join(d, e.name)
         if (e.isDirectory()) walk(p)
         else if (p.endsWith('.ts') && !p.endsWith(join('src', 'config-file.ts'))) {
-          if (/atomicWrite\([^)]*CONFIG_FILE_MODE/.test(realFs.readFileSync(p, 'utf8'))) offenders.push(p)
+          if (callsWithConfigMode(realFs.readFileSync(p, 'utf8')).length > 0) offenders.push(p)
         }
       }
     }

@@ -1194,6 +1194,13 @@ export interface AtomicWriteOptions {
    * destination's mode already governs the temp file from creation.
    */
   secret?: boolean
+  /**
+   * With {@link ALLOW_UNPROTECTED_ENV} set, called (instead of the default
+   * stderr line) with the reason when the write goes out without owner-only
+   * protection — so a caller that reports on its own (writeConfigFile) prints
+   * one line, not two.
+   */
+  onUnprotected?: (cause: string) => void
 }
 
 /** Counter making each tmp name unique within a process (pid makes it unique across them). */
@@ -1251,9 +1258,10 @@ function allowUnprotected(env: NodeJS.ProcessEnv): boolean {
  * {@link ALLOW_UNPROTECTED_ENV} set — reported on stderr and written without
  * the protection (returns).
  */
-function refuseUnprotected(filePath: string, cause: string): void {
+function refuseUnprotected(filePath: string, cause: string, onUnprotected?: (cause: string) => void): void {
   if (allowUnprotected(_atomicWriteAcl.env)) {
-    console.error(`[plur:config] writing ${basename(filePath)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${cause}`)
+    if (onUnprotected) onUnprotected(cause)
+    else console.error(`[plur:config] writing ${basename(filePath)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${cause}`)
     return
   }
   throw new Error(`atomicWrite: refusing a credential write: ${cause}. Nothing was written. ` +
@@ -1371,7 +1379,7 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
         if (winAccount === null || !allowUnprotected(_atomicWriteAcl.env)) {
           refuseUnprotected(filePath, winAccount === null
             ? 'cannot tell whether the destination is owner-only (the Windows account is not known: USERNAME is not set)'
-            : 'cannot inspect the destination\'s access list (icacls failed or named no account)')
+            : 'cannot inspect the destination\'s access list (icacls failed or named no account)', opts.onUnprotected)
         }
         winProtect = winAccount !== null
       } else {
@@ -1379,7 +1387,7 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
       }
     } else if (secret) {
       if (winAccount === null) {
-        refuseUnprotected(filePath, 'cannot make the new file owner-only (the Windows account is not known: USERNAME is not set)')
+        refuseUnprotected(filePath, 'cannot make the new file owner-only (the Windows account is not known: USERNAME is not set)', opts.onUnprotected)
       } else {
         winProtect = true
       }
@@ -1406,7 +1414,7 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
     try {
       if (winProtect) {
         const failed = protectWindowsOwnerOnly(tmp, winAccount)
-        if (failed !== null) refuseUnprotected(filePath, failed)
+        if (failed !== null) refuseUnprotected(filePath, failed, opts.onUnprotected)
       }
       writeFileSync(fd, content)
       if (durable) fsyncSync(fd)

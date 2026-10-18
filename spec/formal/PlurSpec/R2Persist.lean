@@ -8,7 +8,8 @@ migrations/runner.ts's `setSchemaVersion` writes the same bytes under the same l
 Gate of #1631 (2026-10-18): still holds. sync.ts's further change is the owner's opt-out
 (`PLUR_ALLOW_UNPROTECTED_CONFIG`: a refused Windows credential write is written unprotected
 and reported instead) — modelled in Persistence §AtomicTemp (`traceAllow`); the tmp, fsync,
-rename and lock order is unchanged.
+rename and lock order is unchanged. Codex gate round 1: the opt-out's report is handed to
+`writeConfigFile` through an `onUnprotected` callback (one stderr line); no order changes.
 
 Models of `packages/core/src/{store/async-lock.ts, sync.ts, engrams.ts, backup.ts,
 storage-pglite.ts, storage-postgres.ts, migrations/runner.ts}`.
