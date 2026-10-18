@@ -397,7 +397,7 @@ export { atomicWrite, withLock } from './sync.js'
  * that hold a secret (the installer's backups and key file reuse them).
  */
 export { writeConfigFile } from './config-file.js'
-export { protectOwnerOnly, checkOwnerOnly, currentWindowsAccount, type OwnerOnlyExec, type OwnerOnlyResult, type OwnerOnlyCheck, type OwnerOnlyOptions } from './owner-only.js'
+export { protectOwnerOnly, checkOwnerOnly, currentWindowsAccount, currentWindowsSid, windowsSystemRoot, windowsSystemTool, defaultOwnerOnlyExec, type OwnerOnlyExec, type OwnerOnlyResult, type OwnerOnlyCheck, type OwnerOnlyOptions } from './owner-only.js'
 export { markRemoteHostDown, remoteHostDownRemainingMs, clearRemoteHostDown, _resetRemoteHostBreaker, salvageRemoteRow, FEEDBACK_SOURCE_CAPABILITY, _resetRemoteCapabilityCache } from './store/remote-store.js'
 export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
 export { scanForTensions, getCandidatePairs, getCandidatePairsDetailed, measuredUnderDiffers, measuredUnderGateApplies, engramOrigin, MEASURED_UNDER_DIMENSIONS, MEASURED_UNDER_CONFIDENCE_CAP, type CandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'

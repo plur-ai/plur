@@ -38,6 +38,7 @@ vi.mock('fs', async importOriginal => {
 
 const { Plur, protectOwnerOnly, checkOwnerOnly, writeConfigFile, currentWindowsAccount } = await import('../src/index.js')
 const { currentWindowsSid, _systemTool } = await import('../src/owner-only.js')
+const { windowsSystemRoot, windowsSystemTool } = await import('../src/index.js')
 const { _atomicWriteAcl, atomicWrite } = await import('../src/sync.js')
 const { setSchemaVersion } = await import('../src/migrations/runner.js')
 const { removePrimaryStoreEntries } = await import('../src/store-duplicates.js')
@@ -319,8 +320,17 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
   })
 
   it('icacls and whoami run by full path from %SystemRoot%\\System32 (never a planted copy); other names unchanged', () => {
-    expect(_systemTool('icacls', { SystemRoot: 'C:\\Windows' })).toBe(join('C:\\Windows', 'System32', 'icacls.exe'))
-    expect(_systemTool('whoami', { SYSTEMROOT: 'D:\\Win' })).toBe(join('D:\\Win', 'System32', 'whoami.exe'))
+    expect(_systemTool('icacls', { SystemRoot: 'C:\\Windows' })).toBe('C:\\Windows\\System32\\icacls.exe')
+    expect(_systemTool('whoami', { SystemRoot: 'd:\\WINDOWS' })).toBe('d:\\WINDOWS\\System32\\whoami.exe')
+    // Only `<drive>:\Windows` is trusted (the rule the company-CA install uses): a SystemRoot
+    // pointing anywhere else runs nothing on Windows.
+    for (const SystemRoot of ['', '.', 'Windows', 'C:\\Users\\Public\\evil', '\\\\evil\\share\\Windows', 'C:\\Windows\\..\\Users\\x', 'C:\\Win"dows', 'C:\\Windows\n', 'D:\\Win']) {
+      expect(_systemTool('icacls', { SystemRoot }, true), SystemRoot).toBeNull()
+      expect(windowsSystemTool('whoami', { SystemRoot }), SystemRoot).toBeNull()
+    }
+    expect(windowsSystemTool('icacls', { SystemRoot: 'E:\\Windows' })).toBe('E:\\Windows\\System32\\icacls.exe')
+    expect(windowsSystemRoot({ SystemRoot: 'C:\\Windows' })).toBe('C:\\Windows')
+    expect(windowsSystemRoot({})).toBeNull()
     expect(_systemTool('icacls', {}, false)).toBe('icacls')   // not Windows (the test stub's fake on PATH)
     // Real Windows with no SystemRoot/windir in the environment: nothing is run by bare
     // name (Windows searches the working folder first) — the protection fails closed.

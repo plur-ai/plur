@@ -57,22 +57,46 @@ export interface OwnerOnlyOptions {
   directory?: boolean
 }
 
+/** The only SystemRoot trusted: `<drive>:\\Windows`, the folder Windows installs into on every drive. */
+const WIN_SYSTEM_ROOT = /^[A-Za-z]:\\Windows$/i
+
 /**
- * Full path of a Windows system tool, so a planted copy in the working folder
- * is never run (Windows searches the working folder before PATH). On real
- * Windows with no `SystemRoot`/`windir` in the environment there is no safe
- * path: null, and nothing is run — the protection fails closed. Elsewhere
- * (the CLI tests' Windows stub on macOS/Linux) the bare name finds the fake
- * on PATH. Internal; exported for tests.
+ * `%SystemRoot%` when it is `<drive>:\\Windows`, else null (unset, a share, a
+ * user folder, a path with `..`). Shared with the CLI's company-CA install.
+ */
+export function windowsSystemRoot(env: NodeJS.ProcessEnv): string | null {
+  const root = env.SystemRoot
+  return typeof root === 'string' && WIN_SYSTEM_ROOT.test(root) ? root : null
+}
+
+/**
+ * `<SystemRoot>\\System32\\<cmd>.exe` by absolute path, or null when SystemRoot is
+ * not trustworthy. Never the bare name: Windows process creation looks in the
+ * current folder before PATH, so a planted `icacls.exe` there would run.
+ */
+export function windowsSystemTool(cmd: 'icacls' | 'whoami', env: NodeJS.ProcessEnv): string | null {
+  const root = windowsSystemRoot(env)
+  return root && `${root}\\System32\\${cmd}.exe`
+}
+
+/**
+ * What the default runner executes for `cmd`: icacls and whoami by
+ * {@link windowsSystemTool}. On real Windows with no trustworthy SystemRoot
+ * that is null and nothing runs — the protection fails closed. Elsewhere (the
+ * CLI tests' Windows stub on macOS/Linux) the bare name finds the fake on
+ * PATH. Any other command (an absolute path a caller resolved) runs as given.
+ * Internal; exported for tests.
  */
 export function _systemTool(cmd: string, env: NodeJS.ProcessEnv, realWindows: boolean = sep === '\\'): string | null {
   if (cmd !== 'icacls' && cmd !== 'whoami') return cmd
-  const root = env.SystemRoot || env.SYSTEMROOT || env.windir || env.WINDIR
-  if (root) return join(root, 'System32', `${cmd}.exe`)
-  return realWindows ? null : cmd
+  return windowsSystemTool(cmd, env) ?? (realWindows ? null : cmd)
 }
 
-function defaultExec(cmd: string, args: string[]): { status: number | null; stdout: string } {
+/**
+ * The default command runner: execFile with an argument array (never a
+ * shell), icacls and whoami resolved by {@link _systemTool}.
+ */
+export function defaultOwnerOnlyExec(cmd: string, args: string[]): { status: number | null; stdout: string } {
   const file = _systemTool(cmd, process.env)
   if (file === null) return { status: null, stdout: '' }
   try {
@@ -94,7 +118,7 @@ function defaultExec(cmd: string, args: string[]): { status: number | null; stdo
 export const _ownerOnlyHost: { platform: NodeJS.Platform; env: NodeJS.ProcessEnv; exec: OwnerOnlyExec } = {
   platform: process.platform,
   env: process.env,
-  exec: defaultExec,
+  exec: defaultOwnerOnlyExec,
 }
 
 /** `DOMAIN\user` for the current Windows account, or null when it is not known. */

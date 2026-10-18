@@ -3,7 +3,7 @@ import { closeSync, fchmodSync, fstatSync, fsyncSync, mkdirSync, openSync, readF
 import { dirname, join } from 'path'
 import * as tls from 'tls'
 import type { ExecFn } from './exec.js'
-import { currentWindowsAccount, defaultExec as defaultOwnerOnlyExec, protectOwnerOnlyWindows, type OwnerOnlyExec } from './owner-only.js'
+import { currentWindowsAccount, defaultOwnerOnlyExec, protectOwnerOnly, windowsSystemRoot, windowsSystemTool, type OwnerOnlyExec } from '@plur-ai/core'
 
 /**
  * The company CA, accepted only by its pinned fingerprint (#1638).
@@ -99,9 +99,6 @@ const WIN32_EXPORT_SCRIPT =
 
 const WIN32_POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-']
 
-/** The only SystemRoot we accept: `<drive>:\\Windows`, the folder Windows installs into on every drive. */
-const WIN_SYSTEM_ROOT = /^[A-Za-z]:\\Windows$/i
-
 /**
  * Windows PowerShell 5.1 by absolute path, or null. Never the bare name:
  * Windows process creation looks in the current folder before PATH, so a
@@ -110,25 +107,22 @@ const WIN_SYSTEM_ROOT = /^[A-Za-z]:\\Windows$/i
  * user folder) runs nothing: the store is then simply not searched.
  */
 export function win32PowerShellPath(env: NodeJS.ProcessEnv): string | null {
-  const root = win32SystemRoot(env)
+  const root = windowsSystemRoot(env)
   return root && `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
 }
 
-function win32SystemRoot(env: NodeJS.ProcessEnv): string | null {
-  const root = env.SystemRoot
-  return typeof root === 'string' && WIN_SYSTEM_ROOT.test(root) ? root : null
-}
-
 /**
- * The icacls runner for the owner-only step: `<SystemRoot>\\System32\\icacls.exe`
- * by absolute path (same reason as PowerShell above), or null when SystemRoot
- * is not trustworthy — then the file is not written.
+ * The runner for the owner-only step (core's `protectOwnerOnly`, which runs
+ * icacls and whoami): each by absolute path from `<SystemRoot>\\System32` (same
+ * reason as PowerShell above), or null when SystemRoot is not trustworthy —
+ * then the file is not written. Nothing else is run through it.
  */
 export function win32IcaclsExec(env: NodeJS.ProcessEnv, run: OwnerOnlyExec = defaultOwnerOnlyExec): OwnerOnlyExec | null {
-  const root = win32SystemRoot(env)
-  if (!root) return null
-  const icacls = `${root}\\System32\\icacls.exe`
-  return (_cmd, args) => run(icacls, args)
+  if (!windowsSystemRoot(env)) return null
+  return (cmd, args) => {
+    const file = cmd === 'icacls' || cmd === 'whoami' ? windowsSystemTool(cmd, env) : null
+    return file ? run(file, args) : { status: null, stdout: '' }
+  }
 }
 
 /** macOS `security`, by absolute path (never looked up on PATH). */
@@ -279,7 +273,7 @@ function writeOwnerOnly(
   let closed = false
   try {
     if (o.platform === 'win32') {
-      const r = protectOwnerOnlyWindows(tmp, { directory: false, account: o.account, exec: o.aclExec })
+      const r = protectOwnerOnly(tmp, { platform: 'win32', directory: false, account: o.account, exec: o.aclExec })
       if (!r.ok) throw new Error(r.detail)
     } else {
       fchmodSync(fd, CA_FILE_MODE)
