@@ -41,6 +41,16 @@ tools.ts's only change is in plur_stores_add's reply: on `token_rotated` for a
 scope of a server entry it adds `token_scopes` and a note. That is not in any
 section here (learn entry points, session lifecycle, hook merges, exit codes,
 dsh, hermes, array coercion, `.plur.yaml` trust).
+
+Checked against #1631 background discovery (2026-10-18): still holds.
+plur_session_start starts a background scope refresh for company server
+entries, skips the awaited `/me` probe for their endpoints (exactly those
+refreshServerScopes probes: a scopes list and an enterprise block), reports a
+failed check in the guide, caps the guide's
+scope list and adds a `discovery` reply field. It does not touch the
+session-scope registry or its default-scope slot (§1), `_cleanExpiredSessions`
+or session_end (§2), or the `.plur.yaml` trust gate (§9): `default_scope` and
+`scope_source` are computed exactly as before.
 -/
 
 namespace PlurSpec.Adapters

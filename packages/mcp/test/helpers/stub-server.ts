@@ -38,6 +38,11 @@ export class StubServer {
   meStatus: number | null = null
   /** When set, GET /api/v1/me returns this as the response body (#1631). */
   meBody: unknown = null
+  /** Number of GET /api/v1/me requests received (#1631 background discovery). */
+  meCalls = 0
+  /** When set, GET /api/v1/me answers only after this settles — a slow or
+   *  hanging server (#1631: startup must not wait on it). */
+  beforeMe: (() => void | Promise<void>) | null = null
 
   constructor(private readonly validToken: string) {}
 
@@ -70,6 +75,9 @@ export class StubServer {
   async stop(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.server) return resolve()
+      // Drop connections a held /me answer is still keeping open, or close()
+      // waits for them (#1631).
+      this.server.closeAllConnections?.()
       this.server.close(() => {
         this.server = null
         this.engrams.clear()
@@ -91,6 +99,8 @@ export class StubServer {
     this.idCounter = 0
     this.meStatus = null
     this.meBody = null
+    this.meCalls = 0
+    this.beforeMe = null
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -106,12 +116,19 @@ export class StubServer {
 
     // GET /api/v1/me — resolved identity + authorized scopes (#292)
     if (method === 'GET' && path === '/api/v1/me') {
+      this.meCalls++
       // #1631: meStatus/meBody override — simulate 503 scope_lookup_failed etc.
-      if (this.meStatus !== null) {
-        this.json(res, this.meStatus, this.meBody ?? { error: `forced ${this.meStatus}` })
+      // The answer (forced or not) is sent only after `beforeMe` settles.
+      const answer = (): void => {
+        if (this.meStatus !== null) this.json(res, this.meStatus, this.meBody ?? { error: `forced ${this.meStatus}` })
+        else this.json(res, 200, this.me)
+      }
+      const hook = this.beforeMe
+      if (hook) {
+        Promise.resolve().then(() => hook()).then(answer, () => this.json(res, 500, { error: 'beforeMe failed' }))
         return
       }
-      this.json(res, 200, this.me)
+      answer()
       return
     }
 

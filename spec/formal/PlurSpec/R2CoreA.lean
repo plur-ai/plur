@@ -44,6 +44,11 @@ Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): sti
 refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
 (nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
 warning naming the url by origin; no modelled branch changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; no section here reads it.
 -/
 
 namespace PlurSpec.R2CoreA
