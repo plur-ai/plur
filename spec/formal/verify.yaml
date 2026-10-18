@@ -113,3 +113,22 @@ models:
   - model: PlurSpec/PacksV2.lean
     covers:
       - packages/core/src/packs.ts
+  - model: PlurSpec/StoreEntry.lean
+    covers:
+      - packages/core/src/store-expand.ts
+      - packages/core/src/sensitivity-writeback.ts
+      - packages/core/src/config.ts
+      - packages/core/src/index.ts
+  - model: PlurSpec/Installer.lean
+    covers:
+      - packages/cli/src/enterprise/cleanup.ts
+      - packages/cli/src/enterprise/owner-only.ts
+      - packages/cli/src/enterprise/hello.ts
+      - packages/cli/src/enterprise/mcp-stdio.ts
+      - packages/cli/src/enterprise/args.ts
+      - packages/cli/src/enterprise/summary.ts
+  - model: PlurSpec/RoutingDiscovery.lean
+    covers:
+      - packages/core/src/store-resolver.ts
+      - packages/core/src/server-discovery.ts
+      - packages/core/src/index.ts

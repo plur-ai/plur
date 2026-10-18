@@ -29,7 +29,7 @@
 #                    copy until the tweet fits 280 chars.
 #   --skip-tweet     Full release but don't post to X.
 #   --trust-ci       Replace the LOCAL test suite (step 3) with a verification
-#                    that HEAD equals origin/main and that the five required CI
+#                    that HEAD equals origin/main and that the four required CI
 #                    contexts are green on that exact commit. Same safety
 #                    purpose, different evidence: use when the release machine
 #                    is too contended for the timing-sensitive suites to pass
@@ -37,7 +37,9 @@
 #                    passing in isolation). The tree still differs from the
 #                    verified commit by the version bumps this script just
 #                    made — the packaged-artifact smoke test downstream is what
-#                    covers those, as it does on every release.
+#                    covers those, as it does on every release. In every
+#                    mode, the Windows real-editor checks (windows-editors,
+#                    #1605) must be green on HEAD, which must be origin/main.
 #   --no-website     Skip website pre-flight (Step 3.8) and deploy (Step 8).
 #                    Normally a missing $WEBSITE_DIR is a hard abort — this flag
 #                    makes the skip explicit. Use only from worktrees or machines
@@ -503,6 +505,20 @@ echo ""
 
 # --- 3. Test ---
 echo "--- Step 3: Test ---"
+# Windows real-editor gate (#1605), in every mode: no local run can stand in
+# for it, so the release commit must be origin/main and the Windows real
+# editors workflow must have passed on it (scripts/release-windows-gate.sh).
+git fetch origin main --quiet
+GATE_SHA=$(git rev-parse HEAD)
+if [ "$GATE_SHA" != "$(git rev-parse origin/main)" ]; then
+  echo "ERROR: HEAD ($GATE_SHA) is not origin/main — the Windows real-editor checks run on pushed commits only. Push, wait for windows-editors, then release. Aborting."
+  exit 1
+fi
+if ! scripts/release-windows-gate.sh "$GATE_SHA"; then
+  echo "ERROR: the Windows real-editor checks (windows-editors) are not green on $GATE_SHA. Aborting."
+  exit 1
+fi
+echo "  ✓ windows-editors green on $GATE_SHA"
 if [ "$TRUST_CI" = true ]; then
   # Trust-CI mode: the gate's purpose is "never ship an untested tree". A
   # green required-context set on the identical commit satisfies that purpose
@@ -516,7 +532,7 @@ if [ "$TRUST_CI" = true ]; then
     exit 1
   fi
   CI_FAILED=false
-  for CTX in "test (20)" "test (22)" "test (24)" "test (26)" "smoke-packaged"; do
+  for CTX in "test (22)" "test (24)" "test (26)" "smoke-packaged"; do
     CONCLUSION=$(gh api "repos/plur-ai/plur/commits/$LOCAL_SHA/check-runs?per_page=100"       --jq "[.check_runs[] | select(.name == \"$CTX\")] | max_by(.started_at) | .conclusion // \"missing\"" 2>/dev/null || echo "query-failed")
     echo "  $CTX: $CONCLUSION"
     [ "$CONCLUSION" = "success" ] || CI_FAILED=true
@@ -525,7 +541,7 @@ if [ "$TRUST_CI" = true ]; then
     echo "ERROR: required CI is not uniformly green on $LOCAL_SHA. Run without --trust-ci, or fix CI. Aborting."
     exit 1
   fi
-  echo "  ✓ all five required contexts green on $LOCAL_SHA"
+  echo "  ✓ all four required contexts green on $LOCAL_SHA"
 else
 TEST_OUTPUT=$(pnpm test 2>&1 || true)
 PASS_COUNT=$(echo "$TEST_OUTPUT" | grep -o '[0-9]* passed' | head -1)

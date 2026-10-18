@@ -20,6 +20,7 @@ import { mkdtempSync, rmSync, writeFileSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { PlurPlugin } from '../src/index.js'
+import { withFolderMap } from './folder-fixture.js'
 
 const REMOTE_CONFIG = `scope: group:acme/eng
 remote_url: https://plur.acme.internal
@@ -52,6 +53,8 @@ describe('project remote settings (#1207)', () => {
       learnRouted: vi.fn().mockResolvedValue(undefined),
       isDirectoryTrusted: vi.fn().mockReturnValue(true),
     }
+    // #1347: the same trust, as the folder map holds it.
+    withFolderMap(mockPlur, [{ path: tempDir, trusted: true }])
     warned = []
     errSpy = vi.spyOn(console, 'error').mockImplementation((msg?: unknown) => { warned.push(String(msg)) })
   })
@@ -82,6 +85,8 @@ describe('project remote settings (#1207)', () => {
   it('refuses: no remote_project from an untrusted directory, and says so', async () => {
     writeFileSync(join(tempDir, '.plur.yaml'), REMOTE_CONFIG)
     mockPlur.isDirectoryTrusted.mockReturnValue(false)
+    // #1347: untrusted, with the folder switched on in the map (no decision would ask).
+    withFolderMap(mockPlur, [{ path: tempDir, plur: 'on' }])
 
     const opts = await recallOptions(tempDir)
 

@@ -10,5 +10,10 @@ export default defineConfig({
     testTimeout: 60000,
     hookTimeout: 60000,
     exclude: ['**/node_modules/**', '**/test/e2e/**'],
+    // isolate-home (shared with packages/cli): a temp HOME and no inherited
+    // PLUR_PATH for every file. engine.test.ts constructs the real core with
+    // the default store path, which opened the real ~/.plur; the CLI suite's
+    // real-home guard caught it in CI.
+    setupFiles: ['../cli/test/setup/isolate-home.ts'],
   },
 })

@@ -169,7 +169,7 @@ async function closeSession(flags: GlobalFlags): Promise<boolean> {
   }
   // An unresolvable folder: no capture; the checkpoint stays for a later,
   // resolvable session to decide.
-  if (checkpointPolicy?.reason === 'malformed-map') return true
+  if (checkpointPolicy?.reason === 'malformed-map' || checkpointPolicy?.reason === 'resolver-error') return true
 
   // Build a conservative, metadata-only summary — the same information the
   // deferred wrap-up (#216) reports, but captured as a durable episode.

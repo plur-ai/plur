@@ -6,7 +6,7 @@
  * must leave the same number of hook commands as one run.
  */
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, mkdirSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
@@ -42,6 +42,12 @@ describe('plur init on a home with a quote or metacharacter keeps one hook set (
     home = join(mkdtempSync(join(tmpdir(), 'plur-mc-')), name)
     const project = join(home, 'project')
     mkdirSync(project, { recursive: true })
+    // This hook-idempotence fixture must not depend on Codex being installed
+    // on the developer's PATH. Existing MCP registrations are repaired in place;
+    // an explicit fresh --codex setup without a host now correctly exits nonzero.
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(join(home, '.codex', 'config.toml'),
+      '[mcp_servers.plur]\ncommand = "npx"\nargs = ["-y", "@plur-ai/mcp@0.19.4"]\n')
     const files = {
       claude: join(home, '.claude', 'settings.json'),
       codex: join(home, '.codex', 'hooks.json'),

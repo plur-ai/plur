@@ -41,7 +41,7 @@ const ALWAYS_ASYNC = new Set([
   'learnAsync', 'recallAsync', 'setPinnedAsync', 'updateEngramAsync',
   'reindexAsync', 'listStoresAsync',
   // Embedding/LLM-backed retrieval — always async, always awaited by callers.
-  'recallHybrid', 'recallHybridWithMeta', 'recallSemantic', 'recallAutoSearch',
+  'recallHybrid', 'recallHybridWithMeta', 'recallWithMeta', 'recallSemantic', 'recallAutoSearch',
   'recallExpanded', 'injectHybrid', 'similaritySearch', 'checkRerankerFit',
   'rerankerSelfEval',
   // Network / index plumbing.
@@ -99,6 +99,10 @@ const ALWAYS_ASYNC = new Set([
   // I/O, so it could never have been sync; new in this release, so there is
   // no pre-0.16 call site to rewrite.
   'verifyRemoteStore',
+  // Born async (#1631) — reads each company server's scope list from /me and
+  // writes the discovery cache. Network I/O, so it could never have been sync;
+  // new in this release, so there is no pre-0.16 call site to rewrite.
+  'refreshServerScopes',
 ])
 
 /** Public methods of `Plur`, mapped to whether they are declared `async`. */

@@ -213,6 +213,9 @@ export function makeOpenAI3LargeAdapter(options?: OpenAI3LargeOptions): Embedder
     maxTokensPerRequest: options?.maxTokensPerRequest ?? DEFAULT_MAX_TOKENS_PER_REQUEST,
   }
   return {
+    // A remote API: no local model, no cold start, so no background cache
+    // fill (#1586 round 6, L4).
+    remote: true,
     name: 'openai-3-large',
     dim: OPENAI_3_LARGE_DIM,
     modelId: OPENAI_3_LARGE_MODEL_ID,

@@ -7,6 +7,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
+import { skippedStoreNotice } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
@@ -48,7 +49,7 @@ function logRemoteAttempt(entry: {
   // #776: the recall leg's per-host states join the legacy outcome values so
   // old log tooling keeps parsing the same field.
   outcome:   'ok' | 'http_error' | 'timeout' | 'network_error' | 'bad_response' | 'oversize'
-           | 'unreachable' | 'auth_expired' | 'forbidden' | 'rate_limited' | 'unsupported' | 'skipped_cooldown'
+           | 'unreachable' | 'auth_expired' | 'forbidden' | 'rate_limited' | 'unsupported' | 'skipped_cooldown' | 'client_slow'
   ms:        number
   http?:     number
   engrams?:  number
@@ -588,7 +589,7 @@ export function processDeferredWrapups(
         // unresolvable folder, or an unreadable map, leaves the checkpoint
         // uncaptured for a session that can decide.
         try { policy = plur.resolveFolderPolicy(checkpoint.cwd) } catch { continue }
-        if (policy.reason === 'malformed-map') continue
+        if (policy.reason === 'malformed-map' || policy.reason === 'resolver-error') continue
         if (policy.mode === 'remote-only') {
           try { unlinkSync(path) } catch { /* gone */ }
           continue
@@ -691,10 +692,11 @@ export function settleWithin(p: Promise<unknown>, ms: number): Promise<boolean> 
 /**
  * Background build of the embedding cache (#1313 audit).
  *
- * Core saves `.embeddings-cache.json` only when a hybrid search runs to the
- * end. A first prompt whose search misses the deadline exits before that, so
- * on a store with a cold cache every session's first prompt missed the
- * deadline again and never got faster. After such a fallback the hook starts
+ * Core used to save `.embeddings-cache.json` only when a hybrid search ran to
+ * the end, so on a store with a cold cache every session's first prompt
+ * missed the deadline again and never got faster. (Since #1586 round 6 a
+ * cut-off search also keeps its vectors, appended to
+ * `.embeddings-cache.delta.jsonl`; this build still finishes the job.) After such a fallback the hook starts
  * `hook-inject --warm-embeddings`: detached, lowest CPU priority, one at a
  * time per store (the `.embeddings-warming` marker), bounded by
  * PLUR_WARM_CEILING_MS. It runs core's `similaritySearch`, which embeds every
@@ -921,6 +923,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     const correction = promptCorrection(input)
     if (correction) lines.push(correction)
+    // The skipped-store hint is keyed on session AND folder (#1589 audit
+    // round 4): a session that moves to another folder gets that folder's
+    // hint once. Cheap checks run first; the PLUR instance is built only when
+    // a store file is on the walk and the hint was not given here yet.
+    const hint = skippedStoreNotice(() => createAskPlur(flags), typeof input.session_id === 'string' ? input.session_id : '', dir)
+    if (hint) lines.push(hint)
     if (lines.length > 0) {
       emitContext(claudeHookEventName(input, { rehydrate: false, event: null }), lines.join('\n\n'))
     }
@@ -1163,6 +1171,11 @@ async function injectSession(
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
+
+    // A memory store here that was found but not added (#1589 audit round 3):
+    // one line, once per session and folder, with the paste-safe command.
+    const hint = skippedStoreNotice(plur, typeof input.session_id === 'string' ? input.session_id : '', dir)
+    if (hint) parts.push(hint)
 
     // Deferred wrap-up: notify about orphaned previous sessions (#216)
     const deferredNotice = processDeferredWrapups(plur, checkpointRoot(flags))

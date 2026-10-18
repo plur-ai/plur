@@ -76,10 +76,10 @@ describe('plur remote (#1413)', () => {
   const foldersText = () => existsSync(foldersPath()) ? readFileSync(foldersPath(), 'utf8') : null
   const folders = () => ((yaml.load(foldersText() ?? '') ?? { folders: [] }) as { folders: Array<Record<string, unknown>> }).folders ?? []
 
-  function cli(args: string[], opts: { cwd?: string } = {}): Promise<Run> {
+  function cli(args: string[], opts: { cwd?: string; env?: Record<string, string | undefined> } = {}): Promise<Run> {
     return new Promise((resolve, reject) => {
       const child = spawn('node', [CLI, ...args, '--path', plurDir], {
-        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: plurDir },
+        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: plurDir, ...(opts.env ?? {}) },
         cwd: opts.cwd ?? work,
       })
       let stdout = ''
@@ -140,7 +140,7 @@ describe('plur remote (#1413)', () => {
 
     const config = yaml.load(configText()) as { stores: Array<Record<string, unknown>> }
     expect(config.stores).toEqual([expect.objectContaining({ url: baseUrl, scope: SCOPE, token: TOKEN })])
-    expect(folders()).toEqual([{ path: realpathSync(work), scope: SCOPE }])
+    expect(folders()).toEqual([{ path: realpathSync(work), plur: 'on', scope: SCOPE }])
     expect(existsSync(join(work, '.plur.yaml'))).toBe(false)
     expect(existsSync(join(work, '.gitignore'))).toBe(false)
   }, TEST_TIMEOUT_MS)
@@ -189,7 +189,7 @@ describe('plur remote (#1413)', () => {
       mkdirSync(proj, { recursive: true })
       const r = await cli(['remote', '--url', baseUrl, '--token', TOKEN, '--scope', SCOPE, '--json'], { cwd: proj })
       expect(r.status, r.stderr).toBe(0)
-      expect(folders()).toEqual([{ path: realpathSync(proj), scope: SCOPE }])
+      expect(folders()).toEqual([{ path: realpathSync(proj), plur: 'on', scope: SCOPE }])
     }, TEST_TIMEOUT_MS)
   })
 
@@ -198,7 +198,7 @@ describe('plur remote (#1413)', () => {
     expect(r.status, r.stderr).toBe(0)
     const config = yaml.load(configText()) as { stores: Array<Record<string, unknown>> }
     expect(config.stores.map(s => s.scope)).toEqual([SCOPE, SCOPE2])
-    expect(folders()).toEqual([{ path: realpathSync(work), scope: SCOPE }])
+    expect(folders()).toEqual([{ path: realpathSync(work), plur: 'on', scope: SCOPE }])
   }, TEST_TIMEOUT_MS)
 
   it('a rejected token writes nothing', async () => {
@@ -218,6 +218,61 @@ describe('plur remote (#1413)', () => {
     expect(r.stdout + r.stderr).toContain('group:example/finance')
     expect(configText()).toBe(before)
     expect(foldersText()).toBeNull()
+  }, TEST_TIMEOUT_MS)
+
+  it('remote after Codex init adds token forwarding without a second init (#1623)', async () => {
+    const codexHome = join(home, '.codex')
+    mkdirSync(codexHome)
+    const codexPath = join(codexHome, 'config.toml')
+    writeFileSync(codexPath, '[mcp_servers.plur]\ncommand = "npx"\nargs = ["-y", "@plur-ai/mcp@0.21.4"]\nstartup_timeout_sec = 37\n')
+    const VAR = 'PLUR_REMOTE_TEST_TOKEN_1623'
+    const first = await cli(['remote', '--url', baseUrl, '--token-env', VAR, '--scope', SCOPE, '--json'], { env: { [VAR]: TOKEN, CODEX_HOME: codexHome } })
+    expect(first.status, first.stderr).toBe(0)
+    const bytes = readFileSync(codexPath, 'utf8')
+    expect(bytes).toContain(`env_vars = ["${VAR}"]`)
+    expect(bytes).toContain('startup_timeout_sec = 37')
+    expect(bytes).not.toContain(TOKEN)
+    expect(JSON.parse(first.stdout).codex.status).toBe('updated')
+    const again = await cli(['remote', '--url', baseUrl, '--token-env', VAR, '--scope', SCOPE, '--json'], { env: { [VAR]: TOKEN, CODEX_HOME: codexHome } })
+    expect(again.status, again.stderr).toBe(0)
+    expect(readFileSync(codexPath, 'utf8')).toBe(bytes)
+  }, TEST_TIMEOUT_MS)
+
+  // #1561 (pre-release check L5): --token-env wrote the token's VALUE into
+  // config.yaml. Only the variable's name may be stored; the token is read
+  // from it at load, and no later write-back of the stores list (here: a
+  // second scope appended, which rewrites every entry) may persist it.
+  it('--token-env stores only the variable name; the store works while it is set, and no write-back stores the value', async () => {
+    const VAR = 'PLUR_REMOTE_TEST_TOKEN_1561'
+    const first = await cli(['remote', '--url', baseUrl, '--token-env', VAR, '--scope', SCOPE, '--json'], { env: { [VAR]: TOKEN } })
+    expect(first.status, first.stderr).toBe(0)
+    expect(configText()).not.toContain(TOKEN)
+    const config = yaml.load(configText()) as { stores: Array<Record<string, unknown>> }
+    expect(config.stores).toEqual([expect.objectContaining({ url: baseUrl, scope: SCOPE, token_env: VAR })])
+    expect(config.stores[0]).not.toHaveProperty('token')
+    expect(first.stdout + first.stderr).not.toContain(TOKEN)
+
+    // The store is reachable with the variable set, and not without it.
+    const set = await cli(['remote', '--json'], { env: { [VAR]: TOKEN } })
+    expect(set.status, set.stderr).toBe(0)
+    expect(JSON.parse(set.stdout).stores).toEqual([expect.objectContaining({ url: baseUrl, scope: SCOPE, ok: true })])
+    const unset = await cli(['remote', '--json'], { env: { [VAR]: '' } })
+    expect(unset.status).not.toBe(0)
+    // #1564 review M2: the result names the variable, and nothing was sent.
+    const meBefore = server.meCalls
+    const unset2 = await cli(['remote', '--json'], { env: { [VAR]: '' } })
+    expect(server.meCalls).toBe(meBefore)
+    const store = JSON.parse(unset2.stdout).stores[0]
+    expect(store.token_env_unset).toBe(VAR)
+    expect(store.reason).toContain(VAR)
+    expect(store.reason).not.toMatch(/config\.yaml/)
+
+    // Appending a second scope rewrites the whole stores list.
+    const second = await cli(['remote', '--url', baseUrl, '--token-env', VAR, '--scopes', `${SCOPE},${SCOPE2}`, '--json'], { env: { [VAR]: TOKEN } })
+    expect(second.status, second.stderr).toBe(0)
+    expect(configText()).not.toContain(TOKEN)
+    const after = yaml.load(configText()) as { stores: Array<Record<string, unknown>> }
+    expect(after.stores.map(s => s.token_env)).toEqual([VAR, VAR])
   }, TEST_TIMEOUT_MS)
 
   it('is idempotent: a second identical run exits 0 and changes no file', async () => {
@@ -281,7 +336,7 @@ describe('plur remote (#1413)', () => {
     expect(r.status, r.stderr).toBe(0)
     const config = yaml.load(configText()) as { stores: Array<Record<string, unknown>> }
     expect(config.stores).toEqual([expect.objectContaining({ url: baseUrl, scope: SCOPE })])
-    expect(folders()).toEqual([{ path: realpathSync(work), scope: SCOPE }])
+    expect(folders()).toEqual([{ path: realpathSync(work), plur: 'on', scope: SCOPE }])
     expect(existsSync(join(work, '.plur.yaml'))).toBe(false)
 
     const v = await cli(['init-remote', '--verify', '--json'])

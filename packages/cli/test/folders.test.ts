@@ -349,6 +349,18 @@ describe('core copies agree with the CLI originals (#1347)', () => {
       // Home's own settings only count when the walk starts at home.
       mkdirSync(join(home, '.claude'), { recursive: true })
       writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ mcpServers: { plur: {} } }))
+      // A marker above a repository does not reach into it (#1588).
+      const ws = mk(join(home, 'ws'))
+      writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { plur: {} } }))
+      const repo = mk(join(ws, 'repo'))
+      mkdirSync(join(repo, '.git'))
+      mk(join(repo, 'src'))
+      const inRepo = mk(join(ws, 'own'))
+      mkdirSync(join(inRepo, '.git'))
+      writeFileSync(join(inRepo, '.plur.yaml'), 'domain: own\n')
+      mk(join(inRepo, 'lib'))
+      expect(isPlurConfigured(join(repo, 'src'), home)).toBe(false)
+      expect(isPlurConfigured(join(inRepo, 'lib'), home)).toBe(true)
       void plain
       for (const c of cases) {
         expect(findPlurMarker(c, home) !== null, c).toBe(isPlurConfigured(c, home))

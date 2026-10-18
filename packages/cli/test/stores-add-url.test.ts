@@ -166,6 +166,28 @@ describe('plur stores add --url (#1265)', () => {
       { env: { INSTALLER_PLUR_TOKEN: TOKEN } })
     expect(r.status, r.stderr).toBe(0)
     expect(JSON.parse(r.stdout)).toMatchObject({ status: 'added' })
+    // #1561 (pre-release check L5): only the variable's name is stored, never
+    // the token itself.
+    expect(configText()).not.toContain(TOKEN)
+    expect(configText()).toContain('token_env: INSTALLER_PLUR_TOKEN')
+    // A re-run with the same variable is idempotent and still stores no value.
+    const before = configText()
+    const again = await cli(['stores', 'add', '--url', baseUrl, '--token-env', 'INSTALLER_PLUR_TOKEN', '--scope', SCOPE, '--json'],
+      { env: { INSTALLER_PLUR_TOKEN: TOKEN } })
+    expect(again.status, again.stderr).toBe(0)
+    expect(JSON.parse(again.stdout)).toMatchObject({ status: 'already_registered' })
+    expect(configText()).toBe(before)
+  }, TEST_TIMEOUT_MS)
+
+  it('--token-env on a store registered with a literal token replaces the stored token with the reference (#1561)', async () => {
+    const lit = await cli(['stores', 'add', '--url', baseUrl, '--token', TOKEN, '--scope', SCOPE, '--json'])
+    expect(lit.status, lit.stderr).toBe(0)
+    expect(configText()).toContain(TOKEN)
+    const r = await cli(['stores', 'add', '--url', baseUrl, '--token-env', 'INSTALLER_PLUR_TOKEN', '--scope', SCOPE, '--json'],
+      { env: { INSTALLER_PLUR_TOKEN: TOKEN } })
+    expect(r.status, r.stderr).toBe(0)
+    expect(configText()).not.toContain(TOKEN)
+    expect(configText()).toContain('token_env: INSTALLER_PLUR_TOKEN')
   }, TEST_TIMEOUT_MS)
 
   it('--token-env naming an unset variable: exit 1, nothing written', async () => {

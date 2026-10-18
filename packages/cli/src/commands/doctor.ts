@@ -1,9 +1,13 @@
+import { readCodexEntry, configuredTokenVariables, codexMcpEnvironment, codexStorageRoot } from '../codex-config.js'
+import { CLI_VERSION } from '../version.js'
+import { codexConfigTomlPath } from '../mcp-config.js'
 import { spawn } from 'child_process'
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
-import { join, extname } from 'path'
+import { join, extname, dirname, resolve } from 'path'
 import { homedir, platform } from 'os'
 import { createRequire } from 'module'
 import { createPlur, type GlobalFlags } from '../plur.js'
+import { skippedStoreLines } from './stores.js'
 import { outputText, outputInfo, outputJson, shouldOutputJson } from '../output.js'
 import {
   type ConfigFile,
@@ -15,6 +19,8 @@ import {
   hasPlurMcp,
   knownConfigFiles,
   readConfig,
+  claudeCodeUserConfigPath,
+  claudeCodeGlobalSettingsPath,
 } from '../mcp-config.js'
 import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { isPlurHookCommand, isPlurHookSpec } from '../lib/hook-command.js'
@@ -22,7 +28,11 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, classifyStoreDuplicates } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
+import { plurRoot } from '../lib/folder-gate.js'
+import { repairAdvice, repairCommandFor } from './folders.js'
+import { codexInstalled } from '../lib/codex-binary.js'
+import { commandSpawn } from '../lib/command-spawn.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -57,10 +67,28 @@ interface HookShimReport {
   error?: string
 }
 
+/**
+ * Where Claude Code itself would find the `plur` MCP server (#1561): user scope
+ * (`mcpServers` in ~/.claude.json), local scope for this folder
+ * (`projects[<folder>].mcpServers` there), or a project `.mcp.json`. Never
+ * ~/.claude/settings.json — Claude Code does not read MCP servers from it,
+ * and an entry there (`legacySettingsEntry`) is what earlier inits wrote.
+ */
+export interface ClaudeCodeMcpReport {
+  registered: boolean
+  scope: 'user' | 'local' | 'project' | null
+  path: string | null
+  legacySettingsEntry: boolean
+  /** Set when not registered: the command that fixes it. */
+  fix?: string
+}
+
 interface DoctorReport {
   configs: ConfigFileReport[]
   hooksInstalled: boolean
+  /** A plur MCP server is registered somewhere a harness reads it (settings.json never counts, #1561). */
   mcpRegistered: boolean
+  claudeCodeMcp: ClaudeCodeMcpReport
   datacoreCollision: boolean
   staleNpxHooks: boolean
   staleNpxMcp: boolean
@@ -184,6 +212,28 @@ interface DoctorReport {
    */
   ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
   /**
+   * Project stores (`.plur/engrams.yaml`) found from this folder but not
+   * added, because their folder has no decision of its own (#1588, #1589
+   * audit L3). Advisory only: does not fail the overall check.
+   */
+  skippedProjectStores: Array<{ path: string; folder: string }>
+  /**
+   * Remote stores whose token comes from an environment variable
+   * (`token_env`, #1561) that is unset or empty where doctor runs (#1572).
+   * Saves to such a store wait in the outbox and recalls skip it. Names the
+   * variable, never a value. It fails the overall check, as the MCP
+   * `plur_doctor` does, with the same `detail` and `fix` (#1572 review M1/M2).
+   */
+  tokenEnvUnset: Array<{ scope: string; url: string; variable: string; detail: string; fix: string }>
+  /**
+   * The `token_env` stores whose variable IS set, and where (#1572 re-review
+   * M3): this shell (`inShell`), and/or the `env` of a PLUR MCP entry an
+   * editor launches the server with (`sources`). A variable set only in an
+   * entry works for that editor's server, so it is not a failure; `plur`
+   * commands run from this shell still lack it. Never holds a value.
+   */
+  tokenEnvFound: Array<{ scope: string; url: string; variable: string; inShell: boolean; sources: string[] }>
+  /**
    * opencode leg. Owner-approved pre-publish requirement (2026-09-16): until
    * `@plur-ai/opencode` is published, opencode's `plugin: ["@plur-ai/opencode"]`
    * resolves a bare name from the npm registry at startup and fails with NO
@@ -214,6 +264,27 @@ interface DoctorReport {
     retrying: number
     needs_action: number
     scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
+    /** Entries held on this machine for a stated reason (#1581 audit L1). */
+    held?: Array<{ count: number; reason: string; next_step: string }>
+    /** With writes queued: why the push-claims folder cannot be written (#1581 audit L1). */
+    claims_problem?: string
+  } | null
+  /**
+   * The folder map (`folders.yaml`) when it exists but cannot be used (#1526):
+   * where, what in plain words, and whether `plur folders repair` fixes it.
+   * While it is broken every memory surface pauses (fail safe), so this FAILS
+   * `overall`. `null` when the map is fine or absent.
+   */
+  folderMap?: {
+    file: string
+    problem: string
+    line?: number
+    column?: number
+    fixable: boolean
+    /** The command that fixes it, when it can. */
+    repair?: string
+    /** What that repair changes (lines and keys, no values). */
+    repair_summary?: string
   } | null
   overall: 'ok' | 'fail'
 }
@@ -232,8 +303,13 @@ interface OpencodeReport {
   ok: boolean
   /** `plugin: [...]` includes `@plur-ai/opencode` — the automatic memory layer. */
   pluginDeclared: boolean
+  pluginDisabled?: boolean
+  /** Resolution is not proof that the host loaded the plugin. */
+  pluginLoadVerified?: false
+  pluginUpgrade?: { from: string; to: string }
   /** `mcp.plur` is present — the explicit `plur_*` tool surface. */
   mcpPlurDeclared: boolean
+  mcpPlurDisabled?: boolean
   /**
    * Paths PLUR's own win32 node-form `mcp.plur` entry names that no longer
    * exist — the version-specific node binary after a Node upgrade (#1339).
@@ -433,8 +509,14 @@ function countStaleContentHashes(flags: GlobalFlags): number {
 /** #1299: classify the outbox. Local read only; never throws. */
 async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> {
   try {
-    const summary = await createPlur(flags, { readonly: true }).outboxSummary()
-    return { ok: summary.needs_action === 0, ...summary }
+    // Discovery off (#1589 audit round 2): doctor only looks, so its
+    // constructor must not register a project store or import trust.yaml.
+    const plur = createPlur(flags, { readonly: true, autoDiscover: false })
+    const summary = await plur.outboxSummary()
+    // A push claim that cannot be recorded holds every queued write here
+    // (#1581 audit L1). Checked only when something is queued.
+    const claims_problem = summary.pending > 0 ? plur.outboxClaimsProblem() : undefined
+    return { ok: summary.needs_action === 0 && !claims_problem, ...summary, ...(claims_problem ? { claims_problem } : {}) }
   } catch {
     return null
   }
@@ -454,6 +536,73 @@ function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDu
   } catch {
     return []
   }
+}
+
+/**
+ * Project stores found from the working folder but not added for lack of
+ * their folder's own decision (#1589 audit L3). Read-only: discovery is off
+ * for this instance, so nothing is registered by looking.
+ */
+function findSkippedProjectStores(flags: GlobalFlags): DoctorReport['skippedProjectStores'] {
+  try {
+    return createPlur(flags, { readonly: true, autoDiscover: false }).skippedProjectStores(process.cwd())
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The `env` of every PLUR MCP entry an editor launches (#1572 re-review M3):
+ * Claude Code's (~/.claude.json, or this folder's local / project scope),
+ * then the other harnesses' files. A settings.json entry, which nothing
+ * launches, is left out. The same files the handshake probes.
+ */
+function declaredPlurMcpEnvs(): Array<{ source: string; env: Record<string, string> }> {
+  const out: Array<{ source: string; env: Record<string, string> }> = []
+  try {
+    const cc = claudeCodePlurEntry(process.cwd())
+    const ccEntry = cc ? readPlurMcpEntry(cc.config) : null
+    if (cc && ccEntry) out.push({ source: `Claude Code MCP entry (${cc.path})`, env: ccEntry.env ?? {} })
+    for (const cf of knownConfigFiles()) {
+      if (!cf.exists || cf.kind === 'cursor-hooks' || cf.kind === 'claude-user' || isClaudeSettingsFile(cf.path)) continue
+      const e = readPlurMcpEntry(readConfig(cf.path))
+      if (e && !out.some(o => o.source.endsWith(`(${cf.path})`))) out.push({ source: `${cf.label} MCP entry (${cf.path})`, env: e.env ?? {} })
+    }
+  } catch { /* an unreadable config file names no source */ }
+  return out
+}
+
+/**
+ * #1572: the remote stores in config.yaml that take their token from an
+ * environment variable, split by whether the PLUR MCP server will see it —
+ * set in this shell, or in the `env` of an MCP entry an editor launches it
+ * with (re-review M3: the MCP plur_doctor runs with that env and says ok).
+ * Reads config files only; no store is opened, no value is kept.
+ */
+function findTokenEnv(flags: GlobalFlags): { unset: DoctorReport['tokenEnvUnset']; found: DoctorReport['tokenEnvFound'] } {
+  const unset: DoctorReport['tokenEnvUnset'] = []
+  const found: DoctorReport['tokenEnvFound'] = []
+  try {
+    const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+    const stores = loadConfig(join(root, 'config.yaml')).stores ?? []
+    const entries = declaredPlurMcpEnvs()
+    for (const s of stores) {
+      if (!s.url || !s.token_env) continue
+      const inShell = tokenFromEnv(s.token_env) !== undefined
+      // An inline token in the file wins over the variable (core's rule).
+      if (!inShell && s.token) continue
+      const sources = entries.filter(e => tokenFromEnv(s.token_env, e.env) !== undefined).map(e => e.source)
+      if (inShell || sources.length > 0) {
+        found.push({ scope: s.scope, url: s.url, variable: s.token_env, inShell, sources: inShell ? ['this shell', ...sources] : sources })
+      } else {
+        unset.push({
+          scope: s.scope, url: s.url, variable: s.token_env,
+          detail: tokenEnvUnsetDetail(s.token_env, s.scope), fix: tokenEnvUnsetFix(s.url, s.token_env),
+        })
+      }
+    }
+  } catch { /* no config: nothing to report */ }
+  return { unset, found }
 }
 
 function inspectConfigs(): ConfigFileReport[] {
@@ -572,10 +721,20 @@ function inspectConfigs(): ConfigFileReport[] {
  * migration) is invisible to the old probe by construction.
  */
 function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
-  for (const cf of knownConfigFiles()) {
-    if (!cf.exists || cf.kind === 'cursor-hooks') continue
+  // Probe what Claude Code launches first (#1561): ~/.claude.json (user, then
+  // this folder's local scope), then the other harnesses' files; a
+  // settings.json entry, which nothing launches, only as a last resort.
+  const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks')
+  const cc = claudeCodePlurEntry(process.cwd())
+  const ccEntry = cc ? readPlurMcpEntry(cc.config) : null
+  if (cc && ccEntry) return { entry: ccEntry, source: `Claude Code (${cc.scope} scope, ${cc.path})` }
+  const ordered = [
+    ...files.filter(cf => cf.kind !== 'claude-user' && !isClaudeSettingsFile(cf.path)),
+    ...files.filter(cf => isClaudeSettingsFile(cf.path)),
+  ]
+  for (const cf of ordered) {
     const declared = readPlurMcpEntry(readConfig(cf.path))
-    if (declared) return { entry: declared, source: cf.label }
+    if (declared) return { entry: declared, source: isClaudeSettingsFile(cf.path) ? `${cf.label} — not read by Claude Code` : cf.label }
   }
   return { entry: buildMcpServerEntry(), source: 'recommended default (no config declares a plur server)' }
 }
@@ -583,13 +742,14 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
 async function mcpHandshake(
   timeoutMs = 20000,
   envOverride?: Record<string, string>,
+  target?: { entry: McpServerEntry; source: string; env: NodeJS.ProcessEnv; cwd?: string },
 ): Promise<{ ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string; probed?: string; command?: string }> {
-  const { entry, source } = resolveProbeTarget()
+  const { entry, source } = target ?? resolveProbeTarget()
   // The entry's own env matters: a config pinning PLUR_TOOL_PROFILE=full gets a
   // different tool surface, and probing without it would report a count the
   // user never sees. envOverride still wins — it is how the cursor-profile
   // probe asks a deliberate what-if.
-  const spawnEnv = (entry.env || envOverride)
+  const spawnEnv = target ? target.env : (entry.env || envOverride)
     ? { ...process.env, ...(entry.env ?? {}), ...(envOverride ?? {}) }
     : undefined
 
@@ -607,9 +767,14 @@ async function mcpHandshake(
 
     let proc: ReturnType<typeof spawn>
     try {
-      proc = spawn(entry.command, entry.args, {
+      // On Windows a configured `npx` or `.cmd` cannot be spawned directly
+      // (ENOENT / EINVAL); resolve it the way init runs Codex (#1603).
+      const spec = target ? { file: entry.command, args: entry.args, windowsVerbatimArguments: false } : commandSpawn(entry.command, entry.args)
+      proc = spawn(spec.file, spec.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
+        ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         ...(spawnEnv ? { env: spawnEnv } : {}),
+        ...(target?.cwd ? { cwd: target.cwd } : {}),
       })
     } catch (err: unknown) {
       finish({ ok: false, error: `spawn failed: ${(err as Error).message}` })
@@ -633,6 +798,7 @@ async function mcpHandshake(
           const msg = JSON.parse(line)
           if (msg.id === 1 && msg.result) {
             serverInfo = msg.result.serverInfo ?? {}
+            proc.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
             proc.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n')
             continue
           }
@@ -652,6 +818,7 @@ async function mcpHandshake(
             return
           }
           if (msg.id === 2 && msg.error) {
+            if (target) { finish({ ok: false, error: 'tools/list failed' }); return }
             // tools/list failed but initialize succeeded — still report as healthy, just without a count.
             clearTimeout(timeout)
             finish({ ok: true, serverName: serverInfo?.name, serverVersion: serverInfo?.version })
@@ -956,6 +1123,10 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
     exists: snapshot.exists,
     ok: snapshot.ok,
     pluginDeclared: snapshot.pluginDeclared,
+    pluginLoadVerified: false,
+    ...(snapshot.pluginDisabled ? { pluginDisabled: true } : {}),
+    ...(snapshot.mcpPlurDisabled ? { mcpPlurDisabled: true } : {}),
+    ...(snapshot.pluginUpgrade ? { pluginUpgrade: snapshot.pluginUpgrade } : {}),
     mcpPlurDeclared: snapshot.mcpPlurDeclared,
     mcpPlurMissingPaths: snapshot.mcpPlurMissingPaths,
     pluginResolvable,
@@ -975,17 +1146,151 @@ export function hookHarnesses(configs: Array<{ label: string; hasPlurHooks: bool
   return [...new Set(names)]
 }
 
-/** The healthy verdict, naming only harnesses whose hooks are installed. */
-export function readyLine(harnesses: string[]): string {
-  if (harnesses.includes('Claude Code')) return '✓ Healthy. plur is ready to use in Claude Code.'
-  const where = harnesses.length ? harnesses.join(', ') : 'no harness'
-  return `✓ Healthy. plur is ready to use in ${where}. Claude Code has no plur hooks — run \`plur init\` to add them.`
+/**
+ * The healthy verdict, naming only harnesses whose hooks are installed.
+ * `unwired` names editors installed on this machine that PLUR is not wired
+ * into (today: Codex). They stay advisory — the exit code does not change —
+ * but the closing line names them instead of reading as plain "Healthy"
+ * (#1603: a Codex user was told plur was ready while Codex had no PLUR tools).
+ */
+export function readyLine(harnesses: string[], unwired: string[] = []): string {
+  if (!unwired.length) {
+    if (harnesses.includes('Claude Code')) return '✓ Healthy. plur is ready to use in Claude Code.'
+    const where = harnesses.length ? harnesses.join(', ') : 'no harness'
+    return `✓ Healthy. plur is ready to use in ${where}. Claude Code has no plur hooks — run \`plur init\` to add them.`
+  }
+  const where = harnesses.length ? harnesses.join(', ') : 'no editor'
+  const names = unwired.join(', ')
+  const fixes = unwired.map(n => `\`plur init --${n.toLowerCase()}\``).join(', ')
+  return `⚠ plur is ready to use in ${where}, but NOT in ${names}: it is installed and PLUR is not wired into it. Fix: run ${fixes}.`
+}
+
+/**
+ * Proxy advice for an embedding-model download that failed on the network
+ * (#1603). transformers.js downloads with Node's built-in fetch (undici),
+ * which ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 is set — supported
+ * from Node 24.0.0 and 22.21.0 (Node's cli.md). Empty for any other error.
+ */
+export function embeddingNetworkHint(
+  lastError: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  nodeVersion: string = process.versions.node,
+  execArgv: string[] = process.execArgv,
+): string[] {
+  if (!lastError || !/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_CONNECT/i.test(lastError)) return []
+  const [major, minor] = nodeVersion.split('.').map(Number)
+  const supported = major >= 24 || (major === 22 && minor >= 21)
+  const proxy = env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy
+  // The flag form (`--use-env-proxy`, Node 24.5+ / 22.21+) turns it on as well.
+  const useEnvProxy = env.NODE_USE_ENV_PROXY === '1' || execArgv.includes('--use-env-proxy') ||
+    /(^|\s)--use-env-proxy(\s|$)/.test(env.NODE_OPTIONS ?? '')
+  const lines = [
+    '  Network error. The model is downloaded with Node\'s built-in fetch, which ignores',
+    '  HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 is also set.',
+  ]
+  if (!supported) {
+    lines.push(`  This Node (v${nodeVersion}) has no NODE_USE_ENV_PROXY; behind a proxy, use Node 22.21+ or 24+`)
+    lines.push('  and set HTTPS_PROXY=http://<proxy>:<port> plus NODE_USE_ENV_PROXY=1.')
+  } else if (proxy && !useEnvProxy) {
+    lines.push('  HTTPS_PROXY is set, but the download will ignore it: set NODE_USE_ENV_PROXY=1 as well.')
+  } else if (proxy) {
+    lines.push('  HTTPS_PROXY is set and proxy use is on (NODE_USE_ENV_PROXY=1 or --use-env-proxy): check that the proxy is reachable')
+    lines.push('  and allows huggingface.co.')
+  } else {
+    lines.push('  Behind a proxy? Set HTTPS_PROXY=http://<proxy>:<port> and NODE_USE_ENV_PROXY=1.')
+  }
+  lines.push('  Set them where your editor starts PLUR as well (its MCP server env), not only in this shell.')
+  return lines
+}
+
+/** Config files Claude Code reads hooks and settings from, but never MCP servers (#1561). */
+function isClaudeSettingsFile(path: string): boolean {
+  return path === claudeCodeGlobalSettingsPath() || path === join(process.cwd(), '.claude', 'settings.json')
+}
+
+/** The folder Claude Code keys local scope by: the git root above `dir`, else `dir` itself. */
+function claudeProjectRoot(dir: string): string {
+  let cur = dir
+  for (;;) {
+    if (existsSync(join(cur, '.git'))) return cur
+    const parent = dirname(cur)
+    if (parent === cur) return dir
+    cur = parent
+  }
+}
+
+/** The local-scope `plur` entry for `cwd` in a parsed ~/.claude.json, if any. */
+function localScopePlur(config: Record<string, unknown>, cwd: string): Record<string, unknown> | null {
+  const projects = config.projects
+  if (!projects || typeof projects !== 'object') return null
+  // Claude Code keys local scope by the git root, not the folder it runs in
+  // (#1564 review M1); either spelling of the path may be the key.
+  const keys = new Set<string>([claudeProjectRoot(cwd), cwd])
+  try {
+    const real = realpathSync(cwd)
+    keys.add(claudeProjectRoot(real))
+    keys.add(real)
+  } catch { /* keep cwd */ }
+  for (const key of keys) {
+    const p = (projects as Record<string, unknown>)[key] as { mcpServers?: unknown } | undefined
+    const servers = p?.mcpServers
+    if (servers && typeof servers === 'object' && !Array.isArray(servers) && 'plur' in (servers as object)) {
+      return { mcpServers: { plur: (servers as Record<string, unknown>).plur } }
+    }
+  }
+  return null
+}
+
+/** The nearest `.mcp.json` with a plur entry, walking up from `cwd` as Claude Code does (#1564 review M1). */
+function projectMcpJson(cwd: string): string | null {
+  let cur = cwd
+  for (;;) {
+    const p = join(cur, '.mcp.json')
+    if (existsSync(p) && hasPlurMcp(readConfig(p))) return p
+    const parent = dirname(cur)
+    if (parent === cur) return null
+    cur = parent
+  }
+}
+
+/**
+ * The plur entry Claude Code would launch from `cwd`, in its own precedence
+ * order — local scope, then project `.mcp.json`, then user scope
+ * (#1564 review L3) — with where it came from.
+ */
+function claudeCodePlurEntry(cwd: string): { scope: 'local' | 'project' | 'user'; path: string; config: Record<string, unknown> } | null {
+  const userPath = claudeCodeUserConfigPath()
+  const user = readConfig(userPath)
+  const local = localScopePlur(user, cwd)
+  if (local) return { scope: 'local', path: userPath, config: local }
+  const project = projectMcpJson(cwd)
+  if (project) return { scope: 'project', path: project, config: readConfig(project) }
+  if (hasPlurMcp(user)) return { scope: 'user', path: userPath, config: user }
+  return null
+}
+
+export function inspectClaudeCodeMcp(cwd: string = process.cwd()): ClaudeCodeMcpReport {
+  const userPath = claudeCodeUserConfigPath()
+  const legacySettingsEntry = hasPlurMcp(readConfig(claudeCodeGlobalSettingsPath()))
+  const found = claudeCodePlurEntry(cwd)
+  if (found) return { registered: true, scope: found.scope, path: found.path, legacySettingsEntry }
+  return {
+    registered: false, scope: null, path: null, legacySettingsEntry,
+    fix: legacySettingsEntry
+      ? `run \`plur init\` — it moves the plur entry from ${claudeCodeGlobalSettingsPath()} (which Claude Code does not read for MCP servers) to ${userPath}`
+      : `run \`plur init\` — it registers the plur MCP server in ${userPath}, where Claude Code reads it`,
+  }
 }
 
 function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<DoctorReport> {
   const configs = inspectConfigs()
   const hooksInstalled = configs.some((c) => c.hasPlurHooks)
-  const mcpRegistered = configs.some((c) => c.hasPlurMcp)
+  const claudeCodeMcp = inspectClaudeCodeMcp()
+  // A settings.json entry is not a registration: no harness launches it (#1561).
+  const mcpRegistered = claudeCodeMcp.registered || configs.some((c) => c.hasPlurMcp && !isClaudeSettingsFile(c.path))
+  // Claude Code's hooks without its MCP server is the broken half-install
+  // #1561 left on every fresh machine: hooks ran, the plur_* tools never appeared.
+  const claudeCodeHooks = hookHarnesses(configs).includes('Claude Code')
   const datacoreCollision = configs.some((c) => c.hasDatacoreMcp)
 
   // Check for stale npx hooks across all existing configs (#178)
@@ -1069,7 +1374,9 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   )
 
   // Codex health, from Codex's OWN two files only.
-  const codexDetected = existsSync(codexHome())
+  // A Codex home, a codex on PATH, or the Codex app's bundled binary — the
+  // same places `plur init --codex` looks (#1603).
+  const codexDetected = codexInstalled()
   const codexHooksReport = configs.find((c) => c.label === 'Codex (~/.codex/hooks.json)')
   const codexTomlReport = configs.find((c) => c.label === 'Codex (~/.codex/config.toml)')
   // The `plur-mcp.cmd` entry an older init wrote on Windows is registered but
@@ -1126,12 +1433,32 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // the overall doctor check (BM25 still works); it just signals semantic
     // recall is disabled until the model loads.
     const outbox = await checkOutbox(flags)
+    // #1526: a broken folders.yaml pauses memory everywhere — a real failure.
+    let folderMap: NonNullable<DoctorReport['folderMap']> | null = null
+    try {
+      const p = folderMapProblem(plurRoot(flags))
+      if (p) {
+        folderMap = {
+          file: p.file, problem: p.problem,
+          ...(p.line !== undefined ? { line: p.line } : {}),
+          ...(p.column !== undefined ? { column: p.column } : {}),
+          fixable: p.fixable,
+          ...(p.fixable ? { repair: repairCommandFor(flags) } : {}),
+          ...(p.repair_summary ? { repair_summary: p.repair_summary } : {}),
+        }
+      }
+    } catch { /* doctor never fails on its own probe */ }
+    const { unset: tokenEnvUnset, found: tokenEnvFound } = findTokenEnv(flags)
     const overall: 'ok' | 'fail' =
+      folderMap === null &&
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
+      (!claudeCodeHooks || claudeCodeMcp.registered) &&
       brokenNodeMcp.length === 0 &&
       (!cursorProjectDetected || cursorWired) &&
       // #1299: a queued write no retry will deliver is a real failure.
-      (outbox?.ok ?? true)
+      (outbox?.ok ?? true) &&
+      // #1572: a team store with no token cannot work; MCP plur_doctor says not ok too.
+      tokenEnvUnset.length === 0
         ? 'ok' : 'fail'
     // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
     // The two detections are not the same kind of signal. A `.cursor/`
@@ -1184,12 +1511,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       : null
 
     const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
+    const skippedProjectStores = findSkippedProjectStores(flags)
 
     return {
-      configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
+      configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, opencode, outbox, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall,
     }
   })
 }
@@ -1223,17 +1551,38 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   }
 
   outputText('')
+  // #1526: first, because while it is broken no memory runs anywhere.
+  if (report.folderMap) {
+    const m = report.folderMap
+    outputText(`✗ Folder map: ${m.file} ${m.problem}`)
+    outputText('  Memory is paused in every folder until it is fixed (nothing is read or written).')
+    outputText(`  ${repairAdvice(m, flags ?? {})}`)
+    if (m.repair_summary) outputText(`  The repair changes ${m.repair_summary}.`)
+  }
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
   // #1299
   if (report.outbox && report.outbox.pending > 0) {
     const o = report.outbox
-    outputText(`${tick(o.ok)} Outbox: ${o.pending} queued write(s)` + (o.needs_action > 0 ? `, ${o.needs_action} will not deliver by retrying` : ', retrying'))
+    const heldLines = describeHeld({ ...o })
+    outputText(`${tick(o.ok)} Outbox: ${o.pending} queued write(s)` + (o.needs_action > 0 ? `, ${o.needs_action} will not deliver by retrying` : heldLines.length > 0 ? ', held on this machine' : ', retrying'))
+    if (o.claims_problem) outputText(`  The push-claims folder cannot be written (${o.claims_problem}), so queued writes cannot be sent from here. Check disk space and permissions of the PLUR store's cache folder.`)
+    for (const line of heldLines) outputText(`  ${line}`)
     if (!o.ok) {
       for (const line of describeNeedsAction({ ...o })) outputText(`  ${line}`)
       outputText('  Nothing is dropped automatically. `plur outbox` lists them.')
     }
   }
   outputText(`${tick(report.mcpRegistered)} plur MCP server registered`)
+  const cc = report.claudeCodeMcp
+  if (cc) {
+    if (cc.registered) {
+      outputText(`${tick(true)} Claude Code sees the plur MCP server (${cc.scope} scope, ${cc.path})`)
+    } else if (cc.legacySettingsEntry || hookHarnesses(report.configs).includes('Claude Code')) {
+      outputText(`${tick(false)} Claude Code does not see the plur MCP server — the plur_* tools will be missing`)
+      if (cc.legacySettingsEntry) outputText('  Its entry is in ~/.claude/settings.json, which Claude Code does not read for MCP servers.')
+      if (cc.fix) outputText(`  Fix: ${cc.fix}`)
+    }
+  }
 
   if (report.cursorProjectDetected) {
     outputText(`${tick(report.cursorWired)} Cursor: this project's .cursor/mcp.json + .cursor/hooks.json wired to plur`)
@@ -1308,21 +1657,24 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  `plugin`/`mcp` field in an unexpected shape. Run `plur init --opencode` after')
       outputText('  fixing it by hand.')
     }
+    if (oc.pluginUpgrade) {
+      outputText(`! opencode: ${oc.pluginUpgrade.from} is older than ${oc.pluginUpgrade.to}. Run \`plur init --opencode\` to upgrade (omit --keep-opencode-plugin).`)
+    }
+    if (oc.mcpPlurDisabled) outputText('  The PLUR MCP server is explicitly disabled in OpenCode; plur init preserves that choice.')
     if (oc.pluginDeclared) {
+      outputText('  OpenCode V2 requires @plur-ai/opencode 0.21.4 or later. After upgrading, restart OpenCode and its background service.')
       if (oc.pluginResolvable === 'yes') {
-        outputText(`  ✓ ${PLUR_OPENCODE_PLUGIN} resolves (${oc.resolvedVia}) — the plugin will load.`)
+        outputText(`  ✓ ${PLUR_OPENCODE_PLUGIN} resolves (${oc.resolvedVia}) — package available; host loading is not verified.`)
       } else if (oc.pluginResolvable === 'no') {
         outputText(`  ✗ ${PLUR_OPENCODE_PLUGIN} does NOT resolve — the npm registry has no such package.`)
-        outputText('    The plugin entry is present but opencode will fail to load it SILENTLY: no error')
-        outputText('    appears anywhere in opencode\'s log, it starts normally, and PLUR memory simply')
-        outputText('    never activates for opencode sessions.')
-        outputText('    Fix: wait for the package to be published, then restart opencode — until then')
-        outputText('    this entry does nothing.')
+        outputText('    The configured package is unavailable. Check the version and restart OpenCode after installation.')
       } else {
         outputText(`  ? Could not verify whether ${PLUR_OPENCODE_PLUGIN} resolves (network unreachable,`)
         outputText('    timed out, or the check was skipped with --no-handshake). This is NOT a clean')
         outputText('    bill of health — re-run doctor with network access to confirm either way.')
       }
+    } else if (oc.pluginDisabled) {
+      outputText('  The plugin is disabled by an OpenCode removal directive; plur init preserves that choice.')
     } else if (oc.ok) {
       outputText('  opencode is configured but the plugin entry is not declared — memory is not')
       outputText('  automatic here. Run `plur init --opencode` to add it.')
@@ -1424,6 +1776,25 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     }
   }
 
+  for (const line of skippedStoreLines(report.skippedProjectStores, plurRoot(flags))) outputText(line.startsWith('Found') ? `⚠  ${line}` : line)
+
+  if (report.tokenEnvUnset.length > 0) {
+    outputText('')
+    // The same detail and fix plur_doctor gives over MCP (#1572 review M2).
+    for (const t of report.tokenEnvUnset) {
+      outputText(`✗ remote store: ${t.url} — ${t.detail}`)
+      outputText(`   Fix: ${t.fix}`)
+    }
+  }
+  const entryOnly = (report.tokenEnvFound ?? []).filter(t => !t.inShell)
+  if (entryOnly.length > 0) {
+    outputText('')
+    for (const t of entryOnly) {
+      outputText(`✓ remote store: ${t.url} — its token comes from ${t.variable}, set in the env of: ${t.sources.join('; ')}.`)
+      outputText(`   ${t.variable} is not set in this shell, so \`plur\` commands run here queue that store's saves in the outbox.`)
+    }
+  }
+
   outputText('')
   if (report.handshake.ok) {
     outputText(`✓ MCP handshake: ${report.handshake.serverName} v${report.handshake.serverVersion}`)
@@ -1472,6 +1843,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (report.embedder.lastError) {
       outputText(`  Last error: ${report.embedder.lastError}`)
     }
+    for (const line of embeddingNetworkHint(report.embedder.lastError)) outputText(line)
     outputText('  Likely causes:')
     outputText('    - First-run download not completed (try again in a few seconds)')
     outputText('    - Network blocked HuggingFace Hub — check huggingface.co connectivity')
@@ -1483,11 +1855,13 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   outputText('')
   if (report.overall === 'ok') {
-    outputText(readyLine(hookHarnesses(report.configs)))
+    outputText(readyLine(hookHarnesses(report.configs), report.codexDetected && !report.codexWired ? ['Codex'] : []))
   } else {
     outputText('✗ Issues detected.')
     if (!report.hooksInstalled || !report.mcpRegistered) {
       outputText('  Fix: run `npx @plur-ai/cli init`')
+    } else if (report.claudeCodeMcp && !report.claudeCodeMcp.registered && hookHarnesses(report.configs).includes('Claude Code')) {
+      outputText(`  Fix: ${report.claudeCodeMcp.fix ?? 'run `plur init`'}`)
     }
     if (report.hooksInstalled && report.mcpRegistered && !report.handshake.ok) {
       outputText('  Fix: ensure `npx` is reachable from Claude Desktop')
@@ -1495,7 +1869,13 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('       — or replace the plur entry command with an absolute path to your shell.')
     }
     if (report.outbox && !report.outbox.ok) {
-      outputText('  Fix: see the Outbox line above — queued team writes need a person to act.')
+      outputText(report.outbox.claims_problem
+        ? '  Fix: make the PLUR store\'s cache/outbox-claims folder writable (disk space, permissions), then `plur outbox --flush`.'
+        : '  Fix: see the Outbox line above — queued team writes need a person to act.')
+    }
+    for (const t of report.tokenEnvUnset ?? []) outputText(`  Fix: ${t.fix}`)
+    if (report.folderMap) {
+      outputText(`  Fix: ${report.folderMap.fixable ? `run \`${report.folderMap.repair}\`` : 'edit the folder map by hand'} — see the Folder map line above.`)
     }
     if (report.cursorProjectDetected && !report.cursorWired) {
       outputText('  Fix: run `plur init --cursor` from this project — this project\'s own')
@@ -1509,8 +1889,71 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   }
 }
 
+/** Explicit Codex check: never substitute another editor or a recommended entry. */
+async function codexReport(skipHandshake: boolean) {
+  const path = codexConfigTomlPath()
+  const report = {
+    target: 'codex', configPath: path, cliVersion: CLI_VERSION,
+    verificationScope: 'User config, local stdio, and this process environment. Project/profile overrides, desktop environment, hook trust and end-to-end remote writes require verification in the actual Codex session.',
+    registered: false, enabled: true, storageRoot: null as string | null,
+    tokenVariables: [] as Array<{ name: string; available: boolean; fix?: string }>,
+    handshake: { ok: false, skipped: skipHandshake } as { ok: boolean; skipped: boolean; serverVersion?: string; toolCount?: number; error?: string },
+    versionMatches: null as boolean | null,
+    problems: [] as string[], overall: 'fail' as 'ok' | 'fail' | 'unverified',
+  }
+  try {
+    const entry = existsSync(path) ? readCodexEntry(readFileSync(path, 'utf8')) : null
+    if (!entry) { report.problems.push('Codex has no user PLUR MCP registration. Run `plur init --codex`.'); return report }
+    report.registered = true
+    if (entry.url) { report.problems.push('HTTP MCP registration preserved; this diagnostic checks local stdio only. Verify this server in Codex.'); return report }
+    report.enabled = entry.enabled !== false
+    if (!report.enabled) { report.problems.push('Codex PLUR MCP is explicitly disabled.'); return report }
+    const env = codexMcpEnvironment(entry)
+    // Codex does not inherit arbitrary PLUR_PATH from the invoking shell.
+    const envValue = (name: string) => process.platform === 'win32'
+      ? Object.entries(env).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1] : env[name]
+    const inheritedRoot = envValue('PLUR_PATH')
+      ? resolve(entry.cwd ?? process.cwd(), envValue('PLUR_PATH')!)
+      : join(envValue(process.platform === 'win32' ? 'USERPROFILE' : 'HOME') || homedir(), '.plur')
+    report.storageRoot = codexStorageRoot(entry, inheritedRoot)
+    for (const name of configuredTokenVariables(report.storageRoot)) {
+      const available = !!envValue(name)?.trim()
+      const forwarded = Object.hasOwn(entry.env ?? {}, name) || (entry.env_vars ?? []).some(v => (typeof v === 'string' ? v : v.name) === name)
+      report.tokenVariables.push({ name, available, ...(!available ? { fix: forwarded
+        ? `Set ${name} in the environment that launches Codex, then restart Codex. A terminal variable does not establish desktop availability.`
+        : `Run plur init --codex to add ${name} to env_vars, then restart Codex.` } : {}) })
+    }
+    if (report.tokenVariables.some(v => !v.available)) report.problems.push('Remote token variables are unavailable to the configured Codex subprocess; writes may remain queued.')
+    if (!skipHandshake) {
+      const result = await mcpHandshake(20000, undefined, { entry, source: `Codex user config (${path})`, env, cwd: entry.cwd })
+      // No command, server errors or stderr: custom arguments may contain secrets.
+      report.handshake = { ok: result.ok, skipped: false, serverVersion: result.serverVersion, toolCount: result.toolCount,
+        ...(!result.ok ? { error: 'Configured Codex MCP failed initialize/tools/list. Check its command, paths and environment.' } : {}) }
+      report.versionMatches = result.ok && result.serverVersion === CLI_VERSION
+      if (!result.ok) report.problems.push(report.handshake.error!)
+      else if (!report.versionMatches) report.problems.push(`Codex MCP version ${result.serverVersion ?? 'unknown'} differs from CLI ${CLI_VERSION}. Run plur init --codex and restart Codex; check deliberate newer/custom pins manually.`)
+    }
+    report.overall = report.problems.length ? 'fail' : skipHandshake ? 'unverified' : 'ok'
+  } catch {
+    report.problems.push('Codex configuration or storage could not be read safely. Check config.toml and PLUR config.yaml; nothing was changed.')
+  }
+  return report
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const skipHandshake = args.includes('--no-handshake')
+  if (args.includes('--codex')) {
+    const report = await codexReport(skipHandshake)
+    if (shouldOutputJson(flags)) outputJson(report)
+    else {
+      outputText(`Codex MCP: ${report.overall} (${report.configPath})`)
+      outputText(`CLI ${report.cliVersion}; MCP ${report.handshake.serverVersion ?? 'not verified'}`)
+      for (const problem of report.problems) outputText(problem)
+      for (const variable of report.tokenVariables) if (variable.fix) outputText(variable.fix)
+      outputText(report.verificationScope)
+    }
+    process.exit(report.overall === 'ok' ? 0 : 1)
+  }
   const report = await buildReport(skipHandshake, flags)
 
   if (shouldOutputJson(flags)) {

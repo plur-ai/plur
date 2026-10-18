@@ -1,8 +1,9 @@
+import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
+import { cursorHookFolder, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
-import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule } from '../lib/cursor-hook-io.js'
+import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule, removeGeneratedContextRules } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
 
@@ -54,23 +55,33 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // #1347: the folder map decides. off is silent; ask puts the one question
   // where Cursor reads it (the rule file, plus additional_context) instead of
   // memories, and marks nothing, so the guard stays silent too.
-  const dir = payloadDir(input)
-  const policy = hookFolderPolicy(dir, flags)
-  const rulePath = cursorContextRulePath(dir)
-  if (policy.mode !== 'on' && policy.mode !== 'remote-only') removeStaleAsk(rulePath)
-  if (policy.mode === 'off') return
+  // G1: the workspace (workspace_roots), not this process's folder — the
+  // same decision every Cursor hook reaches, see cursorHookFolder.
+  const { dir, policy, askAbout, cleanupDirs } = cursorHookFolder(input, flags)
+  if (policy.mode === 'off') {
+    for (const root of cleanupDirs ?? (dir ? [dir] : [])) removeGeneratedContextRules(root)
+    return
+  }
+  if (dir && policy.mode === 'ask') removeStaleAsk(cursorContextRulePath(dir))
 
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't track this session — stay silent rather than guess
 
   if (policy.mode === 'ask') {
+    // The question is about `askAbout` when that root does not exist (N3 of
+    // the #1583 re-audit): shown from `dir`, the first root that does, and
+    // only in additional_context when none does — never by creating it.
+    const about = askAbout ?? dir
+    if (!about) return
     // No store discovery: asking must not register this folder's .plur store.
-    const ask = folderAskOnce({ dir, policy, sessionId: conversationId, flags, plur: createAskPlur(flags) })
+    const ask = folderAskOnce({ dir: about, policy, sessionId: conversationId, flags, plur: createAskPlur(flags) })
     if (!ask) return
-    writeContextRule(ask, rulePath)
+    if (dir) writeContextRule(ask, cursorContextRulePath(dir))
     process.stdout.write(JSON.stringify({ additional_context: ask }))
     return
   }
+  if (!dir) return
+  const rulePath = cursorContextRulePath(dir)
 
   // markSessionStarted (not a bare sentinel write) so the reminder timer also
   // resets here — otherwise hook-cursor-post-tool's isReminderDue() sees no
@@ -112,9 +123,14 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const count = result.count
     const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 
+    // A store in the workspace that was found but not added (#1589): once per
+    // conversation and workspace folder (the payload's root, not this process's).
+    const hint = skippedStoreNotice(plur, conversationId, dir)
     const header = [
       `[PLUR Memory — session started, ${count} engrams injected]` +
-        (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : ''),
+        (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '') +
+        (hint ? `\n${hint}` : ''),
+      // remote-only: where memory goes, and that the team server did not answer.
       ...remoteOnlyLines(plur, result, true),
     ].join('\n')
 

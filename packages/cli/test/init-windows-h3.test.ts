@@ -46,7 +46,7 @@ describe('decision H3: string editors on win32', { timeout: 60000 }, () => {
     try {
       return execFileSync(process.execPath, ['--import', WIN32_PRELOAD, CLI, ...args], {
         encoding: 'utf-8', timeout: 30000, cwd: home,
-        env: { ...isolatedHomeEnv(home), PATH: `${bin}:${process.env.PATH}` },
+        env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1', PATH: `${bin}:${process.env.PATH}` },
       })
     } catch (err: unknown) {
       return String((err as { stdout?: Buffer | string }).stdout ?? '')

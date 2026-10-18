@@ -45,7 +45,7 @@ describe('R2 follow-ups: session rule for recall, zero-session scope set', () =>
   it('two sessions open, id-less recall (keyword and hybrid): core receives NO_SESSION', async () => {
     await start('project:a')
     await start('group:acme/eng')
-    const kw = vi.spyOn(plur, 'recall')
+    const kw = vi.spyOn(plur, 'recallWithMeta')
     const hy = vi.spyOn(plur, 'recallHybridWithMeta')
     await call('plur_recall', { query: 'anything', mode: 'keyword' })
     await call('plur_recall', { query: 'anything' })
@@ -54,14 +54,14 @@ describe('R2 follow-ups: session rule for recall, zero-session scope set', () =>
   })
 
   it('zero sessions open, id-less recall: core receives NO_SESSION', async () => {
-    const kw = vi.spyOn(plur, 'recall')
+    const kw = vi.spyOn(plur, 'recallWithMeta')
     await call('plur_recall', { query: 'anything', mode: 'keyword' })
     expect(kw.mock.calls.at(-1)?.[1]?.session).toBe(NO_SESSION)
   })
 
   it('good case: one session open, or an explicit id, still supplies the session', async () => {
     const a = await start('project:a')
-    const kw = vi.spyOn(plur, 'recall')
+    const kw = vi.spyOn(plur, 'recallWithMeta')
     await call('plur_recall', { query: 'anything', mode: 'keyword' })
     expect(kw.mock.calls.at(-1)?.[1]?.session).toBe(a)
     const b = await start('project:b')

@@ -87,6 +87,51 @@ function extractMessageText(message: LearnableMessage): string {
 const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 
 /**
+ * The per-reply memory line PLUR's instructions ask for
+ * (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`),
+ * in the forms an agent may write it: plain, in backticks, bold or italics, as
+ * a bullet, numbered item or quote, after a 🧠, inside HTML tags, with an em
+ * dash, en dash, hyphen or colon. It reports on the turn; it is never a
+ * learning (#1520 audit S3, re-audits R2, L2, N3).
+ *
+ * The WHOLE line must have the footer's shape: parts separated by `·`, each
+ * `recalled N` (a count, any script's digits), `recalled/used/written: ENG-…`
+ * (ids, comma-separated) or `… none`, or `none` / `none recalled` alone. So
+ * "Memory: recalled 3 times faster…" or "Memory: used: ENG-123 is obsolete…"
+ * stay learnings. Mirrored exactly by `_MEMORY_LINE_RE` in
+ * packages/hermes/plur_hermes/learner.py; both are tested on the cases in
+ * packages/core/test/fixtures/memory-line-cases.json. Whitespace is written as
+ * `[ \t]` (not `\s`) and a leading BOM is stripped before matching, because
+ * JavaScript's and Python's `\s` differ on it.
+ */
+const ML_MARK = '[*_`]*'
+/**
+ * Case-insensitive for ASCII letters only, written out (`[Mm][Ee]…`) rather
+ * than with a flag: JavaScript's `i` and Python's IGNORECASE fold different
+ * letters (Turkish İ and ı fold to I/i in Python only), so neither side uses a
+ * flag and both stay identical (#1557 review L4).
+ */
+const ci = (word: string) => [...word].map(ch => /[a-z]/i.test(ch) ? `[${ch.toUpperCase()}${ch.toLowerCase()}]` : ch).join('')
+const ML_ID = 'ENG-[A-Za-z0-9…-]*'
+const ML_IDS = `${ML_ID}(?:[ \\t]*,[ \\t]*${ML_ID})*`
+const ML_PART =
+  `(?:${ci('recalled')}${ML_MARK}[ \\t]*(?:\\p{Nd}+|:[ \\t]*${ML_MARK}[ \\t]*(?:${ML_IDS}|${ci('none')})|${ci('none')})` +
+  `|(?:${ci('used')}|${ci('written')})${ML_MARK}[ \\t]*:[ \\t]*${ML_MARK}[ \\t]*(?:${ML_IDS}|${ci('none')})` +
+  `|${ci('none')}(?:[ \\t]+${ci('recalled')})?)`
+export const MEMORY_LINE_RE = new RegExp(
+  '^[ \\t>*_`~•-]*(?:\\p{Nd}+[.)][ \\t]*)?(?:🧠[ \\t]*)?(?:<[A-Za-z][^>]*>[ \\t]*)*' + ML_MARK +
+  ci('memory') + ML_MARK + '[ \\t]*(?:[—–-]+|:)[ \\t]*' + ML_MARK +
+  ML_PART + ML_MARK + `(?:[ \\t]*[·•][ \\t]*${ML_MARK}${ML_PART}${ML_MARK})*` +
+  '[ \\t]*(?:</[A-Za-z]+>[ \\t]*)*[.]?[ \\t]*$',
+  'u',
+)
+
+/** True when `line` is the memory line (see MEMORY_LINE_RE). */
+export function isMemoryLine(line: string): boolean {
+  return MEMORY_LINE_RE.test(line.replace(/^\uFEFF/, '').replace(/\r$/, ''))
+}
+
+/**
  * Extract self-reported learnings from a message.
  * Looks for the 🧠 I learned: section and parses bullet points.
  *
@@ -100,11 +145,15 @@ const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 export function extractSelfReportedLearnings(message: LearnableMessage): string[] {
   const content = extractMessageText(message)
   // Match the learning section: ---\n🧠 I learned:\n- item\n- item
+  // The per-reply memory line may follow the last bullet with no blank line,
+  // so it can land inside the block; it is filtered out below, line by line,
+  // so a real learning after it is never lost (#1520 audit S3, re-audits R2, L2).
   const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)/)
   if (!match) return []
 
   return match[1]
     .split('\n')
+    .filter(line => !isMemoryLine(line))
     .map(line => line.replace(/^[-•*]\s*/, '').trim())
     .filter(line => line.length >= 10 && !PLACEHOLDER_BULLET_RE.test(line)) // skip empty, trivial, or placeholder lines
 }

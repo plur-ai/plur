@@ -1135,23 +1135,56 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
  * the same shape, or a caller that records what it just wrote is holding an id
  * no read path ever produced (#914). Idempotent: an already-namespaced id is
  * returned unchanged, so the two call sites can't double-prefix each other.
+ *
+ * An id carrying this scope's OLD three-letter prefix (releases up to 0.21.0,
+ * see {@link legacyStorePrefix}) is upgraded to the current prefix rather than
+ * wrapped a second time — a store file can hold such an id verbatim.
  */
 export function namespaceEngramId(id: string, scope: string): string {
   const prefix = storePrefix(scope)
   if (new RegExp(`^(ENG|ABS|META)-${prefix}-`).test(id)) return id
+  const legacy = new RegExp(`^(ENG|ABS|META)-${legacyStorePrefix(scope)}-(?=\\d{4}-)`)
+  if (legacy.test(id)) return id.replace(legacy, `$1-${prefix}-`)
   return id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
 }
 
 /**
- * Strip any store namespace prefix from an ID to obtain its bare form (#1119).
- * E.g. 'ENG-GPL-2026-08-13-025' -> 'ENG-2026-08-13-025'.
+ * The store prefix of a namespaced id and its bare form, or null for an id
+ * that carries none. Both prefix forms parse: the current eleven letters and
+ * the three-letter form of releases up to 0.21.0. A store prefix is always
+ * followed by the four-digit year of the id it wraps, which is what tells it
+ * apart from a bare id (`ENG-2026-…`) or a pack id.
  */
-export function bareEngramId(id: string): string {
-  return id.replace(/^(ENG|ABS|META)-[A-Z]{2,4}-(?=\d{4}-)/, '$1-')
+export function parseNamespacedId(id: string, anyTail = false): { kind: string; prefix: string; bare: string } | null {
+  // `anyTail`: accept any id after the prefix, for callers that then check the
+  // prefix against a CONFIGURED store's (server ids are dated, test stubs and
+  // some older servers' are not). Never for stripping blind — a pack id like
+  // `ENG-PACK-EM-006` parses that way too.
+  const m = (anyTail ? /^(ENG|ABS|META)-([A-Z]{2,11})-(?=[A-Za-z0-9])/ : /^(ENG|ABS|META)-([A-Z]{2,11})-(?=\d{4}-)/).exec(id)
+  if (!m) return null
+  return { kind: m[1], prefix: m[2], bare: `${m[1]}-${id.slice(m[0].length)}` }
 }
 
-/** Derive a 3-char prefix from a store scope (e.g. 'datafund' → 'DFU', 'project:myapp' → 'PMY') */
-export function storePrefix(scope: string): string {
+/**
+ * Strip any store namespace prefix from an ID to obtain its bare form (#1119).
+ * E.g. 'ENG-GPLKQZA-2026-08-13-025' -> 'ENG-2026-08-13-025'. The old
+ * three-letter form ('ENG-GPL-2026-08-13-025') strips the same way.
+ */
+export function bareEngramId(id: string): string {
+  return parseNamespacedId(id)?.bare ?? id
+}
+
+/**
+ * The three-letter prefix releases up to 0.21.0 gave a store
+ * (e.g. 'datafund' → 'DFU', 'project:myapp' → 'PMY').
+ *
+ * Lossy: every `group:<org>/<team>` scope of one org got the same one, so two
+ * team stores minting the same server id on the same day handed out one
+ * namespaced id for two engrams (0.21.1 audit, H1). Kept only to READ ids in
+ * that form — history, injection records and ids an agent still holds — never
+ * to mint one.
+ */
+export function legacyStorePrefix(scope: string): string {
   const parts = scope.split(/[:\-_./]/).filter(Boolean)
   if (parts.length >= 2) {
     // Multi-part: first char of part1 + first 2 chars of part2
@@ -1163,6 +1196,33 @@ export function storePrefix(scope: string): string {
   if (w.length >= 3) return (w[0] + w[Math.floor(w.length / 2)] + w[w.length - 1]).toUpperCase()
   // Very short: pad with repeat
   return (w[0] + (w[1] || w[0]) + (w[2] || w[0])).toUpperCase()
+}
+
+/**
+ * The namespace prefix of a store: the readable three letters of
+ * {@link legacyStorePrefix} plus eight letters of a SHA-256 digest of the whole
+ * scope (e.g. 'group:plur/eng' → 'GPL' + eight letters), so two scopes that
+ * share the first three no longer share a prefix (0.21.1 audit, H1).
+ *
+ * Derived from the scope alone, on purpose: every read and write path that
+ * namespaces an id holds the scope, while several hold no store entry, and a
+ * prefix one path cannot compute is how save and recall drifted apart before
+ * (#914, #1568). Two configured stores with the SAME scope (one scope on two
+ * servers, or a path store and a url store) share a prefix; the action paths
+ * resolve such an id to the one store that holds the row, and refuse it as
+ * ambiguous when more than one does.
+ *
+ * Letters only, so ids keep matching `^(ENG|ABS|META)-[A-Za-z0-9-]+$` and the
+ * `[A-Z]+` readers.
+ */
+export function storePrefix(scope: string): string {
+  const digest = createHash('sha256').update(scope).digest()
+  let tag = ''
+  // Eight letters (26^8 ≈ 2·10^11 per three-letter bucket): a collision among
+  // 100k scopes of one org is about 2%, so configured scopes are still checked
+  // for one (`Plur._sharedPrefixScopes`) and refused for actions by id.
+  for (let i = 0; i < 8; i++) tag += String.fromCharCode(65 + (digest[i] % 26))
+  return legacyStorePrefix(scope) + tag
 }
 
 /**

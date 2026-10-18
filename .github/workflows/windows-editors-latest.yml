@@ -1,0 +1,22 @@
+name: Windows real editors (latest)
+
+# The windows-editors checks against the LATEST release of every editor CLI
+# (Claude Code, Codex, opencode, Cursor's agent through its own installer),
+# on main, once a day. The PR job pins the editors; this one reports drift: a
+# table of pinned against latest versions in the summary, and a red run when
+# a new editor release breaks PLUR. It never gates a PR or a release (its
+# checks are named "latest / ...", not windows-editors). No logins or tokens.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest:
+    uses: ./.github/workflows/windows-editors.yml
+    with:
+      channel: latest

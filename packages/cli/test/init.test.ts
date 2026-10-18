@@ -38,6 +38,11 @@ describe('plur init', () => {
     return JSON.parse(readFileSync(path, 'utf-8'))
   }
 
+  /** ~/.claude.json — where Claude Code reads user-scoped MCP servers (#1561). */
+  function readUserConfig(): Settings {
+    return JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'))
+  }
+
   it('writes settings.json with hooks and plur MCP server on a fresh install', () => {
     const output = runInit()
     expect(output).toContain('PLUR installed')
@@ -50,9 +55,9 @@ describe('plur init', () => {
     expect(settings.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]?.command).toContain('hook-inject')
     expect(settings.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]?.command).toContain('.plur/bin/plur-hook')
 
-    // MCP server registered
-    expect(settings.mcpServers).toBeDefined()
-    expect(settings.mcpServers?.plur).toBeDefined()
+    // MCP server registered where Claude Code reads it (#1561), not in settings.json
+    expect(readUserConfig().mcpServers?.plur).toBeDefined()
+    expect(settings.mcpServers?.plur).toBeUndefined()
   })
 
   it('installs the first-prompt and rehydrate injections sync with a 20s timeout (#1313)', () => {
@@ -97,8 +102,7 @@ describe('plur init', () => {
 
   it('registers the MCP server with a platform-appropriate command', () => {
     runInit()
-    const settings = readSettings()
-    const plur = settings.mcpServers?.plur
+    const plur = readUserConfig().mcpServers?.plur
     expect(plur).toBeDefined()
 
     const blob = `${plur?.command} ${(plur?.args ?? []).join(' ')}`
@@ -129,8 +133,8 @@ describe('plur init', () => {
     const secondHookCount = second.hooks?.UserPromptSubmit?.length ?? 0
 
     expect(secondHookCount).toBe(firstHookCount)
-    // Still exactly one plur entry
-    expect(Object.keys(second.mcpServers ?? {}).filter((k) => k === 'plur')).toHaveLength(1)
+    // Still exactly one plur entry (#1561: in ~/.claude.json)
+    expect(Object.keys(readUserConfig().mcpServers ?? {}).filter((k) => k === 'plur')).toHaveLength(1)
   })
 
   it('re-running init heals an async hook-inject registration to sync (#1313)', () => {
@@ -201,8 +205,8 @@ describe('plur init', () => {
 
     // Hooks not duplicated — still exactly one entry under UserPromptSubmit
     expect(settings.hooks?.UserPromptSubmit?.length).toBe(1)
-    // MCP server now registered
-    expect(settings.mcpServers?.plur).toBeDefined()
+    // MCP server now registered (#1561: in ~/.claude.json)
+    expect(readUserConfig().mcpServers?.plur).toBeDefined()
   })
 
   it('preserves unrelated existing settings keys', () => {
@@ -225,7 +229,9 @@ describe('plur init', () => {
 
     expect(raw.model).toBe('opus')
     expect(raw.mcpServers.datacore).toBeDefined()
-    expect(raw.mcpServers.plur).toBeDefined()
+    // #1561: plur's server goes to ~/.claude.json; settings.json keeps the user's own.
+    expect(raw.mcpServers.plur).toBeUndefined()
+    expect(readUserConfig().mcpServers?.plur).toBeDefined()
     expect(raw.hooks).toBeDefined()
   })
 
@@ -420,8 +426,7 @@ describe('plur init', () => {
 
   it('MCP server entry uses local shim instead of npx (#234)', () => {
     runInit()
-    const settings = readSettings()
-    const plurMcp = settings.mcpServers?.plur
+    const plurMcp = readUserConfig().mcpServers?.plur
     expect(plurMcp).toBeDefined()
 
     const shimPath = join(home, '.plur', 'bin', platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp')
@@ -451,8 +456,9 @@ describe('plur init', () => {
     )
 
     runInit()
-    const settings = readSettings()
-    const plurMcp = settings.mcpServers?.plur
+    // #1561: the old settings.json entry is moved to ~/.claude.json, then healed.
+    expect(readSettings().mcpServers?.plur).toBeUndefined()
+    const plurMcp = readUserConfig().mcpServers?.plur
     expect(plurMcp).toBeDefined()
 
     const shimPath = join(home, '.plur', 'bin', platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp')

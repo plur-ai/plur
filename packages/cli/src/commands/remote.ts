@@ -1,3 +1,5 @@
+import { updateCodexRegistration } from '../codex-config.js'
+import { CLI_VERSION } from '../version.js'
 import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -50,8 +52,10 @@ OPTIONS
 WHAT THIS DOES
   Checks the token against the server first and writes nothing if it is
   rejected or a scope is not authorised. Then it registers each scope as a
-  store in your config.yaml (the token is kept there) and records this folder
-  in your folders.yaml with the scope. Nothing is written to this folder.
+  store in your config.yaml (the token is kept there; with --token-env only
+  the variable's name is, and it must be set wherever PLUR runs) and records
+  this folder in your folders.yaml with the scope. Nothing is written to this
+  folder.
 `
 
 interface Parsed {
@@ -276,7 +280,8 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
   const stores: Array<{ scope: string; status: string }> = []
   for (const scope of scopes) {
     try {
-      const r = await plur.addRemoteStore({ url, token: tok, scope })
+      // #1561: with --token-env only the variable's name goes into config.yaml.
+      const r = await plur.addRemoteStore({ url, token: tok, scope, ...(parsed.tokenEnv ? { tokenEnv: parsed.tokenEnv } : {}) })
       stores.push({ scope, status: r.status })
     } catch (err) {
       const done = stores.length ? ` Registered before this: ${stores.map(s => s.scope).join(', ')}.` : ''
@@ -302,9 +307,18 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
 
   const legacy = legacyRemote(canonicalize(folder))
   const root = plur.storageRoot
+  let codex: { status: string; message: string }
+  try {
+    codex = updateCodexRegistration({ root, version: CLI_VERSION })
+  } catch {
+    // Remote connection succeeded; distinguish partial local setup without
+    // exposing parser/OS diagnostics that might contain credential values.
+    codex = { status: 'failed', message: 'Remote store connected, but Codex configuration could not be updated. Run `plur init --codex`, then `plur doctor --codex` before using it in Codex.' }
+    process.exitCode = 1
+  }
   if (json) {
     outputJson(scrubDeep({
-      success: true, url, folder: mapped, scope: scopes[0], stores,
+      success: true, url, folder: mapped, scope: scopes[0], stores, codex,
       ...(username ? { username } : {}),
       ...(legacy ? { legacy_plur_yaml: { path: legacy.path, message: legacyMovedMessage(legacy.path) } } : {}),
     }, [tok, legacy?.remote_token]))
@@ -317,7 +331,10 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
   lines.push(`Connected to ${url}${username ? ` as ${username}` : ''}.`)
   for (const s of stores) lines.push(`  store ${s.scope}: ${label[s.status] ?? s.status}`)
   lines.push(`Mapped ${mapped} to scope ${scopes[0]} in ${join(root, 'folders.yaml')}.`)
-  lines.push(`The token is kept in ${join(root, 'config.yaml')}; nothing was written to this folder.`)
+  lines.push(parsed.tokenEnv
+    ? `${join(root, 'config.yaml')} records only the variable name (${parsed.tokenEnv}), not the token; it must be set wherever PLUR runs. Nothing was written to this folder.`
+    : `The token is kept in ${join(root, 'config.yaml')}; nothing was written to this folder.`)
+  if (codex.status !== 'absent') lines.push(`Codex: ${codex.message}`)
   for (const l of lines) outputInfo(scrubAll(l, [tok, legacy?.remote_token]), flags)
   // Not suppressed by --quiet: it says a file of yours still holds a token.
   if (legacy) outputText(scrubAll(legacyMovedMessage(legacy.path), [tok, legacy.remote_token]))
@@ -331,6 +348,8 @@ interface ServedStore {
   status: 'ok' | 'auth_expired' | 'unreachable'
   username?: string
   reason?: string
+  /** #1564 review M2: the variable holding the token is unset; nothing was sent. */
+  token_env_unset?: string
 }
 
 /** GET <origin>/api/v1/me for a `.plur.yaml` remote (its token is not in config.yaml). */
@@ -382,6 +401,7 @@ async function show(flags: GlobalFlags): Promise<void> {
           url: h.url, scope: policy.scope, source: 'config', ok: h.ok, status: h.status,
           ...(safeUsername(h.username) ? { username: safeUsername(h.username) } : {}),
           ...(h.reason ? { reason: h.reason } : {}),
+          ...(h.tokenEnvUnset ? { token_env_unset: h.tokenEnvUnset } : {}),
         })
       }
     }
@@ -428,6 +448,7 @@ async function show(flags: GlobalFlags): Promise<void> {
     for (const s of served) {
       const where = `${s.url}${s.scope ? ` [${s.scope}]` : ''}${s.source === 'plur-yaml' ? ' (from .plur.yaml)' : ''}`
       if (s.ok) lines.push(`  ✓ ${where} — reachable${s.username ? ` as ${s.username}` : ''}`)
+      else if (s.token_env_unset) lines.push(`  ✗ ${where} — no token: ${s.reason ?? `set ${s.token_env_unset} where PLUR runs`}`)
       else if (s.status === 'auth_expired') lines.push(`  ✗ ${where} — token rejected${s.reason ? `: ${s.reason}` : ''}`)
       else lines.push(`  ✗ ${where} — unreachable${s.reason ? `: ${s.reason}` : ''}`)
     }

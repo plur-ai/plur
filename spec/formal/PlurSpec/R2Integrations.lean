@@ -15,6 +15,12 @@ Checked against #1277 (2026-09-30): still holds. tools.ts changes plur_outbox's
 output (retrying/needs_action) and makes its explicit flush `force`, and adds
 outbox notices to plur_status and plur_session_start. No tool's annotations,
 effects or plur_admin dispatch changed.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+tools.ts's only change is two reply fields of plur_stores_add (`token_scopes`
+and a note, on `token_rotated` only, so they never collide with the
+`scopeDropped` note, which needs `already_registered`). No tool's annotations,
+effects or plur_admin dispatch changed (§1), and §2–§7 do not read tools.ts.
 -/
 
 namespace PlurSpec.R2Integrations

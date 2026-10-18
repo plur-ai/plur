@@ -1,7 +1,7 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { findProjectConfigPath, readProjectConfigFromPath, FolderMapError } from '@plur-ai/core'
-import { nonceRequired, fail } from './folders.js'
+import { nonceRequired, fail, nonceSession } from './folders.js'
 
 /**
  * Split `[dir] [--nonce <n>]` (#1378). Returns null on a malformed argument
@@ -55,6 +55,10 @@ export function refuseTrustWithoutNonce(nonce: string | undefined, json: boolean
  * `--list` prints every trusted directory; bare `plur trust` (no dir) trusts
  * the current directory, matching `direnv allow`'s no-argument default.
  */
+/** What a grant covers, and what it does not (#1589 audit rounds 2 and 3). */
+export const TRUST_COVERS =
+  'Trust covers the .plur.yaml files in every folder below it. A repository\'s own memory store (.plur/engrams.yaml) is still added only after you decide on that repository: plur folders set <repo> --on, or plur trust <repo>.'
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--list')) {
     const plur = createPlur(flags)
@@ -72,7 +76,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const parsed = parseTrustArgs(args)
-  if (!parsed) return exit(1, 'Usage: plur trust [dir] [--nonce <n>] | plur trust --list')
+  if (!parsed) return exit(1, 'Usage: plur trust [dir] [--nonce <n>] | plur trust --list\n' + TRUST_COVERS)
   const dir = parsed.dir || process.cwd()
   refuseTrustWithoutNonce(parsed.nonce, shouldOutputJson(flags))
   const plur = createPlur(flags)
@@ -80,7 +84,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // be read is refused rather than overwritten.
   let trusted: string
   try {
-    trusted = plur.trustDirectory(dir, parsed.nonce !== undefined ? { nonce: parsed.nonce } : undefined)
+    trusted = plur.trustDirectory(dir, parsed.nonce !== undefined ? { nonce: parsed.nonce, ...nonceSession() } : undefined)
   } catch (err) {
     if (err instanceof FolderMapError && err.code.startsWith('nonce-')) return fail(err, shouldOutputJson(flags))
     return exit(1, (err as Error).message)
@@ -111,6 +115,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   outputInfo(`Trusted: ${trusted}`, flags)
+  outputInfo(TRUST_COVERS, flags)
   if (declares) {
     outputInfo(`This authorizes ${configPath}:`, flags)
     if (config.scope) outputInfo(`  scope:  ${config.scope}`, flags)

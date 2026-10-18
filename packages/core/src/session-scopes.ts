@@ -99,6 +99,17 @@ export class SessionScopeRegistry {
   }
 
   /**
+   * The session's OWN registration only — never the process slot. `null` for
+   * no session, `NO_SESSION`, or a session that never registered. Used where
+   * an inherited process default must not count as the caller's choice (the
+   * personal `user:` remote dial, #1515 audit F2).
+   */
+  own(session?: string): string | null {
+    if (session === undefined || session === NO_SESSION) return null
+    return this.scopes.get(session) ?? null
+  }
+
+  /**
    * Forget a session's registration. Call on session end — a long-lived
    * deployment would otherwise retain one entry per session it has ever seen.
    * Omitting `session` clears the process slot.

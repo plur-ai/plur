@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { PlurPlugin } from '../src/index.js'
+import { folderOn } from './folder-fixture.js'
 
-const fakePlur = () => ({
+// A folder switched on in the folder map (#1347): see folder-fixture.ts.
+const fakePlur = () => folderOn({
   injectHybrid: vi.fn().mockResolvedValue({ count: 1, directives: '[ENG-9] Keep it.', constraints: '', text: '' }),
   learnRouted: vi.fn().mockResolvedValue({}),
-})
+}, '/tmp/p')
 
 const partUpdated = (sessionID: string, messageID: string, text: string) => ({
   event: {

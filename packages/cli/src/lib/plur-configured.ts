@@ -53,8 +53,12 @@ export function canonicalize(p: string): string {
  * (core `findPlurMarker`, held to this walk by a parity test). This stays as
  * that gate's fallback when the resolver itself fails.
  *
- * Cheap — a few `existsSync` + JSON parses, terminates at `home`, the root, or the
- * first match.
+ * The walk stops at the repository root (the folder holding `.git` is still
+ * checked, nothing above it is), the same boundary as the `.plur.yaml` lookup
+ * (#1588).
+ *
+ * Cheap — a few `existsSync` + JSON parses, terminates at `home`, the root, a
+ * repository root, or the first match.
  */
 export function isPlurConfigured(
   cwd: string = process.cwd(),
@@ -76,6 +80,9 @@ export function isPlurConfigured(
       if (existsSync(join(dir, '.plur.yaml'))) return true
     }
     if (atHome) break  // stop after (optionally) checking home
+    // Stop at the repository root (#1588), like the `.plur.yaml` lookup: a
+    // marker above a cloned repository does not configure it.
+    if (existsSync(join(dir, '.git'))) break
     const parent = dirname(dir)
     if (parent === dir) break  // filesystem root
     dir = parent

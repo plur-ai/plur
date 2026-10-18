@@ -15,7 +15,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
-import { Plur } from '@plur-ai/core'
+import { Plur, storePrefix } from '@plur-ai/core'
 import { createServer, INSTRUCTIONS, GUIDE_RESOURCE } from '../src/server.js'
 import { getToolDefinitions } from '../src/tools.js'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
@@ -90,7 +90,12 @@ describe('remote_stores block on plur_recall', () => {
     expect(res.results.some((r: any) => String(r.id).includes('2026-0731-080'))).toBe(true)
   })
 
-  it('serves bare operable engram ID in plur_recall results (#1119)', async () => {
+  // #1119 made recall serve the bare server id so forget could act on it.
+  // Forget, feedback and pin now accept the namespaced id, and the bare one
+  // collides with local engrams minted the same day, so recall serves the id
+  // plur_learn returns (0.21.1 pre-release check, F3): the store prefix plus
+  // the server id. team-id-roundtrip.test.ts pins the round trip.
+  it('serves the namespaced, operable engram ID in plur_recall results (#1119, F3)', async () => {
     stub.recallRows = [{ id: 'ENG-2026-0813-025', scope: SCOPE, status: 'active', statement: 'deploy checklist', score: 1 }]
     const client = await makeClient(writeConfig(baseUrl))
     const res = callResult(await client.callTool({
@@ -98,7 +103,7 @@ describe('remote_stores block on plur_recall', () => {
       arguments: { query: 'deploy checklist', scope: PROJECT },
     }))
     expect(res.results).toHaveLength(1)
-    expect(res.results[0].id).toBe('ENG-2026-0813-025')
+    expect(res.results[0].id).toBe(`ENG-${storePrefix(SCOPE)}-2026-0813-025`)
     expect(res.results[0].scope).toBe(SCOPE)
   })
 

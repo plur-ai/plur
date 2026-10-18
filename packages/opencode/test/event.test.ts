@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { PlurPlugin } from '../src/index.js'
+import { folderOn } from './folder-fixture.js'
 
-const fakePlur = () => ({
+// A folder switched on in the folder map (#1347): see folder-fixture.ts.
+const fakePlur = () => folderOn({
   injectHybrid: vi.fn().mockResolvedValue({ count: 1, directives: '[ENG-1] Use pnpm.', constraints: '', text: '' }),
   learnRouted: vi.fn().mockResolvedValue({}),
-})
+}, '/tmp/p')
 
 const partUpdated = (sessionID: string, text: string, messageID = 'msg_a') => ({
   event: {
@@ -189,4 +191,21 @@ describe('fallback end-to-end — the RenderPath latch actually injects', () => 
 
     expect(output2.parts).toHaveLength(0)
   })
+  it('drains accepted background learning before V1 disposal returns', async () => {
+    const plur = fakePlur()
+    let release!: () => void
+    plur.learnRouted.mockImplementationOnce(() => new Promise<void>(r => { release = r }))
+    const hooks = await PlurPlugin({ directory: '/tmp/p', _plur: plur } as any)
+    await hooks.event!(partUpdated('ses_1', '---\n🧠 I learned:\n- Keep the accepted learning when the host exits.') as any)
+    await hooks.event!(sessionIdle('ses_1') as any)
+    await vi.waitFor(() => expect(plur.learnRouted).toHaveBeenCalledTimes(1))
+    let disposed = false
+    const closing = hooks.dispose!().then(() => { disposed = true })
+    try {
+      await new Promise(r => setTimeout(r, 10))
+      expect(disposed).toBe(false)
+    } finally { release(); await closing }
+    expect(disposed).toBe(true)
+  })
+
 })

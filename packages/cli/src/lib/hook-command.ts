@@ -2,6 +2,7 @@ import { homedir } from 'os'
 import { spawnSync } from 'child_process'
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { cmdExeSpawn } from './command-spawn.js'
 
 /**
  * The command prefix every PLUR hook entry starts with on darwin/linux,
@@ -57,7 +58,8 @@ export function resolveShortPath(path: string): string | null {
   try {
     // Verbatim arguments: Node's own quoting would backslash-escape the inner
     // quotes, which cmd does not understand.
-    const r = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${path}") do @echo %~sI"`], {
+    const spec = cmdExeSpawn(`for %I in ("${path}") do @echo %~sI`)
+    const r = spawnSync(spec.file, spec.args, {
       encoding: 'utf8', timeout: 5000, windowsVerbatimArguments: true, stdio: ['ignore', 'pipe', 'ignore'],
     })
     const out = r.status === 0 && typeof r.stdout === 'string' ? r.stdout.trim() : ''
@@ -104,9 +106,8 @@ export function useClaudeExecForm(versionOutput: string | null, stringIsFallback
  */
 export function claudeVersionOutput(plat: NodeJS.Platform = process.platform): string | null {
   try {
-    const r = plat === 'win32'
-      ? spawnSync('cmd.exe', ['/d', '/s', '/c', '"claude --version"'], { encoding: 'utf8', timeout: 10000, windowsVerbatimArguments: true, stdio: ['ignore', 'pipe', 'ignore'] })
-      : spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] })
+    const spec = plat === 'win32' ? cmdExeSpawn('claude --version') : { file: 'claude', args: ['--version'], windowsVerbatimArguments: false }
+    const r = spawnSync(spec.file, spec.args, { encoding: 'utf8', timeout: 10000, windowsVerbatimArguments: spec.windowsVerbatimArguments, stdio: ['ignore', 'pipe', 'ignore'] })
     return r.status === 0 && typeof r.stdout === 'string' && r.stdout.trim() ? r.stdout : null
   } catch {
     return null

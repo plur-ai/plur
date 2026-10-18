@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { AddRemoteStoreError, redactToken, redactTokenDeep } from '@plur-ai/core'
+import { AddRemoteStoreError, redactToken, redactTokenDeep, folderSetOnCommand, folderEscapedPath } from '@plur-ai/core'
+import { plurRoot } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 const REMOTE_USAGE =
@@ -54,6 +55,8 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
   try {
     result = await plur.addRemoteStore({
       url: url!, token, scope: scope!,
+      // #1561: only the variable's name goes into config.yaml.
+      ...(tokenEnv ? { tokenEnv } : {}),
       ...(readonly ? { readonly } : {}),
       ...(args.includes('--overwrite-scope') ? { overwriteScope: true } : {}),
     })
@@ -77,12 +80,15 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
     exit(1, redactToken(`Not registered: ${msg}. Nothing was written.`, token))
   }
 
+  const kept = tokenEnv ? ` config.yaml records only the variable name (${tokenEnv}); it must be set wherever PLUR runs.` : ''
   const message = {
     added: `Added store: ${url} (scope: ${result.scope})`,
     already_registered: `Already registered: ${url} (scope: ${result.scope}) — nothing changed.`,
     token_rotated: `Updated the token for ${url} (scope: ${result.scope}) after it verified.`,
     overwritten: `Reassigned scope ${result.scope} to ${url}.`,
-  }[result.status]
+  }[result.status] + (result.status === 'already_registered' ? '' : kept) +
+    // A server entry has one key for all its scopes (#1631): say which ones it now serves.
+    (result.token_scopes ? ` The key is shared by every scope of that server entry: ${result.token_scopes.join(', ')}.` : '')
   if (shouldOutputJson(flags)) {
     outputJson(redactTokenDeep({
       success: true, status: result.status, url, scope: result.scope,
@@ -214,20 +220,46 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (!subcommand || subcommand === 'list') {
     // Async variant — accurate remote store engram_count (issue #184)
     const storeList = await plur.listStoresAsync()
+    // Stores found from here that were not added because their folder has no
+    // decision of its own (#1588, #1589 audit L3), with the command that adds them.
+    let skipped: Array<{ path: string; folder: string }> = []
+    try { skipped = plur.skippedProjectStores(process.cwd()) } catch { /* a hint never fails the list */ }
     if (shouldOutputJson(flags)) {
-      outputJson({ stores: storeList, count: storeList.length })
+      outputJson({ stores: storeList, count: storeList.length, skipped })
     } else {
       if (storeList.length === 0) {
         outputText('No stores configured.')
-        return
       }
       storeList.forEach(s => {
         const flags_str = [s.shared ? 'shared' : '', s.readonly ? 'readonly' : ''].filter(Boolean).join(', ')
         outputText(`${s.path} [${s.scope}] ${s.engram_count} engrams${flags_str ? ` (${flags_str})` : ''}`)
       })
+      for (const line of skippedStoreLines(skipped, plurRoot(flags))) outputText(line)
     }
     return
   }
 
   exit(1, 'Usage: plur stores <add|list|discover|prune>')
+}
+
+/**
+ * The text for project stores that were found but not added (#1589 audit L3).
+ * Shared with `plur doctor`. The command is built by core's
+ * `folderSetOnCommand` (#1589 audit round 2): the folder quoted for the shell,
+ * `--path` when the store `root` is not ~/.plur, and no command at all for a
+ * folder the folder question refuses (#1418), whose path is shown escaped.
+ */
+export function skippedStoreLines(skipped: Array<{ path: string; folder: string }>, root: string): string[] {
+  if (skipped.length === 0) return []
+  const lines = ['', `Found ${skipped.length === 1 ? 'a memory store that was' : `${skipped.length} memory stores that were`} not added, because ${skipped.length === 1 ? 'its folder has' : 'their folders have'} no decision of ${skipped.length === 1 ? 'its' : 'their'} own (#1588):`]
+  for (const s of skipped) {
+    const command = folderSetOnCommand(s.folder, root)
+    // The path is data, never a shell word: escaped, so a pasted line runs
+    // nothing hidden in a folder name.
+    lines.push(`   - ${folderEscapedPath(s.path)}`)
+    lines.push(command
+      ? `     To use it: ${command}`
+      : '     Its folder name cannot be offered as a command here. To use it, turn that folder on by hand from a terminal.')
+  }
+  return lines
 }

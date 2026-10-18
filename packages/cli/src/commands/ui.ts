@@ -6,16 +6,14 @@
 import { spawn } from 'node:child_process'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputInfo, outputText } from '../output.js'
+import { urlOpener } from '../lib/open-url.js'
 import { createUiServer, parseUiArgs, planViewer } from './ui-server.js'
 import { isLoopbackName } from '@plur-ai/ui/server'
 import type { EngramRow } from '@plur-ai/ui'
 
 /** Open a URL in the platform's default browser. Best-effort. */
 function openBrowser(url: string): void {
-  const command = process.platform === 'darwin' ? 'open'
-    : process.platform === 'win32' ? 'cmd'
-    : 'xdg-open'
-  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
+  const [command, args] = urlOpener(url)
   try {
     // Detached and fully ignored: a browser that writes to our stdout would
     // corrupt --json output, and one that outlives us must not hold the pipe.

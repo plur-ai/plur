@@ -47,7 +47,7 @@ def test_target_exposes_register():
     )
 
 
-def test_register_registers_a_provider():
+def test_register_registers_a_provider(monkeypatch):
     """Mimics Hermes' _ProviderCollector: register_memory_provider() just assigns."""
     class Collector:
         def __init__(self):
@@ -58,6 +58,12 @@ def test_register_registers_a_provider():
 
         def __getattr__(self, _name):        # tolerate other register_* calls
             return lambda *a, **k: None
+
+    # This is the package entry-point/registration contract, not a CLI smoke
+    # test. Do not fetch an unpublished release candidate (or read a real
+    # user's memory store) just to obtain the registration banner's count.
+    from plur_hermes.bridge import PlurBridge
+    monkeypatch.setattr(PlurBridge, "status", lambda self: {"total_engrams": 0})
 
     c = Collector()
     _plur_ep().load().register(c)

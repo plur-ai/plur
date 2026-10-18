@@ -300,15 +300,21 @@ describe('F4: the PLUR-hook matcher is anchored', () => {
     expect(mcpIsPlurHookCommand(`${POSIX_SHIM_F} hook-inject\r\n`)).toBe(true)
   })
 
+  const LINEAR_TIME_BUDGET_MS = 400
+
   it('runs in linear time on a 1 MiB run of spaces (#1270 review)', () => {
     const hostile = 'C:/' + ' '.repeat(1 << 20) + 'x'
     for (const match of [isPlurHookCommand, mcpIsPlurHookCommand]) {
       const start = performance.now()
       expect(match(hostile)).toBe(false)
-      expect(performance.now() - start).toBeLessThan(200)
+      expect(performance.now() - start).toBeLessThan(LINEAR_TIME_BUDGET_MS)
     }
   })
 
+  // Budget: a catastrophic (super-linear) pattern takes seconds to minutes at
+  // 1 MiB (84 s was seen, #1270 review); a linear one takes tens of ms. 400 ms
+  // still separates the two while tolerating shared CI runners, where 200 ms
+  // failed on linear code at 205-238 ms.
   // The patterns themselves, without the length cap (which may be raised):
   // 1 MiB inputs of every shape the matcher has been slow on, including the
   // repeated path-end-plus-argument tail that took 84 s at 1 MiB (#1270
@@ -334,7 +340,7 @@ describe('F4: the PLUR-hook matcher is anchored', () => {
         for (const match of [matchesPlurHookLauncher, mcpMatchesPlurHookLauncher]) {
           const start = performance.now()
           expect(match(hostile)).toBe(false)
-          expect(performance.now() - start).toBeLessThan(200)
+          expect(performance.now() - start).toBeLessThan(LINEAR_TIME_BUDGET_MS)
         }
       })
     }

@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { folderReadContext } from '../lib/folder-gate.js'
 
 // Note: the supersedes rule assumes the consumer has PLUR MCP tools available
 // (plur_learn). Consumers without MCP tooling can opt out via
@@ -53,9 +54,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Same semantics as MCP plur_inject / plur_inject_hybrid: `scope` filters
   // engram selection, and on the hybrid path it is the remote leg's dialing
   // context (#243/#776).
+  // Without --scope, the folder's scope is the dialing context (L10), by the
+  // same rule as MCP plur_inject_hybrid (#1566). `dial_session`, not
+  // `session_id`: the internal key is never recorded as a session. The
+  // keyword path (--fast) never dials, as before. An off folder, an
+  // undecided one (unscoped) or a broken folder map contacts no store at all.
+  const { session: dial_session, remote } = folderReadContext(plur, scope)
   const result = flags.fast
     ? await plur.inject(task, { budget, scope })
-    : await plur.injectHybrid(task, { budget, scope })
+    : await plur.injectHybrid(task, { budget, scope, dial_session, remote })
 
   // Append default learning protocol to directives (opt-out via --no-with-default-protocol)
   let directives = result.directives || ''
@@ -72,6 +79,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       tokens_used: result.tokens_used,
       // #1142: pinned engrams the budget dropped. Absent when none were.
       ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
+      // #1586 audit L6: what the server leg did on this call (added fields).
+      // The keyword path (--fast) never dials.
+      remote: result.remote ?? { state: 'not_dialed', hosts: [] },
+      results_complete: result.results_complete ?? true,
+      ...(result.mode ? { mode: result.mode } : {}),
+      ...(result.degraded_reason ? { degraded_reason: result.degraded_reason } : {}),
+      ...((result.mode === 'hybrid-degraded' || result.degraded_reason) && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
     })
   } else {
     // CONSTRAINTS FIRST — matches @plur-ai/mcp and @plur-ai/dsh. Consumers

@@ -76,6 +76,7 @@ Commands:
   remote --url <u> --token <t> --scope <s>
                           Connect this folder to a team store (verified; [--scopes a,b])
   folders list            Your per-folder decisions (~/.plur/folders.yaml, #1347)
+  folders repair [--yes]  Fix a broken folders.yaml: shows the change, asks, keeps a backup (#1526)
   folders set <folder>    --scope <s> | --on | --off | --ask  [--trusted|--no-trusted] [--nonce <n>]
   folders rm <folder>     Remove a folder's entry
   scopes                  List authorized-but-unregistered shared scopes (#647)
@@ -86,6 +87,9 @@ Commands:
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
   login --status          Enterprise token validity per host (probe + expiry) (#587)
+  init --keep-opencode-plugin  Keep an intentionally older OpenCode plugin pin
+  init --keep-codex-mcp    Keep an intentionally older Codex MCP launch entry
+  doctor --codex          Check Codex MCP version and token forwarding in this environment
   doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]

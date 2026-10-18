@@ -232,13 +232,16 @@ export function listHistoryMonths(root: string): string[] {
  * Read all history events for a specific engram, across all months.
  * Returns events sorted chronologically.
  */
-export function readHistoryForEngram(root: string, engramId: string): HistoryEvent[] {
+export function readHistoryForEngram(root: string, engramId: string | ReadonlySet<string>): HistoryEvent[] {
+  // A set names one engram under several spellings — a team engram's current
+  // id and the old-form id earlier releases recorded it under (0.21.1, H1).
+  const wanted = typeof engramId === 'string' ? new Set([engramId]) : engramId
   const months = listHistoryMonths(root)
   const events: HistoryEvent[] = []
   for (const month of months) {
     const monthEvents = readHistory(root, month)
     for (const event of monthEvents) {
-      if (event.engram_id === engramId) {
+      if (wanted.has(event.engram_id)) {
         events.push(event)
       }
     }

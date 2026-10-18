@@ -58,6 +58,13 @@ soft deadline (`injectWithFallback`):
 3. **Remote recall** (PLUR Enterprise) — `PLUR_REMOTE_RECALL_TIMEOUT_MS`,
    default **2s**, and it runs *before* the local pipeline, so its real cost is
    `max(0, remote − local)` rather than a straight addition.
+4. **Recall deadline** — `PLUR_RECALL_DEADLINE_MS`, default **10s**. One
+   end-to-end bound on a recall or a hybrid injection (local search, remote
+   leg, the freshness write after it). It is enforced by a timer, so it only
+   fires once the event loop is free: it cannot interrupt a synchronous step
+   such as the first parse of a very large YAML store or loading the embedder.
+   A reply can therefore arrive later than the deadline on a cold, blocked
+   process; it says what is missing (`results_complete: false`) when it does.
 
 The expensive item is not in that list: **loading the BGE embedder takes ~20s
 cold** once a store passes a few thousand engrams. The 8s deadline exists to

@@ -1,15 +1,20 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, readdirSync } from 'fs'
-import { execFileSync } from 'child_process'
+import { execFileSync, type ExecFileSyncOptions } from 'child_process'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { outputInfo } from '../output.js'
+import { outputInfo, outputText } from '../output.js'
+import { updateCodexRegistration } from '../codex-config.js'
 import { CLI_VERSION } from '../version.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import { plurRoot } from '../lib/folder-gate.js'
-import { resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize } from '@plur-ai/core'
+import {
+  resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize,
+  upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile, registerClaudeUserMcp,
+  SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES,
+} from '@plur-ai/core'
 import {
   hookCommandPrefix,
   isPlurHookSpec,
@@ -21,9 +26,12 @@ import {
   nextRecordedEntries,
   type StringHookHost,
 } from '../lib/hook-command.js'
+import { spawnResolved } from '../lib/command-spawn.js'
+import { resolveCodexBinary, codexTomlSnippet, type CodexBinary } from '../lib/codex-binary.js'
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
+  claudeCodeUserConfigPath,
   hasPlurMcp,
   mergePlurMcp,
   healPlurMcpEntry,
@@ -35,10 +43,6 @@ import {
   codexHome,
   codexHooksConfigPath,
   codexConfigTomlPath,
-  readCodexPlurMcpEntry,
-  readCodexPlurMcpCommand,
-  isOwnWin32CmdShimEntry,
-  isOwnWin32CmdShimCommand,
   agyConfigDir,
   agyHooksConfigPath,
   agyMcpConfigPath,
@@ -83,14 +87,19 @@ import {
  * Two things must be in place for plur to work in Claude Code:
  *
  *   1. The `plur` MCP server must be registered, so the `plur_*` tools exist.
+ *      Claude Code reads user-scoped MCP servers from ~/.claude.json only
+ *      (what `claude mcp add --scope user` writes), never from
+ *      ~/.claude/settings.json (#1561).
  *   2. The lifecycle hooks must call the plur CLI to inject relevant engrams
  *      into the conversation. A local shim at ~/.plur/bin/plur-hook is
  *      created to avoid npx overhead and race conditions (#178).
  *
  * Usage:
- *   plur init                 # default: user settings ~/.claude/settings.json, from any folder (#1467)
+ *   plur init                 # default: hooks in user settings ~/.claude/settings.json, from any folder (#1467);
+ *                             #   MCP server in ~/.claude.json at user scope (#1561)
  *   plur init --global        # same as the default
- *   plur init --project       # prompt hooks + MCP in ./.claude/settings.json (the pre-#1467 placement)
+ *   plur init --project       # prompt hooks in ./.claude/settings.json (the pre-#1467 placement), plus
+ *                             #   the project marker entry there; the MCP server still goes to ~/.claude.json
  *   plur init --desktop / --no-desktop        # force / skip Claude Desktop registration
  *   plur init --cursor / --no-cursor          # force / skip Cursor (auto: .cursor/ exists)
  *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
@@ -105,8 +114,8 @@ import {
  *   cd ~/projects/my-app
  *   plur init --domain myapp.core --scope project:my-app
  *
- * This writes the hooks + MCP to user settings and .plur.yaml (scoping) in
- * the folder. Run inside a repo an older init set up, it moves PLUR's hooks
+ * This writes the hooks to user settings, the MCP server to ~/.claude.json and
+ * .plur.yaml (scoping) in the folder. Run inside a repo an older init set up, it moves PLUR's hooks
  * out of the repo's .claude/settings.json and records the repo as `on` in the
  * folder map (#1467).
  */
@@ -449,7 +458,8 @@ export function buildInjectionHooks(launch: HookLaunch | string): Record<string,
     ],
 
     // Learning reflection — nudge the LLM to call plur_learn after responses
-    // where it discovered or learned something. Fires every 3rd Stop to avoid fatigue.
+    // where it discovered or learned something. Fires after a correction, preference or
+    // decision in the user's last message, plus every 10th Stop as a fallback.
     Stop: [
       {
         matcher: '*',
@@ -484,6 +494,30 @@ function mergeHookMaps(
   return out
 }
 
+/**
+ * Closes every PLUR instruction section `plur init` writes (CLAUDE.md,
+ * AGENTS.md, the Cursor rule). When any of those texts change: first run
+ * `node scripts/extract-plur-section-history.mjs` so the outgoing text joins
+ * the shipped list (only shipped texts are ever replaced), then bump the
+ * number. Numbered in step with the Claw system prompt
+ * (packages/claw/src/system-prompt.ts), which carries the same rule.
+ */
+export const PLUR_INSTRUCTIONS_MARKER = '<!-- plur-instructions-v4 -->'
+
+/**
+ * The memory line: the agent ends every reply naming the engrams it recalled,
+ * used and wrote that turn, so the owner can see what memory did. Brief on
+ * purpose (owner, #1520): a count and ids, no statements; the user asks a
+ * follow-up for details. Shared verbatim by every target below and by the MCP
+ * server instructions (packages/mcp/src/server.ts); the tests pin the exact text.
+ */
+const MEMORY_FOOTER_RULE =
+  'End every reply with one short line: ' +
+  '`Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…` ' +
+  '(recalled as a count; used and written as ids only, no statements), or `Memory — none`. ' +
+  'Only count/list ids you actually saw this turn; never invent an id. ' +
+  'Give details only if the user asks.'
+
 const CLAUDE_MD_SECTION = `## PLUR Memory
 
 You have persistent memory via PLUR. Corrections, preferences, and conventions persist across sessions as engrams.
@@ -503,6 +537,10 @@ A PreToolUse guard enforces that \`plur_session_start\` is called at the beginni
 5. **End**: Call \`plur_session_end\` with summary + engram_suggestions — a SessionEnd hook auto-closes the lifecycle if you forget, but calling it yourself captures higher-quality learnings
 
 Do not ask permission to use these tools — they are your memory system.
+
+### Memory line on every reply
+
+${MEMORY_FOOTER_RULE}
 
 ### Scope selection (set scope PER engram, by content)
 
@@ -527,6 +565,8 @@ When the user corrects you ("no, use X not Y", "that's wrong"):
 1. Call \`plur_learn\` immediately — before continuing the task
 2. Call \`plur_feedback\` with negative signal on the wrong engram if one was injected
 3. Then continue with the corrected approach
+
+${PLUR_INSTRUCTIONS_MARKER}
 `
 
 /**
@@ -560,6 +600,10 @@ Relevant engrams are injected automatically by hooks; recalled context appears i
 
 Do not ask permission to use these tools — they are your memory system.
 
+### Memory line on every reply
+
+${MEMORY_FOOTER_RULE}
+
 ### Scope selection (set scope PER engram, by content)
 
 - **Team / shared knowledge** → the matching team scope (e.g. \`group:<org>/<team>\`) — \`plur_session_start\` lists the writable ones.
@@ -573,6 +617,8 @@ When the user corrects you ("no, use X not Y"):
 1. Call \`plur_learn\` immediately — before continuing the task
 2. Call \`plur_feedback\` with negative signal on the wrong engram if one was injected
 3. Then continue with the corrected approach
+
+${PLUR_INSTRUCTIONS_MARKER}
 `
 
 const CURSOR_RULE_CONTENT = `---
@@ -593,8 +639,11 @@ You have persistent memory via PLUR (tools prefixed \`plur_\`; less-common ones 
 - Before answering factual questions about this project: call **plur_recall** first.
 - Rate injected engrams with **plur_feedback** when you notice one helped or missed.
 - Call **plur_session_end** before wrapping up, with a summary and engram suggestions.
+- ${MEMORY_FOOTER_RULE}
 
 Full reference: read the \`plur://guide\` MCP resource.
+
+${PLUR_INSTRUCTIONS_MARKER}
 `
 
 /**
@@ -619,23 +668,58 @@ function installProjectConfig(args: string[]): string | null {
   return configPath
 }
 
+/**
+ * Write the PLUR section into an instruction file (CLAUDE.md, AGENTS.md) and
+ * return the status line init prints. The section logic is core's
+ * `upsertInstructionSection`, shared with `plur-mcp init` and the Claw loader:
+ * an old section is replaced only when it is, whitespace aside, a text PLUR
+ * shipped; a section the user wrote or edited is never touched, the new one is
+ * added beside it, and the line says so. Any change to an existing file is
+ * preceded by a timestamped backup beside it.
+ *
+ * Before this, re-running `plur init` saw the heading, reported "already in",
+ * and an existing install never received a changed instruction.
+ */
+export function writePlurSection(path: string, section: string, title: string): string {
+  const existing = existsSync(path) ? readFileSync(path, 'utf8') : null
+  const r = upsertInstructionSection(existing, {
+    section, title, heading: '## PLUR Memory', marker: PLUR_INSTRUCTIONS_MARKER, shipped: SHIPPED_PLUR_SECTIONS,
+  })
+  if (r.status === 'skipped') return `not written to ${path}: ${r.skipReason}`
+  let backup: string | null
+  try {
+    backup = r.status === 'already' ? null : writeWithBackup(path, r.content, existing)
+  } catch (err) {
+    // A write PLUR declined (a dangling symlink, an edit made meanwhile): say
+    // so and let the rest of the install carry on.
+    if ((err as { code?: string }).code === 'PLUR_REFUSED') return `not written to ${path}: ${(err as Error).message}`
+    throw err
+  }
+  const head = {
+    created: `created ${path}`,
+    added: `added to ${path}`,
+    upgraded: `upgraded in ${path}`,
+    already: `already in ${path}`,
+  }[r.status]
+  const notes: string[] = []
+  if (backup) notes.push(`backup: ${backup}`)
+  if (r.keptSections > 0) {
+    notes.push(
+      `left ${r.keptSections} older "## PLUR Memory" section${r.keptSections === 1 ? '' : 's'} untouched because ` +
+      `${r.keptSections === 1 ? 'it has' : 'they have'} text PLUR did not write — remove it yourself once you have kept what you need`,
+    )
+  }
+  if (r.closedOpenBlock) {
+    notes.push(`closed the ${r.closedOpenBlock === 'fence' ? 'code block' : 'HTML comment'} left open at the end of the file before adding the section`)
+  }
+  return notes.length ? `${head} (${notes.join('; ')})` : head
+}
+
 function installClaudeMd(): string {
-  const marker = '## PLUR Memory'
   const projectClaudeMd = join(process.cwd(), 'CLAUDE.md')
   const globalClaudeMd = join(homedir(), 'CLAUDE.md')
   const claudeMdPath = existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
-
-  if (existsSync(claudeMdPath)) {
-    const content = readFileSync(claudeMdPath, 'utf8')
-    if (content.includes(marker)) {
-      return `already in ${claudeMdPath}`
-    }
-    writeFileSync(claudeMdPath, content.trimEnd() + '\n\n' + CLAUDE_MD_SECTION)
-    return `added to ${claudeMdPath}`
-  }
-
-  writeFileSync(claudeMdPath, `# CLAUDE.md\n\n${CLAUDE_MD_SECTION}`)
-  return `created ${claudeMdPath}`
+  return writePlurSection(claudeMdPath, CLAUDE_MD_SECTION, '# CLAUDE.md')
 }
 
 /**
@@ -882,6 +966,58 @@ function mergeHooks(settings: Settings, hooksMap: Record<string, HookEntry[]>): 
 }
 
 /**
+ * Register the plur MCP server for Claude Code at user scope, in
+ * `~/.claude.json` — the file `claude mcp add --scope user` writes and the only
+ * user-level place Claude Code reads MCP servers (#1561). Written directly, so
+ * it works without the `claude` CLI; every other key in that file (Claude
+ * Code's own state, other servers, per-folder settings) is kept.
+ *
+ * Earlier inits wrote the entry into `~/.claude/settings.json`, which Claude
+ * Code never reads for MCP servers: hooks ran, tools never appeared. An old
+ * entry there is moved here — env and extra keys kept, healed like any other
+ * — unless `~/.claude.json` already has one, which wins; then the old entry is
+ * removed from settings.json, leaving its other servers and keys. Every change
+ * to an existing file is preceded by a timestamped backup beside it, and a
+ * file edited while PLUR was working is left alone (writeWithBackup). An
+ * unparseable `~/.claude.json` is refused and neither file is touched. A run
+ * with nothing to change writes nothing.
+ */
+function installClaudeCodeMcp(settingsPath: string): { ok: boolean; status: string } {
+  const settingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : null
+  const settingsRead = readConfigForWrite(settingsPath)
+  const oldServers = settingsRead.ok ? settingsRead.config.mcpServers : undefined
+  const oldEntry = oldServers && typeof oldServers === 'object' && !Array.isArray(oldServers)
+    ? (oldServers as Record<string, unknown>).plur
+    : undefined
+
+  // One implementation with `plur-mcp init` (#1564 review): concurrent-save
+  // re-apply, BOM, symlink, non-object mcpServers, backup pruning.
+  const r = registerClaudeUserMcp({
+    userPath: claudeCodeUserConfigPath(),
+    entry: () => buildMcpServerEntry() as unknown as Record<string, unknown>,
+    heal: (config) => healPlurMcpEntry(config),
+    legacyEntry: oldEntry,
+    legacyPath: settingsPath,
+  })
+  // The old entry stays until the new one is in place.
+  if (!r.ok || oldEntry === undefined) return { ok: r.ok, status: r.message }
+
+  let status = r.message
+  const next: Record<string, unknown> = { ...settingsRead.config }
+  const servers = { ...(oldServers as Record<string, unknown>) }
+  delete servers.plur
+  if (Object.keys(servers).length > 0) next.mcpServers = servers
+  else delete next.mcpServers
+  try {
+    const backup = writeWithBackup(settingsPath, JSON.stringify(next, null, 2) + '\n', settingsRaw)
+    status += `; removed the unused entry from ${settingsPath}${backup ? ` (backup: ${backup})` : ''}`
+  } catch (err) {
+    status += `; could not remove the unused entry from ${settingsPath} (${(err as Error).message}) — Claude Code ignores it, remove it by hand`
+  }
+  return { ok: true, status }
+}
+
+/**
  * Register the plur MCP server in Claude Desktop's config file (if present
  * or if --desktop is forced). Returns a status string for the report.
  */
@@ -998,8 +1134,33 @@ function installCursor(cmd: string): string {
   }
 
   mkdirSync(dirname(rulesPath), { recursive: true })
-  const ruleAlready = existsSync(rulesPath)
-  if (!ruleAlready) writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
+  // An existing rule file is replaced only when it is, whitespace aside, a
+  // text PLUR shipped (#1520 audit S2). One the user edited is kept as it is
+  // and backed up, and the status line says the memory line is missing.
+  const existingRule = existsSync(rulesPath) ? readFileSync(rulesPath, 'utf8') : null
+  let ruleStatus: string
+  if (existingRule === null) {
+    try {
+      writeFileSync(rulesPath, CURSOR_RULE_CONTENT, { flag: 'wx' })
+      ruleStatus = 'created'
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      ruleStatus = 'not written: it was created while PLUR was updating it — run again'
+    }
+  } else if (hasStandaloneMarker(existingRule, PLUR_INSTRUCTIONS_MARKER)) {
+    ruleStatus = 'already present'
+  } else if (isShippedText(existingRule, SHIPPED_CURSOR_RULES)) {
+    const content = existingRule.includes('\r\n') ? CURSOR_RULE_CONTENT.replace(/\n/g, '\r\n') : CURSOR_RULE_CONTENT
+    try {
+      ruleStatus = `upgraded (backup: ${writeWithBackup(rulesPath, content, existingRule)})`
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'PLUR_REFUSED') throw err
+      ruleStatus = `not written: ${(err as Error).message}`
+    }
+  } else {
+    ruleStatus = `kept as you edited it (backup: ${backupFile(rulesPath, { once: true })}); it lacks the newer instructions — ` +
+      `delete it and re-run \`plur init --cursor\` to get them`
+  }
 
   // The dynamic context and reminder rules (plur-context.mdc, plur-reminder.mdc)
   // are rewritten every session by hook-cursor-session-start.ts/
@@ -1022,7 +1183,7 @@ function installCursor(cmd: string): string {
 
   return `Cursor: MCP ${mcpStatus} (${mcpPath}); ` +
     `hooks ${hooksStatus} (${hooksPath}); ` +
-    `rule ${ruleAlready ? 'already present' : 'created'} (${rulesPath}); ` +
+    `rule ${ruleStatus} (${rulesPath}); ` +
     `gitignored .cursor/rules/plur-context.mdc, .cursor/rules/plur-reminder.mdc`
 }
 
@@ -1035,97 +1196,62 @@ function shouldSetupCodex(args: string[], env: NodeJS.ProcessEnv = process.env):
 }
 
 /**
- * Register the plur MCP server with Codex by shelling out to `codex mcp add`
- * rather than editing `config.toml` ourselves.
- *
- * Codex's config is TOML, and hand-writing TOML would mean either taking a
- * dependency or doing string surgery on a file that also holds the user's
- * model, profiles, projects and other MCP servers — the exact shape of edit
- * that eats a hand-authored config when it goes wrong. `codex mcp add` is a
- * supported, versioned interface that does it correctly.
- *
- * Returns a status string; never throws. If the `codex` binary is not on
- * PATH (perfectly possible — `~/.codex/` can exist from a since-removed
- * install), we say so and print the manual snippet instead of failing init.
+ * Run the `codex` CLI found by resolveCodexBinary (#1603): a codex on PATH —
+ * on Windows npm's `codex.cmd`, run through cmd.exe, never the extensionless
+ * sh shim — else the Codex app's bundled binary. With neither, the bare name,
+ * so the caller still gets its ENOENT.
  */
-function installCodexMcp(): string {
+function runCodex(bin: CodexBinary | null, args: string[], opts: ExecFileSyncOptions): string {
+  const spec = bin ? spawnResolved(bin.path, args) : { file: 'codex', args }
+  return String(execFileSync(spec.file, spec.args, {
+    ...opts, ...('windowsVerbatimArguments' in spec && spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  }))
+}
+
+function installCodexMcp(root: string, keepLaunch: boolean): string {
   const entry = buildMcpServerEntry()
+  const bin = resolveCodexBinary()
+  const used = bin ? `${bin.path}${bin.source === 'app' ? ', the Codex app\'s binary' : ''}` : 'codex'
+
+  // Existing tables are edited in place: remove/add would lose env and policy.
+  const updated = updateCodexRegistration({ root, version: CLI_VERSION, replacement: entry, keepLaunch })
+  if (updated.status !== 'absent') return updated.message
 
   let listed = ''
   try {
-    listed = execFileSync('codex', ['mcp', 'list'], {
+    listed = runCodex(bin, ['mcp', 'list'], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000,
     })
   } catch (err: unknown) {
     const code = (err as { code?: string }).code
     if (code === 'ENOENT') {
-      return 'skipped — the `codex` binary is not on PATH. Install Codex, then re-run `plur init --codex`'
+      return 'skipped — no `codex` on PATH and no Codex app binary under ' +
+        `${join(codexHome(), 'packages', 'app-server-daemon', 'releases')}. Install Codex, then re-run \`plur init --codex\`, ` +
+        `or add this to ${codexConfigTomlPath()} by hand:\n${codexTomlSnippet(entry)}`
     }
     // `mcp list` can fail for reasons that don't block `mcp add` (an
     // unrelated broken server entry, for one). Fall through and try to add.
   }
 
-  // Codex has no "update this server" verb, and `add` on an existing name
-  // errors rather than replacing. Detecting the existing entry lets us
-  // report honestly instead of swallowing that error as a failure.
-  let healed = false
   if (/(^|\s)plur(\s|$)/m.test(listed)) {
-    // init cannot edit TOML safely (see docstring), but it CAN detect the
-    // #1069 race and say so instead of a bare "already registered" — the
-    // one leg where 'run plur init again' does not heal.
-    let toml = ''
-    try { toml = readFileSync(codexConfigTomlPath(), 'utf8') } catch { /* unreadable — the bare message is still true */ }
-    if (toml.includes('@plur-ai/mcp@latest')) {
-      return 'already registered, but the entry uses @plur-ai/mcp@latest — the npx cache-rewrite race (#1069). Fix: `codex mcp remove plur`, then re-run `plur init --codex`'
-    }
-    // The `plur-mcp.cmd` entry an older init wrote on Windows fails with
-    // `spawn EINVAL` (#1267). Heal it through Codex's own CLI — remove, then
-    // the add below — rather than editing TOML. Only that exact entry: our
-    // shim path and no args. Anything else is the user's.
-    const existing = readCodexPlurMcpEntry(toml)
-    if (!existing || !isOwnWin32CmdShimEntry(existing)) {
-      // The shim command with anything else in the entry (env, other keys, a
-      // multi-line args array): still broken, but `codex mcp add` would drop
-      // those settings — a lost PLUR_PATH moves the user's memory to the
-      // default store — so say what to change by hand instead (#1366).
-      const command = readCodexPlurMcpCommand(toml)
-      if (command !== null && isOwnWin32CmdShimCommand(command)) {
-        const lit = (v: string) => (v.includes("'") ? JSON.stringify(v) : `'${v}'`)
-        return 'already registered with the old plur-mcp.cmd entry, which fails to start (spawn EINVAL). ' +
-          'The entry also carries other settings (env, other keys or a multi-line args array) that ' +
-          '`codex mcp remove` + `codex mcp add` would drop, so init left it alone. Fix by hand: in ' +
-          `${codexConfigTomlPath()}, under [mcp_servers.plur], replace the command and args lines with\n` +
-          `    command = ${lit(entry.command)}\n` +
-          `    args = [${entry.args.map(lit).join(', ')}]\n` +
-          '  and keep every other setting (env included)'
-      }
-      return 'already registered (run `codex mcp remove plur` first if you need to re-point it)'
-    }
-    try {
-      execFileSync('codex', ['mcp', 'remove', 'plur'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
-    } catch (err: unknown) {
-      const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
-      return `already registered with the old plur-mcp.cmd entry, which fails to start (spawn EINVAL), and \`codex mcp remove plur\` failed (${stderr || (err as Error).message}). Fix: run \`codex mcp remove plur\`, then re-run \`plur init --codex\``
-    }
-    healed = true
+    return 'already registered outside the user config; preserved — run `plur doctor --codex` to verify the user registration'
   }
 
   try {
     const args = ['mcp', 'add', 'plur']
     if (entry.env) for (const [k, v] of Object.entries(entry.env)) args.push('--env', `${k}=${v}`)
     args.push('--', entry.command, ...entry.args)
-    execFileSync('codex', args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
-    return healed
-      ? 'healed — replaced the old plur-mcp.cmd entry (spawn EINVAL) via `codex mcp remove` + `codex mcp add`'
-      : 'registered via `codex mcp add`'
+    runCodex(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
+    const forwarding = updateCodexRegistration({ root, version: CLI_VERSION })
+    return `registered via \`codex mcp add\` (${used})` + (forwarding.status === 'updated' ? '; token variable forwarding configured' : '')
   } catch (err: unknown) {
     const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
-    return `FAILED (${stderr || (err as Error).message}) — add it by hand: ` +
-      `[mcp_servers.plur] command = "${entry.command}"`
+    return `FAILED (${stderr || (err as Error).message}) — add it by hand to ${codexConfigTomlPath()}:\n` +
+      codexTomlSnippet(entry)
   }
 }
 
-function installCodex(cmd: string, env: NodeJS.ProcessEnv = process.env): string {
+function installCodex(cmd: string, root: string, keepLaunch: boolean, env: NodeJS.ProcessEnv = process.env): string {
   const hooksPath = codexHooksConfigPath(env)
 
   // Same refusal as the Cursor path: readCodexHooksConfig() treats
@@ -1157,7 +1283,7 @@ function installCodex(cmd: string, env: NodeJS.ProcessEnv = process.env): string
     hooksWritten = true
   }
 
-  const mcpStatus = installCodexMcp()
+  const mcpStatus = installCodexMcp(root, keepLaunch)
   const agentsStatus = installAgentsMd(process.cwd(), join(codexHome(env), 'AGENTS.md'))
 
   return [
@@ -1187,7 +1313,6 @@ const CODEX_TRUST_NOTICE =
   '    skipped SILENTLY — no warning, no error, memory simply never loads.'
 
 function installAgentsMd(cwd: string = process.cwd(), globalFallback: string | null = null): string {
-  const marker = '## PLUR Memory'
   const projectAgents = join(cwd, 'AGENTS.md')
   // The global fallback is HARNESS-SPECIFIC (evaluator audit M7): Codex
   // reads ~/.codex/AGENTS.md, but agy walks up from the workspace and never
@@ -1199,14 +1324,7 @@ function installAgentsMd(cwd: string = process.cwd(), globalFallback: string | n
     : (globalFallback && existsSync(globalFallback)) ? globalFallback
     : projectAgents
 
-  if (existsSync(target)) {
-    const content = readFileSync(target, 'utf8')
-    if (content.includes(marker)) return `already in ${target}`
-    writeFileSync(target, content.trimEnd() + '\n\n' + AGENTS_MD_SECTION)
-    return `added to ${target}`
-  }
-  writeFileSync(target, `# AGENTS.md\n\n${AGENTS_MD_SECTION}`)
-  return `created ${target}`
+  return writePlurSection(target, AGENTS_MD_SECTION, '# AGENTS.md')
 }
 
 // ── Antigravity CLI (agy) ───────────────────────────────────────────────────
@@ -1321,19 +1439,19 @@ function shouldSetupOpencode(args: string[]): boolean {
  * unpinned spec re-resolves on every publish and races the npx cache
  * rewrite.
  */
-function installOpencode(cliVersion: string, autoDetected: boolean): string {
+function installOpencode(cliVersion: string, autoDetected: boolean, upgradePlugin = true): string {
   const configPath = opencodeConfigPath()
-  const result = writeOpencodeConfig(configPath, cliVersion)
+  const result = writeOpencodeConfig(configPath, cliVersion, { upgradePlugin })
 
   if (!result.ok) {
     // Same refusal shape as every other host leg (#1059 class): a config
-    // PLUR cannot safely merge into — either it doesn't parse (most likely
-    // an opencode.jsonc file using comments), its top level parses but isn't
+    // PLUR cannot safely merge into — either it does not parse, has duplicate
+    // keys, its top level parses but is not
     // a plain object (e.g. a top-level array — valid JSON, wrong shape), or
     // an existing `plugin`/`mcp` field is already the wrong shape to extend
     // — must never be coerced to {}/[] and written back over.
     return `Opencode: skipped — ${configPath} exists but PLUR could not safely write into it ` +
-      '(either invalid JSON — JSONC comments/trailing commas are not supported here — or a ' +
+      '(invalid or ambiguous JSONC, or a ' +
       'valid JSON document whose top level, or existing `plugin`/`mcp` field, is not the ' +
       `expected shape); add the entries by hand, then re-run \`plur init --opencode\`:\n` +
       `    "plugin": ["@plur-ai/opencode"]\n` +
@@ -1343,10 +1461,11 @@ function installOpencode(cliVersion: string, autoDetected: boolean): string {
   const status = result.created ? 'created' : result.changed ? 'updated' : 'already up to date'
   // The opencode config is global even on a project-scoped run, and the leg
   // runs whenever opencode's config directory exists, so say both (#1338).
+  const pinNote = upgradePlugin ? '' : '; existing plugin pin kept (--keep-opencode-plugin)'
   const scope = autoDetected
     ? 'auto-detected; global, applies to every opencode project; pass --no-opencode to skip'
     : 'global, applies to every opencode project'
-  return `Opencode: config ${status} (${configPath}) (${scope})${opencodeMcpNote(result)}`
+  return `Opencode: config ${status} (${configPath}) (${scope}${pinNote})${opencodeMcpNote(result)}`
 }
 
 function writeSettings(path: string, settings: Settings): void {
@@ -1571,7 +1690,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   let injectionHooksStatus: string
   let enforcementHooksStatus: string
-  let mcpStatus: string
   let repoMigration: string | null = null
 
   if (samePath) {
@@ -1583,23 +1701,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       const refusal = settingsRefusal(enforcementPath)
       injectionHooksStatus = refusal
       enforcementHooksStatus = refusal
-      mcpStatus = refusal
     } else {
       let settings = loaded
       const hadHooks = hasPlurHooks(settings)
-      const mcpAlready = hasPlurMcp(settings)
       const before = JSON.stringify(settings.hooks ?? {})
 
       settings = mergeHooks(settings, mergeHookMaps(PLUR_HOOKS_ENFORCEMENT, PLUR_HOOKS_INJECTION))
       const after = JSON.stringify(settings.hooks ?? {})
 
-      if (!mcpAlready) {
-        mergePlurMcp(settings as Record<string, unknown>)
-        mcpStatus = 'registered'
-      } else {
-        mcpStatus = healPlurMcpEntry(settings as Record<string, unknown>) ?? 'already registered'
-      }
-
+      // The MCP server is NOT registered here: Claude Code does not read MCP
+      // servers from settings.json (#1561). installClaudeCodeMcp below writes
+      // it to ~/.claude.json and moves an old entry out of this file.
       writeSettings(enforcementPath, settings)
       // Only once user settings carry the hooks: a repo an older init set up
       // hands its PLUR hooks over, so none runs twice (#1467).
@@ -1633,7 +1745,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const projectRead = loadSettingsForWrite(injectionPath)
     if (!projectRead.ok) {
       injectionHooksStatus = settingsRefusal(injectionPath)
-      mcpStatus = settingsRefusal(injectionPath)
     } else {
       let projectSettings = projectRead.settings
       const projectHadHooks = hasPlurHooks(projectSettings)
@@ -1642,16 +1753,32 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       projectSettings = mergeHooks(projectSettings, PLUR_HOOKS_INJECTION)
       const projectAfter = JSON.stringify(projectSettings.hooks ?? {})
 
+      // Claude Code does not launch an MCP server from settings.json (#1561);
+      // the entry here is kept because it is this repo's PLUR project marker
+      // (resolveFolderPolicy / isPlurConfigured), which --project has always
+      // written. The server Claude Code launches is the ~/.claude.json one.
       if (!projectMcpAlready) {
         mergePlurMcp(projectSettings as Record<string, unknown>)
-        mcpStatus = 'registered'
       } else {
-        mcpStatus = healPlurMcpEntry(projectSettings as Record<string, unknown>) ?? 'already registered'
+        healPlurMcpEntry(projectSettings as Record<string, unknown>)
       }
 
       writeSettings(injectionPath, projectSettings)
       injectionHooksStatus = hooksStatusFor(projectBefore, projectAfter, projectHadHooks)
     }
+  }
+
+  // Register the MCP server where Claude Code reads it (#1561). Contained:
+  // a refused ~/.claude.json must not abort the rest of the install.
+  let mcpStatus: string
+  let mcpOk: boolean
+  try {
+    const r = installClaudeCodeMcp(enforcementPath)
+    mcpStatus = r.status
+    mcpOk = r.ok
+  } catch (err: unknown) {
+    mcpStatus = `FAILED (${(err as Error)?.message ?? 'unknown error'}) — Claude Code will not see PLUR's tools; fix it and re-run \`plur init\``
+    mcpOk = false
   }
 
   // Install CLAUDE.md section
@@ -1678,7 +1805,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     : 'skipped (no ~/.gemini/antigravity-cli found — pass --antigravity to force, --no-antigravity to silence this)'
 
   const codexStatus = shouldSetupCodex(args)
-    ? containLeg('Codex', () => installCodex(stringHookCmd('codex')))
+    ? containLeg('Codex', () => installCodex(stringHookCmd('codex'), plurRoot(flags), args.includes('--keep-codex-mcp')))
     : 'skipped (no ~/.codex found — pass --codex to force, --no-codex to silence this)'
 
   const cursorStatus = shouldSetupCursor(args)
@@ -1686,7 +1813,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
 
   const opencodeStatus = shouldSetupOpencode(args)
-    ? containLeg('Opencode', () => installOpencode(CLI_VERSION, !args.includes('--opencode')))
+    ? containLeg('Opencode', () => installOpencode(CLI_VERSION, !args.includes('--opencode'), !args.includes('--keep-opencode-plugin')))
     : args.includes('--no-opencode')
       ? 'Opencode: skipped (--no-opencode)'
       : `Opencode: skipped (no ${opencodeConfigDir()} found — pass --opencode to force, --no-opencode to silence this)`
@@ -1709,7 +1836,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo('', flags)
   outputInfo(samePath
     ? 'Architecture: One global engram store (~/.plur/); all hooks in user settings, gated per folder by the folder map.'
-    : 'Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped (--project).', flags)
+    : 'Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped (--project). ' +
+      'The MCP server is registered at user scope (~/.claude.json), so PLUR\'s tools appear in every project.', flags)
   outputInfo('Multi-project scoping via domain/scope fields on engrams, not separate installs.', flags)
   outputInfo('', flags)
   outputInfo(skillsStatus, flags)
@@ -1730,7 +1858,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo('  PreToolUse        — observation capture for pattern learning', flags)
   outputInfo('  PostToolUse       — observation results capture', flags)
   outputInfo('  SubagentStart     — inject agent-scoped engrams into subagents', flags)
-  outputInfo('  Stop              — learning reflection nudge (every 3rd response)', flags)
+  outputInfo('  Stop              — learning reflection nudge (after corrections, preferences, decisions)', flags)
   outputInfo('', flags)
   outputInfo(`Enforcement file: ${enforcementPath}`, flags)
   if (!samePath) outputInfo(`Injection file:   ${injectionPath}`, flags)
@@ -1787,6 +1915,20 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputInfo('', flags)
   }
   outputInfo('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.', flags)
+  // #1586 round 4: a fresh install has no embedding model, and no recall or
+  // hook downloads it. Say once how to get it; init itself does not download.
+  try {
+    const { semanticModelState } = await import('@plur-ai/core')
+    if (await semanticModelState() === 'missing') {
+      outputInfo('The embedding model is not downloaded yet: run `plur doctor` once to download it (~133 MB). Until then recall uses keyword search.', flags)
+    }
+  } catch { /* advisory only */ }
+  if (args.includes('--codex') && (codexStatus.includes('FAILED') || codexStatus.includes('skipped —'))) process.exitCode = 1
+  if (!mcpOk) {
+    // #1564 review L4: the point of init did not happen; scripts must see it.
+    process.exitCode = 1
+    outputText(`Not finished: Claude Code will not see PLUR's tools — the MCP server was ${mcpStatus}`)
+  }
 
   // Telemetry opt-in — ask once, never nag. Runs last so it doesn't interrupt the
   // settings-installation summary above. Non-interactive installs silently write

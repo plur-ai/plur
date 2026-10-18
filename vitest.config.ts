@@ -64,10 +64,15 @@ export default defineConfig({
             'test/timeline.test.ts',
             'test/hook-outbox-flush.test.ts',
             'test/outbox-needs-action.test.ts',
+            'test/save-deadline-outbox.test.ts',
           ],
           // The whole point: one file at a time, so no two batches of CLI
           // processes are spawning concurrently.
           fileParallelism: false,
+          // Same home isolation and real-store guard as packages/cli's own
+          // config — this inline project bypasses that file.
+          setupFiles: ['test/setup/isolate-home.ts'],
+          globalSetup: ['test/setup/real-home-guard.ts'],
           // Generous, because serial execution means a slow run costs
           // wall-clock rather than correctness. A timeout here should mean a
           // real hang, not a busy machine.

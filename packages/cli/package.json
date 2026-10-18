@@ -1,9 +1,10 @@
 {
   "name": "@plur-ai/cli",
-  "version": "0.21.0",
+  "version": "0.21.5",
   "type": "module",
   "bin": {
-    "plur": "dist/index.js"
+    "plur": "dist/index.js",
+    "plur-enterprise": "dist/enterprise.js"
   },
   "main": "dist/index.js",
   "files": [
@@ -15,13 +16,15 @@
     "pretest": "npm run build"
   },
   "dependencies": {
-    "@plur-ai/core": "workspace:*"
+    "@plur-ai/core": "workspace:*",
+    "jsonc-parser": "3.3.1",
+    "js-yaml": "^4.3.2",
+    "toml-eslint-parser": "0.10.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
     "better-sqlite3": "^12.0.0",
     "@plur-ai/ui": "workspace:*",
-    "js-yaml": "^4.3.1",
     "@types/js-yaml": "^4.0.9"
   },
   "peerDependencies": {
@@ -33,7 +36,7 @@
     }
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "Apache-2.0",
   "description": "PLUR CLI — persistent memory for AI agents from the command line",

@@ -16,6 +16,11 @@ export const FLAGS_WITH_VALUES = ['--reason', '--scope']
 
 export const FLAGS = ['--search', '--reason', '--force', '--scope']
 
+/** `warnings` only when there are any, so an ordinary retire prints what it always did. */
+const withWarnings = (w: string[]): { warnings?: string[] } => w.length > 0 ? { warnings: w } : {}
+/** A warning changes what the reader should do next — never suppressed by --quiet. */
+const printWarnings = (w: string[]): void => { for (const line of w) outputText(`  Warning: ${line}`) }
+
 const USAGE = 'Usage: plur forget <id-or-search> [--search] [--reason <reason>] [--scope <scope>]'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
@@ -64,11 +69,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // surface as MCP plur_forget. Without force, a multiply-learned engram
       // (reference_count > 1) only decrements and stays active, and a later
       // learn() at a different scope re-matches it and inherits the old scope.
-      await plur.forget(target, reason, { force: true })
+      const { warnings } = await plur.forget(target, reason, { force: true })
       if (shouldOutputJson(flags)) {
-        outputJson({ success: true, retired: { id: target, statement: engram.statement } })
+        outputJson({ success: true, retired: { id: target, statement: engram.statement }, ...withWarnings(warnings) })
       } else {
         outputInfo(`Retired: [${target}] ${engram.statement}`, flags)
+        printWarnings(warnings)
       }
       return
     }
@@ -88,11 +94,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     //
     // No statement to echo on this path — the local corpus did not have one —
     // so the report names what was asked for and, when given, where.
-    await plur.forget(target, reason, { force: true, ...(scope ? { scope } : {}) })
+    const { warnings } = await plur.forget(target, reason, { force: true, ...(scope ? { scope } : {}) })
     if (shouldOutputJson(flags)) {
-      outputJson({ success: true, retired: { id: target, ...(scope ? { scope } : {}) } })
+      outputJson({ success: true, retired: { id: target, ...(scope ? { scope } : {}) }, ...withWarnings(warnings) })
     } else {
       outputInfo(`Retired: [${target}]${scope ? ` (scope: ${scope})` : ''}`, flags)
+      printWarnings(warnings)
     }
     return
   }
@@ -126,11 +133,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // force (#766): explicit user-facing forget — full retirement, not a
     // ref-count decrement (see the direct-ID branch above). `scope` here can
     // only be `primary` (guarded above) and is passed through, not dropped.
-    await plur.forget(matches[0].id, reason, { force: true, ...(scope ? { scope } : {}) })
+    const { warnings } = await plur.forget(matches[0].id, reason, { force: true, ...(scope ? { scope } : {}) })
     if (shouldOutputJson(flags)) {
-      outputJson({ success: true, retired: { id: matches[0].id, statement: matches[0].statement } })
+      outputJson({ success: true, retired: { id: matches[0].id, statement: matches[0].statement }, ...withWarnings(warnings) })
     } else {
       outputInfo(`Retired: [${matches[0].id}] ${matches[0].statement}`, flags)
+      printWarnings(warnings)
     }
     return
   }

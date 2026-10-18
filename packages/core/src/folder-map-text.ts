@@ -257,6 +257,20 @@ function surgical(src: string, next: Entry[]): string | null {
 }
 
 /**
+ * Only the in-place edit of `previous` (no rewrite fallback): the text with
+ * just the changed bytes rewritten, or null when the surgical edit does not
+ * apply or does not read back as exactly `entries`.
+ */
+export function surgicalFolderMapText(previous: string, entries: Entry[]): string | null {
+  try {
+    const out = surgical(previous, entries)
+    return out !== null && holds(out, entries) ? out : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * The folders.yaml text holding `entries`, as an edit of `previous` (the
  * current file text, or null when there is none yet: the template is used).
  */

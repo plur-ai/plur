@@ -1,6 +1,6 @@
 import { statSync } from 'fs'
 import { type GlobalFlags } from '../plur.js'
-import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
+import { cursorHookFolder } from '../lib/folder-gate.js'
 import {
   readStdinJson,
   cursorConversationId,
@@ -73,7 +73,9 @@ function isReminderDue(conversationId: string): boolean {
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
   // Silent unless the folder map says on (#1347).
-  if (!hookFolderOn(payloadDir(input), flags)) return
+  const folder = cursorHookFolder(input, flags)
+  if (folder.policy.mode !== 'on' || !folder.dir) return
+  const dir = folder.dir
   const conversationId = cursorConversationId(input)
   if (!conversationId) return
 
@@ -88,6 +90,6 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   if (!isReminderDue(conversationId)) return
 
   touchReminder(conversationId)
-  writeContextRule(REMINDER_TEXT, cursorReminderRulePath())
+  writeContextRule(REMINDER_TEXT, cursorReminderRulePath(dir))
   process.stdout.write(JSON.stringify({ additional_context: REMINDER_TEXT }))
 }

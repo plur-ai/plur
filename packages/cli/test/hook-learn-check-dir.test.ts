@@ -46,8 +46,10 @@ describe.skipIf(process.platform === 'win32')('hook-learn-check state directorie
   afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
   function stop(env: Record<string, string> = {}): { stdout: string; status: number } {
-    const e: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: tmp, PLUR_PATH: store, ...env }
-    delete e.CLAUDE_SESSION_ID
+    // The runner's own hook settings never reach the spawned hook (review F5).
+    const base: NodeJS.ProcessEnv = { ...process.env }
+    for (const k of ['CLAUDE_SESSION_ID', 'PLUR_LEARN_FALLBACK_INTERVAL', 'PLUR_CHECKPOINT_INTERVAL']) delete base[k]
+    const e: NodeJS.ProcessEnv = { ...base, HOME: home, USERPROFILE: home, TMPDIR: tmp, PLUR_PATH: store, ...env }
     const r = runCli('node', [CLI, 'hook-learn-check'], {
       input: JSON.stringify({ hook_event_name: 'Stop', session_id: SID, cwd: home }),
       encoding: 'utf-8', timeout: 15_000, env: e, cwd: home,
@@ -57,8 +59,10 @@ describe.skipIf(process.platform === 'win32')('hook-learn-check state directorie
 
   it('counts in the private fallback when the shared dir is planted, and still nudges', () => {
     symlinkSync(evilShared, join(tmp, 'plur-sessions'))
-    stop(); stop()
-    const third = stop()
+    // No transcript, so no signal: pin the fallback nudge to the 3rd Stop.
+    const every3 = { PLUR_LEARN_FALLBACK_INTERVAL: '3' }
+    stop(every3); stop(every3)
+    const third = stop(every3)
     expect(third.stdout).toContain('hookSpecificOutput')
     expect(readdirSync(evilShared)).toEqual([])
     expect(existsSync(join(store, 'hook-sessions', `${SID}.stop-count`))).toBe(true)

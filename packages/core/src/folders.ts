@@ -1,16 +1,16 @@
-import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, lstatSync, realpathSync, statSync, writeFileSync } from 'fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
 import yaml from 'js-yaml'
-import { z } from 'zod'
+import { checkFolderMapText, describeFolderMapIssues, editFolderMapText, planFolderMapRepair, type FolderMapIssue } from './folder-map-check.js'
 import { logger } from './logger.js'
 import { atomicWrite, withLock } from './sync.js'
 import { canonicalize, canonicalSpellings, findProjectConfigPath, readProjectConfigFromPath } from './project-config.js'
 import { resolveProjectRemoteFromConfig } from './project-remote.js'
 import { isSharedScope } from './scope-util.js'
 import { isLocalOnlyScope } from './scope-target.js'
-import { renderFolderMapText } from './folder-map-text.js'
+import { renderFolderMapText, surgicalFolderMapText } from './folder-map-text.js'
 
 /**
  * The folder map (#1347): `<PLUR home>/folders.yaml` holds the user's own
@@ -44,9 +44,10 @@ import { renderFolderMapText } from './folder-map-text.js'
  * packs, never the personal local store. The Plur instance enforces it once
  * bound to the folder (`Plur.bindFolder`).
  *
- * The file is written by renderFolderMapText (folder-map-text.ts): a new file
- * starts with a commented example of every setting, and every write keeps the
- * user's comments and order.
+ * A new file starts from the commented template (renderFolderMapText,
+ * folder-map-text.ts): an example of every setting. Every later write edits
+ * only the entries it changed and keeps the user's comments and order
+ * (editFolderMapText, #1562).
  */
 
 export type FolderMode = 'on' | 'off' | 'ask' | 'remote-only'
@@ -69,6 +70,19 @@ export interface FolderMap {
 }
 
 /** Where a policy decision came from. */
+/** Where and why the folder map cannot be used (#1526). */
+export interface FolderMapFault {
+  file: string
+  line?: number
+  column?: number
+  /** Plain words, e.g. "line 4: indentation — `plur:` is indented 5 spaces, expected 4 (…)". */
+  problem?: string
+  /** True when `plur folders repair` can fix it. */
+  fixable?: boolean
+  /** When fixable: what the repair changes, in one line without values (shown to the user before `--yes`). */
+  repair_summary?: string
+}
+
 export type FolderPolicySource = 'map' | 'plur-yaml' | 'mcp-config' | 'default'
 
 export interface FolderPolicy {
@@ -86,32 +100,19 @@ export interface FolderPolicy {
    * `untrusted-plur-yaml` (decision D1): the repo's `.plur.yaml` requests
    * settings that need trust, and they are ignored until the user says yes.
    */
-  reason?: 'untrusted-plur-yaml' | 'malformed-map'
+  reason?: 'untrusted-plur-yaml' | 'malformed-map' | 'resolver-error'
   /**
-   * With `reason: 'malformed-map'`: why the folder map could not be read,
-   * naming the file and, where known, the line. The folder then behaves like
-   * `ask` and nothing is read or written (audit of #1521: fail safe, never
-   * fall back to `on`).
+   * For `malformed-map`: the folder map that could not be read, the line and
+   * column of the problem when there is one (1-based), the problem in plain
+   * words (it quotes at most the key on that line, #1526), and whether
+   * `plur folders repair` can fix it. The decision fails SAFE: the folder is
+   * `ask` — no memory — until the file is fixed (audit F4 of #1517, owner
+   * decision), never `on` because a project marker is there.
    */
-  error?: string
+  mapError?: FolderMapFault
   /** What that `.plur.yaml` requests, for the question. Never the token. */
   requested?: { scope?: string; domain?: string; remote_url?: string }
 }
-
-const FolderEntrySchema = z.object({
-  path: z.string().min(1),
-  plur: z.enum(['on', 'off', 'ask', 'remote-only']).optional(),
-  scope: z.string().min(1).optional(),
-  trusted: z.boolean().optional(),
-  literal: z.boolean().optional(),
-}).passthrough()
-
-const FolderMapSchema = z.object({
-  version: z.literal(1).optional(),
-  // `folders: []` is what the template starts with; a list emptied by hand
-  // to `folders:` (null) means no entries too.
-  folders: z.array(FolderEntrySchema).nullable().optional(),
-}).passthrough()
 
 export function folderMapPath(root: string): string {
   return join(root, 'folders.yaml')
@@ -287,52 +288,117 @@ function warnOnce(key: string, msg: string): void {
   logger.warning(msg)
 }
 
-interface LoadResult { map: FolderMap; malformed: boolean; error?: string }
+interface LoadResult { map: FolderMap; malformed: boolean; error?: Omit<FolderMapFault, 'file'> }
 
+/** The problem with a folders.yaml's text, or its map (#1526: strict, pinpointed). */
+function parseMapText(text: string): { map: FolderMap } | { issues: FolderMapIssue[] } {
+  const check = checkFolderMapText(text)
+  if (!check.ok) return { issues: check.issues }
+  const folders = (check.raw.folders ?? []) as FolderEntry[]
+  return { map: { version: 1, folders } }
+}
 
-/** Parse folders.yaml. `problem` says, in words, why it cannot be used. */
-function parseMapFile(file: string): { map: FolderMap } | { problem: string } {
-  let text: string
+/** A broken map's error: the first problem, located, and whether repair can fix the file. */
+/**
+ * The last broken map's error, by file and exact text. Every hook prompt and
+ * gated MCP call asks for it while the map is broken, and the repair plan
+ * behind `fixable` is not free; the text comparison is (#1530 review F5).
+ */
+const mapErrorCache = new Map<string, { text: string; error: Omit<FolderMapFault, 'file'> }>()
+
+function mapErrorOf(file: string, text: string, issues: FolderMapIssue[], utf8 = true): Omit<FolderMapFault, 'file'> {
+  const hit = mapErrorCache.get(file)
+  if (hit && hit.text === text && utf8) return hit.error
+  const first = issues[0]
+  let fixable = false
+  let summary: string | undefined
+  if (utf8) try {
+    // No diff: only `plur folders repair` shows one.
+    const plan = planFolderMapRepair(text, { diff: false })
+    if (plan.status === 'fixable') { fixable = true; summary = plan.summary }
+  } catch { /* not fixable */ }
+  const error = {
+    ...(first.line !== undefined ? { line: first.line } : {}),
+    ...(first.column !== undefined ? { column: first.column } : {}),
+    problem: describeFolderMapIssues(issues),
+    fixable,
+    ...(summary ? { repair_summary: summary } : {}),
+  }
+  if (utf8) mapErrorCache.set(file, { text, error })
+  return error
+}
+
+/** "has a problem at line 4: …" / "has a problem: the file is empty …". */
+function problemPhrase(message: string): string {
+  return /^line \d+/.test(message) ? `has a problem at ${message}` : `has a problem: ${message}`
+}
+
+/**
+ * Read folders.yaml: null when absent, else the map or why it cannot be used.
+ * Absent means ENOENT on the path itself, nothing else. existsSync() also
+ * answers false for a dangling symlink, a symlink loop or a parent that
+ * cannot be searched — each of those is a map that cannot be read.
+ */
+function readMapText(file: string): null | { text: string; utf8: boolean } | { unreadable: string } {
   try {
-    text = readFileSync(file, 'utf8')
+    lstatSync(file)
   } catch (err) {
-    return { problem: `cannot be read (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})` }
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return null
+    return { unreadable: `cannot be read (${code ?? (err as Error).message})` }
   }
-  let raw: unknown
   try {
-    raw = yaml.load(text.replace(/^\uFEFF/, ''))
+    const bytes = readFileSync(file)
+    const text = bytes.toString('utf8')
+    // Bytes that do not round-trip are not UTF-8: reported, never repaired (#1530 re-review R5).
+    return { text, utf8: Buffer.from(text, 'utf8').equals(bytes) }
   } catch (err) {
-    const mark = (err as { mark?: { line?: number; column?: number } }).mark
-    const reason = (err as { reason?: string }).reason ?? (err as Error).message.split('\n')[0]
-    return { problem: mark && typeof mark.line === 'number'
-      ? `is not valid YAML at line ${mark.line + 1}, column ${(mark.column ?? 0) + 1}: ${reason}`
-      : `is not valid YAML: ${reason}` }
+    const code = (err as NodeJS.ErrnoException).code
+    const link = (() => { try { return lstatSync(file).isSymbolicLink() } catch { return false } })()
+    return { unreadable: `cannot be read (${code ?? (err as Error).message}${link ? ', it is a symlink whose target cannot be read' : ''})` }
   }
-  if (raw === null || raw === undefined) return { map: { version: 1, folders: [] } }
-  const parsed = FolderMapSchema.safeParse(raw)
-  if (!parsed.success) {
-    return { problem: 'has an invalid entry: ' + parsed.error.issues.map(i => {
-      const [top, idx, ...rest] = i.path
-      const where = top === 'folders' && typeof idx === 'number'
-        ? `entry ${idx + 1} (folders.${idx}${rest.length ? '.' + rest.join('.') : ''})`
-        : i.path.join('.') || 'the file'
-      return `${where}: ${i.message}`
-    }).join('; ') }
-  }
-  return { map: { version: 1, folders: (parsed.data.folders ?? []) as FolderEntry[] } }
+}
+
+/**
+ * What a broken map means, for the stderr warning (#1562): memory is paused
+ * in every folder (the hooks, the plugins and the MCP server all treat the
+ * folder as undecided and touch no memory), and the command that fixes it.
+ * It said "treating it as empty (folders fall back to ask)", which read as if
+ * memory carried on.
+ */
+function pausedUntilFixed(root: string, fault: { fixable?: boolean; line?: number }): string {
+  const store = resolve(root)
+  const cmd = store === resolve(join(homedir(), '.plur')) ? 'plur folders repair' : `plur --path ${JSON.stringify(store)} folders repair`
+  const paused = 'PLUR memory is paused in every folder until the map is fixed.'
+  if (fault.fixable === true) return `${paused} Run \`${cmd}\` to see the problem and repair it (it asks first).`
+  // Repair cannot fix this file (#1567): say what to do instead of sending the
+  // user to a command that will refuse.
+  const where = fault.line !== undefined ? `line ${fault.line}` : 'it'
+  return `${paused} \`${cmd}\` cannot fix it automatically: fix ${where} by hand (\`${cmd}\` re-checks the file).`
 }
 
 function readMapFile(root: string): LoadResult | null {
   const file = folderMapPath(root)
-  if (!existsSync(file)) return null
-  const r = parseMapFile(file)
-  if ('map' in r) return { map: r.map, malformed: false }
-  // Fail safe (audit of #1521, S3): an unreadable map is never read as empty
-  // for a decision — the resolver answers `ask` with this error, and nothing
-  // is read or written until it is fixed.
-  const error = `${file} ${r.problem}`
-  warnOnce(`malformed:${file}`, `[plur:folders] ${error} — every folder behaves like ask, and PLUR reads and writes nothing, until it is fixed`)
+  const r = readMapText(file)
+  if (r === null) return null
+  if ('unreadable' in r) {
+    warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${r.unreadable} — ${pausedUntilFixed(root, { fixable: false })}`)
+    return { map: { version: 1, folders: [] }, malformed: true, error: { problem: r.unreadable, fixable: false } }
+  }
+  const parsed = parseMapText(r.text)
+  if ('map' in parsed) return { map: parsed.map, malformed: false }
+  // The same cases the MCP gate refuses (#1519): an empty file and an unknown
+  // top-level key count too, so the hooks and plugins agree with it (#1526).
+  const error = mapErrorOf(file, r.text, parsed.issues, r.utf8)
+  warnOnce(`malformed:${file}`, `[plur:folders] ${file} ${problemPhrase(error.problem!)} — ${pausedUntilFixed(root, error)}`)
   return { map: { version: 1, folders: [] }, malformed: true, error }
+}
+
+/** What a broken folder map is, where, and whether `plur folders repair` can fix it (#1526). */
+export interface FolderMapProblem extends FolderMapFault {
+  /** The problem as a predicate on the file: "<file> <problem>". */
+  problem: string
+  fixable: boolean
 }
 
 /**
@@ -340,43 +406,20 @@ function readMapFile(root: string): LoadResult | null {
  * Read-only: unlike {@link loadFolderMap} it never imports trust.yaml, so it
  * never writes folders.yaml. For callers that must fail safe on a broken map
  * (the MCP memory tools) instead of reading it as empty.
+ *
+ * Strict where the loader once was lenient: a map that says nothing is not
+ * "no decisions" when the file exists, and an unknown top-level key (a typo
+ * such as `folder:`) would otherwise drop every decision silently.
  */
-export function folderMapProblem(root: string): { file: string; problem: string } | null {
+export function folderMapProblem(root: string): FolderMapProblem | null {
   const file = folderMapPath(root)
-  // Absent means ENOENT on the path itself, nothing else. existsSync() also
-  // answers false for a dangling symlink, a symlink loop or a parent that
-  // cannot be searched — each of those is a map that cannot be read.
-  try {
-    lstatSync(file)
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT') return null
-    return { file, problem: `cannot be read (${code ?? (err as Error).message})` }
-  }
-  let text: string
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    const link = (() => { try { return lstatSync(file).isSymbolicLink() } catch { return false } })()
-    return { file, problem: `cannot be read (${code ?? (err as Error).message}${link ? ', it is a symlink whose target cannot be read' : ''})` }
-  }
-  const r = parseMapFile(file)
-  if ('problem' in r) return { file, problem: r.problem }
-  // Strict where the loader is lenient: a map that says nothing is not "no
-  // decisions" when the file exists, and an unknown top-level key (a typo
-  // such as `folder:`) would otherwise drop every decision silently.
-  let raw: unknown
-  try { raw = yaml.load(text.replace(/^\uFEFF/, '')) } catch { raw = undefined }
-  if (raw === null || raw === undefined) {
-    return { file, problem: 'is empty (no `version:` or `folders:` key); run plur folders list to see the map, or delete the file if you meant to have none' }
-  }
-  if (typeof raw !== 'object' || Array.isArray(raw)) return { file, problem: 'is not a mapping with `version:` and `folders:` keys' }
-  const unknown = Object.keys(raw as Record<string, unknown>).filter(k => k !== 'version' && k !== 'folders')
-  if (unknown.length > 0) {
-    return { file, problem: `has an unknown top-level key ${unknown.map(k => JSON.stringify(k)).join(', ')} (only "version" and "folders" are allowed)` }
-  }
-  return null
+  const r = readMapText(file)
+  if (r === null) return null
+  if ('unreadable' in r) return { file, problem: r.unreadable, fixable: false }
+  const parsed = parseMapText(r.text)
+  if ('map' in parsed) return null
+  const error = mapErrorOf(file, r.text, parsed.issues, r.utf8)
+  return { file, ...error, problem: problemPhrase(error.problem!), fixable: error.fixable === true }
 }
 
 /** Read the pre-#1347 `trust.yaml` list. Never writes it. */
@@ -415,14 +458,16 @@ function locked<T>(root: string, fn: () => T): T {
   }, { maxRetries: 12, baseDelay: 25 })
 }
 
-function load(root: string): LoadResult {
+function load(root: string, readOnly = false): LoadResult {
   const existing = readMapFile(root)
   if (existing) return existing
   // First read: import trust.yaml once, entries kept exactly as written.
   // trust.yaml itself is kept in step by the dual-write, not by the import.
+  // A read-only caller (#1589 audit round 2: listing skipped stores) uses the
+  // imported entries in memory and writes nothing.
   const legacy = readLegacyTrustEntries(root)
   const map: FolderMap = { version: 1, folders: legacy.map(path => ({ path, trusted: true })) }
-  if (legacy.length > 0) {
+  if (legacy.length > 0 && !readOnly) {
     try {
       // Under the lock, and only if nobody created folders.yaml meanwhile:
       // an import must never overwrite a concurrent writer's map.
@@ -441,27 +486,181 @@ function load(root: string): LoadResult {
 
 /**
  * Load the folder map. A missing file is empty (after importing any
- * trust.yaml entries); a malformed one is empty with one warning. Never throws.
+ * trust.yaml entries; with `readOnly`, they are read into memory and nothing
+ * is written); a malformed one is empty with one warning. Never throws.
  */
-export function loadFolderMap(root: string): FolderMap {
-  return load(root).map
+export function loadFolderMap(root: string, readOnly = false): FolderMap {
+  return load(root, readOnly).map
+}
+
+/**
+ * Which entries a write changed (#1562), by their index in the map as it was
+ * read: the new entry, or null for a removed one; and the entries added at the
+ * end. `count` is how many entries the map had.
+ */
+export interface FolderMapEdit {
+  count: number
+  replace: Map<number, FolderEntry | null>
+  append: FolderEntry[]
+}
+
+/** Keys sorted at every level, so two maps compare by content, not key order. */
+function sortedJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x)
+    ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    : x))
+}
+
+/**
+ * The current file with only `edit`'s entries rewritten (#1562), or null when
+ * that cannot be done safely: no file, a file that is not valid UTF-8 or not
+ * a map this edit matches, or a result that does not read back as exactly
+ * `map`. Then the whole map is written as before.
+ */
+function editedMapText(root: string, map: FolderMap, edit: FolderMapEdit): string | null {
+  const r = readMapText(folderMapPath(root))
+  if (r === null || 'unreadable' in r || !r.utf8) return null
+  const replace = new Map<number, Record<string, unknown> | null>()
+  for (const [i, e] of edit.replace) replace.set(i, e ? { ...cleanEntry(e) } : null)
+  const text = editFolderMapText(r.text, { count: edit.count, replace, append: edit.append.map(e => ({ ...cleanEntry(e) })) })
+  if (text === null) return null
+  const back = parseMapText(text)
+  if (!('map' in back)) return null
+  if (sortedJson(back.map.folders.map(cleanEntry)) !== sortedJson(map.folders.map(cleanEntry))) return null
+  return text
+}
+
+/**
+ * The current file with only the changed bytes rewritten (#1521): a changed
+ * value is replaced in place, so a comment after it stays, and the template's
+ * `folders: []` takes its first entry. Null when that cannot be done safely —
+ * no file, not valid UTF-8, or a result that does not read back (strictly, as
+ * the loader reads) as exactly `map`. Then {@link editedMapText} is tried.
+ */
+function surgicalMapText(root: string, map: FolderMap): string | null {
+  const r = readMapText(folderMapPath(root))
+  if (r === null || 'unreadable' in r || !r.utf8) return null
+  const bom = r.text.startsWith('\uFEFF')
+  const text = surgicalFolderMapText(bom ? r.text.slice(1) : r.text, map.folders.map(cleanEntry) as unknown as Record<string, unknown>[])
+  if (text === null) return null
+  const out = bom ? `\uFEFF${text}` : text
+  const back = parseMapText(out)
+  if (!('map' in back)) return null
+  if (sortedJson(back.map.folders.map(cleanEntry)) !== sortedJson(map.folders.map(cleanEntry))) return null
+  return out
 }
 
 /**
  * Write the folder map. Throws on I/O errors — only CLI writes call this.
- *
- * The file is EDITED, not regenerated (owner decision 2026-10-01): the
- * entries that changed are rewritten in place and every other byte — the
- * user's comments, blank lines and order — is kept. A new file starts from
- * the commented template (an example of every setting). Callers have already
- * refused a malformed file (loadForWrite), so this never overwrites one.
+ * With `edit` (the entries this write changed), the file's other lines —
+ * comments, blank lines, untouched entries — are kept as written (#1562);
+ * without it, or when that is not safe, the whole map is written.
  */
-export function saveFolderMap(root: string, map: FolderMap): void {
+export function saveFolderMap(root: string, map: FolderMap, edit?: FolderMapEdit): void {
   const file = folderMapPath(root)
-  let previous: string | null = null
-  try { previous = existsSync(file) ? readFileSync(file, 'utf8').replace(/^\uFEFF/, '') : null } catch { previous = null }
-  const body = renderFolderMapText(previous, map.folders.map(cleanEntry) as unknown as Record<string, unknown>[])
+  // A new file starts from the commented template: an example of every
+  // setting, one explanation line each (#1521, owner decision 2026-10-01).
+  const body = !existsSync(file)
+    ? renderFolderMapText(null, map.folders.map(cleanEntry) as unknown as Record<string, unknown>[])
+    : surgicalMapText(root, map)
+      ?? (edit ? editedMapText(root, map, edit) : null)
+      ?? yaml.dump({ version: 1, folders: map.folders.map(cleanEntry) }, { lineWidth: 120, noRefs: true })
   atomicWrite(file, body, { mode: 0o600 })
+}
+
+/** What {@link repairFolderMap} found or did (#1526). */
+export interface FolderMapRepairResult {
+  /**
+   * `absent`: no folders.yaml. `ok`: nothing to repair. `fixable`: a repair
+   * is possible (dry run). `repaired`: written. `unfixable`: needs a hand fix,
+   * nothing changed. `unreadable`: the file cannot be read (a dangling symlink,
+   * a permission), nothing changed. `changed`: the file changed since the
+   * caller's dry run, nothing written.
+   */
+  status: 'absent' | 'ok' | 'fixable' | 'repaired' | 'unfixable' | 'unreadable' | 'changed'
+  file: string
+  /** The text the plan was made from (pass it back as `expect`). */
+  before?: string
+  diff?: string
+  /** What the repair changes, in one line without values. */
+  summary?: string
+  fixes?: FolderMapIssue[]
+  issues?: FolderMapIssue[]
+  /** For `unreadable`: why. */
+  problem?: string
+  backup?: string
+  /** After a write: the map re-checked from disk (null = it is fine now). */
+  problemAfter?: FolderMapProblem | null
+}
+
+/** `20261002T090807Z`: the UTC time, for a backup's name. */
+function utcStamp(d: Date): string {
+  return d.toISOString().replace(/\.\d+Z$/, 'Z').replace(/[-:]/g, '')
+}
+
+/**
+ * `plur folders repair` (#1526). Plans the repair of a broken folders.yaml
+ * and, with `apply`, performs it under the folder-map lock: a backup
+ * `folders.yaml.plur-backup-<UTC>` next to the file (the original bytes),
+ * an atomic write of the repaired text (to the symlink's target when the map
+ * is a symlink, so the link stays a link), then a re-check from disk.
+ *
+ * Only unambiguous fixes are made (see planFolderMapRepair); when any problem
+ * needs a hand fix, nothing is written at all. `expect`, when given, must be
+ * the text the caller showed the user (its dry run's `before`): if the file
+ * changed since, nothing is written.
+ */
+export function repairFolderMap(root: string, opts: { apply: boolean; expect?: string; now?: Date }): FolderMapRepairResult {
+  const file = folderMapPath(root)
+  const plan = (): FolderMapRepairResult & { bytes?: Buffer; target?: string } => {
+    const r = readMapText(file)
+    if (r === null) return { status: 'absent', file }
+    if ('unreadable' in r) return { status: 'unreadable', file, problem: r.unreadable }
+    // Resolve a symlinked map once, and read, back up and write that same
+    // file (#1530 review N9): the link stays a link.
+    let target = file
+    try { if (lstatSync(file).isSymbolicLink()) target = realpathSync(file) } catch { /* the path itself */ }
+    let bytes: Buffer
+    try { bytes = readFileSync(target) } catch (err) {
+      return { status: 'unreadable', file, problem: `cannot be read (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})` }
+    }
+    const text = bytes.toString('utf8')
+    // Text that does not round-trip is not UTF-8: a repair would replace the
+    // bytes it cannot decode (#1530 review F6). Pinpoint, change nothing.
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      const n = text.slice(0, text.indexOf('\uFFFD')).split('\n').length
+      return { status: 'unfixable', file, before: text, issues: [{ line: n, column: 1, fixable: false,
+        message: `line ${n}: the file is not valid UTF-8 text; plur folders repair does not change it — fix that line by hand` }] }
+    }
+    const p = planFolderMapRepair(text)
+    if (p.status === 'ok') return { status: 'ok', file, before: text }
+    if (p.status === 'unfixable') return { status: 'unfixable', file, before: text, issues: p.issues }
+    return { status: 'fixable', file, before: text, diff: p.diff, fixes: p.fixes, summary: p.summary, bytes, target }
+  }
+  const strip = ({ bytes: _b, target: _t, ...rest }: ReturnType<typeof plan>): FolderMapRepairResult => rest
+  if (!opts.apply) return strip(plan())
+  return locked(root, () => {
+    const shown = plan()
+    if (shown.status !== 'fixable') return strip(shown)
+    if (opts.expect !== undefined && opts.expect !== shown.before) return { ...strip(shown), status: 'changed' }
+    const p = planFolderMapRepair(shown.before!, { diff: false })
+    if (p.status !== 'fixable') return strip(shown)
+    // The original bytes, private like the map; never overwrite an earlier
+    // backup (two repairs in one second get -2, -3, …).
+    const stem = `${file}.plur-backup-${utcStamp(opts.now ?? new Date())}`
+    let backup = stem
+    for (let n = 2; ; n++) {
+      try {
+        writeFileSync(backup, shown.bytes!, { mode: 0o600, flag: 'wx' })
+        break
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || n > 99) throw err
+        backup = `${stem}-${n}`
+      }
+    }
+    atomicWrite(shown.target!, p.after, { mode: 0o600 })
+    return { ...strip(shown), status: 'repaired', backup, problemAfter: folderMapProblem(root) }
+  })
 }
 
 function cleanEntry(e: FolderEntry): FolderEntry {
@@ -485,11 +684,26 @@ function configHasPlur(path: string): boolean {
   }
 }
 
+/** The project marker in `dir` itself (no walk), or `null`. */
+function markerIn(dir: string): 'mcp-config' | 'plur-yaml' | null {
+  if (configHasPlur(join(dir, '.mcp.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.claude', 'settings.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return 'mcp-config'
+  if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return 'mcp-config'
+  if (existsSync(join(dir, '.plur.yaml'))) return 'plur-yaml'
+  return null
+}
+
 /**
  * The first project marker walking up from `cwd` — the same walk, order and
  * home rule as `isPlurConfigured` in packages/cli/src/lib/plur-configured.ts
  * (kept there without a core import so the lightweight hooks stay cheap; a
  * parity test holds the two together). `null` when there is none.
+ *
+ * The walk stops at the repository root (#1588), the same boundary as the
+ * `.plur.yaml` lookup (`findProjectConfigPath`): the folder holding `.git` is
+ * still checked, nothing above it is. A marker in a folder above a cloned
+ * repository does not decide for that repository.
  */
 export function findPlurMarker(cwd: string, home: string = homedir()): 'mcp-config' | 'plur-yaml' | null {
   const start = canonicalize(cwd)
@@ -498,17 +712,51 @@ export function findPlurMarker(cwd: string, home: string = homedir()): 'mcp-conf
   for (;;) {
     const atHome = dir === homeResolved
     if (!atHome || start === homeResolved) {
-      if (configHasPlur(join(dir, '.mcp.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.claude', 'settings.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return 'mcp-config'
-      if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return 'mcp-config'
-      if (existsSync(join(dir, '.plur.yaml'))) return 'plur-yaml'
+      const found = markerIn(dir)
+      if (found) return found
     }
     if (atHome) return null
+    if (existsSync(join(dir, '.git'))) return null
     const parent = dirname(dir)
     if (parent === dir) return null
     dir = parent
   }
+}
+
+/**
+ * True when two folder paths name the same folder, compared the way the
+ * folder matcher compares them on `platform` (case-folded and with `\\` read
+ * as `/` on Windows, exact elsewhere; a trailing separator ignored). Exact:
+ * unlike `folderPatternMatches`, a parent does not match its children.
+ */
+export function sameFolderPath(a: string, b: string, platform: Platform = process.platform): boolean {
+  return norm(a, platform) === norm(b, platform)
+}
+
+/**
+ * True when the USER decided on `dir` itself (#1588; owner decision
+ * 2026-10-05): the folder is on, and a non-pattern folder-map entry names
+ * exactly this folder — written by `plur folders set <folder> --on`, a yes to
+ * the folder question, or `plur trust`. Nothing a repository ships counts: a
+ * project marker in the folder (an MCP config naming plur, a `.plur.yaml`)
+ * can switch memory on there, but is not the user's decision about the
+ * repository's own store. A folder that is on only through a parent (a
+ * parent's entry or pattern, or a marker) has no decision of its own either.
+ * Store auto-discovery registers a folder's `.plur/engrams.yaml` only when
+ * this is true.
+ */
+export function hasOwnFolderDecision(dir: string, opts: FolderPolicyOptions): boolean {
+  if (resolveFolderPolicy(dir, opts).mode !== 'on') return false
+  return hasExactOnEntry(dir, opts.root, opts.home ?? homedir(), opts.readOnly === true)
+}
+
+/** A non-pattern folder-map entry that names exactly `dir` and turns it on (or trusts / scopes it). */
+function hasExactOnEntry(dir: string, root: string, home: string, readOnly: boolean): boolean {
+  const targets = [...new Set([canonicalize(dir), ...canonicalSpellings(dir)])]
+  return load(root, readOnly).map.folders.some(e =>
+    (e.plur === 'on' || (e.plur === undefined && (e.scope !== undefined || e.trusted === true))) &&
+    !entryIsGlob(e) &&
+    entryForms(e.path, home, false, e.literal === true).some(f => targets.some(t => sameFolderPath(f, t))))
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +768,11 @@ export interface FolderPolicyOptions {
   root: string
   /** Defaults to `os.homedir()`. */
   home?: string
+  /**
+   * Write nothing: a legacy `trust.yaml` is read into memory but not imported
+   * into `folders.yaml` (#1589 audit round 2). For callers that only look.
+   */
+  readOnly?: boolean
 }
 
 /** True when a `trusted: true` entry covers `dir` (canonical target, #1334 entry forms). */
@@ -566,13 +819,15 @@ export function folderOffEntries(dir: string, opts: FolderPolicyOptions): Folder
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const home = opts.home ?? homedir()
-  const loaded = load(opts.root)
-  // A map that cannot be read fails SAFE (audit of #1521): it might hold an
-  // `off` or a `remote-only` decision, so nothing — not a repo marker, not a
-  // project MCP config — may turn memory on. The folder behaves like `ask`
-  // and the adapters say why, naming the file.
+  const loaded = load(opts.root, opts.readOnly === true)
   if (loaded.malformed) {
-    return { mode: 'ask', remoteAllowed: false, source: 'map', reason: 'malformed-map', ...(loaded.error ? { error: loaded.error } : {}) }
+    // Fail SAFE (audit F4 of #1517): an unreadable map could hold an `off`
+    // for this folder, so nothing — not even a project marker — turns memory
+    // on until it is fixed. `plur folders set` refuses to write it too.
+    return {
+      mode: 'ask', remoteAllowed: false, source: 'default', reason: 'malformed-map',
+      mapError: { file: folderMapPath(opts.root), ...(loaded.error ?? {}) },
+    }
   }
   const entries = loaded.map.folders
   const strict = [canonicalize(dir)]
@@ -644,7 +899,7 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
 // Writes (CLI only): set / remove, with the nonce and shared-scope guards.
 // ---------------------------------------------------------------------------
 
-export type FolderMapErrorCode = 'malformed' | 'nonce-required' | 'nonce-unknown' | 'nonce-expired' | 'nonce-folder' | 'nonce-answer' | 'scope-unconfigured' | 'invalid' | 'covers-home'
+export type FolderMapErrorCode = 'malformed' | 'nonce-required' | 'nonce-unknown' | 'nonce-expired' | 'nonce-folder' | 'nonce-answer' | 'nonce-session' | 'scope-unconfigured' | 'invalid' | 'covers-home'
 
 export class FolderMapError extends Error {
   constructor(public readonly code: FolderMapErrorCode, message: string) {
@@ -665,8 +920,11 @@ export interface FolderChange {
  * FolderChange it will be compared with) or the removal of the entry.
  * `plur trust` is the answer `{ trusted: true }`. `folders set --no-trusted`
  * is `{ trusted: false }`; `plur untrust` needs no nonce (#1477 review).
+ * `{ notNow: true }` is the MCP question's "not now" (#1525): its nonce
+ * authorises no write at all; `plur folders set --not-now` only consumes it,
+ * which tells the MCP session that asked to stop asking.
  */
-export type FolderAnswer = FolderChange | { remove: true }
+export type FolderAnswer = FolderChange | { remove: true } | { notNow: true }
 
 /**
  * The comparable form of an answer. `--scope X` means on, so it equals
@@ -676,6 +934,7 @@ export type FolderAnswer = FolderChange | { remove: true }
 function answerKey(a: FolderAnswer | undefined | null): string | null {
   if (!a || typeof a !== 'object') return null
   if ('remove' in a) return a.remove === true ? 'remove' : null
+  if ('notNow' in a) return a.notNow === true ? 'not-now' : null
   const mode = a.mode ?? (a.scope !== undefined ? 'on' : null)
   return JSON.stringify(['set', mode, a.scope ?? null, a.trusted ?? null])
 }
@@ -683,6 +942,7 @@ function answerKey(a: FolderAnswer | undefined | null): string | null {
 function describeAnswer(a: FolderAnswer | undefined | null): string {
   if (!a || typeof a !== 'object') return 'no answer'
   if ('remove' in a) return 'removing the entry'
+  if ('notNow' in a) return '--not-now'
   const parts: string[] = []
   if (a.mode === 'remote-only') parts.push('--remote-only')
   if (a.scope !== undefined) parts.push(`--scope ${a.scope}`)
@@ -702,6 +962,12 @@ export interface SetFolderOptions {
   remoteScopes?: string[]
   /** Present when the write comes from the ask flow. */
   nonce?: string
+  /**
+   * The session the redeeming command runs in, when its host says so
+   * (PLUR_FOLDER_SESSION; audit F5 of #1517). Only that session's nonces are
+   * consulted, and a session-bound nonce needs it.
+   */
+  session?: string
   home?: string
   now?: number
   /**
@@ -738,6 +1004,38 @@ export function coversHomeOrRoot(dir: string, home: string = homedir()): boolean
     }
   }
   return false
+}
+
+/**
+ * THE default scope of a workspace (#1562, #1566; the CLI since L10 of the
+ * third 0.21.1 pre-release check) — the one resolver the MCP server (its
+ * client roots, else its start folder) and the CLI (the folder it runs in)
+ * use for an unscoped write or read.
+ *
+ * Each input is realpath-resolved first, so a link gets the decision of the
+ * folder it points at. Each must resolve to `on` with a scope — the folder
+ * map's, else a trusted `.plur.yaml`'s — and all to the SAME scope. Anything
+ * else gives null, and null means no scope, with no fallback after it:
+ *  - no inputs; two inputs with different scopes, or one with no scope;
+ *  - an `off` or undecided (`ask`) folder;
+ *  - the home folder, a folder above it or a filesystem root (each covers
+ *    every folder under it);
+ *  - an input that cannot be resolved, or any error.
+ */
+export function workspaceFolderScope(inputs: string[], policyOf: (dir: string) => FolderPolicy): string | null {
+  if (inputs.length === 0) return null
+  let agreed: string | null = null
+  for (const input of inputs) {
+    let dir: string
+    try { dir = realpathSync.native(input) } catch { return null }
+    try { if (coversHomeOrRoot(dir)) return null } catch { return null }
+    let policy: FolderPolicy
+    try { policy = policyOf(dir) } catch { return null }
+    if (policy.mode !== 'on' || !policy.scope) return null
+    if (agreed === null) agreed = policy.scope
+    else if (agreed !== policy.scope) return null
+  }
+  return agreed
 }
 
 function hasGlob(p: string): boolean {
@@ -834,7 +1132,9 @@ function mostRestrictive(modes: Array<FolderMode | undefined>): FolderMode | und
 function loadForWrite(root: string): FolderMap {
   const r = load(root)
   if (r.malformed) {
-    throw new FolderMapError('malformed', `${folderMapPath(root)} could not be read; fix or remove it before writing (nothing was changed).`)
+    const why = r.error?.problem ? ` — ${r.error.problem}` : ''
+    const how = r.error?.fixable ? 'run `plur folders repair` to fix it' : 'fix it by hand (`plur folders repair` re-checks it)'
+    throw new FolderMapError('malformed', `${folderMapPath(root)} cannot be used${why}; ${how} before writing (nothing was changed).`)
   }
   return r.map
 }
@@ -849,7 +1149,7 @@ export function setFolderEntry(root: string, folder: string, change: FolderChang
 
 /**
  * Create or update the entry for `folder`. `mode`/`scope` set the decision;
- * `--scope` alone means on (the `plur` field is dropped so it defaults to on).
+ * `--scope` alone means on, and is written as `plur: on` next to the scope.
  * Returns the entry as written.
  */
 function setFolderEntryUnlocked(root: string, folder: string, change: FolderChange, opts: SetFolderOptions): FolderEntry {
@@ -883,7 +1183,7 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   // only after the map is saved: a refused or failed write never burns it.
   const map = loadForWrite(root)
   const literal = opts.literal === true
-  const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, change, opts.now, home, literal) : null
+  const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, change, opts.now, home, literal, opts.session) : null
   const key = folderEntryKey(folder, home, literal)
   const { applied, nameOnly } = findEntryIndex(map.folders, folder, home, literal)
   // Every entry for this folder merges into ONE, which keeps exactly what is
@@ -941,17 +1241,31 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
           'remote-only, so its memory would have nowhere to go; nothing was changed. To keep memory on this ' +
           `machine there instead, say so: plur folders set ${folder} --on.`)
       }
-    } else if (change.mode === undefined) delete entry.plur
+    // `--scope` alone means on, written as a literal `plur: on` (#1567): the
+    // folder resolves exactly as with no `plur:` line, but `plur folders
+    // repair` only repairs a file whose `on` entries say so in their own lines.
+    } else if (change.mode === undefined) entry.plur = 'on'
   }
   if (change.mode !== undefined) entry.plur = change.mode
   if (change.trusted === true) entry.trusted = true
   if (change.trusted === false) delete entry.trusted
+  // Keys in the order the in-place editor writes them (path, plur, scope,
+  // trusted, literal), so a first write and a repeated one give the same text.
+  for (const k of ['plur', 'scope', 'trusted', 'literal'] as const) {
+    if (k in entry) { const v = entry[k]; delete entry[k]; (entry as unknown as Record<string, unknown>)[k] = v }
+  }
   const matched = [...applied, ...nameOnly]
+  // What changed, so the file's other lines stay as the user wrote them (#1562).
+  const edit: FolderMapEdit = { count: map.folders.length, replace: new Map(), append: [] }
   if (matched.length) {
     const at = Math.min(...matched)
+    for (const i of matched) edit.replace.set(i, i === at ? entry : null)
     map.folders = map.folders.flatMap((e, i) => (i === at ? [entry] : matched.includes(i) ? [] : [e]))
-  } else map.folders.push(entry)
-  saveFolderMap(root, map)
+  } else {
+    map.folders.push(entry)
+    edit.append.push(entry)
+  }
+  saveFolderMap(root, map, edit)
   // Decision F3: the nonce is used up as soon as the map is saved — the
   // decision it authorised is now recorded — and BEFORE the trust.yaml write.
   // If that write then fails, the caller sees the error and a retry needs a
@@ -975,22 +1289,23 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
  * `setFolderEntry`'s and consumed only when an entry was removed and saved.
  */
 export function removeFolderEntry(
-  root: string, folder: string, home: string = homedir(), opts?: { nonce?: string; now?: number },
+  root: string, folder: string, home: string = homedir(), opts?: { nonce?: string; now?: number; session?: string },
 ): boolean {
   return locked(root, () => removeFolderEntryUnlocked(root, folder, home, opts))
 }
 
 function removeFolderEntryUnlocked(
-  root: string, folder: string, home: string, opts?: { nonce?: string; now?: number },
+  root: string, folder: string, home: string, opts?: { nonce?: string; now?: number; session?: string },
 ): boolean {
   const map = loadForWrite(root)
-  const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, { remove: true }, opts.now, home) : null
+  const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, { remove: true }, opts.now, home, false, opts.session) : null
   const { applied, nameOnly } = findEntryIndex(map.folders, folder, home)
   const matched = [...applied, ...nameOnly]
   if (matched.length === 0) return false
   const removed = map.folders.filter((_, i) => matched.includes(i))
+  const edit: FolderMapEdit = { count: map.folders.length, replace: new Map(matched.map(i => [i, null])), append: [] }
   map.folders = map.folders.filter((_, i) => !matched.includes(i))
-  saveFolderMap(root, map)
+  saveFolderMap(root, map, edit)
   consume?.()   // F3: consumed once the map is saved, before trust.yaml
   // Decision F2: removing a trusted entry is a revocation, so it is completed
   // in trust.yaml too (never an addition) — for EVERY removed entry that held
@@ -1013,7 +1328,9 @@ function clearFolderTrustUnlocked(root: string, folder: string, home: string): b
   const cleared: string[] = []
   const raw = resolve(expandHome(folder, home))
   const target = canonicalize(raw)
-  map.folders = map.folders.filter(e => {
+  // The changed entries, so the file's other lines stay (#1563 review, L4).
+  const edit: FolderMapEdit = { count: map.folders.length, replace: new Map(), append: [] }
+  map.folders = map.folders.filter((e, i) => {
     // Also an entry for this folder recorded in another letter case, checked
     // for identity like findEntryIndex's fallback (#1357). Its grant never
     // applied, but `plur untrust` must still clear it and say so.
@@ -1023,10 +1340,12 @@ function clearFolderTrustUnlocked(root: string, folder: string, home: string): b
     changed = true
     cleared.push(e.path)
     delete e.trusted
-    return e.plur !== undefined || e.scope !== undefined
+    const kept = e.plur !== undefined || e.scope !== undefined
+    edit.replace.set(i, kept ? e : null)
+    return kept
   })
   if (changed) {
-    saveFolderMap(root, map)
+    saveFolderMap(root, map, edit)
     // Dual-write (F2): the revocation is completed in trust.yaml for EVERY
     // cleared entry, applied or name-only (untrustDirectory also removes the
     // line for the folder as given).
@@ -1119,8 +1438,31 @@ export function safeSessionKey(sessionId: string): string {
   return safe || 'unknown'
 }
 
-interface NonceRecord { nonce: string; folder: string; answer?: FolderAnswer; issued_at: number }
-interface NonceFile { session: string; nonces: NonceRecord[] }
+/**
+ * `session_bound`: the nonce works only from the session it was issued in,
+ * named by the redeeming command (audit F5 of #1517). Set by an issuer whose
+ * host passes the session to the commands the agent runs (the opencode
+ * plugin, through shell.env). The editor hooks' hosts cannot, so theirs are
+ * unbound and work from any shell, as before.
+ */
+interface NonceRecord { nonce: string; folder: string; answer?: FolderAnswer; issued_at: number; session_bound?: boolean }
+/**
+ * `host_pid`: the process that asked (#1562), recorded by an issuer that lives
+ * in the editor's own process (the opencode plugin), so the PLUR MCP server
+ * that editor started can show that same question instead of a second one
+ * (hostFolderNonces).
+ */
+interface NonceFile { session: string; nonces: NonceRecord[]; host_pid?: number; host_started?: number }
+
+/**
+ * The process that asked a folder question (#1562): its id and when it
+ * started (ms since the epoch). The start time tells a reused process id
+ * from the process that asked (#1563 review, L3).
+ */
+export interface FolderAskHost { pid: number; startedAt: number }
+
+/** How far a host's start time, as measured by a child (`ps` etime, whole seconds), may differ from its own. */
+export const FOLDER_HOST_START_TOLERANCE_MS = 3000
 
 function nonceDir(root: string): string {
   return join(root, 'folder-nonces')
@@ -1133,8 +1475,23 @@ function nonceFile(root: string, sessionId: string): string {
 function readNonceFile(file: string): NonceFile | null {
   try {
     const raw = yaml.load(readFileSync(file, 'utf8')) as NonceFile | null
-    if (!raw || !Array.isArray(raw.nonces)) return null
-    return raw
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.nonces)) return null
+    // Only well-formed records (N12 of the #1529 review): a null or garbage
+    // record in one hand-edited or corrupted file must not make every
+    // session's folder answer fail with a TypeError.
+    const nonces = raw.nonces.filter((r: unknown): r is NonceRecord =>
+      !!r && typeof r === 'object' &&
+      typeof (r as NonceRecord).nonce === 'string' &&
+      typeof (r as NonceRecord).folder === 'string' &&
+      typeof (r as NonceRecord).issued_at === 'number')
+    const host = (raw as { host_pid?: unknown }).host_pid
+    const started = (raw as { host_started?: unknown }).host_started
+    return {
+      session: typeof raw.session === 'string' ? raw.session : '',
+      nonces,
+      ...(typeof host === 'number' && Number.isInteger(host) && host > 0 ? { host_pid: host } : {}),
+      ...(typeof started === 'number' && Number.isFinite(started) ? { host_started: started } : {}),
+    }
   } catch {
     return null
   }
@@ -1160,21 +1517,30 @@ function writeNonceFile(file: string, data: NonceFile): void {
  */
 export function issueFolderNonce(
   root: string, sessionId: string, folder: string, answer: FolderAnswer, now: number = Date.now(),
-  options: { home?: string; literal?: boolean } = {},
+  options: { home?: string; literal?: boolean; bindSession?: boolean; host?: FolderAskHost } = {},
 ): string {
   if (answerKey(answer) === null) throw new FolderMapError('invalid', 'A folder nonce needs the answer it authorises.')
   const key = folderEntryKey(folder, options.home ?? homedir(), options.literal === true)
-  return locked(root, () => issueFolderNonceUnlocked(root, sessionId, key, answer, now))
+  return locked(root, () => issueFolderNonceUnlocked(root, sessionId, key, answer, now, options.bindSession === true, options.host))
 }
 
-function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number): string {
+function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, answer: FolderAnswer, now: number, bound: boolean, host?: FolderAskHost): string {
   mkdirSync(nonceDir(root), { recursive: true, mode: 0o700 })
+  // Orphans of sessions whose end was never reported go first (audit F1 of #1529).
+  sweepFolderNoncesUnlocked(root, now)
   const file = nonceFile(root, sessionId)
   const data = readNonceFile(file) ?? { session: safeSessionKey(sessionId), nonces: [] }
+  // The file is this session's by its name; a wrong `session:` field (hand
+  // edited) would make every nonce issued into it refused (N12).
+  data.session = safeSessionKey(sessionId)
+  if (host && Number.isInteger(host.pid) && host.pid > 0 && Number.isFinite(host.startedAt)) {
+    data.host_pid = host.pid
+    data.host_started = Math.round(host.startedAt)
+  }
   const nonce = randomBytes(16).toString('hex')
   // The same key a write of this folder records (#1477 review): `~` expands
   // to the home, a literal folder is canonicalised, a glob is kept as typed.
-  data.nonces.push({ nonce, folder: key, answer: cleanAnswer(answer), issued_at: now })
+  data.nonces.push({ nonce, folder: key, answer: cleanAnswer(answer), issued_at: now, ...(bound ? { session_bound: true } : {}) })
   writeNonceFile(file, data)
   return nonce
 }
@@ -1182,11 +1548,100 @@ function issueFolderNonceUnlocked(root: string, sessionId: string, key: string, 
 /** Only the fields an answer has, so the nonce file holds nothing else. */
 function cleanAnswer(a: FolderAnswer): FolderAnswer {
   if ('remove' in a) return { remove: true }
+  if ('notNow' in a) return { notNow: true }
   return {
     ...(a.mode !== undefined ? { mode: a.mode } : {}),
     ...(a.scope !== undefined ? { scope: a.scope } : {}),
     ...(a.trusted !== undefined ? { trusted: a.trusted } : {}),
   }
+}
+
+/**
+ * True while `nonce` is still in `sessionId`'s nonce file: issued, not yet
+ * consumed, and the session not ended. An unreadable file answers false.
+ * The MCP server reads its own "not now" nonce this way (#1525): once
+ * `plur folders set --not-now` has consumed it, the session stops asking.
+ */
+export function folderNonceOutstanding(root: string, sessionId: string, nonce: string): boolean {
+  const data = readNonceFile(nonceFile(root, sessionId))
+  return !!data && data.nonces.some(r => r.nonce === nonce)
+}
+
+/**
+ * The "not now" answer of the MCP folder question (#1525): verify `nonce`
+ * as issued for `{ notNow: true }` on exactly `folder` (and, for a
+ * session-bound nonce, from its own session), then consume it. Writes
+ * nothing to the folder map; the folder stays undecided. Throws
+ * FolderMapError as verifyFolderNonce does.
+ */
+export function answerFolderNotNow(
+  root: string, folder: string, nonce: string,
+  options: { home?: string; session?: string; now?: number } = {},
+): void {
+  consumeFolderNonce(root, nonce, folder, { notNow: true }, options.now ?? Date.now(), { home: options.home, session: options.session })
+}
+
+/**
+ * Delete the nonce files of sessions whose end was never reported (a server
+ * killed outright, a missed SessionEnd hook): every file whose newest nonce
+ * is older than FOLDER_NONCE_TTL_MS, so none of its nonces could still be
+ * redeemed. A file that cannot be read is judged by its age on disk.
+ * Redemption reads every file in the directory, so orphans must not pile up
+ * (audit F1 of #1529). Runs on every issue, and from the MCP server at start.
+ */
+export function sweepFolderNonces(root: string, now: number = Date.now()): void {
+  if (!existsSync(nonceDir(root))) return
+  locked(root, () => sweepFolderNoncesUnlocked(root, now))
+}
+
+function sweepFolderNoncesUnlocked(root: string, now: number): void {
+  let names: string[] = []
+  try { names = readdirSync(nonceDir(root)).filter(f => f.endsWith('.yaml')) } catch { return }
+  for (const name of names) {
+    const file = join(nonceDir(root), name)
+    try {
+      // A file with no valid record (unreadable, or only garbage) is judged
+      // by its age on disk.
+      const data = readNonceFile(file)
+      const newest = data && data.nonces.length > 0
+        ? Math.max(...data.nonces.map(r => r.issued_at))
+        : statSync(file).mtimeMs
+      if (now - newest > FOLDER_NONCE_TTL_MS) rmSync(file, { force: true })
+    } catch { /* best-effort: a file that vanished or cannot be removed is left */ }
+  }
+}
+
+/**
+ * The outstanding nonces a host process issued for `folder` (#1562): from the
+ * newest session file whose host is one of `hosts` — the same process id AND
+ * the same start time, within FOLDER_HOST_START_TOLERANCE_MS, so a reused id
+ * never matches (#1563 review, L3) — and that still holds unexpired nonces
+ * for exactly that folder (the key a write of it records). Null when there is
+ * none. Read-only; consumes nothing.
+ */
+export function hostFolderNonces(
+  root: string, hosts: FolderAskHost[], folder: string, now: number = Date.now(), home: string = homedir(),
+): { session: string; nonces: Array<{ nonce: string; answer: FolderAnswer }> } | null {
+  if (hosts.length === 0) return null
+  const key = folderEntryKey(folder, home, false)
+  let names: string[] = []
+  try { names = readdirSync(nonceDir(root)).filter(f => f.endsWith('.yaml')) } catch { return null }
+  let best: { session: string; newest: number; nonces: Array<{ nonce: string; answer: FolderAnswer }> } | null = null
+  for (const name of names) {
+    const data = readNonceFile(join(nonceDir(root), name))
+    if (!data || data.host_pid === undefined || data.host_started === undefined || !data.session) continue
+    if (!hosts.some(h => h.pid === data.host_pid && Math.abs(h.startedAt - data.host_started!) <= FOLDER_HOST_START_TOLERANCE_MS)) continue
+    const live = data.nonces.filter(r => r.folder === key && r.answer && now - r.issued_at <= FOLDER_NONCE_TTL_MS)
+    if (live.length === 0) continue
+    const newest = Math.max(...live.map(r => r.issued_at))
+    if (!best || newest > best.newest) best = { session: data.session, newest, nonces: live.map(r => ({ nonce: r.nonce, answer: r.answer! })) }
+  }
+  return best ? { session: best.session, nonces: best.nonces } : null
+}
+
+/** The comparable form of a folder answer (#1378): the same for every way of writing the same answer. */
+export function folderAnswerKey(a: FolderAnswer): string | null {
+  return answerKey(a)
 }
 
 /** Drop every nonce of `sessionId` — called when the session ends. */
@@ -1199,9 +1654,9 @@ export function endFolderNonceSession(root: string, sessionId: string): void {
  */
 export function consumeFolderNonce(
   root: string, nonce: string, folder: string, answer: FolderAnswer, now: number = Date.now(),
-  options: { home?: string; literal?: boolean } = {},
+  options: { home?: string; literal?: boolean; session?: string } = {},
 ): void {
-  locked(root, () => verifyFolderNonce(root, nonce, folder, answer, now, options.home ?? homedir(), options.literal === true)())
+  locked(root, () => verifyFolderNonce(root, nonce, folder, answer, now, options.home ?? homedir(), options.literal === true, options.session)())
 }
 
 /**
@@ -1215,7 +1670,7 @@ export function consumeFolderNonce(
  */
 export function verifyFolderNonce(
   root: string, nonce: string, folder: string, answer: FolderAnswer, now: number = Date.now(), home: string = homedir(),
-  literal = false,
+  literal = false, session?: string,
 ): () => void {
   // Checked against exactly the key the write records (#1477 review). With
   // canonicalize(folder) alone, a quoted `~/x` was checked as `<cwd>/~/x`
@@ -1233,6 +1688,14 @@ export function verifyFolderNonce(
     const idx = data.nonces.findIndex(r => r.nonce === nonce)
     if (idx < 0) continue
     const rec = data.nonces[idx]
+    // Session binding (audit F5 of #1517), checked before anything is
+    // consumed or removed, so a refused nonce still works where it belongs.
+    const sameSession = session !== undefined && data.session === safeSessionKey(session)
+    if ((session !== undefined && !sameSession) || (rec.session_bound === true && !sameSession)) {
+      throw new FolderMapError('nonce-session',
+        'That nonce belongs to another session (or this command names none); nothing was changed. ' +
+        'Run the command from the session that showed it, or decide by hand in a terminal: plur folders set <folder> --on | --off.')
+    }
     if (now - rec.issued_at > FOLDER_NONCE_TTL_MS) {
       data.nonces.splice(idx, 1)
       writeNonceFile(file, data)

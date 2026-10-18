@@ -2,9 +2,8 @@
  * Read-only JSONC support: JSON with `//` and `/* *\/` comments and trailing
  * commas, the syntax opencode accepts in its config file.
  *
- * READ PATHS ONLY. A JSONC file parsed here cannot be written back without
- * losing its comments, so writers (`writeOpencodeConfig`) keep refusing JSONC
- * rather than round-tripping it through this (#1059 class).
+ * Parsing discards comments. Writers must apply offset edits to the original
+ * source instead of serializing this result (see writeOpencodeConfig).
  *
  * String-aware: `//`, `/*` and `,}` inside a string literal are content — a
  * `$schema` URL or a glob must survive. Line comments are deleted up to (not

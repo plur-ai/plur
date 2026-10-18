@@ -21,6 +21,14 @@ Keys are opaque naturals. The server is one of two kinds
 (`docs/remote-store-contract.md`): `honour` deduplicates POSTs by key; `ignore`
 does not. What the network does to each attempt is an adversarial outcome
 chosen per event, so every theorem holds for every schedule of outcomes.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): updated.
+`routeFor` in `_flushOutboxClaimed` now holds an entry whose target scope two
+servers claim, before `heldBack` and before the push, so even `force` does not
+deliver it; modelled in §8b (`conflict_untouched`, `keptC_only_bookkeeping`).
+Keys, retry, claims, the listing and the breaker (§1–§7) are unchanged.
+remote-store.ts changed only `me()` (C1 /me fields; a non-2xx now throws
+`RemoteHttpError` with the same message), which the push path does not call.
 -/
 
 namespace PlurSpec.Outbox
@@ -363,6 +371,46 @@ theorem verdict_only_skips {β} (bump : β → β) (o d f w : Bool) (e : Entry �
   rw [h, this]
 
 theorem force_dials_needs_action (w : Bool) : skipOf true true w = false := by
+  cases w <;> rfl
+
+/-! ### 8b. The conflict hold (#1631; reviewed 2026-10-18)
+
+`routeFor` now holds an entry whose target scope two servers claim
+(`resolveScopeTarget(...).kind === 'conflict'`). It runs at selection, before
+the `heldBack` verdict, and again before the push, ahead of the policy
+re-scan; `force` reaches `heldBack` only, so the conflict hold binds the
+explicit flush too. A held entry is not claimed and nothing is written. -/
+
+def flushEntryC {β : Type} (bump : β → β) (force needsAction inWindow conflict offends delivered : Bool)
+    (e : Entry β) : Res β :=
+  if conflict then .kept e
+  else flushEntry bump (skipOf force needsAction inWindow) offends delivered e
+
+/-- A conflicted entry is untouched and never handed off, forced flush or not. -/
+theorem conflict_untouched {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    flushEntryC bump f n w true o d e = .kept e := rfl
+
+theorem conflict_never_delivered {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    ∀ e', flushEntryC bump f n w true o d e ≠ .handedOff ∧ flushEntryC bump f n w true o d e ≠ .demoted e' := by
+  intro e'; simp [flushEntryC]
+
+/-- §8 still holds with the new branch: a kept entry keeps scope, target and content. -/
+theorem keptC_only_bookkeeping {β} (bump : β → β) (f n w c o d : Bool) (e e' : Entry β)
+    (h : flushEntryC bump f n w c o d e = .kept e') :
+    e'.scope = e.scope ∧ e'.target = e.target ∧ e'.body = e.body := by
+  unfold flushEntryC at h
+  split at h
+  · cases h; exact ⟨rfl, rfl, rfl⟩
+  · exact kept_only_bookkeeping bump _ o d e e' h
+
+/-- Off conflicts the flush is the §8 flush, so `verdict_only_skips` and
+`force_dials_needs_action` carry over. -/
+theorem flushEntryC_off_conflict {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    flushEntryC bump f n w false o d e = flushEntry bump (skipOf f n w) o d e := rfl
+
+/-- Non-vacuity: the forced flush still delivers an unconflicted needs_action entry. -/
+theorem force_delivers_unconflicted {β} (bump : β → β) (w : Bool) (e : Entry β) :
+    flushEntryC bump true true w false false true e = .handedOff := by
   cases w <;> rfl
 
 end PlurSpec.Outbox

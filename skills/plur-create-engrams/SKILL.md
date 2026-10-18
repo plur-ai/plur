@@ -1,6 +1,6 @@
 ---
 name: plur-create-engrams
-version: 0.21.0
+version: 0.21.5
 description: Create or improve PLUR engrams from conversations, documents, decisions, observations, and explicit preferences. Use for memory extraction, engram authoring, or reviewing proposed memories, including global, scoped, pinned, retrieved, and provisional knowledge. Ordinary use of existing memories does not require this skill.
 ---
 
@@ -91,6 +91,10 @@ Choose a form that matches the knowledge:
 | Procedure | At trigger C, follow the sequence; link the detailed source. |
 
 Avoid vague pronouns, "always obey", and urgency manufactured to imply authority. Never phrase a remedy as a disjunction whose second branch is cheaper — the cheap branch gets taken and the rule becomes a licence.
+
+## MCP tool profiles
+
+`plur_learn`, `plur_recall` and `plur_forget` are direct tools in the default lean profile. Less-common operations such as `plur_pin` are reached through `plur_admin` with `{ "action": "plur_pin", "args": { ... } }`. Call `plur_admin` with `{ "action": "help" }` for the current actions and schemas; use the live schema when serializing a call. With `PLUR_TOOL_PROFILE=full`, those actions are direct tools too.
 
 ## Before you write: check, and write once
 

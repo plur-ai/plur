@@ -86,6 +86,14 @@ describe('plur init sets up opencode by default (#1311)', { timeout: 60000 }, ()
     expect(out).not.toContain('auto-detected')
   })
 
+  it('--keep-opencode-plugin preserves an intentionally older pin', () => {
+    mkdirSync(ocDir(), { recursive: true })
+    writeFileSync(ocJson(), JSON.stringify({ plugin: ['@plur-ai/opencode@0.1.1'] }))
+    const out = runInit(['--keep-opencode-plugin'])
+    expect(readOc().plugin).toEqual(['@plur-ai/opencode@0.1.1'])
+    expect(out).toContain('existing plugin pin kept')
+  })
+
   it('a re-run is byte-for-byte idempotent', () => {
     mkdirSync(ocDir(), { recursive: true })
     runInit()
@@ -110,23 +118,26 @@ describe('plur init sets up opencode by default (#1311)', { timeout: 60000 }, ()
     expect(cfg.mcp.plur.type).toBe('local')
   })
 
-  it('leaves an opencode.jsonc with comments byte-for-byte untouched and says so', () => {
+  it('updates an opencode.jsonc while preserving comments and unrelated text', () => {
     mkdirSync(ocDir(), { recursive: true })
     const p = join(ocDir(), 'opencode.jsonc')
     const original = '{\n  // my comment\n  "model": "provider/some-model"\n}\n'
     writeFileSync(p, original)
     const out = runInit()
-    expect(readFileSync(p, 'utf-8')).toBe(original)
+    const after = readFileSync(p, 'utf-8')
+    expect(after).toContain('// my comment')
+    expect(after).toContain('\"model\": \"provider/some-model\"')
     expect(existsSync(ocJson())).toBe(false)
-    expect(out).toContain('could not safely write into it')
+    expect(out).toContain('Opencode: config updated')
   })
 
-  it('uses a pinned npx MCP command on darwin/linux (unchanged)', () => {
+  it('uses the installed MCP command on darwin/linux', () => {
     mkdirSync(ocDir(), { recursive: true })
     runInit()
     const command: string[] = readOc().mcp.plur.command
-    expect(command[0]).toBe('npx')
-    expect(command[2]).toMatch(/^@plur-ai\/mcp@\d+\.\d+\.\d+/)
+    expect(command[0]).toBe(process.execPath)
+    expect(command).toHaveLength(2)
+    expect(existsSync(command[1])).toBe(true)
   })
 
   it('on win32 the MCP entry is node.exe + the @plur-ai/mcp js entry, never bare npx', () => {
@@ -195,10 +206,12 @@ describe('plur init sets up opencode by default (#1311)', { timeout: 60000 }, ()
       expect(readOc().mcp.plur).toEqual(plur)
     })
 
-    it('leaves the bare-npx entry alone on darwin/linux, where it works', () => {
+    it('migrates the owned bare-npx entry to installed MCP on darwin/linux', () => {
       seed(legacy())
       runInit()
-      expect(readOc().mcp.plur).toEqual(legacy())
+      const command = readOc().mcp.plur.command
+      expect(command[0]).toBe(process.execPath)
+      expect(readOc().mcp.plur).toEqual({ ...legacy(), command })
     })
   })
 

@@ -155,6 +155,9 @@ describe('every public Plur method in a remote-only folder', () => {
       registerDiscoveredScopes: [], offerableScopes: [], registerScope: ['group:nope/y'], dismissScope: ['group:nope/z'],
       reofferScopes: [], getDismissedScopes: [], persistScopeMetadata: [[]], setSessionScope: [null], adjustSessionScope: [null],
       getSessionScope: [], clearSessionScope: [], trackedSessionScopes: [],
+      // Added on development after #1521 (merge of #1521 onto development):
+      recallWithMeta: ['dentist PERSONALZEBRA'], outboxClaimsProblem: [], skippedProjectStores: [work],
+      refreshServerScopes: [], notNowFolder: [join(base, 'elsewhere'), { nonce: 'not-a-nonce' }],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
@@ -170,6 +173,7 @@ describe('every public Plur method in a remote-only folder', () => {
       addRemoteStore: /fetch|connect|ECONNREFUSED|reach|token|failed/i, // points at a closed port on purpose
       registerScope: /not|unknown|authori|scope/i, // the stub /me does not grant that scope
       reportFailure: /not found/i, // the personal row it names is invisible here — the point of the test
+      notNowFolder: /nonce/i, // no such nonce was issued: refused before anything is written
     }
     // These must be REFUSED in the folder (with the arguments above: a personal
     // id, a local scope, or a personal-store operation). Every other method

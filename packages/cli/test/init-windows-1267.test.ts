@@ -52,12 +52,14 @@ describe('plur init on win32 with a home dir containing a space (#1267)', { time
     return execFileSync(process.execPath, [...nodeArgs, CLI, 'init', '--global', '--no-desktop', '--no-codex', '--no-antigravity', ...extra], {
       encoding: 'utf-8',
       timeout: 30000,
-      env: isolatedHomeEnv(home),
+      env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
       cwd: home,
     })
   }
   const settingsPath = () => join(home, '.claude', 'settings.json')
   const readSettings = (): Settings => JSON.parse(readFileSync(settingsPath(), 'utf-8'))
+  /** ~/.claude.json — where Claude Code reads user-scoped MCP servers (#1561). */
+  const readUserConfig = (): Settings => JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'))
 
   // F4 follow-up: a CLI install that moved (npm prefix change, upgrade into a
   // new directory) left exec-form hooks naming the OLD js entry. Re-init must
@@ -205,7 +207,7 @@ describe('plur init on win32 with a home dir containing a space (#1267)', { time
     }, null, 2))
     const out = runInit()
     expect(out).not.toMatch(/already registered/)
-    const plur = readSettings().mcpServers?.plur
+    const plur = readUserConfig().mcpServers?.plur
     expect(plur?.command).toBe(process.execPath)
     expect(plur?.args).toHaveLength(1)
     expect(plur?.args[0]).toMatch(/[\\/]mcp[\\/]dist[\\/]index\.js$/)
@@ -213,7 +215,7 @@ describe('plur init on win32 with a home dir containing a space (#1267)', { time
 
   it('registers the MCP server as node.exe + the @plur-ai/mcp js entry, never a .cmd', () => {
     runInit()
-    const plur = readSettings().mcpServers?.plur
+    const plur = readUserConfig().mcpServers?.plur
     expect(plur?.command).toBe(process.execPath)
     expect(plur?.args).toHaveLength(1)
     expect(plur?.args[0]).toMatch(/[\\/]mcp[\\/]dist[\\/]index\.js$/)
@@ -226,7 +228,7 @@ describe('plur init on win32 with a home dir containing a space (#1267)', { time
       mcpServers: { plur: { command: 'C:\\Users\\Test User\\.plur\\bin\\plur-mcp.cmd', args: [] } },
     }, null, 2))
     runInit()
-    const plur = readSettings().mcpServers?.plur
+    const plur = readUserConfig().mcpServers?.plur
     expect(plur?.command).toBe(process.execPath)
     expect(plur?.args[0]).toMatch(/index\.js$/)
   })
@@ -260,7 +262,7 @@ describe('plur doctor sees Windows hooks (#1267)', { timeout: 60000 }, () => {
     let stdout: string
     try {
       stdout = execFileSync(process.execPath, ['--import', WIN32_PRELOAD, CLI, 'doctor', '--no-handshake', '--json'], {
-        encoding: 'utf-8', timeout: 30000, env: isolatedHomeEnv(home), cwd: home,
+        encoding: 'utf-8', timeout: 30000, env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' }, cwd: home,
       })
     } catch (err: any) {
       stdout = err.stdout?.toString() ?? ''
@@ -283,7 +285,7 @@ describe('plur doctor flags a broken node-form MCP entry (#1267)', { timeout: 60
     let stdout: string
     try {
       stdout = execFileSync(process.execPath, ['--import', WIN32_PRELOAD, CLI, 'doctor', '--no-handshake', '--json'], {
-        encoding: 'utf-8', timeout: 30000, env: isolatedHomeEnv(home), cwd: home,
+        encoding: 'utf-8', timeout: 30000, env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' }, cwd: home,
       })
     } catch (err: any) {
       stdout = err.stdout?.toString() ?? ''
@@ -317,12 +319,14 @@ describe('plur init on darwin/linux output is unchanged (#1267)', { timeout: 600
 
   it.skipIf(process.platform === 'win32')('hook commands match the pre-#1267 snapshot', () => {
     execFileSync(process.execPath, [CLI, 'init', '--global', '--no-desktop', '--no-codex', '--no-antigravity', '--no-cursor'], {
-      encoding: 'utf-8', timeout: 30000, env: isolatedHomeEnv(home), cwd: home,
+      encoding: 'utf-8', timeout: 30000, env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' }, cwd: home,
     })
     const raw = readFileSync(join(home, '.claude', 'settings.json'), 'utf-8')
     const settings = JSON.parse(raw) as Settings
     expect(JSON.stringify(settings.hooks, null, 2).split(home).join('<HOME>')).toMatchSnapshot()
-    const plur = settings.mcpServers?.plur
+    // #1561: the MCP server is registered in ~/.claude.json, not settings.json.
+    expect(settings.mcpServers?.plur).toBeUndefined()
+    const plur = (JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8')) as Settings).mcpServers?.plur
     // The shim when @plur-ai/mcp is built alongside; the pinned login-shell npx otherwise.
     if (plur?.command === join(home, '.plur', 'bin', 'plur-mcp')) {
       expect(plur.args).toEqual([])

@@ -69,12 +69,30 @@ export class StubServer {
   // behavior is the default; setMe({ scope_metadata }) opts a test into it.
   // #1310: `capabilities` is optional and absent by default (older server);
   // setMe({ capabilities: ['feedback.source'] }) simulates a capable server.
-  private me: { username: string; org_id: string; role: string; scopes: string[]; scope_metadata?: unknown[]; capabilities?: unknown[] } = {
-    username: 'testuser', org_id: 'test-org', role: 'developer', scopes: ['group:test'],
-  }
+  // #1631: C1 fields (scopes_status, gitlab_host, etc.) are absent by default
+  // to simulate an older server; setMe() opts into them.
+  private static readonly DEFAULT_ME = {
+    username: 'testuser', org_id: 'test-org', role: 'developer', scopes: ['group:test'] as string[],
+  } as const
+  private me: {
+    username: string; org_id: string; role: string; scopes: string[]
+    scope_metadata?: unknown[]; capabilities?: unknown[]
+    scopes_status?: string; scope_metadata_status?: string
+    gitlab_host?: string | null; project_paths?: Record<string, string>
+    key_expires_at?: string | null
+  } = { ...StubServer.DEFAULT_ME }
+  /** When set, GET /api/v1/me returns this HTTP status instead of 200 (#1631). */
+  meStatus: number | null = null
+  /** When set, GET /api/v1/me returns this as the response body (#1631). */
+  meBody: unknown = null
   /** When set, POST /engrams returns this as the assigned id instead of a valid
    *  one — to simulate a buggy/hostile server (e.g. for the #404 id-shape test). */
   badAppendId: unknown = null
+  /** When true, POST /engrams mints ids the way the enterprise server does,
+   *  `ENG-YYYY-MM-DD-NNN` (today, sequence from 001), instead of `ENG-SRV-NNN`.
+   *  A local store minting on the same day gets the same bare ids, which is
+   *  the collision #1109 / the 0.21.1 F3 finding is about. Cleared by reset(). */
+  datedIds = false
   /** When set, POST /engrams short-circuits to this error response BEFORE reading
    *  the body — to simulate a server that rejects the write (#912 sanitise test). */
   appendErrorResponse: { status: number; body: string } | null = null
@@ -164,8 +182,16 @@ export class StubServer {
 
   /** Override the GET /api/v1/me response (authorized scope set, identity).
    *  #345 D2: pass `scope_metadata` to simulate a server that serves
-   *  self-describing scope metadata. */
-  setMe(me: Partial<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: unknown[]; capabilities: unknown[] }>): void {
+   *  self-describing scope metadata.
+   *  #1631: pass C1 fields (scopes_status, gitlab_host, project_paths,
+   *  key_expires_at, scope_metadata_status) to simulate enterprise /me. */
+  setMe(me: Partial<{
+    username: string; org_id: string; role: string; scopes: string[]
+    scope_metadata: unknown[]; capabilities: unknown[]
+    scopes_status: string; scope_metadata_status: string
+    gitlab_host: string | null; project_paths: Record<string, string>
+    key_expires_at: string | null
+  }>): void {
     this.me = { ...this.me, ...me }
   }
 
@@ -245,6 +271,7 @@ export class StubServer {
     this.engrams.clear()
     this.idCounter = 0
     this.badAppendId = null
+    this.datedIds = false
     this.appendErrorResponse = null
     this.appendErrorByScope = {}
     this.appendDelayMs = 0
@@ -273,6 +300,9 @@ export class StubServer {
     this.getByIdCalls = 0
     this.feedbackDelayMs = 0
     this.beforeMe = null
+    this.meStatus = null
+    this.meBody = null
+    this.me = { ...StubServer.DEFAULT_ME }
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -290,6 +320,11 @@ export class StubServer {
     // GET /api/v1/me — resolved identity + authorized scopes (#292)
     if (method === 'GET' && path === '/api/v1/me') {
       this.meCalls++
+      // #1631: meStatus/meBody override — simulate 503 scope_lookup_failed etc.
+      if (this.meStatus !== null) {
+        this.json(res, this.meStatus, this.meBody ?? { error: `forced ${this.meStatus}` })
+        return
+      }
       const hook = this.beforeMe
       if (hook) {
         const me = this.me
@@ -385,7 +420,8 @@ export class StubServer {
         }
         // Recorded with the row, as docs/remote-store-contract.md recommends.
         const idempotency_key = body.idempotency_key
-        const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
+        const seq = String(++this.idCounter).padStart(3, '0')
+        const id = this.datedIds ? `ENG-${new Date().toISOString().slice(0, 10)}-${seq}` : `ENG-SRV-${seq}`
         const now = new Date().toISOString()
         const engram: StoredEngram = {
           id,

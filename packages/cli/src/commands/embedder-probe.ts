@@ -1,3 +1,4 @@
+import { embed } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 
 /**
@@ -31,18 +32,23 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   try {
     const plur = createPlur(flags)
     const preStatus = plur.embedderStatus()
+    let modelLoaded = false
     if (!preStatus.disabled) {
       plur.resetEmbedder()
       try {
-        await plur.recallSemantic('plur doctor probe', { limit: 1 })
-      } catch { /* best effort — probe completing is enough signal */ }
+        // A recall against a missing model deliberately uses keyword search.
+        // Doctor is the explicit download path, so await an embedding directly.
+        // Core still enforces offline/download-disabled settings.
+        const vector = await embed('plur doctor probe', 'query')
+        modelLoaded = vector !== null && vector.length > 0
+      } catch { /* failure is reported as modelLoaded: false */ }
     }
     const status = plur.embedderStatus()
     process.stdout.write(JSON.stringify({
       available: status.available,
       loaded: status.loaded,
       lastError: status.lastError,
-      modelLoaded: status.available && status.loaded,
+      modelLoaded,
       disabled: status.disabled,
       disabledReason: status.disabledReason,
     }) + '\n')

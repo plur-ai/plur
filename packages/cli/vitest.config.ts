@@ -42,11 +42,19 @@ export const SPAWN_SUITES = [
   'test/hook-outbox-flush.test.ts',
   // #1299: spawns status / doctor / outbox / sync against a real-HTTP stub.
   'test/outbox-needs-action.test.ts',
+  // 0.21.1 save deadline: spawns learn/forget/feedback against hanging, 401
+  // and real-HTTP stubs, wall-clock timed, plus a 13k-engram store.
+  'test/save-deadline-outbox.test.ts',
 ]
 
 export default defineConfig({
   test: {
     globals: true,
     exclude: ['**/node_modules/**', '**/dist/**', ...SPAWN_SUITES],
+    // Every test file runs against a temp HOME / XDG_CONFIG_HOME with no
+    // inherited PLUR_PATH, and the run fails if the real store changed.
+    // Keep in sync with the cli-spawn project in the root vitest.config.ts.
+    setupFiles: ['test/setup/isolate-home.ts'],
+    globalSetup: ['test/setup/real-home-guard.ts'],
   },
 })

@@ -239,10 +239,18 @@ ENG-{PREFIX}-YYYY-MM-DD-NNN       e.g.  ENG-GPL-2026-07-30-032
 ENG-{PREFIX}-YYYY-MMDD-NNN        e.g.  ENG-DF-2026-0401-001   (legacy source id)
 ```
 
-`PREFIX` is a SHORT uppercase token derived from the source scope (the
-reference derives exactly three characters via `storePrefix()`, e.g.
-`group:plur/engineering` → `GPL`-style abbreviations, and detects namespaced
-ids with `^(ENG|ABS|META)-[A-Z]{3}-`). The namespaced form still matches the
+`PREFIX` is a SHORT uppercase token derived from the source scope. Since
+0.21.1 the reference derives eleven letters via `storePrefix()`: three readable
+letters (`group:plur/eng` → `GPL`) followed by eight letters of a SHA-256 digest
+of the whole scope (`group:plur/eng` → `GPLTBNXSCAW`). Releases up to 0.21.0
+used the three letters alone, which every team scope of one org shared, so two
+stores' engrams could carry one namespaced id; the reference still READS that
+form (`legacyStorePrefix()`), but only for a dated id, and only where exactly
+one store holds the row. It detects namespaced ids with
+`^(ENG|ABS|META)-[A-Z]{2,11}-` followed by the four-digit year. An
+implementation SHOULD derive a prefix that differs for different scopes, and
+SHOULD NOT act on a namespaced id that two configured stores of different scope
+could both claim. The namespaced form still matches the
 grammar in §3.1. Implementations MUST treat the namespaced and bare forms as
 referring to *different* logical engrams once namespacing has been applied
 (the prefix is part of the identity in a merged view). Pack producers SHOULD

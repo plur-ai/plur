@@ -3,10 +3,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, type FolderPolicy } from '@plur-ai/core'
-import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
+import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad, type FolderPolicy } from '@plur-ai/core'
+import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
-import { FOLDER_GATED_TOOLS, folderOffAnswer, createWorkspaceDirs, workspaceUnknownAnswer } from './folder-gate.js'
+import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, folderOffAnswer, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -60,6 +60,8 @@ DURING the session:
 - When user states a preference ("always X", "never Y") → call plur_learn immediately
 - When you discover a codebase convention or pattern → call plur_learn
 
+EVERY REPLY: End every reply with one short line: \`Memory — recalled N · used: ENG-…, ENG-… · written: ENG-…\` (recalled as a count; used and written as ids only, no statements), or \`Memory — none\`. Only count/list ids you actually saw this turn; never invent an id. Give details only if the user asks.
+
 SCOPE SELECTION (set scope PER engram, by content — not once per session):
 A single session produces engrams that belong in different stores. Choose the
 "scope" on EACH plur_learn call from what the engram is about:
@@ -79,7 +81,7 @@ OPTIONAL but improves quality:
 
 Do not ask permission to use these tools — they are your memory system.
 
-FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken, and with reason "workspace-unknown" when your client's workspace roots could not be fetched (that one retries by itself on the next call). Carry on without memory and do not retry or work around it; only the user can turn it back on or fix the map, from a terminal (the message names the command). plur_status and plur_doctor keep working.
+FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken, and with reason "workspace-unknown" when your client's workspace roots could not be fetched (that one retries by itself on the next call). Carry on without memory and do not retry or work around it; only the user can turn it back on, from a terminal (the message names the command). For a broken map the message names the line and the problem; when it carries a repair_command (plur folders repair --yes), tell the user what is wrong, show them repair_summary (what the repair changes), and run that command only after they agree. plur_status and plur_doctor keep working.
 
 REMOTE-ONLY FOLDERS: a folder the user set to remote-only keeps its memory on the team server only. There, plur_learn without a scope saves to the folder's team scope; a personal or local scope (user:, global, local, a project: scope no team store serves, a private memory) is refused with an error that names the folder — save without a scope instead, and do not retry with another personal scope. Recall reads only the team scope and installed packs.
 
@@ -174,6 +176,28 @@ Use \`scope\` to namespace engrams per project:
 Override with \`PLUR_PATH\` environment variable.
 `
 
+/** Per server: resolves once no tools/call is running (or after the timeout, when one is given). */
+const _whenIdle = new WeakMap<object, (timeoutMs?: number) => Promise<void>>()
+/** Per server: ends its folder question (deletes the session's nonces). */
+const _endFolderQuestion = new WeakMap<object, () => void>()
+
+/**
+ * Close a session: end its folder question at once (its nonces are deleted;
+ * no request can issue new ones once the session is closing), then close
+ * `server` once the tool calls already running have answered (audits R1 and
+ * R3 of #1529). With `timeoutMs`, wait at most that long; without it, wait
+ * as long as they run, so a call that is still writing is never cut off from
+ * its answer.
+ */
+export async function closeWhenIdle(server: Server, timeoutMs?: number): Promise<void> {
+  try { _endFolderQuestion.get(server)?.() } catch { /* best-effort */ }
+  // A request read in the same chunk as the end of stdin is dispatched on a
+  // later tick: let it start before checking whether anything is running.
+  await new Promise<void>(r => setTimeout(r, 10))
+  await (_whenIdle.get(server)?.(timeoutMs) ?? Promise.resolve())
+  await server.close().catch(() => { /* already closed */ })
+}
+
 // One periodic version re-check per process, however many servers are created
 // (tests create one per case — stacking an interval per server would leak).
 let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
@@ -202,7 +226,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   // version-check.ts covers processes whose timers are throttled.
   const announceUpdate = (r: { updateAvailable: boolean; current: string; latest: string | null }) => {
     if (r.updateAvailable) {
-      console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest && plur init (configs pin versions)`)
+      console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest && plur init (configs pin versions)`)
     }
   }
   checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
@@ -226,11 +250,62 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     },
   )
 
+  // --- Requests in flight, so a closing session can answer them first ---
+  // (audit R1 of #1529): closing the transport under a running tools/call
+  // dropped its response while the write behind it still happened.
+  let inFlight = 0
+  let idleWaiters: Array<() => void> = []
+  const trackInFlight = async <T>(fn: () => Promise<T>): Promise<T> => {
+    inFlight++
+    try {
+      return await fn()
+    } finally {
+      inFlight--
+      if (inFlight === 0) {
+        // Let the protocol write the response before anyone closes.
+        setImmediate(() => { if (inFlight === 0) { const w = idleWaiters; idleWaiters = []; w.forEach(f => f()) } })
+      }
+    }
+  }
+  _whenIdle.set(server, (timeoutMs?: number) => new Promise<void>(resolve => {
+    if (inFlight === 0) return resolve()
+    const timer = timeoutMs === undefined ? undefined : setTimeout(resolve, timeoutMs)
+    timer?.unref?.()
+    idleWaiters.push(() => { if (timer) clearTimeout(timer); resolve() })
+  }))
+
   // --- The editor's workspace, for the folder map (folder-gate.ts) ---
   // One helper (#1519's createWorkspaceDirs): one roots cache, one
   // list_changed handler, fail closed on a roots failure. Its folder is the
-  // one this server serves (`folder`, default cwd).
-  const workspace = createWorkspaceDirs(server, { cwd: () => options?.folder ?? process.cwd() })
+  // one this server serves (`folder`, default cwd; #1521).
+  const workspace = createWorkspaceDirs(server, { cwd: () => folder })
+  // The folder map's off / ask for this MCP session (#1525). The session's
+  // unanswered folder-question nonces die with the connection.
+  const folderGate = createFolderGate(instance)
+  _endFolderQuestion.set(server, () => folderGate.end())
+  const priorOnClose = server.onclose
+  server.onclose = () => {
+    folderGate.end()
+    priorOnClose?.()
+  }
+
+  // PLUR_LOG_CLIENT_INFO=1: log one line to stderr on initialize so a human
+  // can record which capabilities each editor actually sends (#1635).
+  const priorOnInitialized = server.oninitialized
+  server.oninitialized = () => {
+    priorOnInitialized?.()
+    if (process.env.PLUR_LOG_CLIENT_INFO !== '1') return
+    const caps = server.getClientCapabilities()
+    const info = server.getClientVersion()
+    const name = (info?.name ?? 'unknown').replace(/\s+/g, '-') || 'unknown'
+    const version = (info?.version ?? 'unknown').replace(/\s+/g, '-') || 'unknown'
+    const rootsCap = (caps?.roots ?? null) as { listChanged?: boolean } | null
+    const hasRoots = rootsCap !== null
+    const listChanged = rootsCap?.listChanged === true
+    process.stderr.write(
+      `[plur] client ${name} ${version} roots=${hasRoots ? 'yes' : 'no'} listChanged=${listChanged ? 'yes' : 'no'}\n`,
+    )
+  }
 
   // Bind the instance to the workspace's folder decision (remote-only), or
   // block it (off, unknown workspace, unreadable map), for this call.
@@ -245,7 +320,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         return
       }
     }
-    const pick = resolved.find(r => r.policy.reason === 'malformed-map')
+    const pick = resolved.find(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')
       ?? resolved.find(r => r.policy.mode === 'remote-only')
       ?? resolved[resolved.length - 1]
     instance.bindFolderPolicy(pick.dir, pick.policy)
@@ -275,7 +350,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     })),
   }))
 
-  server.setRequestHandler('tools/call', async (request) => {
+  server.setRequestHandler('tools/call', (request) => trackInFlight(async () => {
    // One call at a time (see acquireCall); released on every return path.
    const release = await acquireCall()
    try {
@@ -302,26 +377,33 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         isError: true,
       }
     }
-    // The folder map's `off` (folder-gate.ts): a memory tool, called directly
-    // or through plur_admin, touches no store in an `off` folder and says so.
+    // The folder map (folder-gate.ts): a memory tool, called directly or
+    // through plur_admin, touches no store in an `off` folder and says so, and
+    // in an undecided (`ask`) folder answers with the folder question (#1525).
     // Before the canary tick: a refused call is not a turn of memory use.
     const gated = tool.name === 'plur_admin'
       ? (request.params.arguments as Record<string, unknown> | undefined)?.action
       : tool.name
-    // Every call: resolve the workspace once, bind (or block) the instance,
-    // and answer `off` for a gated tool where memory is off — all inside this
-    // call's serialized step, so gate and binding see the same roots.
-    const dirs = await workspace.dirs()
-    const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
-    const isGated = typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)
-    // A gated tool where memory is off answers without touching the instance.
-    if (off && isGated) return { content: [{ type: 'text', text: JSON.stringify(off, null, 2) }] }
-    // An admin tool there runs unbound, as #1519 defines (no engram text in
-    // its answers); otherwise the instance is bound to the workspace.
-    if (off) {
-      instance.bindFolderPolicy(folder, { mode: 'ask', remoteAllowed: false, source: 'default' })
+    // The workspace the gate admitted this call in (#1566): a read's default
+    // scope comes from it, so a read costs no second roots request and is
+    // answered in the workspace it was admitted in.
+    let admittedWs: Awaited<ReturnType<typeof workspace.workspace>> = null
+    if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
+      const ws = await workspace.workspace()
+      const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
+      if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
+      admittedWs = ws
+      // The instance follows the admitted workspace's folder decision
+      // (remote-only, #1521): bound on every call, in this serialized step.
+      bindWorkspace([...new Set([...ws!.roots, ws!.cwd])])
     } else {
-      bindWorkspace(dirs!)
+      // Not a gated tool: bound to the workspace too, unless memory is off
+      // there or the workspace is unknown, where it runs unbound, as #1519
+      // defines (no engram text in its answers).
+      const dirs = await workspace.dirs()
+      const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
+      if (off) instance.bindFolderPolicy(folder, { mode: 'ask', remoteAllowed: false, source: 'default' })
+      else bindWorkspace(dirs!)
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -372,6 +454,20 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         }
       }
       args = validated.data
+      // The workspace's default write scope (#1525, #1563 review round 2),
+      // resolved when a tool asks for it — at the moment a write is
+      // admitted — from the CURRENT roots, by the one resolver. Under a
+      // Symbol key no client can set.
+      const folderContext: FolderScopeContext = {
+        resolve: async () => {
+          const ws = await workspace.workspace()
+          return ws === null ? null : { scope: workspaceWriteScope(instance, ws), key: workspaceKey(ws) }
+        },
+        ...(admittedWs !== null
+          ? { admitted: () => ({ scope: workspaceWriteScope(instance, admittedWs!), key: workspaceKey(admittedWs!) }) }
+          : {}),
+      }
+      args = { ...args, [FOLDER_SCOPE]: folderContext }
       const result = await tool.handler(args, instance)
 
       // Generic _isError propagation (audit fix): a tool handler — currently
@@ -406,7 +502,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
    } finally {
      release()
    }
-  })
+  }))
 
   // --- Resources ---
 
@@ -634,6 +730,10 @@ export async function runStdio(): Promise<void> {
   // of this ternary is how doctor comes to describe a profile nobody is running.
   const profile: ToolProfile = resolveToolProfile()
   const server = await createServer(undefined, { profile })
+  // A long-lived process: when a recall finds the embedding model missing, it
+  // may load (and download) it in the background, once (#1586 round 4).
+  // Short-lived CLI and hook processes never do.
+  allowBackgroundModelLoad(true)
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
   // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out
   // install registers the handler but flushes nothing. Registered in runStdio,
@@ -653,4 +753,37 @@ export async function runStdio(): Promise<void> {
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
+
+  // The SDK's stdio transport never reports that stdin ended, so close the
+  // server ourselves (audit F1 of #1529): on stdin end and on SIGTERM /
+  // SIGINT. Closing fires onclose, which deletes this session's folder-question
+  // nonces at once. The tool calls already running answer first (audits R1,
+  // R3): on stdin end, however long they take, and the process then exits by
+  // itself once its output is written; a signal waits at most 2 s for them,
+  // then exits (the handler replaces
+  // Node's default exit). On Windows a SIGTERM from another process cannot be
+  // caught; a server killed that way leaves its nonces to the 24 h sweep.
+  let closing: Promise<void> | null = null
+  const closeSession = (timeoutMs?: number): Promise<void> => {
+    if (!closing) closing = closeWhenIdle(server, timeoutMs)
+    return closing
+  }
+  // No cap after stdin ends (audit R3): no new request can arrive, the
+  // nonces are already gone, and a call still running (a store lock, a slow
+  // remote) keeps the process alive anyway, so waiting costs nothing and its
+  // answer is never dropped.
+  process.stdin.once('end', () => { void closeSession() })
+  process.stdin.once('close', () => { void closeSession() })
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      const code = signal === 'SIGTERM' ? 143 : 130
+      const timer = setTimeout(() => process.exit(code), 3000)
+      timer.unref?.()
+      void closeSession(2000).finally(() => {
+        // Let a response still in stdout's buffer reach the client.
+        if (process.stdout.writableLength > 0) process.stdout.once('drain', () => process.exit(code))
+        else process.exit(code)
+      })
+    })
+  }
 }

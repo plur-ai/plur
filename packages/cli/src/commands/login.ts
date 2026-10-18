@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { doctorRemoteRemediation, normalizeEndpointUrl, type RemoteHealth } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputInfo, outputError, outputJson, shouldOutputJson, isQuiet } from '../output.js'
+import { urlOpener } from '../lib/open-url.js'
 
 /**
  * plur login — enterprise token status (#587) and the (gated) OAuth device flow.
@@ -333,12 +334,8 @@ async function openBrowser(url: string): Promise<boolean> {
   if (scheme !== 'http:' && scheme !== 'https:') return false
 
   const { spawn } = await import('child_process')
-  const p = process.platform
   // spawn with an arg array: no shell interpolation, no injection vector.
-  const [cmd, cmdArgs]: [string, string[]] =
-    p === 'darwin' ? ['open', [url]] :
-    p === 'win32'  ? ['rundll32.exe', ['url.dll,FileProtocolHandler', url]] :
-    ['xdg-open', [url]]
+  const [cmd, cmdArgs] = urlOpener(url)
   return new Promise(resolve => {
     const child = spawn(cmd, cmdArgs, { detached: true, stdio: 'ignore' })
     child.unref()
@@ -452,7 +449,10 @@ export function buildStatusReport(
           : h.status === 'auth_expired'
             ? { probed: true, reachable: true, ...(h.reason ? { reason: h.reason } : {}) }
             : { probed: true, reachable: false, ...(h.reason ? { reason: h.reason } : {}) }
-    const remediation = remediationFor(status, h.url, h.tokenExpiresInDays)
+    // #1564 review M2: an unset token_env variable is fixed by setting it, not by re-authenticating.
+    const remediation = h.tokenEnvUnset
+      ? `Set the environment variable ${h.tokenEnvUnset} where PLUR runs — it holds the token for ${normalizeEndpointUrl(h.url)}.`
+      : remediationFor(status, h.url, h.tokenExpiresInDays)
     return {
       url: h.url,
       status,

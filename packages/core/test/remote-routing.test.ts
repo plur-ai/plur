@@ -307,10 +307,10 @@ describe('learn() — remote routing (issue #25)', () => {
     await new Promise(r => setTimeout(r, 100))
 
     const readId = plur.readIdFor(engram)
-    // storePrefix('group:plur/plur-ai/engineering') → 'GPL'
-    expect(readId).toMatch(/^ENG-GPL-/)
+    // storePrefix('group:plur/plur-ai/engineering') → 'GPL' + eight digest letters
+    expect(readId).toMatch(/^ENG-GPL[A-Z]{8}-/)
     // The raw engram.id is the server-assigned bare form.
-    expect(engram.id).not.toMatch(/^ENG-GPL-/)
+    expect(engram.id).not.toMatch(/^ENG-GPL[A-Z]{8}-/)
     // The namespaced form differs from the raw form.
     expect(readId).not.toBe(engram.id)
   })
@@ -1166,6 +1166,8 @@ describe('feedback() — cross-store ID collision guard (issue #850)', () => {
     const plur = new Plur({ path: primaryDir })
     const e = await plur.learn('local engram unreachable remote', { scope: 'global' })
 
-    await expect(plur.feedback(e.id, 'positive')).resolves.toBeUndefined()
+    // 0.21.1: the unverified store is reported back, not only logged.
+    const res = await plur.feedback(e.id, 'positive')
+    expect(res.warnings.join(' ')).toMatch(/could not be reached/)
   })
 })

@@ -1,6 +1,7 @@
+import type { RecallRemoteReport } from './remote-recall.js'
 import type { Engram } from './schemas/engram.js'
 import { searchEngrams } from './fts.js'
-import { embeddingSearch, embedderStatus } from './embeddings.js'
+import { embeddingSearch, embedderStatus, type EmbeddingSearchOptions } from './embeddings.js'
 import { rewriteLexicalQuery, isQueryRewriteDisabled } from './intent/rewrite.js'
 import { logger } from './logger.js'
 import type { RerankerAdapter } from './rerankers/types.js'
@@ -37,6 +38,17 @@ export interface HybridSearchResult {
    * empty. Useful for benchmark + diagnostic reporting.
    */
   reranked?: number
+  /** What the remote (server) leg did on THIS call (#1586). Set by Plur's
+   *  recall paths; absent from the bare local search functions. */
+  remote?: RecallRemoteReport
+  /** False when a leg that should have contributed did not: a dialed host
+   *  was not ok, or the local search was cut by the recall deadline (#1586). */
+  results_complete?: boolean
+  /** Present (false) only when the local search did not finish within the
+   *  recall deadline (#1586). */
+  local_complete?: boolean
+  /** Why the semantic leg did not contribute, when it did not (#1586 round 4). */
+  degraded_reason?: import('./types.js').DegradedReason
 }
 
 /** Options for the optional cross-encoder rerank stage (#220). */
@@ -138,6 +150,13 @@ export async function hybridSearchWithMeta(
   limit: number,
   storagePath?: string,
   rerank?: RerankOptions,
+  /** `signal` (#1586 audit L3): the caller stopped waiting — the embedding
+   *  leg stops and does not save its cache. */
+  opts?: EmbeddingSearchOptions & {
+    /** Called with the fused ranking before the optional rerank, so a caller
+     *  that stops waiting keeps it (#1586 round 3). */
+    onFused?: (r: HybridSearchResult) => void
+  },
 ): Promise<HybridSearchResult> {
   if (engrams.length === 0) {
     return { engrams: [], mode: 'hybrid', embedderError: null, topScore: null, reranked: 0 }
@@ -156,7 +175,7 @@ export async function hybridSearchWithMeta(
 
   const [bm25Results, embResults] = await Promise.all([
     Promise.resolve(searchEngrams(engrams, lexicalQuery, bm25Limit)),
-    embeddingSearch(engrams, query, embLimit, storagePath),
+    embeddingSearch(engrams, query, embLimit, storagePath, opts),
   ])
 
   const status = embedderStatus()
@@ -183,6 +202,7 @@ export async function hybridSearchWithMeta(
   // optional rerank stage — the miss-signal reasons about fusion strength, not
   // the cross-encoder's reordering.
   const topScore = ranked.length > 0 ? ranked[0].score : null
+  opts?.onFused?.({ engrams: ranked.slice(0, limit).map(s => s.engram), mode, embedderError, topScore, reranked: 0 })
   // Optional cross-encoder rerank (#220): reorders the top-K by joint relevance.
   // Off by default; on failure applyReranker logs + falls back to RRF order, so
   // recall always returns something.

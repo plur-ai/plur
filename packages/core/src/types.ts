@@ -1,6 +1,7 @@
 import type { RemoteOnlyStatus } from './remote-only.js'
 import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { InjectionSource } from './history.js'
+import type { RecallRemoteReport } from './remote-recall.js'
 export type { Engram, KnowledgeAnchor, Association, MeasuredUnder } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
@@ -274,6 +275,15 @@ export interface RecallOptions {
    *  Hook path passes 1500; MCP recall defaults to 2000; session_start warm
    *  passes 5000. */
   remote_timeout_ms?: number
+  /** End-to-end deadline for this recall in ms (#1586). The call returns
+   *  within it with whatever is ready and reports what is missing. Default
+   *  10 s; env PLUR_RECALL_DEADLINE_MS wins. */
+  deadline_ms?: number
+  /** The same deadline as an absolute time (epoch ms), for a caller that
+   *  started its clock before calling — e.g. the MCP handler, whose own
+   *  awaits (workspace resolution) count against the reply (#1586 audit L1).
+   *  Wins over `deadline_ms`. */
+  deadline_at?: number
   /** `.plur.yaml` remote endpoint — establishes the org context for dialing
    *  on the hook path (#776). See {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig
@@ -287,6 +297,13 @@ export interface RecallOptions {
    */
   session?: string
 }
+
+/**
+ * Why a hybrid recall or injection answered without (part of) its semantic
+ * leg (#1586 rounds 3-4): the model is not on disk (run `plur doctor`), the
+ * semantic leg missed the recall deadline, or only the reranker did.
+ */
+export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline'
 
 export interface InjectOptions {
   budget?: number
@@ -313,6 +330,15 @@ export interface InjectOptions {
   rerank?: boolean
   /** Session ID (from plur_session_start) recorded on the co_injection provenance event (#452). */
   session_id?: string
+  /**
+   * The session whose default scope sets the remote dialing context, when it
+   * is not `session_id` (#1566). The MCP server passes the workspace's own
+   * registry key here for a read with no session default of its own, so the
+   * folder's team store is dialed while `session_id` — what is recorded on
+   * the co_injection event — stays the caller's real session (or none).
+   * Omitted: `session_id` sets the dialing context, as before.
+   */
+  dial_session?: string
   /** Which surface asked for this injection. Recorded on the co_injection event. */
   source?: InjectionSource
   /**
@@ -323,6 +349,10 @@ export interface InjectOptions {
   remote?: boolean
   /** Per-call remote budget in ms — see {@link RecallOptions.remote_timeout_ms}. */
   remote_timeout_ms?: number
+  /** End-to-end deadline for `injectHybrid` — see {@link RecallOptions.deadline_ms} (#1586 audit L6). */
+  deadline_ms?: number
+  /** Absolute form — see {@link RecallOptions.deadline_at}. */
+  deadline_at?: number
   /** `.plur.yaml` remote endpoint (hook path org context) — see
    *  {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig
@@ -356,6 +386,15 @@ export interface InjectionResult {
    */
   mode?: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   embedder_error?: string
+  /** Set by `injectHybrid` when it ran without its semantic leg: why (#1586 round 4). */
+  degraded_reason?: DegradedReason
+  /** Set by `injectHybrid` (#1586 audit L6): what the remote (server) leg
+   *  did on THIS call, as on recall. */
+  remote?: RecallRemoteReport
+  /** Set by `injectHybrid`: false when a leg that should have contributed did
+   *  not — a dialed host was not ok, or the semantic leg was cut by the
+   *  deadline. */
+  results_complete?: boolean
   /**
    * Present only when the instance is bound to a remote-only folder (owner
    * decisions 2026-10-01): whether the folder's team server served this

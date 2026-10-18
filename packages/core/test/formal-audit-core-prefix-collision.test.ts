@@ -19,7 +19,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import yaml from 'js-yaml'
 import { Plur, computeContentHash } from '../src/index.js'
-import { storePrefix } from '../src/engrams.js'
+import { storePrefix, legacyStorePrefix } from '../src/engrams.js'
 
 const ENG = 'group:plur/eng'
 const OPS = 'group:plur/ops'
@@ -41,7 +41,10 @@ describe('audit #1228 — two stores sharing a storePrefix', () => {
   let dir: string
   let originalFetch: typeof globalThis.fetch
   beforeEach(() => {
-    expect(storePrefix(ENG)).toBe(storePrefix(OPS))
+    // The OLD three-letter prefix is shared; since 0.21.1 (H1) the current
+    // one is not — these guards still hold for rows carrying the old form.
+    expect(legacyStorePrefix(ENG)).toBe(legacyStorePrefix(OPS))
+    expect(storePrefix(ENG)).not.toBe(storePrefix(OPS))
     dir = mkdtempSync(join(tmpdir(), 'plur-audit-collide-'))
     originalFetch = globalThis.fetch
   })
