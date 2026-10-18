@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { dirname } from 'path'
 import {
-  normalizeEndpointUrl, redactToken, tokenFromEnv, withLock, writeConfigFile,
+  containsToken, normalizeEndpointUrl, redactToken, tokenFromEnv, withLock, writeConfigFile,
   PersonalScopeTakenError, SignInHeldError, type FoldReport, type OwnerOnlyResult, type Plur, type ServerDiscoveryOutcome,
 } from '@plur-ai/core'
 import { backupSecretFile, fetchMe, redactConsoleWith, takeoverMessage, type BackupHost, type FetchFn, type MeAnswer } from './sign-in-shared.js'
@@ -53,7 +53,8 @@ function sameServer(url: string, server: string): boolean {
  * - 503, a network error, a timeout or an unreadable answer → `unknown`: the
  *   run stops, mints no key and writes nothing (the key may still work);
  * - two entries for the server → `unknown`: registration would refuse to
- *   choose which key to replace.
+ *   choose which key to replace;
+ * - a 200 whose user, org or scopes repeat the key → `unknown`.
  *
  * Never throws; no result carries the key except `works.token`.
  */
@@ -73,7 +74,14 @@ export async function checkExistingKey(opts: {
     : tokenFromEnv(typeof e.token_env === 'string' ? e.token_env : undefined, opts.env ?? process.env)
   if (!token) return { state: 'none' }
   const me = await fetchMe(originOf(opts.server), token, { fetch: opts.fetch, timeoutMs: opts.timeoutMs })
-  if (me.status === 'ok') return { state: 'works', token, me }
+  if (me.status === 'ok') {
+    // A server that repeats the key as the user, the org or a scope: not an
+    // answer to build on, and every later print of it would show the key.
+    if ([me.username, me.orgId, ...me.scopes].some(v => containsToken(v, token))) {
+      return { state: 'unknown', reason: 'the server\'s /me answer repeats the key' }
+    }
+    return { state: 'works', token, me }
+  }
   if (me.status === 'rejected') return { state: 'rejected' }
   return { state: 'unknown', reason: redactToken(me.reason, token) }
 }
