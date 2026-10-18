@@ -3,7 +3,8 @@
 
 Everything that decides a verdict is the judge: all of evals/** (promises, evals,
 helpers, config, gold, mutants, baseline), .evals/**, this checker and its test, the
-evals workflow and CODEOWNERS, and fixtures under packages/*/test/helpers/ that evals
+harness tests, the evals workflow and CODEOWNERS, the root package.json (its scripts
+run before the gate), and fixtures under packages/*/test/helpers/ that evals
 import (the team stub server). Source under packages/*/src is the defendant. A change to both in one pull request is how a
 judge gets loosened on the day it would have gone red -- Datacore's first evals
 were weakened exactly that way. Eval changes go in their own pull request,
@@ -21,7 +22,11 @@ import sys
 # A helper, the vitest config or evals.yaml (which names the baseline) can loosen a
 # verdict as surely as an eval can; leaving them out let a pull request point the
 # baseline at a missing file alongside the code change (audit E-03).
-JUDGE = re.compile(r"^(?:evals/.+|\.evals/.+|scripts/(?:check-eval-separation|test_check_eval_separation"
+# The root package.json is the judge too: its `evals*` scripts were how CI reached the
+# gate, so a pull request could turn the gate into a no-op beside a source change
+# (second audit R-02). CI now calls .evals/gate.py directly, and the manifest stays here
+# because its install/build scripts still run before the gate.
+JUDGE = re.compile(r"^(?:package\.json|evals/.+|\.evals/.+|scripts/(?:check-eval-separation|test_check_eval_separation"
                    r"|test_evals_harness)\.py|\.github/workflows/evals\.yml|\.github/CODEOWNERS"
                    r"|packages/[^/]+/test/helpers/.+)$")
 CODE = re.compile(r"^packages/[^/]+/src/.+")
