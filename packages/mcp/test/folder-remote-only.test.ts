@@ -255,3 +255,23 @@ describe('gate review of #1663: MCP tools that read this machine\'s files direct
     expect(profile).toContain('remote-only')
   })
 })
+
+describe('Codex round 5 on #1663: an unreadable map keeps diagnostics away from other servers', () => {
+  it('plur_stores_list loads no store when the folder map cannot be read', async () => {
+    const { createServer: http } = await import('http')
+    const seen: string[] = []
+    const other = http((req, res) => { seen.push(`${req.method} ${req.url}`); res.writeHead(404); res.end('{}') })
+    await new Promise<void>(r => other.listen(0, '127.0.0.1', () => r()))
+    try {
+      const a = other.address() as { port: number }
+      writeFileSync(join(root, 'config.yaml'),
+        `index: false\nembeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${TEAM}"\n` +
+        `  - url: "http://127.0.0.1:${a.port}"\n    token: "${TOKEN}"\n    scope: "group:acme/other"\n`)
+      writeFileSync(join(root, 'folders.yaml'), 'version: 1\nfolders: [[[\n')
+      const c = await client()
+      await c.callTool({ name: 'plur_stores_list', arguments: {} })
+      expect(seen.filter(r => !r.startsWith('GET /api/v1/me'))).toEqual([])
+    } finally { await new Promise<void>(r => other.close(() => r())) }
+  })
+})
+

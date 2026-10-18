@@ -353,3 +353,36 @@ describe('Codex round 3 on #1663', () => {
     expect(other.requests).toEqual([])
   })
 })
+
+describe('Codex round 5 on #1663', () => {
+  it('a pin whose ownership lookups fail is never sent', async () => {
+    const host = new Scripted()
+    await host.start()
+    try {
+      host.handler = (method, path) => {
+        if (path === '/api/v1/me') return { status: 200, body: { username: 'u', org_id: 'o', role: 'developer', scopes: [TEAM] } }
+        if (method === 'GET' && path.startsWith('/api/v1/engrams/')) return { status: 503, body: { error: 'down' } }
+        if (method === 'PATCH') return { status: 200, body: { engram: { id: 'ENG-2026-10-18-013', scope: 'user:me', status: 'active', data: { statement: 'PERSONALPINNED', pinned: false } } } }
+        return { status: 404, body: { error: 'Not found' } }
+      }
+      writeFileSync(join(root, 'config.yaml'), yaml.dump({
+        index: false, embeddings: { enabled: false },
+        stores: [{ url: host.url, token: TOKEN, scope: TEAM, shared: true, readonly: false }],
+      }))
+      const plur = new Plur({ path: root })
+      plur.bindFolder(work)
+      const out = await plur.setPinned('ENG-2026-10-18-013', false).catch(() => null)
+      expect(host.requests.filter(r => r.startsWith('PATCH'))).toEqual([])
+      expect(JSON.stringify(out ?? '')).not.toContain('PERSONALPINNED')
+    } finally { await host.stop() }
+  })
+
+  it('a scopes allow-list must hold the folder scope exactly before it is dialled', async () => {
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    team.recallCalls = 0
+    await plur.recall('client deploys', { scopes: [`${TEAM}/sub`] } as any)
+    expect(team.recallCalls).toBe(0)
+  })
+})
+

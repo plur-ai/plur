@@ -73,3 +73,20 @@ describe('Codex round 4 on #1663: every embedding entry point', () => {
   })
 })
 
+describe('Codex round 5 on #1663: the other search entry points', () => {
+  it('recallAsync, recallExpanded and recallAutoSearch call no model and no embedder', async () => {
+    // A populated team corpus: the team store's rows are the read corpus.
+    server.seedEngram({ id: 'ENG-2026-10-18-014', scope: TEAM, status: 'active', data: { statement: 'client deploys go through the blue lane when it is open', type: 'behavioral' } })
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    await plur.warmRemoteCaches()
+    expect((await plur.list()).length).toBeGreaterThan(0)
+    calls.length = 0
+    const llm = async (p: string) => { calls.push(`llm ${p.slice(0, 30)}`); return '[]' }
+    await plur.recallAsync('how do client deploys go', { llm } as any).catch(() => [])
+    await plur.recallExpanded('how do client deploys go', { llm } as any).catch(() => [])
+    await plur.recallAutoSearch('how do client deploys go when the lane is blocked', { llm } as any).catch(() => null)
+    expect(calls).toEqual([])
+  })
+})
+
