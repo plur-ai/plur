@@ -83,14 +83,16 @@ export function isDiscoveryEnabled(plur: Plur): boolean {
 }
 
 /** Record `failed` for every server endpoint: a refresh that could not run or answered nonsense. */
-function markAllFailed(plur: Plur, st: DiscoveryState): void {
+function markAllFailed(plur: Plur, st: DiscoveryState, launchKeys: ReadonlySet<string>): void {
   // Dated when the refresh failed, and winning a tie: anything this same
   // refresh wrote to disk before it failed (an `ok` before a later step
   // threw) is not newer than its failure. A status written afterwards is.
+  // The endpoints are the ones known when the refresh started, plus any read
+  // now: config.yaml may be unreadable at this moment.
   const at = new Date().toISOString()
-  try {
-    for (const key of plur._serverDiscoveryEndpoints().keys()) st.last.set(key, { status: 'failed', at, failedRun: true })
-  } catch { /* status only */ }
+  const keys = new Set(launchKeys)
+  try { for (const key of plur._serverDiscoveryEndpoints().keys()) keys.add(key) } catch { /* the launch set stands */ }
+  for (const key of keys) st.last.set(key, { status: 'failed', at, failedRun: true })
 }
 
 /**
@@ -105,11 +107,13 @@ export function startBackgroundDiscovery(plur: Plur): boolean {
   // checked_at core writes for it — so a status another process writes after
   // that is seen as newer (discoverySummary).
   const startedAt = new Date().toISOString()
+  let launchKeys: ReadonlySet<string> = new Set()
+  try { launchKeys = new Set(plur._serverDiscoveryEndpoints().keys()) } catch { /* read again on failure */ }
   let run: Promise<ServerDiscoveryOutcome[]>
   try {
     run = Promise.resolve(plur.refreshServerScopes({ timeoutMs: timeoutOverrideMs ?? BACKGROUND_DISCOVERY_TIMEOUT_MS }))
   } catch (err) {
-    markAllFailed(plur, st)
+    markAllFailed(plur, st, launchKeys)
     log(`scope discovery could not start (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
     return false
   }
@@ -122,7 +126,7 @@ export function startBackgroundDiscovery(plur: Plur): boolean {
   }).catch(err => {
     // A refresh that did not finish is a failure — never the cached status,
     // which may say `ok` from an earlier run.
-    markAllFailed(plur, st)
+    markAllFailed(plur, st, launchKeys)
     // The error's text can carry a configured url or a server's answer: only its kind is logged.
     log(`scope discovery did not finish (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
   }).finally(() => {

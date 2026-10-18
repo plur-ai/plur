@@ -12,7 +12,7 @@
  * stub (real HTTP).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/client'
@@ -224,6 +224,23 @@ describe('MCP scope discovery runs in the background (#1631)', () => {
     })
     await connect(plur)
     await whenDiscoverySettled(plur)
+    expect(discoverySummary(plur)[0].status).toBe('failed')
+  })
+
+  it('a failed refresh stays failed when config.yaml was unreadable as it failed', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as any)
+    const dir = seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL, discovery: { status: 'ok', checked_at: '2020-01-01T00:00:00.000Z' } })
+    const before = readFileSync(join(dir, 'config.yaml'), 'utf8')
+    const plur = new Plur({ path: dir })
+    let restore: () => void = () => {}
+    vi.spyOn(plur, 'refreshServerScopes').mockImplementation(async () => {
+      writeFileSync(join(dir, 'config.yaml'), 'stores: [unclosed')
+      restore = () => writeFileSync(join(dir, 'config.yaml'), before)
+      throw new Error('config unreadable')
+    })
+    await connect(plur)
+    await whenDiscoverySettled(plur)
+    restore()
     expect(discoverySummary(plur)[0].status).toBe('failed')
   })
 
