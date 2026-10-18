@@ -37,7 +37,7 @@ Knowledge is stored as **engrams** — small assertions that strengthen with use
 
 ## Tools
 
-By default (lean profile), your agent gets 14 tools. Everything else is reachable through `plur_admin`:
+By default (lean profile), your agent gets 16 tools. Everything else is reachable through `plur_admin`:
 
 | Tool | What it does |
 |------|-------------|
@@ -54,9 +54,11 @@ By default (lean profile), your agent gets 14 tools. Everything else is reachabl
 | `plur_tensions_purge` | Clear stale/resolved tensions |
 | `plur_tensions` | List, scan, confirm, dismiss or resolve contradictions — resolve retires the losing memory, so it is a direct tool, never dispatched through `plur_admin` |
 | `plur_validate_meta` | Test a meta-engram in a new domain — a third failure can retire it, so it is a direct tool too |
+| `plur_report_failure` | Report a failed procedure — procedure evolution rewrites the procedure's text, so it is marked destructive and is a direct tool |
+| `plur_learn_batch` | Store many memories in one call. Never overwrites an existing memory: an item the duplicate checker would merge is saved as its own memory, linked to the existing one (`likely_duplicate_of`). Marked destructive and direct because it saves through the AI duplicate check |
 | `plur_admin` | Dispatch to any other tool: `{ action: "plur_packs_install", args: {...} }` |
 
-Less commonly needed tools (`plur_recall_hybrid`, `plur_inject_hybrid`, `plur_learn_batch`, `plur_ingest`, `plur_sync`, `plur_packs_install`, `plur_packs_list`, `plur_capture`, `plur_timeline`, `plur_provenance`, and more) are all reachable via `plur_admin`. Set `PLUR_TOOL_PROFILE=full` to expose all 44 tools directly.
+Less commonly needed tools (`plur_recall_hybrid`, `plur_inject_hybrid`, `plur_ingest`, `plur_sync`, `plur_packs_install`, `plur_packs_list`, `plur_capture`, `plur_timeline`, `plur_provenance`, and more) are all reachable via `plur_admin`. Set `PLUR_TOOL_PROFILE=full` to expose all 44 tools directly.
 
 A `plur_*` name missing from `tools/list` means it moved behind the gateway, not that the server is down. `plur_admin { action: "help" }` returns every action with a one-line description and its argument schema; `plur_doctor` reports the same inventory as `tool_surface`.
 

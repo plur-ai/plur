@@ -852,6 +852,16 @@ const LLM_BREAKER_WINDOW_MS = 5 * 60 * 1000
 const LLM_BREAKER_COOLDOWN_MS = 60 * 60 * 1000
 
 /** Map engram type to default cognitive level (Idea 5). */
+/**
+ * `LearnContext.related` as a list of ids. A plain string is one id; anything
+ * else that is not an array of non-empty strings contributes nothing.
+ */
+function relatedIds(related: unknown): string[] {
+  if (typeof related === 'string') return related ? [related] : []
+  if (!Array.isArray(related)) return []
+  return [...new Set(related.filter((x): x is string => typeof x === 'string' && x.length > 0))]
+}
+
 const TYPE_TO_COGNITIVE: Record<string, string> = {
   behavioral: 'apply',
   terminological: 'remember',
@@ -5354,9 +5364,14 @@ export class Plur {
       // #240: forward supersedes edge travels with the remote-routed shape.
       // The reverse superseded_by edge on remote targets is NOT patched
       // (best-effort — see LearnContext.supersedes docs).
-      relations: (context?.supersedes?.length ?? 0) > 0 ? {
-        broader: [], narrower: [], related: [], conflicts: [],
-        supersedes: context!.supersedes!, superseded_by: [],
+      // `related` (2026-10-18): batch learning links an item to the memory the
+      // duplicate checker said it resembles, instead of overwriting that memory.
+      // Forward edge only; the target is not modified.
+      // A single id passed as a plain string (an untyped caller) is one id, not
+      // a list of characters.
+      relations: ((context?.supersedes?.length ?? 0) > 0 || relatedIds(context?.related).length > 0) ? {
+        broader: [], narrower: [], related: relatedIds(context?.related), conflicts: [],
+        supersedes: [...(context?.supersedes ?? [])], superseded_by: [],
       } : undefined,
       pinned: context?.pinned === true ? true : undefined,
       pinned_tier: context?.pin_tier,
