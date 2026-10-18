@@ -6,6 +6,7 @@ import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
+import { startBackgroundDiscovery, discoverySummary, isServerEndpoint } from './background-discovery.js'
 import { z } from 'zod'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
@@ -535,6 +536,9 @@ You have **0 engrams**. This session's learnings will be lost unless you store t
 3. Call **plur_session_end** before the conversation ends — suggest new engrams
 
 The more you store now, the smarter you start next session.`
+
+/** How many remote scopes the session-start guide names before "+N more" (#1631). */
+export const GUIDE_SCOPE_LIST_MAX = 20
 
 const PLUR_GUIDE = `## PLUR Quick Start
 
@@ -3597,6 +3601,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // tool call in the server dispatch loop.
         mcpCanary.reset()
         mcpCanary.signal('session_start_hook')
+        // #1631: a company server's scopes are refreshed in the background —
+        // started here when none is in flight, never awaited. The guide below
+        // is built from the cached scopes.
+        startBackgroundDiscovery(plur)
         const crypto = await import('crypto')
         const session_id = crypto.randomUUID()
         const task = args.task as string
@@ -3898,13 +3906,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // #345/#346: when a scope declares self-describing metadata, show what
           // it's FOR (description + covers) inline so the agent can route by
           // purpose, not just by name. Falls back to the bare "scope" name.
-          const scopeList = remote_scopes.map(s => {
+          // #1631: a company server can grant hundreds of scopes; the guide
+          // names the first GUIDE_SCOPE_LIST_MAX and counts the rest
+          // (`remote_scopes` keeps the full list).
+          const scopeList = remote_scopes.slice(0, GUIDE_SCOPE_LIST_MAX).map(s => {
             const detail = [
               s.description ? `— ${safe(s.description)}` : '',
               s.covers && s.covers.length > 0 ? `(covers: ${s.covers.map(safe).join(', ')})` : '',
             ].filter(Boolean).join(' ')
             return detail ? `"${safe(s.scope)}" ${detail}` : `"${safe(s.scope)}"`
-          }).join('; ')
+          }).join('; ') + (remote_scopes.length > GUIDE_SCOPE_LIST_MAX ? `; +${remote_scopes.length - GUIDE_SCOPE_LIST_MAX} more` : '')
           guide += default_scope
             ? `\n\nSession default scope is set to "${default_scope}". To route an engram to a remote ` +
               `enterprise store instead, pass scope explicitly to plur_learn (available remote scopes: ${scopeList}).`
@@ -3925,7 +3936,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // short timeout, and fully swallowed on error — never blocks or fails
           // session_start. Only hints when there's actually something to add.
           try {
-            const discoveries = await plur.discoverRemoteScopes({ timeoutMs: 3000 })
+            // #1631: an endpoint served by a company server entry is not
+            // probed here — its /me runs in the background (never awaited).
+            // With none, the legacy call is exactly as before.
+            const endpoints = plur._distinctRemoteEndpoints()
+            const legacy = endpoints.filter(e => !isServerEndpoint(plur, e.url))
+            const discoveries = legacy.length === endpoints.length
+              ? await plur.discoverRemoteScopes({ timeoutMs: 3000 })
+              : (await Promise.all(legacy.map(e => plur.discoverRemoteScopes({ url: e.url, timeoutMs: 3000 })))).flat()
             // Persist covers/description/sensitivity so suggestScope activates (#668).
             plur.persistScopeMetadata(discoveries)
             // #295: surface auth/reachability failures LOUDLY. discoverRemoteScopes
@@ -3995,6 +4013,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             '(send { action: "help" } for the full action list).'
         }
 
+        let server_discovery: ReturnType<typeof discoverySummary> = []
+        try { server_discovery = discoverySummary(plur) } catch { /* a status row is never worth failing session_start over */ }
         const sessionResponse: Record<string, unknown> = {
           session_id,
           engrams: engrams ?? [],
@@ -4003,6 +4023,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           guide,
           // Remote scope routing info (#229)
           ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
+          // #1631: each company server's cached scope count and discovery
+          // status (`pending` while the background refresh is in flight).
+          ...(server_discovery.length > 0 ? { discovery: server_discovery } : {}),
           ...(default_scope ? { default_scope, scope_source } : {}),
           ...(default_domain ? { default_domain, domain_source: 'project-config' as const } : {}),
           ...(projectConfig.warning ? { project_config_warning: projectConfig.warning } : {}),
