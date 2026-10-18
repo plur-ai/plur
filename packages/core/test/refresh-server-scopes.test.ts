@@ -5,12 +5,14 @@
  * A failed or degraded answer never replaces the cached list: only
  * `discovery.status` and `discovery.checked_at` change then. The `enterprise`
  * block, `pinned_scopes` and `scope_settings` are never touched (metadata
- * aside), and per-scope entries are left alone. Real HTTP against the stub.
+ * aside), and per-scope entries are left alone. An unchanged answer does not
+ * rewrite config.yaml, except to refresh its timestamp once a day. Real HTTP
+ * against the stub.
  *
  * Refs plur-ai/plur#1631
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
@@ -219,5 +221,106 @@ describe('refreshServerScopes — what it never touches', () => {
     expect(raw.scope_settings['group:acme/team']).toMatchObject({ description: 'The team', covers: ['acme.team.web'] })
     expect(raw.stores).toBeUndefined()
     expect(rawConfig().stores).toHaveLength(1)
+  })
+})
+
+describe('refreshServerScopes — an unchanged answer does not rewrite config.yaml', () => {
+  const HOUR = 60 * 60 * 1000
+  const iso = (msAgo: number): string => new Date(Date.now() - msAgo).toISOString()
+  const fileState = (): { text: string; mtimeMs: number } => ({ text: readFileSync(configPath(), 'utf8'), mtimeMs: statSync(configPath()).mtimeMs })
+  const META_ME = {
+    scopes: ['user:acme:alice', 'group:acme/team'],
+    scope_metadata: [{ scope: 'group:acme/team', description: 'The team', covers: ['acme.team.web'] }],
+  }
+
+  it('the same accepted answer twice: the second refresh writes nothing', async () => {
+    stub.setMe(META_ME)
+    seed(serverEntry())
+    await plur.refreshServerScopes()
+    const before = fileState()
+    await new Promise(r => setTimeout(r, 20))
+    const [o] = await plur.refreshServerScopes()
+    expect(o).toMatchObject({ status: 'ok', applied: true, scopes: ['user:acme:alice', 'group:acme/team'] })
+    expect(fileState()).toEqual(before)
+  })
+
+  it('the same refused answer twice: the second refresh writes nothing', async () => {
+    seed(serverEntry())
+    await plur.refreshServerScopes()
+    stub.meStatus = 503
+    stub.meBody = { error: 'scope_lookup_failed' }
+    await plur.refreshServerScopes()   // ok → failed is a change: written
+    expect(rawConfig().stores[0].discovery.status).toBe('failed')
+    const before = fileState()
+    await new Promise(r => setTimeout(r, 20))
+    const [o] = await plur.refreshServerScopes()
+    expect(o).toMatchObject({ status: 'failed', applied: false })
+    expect(fileState()).toEqual(before)
+  })
+
+  it('an unchanged answer refreshes discovered_at once it is more than 24 h old, so the cache stays fresh', async () => {
+    seed(serverEntry())
+    await plur.refreshServerScopes()
+    const raw = rawConfig()
+    const old = iso(25 * HOUR)
+    raw.stores[0].discovery.discovered_at = old
+    raw.stores[0].discovery.checked_at = old
+    writeFileSync(configPath(), yaml.dump(raw))
+    await plur.refreshServerScopes()
+    const d = rawConfig().stores[0].discovery
+    expect(Date.parse(d.discovered_at)).toBeGreaterThan(Date.now() - HOUR)
+    expect(d.checked_at).toBe(d.discovered_at)
+    expect(rawConfig().stores[0].scopes).toEqual(raw.stores[0].scopes)
+  })
+
+  it('an unchanged answer less than 24 h after the last write leaves the timestamps alone', async () => {
+    seed(serverEntry())
+    await plur.refreshServerScopes()
+    const raw = rawConfig()
+    const recent = iso(23 * HOUR)
+    raw.stores[0].discovery.discovered_at = recent
+    raw.stores[0].discovery.checked_at = recent
+    writeFileSync(configPath(), yaml.dump(raw))
+    const before = readFileSync(configPath(), 'utf8')
+    await plur.refreshServerScopes()
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+  })
+
+  it('a future or unparsable discovered_at is refreshed even when the answer is unchanged', async () => {
+    for (const bad of [iso(-48 * HOUR), 'not-a-date']) {
+      seed(serverEntry())
+      await plur.refreshServerScopes()
+      const raw = rawConfig()
+      raw.stores[0].discovery.discovered_at = bad
+      writeFileSync(configPath(), yaml.dump(raw))
+      await plur.refreshServerScopes()
+      const at = Date.parse(rawConfig().stores[0].discovery.discovered_at)
+      expect(at).toBeGreaterThan(Date.now() - HOUR)
+      expect(at).toBeLessThanOrEqual(Date.now())
+    }
+  })
+
+  it('an unchanged refused answer refreshes checked_at once a day, never discovered_at', async () => {
+    seed(serverEntry())
+    await plur.refreshServerScopes()
+    stub.meStatus = 503
+    await plur.refreshServerScopes()
+    const raw = rawConfig()
+    const old = iso(25 * HOUR)
+    raw.stores[0].discovery.discovered_at = old
+    raw.stores[0].discovery.checked_at = old
+    writeFileSync(configPath(), yaml.dump(raw))
+    await plur.refreshServerScopes()
+    const d = rawConfig().stores[0].discovery
+    expect(d.discovered_at).toBe(old)
+    expect(Date.parse(d.checked_at)).toBeGreaterThan(Date.now() - HOUR)
+  })
+
+  it('a changed scope list is written at once, whatever the age', async () => {
+    seed(serverEntry())
+    await plur.refreshServerScopes()
+    stub.setMe({ scopes: ['user:acme:alice', 'group:acme/ops'] })
+    await plur.refreshServerScopes()
+    expect(rawConfig().stores[0].scopes).toEqual(['user:acme:alice', 'group:acme/ops'])
   })
 })

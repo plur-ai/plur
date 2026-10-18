@@ -1235,6 +1235,27 @@ function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<str
   return out
 }
 
+/** How often an unchanged discovery answer refreshes its timestamp (#1631).
+ *  Well inside the 7-day stale-cache limit, so an unchanged answer keeps the
+ *  cache fresh while writing config.yaml at most once a day. */
+const DISCOVERY_TIMESTAMP_REFRESH_MS = 24 * 60 * 60 * 1000
+
+/** Whether `next` must be written over `entry`: anything but the discovery
+ *  timestamps changed, or the timestamp that answer would refresh (`stamp`) is
+ *  older than {@link DISCOVERY_TIMESTAMP_REFRESH_MS}, in the future or
+ *  unparsable. An unchanged answer otherwise never rewrites config.yaml. */
+function discoveryChanged(entry: Record<string, unknown>, next: Record<string, unknown>, stamp: 'discovered_at' | 'checked_at', now: number): boolean {
+  const strip = (e: Record<string, unknown>): Record<string, unknown> => {
+    if (!isPlainObject(e.discovery)) return e
+    const { discovered_at: _d, checked_at: _c, ...rest } = e.discovery
+    return { ...e, discovery: rest }
+  }
+  if (stableJson(strip(next)) !== stableJson(strip(entry))) return true
+  const prev = isPlainObject(entry.discovery) ? entry.discovery[stamp] : undefined
+  const at = typeof prev === 'string' ? Date.parse(prev) : NaN
+  return !Number.isFinite(at) || at > now || now - at >= DISCOVERY_TIMESTAMP_REFRESH_MS
+}
+
 /** Why one scope of a server entry cannot be replaced or removed on its own. */
 function serverEntryScopeRefusal(scope: string, url: string): string {
   return `scope "${scope}" belongs to the server entry for ${safeOrigin(url)}, which lists all its scopes in one entry ` +
@@ -13858,6 +13879,11 @@ Generate an improved version of the procedure that prevents this failure. Return
    * `scope_settings` changes only through {@link persistScopeMetadata}, and
    * only when the server says its metadata is `ok` (#1173, #648).
    *
+   * An answer that changes nothing but the timestamps writes nothing: the
+   * timestamp it would set (`discovered_at` for an accepted answer,
+   * `checked_at` for a refused one) is refreshed at most once a day, so the
+   * 7-day stale-cache checks still see an unchanged answer as fresh.
+   *
    * The requests run in parallel and one server's failure never affects
    * another's outcome. The write is a raw read-modify-write of the server
    * entries under the config lock, so every other key of the entry (unknown
@@ -13930,7 +13956,10 @@ Generate an improved version of the procedure that prevents this failure. Return
         } else {
           next = { ...entry, discovery: { ...oldDiscovery, status: decision.status, checked_at: now } }
         }
-        if (stableJson(next) !== stableJson(entry)) { rawStores[idx] = next; changed = true }
+        if (discoveryChanged(entry, next, decision.replaceCache ? 'discovered_at' : 'checked_at', Date.now())) {
+          rawStores[idx] = next
+          changed = true
+        }
 
         const pinned = stringList(entry.pinned_scopes)
         const listed = new Set(me?.scopes ?? [])
