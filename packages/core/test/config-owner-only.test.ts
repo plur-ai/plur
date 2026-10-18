@@ -167,6 +167,33 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'also readable by BUILTIN\\Users' })
   })
 
+  it('explicit grants that survive /inheritance:r are removed by name, then the list is read again (seen on a Windows runner)', () => {
+    const calls: string[][] = []
+    let removed = false
+    const exec = (c: string, a: string[]) => {
+      calls.push([c, ...a])
+      if (a[1] === '/remove:g') { removed = true; return { status: 0, stdout: 'Successfully processed 1 files' } }
+      if (a.length > 1) return { status: 0, stdout: '' }
+      return { status: 0, stdout: removed
+        ? `${a[0]} ACME\\alice:(F)\n\nSuccessfully processed 1 files`
+        : `${a[0]} NT AUTHORITY\\SYSTEM:(F)\n    BUILTIN\\Administrators:(F)\n    ACME\\alice:(F)\n\nSuccessfully processed 1 files` }
+    }
+    expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: true })
+    expect(calls).toEqual([
+      ['icacls', 'C:\\c.yaml', '/inheritance:r', '/grant:r', 'ACME\\alice:F'],
+      ['icacls', 'C:\\c.yaml'],
+      ['icacls', 'C:\\c.yaml', '/remove:g', 'NT AUTHORITY\\SYSTEM', 'BUILTIN\\Administrators'],
+      ['icacls', 'C:\\c.yaml'],
+    ])
+  })
+
+  it('a removal that fails → ok:false with its exit code', () => {
+    const exec = (_c: string, a: string[]) => a[1] === '/remove:g'
+      ? { status: 5, stdout: '' }
+      : a.length > 1 ? { status: 0, stdout: '' } : { status: 0, stdout: `${a[0]} Everyone:(R)\n ACME\\alice:(F)\n` }
+    expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'icacls failed (exit 5)' })
+  })
+
   it('icacls exit 5 → { ok:false, detail:"icacls failed (exit 5)" }', () => {
     const exec = () => ({ status: 5, stdout: '' })
     expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'icacls failed (exit 5)' })
@@ -301,6 +328,15 @@ describe.runIf(isWin)('Windows, real icacls', () => {
       .filter(t => t && !/^Successfully processed/i.test(t) && !/^Failed processing/i.test(t))
       .map(t => /^(.+?):\(/.exec(t)?.[1]).filter((x): x is string => !!x)
   }
+
+  it('diagnostic: the access list a new file gets, and after protection (printed to the log)', () => {
+    const f = join(root, 'diag.txt')
+    realFs.writeFileSync(f, 'x')
+    console.log('[diag] new file:\n' + spawnSync('icacls', [f], { encoding: 'utf8' }).stdout)
+    const r = protectOwnerOnly(f)
+    console.log('[diag] after protectOwnerOnly ' + JSON.stringify(r) + ':\n' + spawnSync('icacls', [f], { encoding: 'utf8' }).stdout)
+    expect(r).toEqual({ ok: true })
+  })
 
   it('after two core rewrites the ACL lists only the current account', () => {
     const acct = currentWindowsAccount()!

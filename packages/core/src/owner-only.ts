@@ -10,8 +10,9 @@ import { chmodSync, statSync } from 'fs'
  * - Unix: `chmod 0600` (a folder `0700`), then read the mode back.
  * - Windows: `icacls <path> /inheritance:r /grant:r <account>:F` (a folder
  *   `(OI)(CI)F`, so what is created inside it is owner-only too), then
- *   `icacls <path>`, accepted only when every access entry names exactly the
- *   current account.
+ *   `icacls <path>`; explicit grants for other principals that survive the
+ *   inheritance removal are removed (`/remove:g`) and the list is read again.
+ *   Accepted only when every access entry names exactly the current account.
  *
  * icacls runs through execFile with an argument array, never a shell, so a
  * path with spaces or shell characters is one argument.
@@ -94,14 +95,14 @@ function resolve(opts: OwnerOnlyOptions): { platform: NodeJS.Platform; exec: Own
   }
 }
 
-/** Read the Windows access list: only the account → ok; another → ok:false; cannot tell → unknown. */
-function readAcl(path: string, exec: OwnerOnlyExec, account: string): OwnerOnlyCheck {
+/** Read the Windows access list: only the account → ok; another → ok:false (with `others`); cannot tell → unknown. */
+function readAcl(path: string, exec: OwnerOnlyExec, account: string): OwnerOnlyCheck & { others?: string[] } {
   const read = exec('icacls', [path])
   if (read.status !== 0) return { ok: 'unknown', detail: `icacls could not read the access list (exit ${read.status ?? 'unknown'})` }
   const principals = icaclsPrincipals(path, read.stdout)
   if (principals.length === 0) return { ok: 'unknown', detail: 'icacls listed no access entries' }
   const others = [...new Set(principals.filter(p => p.toLowerCase() !== account.toLowerCase()))]
-  if (others.length > 0) return { ok: false, detail: `also readable by ${others.join(', ')}` }
+  if (others.length > 0) return { ok: false, detail: `also readable by ${others.join(', ')}`, others }
   return { ok: true }
 }
 
@@ -119,8 +120,18 @@ export function protectOwnerOnly(path: string, opts: OwnerOnlyOptions = {}): Own
     const grant = `${account}:${opts.directory ? '(OI)(CI)' : ''}F`
     const set = exec('icacls', [path, '/inheritance:r', '/grant:r', grant])
     if (set.status !== 0) return { ok: false, detail: `icacls failed (exit ${set.status ?? 'unknown'})` }
-    const r = readAcl(path, exec, account)
-    return r.ok === true ? r : { ok: false, detail: r.detail }
+    let r = readAcl(path, exec, account)
+    if (r.ok === false) {
+      // `/inheritance:r` drops only INHERITED entries. A file or folder can also
+      // carry explicit grants for other principals — measured on a GitHub
+      // Windows runner (#1631): NT AUTHORITY\SYSTEM and BUILTIN\Administrators
+      // stayed on a new file after the grant. Remove every other principal by
+      // the name icacls itself printed, then read the list back again.
+      const rm = exec('icacls', [path, '/remove:g', ...(r.others ?? [])])
+      if (rm.status !== 0) return { ok: false, detail: `icacls failed (exit ${rm.status ?? 'unknown'})` }
+      r = readAcl(path, exec, account)
+    }
+    return r.ok === true ? { ok: true } : { ok: false, detail: r.detail }
   }
   const want = opts.directory ? 0o700 : 0o600
   try {
@@ -147,7 +158,8 @@ export function checkOwnerOnly(path: string, opts: OwnerOnlyOptions = {}): Owner
   const { platform, exec, account } = resolve(opts)
   if (platform === 'win32') {
     if (!account) return { ok: 'unknown', detail: ACCOUNT_UNKNOWN }
-    return readAcl(path, exec, account)
+    const r = readAcl(path, exec, account)
+    return r.ok === 'unknown' ? { ok: 'unknown', detail: r.detail } : r.ok ? { ok: true } : { ok: false, detail: r.detail }
   }
   let mode: number
   try {

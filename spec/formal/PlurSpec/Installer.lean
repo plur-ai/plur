@@ -355,7 +355,11 @@ end Header
 `protectBackupDir` call core's `protectOwnerOnly(path, { platform: 'win32', directory, account,
 exec })`, which keeps exactly this rule — set, read back, accept only when the parsed principals
 are non-empty and all equal the account (case-insensitive) — with the same `icacls failed`
-/ `also readable by` details. `protect` below still describes it. -/
+/ `also readable by` details. One step was added after the first real Windows run (GitHub
+runner): explicit grants for other principals survive `/inheritance:r`, so when the first
+read-back names another principal they are removed by name (`/remove:g`) and the list is read
+again. `protect` below still describes it, with `readStatus`/`principals` the FINAL read-back
+(a failed removal is a failed `setStatus`). -/
 namespace OwnerOnly
 
 /-- One icacls run pair. `principals` is what `icaclsPrincipals` parsed; names are

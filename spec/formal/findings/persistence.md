@@ -550,3 +550,9 @@ Tests: `packages/core/test/config-owner-only.test.ts` (20 failed before the chan
 expectation in `codex2-atomic-first-write.test.ts` (decision 38).
 
 `lake build`: clean.
+
+Real Windows (windows-init on the PR, first run): `/inheritance:r /grant:r` left explicit
+`NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators` grants on a new file and folder, so the
+read-back failed and every config write was refused. `protectOwnerOnly` now removes other
+principals by name (`/remove:g`) and reads the list again. In the model this is inside
+`aclOk` (the protection is established and verified, or not); no theorem changed.
