@@ -13251,6 +13251,18 @@ Generate an improved version of the procedure that prevents this failure. Return
       throw new Error('registerEnterpriseServer: personalScope must be the personal scope (user:<org>:<username>) the server named')
     }
 
+    // The file is about to hold a key: owner-only on POSIX before it is written
+    // (atomicWrite keeps an existing file's mode). Windows ACLs: B1b.
+    if (process.platform !== 'win32') {
+      try {
+        const mode = fs.statSync(this.paths.config).mode & 0o777
+        if (mode & 0o077) fs.chmodSync(this.paths.config, mode & 0o700)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+          throw new Error(`registerEnterpriseServer: config.yaml could not be made owner-only (${(err as NodeJS.ErrnoException)?.code ?? 'error'}). Nothing was changed.`)
+        }
+      }
+    }
     let result: ReturnType<typeof registerServerEntry> | undefined
     try {
       this._updateRawStores(rawStores => {
@@ -13280,10 +13292,11 @@ Generate an improved version of the procedure that prevents this failure. Return
       ...(typeof r.entry.scope === 'string' ? [r.entry.scope] : []),
       ...stringList(r.entry.scopes), ...stringList(r.entry.pinned_scopes),
     ])
-    const queued_by_scope: Record<string, number> = {}
+    const counts = new Map<string, number>()
     for (const row of await this.listOutbox()) {
-      if (served.has(row.target_scope)) queued_by_scope[row.target_scope] = (queued_by_scope[row.target_scope] ?? 0) + 1
+      if (served.has(row.target_scope)) counts.set(row.target_scope, (counts.get(row.target_scope) ?? 0) + 1)
     }
+    const queued_by_scope: Record<string, number> = Object.fromEntries(counts)
     logger.info(`[plur:register] ${r.status} the server entry for ${safeOrigin(url)}: ${r.report.folded.length} folded, ${r.report.kept_separate.length} kept separate`)
     return { status: r.status, fold: { ...r.report, queued_by_scope } }
   }

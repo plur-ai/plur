@@ -25,6 +25,7 @@ import type { MeResponse } from './store/remote-store.js'
 import { normalizeEndpointUrl, safeOrigin } from './store/remote-store.js'
 import { isServerStoreEntry, withCompatScope, entryMetadata, isSafeScopeName } from './store-expand.js'
 import { isSharedScope } from './scope-util.js'
+import { ServerStoreEntrySchema } from './schemas/config.js'
 
 export type DiscoveryStatus = 'ok' | 'not_synced' | 'failed' | 'auth_failed' | 'degraded'
 
@@ -192,23 +193,26 @@ function sameRoute(x: string, scope: string): boolean {
 }
 
 /**
- * Where a write to the personal scope `scope` goes, from raw entries, as
- * scope-target.ts `personalStoreEntry` selects it: the entries serving it
- * exactly (else case-folded), then a path entry, a writable url entry, a
- * readonly one, config order breaking ties. The route is the url's canonical
- * identity (or the path), the stored credential and readonly; undefined when
- * no entry serves it.
+ * Whether the server entry at `si` of `stores`, newly serving the personal
+ * scope `scope`, could take its writes from an entry that serves it now
+ * (scope-target.ts `personalStoreEntry`: exact matches, else case-folded; a
+ * path entry, then a writable url entry, then a readonly one; config order
+ * breaks ties). Judged on every raw entry, valid at load or not, so an entry
+ * the loader drops cannot hide a takeover: true when any other url entry
+ * serving it exactly would rank behind this one, when one serves it only in
+ * another letter case, or when a path entry serves it only in another case.
  */
-function personalRoute(rawStores: unknown[], scope: string): string | undefined {
-  const serving = (exact: boolean) => rawStores.filter(r => isPlainObj(r) &&
-    servedScopes(r).some(x => (exact ? x === scope : x.toLowerCase() === scope.toLowerCase()))) as Record<string, unknown>[]
-  const exact = serving(true)
-  const cands = exact.length ? exact : serving(false)
-  const rank = (r: Record<string, unknown>): number => (typeof r.url !== 'string' ? 0 : r.readonly !== true ? 1 : 2)
-  const best = cands.reduce<Record<string, unknown> | undefined>((b, r) => (b === undefined || rank(r) < rank(b) ? r : b), undefined)
-  if (!best) return undefined
-  return JSON.stringify([typeof best.url === 'string' ? normalizeEndpointUrl(best.url) : `path:${String(best.path)}`,
-    str(best.token_env) ?? null, str(best.token) ?? null, best.readonly === true])
+function takesPersonalScope(stores: unknown[], si: number, scope: string): boolean {
+  const me = stores[si] as Record<string, unknown>
+  const rank = (r: Record<string, unknown>): number => (r.readonly === true ? 2 : 1)
+  return stores.some((r, j) => {
+    if (j === si || !isPlainObj(r)) return false
+    const served = servedScopes(r)
+    const exact = served.includes(scope)
+    if (!exact) return served.some(x => x.toLowerCase() === scope.toLowerCase())
+    if (typeof r.url !== 'string') return false
+    return rank(me) < rank(r) || (rank(me) === rank(r) && si < j)
+  })
 }
 
 /** The reason a same-server per-scope entry is not folded, or null to fold it.
@@ -393,11 +397,16 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   // already takes the personal scope's writes, this entry must not take them
   // over (another server or key); a re-run with a new key for the entry that
   // already serves it changes its key, which is the point of the re-run.
+  const si = serverEntriesAt(folded, key)[0]
+  const parsed = ServerStoreEntrySchema.safeParse(entry)
+  if (!parsed.success) {
+    // Field paths only: a schema message can quote the value (#408).
+    throw new Error(`the server entry for ${safeOrigin(reg.url)} in config.yaml is not valid (${parsed.error.issues.map(it => it.path.join('.') || '(root)').join(', ')}), so it would not load. Nothing was changed. Fix or remove it, then register again.`)
+  }
   const oldEntry = at.length ? rawStores[at[0]] : undefined
   const alreadyServed = servedScopes(oldEntry).includes(reg.personalScope)
   if (!alreadyServed) {
-    const before = personalRoute(rawStores, reg.personalScope)
-    if (before !== undefined && before !== personalRoute(folded, reg.personalScope)) {
+    if (takesPersonalScope(folded, si, reg.personalScope)) {
       throw new Error(`the personal scope ${reg.personalScope} is already served by another entry in config.yaml, and registering ${safeOrigin(reg.url)} would move its writes there. Nothing was changed. Remove that entry, then register again.`)
     }
   }
