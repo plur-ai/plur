@@ -1,7 +1,7 @@
 {
  "green": [
+  "CLI1",
   "COR1",
-  "COR2",
   "COR3",
   "COR4",
   "COR5",
@@ -10,6 +10,9 @@
   "DUR3",
   "DUR4",
   "DUR5",
+  "DUR6",
+  "EPI1",
+  "EPI2",
   "FDB1",
   "FDB2",
   "FDB3",
@@ -22,7 +25,6 @@
   "HK1",
   "HK3",
   "INJ2",
-  "INJ3",
   "INJ4",
   "INJ5",
   "LRN1",
@@ -32,16 +34,20 @@
   "LRN6",
   "OFF1",
   "OFF3",
+  "OFF4",
   "PCK1",
   "PCK2",
   "PRV1",
   "PRV2",
   "PRV3",
   "PRV4",
+  "PRV6",
+  "PRV7",
   "REC3",
   "REC4",
   "REC5",
   "REC6",
+  "REC7",
   "SYN1",
   "SYN2",
   "SYN3",
@@ -50,6 +56,6 @@
   "TEAM3",
   "TEAM4",
   "TOOL1",
-  "TOOL2"
+  "TOOL4"
  ]
 }
