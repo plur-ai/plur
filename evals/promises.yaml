@@ -183,7 +183,7 @@ capabilities:
     promise: A memory reported as given to my agent is in the actual tool or hook reply, with its text and where it came from.
     kind: deterministic
     today: broken
-    evidence: 'Eval 2026-10-17 (evals/inject INJ-7), driven over the in-memory MCP transport and the installed hook-inject run from source. plur_inject and plur_inject_hybrid report 3 memories (count 3, injected_ids) incl. a pinned ''Never …'' rule, but the reply carries none of them: ''reported as given, but the reply has no entry for it at all'' — both handlers omit the constraints section (packages/mcp/src/tools.ts plur_inject / plur_inject_hybrid). The hook carries the text, but no entry says where it came from: ''its entry does not say where it came from (scope "global")''.'
+    evidence: 'Eval 2026-10-18 (evals/inject INJ-7; extended after re-audit B-01). Surfaces: MCP plur_inject, plur_inject_hybrid and plur_session_start over the in-memory transport, and the installed hook-inject run from source. Cases: a pinned ''Never …'' rule, and a memory over 60 characters routed to ''also consider''. Fails on every surface: the MCP inject replies omit the constraints section (''reported as given, but the reply has no entry for it at all'', tools.ts:2186, :2233); the also-consider entry is cut to 60 characters (''…a cutover is the moment billing ser'', inject.ts:1320 formatLayer1); and no entry names its scope (''does not say where it came from'', formatLayer1/2/3).'
     decide: What must a delivered entry show as 'where it came from'? The eval requires the memory's scope on its entry; a pack name or store label would need the eval widened. No reply shows either today.
 
 
@@ -423,8 +423,8 @@ capabilities:
   - id: HIS-2
     promise: The usage receipt adds up, and forgotten memories do not inflate it.
     kind: deterministic
-    today: holds
-    evidence: 'Eval 2026-10-17, read from core and through the MCP plur_receipt tool. The most-relied-on list is checked non-vacuously: it is not empty, each entry''s count equals how many injections gave it, and an entry is marked forgotten exactly when its memory is forgotten. 3 planted bugs caught. receipt.test.ts. Open issue 1394.'
+    today: broken
+    evidence: 'Eval 2026-10-18 (evals/history HIS-2, re-audit B-01). Expected counts are derived from the memory ids present in the inject reply text, not from injected_ids. Core inject + core receipt holds. Through the MCP plur_inject tool, both the MCP plur_receipt and the core receipt fail: ''the receipt says 4 distinct memories were retrieved; the replies delivered 1 that are still stored (listed as given but absent from the reply text ...)''. Cause: co_injection records every injected id (core index.ts:8047) while the MCP inject replies drop the constraints section (tools.ts:2186, :2233) — the INJ-7 defect. receipt.ts:170 defines retrieval as selection; fixing INJ-7 makes selection and delivery agree. receipt.test.ts. Open issue 1394.'
 
 - key: agent-tools
   name: The tools my agent uses
@@ -444,9 +444,9 @@ capabilities:
   - id: TOOL-4
     promise: Every tool that deletes a memory or overwrites its text is marked as destructive, so my client can ask me first, and the general gateway tool can never delete or overwrite. Moving a memory to another scope is not counted as overwriting.
     kind: deterministic
-    today: holds
-    evidence: 'Eval 2026-10-17 (replaces TOOL-2): deleting/overwriting tools are enumerated from the handlers in packages/mcp/src/tools.ts (forget, pack uninstall, tension resolve, meta validation today; literal floor of 4), each must be listed directly with destructiveHint, absent from the gateway''s actions, and refused by plur_admin with the store unchanged. Rescope is a move and not required. Planted bugs TOOL-4-1/2/3 killed. Whether a given client actually asks is the client''s policy and is not claimed.'
-    decide: With an AI checker configured, plur_learn_batch can fold a new statement into an existing memory (UPDATE replaces its text, MERGE appends). Does that automatic merge count as 'overwrites its text'? If yes, plur_learn_batch must be marked destructive and TOOL-4 is broken today; the eval lists it as pending, not graded.
+    today: broken
+    evidence: 'Eval 2026-10-18 (evals/agent-tools TOOL-4, re-audit R-03). Three checks: handlers enumerated from tools.ts (delete, statement rewrite, and saves through the AI duplicate check — learnBatch/learnAsync — with no pending exception); a scripted duplicate checker on 127.0.0.1 (no model, no network) answering UPDATE and MERGE; and an effects sweep calling all 31 gateway actions with harmless arguments, reopening the store after each. Fails: through plur_admin, plur_learn_batch with an UPDATE answer replaced an existing memory''s text (''three bullets'' -> ''five bullets'') and with MERGE appended to it; plur_report_failure replaced a procedure''s text with whatever its checker URL returned (''SCRIPTED CHECKER REWRITE ...''). Both are listed with destructiveHint false (tools.ts:1863, :4907), so the gateway (tools.ts:1301, keyed on destructiveHint) runs them, and neither is a direct tool in the lean profile. plur_learn did not overwrite. Rescope is a move, run as a dry run, not counted.'
+    decide: 'Owner decision 2026-10-18: batch learning never overwrites an existing memory; an UPDATE or MERGE verdict saves the new statement as its own memory, linked to the old one. Product fix on branch fix/learn-batch-overwrite. Still open: plur_report_failure, which rewrites a procedure from a caller-supplied checker URL.'
 
 - key: hooks
   name: Automatic memory in Claude Code
