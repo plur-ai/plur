@@ -209,7 +209,10 @@ function gitlabHostParts(h: string): { host: string; port?: number } | null {
   if (!isSafeHost(h)) return null
   const m = /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(h)
   if (!m) return null
-  return m[2] === undefined ? { host: m[1] } : { host: m[1], port: Number(m[2]) }
+  if (m[2] === undefined) return { host: m[1] }
+  // The host grammar allows any 1-5 digits; a port outside 1-65535 names no server.
+  const port = Number(m[2])
+  return port >= 1 && port <= 65535 ? { host: m[1], port } : null
 }
 
 /**
