@@ -36,7 +36,7 @@ interface DiscoveryState {
   enabled: boolean
   inFlight: Promise<void> | null
   /** normalized endpoint url → this process's last settled outcome and when its check started (ISO). */
-  last: Map<string, { status: DiscoveryStatus; at: string }>
+  last: Map<string, { status: DiscoveryStatus; at: string; failedRun?: boolean }>
 }
 
 const states = new WeakMap<Plur, DiscoveryState>()
@@ -83,9 +83,13 @@ export function isDiscoveryEnabled(plur: Plur): boolean {
 }
 
 /** Record `failed` for every server endpoint: a refresh that could not run or answered nonsense. */
-function markAllFailed(plur: Plur, st: DiscoveryState, at: string): void {
+function markAllFailed(plur: Plur, st: DiscoveryState): void {
+  // Dated when the refresh failed, and winning a tie: anything this same
+  // refresh wrote to disk before it failed (an `ok` before a later step
+  // threw) is not newer than its failure. A status written afterwards is.
+  const at = new Date().toISOString()
   try {
-    for (const key of plur._serverDiscoveryEndpoints().keys()) st.last.set(key, { status: 'failed', at })
+    for (const key of plur._serverDiscoveryEndpoints().keys()) st.last.set(key, { status: 'failed', at, failedRun: true })
   } catch { /* status only */ }
 }
 
@@ -105,7 +109,7 @@ export function startBackgroundDiscovery(plur: Plur): boolean {
   try {
     run = Promise.resolve(plur.refreshServerScopes({ timeoutMs: timeoutOverrideMs ?? BACKGROUND_DISCOVERY_TIMEOUT_MS }))
   } catch (err) {
-    markAllFailed(plur, st, startedAt)
+    markAllFailed(plur, st)
     log(`scope discovery could not start (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
     return false
   }
@@ -118,7 +122,7 @@ export function startBackgroundDiscovery(plur: Plur): boolean {
   }).catch(err => {
     // A refresh that did not finish is a failure — never the cached status,
     // which may say `ok` from an earlier run.
-    markAllFailed(plur, st, startedAt)
+    markAllFailed(plur, st)
     // The error's text can carry a configured url or a server's answer: only its kind is logged.
     log(`scope discovery did not finish (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
   }).finally(() => {
@@ -187,9 +191,11 @@ export function discoverySummary(plur: Plur): DiscoveryRow[] {
     const cached = typeof g.status === 'string' && STATUSES.has(g.status) ? g.status as DiscoveryStatus : undefined
     // The newer of this process's last outcome and the status on disk, which
     // another process may have written since. A disk status with no time is
-    // older than any outcome seen here; on a tie the disk wins.
+    // older than any outcome seen here; on a tie the disk wins, except over
+    // a refresh that failed (markAllFailed).
     const mine = st?.last.get(key)
-    const diskNewer = cached !== undefined && (!mine || (g.checkedAt !== undefined && g.checkedAt >= mine.at))
+    const diskNewer = cached !== undefined && (!mine || (g.checkedAt !== undefined &&
+      (mine.failedRun ? g.checkedAt > mine.at : g.checkedAt >= mine.at)))
     const known = diskNewer ? cached : mine?.status
     const row: DiscoveryRow = { url: displayUrl(g.url), status: st?.inFlight ? 'pending' : (known ?? 'pending'), scopes: g.scopes.size }
     if (row.status === 'pending' && known) row.last_status = known
