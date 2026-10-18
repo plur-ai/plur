@@ -2589,6 +2589,13 @@ export class Plur {
   private _scopedUrlEntry(scope: string, outcome: string): StoreEntry | undefined {
     const target = resolveScopeTarget(scope, this.config.stores ?? [])
     if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers, outcome)
+    // Under a company server's org but not granted: no store claims it, so
+    // there is nothing to act on, and the remote walk must not act on a row
+    // of another store instead (gate of #1667).
+    if (target.kind === 'unauthorized') {
+      throw new Error(`"${scope}" is not granted to you on ${target.server}; ${outcome}. `
+        + 'Ask an admin for access, or pass a granted scope (plur stores list).')
+    }
     return target.kind === 'remote' ? target.entry : undefined
   }
 
@@ -8568,6 +8575,9 @@ export class Plur {
     const unverifiedStores: string[] = []
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
+      // An explicit scope names its store exactly (#1633): the walk never
+      // rates a row of a store that does not claim that scope.
+      if (scope && entry.scope !== scope) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
       // Automatic feedback (#1310): a server that does not advertise
       // `feedback.source` is skipped before any engram lookup is spent on it.
@@ -9821,6 +9831,9 @@ export class Plur {
     let pendingUnreachableError: string | null = null
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
+      // An explicit scope names its store exactly (#1633): the walk never
+      // retires a row of a store that does not claim that scope.
+      if (targetScope && entry.scope !== targetScope) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
       if (entry.readonly === true) {
         // Check if the engram exists here before throwing, so readonly
