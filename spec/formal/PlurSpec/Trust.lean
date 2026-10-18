@@ -25,8 +25,10 @@ namespace PlurSpec.Trust
 fingerprint equals the pin, returned alone. `install` is `installCompanyCa`:
 an invalid pin is refused before anything is read; a `caFile` is searched and
 nothing else (unreadable → not found, no match → mismatch); otherwise the
-system sources are searched. A success writes exactly `[c]`; a refusal
-writes nothing, so an earlier file stays as it was. -/
+system sources are searched. The found certificate is written only when the
+file can be made owner-only first (`protectable`; 0600, or a verified
+owner-only icacls list on Windows) — else `unprotected`. A success writes
+exactly `[c]`; a refusal writes nothing, so an earlier file stays as it was. -/
 namespace Anchor
 
 variable {Cert Fp : Type} [DecidableEq Fp]
@@ -35,15 +37,17 @@ def find (fp : Cert → Fp) (pin : Fp) : List Cert → Option Cert
   | [] => none
   | c :: cs => if fp c = pin then some c else find fp pin cs
 
-inductive Reason | notFound | mismatch | invalidFingerprint
+inductive Reason | notFound | mismatch | invalidFingerprint | unprotected
   deriving DecidableEq, Repr
 
 structure Input (Cert : Type) where
   pinValid : Bool                       -- /^[0-9a-f]{64}$/ (served-installer rule)
   caFile   : Option (Option (List Cert)) -- none: no caFile; some none: unreadable
   system   : List Cert
+  protectable : Bool                    -- the file can be made owner-only before it is filled
 
-def install (fp : Cert → Fp) (pin : Fp) (i : Input Cert) : Except Reason (List Cert) :=
+/-- The search: which certificate, if any, would be written. -/
+def select (fp : Cert → Fp) (pin : Fp) (i : Input Cert) : Except Reason (List Cert) :=
   if i.pinValid = false then .error .invalidFingerprint
   else match i.caFile with
     | some none => .error .notFound
@@ -55,6 +59,11 @@ def install (fp : Cert → Fp) (pin : Fp) (i : Input Cert) : Except Reason (List
       match find fp pin i.system with
       | some c => .ok [c]
       | none => .error .notFound
+
+def install (fp : Cert → Fp) (pin : Fp) (i : Input Cert) : Except Reason (List Cert) :=
+  match select fp pin i with
+  | .ok f => if i.protectable then .ok f else .error .unprotected
+  | .error e => .error e
 
 /-- What Node trusts after the install: default roots, then the extra file.
 On a refusal the file is the one an earlier run left (`prev`). -/
@@ -72,10 +81,9 @@ theorem find_sound (fp : Cert → Fp) (pin : Fp) :
     · have := find_sound fp pin ds c h
       exact ⟨this.1, List.mem_cons_of_mem _ this.2⟩
 
-/-- Whatever is written is exactly one certificate, and it carries the pin. -/
-theorem install_only_pinned (fp : Cert → Fp) (pin : Fp) (i : Input Cert) (f : List Cert) :
-    install fp pin i = .ok f → ∃ c, f = [c] ∧ fp c = pin := by
-  unfold install
+theorem select_only_pinned (fp : Cert → Fp) (pin : Fp) (i : Input Cert) (f : List Cert) :
+    select fp pin i = .ok f → ∃ c, f = [c] ∧ fp c = pin := by
+  unfold select
   split
   · simp
   · split
@@ -87,6 +95,22 @@ theorem install_only_pinned (fp : Cert → Fp) (pin : Fp) (i : Input Cert) (f : 
     · split
       · rename_i c hc; intro h; cases h; exact ⟨c, rfl, (find_sound fp pin i.system c hc).1⟩
       · simp
+
+/-- Whatever is written is exactly one certificate, and it carries the pin. -/
+theorem install_only_pinned (fp : Cert → Fp) (pin : Fp) (i : Input Cert) (f : List Cert) :
+    install fp pin i = .ok f → ∃ c, f = [c] ∧ fp c = pin := by
+  unfold install
+  cases h : select fp pin i with
+  | error e => simp
+  | ok g =>
+    cases hp : i.protectable <;> simp
+    intro hg; subst hg; exact select_only_pinned fp pin i g h
+
+/-- A file that cannot be made owner-only first is never written. -/
+theorem unprotected_writes_nothing (fp : Cert → Fp) (pin : Fp) (i : Input Cert) (h : i.protectable = false)
+    (f : List Cert) : install fp pin i ≠ .ok f := by
+  unfold install
+  cases select fp pin i <;> simp [h]
 
 /-- The default trust is never replaced: every default root stays trusted. -/
 theorem defaults_kept (defaults prev : List Cert) (r : Except Reason (List Cert)) :
@@ -125,20 +149,20 @@ theorem refusal_writes_nothing (fp : Cert → Fp) (pin : Fp) (i : Input Cert) (e
 /-- An invalid pin is refused whatever the sources hold. -/
 theorem invalid_pin_refused (fp : Cert → Fp) (pin : Fp) (i : Input Cert) (h : i.pinValid = false) :
     install fp pin i = .error .invalidFingerprint := by
-  simp [install, h]
+  simp [install, select, h]
 
 /-- The caFile is checked again and never bypassed: when it holds no match,
 the run refuses even if a system store holds the pinned CA. -/
-theorem caFile_not_bypassed (fp : Cert → Fp) (pin : Fp) (cs sys : List Cert)
+theorem caFile_not_bypassed (fp : Cert → Fp) (pin : Fp) (cs sys : List Cert) (p : Bool)
     (hm : find fp pin cs = none) :
-    install fp pin ⟨true, some (some cs), sys⟩ = .error .mismatch := by
-  simp [install, hm]
+    install fp pin ⟨true, some (some cs), sys, p⟩ = .error .mismatch := by
+  simp [install, select, hm]
 
 /-- Non-vacuity: the pinned CA, found in a bundle next to another, is
 installed alone. (`Cert := Nat`, `fp := id`, pin 1.) -/
 theorem install_reachable :
-    install (Cert := Nat) id 1 ⟨true, some (some [2, 1]), []⟩ = .ok [1] := by
-  simp [install, find]
+    install (Cert := Nat) id 1 ⟨true, some (some [2, 1]), [], true⟩ = .ok [1] := by
+  simp [install, select, find]
 
 /-- Counterexample for the bug `find`'s single-certificate result prevents
 (replayed: enterprise-ca.test.ts "a bundle caFile installs ONLY the pinned
@@ -158,7 +182,7 @@ def effectiveReplace (defaults prev : List Cert) : Except Reason (List Cert) →
   | .error _ => if prev = [] then defaults else prev
 
 theorem replace_loses_defaults :
-    (7 : Nat) ∉ effectiveReplace [7] [] (install (Cert := Nat) id 1 ⟨true, none, [1]⟩) := by decide
+    (7 : Nat) ∉ effectiveReplace [7] [] (install (Cert := Nat) id 1 ⟨true, none, [1], true⟩) := by decide
 
 end Anchor
 
@@ -255,8 +279,9 @@ end LaunchEnv
 
 /-! ## 3. The real exec adapter (`exec.ts`)
 
-`spawnSync` reports a timeout as `status: null` with error ETIMEDOUT. The
-adapter maps every outcome to a number; the property is that only a real
+`spawnSync` reports a timeout as `status: null` with error ETIMEDOUT. A
+spawnSync that throws before starting (a NUL in an argument) is caught and
+is `startFailed` with pid 0. The adapter maps every outcome to a number; the property is that only a real
 exit 0 reads as 0. -/
 namespace Exec
 

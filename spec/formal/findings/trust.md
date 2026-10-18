@@ -13,6 +13,7 @@ Abstract: certificates and fingerprints (`fp` is any function; the real one is S
 - `Anchor.defaults_kept`: every default root stays trusted, on success and on refusal (the CA is added, never a replacement).
 - `Anchor.growth_only_pinned`: anything trusted after the run is a default root, was in the earlier file, or carries the pin.
 - `Anchor.refusal_writes_nothing`, `Anchor.invalid_pin_refused`.
+- `Anchor.unprotected_writes_nothing`: when the file cannot be made owner-only before it is filled, nothing is written (reason `unprotected`).
 - Non-vacuity: `Anchor.install_reachable` (the pinned CA, found in a bundle next to another, is installed alone).
 
 ## T2. A mismatching CA is never trusted; the caFile is checked again
@@ -49,6 +50,11 @@ Each run on a scratch copy of the model; every mutation breaks the named theorem
 | credential check removed from `build` | `no_credentials` |
 | `build` also emits NODE_TLS_REJECT_UNAUTHORIZED=0 | `keys_allowed`, `build_reachable` |
 | timeout mapped to 0 | `zero_means_exit_zero`, `timeout_nonzero` |
+| `install` ignores `protectable` | `unprotected_writes_nothing` |
+
+## Review update (2026-10-18)
+
+Gate review of the PR. The model gained `Input.protectable`, the `unprotected` reason and `Anchor.unprotected_writes_nothing`; the search is now `select` and `install` wraps it, so the existing theorems hold unchanged. The code changes it follows: `company-ca.pem` is written through an exclusive temp file made owner-only while empty (0600, or a verified owner-only icacls list on Windows); the Windows store export runs `<SystemRoot>\System32\WindowsPowerShell\v1.0\powershell.exe` only for a SystemRoot of `<drive>:\Windows`, with a plain .NET script; macOS runs `/usr/bin/security`; a proxy value with whitespace, a control character or any `@` is refused; an exec rejected before start is `startFailed` (127). Not modelled: the path and script choices (they decide which program runs, not what is trusted).
 
 ## Not verified
 
