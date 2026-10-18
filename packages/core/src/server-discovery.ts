@@ -443,6 +443,10 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   stores: unknown[]; status: 'added' | 'updated' | 'unchanged'; report: Omit<FoldReport, 'queued_by_scope'>; entry: Record<string, unknown>
   removed: ScopeHolder[]
 } {
+  // One object per position: YAML aliases load as the same object at several
+  // positions, and the holders are mapped back to their positions by identity
+  // (#1665 gate). A shallow copy changes no content.
+  rawStores = rawStores.map(r => (isPlainObj(r) ? { ...r } : r))
   const key = normalizeEndpointUrl(reg.url)
   if (reg.keepSignIn && rawStores.some(r => isPlainObj(r) && typeof r.url === 'string' && normalizeEndpointUrl(r.url) === key)) {
     throw new SignInHeldError(`config.yaml already holds a sign-in for ${safeOrigin(reg.url)}; it is kept. Nothing was changed.`)

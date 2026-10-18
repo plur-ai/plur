@@ -316,25 +316,32 @@ export async function pollForToken(
   let transient = 0
 
   const expired = (): Error => new Error(`Sign-in timed out: the code expired before it was entered. ${rerun}`)
+  // Time used: the waits (as asked of `sleep`), or the wall clock if that is
+  // more. One deadline: no wait and no request runs past it (a request's
+  // timeout is the time left), and no answer that arrives after it counts.
+  const remaining = (): number => limitMs - Math.max(Date.now() - started, waited)
+  const late = (sent: number): boolean => remaining() <= 0 || waited + (Date.now() - sent) >= limitMs
   for (;;) {
-    // One deadline: no wait runs past it, and no poll (so no key) after it.
-    const remaining = Math.min(limitMs - waited, limitMs - (Date.now() - started))
-    if (remaining <= 0) throw expired()
-    const ms = Math.min(nextWaitMs ?? intervalMs, remaining)
+    if (remaining() <= 0) throw expired()
+    const ms = Math.min(nextWaitMs ?? intervalMs, remaining())
     nextWaitMs = undefined
     await pause(ms)
     waited += ms
-    if (waited >= limitMs || Date.now() - started >= limitMs) throw expired()
+    if (remaining() <= 0) throw expired()
     onPoll?.()
 
     let r: Response
     let data: Record<string, unknown> | undefined
+    const sent = Date.now()
     try {
-      ({ r, data } = await postJson(f, url, { grant_type: DEVICE_GRANT, device_code: deviceCode, client_id: DEVICE_CLIENT_ID }))
+      ({ r, data } = await postJson(f, url, { grant_type: DEVICE_GRANT, device_code: deviceCode, client_id: DEVICE_CLIENT_ID },
+        Math.max(1, Math.min(REQUEST_TIMEOUT_MS, remaining()))))
     } catch {
+      if (late(sent)) throw expired()
       if (++transient > TRANSIENT_MAX) throw new Error(`Could not reach ${origin} while waiting for the sign-in. ${rerun}`)
       continue
     }
+    if (late(sent)) throw expired()
     if (r.status === 429) {
       // Never sooner than the interval: a Retry-After of 0 must not turn the
       // poll into a tight loop against the server.
@@ -357,7 +364,10 @@ export async function pollForToken(
     if (err === 'access_denied') throw new Error('Sign-in was cancelled in the browser. Nothing was changed.')
     if (err === 'expired_token') throw new Error(`The code expired before it was entered. ${rerun}`)
     if (err === 'invalid_grant') throw new Error(`The server no longer knows this sign-in request (already used or unknown). ${rerun}`)
-    const named = typeof err === 'string' && /^[a-z_]{1,64}$/.test(err) ? `: ${err}` : ''
+    // Only a code this client knows is named; any other text is the server's
+    // and could carry anything, a key included.
+    const known = ['invalid_request', 'invalid_client', 'unsupported_grant_type', 'unauthorized_client', 'server_error']
+    const named = typeof err === 'string' && known.includes(err) ? `: ${err}` : ''
     throw new Error(`Sign-in failed, ${UNEXPECTED}${named} (HTTP ${r.status}). ${rerun}`)
   }
 }
@@ -624,7 +634,8 @@ export function formatStatusLines(report: LoginStatusReport): string[] {
 
 /** `plur login --status` — build, print, and exit (0 all valid / 1 otherwise). */
 async function runStatus(flags: GlobalFlags): Promise<never> {
-  const plur = createPlur(flags)
+  // A status readout writes nothing: no project-store discovery (#1665 gate).
+  const plur = createPlur(flags, { autoDiscover: false })
   let health: RemoteHealth[] = []
   try {
     health = await plur.checkRemoteHealth({ timeoutMs: STATUS_PROBE_TIMEOUT_MS })
@@ -747,7 +758,7 @@ async function runSignIn(origin: string, parsed: ParsedArgs, flags: GlobalFlags)
 
   const root = flags.path || process.env.PLUR_PATH || undefined
   const configPath = detectPlurStorage(root).config
-  const plur = createPlur(flags)
+  const plur = createPlur(flags, { autoDiscover: false })
   // Every line from here on is redacted with the key: the server's user
   // name, key name, scopes and errors are its own text and could repeat it.
   const say = (line: string): void => outputText(redactToken(line, key))
@@ -809,7 +820,7 @@ async function runSignIn(origin: string, parsed: ParsedArgs, flags: GlobalFlags)
     say(`Scopes could not be fetched now${d?.error ? ` (${d.error})` : ''}; they are fetched at the next session start.`)
   }
   outputInfo(redactToken(`Server: ${signalReload()}`, key), flags)
-  process.exit(elsewhere && !elsewhere.startsWith('a local') ? 1 : 0)
+  process.exit(elsewhere ? 1 : 0)
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -828,7 +839,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   // O15: a remaining ~/.plur/config.json is moved into config.yaml once.
-  await migrateLegacyLogin({ home: homedir(), plur: () => createPlur(flags), print: outputError })
+  await migrateLegacyLogin({ home: homedir(), plur: () => createPlur(flags, { autoDiscover: false }), print: outputError })
 
   // --status: token validity per configured (url, token) credential (#587)
   if (parsed.status) {
