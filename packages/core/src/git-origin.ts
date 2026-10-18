@@ -63,15 +63,26 @@ function parseSchemeUrl(url: string): ParsedRemote | null {
 }
 
 // scp-like: [user@]host:path — must not start with a scheme, must have ':', must not be a Windows drive.
+// The host is a name or a bracketed IPv6 literal (`git@[2001:db8::1]:team/backend.git`).
 // The path may be absolute on the host (`git@host:/srv/repo.git`); its leading '/' is dropped.
-const SCP_RE = /^(?:[^/@:]+@)?([^/:@]+):(?!\\)([^?#]*?)(?:\.git)?\/?$/
+const SCP_RE = /^(?:[^/@:[\]]+@)?(\[[^\]/@]*\]|[^/:@[\]]+):(?!\\)([^?#]*?)(?:\.git)?\/?$/
 
 function parseScpUrl(url: string): ParsedRemote | null {
   // scp-like has no ://; reject anything with a scheme
   if (url.includes('://')) return null
   const m = url.match(SCP_RE)
   if (!m) return null
-  const host = m[1].toLowerCase()
+  let host = m[1].toLowerCase()
+  if (host.startsWith('[')) {
+    // Canonical form, as URL.hostname prints it for an https/ssh remote, so
+    // both spellings of one address compare equal; not an address → null.
+    try {
+      host = new URL(`ssh://${host}/`).hostname
+    } catch {
+      return null
+    }
+    if (!host.startsWith('[')) return null
+  }
   const path = normalisePath(m[2])
   if (!path) return null
   return { protocol: 'scp', host, path }
