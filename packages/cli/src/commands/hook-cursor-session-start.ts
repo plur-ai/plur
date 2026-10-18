@@ -66,8 +66,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // remote-only (also an `ask` workspace with a remote-only root): another
   // root's generated rule may hold personal memory from an earlier session;
   // this session writes its own rule in `dir` only.
+  // Every root, `dir` included, before any early return (Codex round 6 on
+  // #1663): the fresh rule is written below only when the session goes on.
   if (policy.mode === 'remote-only' || (policy.mode === 'ask' && cleanupDirs)) {
-    for (const root of cleanupDirs ?? []) if (root !== dir) removeGeneratedContextRules(root)
+    for (const root of new Set([...(cleanupDirs ?? []), ...(dir ? [dir] : [])])) removeGeneratedContextRules(root)
   }
 
   const conversationId = cursorConversationId(input)

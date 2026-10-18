@@ -1458,6 +1458,17 @@ function refuseLocalFileInRemoteOnly(plur: Plur, what: string): void {
   throw new RemoteOnlyWriteError(ro.folder, ro.scope, undefined, ro.blocked ? 'blocked' : 'local-store', ro.blocked ?? what)
 }
 
+/**
+ * remote-only folder: refuse a tool that would send memories to a model the
+ * caller names (Codex round 6 on #1663). That model is not the folder's team
+ * server, so nothing is sent; the refusal comes before any memory is read.
+ */
+function refuseModelInRemoteOnly(plur: Plur, tool: string): void {
+  if (!plur.remoteOnlyFolder()) return
+  throw new Error(`This folder is remote-only: its memory goes only to its team server, and ${tool} would send ` +
+    'memories to the model you named, so nothing was sent. Run it outside the remote-only folder.')
+}
+
 function getAllToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -2870,6 +2881,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['llm_base_url', 'llm_api_key'],
       },
       handler: async (args, plur) => {
+        refuseModelInRemoteOnly(plur, 'plur_extract_meta')
         const llm = makeHttpLlm(
           args.llm_base_url as string,
           args.llm_api_key as string,
@@ -2990,6 +3002,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['meta_engram_id', 'test_domain', 'llm_base_url', 'llm_api_key'],
       },
       handler: async (args, plur) => {
+        refuseModelInRemoteOnly(plur, 'plur_validate_meta')
         const allEngrams = await plur.list()
         const meta = allEngrams.find(e => e.id === (args.meta_engram_id as string))
         if (!meta) {
@@ -4793,6 +4806,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         })
 
         if (args.scan) {
+          refuseModelInRemoteOnly(plur, 'plur_tensions scan')
           const llm = args.llm_base_url && args.llm_api_key
             ? makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, args.llm_model as string | undefined)
             : getLlmFunction()
@@ -5001,6 +5015,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         required: ['engram_id', 'failure_context'],
       },
       handler: async (args, plur) => {
+        if (args.llm_base_url && args.llm_api_key) refuseModelInRemoteOnly(plur, 'plur_report_failure with a model')
         let llm: LlmFunction | undefined
         if (args.llm_base_url && args.llm_api_key) {
           llm = makeHttpLlm(
