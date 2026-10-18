@@ -98,10 +98,12 @@ describe('explicit-scope lookups go through the resolver (#1633, row 34)', () =>
   let dir: string
   let originalFetch: typeof globalThis.fetch
   let calls: Array<{ host: string; method: string; path: string }>
+  let rowScope: string
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-project-scope-'))
     originalFetch = globalThis.fetch
     calls = []
+    rowScope = E.scope
     globalThis.fetch = vi.fn(async (input: any, init?: { method?: string }) => {
       const url = new URL(typeof input === 'string' ? input : input.url)
       const method = init?.method ?? 'GET'
@@ -111,7 +113,7 @@ describe('explicit-scope lookups go through the resolver (#1633, row 34)', () =>
           ok: true, status: 200,
           json: async () => (method === 'DELETE'
             ? { id: 'ENG-REMOTE-1', status: 'retired' }
-            : { id: 'ENG-REMOTE-1', scope: E.scope, status: 'active', pinned: false, data: { statement: 'remote fact' } }),
+            : { id: 'ENG-REMOTE-1', scope: rowScope, status: 'active', pinned: false, data: { statement: 'remote fact' } }),
           text: async () => '',
         } as Response
       }
@@ -179,6 +181,47 @@ describe('explicit-scope lookups go through the resolver (#1633, row 34)', () =>
       const plur = new Plur({ path: dir })
       await expect(plur.feedback('ENG-REMOTE-1', 'positive', 'user:acme:me')).rejects.toThrow(/not found/i)
       expect(mutating()).toHaveLength(0)
+    })
+  })
+
+  describe('a personal scope a local store keeps never reaches the server (gate of #1667, Codex r1)', () => {
+    const personal = (readonlyPath = false) => {
+      writeFileSync(join(dir, 'personal.yaml'), 'engrams: []\n')
+      writeConfig(dir, [
+        { path: join(dir, 'personal.yaml'), scope: 'user:acme:me', ...(readonlyPath ? { readonly: true } : {}) },
+        { url: SERVER, token: 't', scope: 'user:acme:me', shared: false, readonly: false },
+      ])
+      rowScope = 'user:acme:me'
+    }
+
+    it('forget does not retire the same-scope row on the url store', async () => {
+      personal()
+      const plur = new Plur({ path: dir })
+      await expect(plur.forget('ENG-REMOTE-1', 'x', { scope: 'user:acme:me', force: true })).rejects.toThrow(/not found/i)
+      expect(mutating()).toHaveLength(0)
+    })
+
+    it('feedback does not rate the same-scope row on the url store', async () => {
+      personal()
+      const plur = new Plur({ path: dir })
+      await expect(plur.feedback('ENG-REMOTE-1', 'positive', 'user:acme:me')).rejects.toThrow(/not found/i)
+      expect(mutating()).toHaveLength(0)
+    })
+
+    it('setPinned keeps the selection of a readonly local store: no PATCH to the url store', async () => {
+      personal(true)
+      const plur = new Plur({ path: dir })
+      await expect(plur.setPinned('ENG-REMOTE-1', true, { scope: 'user:acme:me' })).rejects.toThrow(/no writable url store/)
+      expect(mutating()).toHaveLength(0)
+    })
+
+    it('pinnedQuota offers no candidate setPinned would refuse', async () => {
+      personal()
+      const plur = new Plur({ path: dir })
+      const local = (await plur.learnAsync('a local fact for the pin quota check', { scope: 'primary' } as any)).engram
+      await expect(plur.setPinned(local.id, true, { scope: 'user:acme:me' })).rejects.toThrow(/no writable url store/)
+      const q = await plur.pinnedQuota(local.id, { scope: 'user:acme:me' })
+      expect(q.candidate).toBeUndefined()
     })
   })
 
