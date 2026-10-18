@@ -22,6 +22,12 @@ Keys are opaque naturals. The server is one of two kinds
 does not. What the network does to each attempt is an adversarial outcome
 chosen per event, so every theorem holds for every schedule of outcomes.
 
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox` (read only: the
+queued count per scope it reports); no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+
 Checked against #1631 (epic/1797 first install, 2026-10-18): updated.
 `routeFor` in `_flushOutboxClaimed` now holds an entry whose target scope two
 servers claim, before `heldBack` and before the push, so even `force` does not

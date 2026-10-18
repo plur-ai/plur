@@ -17,6 +17,14 @@ scan's verdict on the content. Every theorem holds for every such oracle. The pe
 (`personalStoreEntry`'s first-minimum-rank reduce) is modelled by the equivalent cascade of
 `find?` per rank. Left out: string grammar of scopes, the cooldown/held-back filters of the flush
 (they only skip), YAML key order.
+
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox`; no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+server-discovery.ts gains `foldStoresIntoServerEntry` and `registerServerEntry` beside
+`acceptDiscoveredScopes`, which is unchanged. A registration refuses two server entries on one
+url, like the cache write (D4), and never writes `scopes` or `discovery`.
 -/
 
 set_option linter.unusedSimpArgs false

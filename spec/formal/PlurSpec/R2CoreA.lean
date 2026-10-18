@@ -7,6 +7,11 @@ theorems hold for every oracle.
 
 Findings and replays: spec/formal/findings/r2-corea.md.
 
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox`; no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+
 Checked against the outbox lease (decision D2, PR #1231): index.ts gained a lease on outbox
 rows (`_outboxLease` bookkeeping, taken and released around each push) and `listOutbox` reports
 `leased_until`. Decision C3 (2026-09-30 merge of main) removed the lease again: #1277's per-entry

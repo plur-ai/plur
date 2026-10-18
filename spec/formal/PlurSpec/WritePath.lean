@@ -7,6 +7,11 @@ content scanners, config) are abstracted: theorems quantify over them.
 
 Findings and replays: spec/formal/findings/writepath.md.
 
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox`; no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+
 Checked against #1349 (merged into #1228 on 2026-09-30): still holds. index.ts's
 only change is a re-export of `pendingStoreLockOps`, and no write-path branch changed.
 
