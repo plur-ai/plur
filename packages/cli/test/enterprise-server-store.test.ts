@@ -118,6 +118,15 @@ describe('checkExistingKey', () => {
     expect(await checkExistingKey({ server, config: { stores: [entry] }, fetch: f, env: {} })).toEqual({ state: 'none' })
   })
 
+  it('a /me answer that repeats the key (as the user, the org or a scope) is not trusted → unknown, and the key is in no field but token', async () => {
+    for (const me of [{ ...ME, username: KEY }, { ...ME, org_id: `x${KEY}` }, { ...ME, scopes: [...ME.scopes, `group:acme/${KEY}`] }]) {
+      const { f } = scriptedFetch({ status: 200, body: me })
+      const r = await checkExistingKey({ server, config: { stores: [serverEntry(server)] }, fetch: f })
+      expect(r.state).toBe('unknown')
+      expect(JSON.stringify(r)).not.toContain(KEY)
+    }
+  })
+
   it('two server entries for the server → unknown (registration would refuse which key to replace)', async () => {
     const { f, calls } = scriptedFetch({ status: 200, body: ME })
     const r = await checkExistingKey({ server, config: { stores: [serverEntry(server), serverEntry(`${server}/`, { token: 'plur_sk_second_0123456789abcdef' })] }, fetch: f })
