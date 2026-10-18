@@ -190,3 +190,6 @@ Code-level (eligibility is `PerScope.ok` in §6); replayed by the round-5 tests.
 
 #### Codex audit round 7 (2026-10-18, PASS with one medium, fixed)
 - A personal scope in another letter case could still be folded into a server entry that already served the scope, reordering the case-folded personal selection (and its dial). The fold now keeps an entry separate when any entry, the server entry and other folding entries included, serves its personal scope in another letter case (`scope-served-elsewhere`). Replayed by the round-7 tests.
+
+#### Codex audit round 8 (2026-10-18, PASS with one medium, fixed)
+- A metadata-free entry folded into a server entry whose `scope_settings` held a dormant value for its scope woke that value (e.g. `dial: never`). The fold now requires every source in force (each folding entry, and the server entry when it serves the scope) to equal the folded result exactly, absent keys included; otherwise `metadata-differs`. Stricter than `fold_md_keeps_set`'s hypothesis, so that theorem still applies (`PerScope.ok`). The pure test "a scope already pinned is not repeated" now gives the server entry the same settings, since a fold no longer changes them. Replayed by the round-8 test.

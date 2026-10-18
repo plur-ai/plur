@@ -302,9 +302,7 @@ export function foldStoresIntoServerEntry(
       sameRoute(x, scope) && (x !== scope || (j !== si && why.get(j) !== null))))
     if (elsewhere) why.set(i, 'scope-served-elsewhere')
   }
-  // Pass 3: fold a scope only when its metadata has one value: every folding
-  // entry that declares any agrees, and so does the server entry's own
-  // (scope_settings, and the top level for its compat scope).
+  // Pass 3: fold a scope only when its metadata in force does not change.
   const byScope = new Map<string, number[]>()
   for (const [i, w] of why) {
     if (w !== null) continue
@@ -316,12 +314,15 @@ export function foldStoresIntoServerEntry(
       ...(server.scope === scope ? entryMetadata(server) : {}),
       ...(isPlainObj(settings[scope]) ? entryMetadata(settings[scope] as Record<string, unknown>) : {}),
     }
-    const mds = [own, ...idx.map(i => entryMetadata(rawStores[i] as Record<string, unknown>))].filter(m => Object.keys(m).length)
-    // `dial` is read per entry, so its absence (the default) counts too:
-    // among the folding entries, and the server entry's when it serves the scope.
-    const servesIt = servedScopes(server).includes(scope)
-    const dials = [...(servesIt ? [own.dial] : []), ...idx.map(i => (rawStores[i] as Record<string, unknown>).dial)]
-    if (mds.some(m => !isDeepStrictEqual(m, mds[0])) || dials.some(d => !isDeepStrictEqual(d, dials[0]))) {
+    // The scope's metadata once folded is the server entry's (dormant or
+    // not) with the folded entries' over it; every source the scope had in
+    // force must already have exactly that, absent keys included (`dial` is
+    // read per entry): the folding entries, and the server entry when it
+    // serves the scope.
+    const mds = idx.map(i => entryMetadata(rawStores[i] as Record<string, unknown>))
+    const after = Object.assign({}, own, ...mds) as Record<string, unknown>
+    const sources = [...(servedScopes(server).includes(scope) ? [own] : []), ...mds]
+    if (sources.some(m => !isDeepStrictEqual(m, after))) {
       for (const i of idx) why.set(i, 'metadata-differs')
     }
   }
