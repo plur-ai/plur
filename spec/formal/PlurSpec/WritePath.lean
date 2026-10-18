@@ -1341,7 +1341,13 @@ index.ts `_remoteOnlyContext` before every write (`_guardSensitiveScope`,
 local-only, not `user:`, and the shared resolver says `remote` and writable
 (`writeScope`). It used "some writable url entry has exactly this scope" before
 the merge onto development; `old_deliverable_accepts_conflict` is why that changed.
-The grammar predicates are oracles. -/
+The grammar predicates are oracles.
+
+Review of #1521, (d): an update never retargets a save queued from a remote-only
+folder (any scope change is refused, §2's invariant is untouched), and the
+retarget branch refuses it unless the new scope is a deliverable team scope
+(a personal url store can be the resolver's writable target, #1515/#1528).
+Messages name folders and scopes only as escaped data; that is not modelled. -/
 
 structure ROBind where
   blocked     : Bool

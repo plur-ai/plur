@@ -74,6 +74,7 @@ import {
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome, stampStoreRow} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { RemoteOnlyStoreGuard, QueueHoldStore, isQueuedForFolder } from './store/remote-only-store-guard.js'
+import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
@@ -9303,7 +9304,9 @@ export class Plur {
       const writable = target.kind === 'remote' && target.writable ? target.entry : undefined
       // A save queued from a remote-only folder keeps going to a team store:
       // never cancelled into a local row (audit of #1521, B2).
-      if (Plur._isRemoteOnlyQueued(stored) && !writable) throw this._queuedStaysRemote(stored)
+      // (A personal url store can be `writable` here, #1515/#1528: only a team
+      // scope is a destination for it — review of #1521, d.)
+      if (Plur._isRemoteOnlyQueued(stored) && (!writable || !this._isDeliverableTeamScope(newScope))) throw this._queuedStaysRemote(stored)
       const personalLocal = target.kind === 'local' && !!target.entry && newScope.toLowerCase().startsWith('user:')
       if (personalLocal) {
         delete sd._outbox
@@ -13904,9 +13907,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       // `off` or a remote-only decision we cannot see, so read and write nothing.
       const where = policy.mapError
       const why = policy.reason === 'resolver-error'
-        ? `the folder decision for ${dir} could not be resolved`
+        ? `the folder decision for ${folderEscaped(dir)} could not be resolved`
         : where
-          ? `the folder map ${where.file}${where.line !== undefined ? ` (line ${where.line})` : ''} could not be read`
+          ? `the folder map ${folderEscaped(where.file)}${where.line !== undefined ? ` (line ${where.line})` : ''} could not be read`
           : 'the folder map could not be read'
       this._remoteOnly = { folder: dir, scope: null, blocked: why }
       return
@@ -13920,7 +13923,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * succeeds.
    */
   bindFolderUnresolved(dir: string, why: string): void {
-    this._remoteOnly = { folder: dir, scope: null, blocked: `the folder decision for ${dir} could not be resolved (${why})` }
+    this._remoteOnly = { folder: dir, scope: null, blocked: `the folder decision for ${folderEscaped(dir)} could not be resolved (${folderEscaped(why)})` }
   }
 
   private _remoteOnlyError(refusal: RemoteOnlyRefusal, requested?: string, detail?: string): RemoteOnlyWriteError {

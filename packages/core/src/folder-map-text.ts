@@ -1,4 +1,5 @@
-import { Document, isMap, isScalar, isSeq, parseDocument, stringify, type Pair, type YAMLMap } from 'yaml'
+import { isMap, isScalar, isSeq, parseDocument, type Pair, type YAMLMap } from 'yaml'
+import jsyaml from 'js-yaml'
 
 /**
  * The text of `<PLUR home>/folders.yaml`, written so that a person's edits
@@ -64,8 +65,12 @@ function lineEndIncl(src: string, pos: number): number {
   return i === -1 ? src.length : i + 1
 }
 
+// Every value is WRITTEN with js-yaml, the reader PLUR loads the file with
+// (review of #1521): the `yaml` package (YAML 1.2 core) writes `2026-10-02`
+// or `0b101` unquoted, which js-yaml then reads back as a date or a number.
+// The `yaml` package only locates entries and values in the source text.
 function renderScalar(v: unknown): string {
-  return stringify(v, { lineWidth: 0 }).replace(/\n$/, '')
+  return jsyaml.dump(v, { lineWidth: -1, noRefs: true }).replace(/\n$/, '')
 }
 
 /** A new entry's keys in reading order: the folder, then what is decided for it. */
@@ -79,7 +84,7 @@ function ordered(e: Entry): Entry {
 }
 
 function renderItem(e: Entry, indent: number): string {
-  const body = new Document(ordered(e)).toString({ lineWidth: 0 }).replace(/\n$/, '')
+  const body = jsyaml.dump(ordered(e), { lineWidth: -1, noRefs: true }).replace(/\n$/, '')
   const pad = ' '.repeat(indent)
   return body.split('\n').map((l, i) => (i === 0 ? `${pad}- ${l}` : `${pad}  ${l}`)).join('\n') + '\n'
 }
@@ -103,9 +108,8 @@ function sameEntries(a: unknown, b: Entry[]): boolean {
 /** True when `text` parses to a map whose `folders` are exactly `next`. */
 function holds(text: string, next: Entry[]): boolean {
   try {
-    const doc = parseDocument(text)
-    if (doc.errors.length > 0) return false
-    const js = doc.toJS() as { folders?: unknown } | null
+    // Read back the way PLUR reads the file (js-yaml), not with the writer's parser.
+    const js = jsyaml.load(text.replace(/^\uFEFF/, '')) as { folders?: unknown } | null
     return sameEntries(js?.folders, next)
   } catch {
     return false
@@ -288,5 +292,5 @@ export function renderFolderMapText(previous: string | null, entries: Entry[]): 
       if (holds(out, entries)) return out
     }
   } catch { /* fall through to the plain dump */ }
-  return new Document({ version: 1, folders: entries }).toString({ lineWidth: 0 })
+  return jsyaml.dump({ version: 1, folders: entries }, { lineWidth: -1, noRefs: true })
 }

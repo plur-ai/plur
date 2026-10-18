@@ -10,6 +10,7 @@
  * scopes no url store serves), a private write, or content the sensitivity
  * guard would demote to local — is refused, with nothing written or sent.
  */
+import { escapedPath, quoted, folderCommandOfferable } from './folder-ask.js'
 
 /** A Plur instance's binding to a remote-only folder. */
 export interface RemoteOnlyBinding {
@@ -70,31 +71,34 @@ export class RemoteOnlyWriteError extends Error {
   }
 }
 
-function quote(p: string): string {
-  return /^[A-Za-z0-9_./~:@-]+$/.test(p) ? p : `"${p.replace(/(["\\$`])/g, '\\$1')}"`
-}
+// Names in a message are data, never instructions: a folder or scope is
+// printed only as escapedPath() (a JSON string with every shell-, line- and
+// display-unsafe character escaped), and a command is printed only for a
+// folder the folder question could offer one for, quoted by the same rule
+// (review of #1521: the raw folder went into a double-quoted command).
+const name = (v: string): string => escapedPath(v)
 
 export function remoteOnlyRefusalMessage(
   folder: string, scope: string | null, requested: string | undefined, refusal: RemoteOnlyRefusal, detail?: string,
 ): string {
   if (refusal === 'blocked') {
-    return `PLUR reads and writes nothing in ${folder}: ${detail ?? 'the folder map could not be read'}. ` +
+    return `PLUR reads and writes nothing in the folder ${name(folder)}: ${detail ?? 'the folder map could not be read'}. ` +
       'Fix or remove that file (every folder behaves like ask until then).'
   }
   if (refusal === 'queued-stays-remote') {
-    return `${detail ?? 'This memory'} is a save from the remote-only folder ${folder}, waiting to be sent to the team ` +
-      `server${scope ? ` (scope "${scope}")` : ''}. It can only be delivered (to a team scope) or forgotten, never ` +
+    return `${detail ?? 'This memory'} is a save from the remote-only folder ${name(folder)}, waiting to be sent to the team ` +
+      `server${scope ? ` (scope ${name(scope)})` : ''}. It can only be delivered (to a team scope) or forgotten, never ` +
       'kept on this machine, so nothing was changed.'
   }
   const where = scope
-    ? `This folder (${folder}) is remote-only: its memory lives only on the team server, in scope "${scope}".`
-    : `This folder (${folder}) is remote-only, but its folder-map entry names no team scope.`
+    ? `This folder (${name(folder)}) is remote-only: its memory lives only on the team server, in scope ${name(scope)}.`
+    : `This folder (${name(folder)}) is remote-only, but its folder-map entry names no team scope.`
   const why: Record<RemoteOnlyRefusal, string> = {
-    'personal-scope': `"${requested}" is a personal scope, which stays on this machine, so nothing was saved.`,
-    'local-only-scope': `"${requested}" is not served by a team server you can write to, so it would stay on this machine; nothing was saved.`,
+    'personal-scope': `${name(String(requested))} is a personal scope, which stays on this machine, so nothing was saved.`,
+    'local-only-scope': `${name(String(requested))} is not served by a team server you can write to, so it would stay on this machine; nothing was saved.`,
     private: 'A private memory stays on this machine, so nothing was saved.',
     sensitive: `The content looks sensitive (${detail ?? 'a sensitive pattern'}); outside a remote-only folder it would be kept locally, which this folder does not allow, so nothing was saved.`,
-    'no-store': `No writable team store for "${requested ?? scope}" is configured in config.yaml, so nothing was saved.`,
+    'no-store': `No writable team store for ${name(String(requested ?? scope))} is configured in config.yaml, so nothing was saved.`,
     'no-scope': 'Nothing was saved.',
     'local-row': `${detail ?? 'That operation'} works only on team memories here; that memory is kept on this machine (a personal memory, or a save still waiting to be sent), so nothing was changed.`,
     blocked: '', // handled above
@@ -103,10 +107,13 @@ export function remoteOnlyRefusalMessage(
     timeline: 'The session timeline (episodes) is kept on this machine and can hold session content, so nothing is captured here.',
   }
   const fix = refusal === 'personal-scope' || refusal === 'local-only-scope' || refusal === 'private'
-    ? scope ? ` Save it without a scope (it goes to "${scope}") or to another team scope.` : ''
+    ? scope ? ` Save it without a scope (it goes to ${name(scope)}) or to another team scope.` : ''
     : ''
-  const change = ` To keep memory on this machine here instead, change the folder: plur folders set ${quote(folder)} --on ` +
-    `(or plur folders rm ${quote(folder)}).`
+  const change = folderCommandOfferable(folder)
+    ? ` To keep memory on this machine here instead, change the folder: plur folders set ${quoted(folder)} --on ` +
+      `(or plur folders rm ${quoted(folder)}).`
+    : ' To keep memory on this machine here instead, the user changes this folder\'s entry by hand (plur folders list); ' +
+      'its path cannot be printed safely in a command.'
   return `${where} ${why[refusal]}${fix}${change}`
 }
 
@@ -114,7 +121,7 @@ export function remoteOnlyRefusalMessage(
 export function remoteOnlyUnservedNotice(status: RemoteOnlyStatus): string {
   const host = status.host ? ` (${status.host})` : ''
   if (status.reason === 'no-scope' || status.reason === 'no-store') {
-    return `[PLUR Memory — remote-only folder: no team server serves ${status.scope ? `"${status.scope}"` : 'this folder'}` +
+    return `[PLUR Memory — remote-only folder: no team server serves ${status.scope ? name(status.scope) : 'this folder'}` +
       ` (${status.reason}), so this session starts without memory. Fix the folder entry with plur folders set.]`
   }
   return `[PLUR Memory — remote-only folder: the team server${host} could not be reached (${status.reason ?? 'unknown'}), ` +
@@ -126,7 +133,7 @@ export function remoteOnlyUnservedNotice(status: RemoteOnlyStatus): string {
 export function remoteOnlySessionLine(binding: RemoteOnlyBinding): string {
   if (binding.blocked) return `[PLUR Memory — off here: ${binding.blocked}. Nothing is read or saved until it is fixed.]`
   return binding.scope
-    ? `This folder is remote-only: memory here lives only on the team server, in scope "${binding.scope}". ` +
+    ? `This folder is remote-only: memory here lives only on the team server, in scope ${name(binding.scope)}. ` +
       'Call plur_learn without a scope (it goes there) or with another team scope; personal and local scopes are refused here.'
     : 'This folder is remote-only but names no team scope: memory is off here until its entry names one (plur folders set).'
 }

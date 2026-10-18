@@ -537,6 +537,14 @@ function editedMapText(root: string, map: FolderMap, edit: FolderMapEdit): strin
  * no file, not valid UTF-8, or a result that does not read back (strictly, as
  * the loader reads) as exactly `map`. Then {@link editedMapText} is tried.
  */
+/** A new file: the commented template holding `map`, or null when it does not read back (strictly) as exactly `map`. */
+function templateMapText(map: FolderMap): string | null {
+  const text = renderFolderMapText(null, map.folders.map(cleanEntry) as unknown as Record<string, unknown>[])
+  const back = parseMapText(text)
+  if (!('map' in back)) return null
+  return sortedJson(back.map.folders.map(cleanEntry)) === sortedJson(map.folders.map(cleanEntry)) ? text : null
+}
+
 function surgicalMapText(root: string, map: FolderMap): string | null {
   const r = readMapText(folderMapPath(root))
   if (r === null || 'unreadable' in r || !r.utf8) return null
@@ -561,7 +569,7 @@ export function saveFolderMap(root: string, map: FolderMap, edit?: FolderMapEdit
   // A new file starts from the commented template: an example of every
   // setting, one explanation line each (#1521, owner decision 2026-10-01).
   const body = !existsSync(file)
-    ? renderFolderMapText(null, map.folders.map(cleanEntry) as unknown as Record<string, unknown>[])
+    ? templateMapText(map) ?? yaml.dump({ version: 1, folders: map.folders.map(cleanEntry) }, { lineWidth: 120, noRefs: true })
     : surgicalMapText(root, map)
       ?? (edit ? editedMapText(root, map, edit) : null)
       ?? yaml.dump({ version: 1, folders: map.folders.map(cleanEntry) }, { lineWidth: 120, noRefs: true })
