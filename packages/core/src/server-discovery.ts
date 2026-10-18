@@ -30,7 +30,7 @@ export interface AcceptedDiscovery {
   status: DiscoveryStatus
   /** true → the caller writes `scopes` as the new cache. */
   replaceCache: boolean
-  /** The new list when `replaceCache`, otherwise a copy of `cached`. */
+  /** When replaceCache, the new list. When not, a copy of `cached`. */
   scopes: string[]
   rejected: ScopeRejection[]
 }
@@ -45,7 +45,6 @@ export interface AcceptDiscoveredScopesInput {
 
 const ORG_PREFIXED_KINDS = ['group', 'project', 'team', 'space'] as const
 
-/** Why `scope` is not one of this org's scopes, or null when it is. */
 function orgRejection(scope: string, orgId: string, username: string): ScopeRejection['reason'] | null {
   if (!orgId) return 'org-prefix'
   if (scope.startsWith('user:')) {
@@ -59,35 +58,47 @@ function orgRejection(scope: string, orgId: string, username: string): ScopeReje
   return 'org-prefix'
 }
 
-function filterScopes(me: MeResponse, otherServersScopes: ReadonlyMap<string, string>): { scopes: string[]; rejected: ScopeRejection[] } {
+function filterScopes(
+  me: MeResponse,
+  otherServersScopes: ReadonlyMap<string, string>,
+): { scopes: string[]; rejected: ScopeRejection[] } {
   const scopes: string[] = []
   const rejected: ScopeRejection[] = []
   for (const scope of me.scopes) {
-    const reason = orgRejection(scope, me.org_id, me.username)
-      ?? (otherServersScopes.has(scope) ? 'claimed-by-other-server' : null)
+    const reason =
+      orgRejection(scope, me.org_id, me.username) ??
+      (otherServersScopes.has(scope) ? 'claimed-by-other-server' : null)
     if (reason) rejected.push({ scope, reason })
     else scopes.push(scope)
   }
   return { scopes, rejected }
 }
 
+/**
+ * Pure decision table for scope discovery (#1631).
+ *
+ * Takes a /me answer (or an error) and the existing cache, and decides
+ * whether to replace the cached scope list and which scopes to accept.
+ * Never reads from disk, never writes to disk, no I/O.
+ */
 export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): AcceptedDiscovery {
   const { me, error, cached, otherServersScopes } = input
-  const keep = (status: DiscoveryStatus): AcceptedDiscovery => ({ status, replaceCache: false, scopes: [...cached], rejected: [] })
-  const empty = (status: DiscoveryStatus): AcceptedDiscovery => ({ status, replaceCache: true, scopes: [], rejected: [] })
+  const keep = (status: DiscoveryStatus, rejected: ScopeRejection[] = []): AcceptedDiscovery =>
+    ({ status, replaceCache: false, scopes: [...cached], rejected })
+  const empty = (status: DiscoveryStatus, rejected: ScopeRejection[] = []): AcceptedDiscovery =>
+    ({ status, replaceCache: true, scopes: [], rejected })
 
   if (error || !me) {
     const status = error?.status
     return keep(status === 401 || status === 403 ? 'auth_failed' : 'failed')
   }
 
-  // No org to check the list against: a malformed answer, never a real
-  // "you have no scopes". Report what was refused, keep a non-empty cache.
+  // An empty org_id means the server's response cannot be checked against an
+  // org — treat it as degraded regardless of scopes_status. not_synced is
+  // excluded because its scope list is always [], so there is nothing to check.
   if (!me.org_id && me.scopes_status !== 'not_synced') {
     const rejected = me.scopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' }))
-    return cached.length > 0
-      ? { ...keep('degraded'), rejected }
-      : { ...empty('degraded'), rejected }
+    return cached.length > 0 ? keep('degraded', rejected) : empty('degraded', rejected)
   }
 
   switch (me.scopes_status) {
@@ -95,9 +106,10 @@ export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): Acce
       return { status: 'ok', replaceCache: true, ...filterScopes(me, otherServersScopes) }
     case 'not_synced':
       return cached.length > 0 ? keep('not_synced') : empty('not_synced')
-    default:
+    default: {
       // 'absent': an older server that does not say whether its list is real.
       if (me.scopes.length > 0) return { status: 'ok', replaceCache: true, ...filterScopes(me, otherServersScopes) }
       return cached.length > 0 ? keep('degraded') : empty('degraded')
+    }
   }
 }
