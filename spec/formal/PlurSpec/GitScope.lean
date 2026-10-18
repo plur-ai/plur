@@ -34,7 +34,9 @@ form as an https/ssh remote. Still holds: parsing is the abstract `R` / `url (r 
 input, so every theorem covers the new parses unchanged. `loadGitScopeSources` (outside the
 model) now keeps a server entry with a malformed `scopes` value as a source with no scopes, and
 gives an entry whose url is not http(s) an empty identity and no scopes: such a source can only
-add a freshness `problem`, which `problem_unknown` already covers.
+add a freshness `problem`, which `problem_unknown` already covers. `sameGitlab` now also refuses
+a `gitlab_host` whose port is outside 1-65535: a narrower `same r g` oracle, which every theorem
+already quantifies over.
 -/
 
 set_option linter.unusedSimpArgs false
