@@ -27,7 +27,7 @@ import sys
 # (second audit R-02). CI now calls .evals/gate.py directly, and the manifest stays here
 # because its install/build scripts still run before the gate.
 JUDGE = re.compile(r"^(?:package\.json|evals/.+|\.evals/.+|scripts/(?:check-eval-separation|test_check_eval_separation"
-                   r"|test_evals_harness)\.py|\.github/workflows/evals\.yml|\.github/CODEOWNERS"
+                   r"|test_evals_harness)\.py|scripts/evals-local\.sh|\.github/workflows/evals\.yml|\.github/CODEOWNERS"
                    r"|packages/[^/]+/test/helpers/.+)$")
 CODE = re.compile(r"^packages/[^/]+/src/.+")
 

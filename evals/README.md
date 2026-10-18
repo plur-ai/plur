@@ -19,6 +19,20 @@ node evals/helpers/provision-model.mjs verify   # ...and prove it loads with dow
 The `pnpm` scripts are shortcuts for people. CI calls `python3 .evals/gate.py`,
 `run.py` and `bite.py` directly, because a pull request can rewrite `package.json`.
 
+**Local first.** GitHub runs only the merge gate: pull requests into `main` and
+pushes to `main`. The nightly and the agent evals run on a machine of ours, with
+the same steps and refusals as the workflow:
+
+```bash
+scripts/evals-local.sh gate [BASE]   # separation check, harness tests, gate against origin/BASE (default main)
+scripts/evals-local.sh nightly       # model verified offline, holdout hash and labels, scoreboard with the holdout, bite
+scripts/evals-local.sh agents        # agent evals, 3 runs each, subscription login only (never a paid API key)
+```
+
+A pull request into a branch other than `main` pastes the output of
+`scripts/evals-local.sh gate <its base>` into its description. The nightly and
+agents jobs in the workflow remain for a manual run (`workflow_dispatch`).
+
 The scripts in `.evals/` are vendored from the Datacore dev module and are
 language-agnostic. Python 3.11 with PyYAML runs them.
 
@@ -106,6 +120,6 @@ so a variable left on cannot weaken the gate.
 | Kind | When | Where it runs |
 |---|---|---|
 | deterministic | the code decides it | every pull request (the gate) |
-| quality | "the right memory" on labelled data | dev set: every pull request; private holdout: nightly |
+| quality | "the right memory" on labelled data | dev set: every pull request; private holdout: nightly, locally (`scripts/evals-local.sh nightly`) |
 | formal | "never / always" over all states | `spec/formal`, every pull request |
-| agent | what a real agent does with PLUR attached; it must pass all three runs (fewer runs never certify) | weekly, and by hand before each release (RELEASING.md, pre-release step 5); costs money |
+| agent | what a real agent does with PLUR attached; it must pass all three runs (fewer runs never certify) | weekly, locally (`scripts/evals-local.sh agents`), and by hand before each release (RELEASING.md, pre-release step 5); costs subscription usage |

@@ -473,6 +473,37 @@ def test_nightly_never_scores_after_a_failed_holdout_check():
         assert "always()" not in cond and "steps.holdout.outcome == 'success'" in cond, (needle, cond)
 
 
+# --- local first (owner, 2026-10-18): GitHub runs only the merge gate --------------------------
+
+def test_github_runs_evals_only_for_pull_requests_into_main_and_has_no_schedule():
+    on = _workflow().get(True) or _workflow().get("on")   # yaml reads a bare `on:` as True
+    assert "schedule" not in on, on
+    assert on["pull_request"] == {"branches": ["main"]}, on["pull_request"]
+    assert on["push"] == {"branches": ["main"]}, on["push"]
+    jobs = _workflow()["jobs"]
+    assert "schedule" not in str(jobs["nightly"]["if"]) and "workflow_dispatch" in str(jobs["nightly"]["if"])
+    assert "schedule" not in str(jobs["agents"]["if"]) and "inputs.agents" in str(jobs["agents"]["if"])
+
+
+def test_local_script_keeps_the_workflow_refusals():
+    sh = (ROOT / "scripts" / "evals-local.sh").read_text()
+    nightly = sh[sh.index("  nightly)"):sh.index("  agents)")]
+    # the model is verified offline, and the holdout checked, before anything is scored
+    order = [nightly.index(n) for n in ("provision_model", "hash_set.py", "gold/check.py",
+                                        ".evals/run.py", ".evals/bite.py")]
+    assert order == sorted(order), order
+    fn = sh[sh.index("provision_model() {"):sh.index("}", sh.index("provision_model() {"))]
+    assert fn.index("provision-model.mjs fetch") < fn.index("provision-model.mjs verify"), fn
+    assert "--exclude-kind agent" in nightly
+    gate = sh[sh.index("  gate)"):sh.index("  nightly)")]
+    for needle in ("test_check_eval_separation.py", "check-eval-separation.py", "test_evals_harness.py",
+                   "git diff --exit-code -- .evals evals", "python3 .evals/gate.py --config evals/evals.yaml --base"):
+        assert needle in gate, needle
+    assert "pnpm evals" not in sh and "pnpm -s evals" not in sh
+    agents = sh[sh.index("  agents)"):]
+    assert "unset ANTHROPIC_API_KEY" in agents and "--agents" in agents
+
+
 if __name__ == "__main__":
     import traceback
     failed = []

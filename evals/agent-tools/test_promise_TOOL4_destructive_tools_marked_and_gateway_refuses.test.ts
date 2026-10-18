@@ -15,19 +15,24 @@
 // prove "every tool" (independent re-audit 2026-10-18, R-03):
 //
 //  1. Handler enumeration. Every handler in packages/mcp/src/tools.ts that
-//     reaches a core entry point that removes or retires a memory, assigns a
-//     new statement to an existing memory, or saves through the AI duplicate
-//     check (learnBatch / learnAsync: UPDATE replaces the existing text, MERGE
-//     rewrites it) must be listed directly with destructiveHint and refused by
-//     the gateway. There is no "pending owner decision" exception: the promise
-//     says "overwrites its text" and names only scope moves as exempt.
+//     reaches a core entry point that removes or retires a memory, or assigns a
+//     new statement to an existing memory, must be listed directly with
+//     destructiveHint and refused by the gateway. A handler that saves through
+//     the AI duplicate check (learnBatch / learnAsync, where an UPDATE or MERGE
+//     verdict could replace an existing text) must EITHER be held to that same
+//     rule OR be named in NEVER_OVERWRITES, which puts it under check 2: proven
+//     by effect never to overwrite, directly or through the gateway. A new
+//     handler on the checker path is therefore marked destructive until a
+//     behaviour test proves otherwise. (Owner decision 2026-10-18: batch saves
+//     never overwrite, so the batch save need not be marked destructive; the
+//     proof moved from the marking to the behaviour.)
 //  2. The automatic overwrite, by effect. A scripted duplicate checker (a real
 //     HTTP server on 127.0.0.1 answering as the OpenAI chat endpoint; no model,
 //     no network, no credential) answers UPDATE, then MERGE, for an existing
-//     memory. Through plur_admin { action: "plur_learn_batch" } the existing
-//     memory's text must be unchanged on disk (fresh reopen), or the gateway
-//     must have refused. Called directly, a batch that did overwrite must be
-//     listed with destructiveHint.
+//     memory. For every NEVER_OVERWRITES tool, called directly AND through
+//     plur_admin, the existing memory's text must be unchanged on disk (fresh
+//     reopen); a gateway refusal also keeps it unchanged. Other tools on the
+//     checker path that did overwrite must be listed with destructiveHint.
 //  3. Effects sweep. Every gateway action is called with harmless arguments on
 //     a seeded store, the checker scripted as above, and after each call the
 //     store is reopened fresh: no seeded memory may have changed its text or
@@ -57,23 +62,32 @@ const DELETES = [
 /** A new statement assigned to an existing memory and written back. */
 const OVERWRITES_TEXT = /\.statement\s*=(?!=)[\s\S]*?\bplur\.updateEngram\(/
 /**
- * Saving through the AI duplicate check: UPDATE replaces an existing memory's
- * text, MERGE rewrites it. That is overwriting text, so these handlers count.
+ * Saving through the AI duplicate check: an UPDATE or MERGE verdict could
+ * replace an existing memory's text. Such a handler counts as overwriting
+ * unless it is in NEVER_OVERWRITES and proven by effect below.
  */
 const AUTOMATIC_MERGE = /\bplur\.(learnBatch|learnAsync)\(/
+/**
+ * Checker-path tools proven by effect (check 2) never to overwrite, directly or
+ * through the gateway. Adding a name here without that proof is impossible: the
+ * effect tests iterate this list.
+ */
+const NEVER_OVERWRITES = ['plur_learn_batch']
 /** Moving to another scope: not counted as overwriting (the promise says so). */
 const MOVES = /\bplur\.rescope\(/
 
-interface Classified { deleting: string[]; moving: string[]; all: string[] }
+interface Classified { deleting: string[]; checker: string[]; moving: string[]; all: string[] }
 
 function classifyFromSource(): Classified {
   const src = readFileSync(TOOLS_SRC, 'utf8')
   const starts = [...src.matchAll(/\n\s+name: '(plur_[a-z_]+)',\n/g)].map(m => ({ at: m.index!, name: m[1] }))
-  const out: Classified = { deleting: [], moving: [], all: [] }
+  const out: Classified = { deleting: [], checker: [], moving: [], all: [] }
   starts.forEach((s, i) => {
     const block = src.slice(s.at, i + 1 < starts.length ? starts[i + 1].at : src.length)
     out.all.push(s.name)
-    if (DELETES.some(re => re.test(block)) || OVERWRITES_TEXT.test(block) || AUTOMATIC_MERGE.test(block)) out.deleting.push(s.name)
+    if (AUTOMATIC_MERGE.test(block)) out.checker.push(s.name)
+    if (DELETES.some(re => re.test(block)) || OVERWRITES_TEXT.test(block) ||
+        (AUTOMATIC_MERGE.test(block) && !NEVER_OVERWRITES.includes(s.name))) out.deleting.push(s.name)
     else if (MOVES.test(block)) out.moving.push(s.name)
   })
   return out
@@ -194,13 +208,18 @@ describe('TOOL-4 deleting and overwriting tools are marked destructive, and the 
     const found = classifyFromSource()
     expect(found.all.length, `precondition: the tool definitions were read from tools.ts (found ${found.all.length})`).toBeGreaterThanOrEqual(40)
     // Literal floor: forget, pack uninstall, tension resolve and meta validation
-    // each remove a memory today, and the batch save can overwrite. Fewer means
-    // the enumeration broke.
+    // each remove a memory today (tension purge is named in the literal list
+    // below). Fewer means the enumeration broke. (Was 5 while the batch save
+    // counted here; it is now proven by effect instead, see NEVER_OVERWRITES.)
     expect(found.deleting.length,
-      `precondition: at least 5 deleting/overwriting tools found in tools.ts; found ${JSON.stringify(found.deleting)}`).toBeGreaterThanOrEqual(5)
-    // The literal list TOOL-2 held stays covered (stricter, never weaker), and
-    // the batch save is named so a broken enumeration cannot drop it.
-    const required = [...new Set([...found.deleting, 'plur_forget', 'plur_packs_uninstall', 'plur_tensions_purge', 'plur_learn_batch'])]
+      `precondition: at least 4 deleting/overwriting tools found in tools.ts; found ${JSON.stringify(found.deleting)}`).toBeGreaterThanOrEqual(4)
+    for (const name of ['plur_forget', 'plur_packs_uninstall', 'plur_validate_meta', 'plur_tensions'])
+      expect(found.deleting, `precondition: the enumeration finds ${name}`).toContain(name)
+    // The batch save must be seen on the checker path, so a broken enumeration
+    // cannot silently drop it from the effect proof.
+    expect(found.checker, 'precondition: plur_learn_batch is found saving through the duplicate checker').toContain('plur_learn_batch')
+    // The literal list TOOL-2 held stays covered (stricter, never weaker).
+    const required = [...new Set([...found.deleting, 'plur_forget', 'plur_packs_uninstall', 'plur_tensions_purge'])]
 
     s = await mcpSession({ profile: 'lean' })
     const direct = (await s.client.listTools()).tools as ListedTool[]
@@ -239,19 +258,25 @@ describe('TOOL-4 deleting and overwriting tools are marked destructive, and the 
     for (const name of destructive) if (gatewayActions.includes(name)) problems.push(`the gateway offers the destructive tool ${name}`)
 
     expect(problems, `deleting/overwriting tools checked: ${JSON.stringify(required)}; ` +
-      `moves (not counted): ${JSON.stringify(found.moving)}\n` + problems.join('\n')).toEqual([])
+      `moves (not counted): ${JSON.stringify(found.moving)}; proven never to overwrite (effect tests): ${JSON.stringify(NEVER_OVERWRITES)}\n` + problems.join('\n')).toEqual([])
   })
 
   for (const decision of ['UPDATE', 'MERGE'] as const) {
-    it(`plur_admin plur_learn_batch with the duplicate checker answering ${decision}: the existing memory's text is unchanged on disk, or the gateway refused`, async () => {
+    for (const via of ['plur_admin', 'direct'] as const) {
+    it(`${via === 'direct' ? 'plur_learn_batch called directly' : 'plur_admin plur_learn_batch'} with the duplicate checker answering ${decision}: the existing memory's text is unchanged on disk`, async () => {
+      expect(NEVER_OVERWRITES, 'this proof covers the batch save').toContain('plur_learn_batch')
       useEmbedder('bag-of-words')
-      s = await mcpSession({ profile: 'lean' })
+      s = await mcpSession({ profile: via === 'direct' ? 'full' : 'lean' })
       const old = await s.plur.learn(OLD, { scope: 'global' })
       checker = await startChecker()
       checker.decision = decision
       checker.target = old.id
 
-      const res = await s.call('plur_admin', { action: 'plur_learn_batch', args: { engrams: [{ statement: INCOMING, scope: 'global' }] } })
+      const batch = { engrams: [{ statement: INCOMING, scope: 'global' }] }
+      const res = via === 'direct'
+        ? await s.call('plur_learn_batch', batch)
+        : await s.call('plur_admin', { action: 'plur_learn_batch', args: batch })
+      if (via === 'direct') expect(res.isError, `precondition: the direct batch call ran: ${res.text.slice(0, 300)}`).toBe(false)
       const refused = res.isError || res.json?.success === false
       const disk = await snapshot(s.dir)
       const oldNow = disk.get(old.id)
@@ -259,19 +284,19 @@ describe('TOOL-4 deleting and overwriting tools are marked destructive, and the 
         // Non-vacuous: the checker was asked, so the overwrite path was reachable.
         expect(checker.calls, `precondition: the gateway ran the batch and its duplicate checker was asked (reply: ${res.text.slice(0, 300)})`).toBeGreaterThan(0)
       }
-      expect(refused || oldNow === `active|${OLD}`,
-        `the gateway ran plur_learn_batch and the checker's ${decision} overwrote an existing memory: ` +
-        `${old.id} was "${OLD}", on disk it is now "${oldNow?.slice(7) ?? '(gone)'}". Gateway reply: ${res.text.slice(0, 400)}`).toBe(true)
+      expect(oldNow,
+        `${via === 'direct' ? 'plur_learn_batch' : 'the gateway ran plur_learn_batch and'} the checker's ${decision} overwrote, retired or deleted an existing memory: ` +
+        `${old.id} was "${OLD}", on disk it is now "${oldNow ?? '(gone)'}". Reply: ${res.text.slice(0, 400)}`).toBe(`active|${OLD}`)
     })
+    }
   }
 
-  // The batch save is the known overwrite; plur_learn receives the same
-  // environment-configured checker, so it is held to the same rule by effect;
+  // The batch save is proven never to overwrite above; plur_learn receives the
+  // same environment-configured checker, so it is held to the marking rule by effect;
   // procedure evolution (plur_report_failure) rewrites a memory with whatever
   // its checker returns, a rewrite found by the effects sweep below.
   const PROC = 'To roll back the ledger service, revert the release tag and redeploy the previous image'
   const directCases: Array<{ tool: string; old: string; type?: 'procedural'; args: (id: string, c: Checker) => Record<string, unknown> }> = [
-    { tool: 'plur_learn_batch', old: OLD, args: () => ({ engrams: [{ statement: INCOMING, scope: 'global' }] }) },
     { tool: 'plur_learn', old: OLD, args: () => ({ statement: INCOMING, scope: 'global' }) },
     { tool: 'plur_report_failure', old: PROC, type: 'procedural', args: (id, c) => ({ engram_id: id, failure_context: 'the previous image tag had been garbage-collected', llm_base_url: c.url, llm_api_key: 'eval-only-synthetic-token' }) },
   ]
@@ -289,8 +314,6 @@ describe('TOOL-4 deleting and overwriting tools are marked destructive, and the 
       checker.target = old.id
       const res = await s.call(tool, dc.args(old.id, checker))
       expect(res.isError, `precondition: the direct ${tool} call ran: ${res.text.slice(0, 300)}`).toBe(false)
-      // The batch documents the checker on its path: it must have been reached.
-      if (tool === 'plur_learn_batch') expect(checker.calls, 'precondition: the duplicate checker was asked').toBeGreaterThan(0)
       const now = (await snapshot(s.dir)).get(old.id)
       const overwrote = now !== `active|${OLD}`
       expect(!overwrote || listed!.annotations?.destructiveHint === true,

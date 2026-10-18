@@ -1,20 +1,25 @@
 name: Evals
 
-# Promise evals (evals/README.md). Four jobs, four cadences:
-#   gate     every pull request: a promise that was green may not go red, and an
-#            eval may not change in the same pull request as the code it judges
-#   formal   every pull request touching the Lean models or the code they cover
-#   nightly  every planted bug must still turn its promise red (bite), the full
-#            scoreboard, and the private holdout set for the quality promises
-#   agents   weekly: real agent sessions with PLUR attached (costs money)
+# Promise evals (evals/README.md). Local first (owner, 2026-10-18: "For CI and
+# evals, we should do as much local as possible. Let's not burn GitHub usage
+# where we don't need to."). GitHub runs only what must be enforced at merge:
+#   gate     pull requests into main, and pushes to main: a promise that was
+#            green may not go red, and an eval may not change in the same pull
+#            request as the code it judges
+#   formal   the same pull requests, when they touch the Lean models or the
+#            code they cover
+# The nightly (planted bugs, full scoreboard, private holdout) and the agent
+# evals run locally: scripts/evals-local.sh nightly | agents, on the overnight
+# machine. Both jobs stay here for a manual run only (workflow_dispatch).
+# Stacked pull requests into other branches are proven locally by the same
+# script (scripts/evals-local.sh gate) and get the GitHub gate once, when their
+# branch comes into main.
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
-  schedule:
-    - cron: '17 3 * * *'    # nightly
-    - cron: '41 4 * * 1'    # weekly agent evals (Monday)
   workflow_dispatch:
     inputs:
       agents:
@@ -26,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: evals-${{ github.ref }}-${{ github.event.schedule || 'run' }}
+  group: evals-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -124,7 +129,7 @@ jobs:
         run: python3 spec/formal/formal_check.py --project spec/formal --base "${{ github.event.pull_request.base.sha || github.event.before }}"
 
   nightly:
-    if: (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -186,7 +191,7 @@ jobs:
             bite.json
 
   agents:
-    if: (github.event_name == 'schedule' && github.event.schedule == '41 4 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.agents)
+    if: github.event_name == 'workflow_dispatch' && inputs.agents
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

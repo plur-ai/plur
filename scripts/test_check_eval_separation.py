@@ -49,7 +49,7 @@ def test_codeowners_covers_every_kind_of_judge_file():
     lines = (Path(__file__).resolve().parent.parent / ".github" / "CODEOWNERS").read_text().splitlines()
     patterns = [ln.split()[0] for ln in lines if ln.strip() and not ln.startswith("#")]
     for p in ["package.json", "evals/promises.yaml", ".evals/gate.py", "scripts/check-eval-separation.py",
-              "scripts/test_check_eval_separation.py", "scripts/test_evals_harness.py",
+              "scripts/test_check_eval_separation.py", "scripts/test_evals_harness.py", "scripts/evals-local.sh",
               "packages/core/test/helpers/stub-server.ts", ".github/workflows/evals.yml", ".github/CODEOWNERS"]:
         assert sep.classify([p])[0] == [p], p
         assert _owned(p, patterns), f"{p} is a judge file but no CODEOWNERS line covers it"
