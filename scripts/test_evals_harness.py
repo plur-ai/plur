@@ -475,11 +475,13 @@ def test_nightly_never_scores_after_a_failed_holdout_check():
 
 # --- local first (owner, 2026-10-18): GitHub runs only the merge gate --------------------------
 
-def test_github_runs_evals_only_for_pull_requests_into_main_and_has_no_schedule():
+def test_github_runs_evals_only_for_pull_requests_into_development_and_main_and_has_no_schedule():
+    # Owner 2026-10-18: work merges into development (the eval branch goes there first),
+    # and development goes to main; stacked branches are proven locally.
     on = _workflow().get(True) or _workflow().get("on")   # yaml reads a bare `on:` as True
     assert "schedule" not in on, on
-    assert on["pull_request"] == {"branches": ["main"]}, on["pull_request"]
-    assert on["push"] == {"branches": ["main"]}, on["push"]
+    assert on["pull_request"] == {"branches": ["development", "main"]}, on["pull_request"]
+    assert on["push"] == {"branches": ["development", "main"]}, on["push"]
     jobs = _workflow()["jobs"]
     assert "schedule" not in str(jobs["nightly"]["if"]) and "workflow_dispatch" in str(jobs["nightly"]["if"])
     assert "schedule" not in str(jobs["agents"]["if"]) and "inputs.agents" in str(jobs["agents"]["if"])
@@ -522,7 +524,26 @@ def test_dedup_v2_labels_are_valid_and_keep_the_frozen_texts():
     r = subprocess.run([sys.executable, str(ROOT / "evals/gold/check.py"), "--dedup", str(ROOT / "evals/gold/dedup-v2"),
                         "--same-pairs-as", str(ROOT / "evals/gold/recall-v1")], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "warning: only 3 distinct" in r.stdout, r.stdout
+    # 3 distinct pairs relabelled from the frozen 60, plus 17 written by an independent
+    # labeller (owner, 2026-10-18): the false-merge rate is measurable.
+    assert "warning" not in r.stdout, r.stdout
+    pairs = yaml.safe_load((ROOT / "evals/gold/dedup-v2/dedup_pairs.yaml").read_text())["pairs"]
+    assert sum(p["label"] == "distinct" for p in pairs) >= 20
+
+
+def test_dedup_check_keeps_the_frozen_60_and_holds_added_pairs_to_the_overlap_rule():
+    base = (ROOT / "evals/gold/dedup-v2/dedup_pairs.yaml").read_text()
+    pairs = yaml.safe_load(base)["pairs"]
+    frozen = [p for p in pairs if int(p["id"][1:]) <= 60]
+    added = [p for p in pairs if int(p["id"][1:]) > 60]
+    assert len(frozen) == 60 and added, (len(frozen), len(added))
+    # a frozen pair may not be dropped
+    r = _check_dedup(yaml.safe_dump({"pairs": pairs[1:]}), same_as=True)
+    assert r.returncode == 1 and "missing" in r.stdout and "P001" in r.stdout, r.stdout
+    # an added pair must be hard: high word overlap, or it tests nothing
+    easy = dict(added[0], incoming="Bake sourdough at dawn with rye flour and sea salt.")
+    r = _check_dedup(yaml.safe_dump({"pairs": frozen + [easy] + added[1:]}))
+    assert r.returncode == 1 and "overlap" in r.stdout and added[0]["id"] in r.stdout, r.stdout
 
 
 def test_dedup_check_rejects_an_unknown_label_and_a_changed_text():

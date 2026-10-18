@@ -3,9 +3,10 @@ name: Evals
 # Promise evals (evals/README.md). Local first (owner, 2026-10-18: "For CI and
 # evals, we should do as much local as possible. Let's not burn GitHub usage
 # where we don't need to."). GitHub runs only what must be enforced at merge:
-#   gate     pull requests into main, and pushes to main: a promise that was
-#            green may not go red, and an eval may not change in the same pull
-#            request as the code it judges
+#   gate     pull requests into development and main, and pushes to them: a
+#            promise that was green may not go red, and an eval may not change
+#            in the same pull request as the code it judges (owner, 2026-10-18:
+#            work merges into development, and development goes to main)
 #   formal   the same pull requests, when they touch the Lean models or the
 #            code they cover
 # The nightly (planted bugs, full scoreboard, private holdout) and the agent
@@ -13,13 +14,13 @@ name: Evals
 # machine. Both jobs stay here for a manual run only (workflow_dispatch).
 # Stacked pull requests into other branches are proven locally by the same
 # script (scripts/evals-local.sh gate) and get the GitHub gate once, when their
-# branch comes into main.
+# branch comes into development.
 
 on:
   pull_request:
-    branches: [main]
+    branches: [development, main]
   push:
-    branches: [main]
+    branches: [development, main]
   workflow_dispatch:
     inputs:
       agents:

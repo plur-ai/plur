@@ -5,10 +5,12 @@
     python3 evals/gold/check.py --dedup evals/gold/dedup-v2 --same-pairs-as evals/gold/recall-v1
 
 The second form checks a duplicate-checker pair set with three labels (duplicate,
-supersede, distinct; dedup-v2/LABELLER-CHECKLIST.md): 60 pairs, unique ids, no
-other label, at least 20 duplicate and 20 supersede and one distinct, and the
-same pair texts as the frozen set it relabels. Fewer than 20 distinct pairs is
-printed as a warning: that rate is not yet measurable.
+supersede, distinct; dedup-v2/LABELLER-CHECKLIST.md): the 60 frozen pairs with
+the same texts as the set they relabel, plus any pairs added after them (ids
+above P060, at least 70% of the smaller statement's content words shared, so
+they stay hard); unique ids, no other label, at least 20 duplicate and 20
+supersede and one distinct. Fewer than 20 distinct pairs is printed as a
+warning: that rate is not yet measurable.
 
 Fails (exit 1) when a count is off, an id is unknown or repeated, a paraphrase
 query shares a content word with the memory it should find (then it tests
@@ -95,8 +97,18 @@ DEDUP_LABELS = {"duplicate", "supersede", "distinct"}
 def check_dedup(d: Path, same_as: Path | None) -> tuple[list[str], list[str]]:
     pairs = yaml.safe_load((d / "dedup_pairs.yaml").read_text())["pairs"]
     errs, warns = [], []
-    if len(pairs) != WANT["pairs"]:
-        errs.append(f"pairs: {len(pairs)}, expected {WANT['pairs']}")
+    frozen = [p for p in pairs if int(p["id"][1:]) <= WANT["pairs"]]
+    if len(frozen) != WANT["pairs"]:
+        have = {p["id"] for p in frozen}
+        gone = [f"P{i:03d}" for i in range(1, WANT["pairs"] + 1) if f"P{i:03d}" not in have]
+        errs.append(f"pairs: {len(frozen)} of the {WANT['pairs']} frozen pairs, missing {gone[:10]}")
+    for p in pairs:
+        if int(p["id"][1:]) <= WANT["pairs"]:
+            continue
+        a, b = words(p["existing"]), words(p["incoming"])
+        share = len(a & b) / max(1, min(len(a), len(b)))
+        if share < 0.7:
+            errs.append(f"pairs: added pair {p['id']} shares {share:.0%} of its content words; at least 70% overlap keeps it hard")
     dup = [i for i, c in Counter(p["id"] for p in pairs).items() if c > 1]
     if dup:
         errs.append(f"pairs: repeated ids {dup}")
@@ -111,7 +123,7 @@ def check_dedup(d: Path, same_as: Path | None) -> tuple[list[str], list[str]]:
         warns.append(f"warning: only {labels['distinct']} distinct pairs; the false-merge rate is not measurable until there are 20")
     if same_as is not None:
         old = {p["id"]: (p["existing"], p["incoming"]) for p in yaml.safe_load((same_as / "dedup_pairs.yaml").read_text())["pairs"]}
-        new = {p["id"]: (p["existing"], p["incoming"]) for p in pairs}
+        new = {p["id"]: (p["existing"], p["incoming"]) for p in pairs if p["id"] in old}
         if old != new:
             changed = sorted(i for i in old.keys() | new.keys() if old.get(i) != new.get(i))
             errs.append(f"pairs: texts differ from {same_as} for {changed[:10]} (a relabel changes labels only)")
