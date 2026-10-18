@@ -81,10 +81,24 @@ export async function fetchMe(origin: string, key: string, opts: { fetch?: Fetch
     const scopes = Array.isArray(data!.scopes) ? (data!.scopes as unknown[]).filter((s): s is string => typeof s === 'string') : []
     return { status: 'ok', username, orgId, scopes }
   } catch (err) {
-    return { status: 'unknown', reason: (err as Error)?.name === 'AbortError' ? 'timed out' : 'network error' }
+    if ((err as Error)?.name === 'AbortError') return { status: 'unknown', reason: 'timed out' }
+    const code = errorCode(err)
+    return { status: 'unknown', reason: code ? `network error (${code})` : 'network error' }
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * The system error code of a failed fetch (`ECONNRESET`, `ENOTFOUND`,
+ * `UND_ERR_CONNECT_TIMEOUT`), from the error or its cause; only a code-shaped
+ * value, never the message (which can quote a server's text).
+ */
+function errorCode(err: unknown): string | undefined {
+  for (let e = err as { code?: unknown; cause?: unknown } | undefined, i = 0; e && i < 3; e = e.cause as typeof e, i++) {
+    if (typeof e.code === 'string' && /^[A-Z][A-Z0-9_]{1,40}$/.test(e.code)) return e.code
+  }
+  return undefined
 }
 
 /** The personal scope of a /me answer: the one the server lists for this
@@ -106,7 +120,7 @@ export function holderLine(h: ScopeHolder): string {
  * entry that holds the scope and the command that removes them.
  */
 export function takeoverMessage(err: PersonalScopeTakenError, origin: string, configPath: string,
-  wording: { lead?: string; notSaved?: string } = {}): string[] {
+  wording: { lead?: string; notSaved?: string; rerun?: string } = {}): string[] {
   const one = err.holders.length === 1
   const lines = [
     `${wording.lead ?? `Signed in, but ${origin} was not saved:`} your personal scope ${err.personalScope} is already served by`,
@@ -122,7 +136,7 @@ export function takeoverMessage(err: PersonalScopeTakenError, origin: string, co
   } else {
     lines.push(
       `${origin}'s own entry serves your personal scope in another spelling. Remove that spelling from its`,
-      `scope, scopes or pinned_scopes in ${configPath}, then run \`plur login ${origin}\` again.`,
+      `scope, scopes or pinned_scopes in ${configPath}, then ${wording.rerun ?? `run \`plur login ${origin}\` again`}.`,
     )
   }
   return lines
