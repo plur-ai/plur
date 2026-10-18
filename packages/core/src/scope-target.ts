@@ -19,7 +19,8 @@
  * closing. The drift IS the bug, so the rule is a module, not a convention.
  */
 
-import { isScopeWithin } from './scope-util.js'
+import type { StoreEntry } from './schemas/config.js'
+import { resolveScopeTarget } from './store-resolver.js'
 
 /** Scopes that name the LOCAL side of the store graph (lower case; compared folded). */
 const LOCAL_FAMILY = new Set(['primary', 'local', 'global'])
@@ -38,14 +39,20 @@ const LOCAL_FAMILY = new Set(['primary', 'local', 'global'])
  * `Project:x` are the same family as `global` and `project:x`. Only the
  * comparison folds; no scope value is rewritten.
  *
- * Decision E4 (2026-09-26): `project:*` is local-only only when no configured
- * URL store's scope equals or segment-contains it (`isScopeWithin`, #383 — so
- * `project:plurx` is NOT inside a `project:plur` store). A project scope a URL
- * store covers lives on that remote, and naming it must be allowed to reach
- * it. Pass the configured `stores`; omitting them keeps the config-free
- * family (every `project:*` local), which is what `assertScopeNamesATarget`
- * wants — a project scope always names a target, local or covered.
- * `primary` / `local` / `global` never depend on stores.
+ * Decision E4, amended 2026-10-18 by owner decision O5 (#1633): `project:*`
+ * is local-only exactly when write routing keeps it local, i.e. when
+ * {@link resolveScopeTarget} (store-resolver.ts) answers `local` for it. It is
+ * NOT local-only when a url store claims exactly this scope (`remote`), two
+ * servers do (`conflict`, the write path refuses it), or it is under a company
+ * server's org without a grant (`unauthorized`). The 2026-09-26 reading was
+ * containment (`isScopeWithin`): a url store at `project:plur` made
+ * `project:plur/sub` non-local although routing, which matches exactly, never
+ * sends `project:plur/sub` there — forget and feedback dialled a server that
+ * a write to the same scope would never reach. Matching is exact, like the
+ * resolver: no containment, no case fold. Pass the configured `stores`;
+ * omitting them keeps the config-free family (every `project:*` local), which
+ * is what `assertScopeNamesATarget` wants — a project scope always names a
+ * target. `primary` / `local` / `global` never depend on stores.
  *
  * Note the asymmetry with lookup: a local-only scope still permits the
  * secondary-store walk, because `stores:` entries without a `url` are files on
@@ -59,8 +66,7 @@ export function isLocalOnlyScope(
   if (LOCAL_FAMILY.has(s)) return true
   if (!s.startsWith('project:')) return false
   if (!stores) return true
-  return !stores.some(st => !!st.url && typeof st.scope === 'string'
-    && isScopeWithin(s, st.scope.toLowerCase()))
+  return resolveScopeTarget(scope, stores as readonly StoreEntry[]).kind === 'local'
 }
 
 /**
