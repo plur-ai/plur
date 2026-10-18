@@ -133,3 +133,11 @@ Not fixed: it changes which entries persist on disk (Q2). Not modelled in Lean.
 - Q2 (C8): should persistStores keep per-scope entries it does not know about (added by another
   process since load), with addStore's overwriteScope naming the entry it removes? Side effect:
   per-scope entries dropped at load as invalid would also stop being deleted on writeback.
+
+### Codex round 4, finding 2 — a compat-scope change moved the old scope's metadata (2026-10-18)
+`refreshServerScopes` set the compat `scope` to the personal scope `/me` lists and left the top-level metadata in place. Expansion gives top-level metadata to whichever scope holds the compat field, so a legacy team entry lost `dial: never` (and became dialable) and the personal scope inherited it, with its description, covers and sensitivity.
+- Fix (`withCompatScope`, store-expand.ts; used by refreshServerScopes in index.ts): before the compat scope changes, every non-reserved top-level key moves into `scope_settings[oldScope]`, where keys already set win, and leaves the top level. No old compat scope, or no change: the entry is left as it was.
+- Theorems (§1b): `recompat_keeps_old`, `recompat_new_own_only`, `recompat_others`, `fixed_team_keeps_dial` (non-vacuity), `old_moves_metadata_to_personal` (counterexample for the original).
+- Replay: `packages/core/test/codex4-compat-scope-metadata.test.ts` (3 tests; 2 red on the original code).
+- Mutation check: keeping the top level on the recompat'd entry breaks `recompat_new_own_only` and `fixed_team_keeps_dial`; dropping the move breaks `recompat_keeps_old`. In the code, letting moved values win over `scope_settings[oldScope]` turns the precedence test red.
+- Left as is: a key whose `scope_settings[oldScope]` value is present but malformed keeps that value on disk (it wins, as an explicit value), and the schema drops it, so the top-level value it replaced is lost for that key. `recompat_keeps_old` states the well-formedness hypothesis. An entry with no compat scope keeps its ownerless top-level metadata at the top, where it now attaches to the new personal compat scope, as before.

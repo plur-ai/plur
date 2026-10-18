@@ -59,7 +59,7 @@ export function loadConfig(configPath: string): PlurConfig {
           validStores.push(entry)
         } else {
           const label = (entry as { url?: string; path?: string; scope?: string })?.scope
-            ?? (entry as { url?: string; path?: string })?.url
+            ?? (typeof (entry as { url?: unknown })?.url === 'string' ? safeOrigin((entry as { url: string }).url) : undefined)
             ?? (entry as { path?: string })?.path
             ?? `index ${i}`
           logger.warning(`[plur:config] dropping invalid stores[${i}] (${label}) from ${configPath}: ${parsed.error.issues.map(it => it.message).join('; ')}`)

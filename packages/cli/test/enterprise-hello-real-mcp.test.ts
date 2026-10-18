@@ -99,6 +99,7 @@ describe('hello proof through the real MCP server', { timeout: 120_000 }, () => 
     const { value: result, left } = await inOwnTmp(() => runHello({
       launches: [launch('claude-code'), launch('codex')],
       personalScope: PERSONAL,
+      serverUrl: url,
       statement: STATEMENT,
       timeoutMs: 60_000,
     }))
@@ -120,10 +121,38 @@ describe('hello proof through the real MCP server', { timeout: 120_000 }, () => 
     const result = await runHello({
       launches: [launch('codex')],
       personalScope: PERSONAL,
+      serverUrl: url,
       statement: STATEMENT,
       timeoutMs: 60_000,
     })
     expect(result.saved.ok).toBe(false)
     expect(stub.appendStatements).toEqual([])
   })
+
+  // Codex round 4: one launch saves (the row lands in that process's
+  // optimistic cache) and recalls. The id coming back is not proof: the server
+  // must have answered THIS recall, completely.
+  for (const [label, arrange] of [
+    ['answers 401', (s: StubServer) => { s.recallStatus = 401 }],
+    ['answers 500', (s: StubServer) => { s.recallStatus = 500 }],
+    ['answers with no rows', (s: StubServer) => {
+      Object.defineProperty(s, 'recallRows', { configurable: true, get: () => [], set: () => {} })
+    }],
+  ] as const) {
+    it(`single launch, the server's recall ${label}: saved, but not proven`, async () => {
+      arrange(stub)
+      const result = await runHello({
+        launches: [launch('codex')],
+        personalScope: PERSONAL,
+        serverUrl: url,
+        statement: STATEMENT,
+        timeoutMs: 60_000,
+      })
+      expect(result.saved).toMatchObject({ ok: true })
+      expect(stub.appendStatements).toEqual([STATEMENT])
+      expect(stub.recallCalls).toBeGreaterThan(0)
+      expect(result.perTool).toHaveLength(1)
+      expect(result.perTool[0]).toMatchObject({ tool: 'codex', recalled: false })
+    })
+  }
 })

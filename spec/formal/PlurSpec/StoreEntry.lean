@@ -220,6 +220,75 @@ theorem update_compat_top {norm : K → V → Option V} (wb : K → Option V →
   generalize collapse wb d inScope t = d' at htop hset hcomp ⊢
   simp [typed, hset, hcomp, hc, htop, hnu]
 
+/-! ## 1b. A compat-scope change (discovery, Codex round 4 finding 2)
+
+`refreshServerScopes` sets the compat `scope` to the personal scope `/me` lists. The old
+compat scope's top-level metadata belongs to that scope, so `withCompatScope`
+(store-expand.ts) moves it into `scope_settings[old]` first (a key already there wins)
+and clears the top level, so it cannot attach to the new compat scope. -/
+
+/-- Fixed (`withCompatScope`). -/
+def recompat (d : Disk I K V) (n : Nat) : Disk I K V :=
+  match d.compat with
+  | none => { d with compat := some n }
+  | some c =>
+    if c = n then d
+    else { ident := d.ident, compat := some n, top := fun _ => none,
+           set := fun s k => if s = c then (d.set c k).or (d.top k) else d.set s k }
+
+/-- Original: only the compat field changed; the top level stayed and followed it. -/
+def recompatOld (d : Disk I K V) (n : Nat) : Disk I K V := { d with compat := some n }
+
+/-- The old compat scope keeps every metadata value it had (when its own scope_settings
+value for the key, if any, is well-formed: a malformed one wins on disk as it did before
+and the schema drops it, see findings/store-entry.md). -/
+theorem recompat_keeps_old (norm : K → V → Option V) (d : Disk I K V) c n k
+    (hc : d.compat = some c) (hne : c ≠ n)
+    (hwf : ∀ w, d.set c k = some w → (norm k w).isSome) :
+    typed norm (recompat d n) c k = typed norm d c k := by
+  have hne' : ¬ (n = c) := fun h => hne h.symm
+  cases hs : d.set c k with
+  | none =>
+    simp [typed, recompat, hc, hne, hs, hne']
+    cases (d.top k).bind (norm k) <;> rfl
+  | some w =>
+    have hw := hwf w hs
+    cases hnw : norm k w with
+    | none => simp [hnw] at hw
+    | some v => simp [typed, recompat, hc, hne, hs, hnw]
+
+/-- The new compat scope gets exactly its own scope_settings: no top-level metadata. -/
+theorem recompat_new_own_only (norm : K → V → Option V) (d : Disk I K V) c n k
+    (hc : d.compat = some c) (hne : c ≠ n) :
+    typed norm (recompat d n) n k = (d.set n k).bind (norm k) := by
+  have hne' : ¬ (n = c) := fun h => hne h.symm
+  cases h : (d.set n k).bind (norm k) <;> simp [typed, recompat, hc, hne, hne', h]
+
+/-- Every other scope is untouched. -/
+theorem recompat_others (norm : K → V → Option V) (d : Disk I K V) c n s k
+    (hc : d.compat = some c) (hne : c ≠ n) (hsc : s ≠ c) (hsn : s ≠ n) :
+    typed norm (recompat d n) s k = typed norm d s k := by
+  have h1 : ¬ (c = s) := fun h => hsc h.symm
+  have h2 : ¬ (n = s) := fun h => hsn h.symm
+  cases h : (d.set s k).bind (norm k) <;> simp [typed, recompat, hc, hne, hsc, hsn, h, h1, h2]
+
+/-- A team entry (scope 1) with top-level `dial: never` (value 0). -/
+def teamNever : Disk Unit Unit Nat :=
+  { ident := (), compat := some 1, top := fun _ => some 0, set := fun _ _ => none }
+def normId : Unit → Nat → Option Nat := fun _ v => some v
+
+/-- Counterexample for the original (replayed: codex4-compat-scope-metadata.test.ts):
+discovery makes the personal scope (2) the compat scope; the team loses `dial: never`
+and the personal scope inherits it. -/
+theorem old_moves_metadata_to_personal :
+    typed normId (recompatOld teamNever 2) 1 () = none ∧
+    typed normId (recompatOld teamNever 2) 2 () = some 0 := by decide
+
+/-- Non-vacuity: with the fix the team keeps it and the personal scope has none. -/
+theorem fixed_team_keeps_dial :
+    typed normId (recompat teamNever 2) 1 () = some 0 ∧
+    typed normId (recompat teamNever 2) 2 () = none := by decide
+
 /-! ## 2. Sensitivity writeback (candidate 5) — `mergeSensitivityForWriteback`
 
 `forbid`/`allow` absent = `none`. Parsing keeps the `known` categories, and an empty or absent
