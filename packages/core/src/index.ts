@@ -8,7 +8,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
-import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin } from './store-expand.js'
+import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope } from './store-expand.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
 import { acceptDiscoveredScopes, type DiscoveryStatus, type ScopeRejection } from './server-discovery.js'
@@ -13989,9 +13989,10 @@ Generate an improved version of the procedure that prevents this failure. Return
           // snapshot key is replaced or, when this answer lacks it, removed.
           const unknownDiscovery = Object.fromEntries(Object.entries(oldDiscovery)
             .filter(([k]) => !(DISCOVERY_SNAPSHOT_KEYS as readonly string[]).includes(k)))
+          // A changed compat scope takes the old one's top-level metadata
+          // into scope_settings[old] first (Codex round 4, finding 2).
           next = {
-            ...entry,
-            ...(personal ? { scope: personal } : {}),
+            ...(personal ? withCompatScope(entry, personal) : entry),
             scopes: decision.scopes,
             discovery: {
               ...unknownDiscovery,

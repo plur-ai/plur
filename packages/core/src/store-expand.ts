@@ -132,6 +132,31 @@ export function expandServerEntry(entry: ServerStoreEntry, identity: string): St
   return results
 }
 
+/**
+ * A raw server entry with its compat `scope` changed to `newScope` (discovery,
+ * Codex round 4 finding 2). The top level's metadata (every key that is not
+ * identity, credentials or routing: dial, description, covers, sensitivity,
+ * unknown keys) belongs to the OLD compat scope, so it moves into
+ * `scope_settings[oldScope]` first, where keys already set win, and leaves the
+ * top level: it must not attach to the new compat scope. With no old compat
+ * scope, or no change, the entry keeps its top level as is.
+ */
+export function withCompatScope(entry: Record<string, unknown>, newScope: string): Record<string, unknown> {
+  const oldScope = entry.scope
+  if (oldScope === newScope) return entry
+  if (typeof oldScope !== 'string' || oldScope === '') return { ...entry, scope: newScope }
+  const moved: Record<string, unknown> = {}
+  const kept: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(entry)) {
+    if (RESERVED_ENTRY_KEYS.has(k)) kept[k] = v
+    else moved[k] = v
+  }
+  if (Object.keys(moved).length === 0) return { ...entry, scope: newScope }
+  const settings = isPlainObject(entry.scope_settings) ? entry.scope_settings : {}
+  const existing = isPlainObject(settings[oldScope]) ? settings[oldScope] : {}
+  return { ...kept, scope: newScope, scope_settings: { ...settings, [oldScope]: { ...moved, ...existing } } }
+}
+
 // Per-scope metadata fields managed by the collapse step.
 const SCOPE_META_KEYS = ['dial', 'description', 'covers', 'sensitivity'] as const
 
