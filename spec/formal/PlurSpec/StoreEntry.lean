@@ -16,7 +16,7 @@ sensitivity merge satisfies them. Left out: YAML key order, `storeEntryForDisk`'
 rule (#1561, modelled elsewhere), non-server entries in §3.
 
 Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
-index.ts only adds `_serverDiscoveryUrls()`, a read of config.yaml that lists the
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
 writes nothing and is read only by the MCP server; expand, collapse and rotation are untouched.
 -/

@@ -19,7 +19,7 @@ import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { Plur } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
-import { whenDiscoverySettled, discoverySummary } from '../src/background-discovery.js'
+import { whenDiscoverySettled, discoverySummary, _setBackgroundDiscoveryTimeoutForTests } from '../src/background-discovery.js'
 import { StubServer } from './helpers/stub-server.js'
 
 const TOKEN = 'background-discovery-token'
@@ -31,12 +31,16 @@ let stub: StubServer
 let baseUrl: string
 const dirs: string[] = []
 let clients: Client[] = []
+let plurs: Plur[] = []
 let release: (() => void) | null = null
 
-/** Holds every /me answer until the test ends (a server that never answers). */
+/** Holds every /me answer until the test releases it (a server that does not
+ *  answer). The refresh's own timeout is lifted meanwhile, so only the test
+ *  decides when /me settles: no assertion depends on the clock. */
 function holdMe(): void {
   const gate = new Promise<void>(resolve => { release = resolve })
   stub.beforeMe = () => gate
+  _setBackgroundDiscoveryTimeoutForTests(10 * 60_000)
 }
 
 function seed(opts: { scopes: string[]; scope?: string; url?: string; enterprise?: boolean; discovery?: Record<string, unknown> }): string {
@@ -54,6 +58,7 @@ function seed(opts: { scopes: string[]; scope?: string; url?: string; enterprise
 }
 
 async function connect(plur: Plur, options?: { discovery?: boolean }): Promise<Client> {
+  plurs.push(plur)
   const server = await createServer(plur, options)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -86,9 +91,14 @@ beforeEach(() => {
 afterEach(async () => {
   release?.()
   release = null
+  // Join every background refresh before the next test resets the stub or
+  // the mocks: none may run on into another test.
+  await Promise.all(plurs.map(p => whenDiscoverySettled(p)))
+  plurs = []
   await Promise.all(clients.map(c => c.close().catch(() => {})))
   clients = []
   vi.restoreAllMocks()
+  _setBackgroundDiscoveryTimeoutForTests(undefined)
 })
 
 describe('MCP scope discovery runs in the background (#1631)', () => {
@@ -268,6 +278,32 @@ describe('MCP scope discovery runs in the background (#1631)', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
+  })
+
+  it('a server entry with an empty cache still gets a row and its warning', async () => {
+    // First install before any discovery: no scopes, no compat scope.
+    holdMe()
+    stub.meStatus = 401
+    const plur = new Plur({ path: seed({ scopes: [] }) })
+    const client = await connect(plur)
+    const pending = await call(client, 'plur_session_start', { task: 'x' })
+    expect(pending.discovery).toEqual([{ url: baseUrl, status: 'pending', scopes: 0 }])
+    release?.()
+    await whenDiscoverySettled(plur)
+    expect(discoverySummary(plur)).toEqual([{ url: baseUrl, status: 'auth_failed', scopes: 0 }])
+    holdMe()
+    const r = await call(client, 'plur_session_start', { task: 'y' })
+    expect(r.discovery[0]).toMatchObject({ status: 'pending', last_status: 'auth_failed', scopes: 0 })
+    expect(r.guide).toMatch(/refused .*key/i)
+  })
+
+  it('an empty-cache server entry shows a failure cached from an earlier run', async () => {
+    holdMe()
+    const plur = new Plur({ path: seed({ scopes: [], discovery: { status: 'auth_failed' } }) })
+    const client = await connect(plur)
+    const r = await call(client, 'plur_session_start', { task: 'x' })
+    expect(r.discovery).toEqual([{ url: baseUrl, status: 'pending', scopes: 0, last_status: 'auth_failed' }])
+    expect(r.guide).toMatch(/refused .*key/i)
   })
 
   it('an install with no server entry gets no discovery field and no extra /me', async () => {

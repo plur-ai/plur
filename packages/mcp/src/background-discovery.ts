@@ -25,6 +25,13 @@ import { normalizeEndpointUrl, type Plur, type DiscoveryStatus, type ServerDisco
 /** The /me budget of one background refresh. */
 export const BACKGROUND_DISCOVERY_TIMEOUT_MS = 5000
 
+let timeoutOverrideMs: number | undefined
+
+/** Tests only: lift the /me budget so a held answer settles when the test says, not the clock. */
+export function _setBackgroundDiscoveryTimeoutForTests(ms: number | undefined): void {
+  timeoutOverrideMs = ms
+}
+
 interface DiscoveryState {
   enabled: boolean
   inFlight: Promise<void> | null
@@ -66,7 +73,7 @@ export function setBackgroundDiscovery(plur: Plur, enabled: boolean): void {
 
 /** Record `failed` for every server endpoint: a refresh that could not run or answered nonsense. */
 function markAllFailed(plur: Plur, st: DiscoveryState): void {
-  try { for (const key of plur._serverDiscoveryUrls()) st.last.set(key, 'failed') } catch { /* status only */ }
+  try { for (const key of plur._serverDiscoveryEndpoints().keys()) st.last.set(key, 'failed') } catch { /* status only */ }
 }
 
 /**
@@ -79,7 +86,7 @@ export function startBackgroundDiscovery(plur: Plur): boolean {
   if (!st.enabled || st.inFlight) return false
   let run: Promise<ServerDiscoveryOutcome[]>
   try {
-    run = Promise.resolve(plur.refreshServerScopes({ timeoutMs: BACKGROUND_DISCOVERY_TIMEOUT_MS }))
+    run = Promise.resolve(plur.refreshServerScopes({ timeoutMs: timeoutOverrideMs ?? BACKGROUND_DISCOVERY_TIMEOUT_MS }))
   } catch (err) {
     markAllFailed(plur, st)
     log(`scope discovery could not start (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
@@ -111,26 +118,22 @@ export async function whenDiscoverySettled(plur: Plur): Promise<void> {
 }
 
 /**
- * The in-memory store entries of the endpoints background discovery refreshes
- * (core's own selection, {@link Plur._serverDiscoveryUrls}), grouped by endpoint.
- * An entry with a `scopes` list but no `enterprise` block on disk is not
- * refreshed, so it is not here: it keeps the legacy session-start probe.
+ * The endpoints background discovery refreshes (core's own selection,
+ * {@link Plur._serverDiscoveryEndpoints}: a row even for an empty scope
+ * cache), each with the scopes it serves in memory. An entry with a `scopes`
+ * list but no `enterprise` block on disk is not refreshed, so it is not here:
+ * it keeps the legacy session-start probe.
  */
 function serverEndpoints(plur: Plur): Map<string, { url: string; scopes: Set<string>; status?: unknown }> {
   const out = new Map<string, { url: string; scopes: Set<string>; status?: unknown }>()
-  const refreshed = plur._serverDiscoveryUrls()
-  if (refreshed.size === 0) return out
-  for (const key of refreshed) for (const s of plur._storesForEndpoint(key)) {
-    const raw = s as unknown as Record<string, unknown>
-    // Expanded server entries carry the enterprise block; a separate
-    // per-scope entry on the same url (another key) is not counted.
-    if (!s.url || !isPlainObject(raw.enterprise)) continue
-    let g = out.get(key)
-    if (!g) {
-      g = { url: s.url, scopes: new Set(), status: isPlainObject(raw.discovery) ? raw.discovery.status : undefined }
-      out.set(key, g)
+  for (const [key, e] of plur._serverDiscoveryEndpoints()) {
+    const g = { url: e.url, scopes: new Set<string>(), status: e.status as unknown }
+    for (const s of plur._storesForEndpoint(key)) {
+      // Expanded server entries carry the enterprise block; a separate
+      // per-scope entry on the same url (another key) is not counted.
+      if (isPlainObject((s as unknown as Record<string, unknown>).enterprise)) g.scopes.add(s.scope)
     }
-    g.scopes.add(s.scope)
+    out.set(key, g)
   }
   return out
 }
@@ -143,7 +146,7 @@ const STATUSES: ReadonlySet<string> = new Set<DiscoveryStatus>(['ok', 'not_synce
 
 /** Normalized urls of the endpoints whose /me belongs to background discovery. */
 export function serverEndpointKeys(plur: Plur): Set<string> {
-  return plur._serverDiscoveryUrls()
+  return new Set(plur._serverDiscoveryEndpoints().keys())
 }
 
 export interface DiscoveryRow {

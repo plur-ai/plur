@@ -31,7 +31,7 @@ remote-store.ts changed only `me()` (C1 /me fields; a non-2xx now throws
 `RemoteHttpError` with the same message), which the push path does not call.
 
 Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
-index.ts only adds `_serverDiscoveryUrls()`, a read of config.yaml that lists the
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
 writes nothing and is read only by the MCP server; the outbox and the push path are untouched.
 -/

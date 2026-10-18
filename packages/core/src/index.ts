@@ -13935,14 +13935,23 @@ Generate an improved version of the procedure that prevents this failure. Return
    * keys too) is kept as it is on disk.
    */
   /**
-   * The endpoints {@link refreshServerScopes} probes, by normalized url: the
-   * server entries in config.yaml that carry a `scopes` list and an
-   * `enterprise` block (C6). Reads the file, never the network. The MCP server
-   * uses it so an endpoint is either refreshed in the background or probed by
-   * the legacy session-start path, never neither (#1631).
+   * The endpoints {@link refreshServerScopes} probes, keyed by normalized url:
+   * the server entries in config.yaml that carry a `scopes` list and an
+   * `enterprise` block (C6), each with its configured url and the cached
+   * `discovery.status` of its first entry. Reads the file, never the network.
+   * The MCP server uses it so an endpoint is either refreshed in the
+   * background or probed by the legacy session-start path, never neither, and
+   * so a server with an empty scope cache still has a status (#1631).
    */
-  _serverDiscoveryUrls(): Set<string> {
-    return new Set(this._readRawStores().filter(isEnterpriseServerEntry).map(r => normalizeEndpointUrl(r.url)))
+  _serverDiscoveryEndpoints(): Map<string, { url: string; status?: string }> {
+    const out = new Map<string, { url: string; status?: string }>()
+    for (const r of this._readRawStores().filter(isEnterpriseServerEntry)) {
+      const key = normalizeEndpointUrl(r.url)
+      if (out.has(key)) continue
+      const d = r.discovery
+      out.set(key, { url: r.url, ...(isPlainObject(d) && typeof d.status === 'string' ? { status: d.status } : {}) })
+    }
+    return out
   }
 
   async refreshServerScopes(opts?: { url?: string; timeoutMs?: number }): Promise<ServerDiscoveryOutcome[]> {
