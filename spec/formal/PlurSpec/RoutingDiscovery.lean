@@ -1037,9 +1037,12 @@ theorem no_write_to_other_scope (personal : S → Bool) (orgOf : S → Option O)
 /-- The explicit-scope id lookups (index.ts `_scopedUrlEntry`: forget, feedback; row 34):
 `none` = refused, no server asked (ScopeConflictError for two servers; since the gate of
 #1667 also a scope a company server withholds, "not granted to you on <server>");
-`some none` = no url store claims the scope exactly (the local paths, the guards and the
-scoped walk `walk` run); `some (some e)` = act on `e`. setPinned and
-pinnedQuota (`_pinTargetEntry`) run the same lookup over the writable entries only (a readonly
+`some none` = no url store claims the scope exactly (the local paths and the guards run; the
+scoped walk `walk` runs only when `resolve` is not `local`, so a scope the resolver keeps local,
+e.g. a personal scope a local store holds, never reaches a server; Codex r1 of the #1667 gate);
+`some (some e)` = act on `e`. The pin's sublist keeps every path store (even readonly) so the
+personal selection is the same; only readonly url entries are dropped. setPinned and
+pinnedQuota (`_pinTargetEntry`) run the same lookup over the path entries and the writable url entries (a readonly
 store never receives the PATCH, #1532 R6); every theorem below holds for any list, so for that
 sublist too, and an entry of the sublist is an entry of the config. -/
 def lookup (personal : S → Bool) (orgOf : S → Option O) (s : S) (l : List (Entry S U O)) :

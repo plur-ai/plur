@@ -2605,8 +2605,17 @@ export class Plur {
    * scope never competes (#1532 re-audit R6) and two writable servers are a
    * refused conflict.
    */
+  /**
+   * The stores a scoped pin resolves over: every path store (a local store
+   * keeps its place in the personal selection, even readonly) and the
+   * writable url stores (a readonly url store never receives the PATCH).
+   */
+  private _pinCandidateStores(): StoreEntry[] {
+    return (this.config.stores ?? []).filter(s => !s.url || s.readonly !== true)
+  }
+
   private _pinTargetEntry(scope: string, outcome: string): StoreEntry | undefined {
-    const target = resolveScopeTarget(scope, (this.config.stores ?? []).filter(s => s.readonly !== true))
+    const target = resolveScopeTarget(scope, this._pinCandidateStores())
     if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers, outcome)
     return target.kind === 'remote' ? target.entry : undefined
   }
@@ -8562,7 +8571,10 @@ export class Plur {
     // 'primary')` on an id absent locally rated a REMOTE engram. One severity
     // band below the retire (a mis-targeted signal is recoverable), same
     // defect, same predicate.
-    if (scope && isLocalOnlyScope(scope, this.config.stores ?? [])) {
+    // An explicit scope the resolver keeps local (a path store, or the local
+    // store a personal scope selects) is local too (gate of #1667).
+    if (scope && (isLocalOnlyScope(scope, this.config.stores ?? [])
+      || resolveScopeTarget(scope, this.config.stores ?? []).kind === 'local')) {
       throw new Error(
         `Engram not found in the local store: ${id} (scope: "${scope}"). `
         + `That scope names a local target, so no remote store was searched. `
@@ -9407,9 +9419,12 @@ export class Plur {
     // no pin to cost — and no server is asked for the row.
     const quotaScope = options?.scope
     const quotaTarget = quotaScope && quotaScope !== 'primary'
-      ? resolveScopeTarget(quotaScope, (this.config.stores ?? []).filter(s => s.readonly !== true))
+      ? resolveScopeTarget(quotaScope, this._pinCandidateStores())
       : undefined
-    if (candidateId && quotaTarget?.kind !== 'conflict') {
+    // An explicit non-primary scope costs a candidate only where setPinned
+    // would pin it: a writable url store the resolver selects.
+    const pinnable = !quotaTarget || (quotaTarget.kind === 'remote' && quotaTarget.writable)
+    if (candidateId && pinnable) {
       // #1532 review F6: cost the engram the pin will actually change. A bare
       // id can name a local engram and an unrelated remote one; with a scope,
       // look where that scope says, as setPinned will.
@@ -9807,7 +9822,10 @@ export class Plur {
     // Decision E4 (amended by O5, #1633): stores are passed, so a `project:*`
     // scope a URL store claims EXACTLY (the resolver) is NOT local-only and
     // reaches it; one a store only contains stays local, as its writes do.
-    if (targetScope && isLocalOnlyScope(targetScope, this.config.stores ?? [])) {
+    // An explicit scope the resolver keeps local (a path store, or the local
+    // store a personal scope selects) is local too (gate of #1667).
+    if (targetScope && (isLocalOnlyScope(targetScope, this.config.stores ?? [])
+      || resolveScopeTarget(targetScope, this.config.stores ?? []).kind === 'local')) {
       throw new Error(
         `Engram not found in the local store: ${id} (scope: "${targetScope}"). `
         + `That scope names a local target, so no remote store was searched. `
