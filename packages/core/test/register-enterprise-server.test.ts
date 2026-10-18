@@ -282,13 +282,24 @@ describe('foldStoresIntoServerEntry — pure', () => {
     expect(raw).toHaveLength(2)  // input untouched
   })
 
-  it("a folded entry's metadata wins over a scope_settings value for the same key; other keys there are kept", () => {
+  it("an entry whose metadata differs from the server entry's scope_settings for the scope is kept separate (Codex audit round 1)", () => {
     const raw = [
       { url: URL_, token: 'k1', scope: ME, enterprise: {}, scopes: [], scope_settings: { 'group:acme/a': { dial: 'auto', covers: ['x'] } } },
       { url: URL_, token: 'k1', scope: 'group:acme/a', dial: 'never' },
     ]
-    const { stores } = foldStoresIntoServerEntry(raw, URL_, 'k1', undefined)
-    expect((stores[0] as { scope_settings: unknown }).scope_settings).toEqual({ 'group:acme/a': { dial: 'never', covers: ['x'] } })
+    const { stores, report } = foldStoresIntoServerEntry(raw, URL_, 'k1', undefined)
+    expect(report.kept_separate).toEqual([{ scope: 'group:acme/a', why: 'metadata-differs' }])
+    expect(stores).toEqual(raw)
+  })
+
+  it('an entry whose metadata equals the server entry settings for the scope folds, and the settings stay', () => {
+    const raw = [
+      { url: URL_, token: 'k1', scope: ME, enterprise: {}, scopes: [], scope_settings: { 'group:acme/a': { dial: 'never' } } },
+      { url: URL_, token: 'k1', scope: 'group:acme/a', dial: 'never' },
+    ]
+    const { stores, report } = foldStoresIntoServerEntry(raw, URL_, 'k1', undefined)
+    expect(report.folded).toEqual([{ scope: 'group:acme/a' }])
+    expect((stores[0] as { scope_settings: unknown }).scope_settings).toEqual({ 'group:acme/a': { dial: 'never' } })
   })
 
   it('a path entry, a scope that fails the grammar, or an explicit shared flag the scope does not have is not folded', () => {
@@ -349,5 +360,50 @@ describe('registerEnterpriseServer — the route a write takes never moves (gate
     expect(err).not.toBeNull()
     expect(err!.message).not.toMatch(/sekrit/)
     expect(String(err!.stack)).not.toMatch(/sekrit/)
+  })
+})
+
+describe('registerEnterpriseServer — Codex audit round 1', () => {
+  const route = (scope: string): [string | undefined, string | undefined] => {
+    const t = resolveScopeTarget(scope, loadConfig(configPath()).stores ?? [])
+    return t.kind === 'remote' ? [t.entry.url, t.entry.token] : [t.kind, undefined]
+  }
+
+  it('a new personal scope keeps the old compat scope served by the entry (pinned), so its writes keep their key', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: group:acme/old\n    scopes: []\n  - url: ${URL_}\n    token: k-other\n    scope: group:acme/old\n`)
+    const before = route('group:acme/old')
+    expect(before[1]).toBe('k1')
+    await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(route('group:acme/old')).toEqual(before)
+    expect(rawConfig().stores[0].pinned_scopes).toEqual(['group:acme/old'])
+  })
+
+  it('two same-key entries for one scope with different metadata are not folded, so the active policy stays', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: group:acme/team\n    sensitivity:\n      forbid: [infra]\n      allow: []\n` +
+      `  - url: ${URL_}\n    token: k1\n    scope: group:acme/team\n    sensitivity:\n      forbid: [infra]\n      allow: [infra]\n`)
+    const before = plur.getScopeMetadata('group:acme/team')
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.folded).toEqual([])
+    expect(plur.getScopeMetadata('group:acme/team')).toEqual(before)
+  })
+
+  it("a per-scope entry whose metadata differs from the server entry's settings for that scope is not folded", async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n    enterprise: {}\n    scopes: [group:acme/team]\n` +
+      `    scope_settings:\n      group:acme/team:\n        sensitivity:\n          forbid: [infra]\n` +
+      `  - url: ${URL_}\n    token: k1\n    scope: group:acme/team\n    sensitivity:\n      forbid: []\n`)
+    const before = plur.getScopeMetadata('group:acme/team')
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.kept_separate).toEqual([{ scope: 'group:acme/team', why: 'metadata-differs' }])
+    expect(plur.getScopeMetadata('group:acme/team')).toEqual(before)
+  })
+
+  it('a YAML error never quotes text from config.yaml (alias and tag names included)', async () => {
+    for (const bad of [`stores:\n  - token: *sekrit-alias\n`, `stores:\n  - token: !sekrit-tag x\n`]) {
+      writeFileSync(configPath(), bad)
+      const err = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME }).then(() => null, (e: Error) => e)
+      expect(err).not.toBeNull()
+      expect(err!.message).not.toMatch(/sekrit/)
+      expect(String(err!.stack)).not.toMatch(/sekrit/)
+    }
   })
 })
