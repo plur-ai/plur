@@ -372,7 +372,12 @@ SID when it ends in -500 or -501). The rule modelled — set, read back, non-emp
 trustee the account — is unchanged, so `protect_sound` holds as stated. Codex gate round 1
 (same day): the saved list is read only when it is exactly one record with one whole
 descriptor (anything else is `unknown`, i.e. `readStatus ≠ 0` here), and icacls/whoami run
-only by full path (no path known on Windows → nothing runs, a failed `setStatus`). -/
+only by full path (no path known on Windows → nothing runs, a failed `setStatus`).
+
+Checked against #1638's gate (`plur login`, 2026-10-18): still holds. cleanup.ts only exports
+`backupWriter` (and its `Backup` type), unchanged; `plur login --remove-stale` and the one-time
+config.json move make their owner-only copies through it (sign-in-shared.ts `backupSecretFile`),
+so this rule now also covers those copies. -/
 namespace OwnerOnly
 
 /-- One icacls run pair. `principals` are the trustees `readAcl` parsed from the saved SDDL;

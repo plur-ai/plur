@@ -18,13 +18,17 @@ export type ScopeTarget =
   /** A path store, or no store: the write stays on this machine. */
   | { kind: 'local'; entry?: StoreEntry }
 
-/** A scope claimed by two servers. Thrown by the write path before anything is saved. */
+/**
+ * A scope claimed by two servers. Thrown by the write path before anything is
+ * saved, and by the explicit-scope id lookups (forget, feedback, setPinned;
+ * #1633 row 34) before any server is asked: `outcome` says what did not happen.
+ */
 export class ScopeConflictError extends Error {
   readonly scope: string
   readonly servers: string[]
-  constructor(scope: string, servers: string[]) {
+  constructor(scope: string, servers: string[], outcome = 'nothing was saved') {
     super(
-      `Scope "${scope}" is claimed by two servers (${servers.join(', ')}); nothing was saved. ` +
+      `Scope "${scope}" is claimed by two servers (${servers.join(', ')}); ${outcome}. ` +
       'Remove it from one of them in config.yaml.',
     )
     this.name = 'ScopeConflictError'

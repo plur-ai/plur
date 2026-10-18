@@ -6,6 +6,13 @@
  *  - E4: `project:*` is local-only only if no configured URL store's scope
  *    equals or segment-contains it (the `isScopeWithin` rule). The stores are
  *    threaded to the callers (forget, feedback, assertScopeNamesATarget).
+ *    AMENDED 2026-10-18 by owner decision O5 (#1633, epic 1797): "Project
+ *    scopes — Exact match. B7 updates the Lean model, the decision record and
+ *    the formal tests in the same PR." `project:*` is local-only exactly when
+ *    the one resolver (`resolveScopeTarget`) keeps a write to it local, so a
+ *    url store that only CONTAINS a project scope no longer makes it remote.
+ *    The containment expectations below are changed to the exact-match answer
+ *    (plan B Task 7, Step 3).
  *
  * Fake remote via mocked fetch; nothing real is called.
  */
@@ -30,14 +37,14 @@ describe('Decision E5 — the local family case-folds', () => {
   })
 })
 
-describe('Decision E4 — project:* is local-only only without a covering url store', () => {
+describe('Decision E4 (amended, O5) — project:* is local-only unless a url store claims it exactly', () => {
   it('exact url store → not local-only', () => {
     expect(isLocalOnlyScope('project:plur', [URL_STORE])).toBe(false)
   })
-  it('segment-contained by a url store → not local-only', () => {
-    expect(isLocalOnlyScope('project:plur/sub', [URL_STORE])).toBe(false)
-    expect(isLocalOnlyScope('project:plur:sub', [URL_STORE])).toBe(false)
-    expect(isLocalOnlyScope('Project:plur/sub', [URL_STORE])).toBe(false)
+  it('segment-contained by a url store → local-only (amended E4: exact match, as write routing)', () => {
+    expect(isLocalOnlyScope('project:plur/sub', [URL_STORE])).toBe(true)
+    expect(isLocalOnlyScope('project:plur:sub', [URL_STORE])).toBe(true)
+    expect(isLocalOnlyScope('Project:plur/sub', [URL_STORE])).toBe(true)
   })
   it('a string-prefix sibling is NOT contained (segment-aware)', () => {
     expect(isLocalOnlyScope('project:plurx', [URL_STORE])).toBe(true)
@@ -49,12 +56,12 @@ describe('Decision E4 — project:* is local-only only without a covering url st
   it('the named local targets never depend on stores', () => {
     expect(isLocalOnlyScope('global', [{ url: 'https://x', scope: 'global' }])).toBe(true)
   })
-  it('a covered descendant names a target (the covering store)', () => {
+  it('a descendant still names a target (config-free: a project scope is always a local target)', () => {
     expect(() => assertScopeNamesATarget('project:plur/sub', [URL_STORE], 'retire from', 'x')).not.toThrow()
   })
 })
 
-describe('Decision E4 — forget/feedback reach the url store that covers a project scope', () => {
+describe('Decision E4 (amended, O5) — forget reaches the url store that claims a project scope exactly', () => {
   let dir: string
   let fetchMock: ReturnType<typeof vi.fn>
   let originalFetch: typeof globalThis.fetch
@@ -86,10 +93,17 @@ describe('Decision E4 — forget/feedback reach the url store that covers a proj
   })
   const calls = (m: string) => fetchMock.mock.calls.filter(([, init]) => (init as any)?.method === m)
 
-  it('forget(scope: project:plur/sub) reaches the covering url store', async () => {
+  it('forget(scope: project:plur) reaches the url store that claims it exactly', async () => {
     const plur = new Plur({ path: dir })
-    await plur.forget('ENG-REMOTE-ONLY', 'covered descendant', { scope: 'project:plur/sub', force: true })
+    await plur.forget('ENG-REMOTE-ONLY', 'exact scope', { scope: 'project:plur', force: true })
     expect(calls('DELETE')).toHaveLength(1)
+  })
+
+  it('forget(scope: project:plur/sub) stays local: a containing url store does not claim it (amended E4)', async () => {
+    const plur = new Plur({ path: dir })
+    await expect(plur.forget('ENG-REMOTE-ONLY', 'contained descendant', { scope: 'project:plur/sub', force: true }))
+      .rejects.toThrow(/not found in the local store/)
+    expect(calls('DELETE')).toHaveLength(0)
   })
 
   it('an uncovered project scope still never reaches the network', async () => {
