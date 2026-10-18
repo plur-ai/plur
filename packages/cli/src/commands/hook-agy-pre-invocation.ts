@@ -100,7 +100,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // INSIDE the record, so a sanitized-path collision between two
     // conversations reads as "no cache", never as another conversation's
     // memory (F9).
-    const cached = readAgyTurnCache(conversationId)
+    // A message cached under another folder mode is not this turn's in a
+    // remote-only folder (gate review of #1663): it may hold personal memory.
+    const rawCached = readAgyTurnCache(conversationId)
+    const cached = rawCached && policy?.mode === 'remote-only' && rawCached.mode !== 'remote-only' ? null : rawCached
 
     // "First" is the conversation's first turn. The absence of a cache alone
     // cannot say that: with an unusable cache dir it is absent on EVERY turn,
@@ -172,7 +175,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const header = isFirst
         ? [
           `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
-            (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : ''),
+            (projectConfig.scope && !plur.remoteOnlyFolder() ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : ''),
           // remote-only: where memory goes, and that the team server did not answer.
           ...remoteOnlyLines(plur, result, true),
         ].join('\n')
@@ -219,6 +222,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       textHash: userHash,
       message,
       ...(user ? { offset: user.offset } : {}),
+      ...(policy ? { mode: policy.mode } : {}),
     })
 
     if (!message) return

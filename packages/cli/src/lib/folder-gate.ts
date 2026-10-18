@@ -292,15 +292,19 @@ export function cursorHookFolder(
   // there lives only on the team server. Any root that is remote-only makes
   // the workspace remote-only (fail closed), from the output folder's own
   // entry when it has one, else the first such root's.
-  if (policy.mode === 'remote-only') return { dir, policy }
+  // A remote-only decision also names every root, so the session start can
+  // remove the generated rule an earlier session left in another root (gate
+  // review of #1663): it may hold personal memory.
+  const allRoots = [...new Set(roots.flatMap(r => r.real ? [r.real] : []))]
+  if (policy.mode === 'remote-only') return { dir, policy, cleanupDirs: allRoots }
   const remoteOnlyRoot = askable.find(r => r.policy.mode === 'remote-only')
-  if (remoteOnlyRoot) return { dir, policy: remoteOnlyRoot.policy }
+  if (remoteOnlyRoot) return { dir, policy: remoteOnlyRoot.policy, cleanupDirs: allRoots }
   // Every spelling `off` is checked on, too (gate review of #1663): each root
   // as given and as resolved — a home-or-above root included — and the
   // payload cwd. A remote-only one keeps the workspace remote-only.
   for (const p of offChecks) {
     const restricted = hookFolderPolicy(p, flags)
-    if (restricted.mode === 'remote-only') return { dir, policy: restricted }
+    if (restricted.mode === 'remote-only') return { dir, policy: restricted, cleanupDirs: allRoots }
   }
   // A home-or-above root that is undecided is on here, by the MCP rule, never `ask`.
   const on: FolderPolicy = policy.mode === 'on'

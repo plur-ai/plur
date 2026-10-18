@@ -63,6 +63,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   if (dir && policy.mode === 'ask') removeStaleAsk(cursorContextRulePath(dir))
+  // remote-only: another root's generated rule may hold personal memory from
+  // an earlier session; this session writes its own rule in `dir` only.
+  if (policy.mode === 'remote-only') {
+    for (const root of cleanupDirs ?? []) if (root !== dir) removeGeneratedContextRules(root)
+  }
 
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't track this session — stay silent rather than guess
@@ -128,7 +133,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const hint = skippedStoreNotice(plur, conversationId, dir)
     const header = [
       `[PLUR Memory — session started, ${count} engrams injected]` +
-        (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '') +
+        (projectConfig.scope && !plur.remoteOnlyFolder() ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '') +
         (hint ? `\n${hint}` : ''),
       // remote-only: where memory goes, and that the team server did not answer.
       ...remoteOnlyLines(plur, result, true),

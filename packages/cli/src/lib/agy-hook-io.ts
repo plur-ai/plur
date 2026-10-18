@@ -129,6 +129,12 @@ export interface AgyTurnCache {
    * cli#12). Optional: caches written before it existed simply lack it.
    */
   offset?: number
+  /**
+   * The folder mode the message was recalled under (gate review of #1663): a
+   * message cached under another mode is never replayed in a remote-only
+   * folder. Optional: older caches lack it.
+   */
+  mode?: string
 }
 
 /**
@@ -161,6 +167,7 @@ export function readAgyTurnCache(conversationId: string): AgyTurnCache | null {
       textHash: typeof raw.textHash === 'string' ? raw.textHash : '',
       message: raw.message,
       ...(typeof raw.offset === 'number' && Number.isSafeInteger(raw.offset) ? { offset: raw.offset } : {}),
+      ...(typeof raw.mode === 'string' ? { mode: raw.mode } : {}),
     }
   } catch {
     return null // missing, torn, or corrupt — degrade to a fresh recall

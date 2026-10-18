@@ -1170,7 +1170,8 @@ async function injectSession(
     parts.push(`[PLUR Memory — session started, ${count} engrams injected]`)
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
-    if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
+    // remote-only: the remote-only line below names the scope, escaped (gate review of #1663).
+    if (projectConfig.scope && !plur.remoteOnlyFolder()) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
 
     // A memory store here that was found but not added (#1589 audit round 3):
     // one line, once per session and folder, with the paste-safe command.

@@ -1455,6 +1455,25 @@ export class Plur {
     return target.kind === 'remote' && target.entry?.scope === scope
   }
 
+  /**
+   * remote-only: true only when the host positively holds the row the id names
+   * and that row is in a deliverable team scope (Codex round 3). Unknown —
+   * a failed probe, or a row the host says it holds but does not hand over —
+   * is false, as is a personal row.
+   */
+  private async _remoteRowOwnedByTeam(driver: RemoteStore, serverId: string): Promise<boolean> {
+    try {
+      const ownership = driver.probeById
+        ? await driver.probeById(serverId, { signal: AbortSignal.timeout(REMOTE_PROBE_TIMEOUT_MS) })
+        : 'assumed'
+      if (ownership === 'unknown' || ownership === 'absent') return false
+      const row = await driver.getById(serverId)
+      return !!row && this._isDeliverableTeamScope(row.scope)
+    } catch {
+      return false
+    }
+  }
+
   private _isDeliverableTeamScope(scope: string): boolean {
     if (!scope || !isSharedScope(scope)) return false
     const stores = this.config.stores ?? []
@@ -2998,6 +3017,9 @@ export class Plur {
       legacy = true
     }
 
+    // remote-only: a url store is asked only when it is the folder's own team
+    // store (Codex round 3); local path stores are read as before.
+    if (this._activeBinding()) candidates = candidates.filter(c => !c.url || this._remoteOnlyWalkAllows(c.scope))
     type Holder = { entry: StoreEntry; rowScope: string; key: string }
     const holders: Holder[] = []
     const unreached: string[] = []
@@ -6094,7 +6116,8 @@ export class Plur {
   /** Search engrams using local embeddings. Async, no API calls. Routes through PGLite/pgvector when active (#226) or a Postgres primary store's vector index (#762), with optional intent routing (#224) + cross-encoder rerank (#220). */
   async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const limit = options?.limit ?? 20
-    const rerank = await this._resolveRerankOptions(options?.rerank)
+    // remote-only: no reranker model either (Codex round 3).
+    const rerank = this._remoteOnly ? null : await this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
     // Two over-fetch sources stack: intent routing wants headroom for its
     // re-rank, the reranker wants topK candidates. Take the larger; truncate
@@ -6105,10 +6128,12 @@ export class Plur {
     let results: Engram[]
     const primaryAdapter = this._primaryQueryAdapter()
     if (this._remoteOnly) {
-      // remote-only: rank the read corpus in memory; the index and the
-      // primary adapter hold the personal store.
+      // remote-only: rank the read corpus in memory by keyword. The index and
+      // the primary adapter hold the personal store, and no embedder is used
+      // here: a cloud one would receive the query and team text, a local one
+      // keeps their vectors in this machine's cache (Codex round 3).
       const filtered = await this._filterEngrams(options)
-      results = await embeddingSearch(filtered, query, fetchLimit, this.paths.root)
+      results = searchEngrams(filtered, isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query), fetchLimit)
     } else if (this.pgliteAdapter) {
       const filtered = await this._filterEngrams(options)
       results = await this._pgliteSemanticRecall(query, fetchLimit, filtered, options)
@@ -6179,6 +6204,10 @@ export class Plur {
       // #906: narrowed by the store when provably equivalent, else the full read.
       const filtered = await this._hybridCandidates(query, options)
       candidates = filtered
+      // remote-only: keyword ranking only, no embedder (Codex round 3; see recallSemantic).
+      if (this._remoteOnly) {
+        return { engrams: searchEngrams(filtered, isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query), limit), mode: 'bm25-only', embedderError: null, topScore: null, reranked: 0 }
+      }
       // A recall never downloads the model (#1586 rounds 3-4): when it is not
       // on disk, answer by keyword and say how to get it (`plur doctor`).
       if (await semanticModelState() === 'missing') {
@@ -6778,6 +6807,8 @@ export class Plur {
       }))
       for (const hit of rows) {
         if (!hit) continue
+        // remote-only: a personal row on the team host is not this folder's (Codex round 3).
+        if (this._remoteOnly && hit.row.scope !== 'global' && !(this._isDeliverableTeamScope(hit.row.scope) && isScopeWithin(hit.row.scope, entry.scope))) continue
         taken.add(hit.id)
         const cloned = { ...hit.row } as Engram & { _originalId?: string; _storeScope?: string }
         cloned._originalId = hit.row.id
@@ -8131,6 +8162,8 @@ export class Plur {
     /** The model is not on disk: keyword only, never a download (#1586 R1). */
     let modelMissing = false
     const semanticLeg = async (): Promise<void> => {
+    // remote-only: no embedder (Codex round 3; see recallSemantic).
+    if (this._remoteOnly) return
     if (await semanticModelState() === 'missing') { modelMissing = true; return }
     try {
       // remote-only: the read corpus (team store rows + packs), and no PGLite
@@ -9255,7 +9288,13 @@ export class Plur {
     // server that merely might hold the id.
     const walk = namedBy.length > 0 || !this._activeBinding()
       ? (namedBy.length > 0 ? namedBy : writableRemotes)
-      : writableRemotes.filter(e => typeof updated.scope === 'string' && isScopeWithin(updated.scope, e.scope))
+      : (() => {
+          // The one store the shared resolver names for the row's scope, never
+          // a parent-scope server that merely contains it (Codex round 3).
+          const target = typeof updated.scope === 'string' ? resolveScopeTarget(updated.scope, this.config.stores ?? []) : null
+          const named = target && target.kind === 'remote' && target.writable ? target.entry : undefined
+          return named ? writableRemotes.filter(e => e.url === named.url && e.scope === named.scope) : []
+        })()
     for (const entry of walk) {
       // Leak guard (#353): remote-resident, explicit update → THROW on a
       // forbidden hit (no coherent demotion for a remote engram).
@@ -9263,6 +9302,9 @@ export class Plur {
       this._guardExplicitUpdate(updated.statement, entry.scope, true, this._engramContextFields(updated))
       const serverId = this._stripRemotePrefix(updated.id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
+      // remote-only: the row the id names on this host must be in a team
+      // scope; the host can also hold personal rows (Codex round 3).
+      if (this._activeBinding() && !(await this._remoteRowOwnedByTeam(driver, serverId))) continue
       // PATCH a focused subset — full-engram PATCH would require strict
       // schema mirroring on the server and is not what enterprise PR #111
       // exposes. Send the fields most commonly mutated by the callers
@@ -14105,12 +14147,23 @@ Generate an improved version of the procedure that prevents this failure. Return
       const entry = target.kind === 'remote' ? target.entry : undefined
       if (entry?.url) {
         const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
-        let row: Engram | null = null
-        try { row = await driver.getById(this._stripForScope(id, entry.scope)) } catch {
-          throw this._remoteOnlyError('local-row', undefined, op)
-        }
-        if (row && !(this._isDeliverableTeamScope(row.scope) && isScopeWithin(row.scope, scope))) {
-          throw this._remoteOnlyError('local-row', undefined, op)
+        const serverId = this._stripForScope(id, entry.scope)
+        // Tri-state (Codex round 3): `getById` reads a 503 as null, so the
+        // probe decides first. Unknown refuses; absent is left to the
+        // operation, which then finds nothing; held must be a team row.
+        let ownership: 'owned' | 'absent' | 'unknown' | 'assumed' = 'unknown'
+        try {
+          ownership = driver.probeById
+            ? await driver.probeById(serverId, { signal: AbortSignal.timeout(REMOTE_PROBE_TIMEOUT_MS) })
+            : 'assumed'
+        } catch { ownership = 'unknown' }
+        if (ownership === 'unknown') throw this._remoteOnlyError('local-row', undefined, op)
+        if (ownership !== 'absent') {
+          let row: Engram | null = null
+          try { row = await driver.getById(serverId) } catch { row = null }
+          if (!row || !(this._isDeliverableTeamScope(row.scope) && isScopeWithin(row.scope, scope))) {
+            throw this._remoteOnlyError('local-row', undefined, op)
+          }
         }
       }
       return
@@ -14452,9 +14505,14 @@ Generate an improved version of the procedure that prevents this failure. Return
     const stores = this.config.stores ?? []
     const REMOTE_LOAD_TIMEOUT_MS = 5000
 
+    // remote-only: only the folder's own team store is loaded; the others are
+    // listed from config.yaml alone, with no count (Codex round 3).
+    const ro = this._activeBinding()
     const additional = await Promise.all(stores.map(async s => {
       let count = 0
-      if (s.url) {
+      if (s.url && ro && !(s.scope === ro.scope && !ro.blocked && this._isDeliverableTeamScope(s.scope))) {
+        // not contacted
+      } else if (s.url) {
         try {
           const driver = this._getRemoteDriver({ url: s.url, token: s.token, scope: s.scope })
           // Race driver.load() against a timeout — a hung remote must not
@@ -14505,7 +14563,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     const stores = this.config.stores ?? []
     // remote-only (gate review of #1663): only the folder's own team store.
     const ro = this._activeBinding()
-    const remoteStores = stores.filter(s => s.url && (!ro || (!ro.blocked && !!ro.scope && s.scope === ro.scope)))
+    const remoteStores = stores.filter(s => s.url && (!ro || (!ro.blocked && !!ro.scope && s.scope === ro.scope && this._isDeliverableTeamScope(s.scope))))
     const REMOTE_LOAD_TIMEOUT_MS = 5000
     await Promise.all(
       remoteStores.map(s => {

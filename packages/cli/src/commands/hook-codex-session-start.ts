@@ -69,7 +69,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         : ''
 
       const header = `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
-        (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
+        (projectConfig.scope && !plur.remoteOnlyFolder() ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
 
       // Never silent (#1198): if the project declared remote settings we
       // refused, say so here — this is the only model-visible surface.
