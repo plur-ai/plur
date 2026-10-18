@@ -203,7 +203,9 @@ const GUID = String.raw`(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa
  * or SDDL codes. Anything else (a conditional entry, a malformed one) does not
  * match, so the list is unknown.
  */
-const ACE = String.raw`\((?:A|D|OA|OD);(?:CI|OI|NP|IO|ID|SA|FA|TP|CR)*;(?:0x[0-9A-Fa-f]+|(?:[A-Z]{2})+);${GUID};${GUID};${TRUSTEE}\)`
+/** SDDL rights codes (generic, standard, directory, file, registry, label) — or an access mask. */
+const RIGHTS = String.raw`(?:0x[0-9A-Fa-f]{1,8}|(?:GA|GR|GW|GX|RC|SD|WD|WO|RP|WP|CC|DC|LC|SW|LO|DT|CR|FA|FR|FW|FX|KA|KR|KW|KX|NR|NW|NX)+)`
+const ACE = String.raw`\((?:A|D|OA|OD);(?:CI|OI|NP|IO|ID|SA|FA|TP|CR)*;${RIGHTS};${GUID};${GUID};${TRUSTEE}\)`
 const SACL_ACE = String.raw`\([^()]*\)`
 /**
  * One whole security descriptor: optional owner and group, the access list

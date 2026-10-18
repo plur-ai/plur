@@ -267,6 +267,9 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
       `D:PAI(A;;FA;;;;${SELF})`,                              // seven fields
       `D:PAI(A;XX;FA;;;${SELF})`,                             // unknown entry flag
       `D:PAI(A;;fa;;;${SELF})`,                               // rights not SDDL
+      `D:PAI(A;;ZZ;;;${SELF})`,                               // no such right (Codex gate round 3)
+      `D:PAI(A;;GARBAGEZ;;;${SELF})`,
+      `D:PAI(A;;0x123456789;;;${SELF})`,                      // wider than an access mask
       `D:PAI(A;;FA;not-a-guid;;${SELF})`,
       `D:PAI(A;;FA;;;nobody)`,
     ]) {
@@ -275,6 +278,7 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
     // Well-formed variants are still read: owner and group sections, a SACL, entry flags,
     // hex rights, an inherited entry, a deny entry for another account (not owner-only).
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`D:PAI(A;OICIID;0x1F01FF;;;${SELF})`), account: ACCT })).toEqual({ ok: true })
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`D:PAI(A;;FRFWRCSD;;;${SELF})(A;OICIIO;GA;;;${SELF})`), account: ACCT })).toEqual({ ok: true })
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`D:AI(A;ID;FA;;;${SELF})(D;;FA;;;BU)`), account: ACCT })).toEqual({ ok: false, detail: 'also readable by BUILTIN\\Users' })
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`O:${SELF}G:SYD:PAI(A;;FA;;;${SELF})S:AI(ML;;NW;;;LW)`), account: ACCT })).toEqual({ ok: true })
   })
@@ -415,6 +419,22 @@ describe('Windows (simulated host): every config write is a protected write', ()
     _atomicWriteAcl.env = {}
     expect(() => writeConfigFile(cfg, 'token: x\n')).toThrow(/account is not known/)
     expect(realFs.existsSync(cfg)).toBe(false)
+  })
+
+  it('a temp file whose list reads back malformed is not protected: the write is refused before any byte (Codex gate round 3)', () => {
+    realFs.writeFileSync(cfg, 'stores: []\n')
+    _atomicWriteAcl.exec = (cmd, args) => {
+      calls.push([cmd, ...args])
+      if (cmd === 'whoami') return { status: 0, stdout: `"CORP\\alice","${SELF}"` }
+      if (args[1] === '/save') {
+        realFs.writeFileSync(args[2], Buffer.from(`n\r\nD:PAI(A;;${/\.tmp$/.test(args[0]) ? 'ZZ' : 'FA'};;;${SELF})\r\n`, 'utf16le'))
+        return { status: 0, stdout: '' }
+      }
+      return { status: 0, stdout: '' }
+    }
+    expect(() => writeConfigFile(cfg, 'token: x\n')).toThrow(/refusing a credential write/)
+    expect(realFs.readFileSync(cfg, 'utf8')).toBe('stores: []\n')
+    expect(realFs.readdirSync(root).filter(n => n.endsWith('.tmp'))).toEqual([])
   })
 
   it('a refusal is one line that names the cause and the opt-out', () => {

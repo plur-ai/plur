@@ -600,3 +600,10 @@ any letters as list flags and any entry body naming the account (`D:GARBAGE(...)
 `unknown`; the opt-out line is printed whenever the content went out unprotected, even when
 the file in place could be protected afterwards (this is `reported` in the model); the
 static writer guard uses the TypeScript parser. No theorem changed.
+
+Codex gate round 3 (PASS, one medium, fixed the same day): entry rights accepted any
+letter pairs (`ZZ`) and any length of hex. Rights are now SDDL rights codes or an access
+mask of at most 8 hex digits; anything else is `unknown`, so a temp file that reads back
+malformed refuses the write. Same day: the company-CA install (ca.ts, merged from
+development) moved onto core's `protectOwnerOnly`, and core trusts SystemRoot only as
+`<drive>:\Windows` (Trust.lean dated note). No theorem changed.
