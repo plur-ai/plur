@@ -898,4 +898,132 @@ theorem rekeyAll_changes_other_route :
   · rcases hs with hs | hs | hs <;> simp [srv0] at hs
   · simp [rekeyAllPer, perK0] at hq; subst hq; simp at ht
 
+/-! ### 6b. Order: the entry a write takes (gate review, 2026-10-18)
+
+The routes above are a set, and order is left out. But a write takes the FIRST entry in
+config order that serves its scope (store-resolver.ts `remoteOf`; `personalStoreEntry` breaks
+ties by order). With order, two folds move a scope onto another key although every route
+triple survives (so `fold_preserves_routing` still holds for them):
+- folding an entry while an entry that stays serves the same scope with another key ahead of
+  the server entry (`fold_moves_first_route`);
+- moving the server entry ahead of an entry that serves one of its scopes with another key
+  (`move_server_moves_first_route`).
+The code keeps the server entry in place (a new one is appended) and keeps such an entry
+separate (`scope-served-elsewhere`). `ordered_fold_preserves_first` proves that then the entry
+a write to any scope takes has the same route before and after. `R` is the set of folded
+scopes; `hnoother` is the `scope-served-elsewhere` rule; `hroute` is `fmatch`. -/
+
+structure OEnt where
+  srv : Bool
+  rm : Bool
+  claims : Nat → Bool
+  route : Nat × Nat × Bool
+
+/-- The route of the first entry that serves `s`. -/
+def firstOn (s : Nat) : List OEnt → Option (Nat × Nat × Bool)
+  | [] => none
+  | e :: es => if e.claims s = true then some e.route else firstOn s es
+
+/-- The fold, in place: the server entry gains the folded scopes `R`; folded entries leave. -/
+def stepE (R : Nat → Bool) (e : OEnt) : Option OEnt :=
+  if e.srv = true then some { e with claims := fun s => e.claims s || R s }
+  else if e.rm = true then none else some e
+
+def foldOrdered (R : Nat → Bool) (es : List OEnt) : List OEnt := es.filterMap (stepE R)
+
+theorem firstOn_all (s : Nat) (r : Nat × Nat × Bool) : ∀ l : List OEnt,
+    (∀ e ∈ l, e.claims s = true → e.route = r) → (∃ e ∈ l, e.claims s = true) → firstOn s l = some r := by
+  intro l
+  induction l with
+  | nil => intro _ hx; obtain ⟨e, he, _⟩ := hx; simp at he
+  | cons e es ih =>
+    intro h hx
+    by_cases hc : e.claims s = true
+    · simp [firstOn, hc, h e (List.mem_cons_self ..) hc]
+    · simp only [firstOn, hc, if_false]
+      apply ih (fun x hx' => h x (List.mem_cons_of_mem _ hx'))
+      obtain ⟨x, hx1, hx2⟩ := hx
+      rcases List.mem_cons.mp hx1 with hx1 | hx1
+      · subst hx1; exact absurd hx2 hc
+      · exact ⟨x, hx1, hx2⟩
+
+theorem firstOn_unclaimed (R : Nat → Bool) (s : Nat) (hR : R s = false) : ∀ l : List OEnt,
+    (∀ e ∈ l, e.srv = false → e.rm = true → e.claims s = false) →
+    firstOn s (foldOrdered R l) = firstOn s l := by
+  intro l
+  induction l with
+  | nil => intro _; rfl
+  | cons e es ih =>
+    intro h
+    have ih' := ih (fun x hx => h x (List.mem_cons_of_mem _ hx))
+    unfold foldOrdered at ih' ⊢
+    cases hs : e.srv
+    · cases hr : e.rm
+      · simp [List.filterMap_cons, stepE, hs, hr, firstOn, ih']
+      · have hc := h e (List.mem_cons_self ..) hs hr
+        simp [List.filterMap_cons, stepE, hs, hr, firstOn, hc, ih']
+    · simp [List.filterMap_cons, stepE, hs, firstOn, hR, ih']
+
+/-- THEOREM (order): with the server entry kept in place and no entry that stays serving a
+folded scope, a write to every scope takes an entry with the same route as before. -/
+theorem ordered_fold_preserves_first (R : Nat → Bool) (r0 : Nat × Nat × Bool) (es : List OEnt)
+    (hsrv : ∃ e ∈ es, e.srv = true)
+    (hroute : ∀ e ∈ es, (e.srv = true ∨ e.rm = true) → e.route = r0)
+    (hcover : ∀ e ∈ es, e.srv = false → e.rm = true → ∀ s, e.claims s = true → R s = true)
+    (hsound : ∀ s, R s = true → ∃ e ∈ es, e.rm = true ∧ e.claims s = true)
+    (hnoother : ∀ s, R s = true → ∀ e ∈ es, e.claims s = true → e.srv = true ∨ e.rm = true)
+    (s : Nat) : firstOn s (foldOrdered R es) = firstOn s es := by
+  cases hRs : R s
+  · apply firstOn_unclaimed R s hRs es
+    intro e he hs hr
+    cases hc : e.claims s
+    · rfl
+    · have := hcover e he hs hr s hc
+      simp [hRs] at this
+  · have hb : firstOn s es = some r0 := by
+      apply firstOn_all s r0 es
+      · intro e he hc; exact hroute e he (hnoother s hRs e he hc)
+      · obtain ⟨e, he, _, hc⟩ := hsound s hRs; exact ⟨e, he, hc⟩
+    rw [hb]
+    apply firstOn_all s r0
+    · intro e' he' hc'
+      obtain ⟨e, he, hst⟩ := List.mem_filterMap.mp he'
+      unfold stepE at hst
+      by_cases hs : e.srv = true
+      · simp [hs] at hst; subst hst; exact hroute e he (Or.inl hs)
+      · by_cases hr : e.rm = true
+        · simp [hs, hr] at hst
+        · simp [hs, hr] at hst; subst hst
+          rcases hnoother s hRs e he hc' with h | h
+          · exact absurd h hs
+          · exact absurd h hr
+    · obtain ⟨e, he, hs⟩ := hsrv
+      refine ⟨{ e with claims := fun s => e.claims s || R s }, ?_, by simp [hRs]⟩
+      exact List.mem_filterMap.mpr ⟨e, he, by simp [stepE, hs]⟩
+
+def eSrv : OEnt := { srv := true, rm := false, claims := fun _ => false, route := (1, 1, false) }
+def eOld : OEnt := { srv := false, rm := false, claims := fun s => s == 5, route := (1, 0, false) }
+def eFold : OEnt := { srv := false, rm := true, claims := fun s => s == 5, route := (1, 1, false) }
+
+/-- Counterexample (every hypothesis but `hnoother` holds): scope 5 went out with key 0; after
+folding the entry with key 1 into the server entry ahead of it, with key 1. Replayed:
+register-enterprise-server.test.ts, "a per-scope entry is not folded while another entry …". -/
+theorem fold_moves_first_route :
+    firstOn 5 [eSrv, eOld, eFold] = some (1, 0, false) ∧
+    firstOn 5 (foldOrdered (fun s => s == 5) [eSrv, eOld, eFold]) = some (1, 1, false) := by
+  constructor <;> simp [firstOn, foldOrdered, stepE, eSrv, eOld, eFold]
+
+def eFold7 : OEnt := { srv := false, rm := true, claims := fun s => s == 7, route := (1, 1, false) }
+def eSrv5 : OEnt := { srv := true, rm := false, claims := fun s => s == 5, route := (1, 1, false) }
+
+/-- Counterexample to moving the server entry to the first folded entry's place (the code
+before the gate review): scope 5, which the server entry serves behind an entry with key 0,
+moves onto key 1; in place it does not. Replayed: register-enterprise-server.test.ts,
+"folding never moves the server entry ahead of …". -/
+theorem move_server_moves_first_route :
+    firstOn 5 [eFold7, eOld, eSrv5] = some (1, 0, false) ∧
+    firstOn 5 (foldOrdered (fun s => s == 7) [eFold7, eOld, eSrv5]) = some (1, 0, false) ∧
+    firstOn 5 [{ eSrv5 with claims := fun s => eSrv5.claims s || s == 7 }, eOld] = some (1, 1, false) := by
+  refine ⟨?_, ?_, ?_⟩ <;> simp [firstOn, foldOrdered, stepE, eFold7, eOld, eSrv5]
+
 end PlurSpec.StoreEntry

@@ -13252,16 +13252,28 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
 
     let result: ReturnType<typeof registerServerEntry> | undefined
-    this._updateRawStores(rawStores => {
-      try {
-        result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise })
-      } catch (err) {
-        throw new Error(`registerEnterpriseServer: ${err instanceof Error ? err.message : String(err)}`)
+    try {
+      this._updateRawStores(rawStores => {
+        try {
+          result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise })
+        } catch (err) {
+          throw new Error(`registerEnterpriseServer: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        if (result.status === 'unchanged') return false
+        rawStores.splice(0, rawStores.length, ...result.stores)
+        return true
+      })
+    } catch (err) {
+      const e = err as { message?: unknown; name?: unknown; reason?: unknown; mark?: { line?: unknown }; code?: unknown }
+      if (typeof e?.message === 'string' && e.message.startsWith('registerEnterpriseServer: ')) throw err
+      // A YAML error quotes the lines around the fault, and those can hold a
+      // key: name the line and the reason only.
+      if (e?.name === 'YAMLException') {
+        const line = typeof e.mark?.line === 'number' ? ` at line ${e.mark.line + 1}` : ''
+        throw new Error(`registerEnterpriseServer: config.yaml is not valid YAML${line} (${typeof e.reason === 'string' ? e.reason : 'parse error'}). Nothing was changed.`)
       }
-      if (result.status === 'unchanged') return false
-      rawStores.splice(0, rawStores.length, ...result.stores)
-      return true
-    })
+      throw new Error(`registerEnterpriseServer: config.yaml could not be updated${typeof e?.code === 'string' ? ` (${e.code})` : ''}. Nothing was changed.`)
+    }
     const r = result!
     const served = new Set<string>([
       ...(typeof r.entry.scope === 'string' ? [r.entry.scope] : []),

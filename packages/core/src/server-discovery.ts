@@ -137,6 +137,10 @@ export type FoldKeptReason =
   | 'shared-differs'
   /** Its scope fails the safe grammar, so expansion would drop it. */
   | 'invalid-scope'
+  /** Another entry that stays (another key, server or path) also serves the
+   *  scope; which of them a write takes depends on config order, so moving it
+   *  into the server entry could move the scope onto another key. */
+  | 'scope-served-elsewhere'
 
 export interface FoldReport {
   /** Per-scope entries absorbed into the server entry. */
@@ -161,6 +165,25 @@ function str(v: unknown): string | undefined {
 function serverEntriesAt(rawStores: unknown[], key: string): number[] {
   return rawStores.flatMap((r, i) =>
     isPlainObj(r) && isServerStoreEntry(r) && typeof r.url === 'string' && normalizeEndpointUrl(r.url) === key ? [i] : [])
+}
+
+/** The scopes a raw entry serves: its `scope`, and a server entry's `scopes`
+ *  and `pinned_scopes`. */
+function servedScopes(r: unknown): string[] {
+  if (!isPlainObj(r)) return []
+  const out = typeof r.scope === 'string' ? [r.scope] : []
+  for (const k of ['scopes', 'pinned_scopes'] as const) {
+    const v = r[k]
+    if (Array.isArray(v)) for (const x of v) if (typeof x === 'string') out.push(x)
+  }
+  return out
+}
+
+/** Whether a served scope `x` competes with `scope` for a write: equal, or for
+ *  a personal `user:` scope equal case-folded (the personal selection folds). */
+function sameRoute(x: string, scope: string): boolean {
+  if (x === scope) return true
+  return scope.toLowerCase().startsWith('user:') && x.toLowerCase() === scope.toLowerCase()
 }
 
 /** The reason a same-server per-scope entry is not folded, or null to fold it.
@@ -191,8 +214,12 @@ function keptReason(r: Record<string, unknown>, scope: string, token: string | u
  * `scope_settings[scope]`, over a value already there for the same key. Every
  * other entry is returned unchanged; the input array is not modified.
  *
- * The server entry takes the earliest position among itself and the entries
- * folded into it.
+ * A write takes the first entry in config order that serves its scope, so the
+ * fold keeps every route as it was: the server entry stays where it is (moving
+ * it ahead of an entry that serves one of its scopes with another key would
+ * move that scope onto this key), and an entry is folded only when no entry
+ * that stays — another key, another server or a path — serves its scope
+ * (`scope-served-elsewhere`).
  */
 export function foldStoresIntoServerEntry(
   rawStores: unknown[], serverUrl: string, token: string | undefined, tokenEnv: string | undefined,
@@ -213,19 +240,32 @@ export function foldStoresIntoServerEntry(
   const tok = str(token)
   const env = str(tokenEnv)
 
-  const out: unknown[] = []
-  let serverPos = -1
+  // Pass 1: the entries that hold the server entry's key and could fold.
+  const why = new Map<number, FoldKeptReason | null>()
   rawStores.forEach((r, i) => {
-    if (i === si) { if (serverPos < 0) serverPos = out.length; return }
+    if (i === si) return
     const candidate = isPlainObj(r) && !isServerStoreEntry(r) && typeof r.url === 'string' && r.path === undefined &&
       typeof r.scope === 'string' && r.scope !== '' && normalizeEndpointUrl(r.url) === key
-    if (!candidate) { out.push(r); return }
+    if (candidate) why.set(i, keptReason(r as Record<string, unknown>, r.scope as string, tok, env, readonly))
+  })
+  // Pass 2: an entry that stays and serves the same scope keeps it separate.
+  for (const [i, w] of why) {
+    if (w !== null) continue
+    const scope = (rawStores[i] as Record<string, unknown>).scope as string
+    const elsewhere = rawStores.some((r, j) => j !== si && why.get(j) !== null && servedScopes(r).some(x => sameRoute(x, scope)))
+    if (elsewhere) why.set(i, 'scope-served-elsewhere')
+  }
+
+  const slot = Symbol('server entry')
+  const out: unknown[] = []
+  rawStores.forEach((r, i) => {
+    if (i === si) { out.push(slot); return }
+    if (!why.has(i)) { out.push(r); return }
     const entry = r as Record<string, unknown>
     const scope = entry.scope as string
-    const why = keptReason(entry, scope, tok, env, readonly)
-    if (why) { report.kept_separate.push({ scope, why }); out.push(r); return }
+    const w = why.get(i)!
+    if (w) { report.kept_separate.push({ scope, why: w }); out.push(r); return }
     report.folded.push({ scope })
-    if (serverPos < 0) serverPos = out.length
     if (!pinned.includes(scope)) pinned.push(scope)
     const md = entryMetadata(entry)
     if (Object.keys(md).length) {
@@ -236,8 +276,7 @@ export function foldStoresIntoServerEntry(
   if (!report.folded.length) return { stores: [...rawStores], report }
   server.pinned_scopes = pinned
   if (Object.keys(settings).length) server.scope_settings = settings
-  out.splice(serverPos, 0, server)
-  return { stores: out, report }
+  return { stores: out.map(r => (r === slot ? server : r)), report }
 }
 
 export interface ServerRegistration {
