@@ -295,8 +295,9 @@ theorem replace_loses_category :
 
 /-! ## 3. Stable identity (candidate 3) — `serverEntryIdentities`
 
-An entry has an identity base `base` (JSON of url, scope, scopes, pinned_scopes, readonly,
-token_env) and a ghost `tag` naming which physical entry it is. The identity of position i is
+An entry has an identity base `base` (JSON of the url's canonical endpoint identity
+`normalizeEndpointUrl`, scope, scopes, pinned_scopes, readonly, token_env; Codex round 3 finding 2:
+two spellings of one server are one base) and a ghost `tag` naming which physical entry it is. The identity of position i is
 `(base, number of earlier entries with that base)`. Collapse and rotation write to the first
 entry whose identity equals the one recorded at load. -/
 
