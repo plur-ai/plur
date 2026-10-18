@@ -44,6 +44,9 @@ vi.mock('fs', async importOriginal => {
 })
 
 const { atomicWrite, CONFIG_FILE_MODE, _atomicWriteAcl } = await import('../src/sync.js')
+const { SELF, writeSaved } = await import('./helpers/fake-acl.js')
+/** The fake icacls writing its /save file is not a content write of atomicWrite's. */
+const saveUnrecorded = (file: string, trustees: string[]) => { const was = rec.on; rec.on = false; try { writeSaved(file, trustees) } finally { rec.on = was } }
 
 const isPosix = process.platform !== 'win32'
 let root: string
@@ -145,18 +148,20 @@ describe.skipIf(!isPosix)('atomicWrite protects the temp file before the first c
 describe('atomicWrite on Windows: owner-only access list before the first content write', () => {
   let saved: typeof _atomicWriteAcl
   let calls: string[][]
-  let readOutput: (p: string) => string
+  /** The trustees `icacls <p> /save` reports (SIDs or SDDL abbreviations; #1631 reads SIDs, not names). */
+  let readAcl: (p: string) => string[]
 
   beforeEach(() => {
     saved = { ..._atomicWriteAcl }
     calls = []
-    readOutput = p => `${p} CORP\\alice:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\n`
+    readAcl = () => [SELF]
     _atomicWriteAcl.platform = 'win32'
     _atomicWriteAcl.env = { USERNAME: 'alice', USERDOMAIN: 'CORP' }
     _atomicWriteAcl.exec = (cmd, args) => {
       calls.push([cmd, ...args])
+      if (cmd === 'whoami') return { status: 0, stdout: `"CORP\\alice","${SELF}"\r\n` }
       rec.events.push({ kind: 'acl', args })
-      if (args.length === 1) return { status: 0, stdout: readOutput(args[0]) }
+      if (args[1] === '/save') { saveUnrecorded(args[2], readAcl(args[0])); return { status: 0, stdout: '' } }
       return { status: 0, stdout: '' }
     }
   })
@@ -170,14 +175,14 @@ describe('atomicWrite on Windows: owner-only access list before the first conten
     rec.on = false
     const firstWrite = rec.events.findIndex(e => e.kind === 'write')
     const set = rec.events.findIndex(e => e.kind === 'acl' && e.args.includes('/inheritance:r'))
-    const verify = rec.events.findIndex((e, i) => i > set && e.kind === 'acl' && e.args.length === 1)
+    const verify = rec.events.findIndex((e, i) => i > set && e.kind === 'acl' && e.args[1] === '/save')
     expect(set).toBeGreaterThanOrEqual(0)
     expect(verify).toBeGreaterThan(set)
     expect(firstWrite).toBeGreaterThan(verify)
     // The access list was set on the TEMP file, not the destination.
     const setArgs = (rec.events[set] as { args: string[] }).args
     expect(setArgs[0]).toMatch(/config\.yaml\.\d+\.\d+\.tmp$/)
-    expect(setArgs).toContain('CORP\\alice:F')
+    expect(setArgs).toContain(`*${SELF}:F`)
     expect(realFs.readFileSync(f, 'utf8')).toBe('token: secret\n')
   })
 
@@ -239,7 +244,7 @@ describe('atomicWrite on Windows: owner-only access list before the first conten
   it('icacls output names no account (unparseable): refuses', () => {
     const f = join(root, 'editor.json')
     realFs.writeFileSync(f, 'a\n')
-    readOutput = () => 'Successfully processed 1 files; Failed processing 0 files\n'
+    readAcl = () => []
     expectRefusedUntouched(f, () => atomicWrite(f, 'b\n', { secret: true }))
   })
 
@@ -273,20 +278,59 @@ describe('atomicWrite on Windows: owner-only access list before the first conten
     expect((rec.events[set] as { args: string[] }).args[0]).toMatch(/\.tmp$/)
   })
 
-  it('secret write over a destination others can read: access list left alone', () => {
+  // Owner decision 38 (epic 1797 review, #1631): "Core does not protect a new
+  // credential file, or an existing one that is not already owner-only" →
+  // "Best-effort owner-only; refuse on failure". This case used to pin "access
+  // list left alone"; a secret write now makes the temp file owner-only too.
+  it('secret write over a destination others can read: the temp file is made owner-only before any byte', () => {
     const f = join(root, 'editor.json')
     realFs.writeFileSync(f, '{"a":1}')
-    readOutput = p => `${p} CORP\\alice:(F)\n BUILTIN\\Users:(RX)\n`
+    readAcl = p => p.endsWith('.tmp') ? [SELF] : [SELF, 'BU']
+    rec.on = true
     atomicWrite(f, '{"a":2}', { secret: true })
-    expect(calls.some(c => c.includes('/inheritance:r'))).toBe(false)
+    rec.on = false
+    const firstWrite = rec.events.findIndex(e => e.kind === 'write')
+    const set = rec.events.findIndex(e => e.kind === 'acl' && e.args.includes('/inheritance:r'))
+    expect(set).toBeGreaterThanOrEqual(0)
+    expect(firstWrite).toBeGreaterThan(set)
+    expect((rec.events[set] as { args: string[] }).args[0]).toMatch(/\.tmp$/)
     expect(realFs.readFileSync(f, 'utf8')).toBe('{"a":2}')
+  })
+
+  it('secret write of a NEW file: the temp file is made owner-only before any byte (owner decision 38)', () => {
+    const f = join(root, 'fresh-secret.json')
+    rec.on = true
+    atomicWrite(f, '{"k":"secret"}', { secret: true })
+    rec.on = false
+    const firstWrite = rec.events.findIndex(e => e.kind === 'write')
+    const set = rec.events.findIndex(e => e.kind === 'acl' && e.args.includes('/inheritance:r'))
+    expect(set).toBeGreaterThanOrEqual(0)
+    expect(firstWrite).toBeGreaterThan(set)
+    expect(realFs.readFileSync(f, 'utf8')).toBe('{"k":"secret"}')
+  })
+
+  it('secret write that cannot be protected (shared destination, grant fails): refused, destination unchanged', () => {
+    const f = join(root, 'editor.json')
+    realFs.writeFileSync(f, 'a\n')
+    _atomicWriteAcl.exec = (cmd, args) => {
+      calls.push([cmd, ...args])
+      if (cmd === 'whoami') return { status: 0, stdout: `"CORP\\alice","${SELF}"` }
+      if (args[1] === '/save') { saveUnrecorded(args[2], [SELF, 'BU']); return { status: 0, stdout: '' } }
+      return { status: 5, stdout: '' }
+    }
+    rec.on = true
+    expect(() => atomicWrite(f, 'b\n', { secret: true })).toThrow(/owner-only/)
+    rec.on = false
+    expect(rec.events.some(e => e.kind === 'write')).toBe(false)
+    expect(realFs.readFileSync(f, 'utf8')).toBe('a\n')
+    expect(realFs.readdirSync(root).filter(n => n.endsWith('.tmp'))).toEqual([])
   })
 
   it('protection that cannot be verified: refuses, writes nothing, destination unchanged', () => {
     const f = join(root, 'config.yaml')
     realFs.writeFileSync(f, 'token: old\n')
     // The destination reads as owner-only; the temp file's list does not take.
-    readOutput = p => p.endsWith('.tmp') ? `${p} CORP\\alice:(F)\n Everyone:(R)\n` : `${p} CORP\\alice:(F)\n`
+    readAcl = p => p.endsWith('.tmp') ? [SELF, 'WD'] : [SELF]
     rec.on = true
     expect(() => atomicWrite(f, 'token: new\n', { mode: CONFIG_FILE_MODE })).toThrow(/owner-only/)
     rec.on = false

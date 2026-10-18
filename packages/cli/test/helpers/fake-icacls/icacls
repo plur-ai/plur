@@ -1,0 +1,42 @@
+#!/bin/sh
+# Fake `icacls` for the spawned-CLI Windows stub (win32-platform.mjs) on a
+# non-Windows host. It keeps the access list in the file's POSIX mode, so the
+# state travels with the file across atomicWrite's rename exactly as a real
+# explicit list does. Core names the account by SID (#1631: `whoami` in this
+# folder answers it) and reads lists with `/save`:
+#   icacls <path> /inheritance:r /grant:r *<SID>:[(OI)(CI)]F
+#       -> the path becomes owner-only (0600 file / 0700 folder), exit 0
+#   icacls <path> /save <file>
+#       -> <file> gets the name line and the SDDL: the account only when no
+#          group/other bit is set; otherwise also BU (BUILTIN\Users, what an
+#          inherited list shows), exit 0. Written as UTF-8 (core reads UTF-16
+#          and UTF-8).
+#   icacls <path> /remove *<SID>...
+#       -> group/other bits cleared, exit 0
+# A missing path exits 2, like the real tool ("cannot find the file"); any
+# other form, or a grant to another SID, exits 87 (invalid parameter).
+# POSIX sh (not node): it runs on every config write of every stubbed CLI run.
+sid='S-1-5-21-1111-2222-3333-1001'
+p="$1"
+[ -n "$p" ] && [ -e "$p" ] || exit 2
+if [ -d "$p" ]; then dir=1; flags='(OI)(CI)'; inh='OICI'; else dir=0; flags=''; inh=''; fi
+if [ "$#" -eq 4 ] && [ "$2" = "/inheritance:r" ] && [ "$3" = "/grant:r" ]; then
+  [ "$4" = "*$sid:${flags}F" ] || exit 87
+  if [ "$dir" = 1 ]; then chmod 700 "$p" || exit 5; else chmod 600 "$p" || exit 5; fi
+  printf 'processed file: %s\nSuccessfully processed 1 files; Failed processing 0 files\n' "$p"
+  exit 0
+fi
+if [ "$#" -eq 3 ] && [ "$2" = "/save" ]; then
+  mode=$(stat -c %a "$p" 2>/dev/null || stat -f %Lp "$p")
+  go=$(( 0$mode & 077 ))
+  aces="(A;$inh;FA;;;$sid)"
+  [ "$go" -eq 0 ] || aces="$aces(A;$inh;0x1200a9;;;BU)"
+  printf '%s\r\nD:PAI%s\r\n' "$(basename "$p")" "$aces" > "$3" || exit 5
+  printf 'Successfully processed 1 files; Failed processing 0 files\n'
+  exit 0
+fi
+if [ "$#" -ge 3 ] && [ "$2" = "/remove" ]; then
+  chmod go-rwx "$p" || exit 5
+  exit 0
+fi
+exit 87

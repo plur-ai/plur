@@ -520,3 +520,90 @@ Mutation checks (scratch copies, each restored): (1) POSIX creation mode ignores
 Tests: `packages/core/test/codex2-atomic-first-write.test.ts` (records the temp file's mode, and the icacls calls, at each content write; 9 failed before the change, 13/13 after), `packages/cli/test/codex2-cleanup-secret-write.test.ts` (cleanup passes `secret: true`; red before, green after).
 
 `lake env lean PlurSpec/Persistence.lean`: clean.
+
+### #1631 (plan B Task 1b) — every config.yaml writer is a protected write (2026-10-18)
+Owner decisions 38, 42 and 20 (epic 1797 review). Round 3 left two gaps the AtomicTemp
+model now closes: (1) a Windows `secret` write of a NEW file, or over a destination other
+accounts can read, went through a temp file that inherits the folder's list (`traceR3`;
+replayed by `r3_new_secret_leaks`, `r3_shared_secret_leaks`); (2) config.yaml's six writers
+(`setIdentity`, `persistStores`, `_updateRawStores`, `persistDismissedScopes` in index.ts;
+`setSchemaVersion` in migrations/runner.ts; `removePrimaryStoreEntries` in
+store-duplicates.ts) passed only an owner-only mode, so they were never refused and a new or
+shared config.yaml stayed readable by others (`unprotected_writer_leaks`). Code: a `secret`
+write on Windows always protects and verifies the empty temp file, or refuses (`winSecret`;
+`secret_write_owner_only` holds with no assumption on the destination;
+`secret_unprotectable_refused`); every writer calls `writeConfigFile` (config-file.ts), which marks
+the write `secret`, tightens an existing Unix file to 0600 first, and re-applies
+`protectOwnerOnly` after the rename, reporting (one stderr line, returned result) rather than
+swallowing a failure (`every_config_writer_protected`, `helper_never_silent`,
+`config_write_reachable`). The shared helper is `packages/core/src/owner-only.ts`; the CLI's
+copy is removed and `cleanup.ts` uses core's.
+
+Mutation checks (scratch copies, each restored): (a) `winSecret` skipping protection over a
+`shared` destination ⇒ `secret_write_owner_only` and `secret_unprotectable_refused` fail; (b)
+`viaHelper .dismissedScopes := false` ⇒ `every_config_writer_protected` fails; (c) secret
+writes routed through the round-3 rule ⇒ `unknown_creates_nothing`, `secret_write_owner_only`
+and `secret_unprotectable_refused` fail.
+
+Tests: `packages/core/test/config-owner-only.test.ts` (20 failed before the change; the
+`Windows, real icacls` cases run in `.github/workflows/windows-init.yml`), and the changed
+expectation in `codex2-atomic-first-write.test.ts` (decision 38).
+
+`lake build`: clean.
+
+Real Windows (windows-init on the PR, first run): `/inheritance:r /grant:r` left explicit
+`NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators` grants on a new file and folder, so the
+read-back failed and every config write was refused. `protectOwnerOnly` now removes other
+principals by name (`/remove:g`) and reads the list again. In the model this is inside
+`aclOk` (the protection is established and verified, or not); no theorem changed.
+
+Gate review (2026-10-18), two changes:
+
+1. **Names are not ASCII-safe; SIDs are.** On the Windows runner, icacls printed a path
+   containing `ü` as the OEM byte 0x81 (and `Č` as `C`), so the text read-back never matched
+   the path or a non-ASCII account name, and every config write under such a profile folder
+   (or for such an account) was refused. `owner-only.ts` now grants `*<SID>` (from
+   `whoami /user /fo csv /nh`), reads the list as SDDL with `icacls <path> /save` (UTF-16,
+   SIDs and SDDL abbreviations) and removes others with `/remove *<SID>`. An abbreviation
+   with no fixed SID (domain-relative) refuses. Inside `aclOk`; no theorem changed. icacls
+   and whoami run from `%SystemRoot%\System32` by full path.
+2. **Opt-out for drives without access lists** (`PLUR_ALLOW_UNPROTECTED_CONFIG`): set, a
+   `secret` write whose destination cannot be inspected still tries to protect its temp
+   file, and a write the default refuses is written unprotected and reported on stderr;
+   unset, the behaviour is `traceNew`. Modelled as `traceAllow` (`allowCall`, `relax`):
+   `allow_off_is_default`, `allow_keeps_working_protection` (it never skips a protection
+   that can be established), `allow_secret_owner_only_when_protectable` (also over an
+   uninspectable destination), `allow_wide_is_reported`, `allow_reachable`. Mutation checks:
+   `relax` also widening a protected write ⇒ `allow_keeps_working_protection` and
+   `allow_secret_owner_only_when_protectable` fail; `allowCall` the identity (skip the
+   attempt when the destination is uninspectable) ⇒ `allow_secret_owner_only_when_protectable`
+   and `allow_reachable` fail.
+
+Tests: `config-owner-only.test.ts` (21 of the new or changed cases failed against the
+builder's code; the real-Windows case under a folder named `Müller Črt` failed on the
+runner before the change), `codex2-atomic-first-write.test.ts` (fake icacls answers by
+SID and `/save`; assertions unchanged), `enterprise-cleanup.test.ts` (same).
+
+Codex gate round 1 (FAIL, fixed the same day): icacls/whoami ran by bare name when the
+environment had no `SystemRoot`/`windir` (now: nothing runs on real Windows, fail closed);
+the SDDL reader accepted a prefix (an entry after a space, a second descriptor or record) —
+now exactly one record with one whole descriptor, else `unknown`; UTF-16 detection by zero
+share misread long non-Latin names — now any zero byte means UTF-16; an opted-out config
+write printed two lines — now one (`onUnprotected`); the static writer guard missed nested
+calls — now balanced-parenthesis scan with fixtures. Inside `aclOk` / reporting; no theorem
+changed.
+
+Codex gate round 2 (PASS, one medium and two lows, fixed the same day): the reader accepted
+any letters as list flags and any entry body naming the account (`D:GARBAGE(...)`,
+`(bogus;;;;;SID)`) — the access list now has to be SDDL (flags `P`/`AI`/`AR`; entries
+`A`/`D`/`OA`/`OD` with SDDL flags, hex or SDDL rights, GUIDs, a SID or abbreviation), else
+`unknown`; the opt-out line is printed whenever the content went out unprotected, even when
+the file in place could be protected afterwards (this is `reported` in the model); the
+static writer guard uses the TypeScript parser. No theorem changed.
+
+Codex gate round 3 (PASS, one medium, fixed the same day): entry rights accepted any
+letter pairs (`ZZ`) and any length of hex. Rights are now SDDL rights codes or an access
+mask of at most 8 hex digits; anything else is `unknown`, so a temp file that reads back
+malformed refuses the write. Same day: the company-CA install (ca.ts, merged from
+development) moved onto core's `protectOwnerOnly`, and core trusts SystemRoot only as
+`<drive>:\Windows` (Trust.lean dated note). No theorem changed.

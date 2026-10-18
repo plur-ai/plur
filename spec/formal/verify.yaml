@@ -37,6 +37,9 @@ models:
       - packages/core/src/outbox-order.ts
       - packages/core/src/learn-async.ts
       - packages/core/src/packs.ts
+      - packages/core/src/owner-only.ts
+      - packages/core/src/config-file.ts
+      - packages/core/src/store-duplicates.ts
   - model: PlurSpec/Adapters.lean
     covers:
       - packages/python/plur_ai/client.py
@@ -122,7 +125,7 @@ models:
   - model: PlurSpec/Installer.lean
     covers:
       - packages/cli/src/enterprise/cleanup.ts
-      - packages/cli/src/enterprise/owner-only.ts
+      - packages/core/src/owner-only.ts
       - packages/cli/src/enterprise/hello.ts
       - packages/cli/src/enterprise/mcp-stdio.ts
       - packages/cli/src/enterprise/args.ts

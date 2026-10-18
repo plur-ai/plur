@@ -32,7 +32,13 @@ exactly `[c]`; a refusal writes nothing, so an earlier file stays as it was.
 PEM splitting is left out: the sources are already lists of certificates
 here. (Review 2026-10-18: the code's scanner keeps only complete blocks,
 restarts at each BEGIN, and runs in linear time; the icacls step runs
-`<SystemRoot>\System32\icacls.exe` by absolute path, else `unprotected`.) -/
+`<SystemRoot>\System32\icacls.exe` by absolute path, else `unprotected`.)
+
+Checked against #1631 (B1b gate, 2026-10-18): still holds. `writeOwnerOnly` now calls
+core's `protectOwnerOnly` (owner-only.ts: the account by SID, the list read back as SDDL),
+and the SystemRoot rule (`<drive>:\Windows`) is core's `windowsSystemRoot`; icacls and
+whoami run only by absolute path from it. `protectable` is still "owner-only established
+and verified before the file is filled". -/
 namespace Anchor
 
 variable {Cert Fp : Type} [DecidableEq Fp]
