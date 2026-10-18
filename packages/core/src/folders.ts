@@ -10,6 +10,8 @@ import { canonicalize, canonicalSpellings, findProjectConfigPath, readProjectCon
 import { resolveProjectRemoteFromConfig } from './project-remote.js'
 import { isSharedScope } from './scope-util.js'
 import { isLocalOnlyScope } from './scope-target.js'
+import { resolveScopeTarget } from './store-resolver.js'
+import type { StoreEntry } from './schemas/config.js'
 
 /**
  * The folder map (#1347): `<PLUR home>/folders.yaml` holds the user's own
@@ -886,6 +888,14 @@ function describeAnswer(a: FolderAnswer | undefined | null): string {
 export interface SetFolderOptions {
   /** Scopes of the stores configured in config.yaml — a shared scope must be one of them. */
   configuredScopes: string[]
+  /**
+   * The configured (expanded) stores (#1633). With them a `project:` scope is
+   * checked like write routing checks it (`isLocalOnlyScope`, the one
+   * resolver): a project scope a server serves or withholds must be one of
+   * `configuredScopes`. Without them every `project:` scope is local, as
+   * before. `Plur.setFolder` passes them.
+   */
+  stores?: readonly StoreEntry[]
   /** Present when the write comes from the ask flow. */
   nonce?: string
   /**
@@ -1085,9 +1095,18 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   }
   // A team scope that is meant to reach a store (group:, org:, team:, ...)
   // must name one that is configured, or a typo silently stays local.
-  // project:* lives in the local store (isLocalOnlyScope), so it needs none.
-  if (change.scope !== undefined && isSharedScope(change.scope) && !isLocalOnlyScope(change.scope) &&
+  // A project:* scope write routing keeps local (isLocalOnlyScope with the
+  // configured stores, exact match, #1633) needs none; one a company server
+  // withholds is refused with its own message.
+  const stores = opts.stores ?? []
+  if (change.scope !== undefined && isSharedScope(change.scope) && !isLocalOnlyScope(change.scope, stores) &&
       !opts.configuredScopes.includes(change.scope)) {
+    const target = resolveScopeTarget(change.scope, stores)
+    if (target.kind === 'unauthorized') {
+      throw new FolderMapError('scope-unconfigured',
+        `"${change.scope}" is not granted to you on ${target.server}; memories would stay local. ` +
+        'Ask an admin for access, or pick a granted scope (plur stores list).')
+    }
     throw new FolderMapError('scope-unconfigured',
       `"${change.scope}" is a team scope with no store configured in config.yaml, so memories would stay local. ` +
       `Add the store first (plur stores add / plur scopes register), then retry.`)
