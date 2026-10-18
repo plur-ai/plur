@@ -4,7 +4,7 @@
 
 Your agents remember corrections, learn preferences, and build knowledge across sessions — stored as open YAML files in `~/.plur/`, not in a cloud.
 
-Part of [PLUR](https://plur.ai) — the engram exchange layer connecting agents across tools. Compatible with the MCP server ([`@plur-ai/mcp`](https://npmjs.com/package/@plur-ai/mcp)) for Claude Code, Cursor, and Windsurf. In our benchmark, **Haiku with PLUR memory outperformed Opus without it** at 10x less cost.
+Part of [PLUR](https://plur.ai) — the engram exchange layer connecting agents across tools. Compatible with the MCP server ([`@plur-ai/mcp`](https://npmjs.com/package/@plur-ai/mcp)) for Claude Code, Cursor, and Windsurf.
 
 ## Why PLUR vs cloud memory plugins
 
@@ -122,9 +122,9 @@ Everything is stored as plain YAML in `~/.plur/`. Open it, read it, edit it. Ove
 
 ## Benchmark
 
-**Retrieval** (LongMemEval R@5): **76.7%** out-of-the-box · **97.0%** with openai-3-large embeddings
+**Retrieval** (full LongMemEval-S, N=500, R@5, chunk granularity): **92.2%** BM25 only · **97.6%** hybrid + local BGE reranker · **97.0%** hybrid with openai-3-large embeddings — [plur-bench headline result](https://github.com/plur-ai/plur-bench/blob/744d133/README.md#headline-result-longmemeval-s-n500-chunk-granularity)
 
-**Agent task impact:** Haiku + PLUR outperforms Opus *without* memory at ~10× less cost. House rules: **12–0** across Haiku, Sonnet, Opus. A/B win rate: **89%**.
+**Agent task impact:** the with-memory vs without-memory [agent-task harness](https://github.com/plur-ai/plur-bench/tree/744d133/agent-bench) is in plur-bench; its real win-rate run is pending, so no number is published yet.
 
 [Full methodology →](https://plur.ai/benchmark.html)
 

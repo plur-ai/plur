@@ -101,15 +101,9 @@ Search is fully local — BM25 + BGE embeddings fused with Reciprocal Rank Fusio
 Zero API calls, zero cloud, works offline. Storage is plain YAML at `~/.plur`
 that you can read, edit, and delete.
 
-We publish our retrieval numbers, measured on LongMemEval:
-
-On a 30-question sanity subset of LongMemEval-S, PLUR's retrieval scores
-**76.7% Hit@5** in the configuration this plugin ships — hybrid BM25 + BGE
-embeddings, no reranker (core v0.9.13, 2026-06-27).
-
-n=30 is a smoke test, not a leaderboard: one question is worth 3.3 points. The
-reproducible harness and the raw runs are in
-[plur-bench](https://github.com/plur-ai/plur-bench).
+We publish our retrieval numbers, measured on the full LongMemEval-S corpus, in
+[plur-bench](https://github.com/plur-ai/plur-bench/blob/744d133/README.md#headline-result-longmemeval-s-n500-chunk-granularity),
+together with the reproducible harness.
 
 ## Tools
 
