@@ -28,7 +28,11 @@ nothing else (unreadable → not found, no match → mismatch); otherwise the
 system sources are searched. The found certificate is written only when the
 file can be made owner-only first (`protectable`; 0600, or a verified
 owner-only icacls list on Windows) — else `unprotected`. A success writes
-exactly `[c]`; a refusal writes nothing, so an earlier file stays as it was. -/
+exactly `[c]`; a refusal writes nothing, so an earlier file stays as it was.
+PEM splitting is left out: the sources are already lists of certificates
+here. (Review 2026-10-18: the code's scanner keeps only complete blocks,
+restarts at each BEGIN, and runs in linear time; the icacls step runs
+`<SystemRoot>\System32\icacls.exe` by absolute path, else `unprotected`.) -/
 namespace Anchor
 
 variable {Cert Fp : Type} [DecidableEq Fp]
@@ -281,7 +285,8 @@ end LaunchEnv
 
 `spawnSync` reports a timeout as `status: null` with error ETIMEDOUT. A
 spawnSync that throws before starting (a NUL in an argument) is caught and
-is `startFailed` with pid 0. The adapter maps every outcome to a number; the property is that only a real
+is `startFailed` with pid 0. The timeout kills with SIGKILL (a child cannot
+ignore it), so `timedOut` always ends the wait. The adapter maps every outcome to a number; the property is that only a real
 exit 0 reads as 0. -/
 namespace Exec
 

@@ -47,6 +47,9 @@ export function createExec(platform: NodeJS.Platform = process.platform): ExecFn
         windowsHide: true,
         env: opts.env,
         timeout: opts.timeoutMs,
+        // SIGTERM can be caught or ignored, and spawnSync then waits on: the
+        // timeout would bound nothing. SIGKILL cannot be.
+        killSignal: 'SIGKILL',
         input: opts.input,
         stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
         // A Windows or macOS certificate export runs to a few MB.

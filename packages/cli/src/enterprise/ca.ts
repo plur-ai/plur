@@ -28,16 +28,36 @@ const CA_FILE_MODE = 0o600
 /** The served installer's rule for INSTALL_CA_SHA256: 64 lower-case hex, no colons. */
 const CA_SHA256_RE = /^[0-9a-f]{64}$/
 
-const PEM_BLOCK = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g
+const PEM_BEGIN = '-----BEGIN CERTIFICATE-----'
+const PEM_END = '-----END CERTIFICATE-----'
 
 /** Lower-case hex SHA-256 of the certificate's DER (`openssl x509 -outform DER | sha256sum`). */
 export function caSha256(pem: string): string {
   return createHash('sha256').update(new X509Certificate(pem).raw).digest('hex')
 }
 
-/** Every `BEGIN/END CERTIFICATE` block in `text`, in order. Anything between blocks is ignored. */
+/**
+ * Every complete `BEGIN/END CERTIFICATE` block in `text`, in order. Anything
+ * between blocks is ignored. A BEGIN with no END before the next BEGIN is
+ * dropped (it never swallows the next certificate), and the scan is linear,
+ * so a malformed bundle can neither hide a good certificate nor stall the run.
+ */
 export function splitPemBundle(text: string): string[] {
-  return text.match(PEM_BLOCK) ?? []
+  const out: string[] = []
+  let begin = text.indexOf(PEM_BEGIN)
+  let end = -1
+  while (begin !== -1) {
+    if (end < begin) end = text.indexOf(PEM_END, begin + PEM_BEGIN.length)
+    if (end === -1) break
+    const next = text.indexOf(PEM_BEGIN, begin + PEM_BEGIN.length)
+    if (next !== -1 && next < end) {
+      begin = next
+      continue
+    }
+    out.push(text.slice(begin, end + PEM_END.length))
+    begin = next
+  }
+  return out
 }
 
 export type CaSourceDeps = {
@@ -227,10 +247,11 @@ export function installCompanyCa(opts: {
     const env = opts.env ?? process.env
     const aclExec = opts.platform === 'win32' ? (opts.aclExec ?? win32IcaclsExec(env)) : undefined
     if (opts.platform === 'win32' && !aclExec) throw new Error('no trustworthy SystemRoot for icacls')
+    // (aclExec is null only on win32, refused above.)
     writeOwnerOnly(path, content, {
       platform: opts.platform,
       account: opts.account !== undefined ? opts.account : currentWindowsAccount(env),
-      aclExec,
+      aclExec: aclExec ?? undefined,
     })
   } catch {
     return { ok: false, reason: 'unprotected' }

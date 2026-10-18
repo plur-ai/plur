@@ -30,6 +30,13 @@ describe('createExec', () => {
     expect(r.status).toBe(EXEC_TIMEOUT_STATUS)
   })
 
+  it.skipIf(process.platform === 'win32')('a child that ignores SIGTERM is still stopped at the timeout', () => {
+    const t0 = Date.now()
+    const r = exec(node, ['-e', 'process.on("SIGTERM",()=>{});setTimeout(()=>{}, 8000)'], { timeoutMs: 500 })
+    expect(r.status).toBe(EXEC_TIMEOUT_STATUS)
+    expect(Date.now() - t0).toBeLessThan(4000)
+  })
+
   it('a command that cannot start is a non-zero status, not a throw', () => {
     const r = exec('plur-no-such-command-xyz', [])
     expect(r).toEqual({ status: EXEC_START_FAILED_STATUS, stdout: '' })

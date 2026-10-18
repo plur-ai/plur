@@ -50,6 +50,20 @@ describe('splitPemBundle', () => {
     expect(caSha256(parts[1])).toBe(sha)
   })
 
+  it('an unterminated BEGIN does not swallow the next certificate', () => {
+    const text = `-----BEGIN CERTIFICATE-----\ngarbage\n${pem}`
+    expect(splitPemBundle(text).map(caSha256)).toEqual([sha])
+    expect(findCompanyCa(sha, [text])).not.toBeNull()
+  })
+
+  it('many unterminated BEGIN markers are scanned in linear time', () => {
+    const text = '-----BEGIN CERTIFICATE-----\nx\n'.repeat(200_000) + pem
+    const t0 = Date.now()
+    expect(splitPemBundle(text).map(caSha256)).toEqual([sha])
+    expect(splitPemBundle('-----BEGIN CERTIFICATE-----\n'.repeat(200_000))).toEqual([])
+    expect(Date.now() - t0).toBeLessThan(2000)
+  })
+
   it('returns nothing for text with no certificate', () => {
     expect(splitPemBundle('no certificates here')).toEqual([])
   })
