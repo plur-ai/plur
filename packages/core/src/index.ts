@@ -10188,7 +10188,7 @@ export class Plur {
     })
     if (cancelledOutbox) {
       logger.warning(
-        `[plur] rescope of ${id} cancelled a pending delivery to ${cancelledOutbox.target_url} ` +
+        `[plur] rescope of ${id} cancelled a pending delivery to ${safeOrigin(cancelledOutbox.target_url)} ` +
         `(scope "${cancelledOutbox.target_scope}"). That queued write would have re-delivered the engram to the ` +
         `store it was moved away from once the host recovered (#848).`,
       )
@@ -13122,7 +13122,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           s === sameEntry ? { ...s, token: options.token, token_env: tokenEnv } : s,
         )
         this.persistStores(rotated)
-        logger.info(`[plur:addStore] rotated token for ${options.url} (scope "${sameEntry.scope}")`)
+        logger.info(`[plur:addStore] rotated token for ${safeOrigin(options.url ?? "")} (scope "${sameEntry.scope}")`)
         return { status: 'token_rotated', scope: sameEntry.scope }
       }
       // #766 heal: a local store registered BEFORE the materialization fix can
@@ -14214,7 +14214,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           // register it. (A registered scope stays reported as
           // already_registered even if a stale dismissal lingers.)
           skipped.push(scope)
-          logger.info(`[plur] skipping dismissed scope "${scope}" from ${d.url} — batch register respects dismissals; use \`plur scopes register ${scope}\` to override (it also clears the dismissal)`)
+          logger.info(`[plur] skipping dismissed scope "${scope}" from ${safeOrigin(d.url)} — batch register respects dismissals; use \`plur scopes register ${scope}\` to override (it also clears the dismissal)`)
           continue
         }
         // SECURITY (#382): never auto-register a PERSONAL-family scope returned
@@ -14227,7 +14227,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         if (!isSharedScope(scope)) {
           skipped.push(scope)
           logger.warning(
-            `[plur] refused to auto-register non-shared scope "${scope}" from ${d.url} — ` +
+            `[plur] refused to auto-register non-shared scope "${scope}" from ${safeOrigin(d.url)} — ` +
             `a /me-advertised personal-family scope is not auto-registered (it would route ` +
             `your default/unscoped writes to that endpoint). Add it explicitly if intended.`,
           )
@@ -14243,7 +14243,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           // and leave a partial registration. Record it as skipped and continue
           // with the remaining authorized scopes.
           skipped.push(scope)
-          logger.warning(`[plur] could not auto-register scope "${scope}" from ${d.url}: ${err instanceof Error ? err.message : String(err)}`)
+          logger.warning(`[plur] could not auto-register scope "${scope}" from ${safeOrigin(d.url)}: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
@@ -14484,7 +14484,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       if (!coversMatch && (entry.covers?.length ?? 0) > 0) clobbered.push('covers')
       if (!descMatch && entry.description !== undefined && entry.description !== '') clobbered.push('description')
       if (clobbered.length) {
-        logger.warning(`[plur:scope-metadata] scope "${entry.scope}": overwriting local ${clobbered.join(' + ')} with server values from ${discovery.url} (server-authoritative)`)
+        logger.warning(`[plur:scope-metadata] scope "${entry.scope}": overwriting local ${clobbered.join(' + ')} with server values from ${safeOrigin(discovery.url)} (server-authoritative)`)
       }
 
       changed = true

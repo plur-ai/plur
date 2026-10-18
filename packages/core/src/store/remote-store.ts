@@ -107,6 +107,15 @@ export const LOAD_FETCH_TIMEOUT_MS = 30_000
  * Comparison-time only: callers must NEVER rewrite a stored config value with
  * the normalized form — the user's spelling is preserved on disk.
  */
+/**
+ * `scheme://host[:port]` of a url, without userinfo, path or query: the only
+ * form of a configured url that goes into a log line or a message, since the
+ * configured url can carry credentials (Codex round 4, finding 3).
+ */
+export function safeOrigin(url: string): string {
+  try { return new URL(url).origin } catch { return '<invalid url>' }
+}
+
 export function normalizeEndpointUrl(url: string): string {
   const foldPath = (p: string): string => p.replace(/\/sse\/?$/, '').replace(/\/$/, '')
   let u: URL
@@ -348,7 +357,7 @@ export function salvageRemoteRow(
       warnedSalvages.add(dedupeKey)
       const safeId = String(logContext.rowId ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
       logger.warning(
-        `[plur:remote-store] ${logContext.url} serves engrams with drifted field(s) [${salvagedFields.join(',')}] this client ` +
+        `[plur:remote-store] ${safeOrigin(logContext.url)} serves engrams with drifted field(s) [${salvagedFields.join(',')}] this client ` +
         `cannot validate (first seen id="${safeId}") — keeping the engrams WITHOUT those fields. ` +
         `The server and client schemas need reconciling (#1071); recall is degraded, not blind.`,
       )
@@ -606,7 +615,7 @@ export class RemoteStore {
       const why = reparse.success ? 'unknown' : reparse.error.issues
         .map(i => `${i.path.join('.') || '(root)'}: ${i.code}`).join('; ')
       const safeId = String(raw.id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
-      logger.warning(`[plur:remote-store] ${this.url} returned a malformed engram (id="${safeId}") — dropped: ${why}`)
+      logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} returned a malformed engram (id="${safeId}") — dropped: ${why}`)
       return null
     }
     const parsed = { data: salvaged.data }
@@ -752,7 +761,7 @@ export class RemoteStore {
       : undefined
     if (rawKeyExpiry !== undefined && key_expires_at === undefined) dropped.push('key_expires_at: invalid')
     if (dropped.length) {
-      logger.warning(`[plur:remote-store] ${this.url} sent /me fields that do not conform (${dropped.join('; ')}) — DROPPED (#426).`)
+      logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} sent /me fields that do not conform (${dropped.join('; ')}) — DROPPED (#426).`)
     }
 
     return {
@@ -799,7 +808,7 @@ export class RemoteStore {
                 .replace(/[^\w:./-]/g, '?')
                 .slice(0, 64)
               logger.warning(
-                `[plur:remote-store] ${this.url} sent scope metadata for "${safeScope}" that does not conform ` +
+                `[plur:remote-store] ${safeOrigin(this.url)} sent scope metadata for "${safeScope}" that does not conform ` +
                 `(${why}) — DROPPED. That scope cannot participate in covers-based auto-routing until the ` +
                 `server sends a conforming shape, so unscoped writes may fall back to the personal default (#843).`,
               )
@@ -855,7 +864,7 @@ export class RemoteStore {
               const msg = (err as Error).name === 'AbortError'
                 ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
                 : (err as Error).message
-              console.error(`[plur:remote-store] ${this.url} load page failed: ${msg}`)
+              console.error(`[plur:remote-store] ${safeOrigin(this.url)} load page failed: ${msg}`)
               break
             }
             clearRemoteHostDown(this.url) // answered — alive, whatever the status
@@ -868,7 +877,7 @@ export class RemoteStore {
               if (r.status === 403 || r.status === 404) {
                 paginationComplete = true
               } else if (r.status >= 500) {
-                console.error(`[plur:remote-store] ${this.url} returned ${r.status} loading scope ${this.scope}`)
+                console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned ${r.status} loading scope ${this.scope}`)
               }
               break
             }
@@ -887,12 +896,12 @@ export class RemoteStore {
               const why = ctrl.signal.aborted
                 ? `a page body that stalled past ${LOAD_FETCH_TIMEOUT_MS}ms`
                 : 'an unreadable (non-JSON) page body'
-              console.error(`[plur:remote-store] ${this.url} returned ${why} loading scope ${this.scope}`)
+              console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned ${why} loading scope ${this.scope}`)
               break
             }
             const page = body as { rows?: unknown; total_count?: unknown } | null
             if (!page || typeof page !== 'object' || !Array.isArray(page.rows)) {
-              console.error(`[plur:remote-store] ${this.url} returned a malformed page (no rows array) loading scope ${this.scope}`)
+              console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned a malformed page (no rows array) loading scope ${this.scope}`)
               break
             }
             const rows = page.rows as any[]
@@ -921,7 +930,7 @@ export class RemoteStore {
         // back to the partial set only if there is no prior cache at all.
         return this.cache?.engrams ?? all
       } catch (err) {
-        console.error(`[plur:remote-store] ${this.url} load failed: ${(err as Error).message}`)
+        console.error(`[plur:remote-store] ${safeOrigin(this.url)} load failed: ${(err as Error).message}`)
         // Don't poison the cache on failure — let the next call retry.
         return this.cache?.engrams ?? []
       } finally {
@@ -1326,7 +1335,7 @@ export class RemoteStore {
     // Only defined update values are applied, mirroring what JSON.stringify
     // actually sent to the server. Same #408 id sanitization as reshape().
     const safeId = id.replace(/[^\w:./-]/g, '?').slice(0, 64)
-    logger.warning(`[plur:remote-store] ${this.url} PATCH ${safeId} succeeded but the echoed row was unusable — returning optimistic merge`)
+    logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} PATCH ${safeId} succeeded but the echoed row was unusable — returning optimistic merge`)
     const merged: Record<string, unknown> = prev ? { ...(prev as unknown as Record<string, unknown>) } : {}
     for (const [k, v] of Object.entries(updates)) if (v !== undefined) merged[k] = v
     merged.id = id

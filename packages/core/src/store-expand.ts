@@ -1,7 +1,7 @@
 import { isSharedScope } from './scope-util.js'
 import { logger } from './logger.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
-import { normalizeEndpointUrl } from './store/remote-store.js'
+import { normalizeEndpointUrl, safeOrigin } from './store/remote-store.js'
 import { ScopeSettingsSchema, type StoreEntry, type ServerStoreEntry } from './schemas/config.js'
 
 /** In-memory marker added to each expanded entry. Value = the server entry's
@@ -153,10 +153,8 @@ const RESERVED_ENTRY_KEYS = new Set<string>([
   'enterprise', 'discovery', 'scope_settings', EXPANDED_FROM,
 ])
 
-/** `scheme://host[:port]` of a url, without userinfo, path or query. */
-export function safeOrigin(url: string): string {
-  try { return new URL(url).origin } catch { return '<invalid url>' }
-}
+/** `scheme://host[:port]` of a url, without userinfo, path or query (lives with the remote client). */
+export { safeOrigin }
 
 /**
  * Collapse expanded per-scope entries back into the original server entries
