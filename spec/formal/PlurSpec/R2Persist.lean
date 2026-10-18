@@ -5,6 +5,10 @@ Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. sync.ts
 is atomicWrite's Windows `secret` branch (modelled in
 Persistence §AtomicTemp, with the new `writeConfigFile`, config-file.ts);
 migrations/runner.ts's `setSchemaVersion` writes the same bytes under the same lock through it. Locks, backups and the migration journal are unchanged.
+Gate of #1631 (2026-10-18): still holds. sync.ts's further change is the owner's opt-out
+(`PLUR_ALLOW_UNPROTECTED_CONFIG`: a refused Windows credential write is written unprotected
+and reported instead) — modelled in Persistence §AtomicTemp (`traceAllow`); the tmp, fsync,
+rename and lock order is unchanged.
 
 Models of `packages/core/src/{store/async-lock.ts, sync.ts, engrams.ts, backup.ts,
 storage-pglite.ts, storage-postgres.ts, migrations/runner.ts}`.
