@@ -1035,8 +1035,10 @@ theorem no_write_to_other_scope (personal : S → Bool) (orgOf : S → Option O)
   fun h => he (route_exact personal orgOf s l e h).2.1
 
 /-- The explicit-scope id lookups (index.ts `_scopedUrlEntry`: forget, feedback; row 34):
-`none` = refused (ScopeConflictError, no server asked); `some none` = no url store claims the
-scope exactly (the local paths and guards run); `some (some e)` = act on `e`. setPinned and
+`none` = refused, no server asked (ScopeConflictError for two servers; since the gate of
+#1667 also a scope a company server withholds, "not granted to you on <server>");
+`some none` = no url store claims the scope exactly (the local paths, the guards and the
+scoped walk `walk` run); `some (some e)` = act on `e`. setPinned and
 pinnedQuota (`_pinTargetEntry`) run the same lookup over the writable entries only (a readonly
 store never receives the PATCH, #1532 R6); every theorem below holds for any list, so for that
 sublist too, and an entry of the sublist is an entry of the config. -/
@@ -1044,6 +1046,7 @@ def lookup (personal : S → Bool) (orgOf : S → Option O) (s : S) (l : List (E
     Option (Option (Entry S U O)) :=
   match resolve personal orgOf s l with
   | .conflict _ => none
+  | .unauthorized _ => none
   | .remote e _ => some (some e)
   | _ => some none
 
@@ -1058,6 +1061,7 @@ theorem lookup_exact (personal : S → Bool) (orgOf : S → Option O) (s : S)
   unfold lookup at h
   split at h
   · cases h
+  · cases h
   · rename_i e' w hr; cases h
     have := remote_is_exact_url personal orgOf s l _ _ hr
     exact ⟨this.1, this.2.1, this.2.2.1⟩
@@ -1069,6 +1073,41 @@ theorem lookup_refuses_conflict (personal : S → Bool) (orgOf : S → Option O)
     lookup personal orgOf s l = none := by
   obtain ⟨xs, hx⟩ := (conflict_iff personal orgOf s l hp).mpr h2
   unfold lookup; rw [hx]
+
+/-- Gate of #1667: a scope under a company server's org that it does not grant is refused
+before any server is asked; there is no store of that scope to act on. -/
+theorem lookup_refuses_unauthorized (personal : S → Bool) (orgOf : S → Option O) (s : S)
+    (l : List (Entry S U O)) (u : U) (h : resolve personal orgOf s l = .unauthorized u) :
+    lookup personal orgOf s l = none := by
+  unfold lookup; rw [h]
+
+/-- The remote walk forget and feedback run after the local paths (index.ts). With an
+explicit scope (`some t`) it only visits url entries whose scope is exactly `t` (gate of
+#1667); without one (`none`) every url entry, as before. -/
+def walk (t : Option S) (l : List (Entry S U O)) : List (Entry S U O) :=
+  l.filter (fun e => e.url.isSome && (match t with | none => true | some t => decide (e.scope = t)))
+
+/-- Before the gate of #1667: the walk visited every url entry whatever scope was named. -/
+def walkOld (l : List (Entry S U O)) : List (Entry S U O) := l.filter (fun e => e.url.isSome)
+
+/-- Gate of #1667: with an explicit scope the walk acts only on url entries with exactly that
+scope — never on a row of another store. -/
+theorem walk_exact (t : S) (l : List (Entry S U O)) (e : Entry S U O) (h : e ∈ walk (some t) l) :
+    e ∈ l ∧ e.scope = t ∧ e.url.isSome := by
+  unfold walk at h
+  simp only [List.mem_filter, Bool.and_eq_true, decide_eq_true_eq] at h
+  exact ⟨h.1, h.2.2, h.2.1⟩
+
+/-- **Counterexample the gate of #1667 closes:** a company server (org 7) serves scope 2; the
+caller names scope 3 of the same org, which it withholds. The lookup found no exact store, so
+forget/feedback fell through to the walk, which visited the scope-2 store and retired or
+rated the row there. Now the lookup refuses, and the scoped walk is empty. -/
+theorem old_walk_other_store :
+    let c : Entry Nat Nat Nat := ⟨2, some 10, false, some 7⟩
+    resolve (fun _ => false) (fun _ => some 7) 3 [c] = .unauthorized 10 ∧
+    walkOld [c] = [c] ∧ c.scope ≠ 3 ∧
+    lookup (fun _ => false) (fun _ => some 7) 3 [c] = none ∧
+    walk (some 3) [c] = [] := by decide
 
 /-- REPLAYED (pre-row-34): forget/feedback/setPinned on a scope two servers claim acted on
 the first-listed server. -/
