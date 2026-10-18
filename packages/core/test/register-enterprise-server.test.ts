@@ -25,6 +25,7 @@ import { Plur } from '../src/index.js'
 import { loadConfig } from '../src/config.js'
 import { logger } from '../src/logger.js'
 import { foldStoresIntoServerEntry } from '../src/server-discovery.js'
+import { resolveScopeTarget } from '../src/store-resolver.js'
 
 const URL_ = 'https://plur.example.com'
 const ME = 'user:acme:alice'
@@ -162,11 +163,11 @@ describe('registerEnterpriseServer — folding per-scope entries', () => {
     expect(tok).toMatchObject({ 'group:acme/a': 'k1', 'project:acme/b': 'k1', 'group:acme/c': 'k0', [ME]: 'k1' })
   })
 
-  it('the new entry takes the place of the first folded entry', async () => {
+  it('the new entry goes at the end: it never moves ahead of an entry already there (gate review)', async () => {
     seed(`stores:\n  - url: https://other.example.com\n    token: z\n    scope: group:o/x\n  - url: ${URL_}\n    token: k1\n    scope: group:acme/a\n` +
       `  - url: https://third.example.com\n    token: z\n    scope: group:t/y\n`)
     await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
-    expect(rawConfig().stores.map((e: { url: string }) => e.url)).toEqual(['https://other.example.com', URL_, 'https://third.example.com'])
+    expect(rawConfig().stores.map((e: { url: string }) => e.url)).toEqual(['https://other.example.com', 'https://third.example.com', URL_])
   })
 
   it('reports queued saves per scope of the server entry after the fold', async () => {
@@ -304,5 +305,49 @@ describe('foldStoresIntoServerEntry — pure', () => {
       { scope: 'group:acme/bad scope', why: 'invalid-scope' },
       { scope: 'group:acme/s', why: 'shared-differs' },
     ])
+  })
+})
+
+describe('registerEnterpriseServer — the route a write takes never moves (gate review)', () => {
+  const route = (scope: string): [string | undefined, string | undefined] => {
+    const t = resolveScopeTarget(scope, loadConfig(configPath()).stores ?? [])
+    return t.kind === 'remote' ? [t.entry.url, t.entry.token] : [t.kind, undefined]
+  }
+
+  it('a per-scope entry is not folded while another entry with another key serves the same scope ahead of the server entry', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n    enterprise: {}\n    scopes: []\n` +
+      `  - url: ${URL_}\n    token: k0\n    scope: group:acme/team\n  - url: ${URL_}\n    token: k1\n    scope: group:acme/team\n`)
+    const before = route('group:acme/team')
+    expect(before[1]).toBe('k0')
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(route('group:acme/team')).toEqual(before)
+    expect(r.fold.folded).toEqual([])
+  })
+
+  it('folding never moves the server entry ahead of an entry that serves one of its scopes with another key', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: group:acme/other\n` +
+      `  - url: ${URL_}\n    token: k0\n    scope: project:acme/api\n` +
+      `  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n    enterprise: {}\n    scopes: [project:acme/api]\n`)
+    const before = route('project:acme/api')
+    expect(before[1]).toBe('k0')
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.folded).toEqual([{ scope: 'group:acme/other' }])
+    expect(route('project:acme/api')).toEqual(before)
+    expect(route('group:acme/other')[1]).toBe('k1')
+  })
+
+  it('a personal scope another server also serves is not folded, so its writes keep their server', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: user:acme:bob\n  - url: https://other.example.com\n    token: z\n    scope: user:acme:bob\n`)
+    const before = route('user:acme:bob')
+    await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(route('user:acme:bob')).toEqual(before)
+  })
+
+  it('an unreadable config.yaml is refused without echoing a key it holds', async () => {
+    writeFileSync(configPath(), `stores:\n  - url: ${URL_}\n    token: sekrit-on-disk\n   scope: : bad\n`)
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'sekrit-new', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err).not.toBeNull()
+    expect(err!.message).not.toMatch(/sekrit/)
+    expect(String(err!.stack)).not.toMatch(/sekrit/)
   })
 })
