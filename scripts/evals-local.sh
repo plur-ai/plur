@@ -51,6 +51,9 @@ case "$MODE" in
     # Never score against a holdout that is not the pinned version, or has bad labels.
     python3 evals/gold/hash_set.py "$PLUR_EVAL_HOLDOUT_DIR" --expect "$(cat evals/gold/holdout-recall-v1.sha256)"
     python3 evals/gold/check.py evals/gold/recall-v1 --other "$PLUR_EVAL_HOLDOUT_DIR"
+    python3 evals/gold/hash_set.py "$PLUR_EVAL_HOLDOUT_DIR/../dedup-v2" --expect "$(cat evals/gold/holdout-dedup-v2.sha256)"
+    python3 evals/gold/check.py --dedup evals/gold/dedup-v2 --same-pairs-as evals/gold/recall-v1
+    python3 evals/gold/check.py --dedup "$PLUR_EVAL_HOLDOUT_DIR/../dedup-v2" --same-pairs-as "$PLUR_EVAL_HOLDOUT_DIR"
     python3 .evals/run.py --config evals/evals.yaml --exclude-kind agent --json > "$OUT/scoreboard.json" || status=$?
     python3 .evals/bite.py --config evals/evals.yaml --json > "$OUT/bite.json" || status=${status:-$?}
     say "scoreboard: $OUT/scoreboard.json  planted bugs: $OUT/bite.json"

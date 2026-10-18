@@ -495,6 +495,11 @@ def test_local_script_keeps_the_workflow_refusals():
     fn = sh[sh.index("provision_model() {"):sh.index("}", sh.index("provision_model() {"))]
     assert fn.index("provision-model.mjs fetch") < fn.index("provision-model.mjs verify"), fn
     assert "--exclude-kind agent" in nightly
+    # every holdout check the workflow's nightly makes, the local nightly makes too
+    wf_checks = [ln.strip() for s in _workflow()["jobs"]["nightly"]["steps"] if s.get("id") == "holdout"
+                 for ln in s["run"].splitlines() if "evals/gold/" in ln]
+    assert wf_checks and all(c in nightly for c in wf_checks), [c for c in wf_checks if c not in nightly]
+    assert max(nightly.index(c) for c in wf_checks) < nightly.index(".evals/run.py")
     gate = sh[sh.index("  gate)"):sh.index("  nightly)")]
     for needle in ("test_check_eval_separation.py", "check-eval-separation.py", "test_evals_harness.py",
                    "git diff --exit-code -- .evals evals", "python3 .evals/gate.py --config evals/evals.yaml --base"):
@@ -502,6 +507,32 @@ def test_local_script_keeps_the_workflow_refusals():
     assert "pnpm evals" not in sh and "pnpm -s evals" not in sh
     agents = sh[sh.index("  agents)"):]
     assert "unset ANTHROPIC_API_KEY" in agents and "--agents" in agents
+
+
+def _check_dedup(pairs_yaml: str, same_as: bool = False):
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, "dedup_pairs.yaml").write_text(pairs_yaml)
+        cmd = [sys.executable, str(ROOT / "evals/gold/check.py"), "--dedup", d]
+        if same_as:
+            cmd += ["--same-pairs-as", str(ROOT / "evals/gold/recall-v1")]
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def test_dedup_v2_labels_are_valid_and_keep_the_frozen_texts():
+    r = subprocess.run([sys.executable, str(ROOT / "evals/gold/check.py"), "--dedup", str(ROOT / "evals/gold/dedup-v2"),
+                        "--same-pairs-as", str(ROOT / "evals/gold/recall-v1")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "warning: only 3 distinct" in r.stdout, r.stdout
+
+
+def test_dedup_check_rejects_an_unknown_label_and_a_changed_text():
+    base = (ROOT / "evals/gold/dedup-v2/dedup_pairs.yaml").read_text()
+    r = _check_dedup(base.replace('"label": "supersede"', '"label": "maybe"', 1))
+    assert r.returncode == 1 and "unknown labels ['maybe']" in r.stdout, r.stdout
+    r = _check_dedup(base.replace("five bullets", "six bullets", 1), same_as=True)
+    assert r.returncode == 1 and "texts differ" in r.stdout and "P002" in r.stdout, r.stdout
+    r = _check_dedup(base.replace('"label": "distinct"', '"label": "supersede"'))
+    assert r.returncode == 1 and "0 distinct" in r.stdout, r.stdout
 
 
 if __name__ == "__main__":
