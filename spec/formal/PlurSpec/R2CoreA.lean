@@ -64,6 +64,8 @@ Codex round 5 (2026-10-18): still holds. Bare-id walks need positive team owners
 (tri-state probe); recallAsync/recallExpanded/recallAutoSearch use keyword recall and
 rerankerSelfEval refuses while bound; the remote-only dial needs the folder scope exactly in a
 scopes allow-list. Only filters and refusals; unbound, unchanged.
+Codex round 8 (2026-10-18): still holds. A public mutator captures the remote-only binding when it
+starts and keeps it to the end (the store lock's AsyncLocalStorage); unbound, nothing changed.
 
 Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
 refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
