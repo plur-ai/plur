@@ -111,6 +111,30 @@ describe('applyMcpEnv: codex', () => {
     expect(toml(readFileSync(path, 'utf8')).mcp_servers.plur.env).toEqual({ PLUR_PATH: '/data/plur', NODE_EXTRA_CA_CERTS: CA })
   })
 
+  it('removing a key keeps the comment on its line', () => {
+    const path = put('.codex/config.toml', '[mcp_servers.plur]\ncommand = "plur-mcp"\n[mcp_servers.plur.env]\nHTTPS_PROXY = "http://old.example.com:1" # my proxy note\nPLUR_PATH = "/data/plur"\n')
+    expect(applyMcpEnv('codex', {}, loc).status).toBe('updated')
+    const after = readFileSync(path, 'utf8')
+    expect(after).toContain('# my proxy note')
+    expect(toml(after).mcp_servers.plur.env).toEqual({ PLUR_PATH: '/data/plur' })
+  })
+
+  it('dotted env keys inside an inline plur table can be added and removed', () => {
+    const path = put('.codex/config.toml', '# mine\nmcp_servers.plur = { command = "plur-mcp", env.HTTPS_PROXY = "http://old.example.com:1", env.PLUR_PATH = "/data/plur" }\n[mcp_servers.other]\ncommand = "y"\n')
+    expect(applyMcpEnv('codex', { NODE_EXTRA_CA_CERTS: CA }, loc).status).toBe('updated')
+    const after = readFileSync(path, 'utf8')
+    expect(toml(after).mcp_servers.plur.env).toEqual({ PLUR_PATH: '/data/plur', NODE_EXTRA_CA_CERTS: CA })
+    expect(toml(after).mcp_servers.other).toEqual({ command: 'y' })
+    expect(after).toContain('# mine')
+  })
+
+  it('an entry with a url is remote even when a command is left in it: refused, no launch', () => {
+    const text = '[mcp_servers.plur]\ncommand = "plur-mcp"\nurl = "https://plur.example.com/mcp"\n'
+    const path = put('.codex/config.toml', text)
+    expect(applyMcpEnv('codex', THREE, loc)).toMatchObject({ status: 'refused', detail: expect.stringMatching(/remote/) })
+    expect(readFileSync(path, 'utf8')).toBe(text)
+  })
+
   it('a config.toml that does not parse is refused and left byte-identical', () => {
     const bad = '[mcp_servers.plur\ncommand = "x"\n'
     const path = put('.codex/config.toml', bad)
@@ -136,6 +160,15 @@ describe('applyMcpEnv: opencode', () => {
     const after = readFileSync(path, 'utf8')
     expect(after).toContain('// keep me')
     expect((parseJsonc(after) as any).mcp.plur.environment).toEqual(THREE)
+  })
+
+  it('removing a key keeps the comments around it', () => {
+    const path = put('.config/opencode/opencode.jsonc', '{\n  "mcp": {\n    "plur": {\n      "type": "local",\n      "command": ["plur-mcp"],\n      "environment": {\n        "HTTP_PROXY": "http://old.example.com:1", // proxy note\n        // explanation of my storage location\n        "PLUR_PATH": "/data"\n      }\n    }\n  }\n}\n')
+    expect(applyMcpEnv('opencode', {}, loc).status).toBe('updated')
+    const after = readFileSync(path, 'utf8')
+    expect(after).toContain('// explanation of my storage location')
+    expect(after).toContain('// proxy note')
+    expect((parseJsonc(after) as any).mcp.plur.environment).toEqual({ PLUR_PATH: '/data' })
   })
 
   it('a symlinked opencode.json survives; the target file carries the env', () => {
@@ -195,6 +228,19 @@ describe('applyMcpEnv: claude-code and cursor', () => {
     const ocPath = put('.config/opencode/opencode.json', oc)
     expect(applyMcpEnv('opencode', THREE, loc).status).toBe('refused')
     expect(readFileSync(ocPath, 'utf8')).toBe(oc)
+  })
+
+  it('a remote entry with a leftover command is still remote: refused, and no launch is read', () => {
+    const text = JSON.stringify({ mcpServers: { plur: { type: 'http', url: 'https://plur.example.com/mcp', command: 'plur-mcp' } } })
+    const path = put('.claude.json', text)
+    expect(applyMcpEnv('claude-code', THREE, loc)).toMatchObject({ status: 'refused', detail: expect.stringMatching(/remote/) })
+    expect(readFileSync(path, 'utf8')).toBe(text)
+    expect(toolLaunch('claude-code', {}, loc)).toBeNull()
+    const oc = JSON.stringify({ mcp: { plur: { type: 'remote', url: 'https://plur.example.com/mcp', command: ['plur-mcp'] } } })
+    const ocPath = put('.config/opencode/opencode.json', oc)
+    expect(applyMcpEnv('opencode', THREE, loc).status).toBe('refused')
+    expect(readFileSync(ocPath, 'utf8')).toBe(oc)
+    expect(toolLaunch('opencode', {}, loc)).toBeNull()
   })
 
   it('a key outside the PLUR set is refused, nothing written', () => {
@@ -257,7 +303,36 @@ describe('launchProblem', () => {
     for (const command of ['bunx', 'pnpx', 'pnpm', 'yarn', 'uvx', 'C:\\Windows\\System32\\wsl.exe', 'busybox']) {
       expect(launchProblem('Codex', { command, args: ['@plur-ai/mcp'], env }, 'win32')).toMatch(/starts PLUR through/)
     }
-    expect(launchProblem('Codex', { command: '/usr/bin/env', args: ['/usr/bin/node', '/x/index.js'], env }, 'linux')).toBeNull()
+    // Only PLUR itself is direct; an `env` prefix is not looked behind for that.
+    expect(launchProblem('Codex', { command: '/usr/bin/env', args: ['/usr/bin/node', '/x/index.js'], env }, 'linux')).toMatch(/through env/)
+  })
+})
+
+describe('launchProblem: only PLUR itself is a direct launch', () => {
+  const env = {}
+  it('a wrapper in any spelling is named', () => {
+    for (const [command, args] of [
+      ['/usr/bin/env', ['-u', 'DEBUG', 'bash', '-c', 'plur-mcp']],
+      ['/usr/bin/env', ["-S", 'sh -c "plur-mcp"']],
+      ['bun', ['x', '@plur-ai/mcp']],
+      ['/usr/bin/node', ['/usr/lib/node_modules/npm/bin/npx-cli.js', '-y', '@plur-ai/mcp']],
+      ['/usr/bin/node', ['-e', 'require("child_process").spawn("plur-mcp")']],
+      ['/usr/bin/python3', ['-m', 'something']],
+    ] as Array<[string, string[]]>) {
+      expect(launchProblem('Codex', { command, args, env }, 'linux'), `${command} ${args.join(' ')}`).not.toBeNull()
+    }
+  })
+  it('PLUR itself is direct', () => {
+    expect(launchProblem('Codex', { command: '/h/.plur/bin/plur-mcp', args: [], env }, 'linux')).toBeNull()
+    expect(launchProblem('Codex', { command: 'C:\\h\\.plur\\bin\\plur-mcp.exe', args: [], env }, 'win32')).toBeNull()
+    expect(launchProblem('Codex', { command: '/usr/local/bin/node', args: ['/usr/local/lib/node_modules/@plur-ai/mcp/dist/index.js'], env }, 'darwin')).toBeNull()
+  })
+  it('wireTools hands no launch out for such an entry', async () => {
+    put('.claude.json', JSON.stringify({ mcpServers: { plur: { command: 'bun', args: ['x', '@plur-ai/mcp'] } } }))
+    const [claude] = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
+    expect(claude.status).toBe('wired')
+    expect(launchOf(claude)).toBeUndefined()
+    expect(claude.detail).toMatch(/bun/)
   })
 })
 
@@ -379,6 +454,34 @@ describe('runPlurInit', () => {
     expect(calls).toEqual([{ cmd: process.execPath, args: ['/opt/plur/cli/dist/index.js', 'init', '--no-prompt'] }])
     expect(readFileSync(log, 'utf8')).toBe('registered in ~/.claude.json\n')
     if (process.platform !== 'win32') expect(statSync(log).mode & 0o777).toBe(0o600)
+  })
+
+  it('an existing loose log becomes owner-only; a symlinked log path is replaced, not followed', () => {
+    if (process.platform === 'win32') return
+    const exec: ExecFn = () => ({ status: 0, stdout: 'ok\n' })
+    const log = join(home, 'logs', 'init.log')
+    mkdirSync(join(home, 'logs'))
+    writeFileSync(log, 'old', { mode: 0o644 })
+    chmodSync(log, 0o644)
+    runPlurInit(exec, '/x.js', log)
+    expect(statSync(log).mode & 0o777).toBe(0o600)
+    const elsewhere = join(home, 'elsewhere.txt')
+    writeFileSync(elsewhere, 'keep')
+    rmSync(log)
+    symlinkSync(elsewhere, log)
+    runPlurInit(exec, '/x.js', log)
+    expect(readFileSync(elsewhere, 'utf8')).toBe('keep')
+    expect(readFileSync(log, 'utf8')).toBe('ok\n')
+  })
+
+  it('stderr goes into the log too, so a failed init can be diagnosed', () => {
+    const seen: Array<Record<string, unknown> | undefined> = []
+    const exec: ExecFn = (_c, _a, opts) => { seen.push(opts as Record<string, unknown>); return { status: 1, stdout: 'partial\n', stderr: 'Error: Cannot find module /x.js\n' } }
+    const log = join(home, 'init.log')
+    expect(runPlurInit(exec, '/x.js', log)).toEqual({ ok: false })
+    expect(seen[0]?.stderr).toBe(true)
+    expect(readFileSync(log, 'utf8')).toContain('partial')
+    expect(readFileSync(log, 'utf8')).toContain('Cannot find module')
   })
 
   it('a non-zero exit is not ok', () => {
