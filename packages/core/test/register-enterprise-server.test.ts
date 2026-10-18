@@ -17,7 +17,7 @@
  * Refs plur-ai/plur#1631
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
@@ -451,5 +451,49 @@ describe('registerEnterpriseServer — Codex audit round 2', () => {
     const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
     expect(r.fold.kept_separate).toEqual([{ scope: '__proto__', why: 'invalid-scope' }])
     expect(rawConfig().stores[0]).toEqual({ url: URL_, token: 'k1', scope: '__proto__', dial: 'never' })
+  })
+})
+
+describe('registerEnterpriseServer — Codex audit round 3', () => {
+  it('a path entry runtime ignores does not hide a personal-scope takeover: refused', async () => {
+    seed(`stores:\n  - path: ${join(dir, 'engrams.yaml')}\n    scope: ${ME}\n  - url: ${URL_}\n    token: k1\n    scope: user:acme:bob\n    scopes: []\n` +
+      `  - url: https://b.example.com\n    token: k2\n    scope: ${ME}\n`)
+    const before = readFileSync(configPath(), 'utf8')
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/already served by another entry/)
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+  })
+
+  it('a personal scope served only in another letter case is not taken over', async () => {
+    seed(`stores:\n  - url: https://b.example.com\n    token: k2\n    scope: user:acme:Alice\n`)
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/already served by another entry/)
+  })
+
+  it('a server entry that does not load is refused, so no working entry is folded into it', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n    scopes: []\n    readonly: "false"\n  - url: ${URL_}\n    token: k1\n    scope: group:acme/team\n`)
+    const before = readFileSync(configPath(), 'utf8')
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/not valid/)
+    expect(err?.message).not.toMatch(/k1/)
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+  })
+
+  it.skipIf(process.platform === 'win32')('a config.yaml readable by others is made owner-only before the key is written', async () => {
+    seed(`auto_learn: true\n`)
+    chmodSync(configPath(), 0o644)
+    await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(statSync(configPath()).mode & 0o777).toBe(0o600)
+  })
+
+  it('queued_by_scope counts a scope named like an Object property as a number', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: constructor\n`)
+    writeFileSync(join(dir, 'engrams.yaml'), yaml.dump({ engrams: [{
+      id: 'ENG-2026-10-18-002', statement: 'queued', type: 'behavioral', scope: 'constructor', status: 'active', visibility: 'public',
+      structured_data: { _outbox: { target_scope: 'constructor', queued_at: new Date().toISOString(), attempt_count: 1 } },
+    }] }))
+    plur = new Plur({ path: dir })
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.queued_by_scope.constructor).toBe(1)
   })
 })
