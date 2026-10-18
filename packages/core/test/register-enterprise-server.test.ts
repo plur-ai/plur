@@ -497,3 +497,50 @@ describe('registerEnterpriseServer — Codex audit round 3', () => {
     expect(r.fold.queued_by_scope.constructor).toBe(1)
   })
 })
+
+describe('registerEnterpriseServer — Codex audit round 4', () => {
+  it('an entry that did not load is not "already serving" its scope: a takeover is refused', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: 123\n    scope: ${ME}\n    scopes: []\n  - url: https://b.example.com\n    token: key-b\n    scope: ${ME}\n`)
+    const before = readFileSync(configPath(), 'utf8')
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'key-a', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/already served by another entry/)
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+  })
+
+  it.skipIf(process.platform === 'win32')('the owner-only step runs under the config lock, right before the write', async () => {
+    seed(`auto_learn: true\n`)
+    chmodSync(configPath(), 0o644)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = plur as any
+    const orig = p._updateRawStores.bind(p)
+    p._updateRawStores = (mutate: (s: unknown[]) => boolean) => {
+      chmodSync(configPath(), 0o644)   // another writer widened it after any earlier check
+      return orig(mutate)
+    }
+    await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(statSync(configPath()).mode & 0o777).toBe(0o600)
+  })
+
+  it('an existing server entry whose url carries a user name or password is refused, and nothing echoes it', async () => {
+    seed(`stores:\n  - url: https://u:old-sekrit@plur.example.com\n    token: old-sekrit\n    scope: ${ME}\n    scopes: []\n`)
+    const before = readFileSync(configPath(), 'utf8')
+    const logs: string[] = []
+    for (const lvl of ['info', 'warning', 'error', 'debug'] as const) {
+      vi.spyOn(logger, lvl).mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')) })
+    }
+    const err = await plur.registerEnterpriseServer(URL_, { tokenEnv: 'PLUR_TEST_UNSET_VAR', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/user name or password/)
+    expect(err?.message).not.toMatch(/sekrit/)
+    expect(logs.join('\n')).not.toMatch(/sekrit/)
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+  })
+
+  it('the unset token_env warning names the url without its user name or password', () => {
+    writeFileSync(configPath(), `stores:\n  - url: https://u:old-sekrit@plur.example.com\n    token_env: PLUR_TEST_UNSET_VAR\n    scope: group:acme/x\n`)
+    const logs: string[] = []
+    vi.spyOn(logger, 'warning').mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')) })
+    loadConfig(configPath())
+    expect(logs.join('\n')).toMatch(/PLUR_TEST_UNSET_VAR/)
+    expect(logs.join('\n')).not.toMatch(/sekrit/)
+  })
+})
