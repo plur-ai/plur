@@ -72,6 +72,9 @@ it('every editor named in the runbook has a fixture', () => {
 
 it('the runbook status row for each editor states what its fixture records', () => {
   const runbook = readFileSync(RUNBOOK, 'utf8')
+  // The row cells are read by position, so the header must name them in this order.
+  const header = runbook.split('\n').find(l => l.startsWith('| Editor |'))
+  expect(header?.split('|').slice(1, -1).map(c => c.trim())).toEqual(['Editor', 'Sends roots', 'listChanged', 'Recorded'])
   const rows = new Map(
     runbook
       .split('\n')
