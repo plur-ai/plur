@@ -200,7 +200,7 @@ describe('registerEnterpriseServer — re-running', () => {
       `  - url: ${URL_}\n    token: k-old\n    scope: group:acme/legacy\n`)
     const logs: string[] = []
     for (const lvl of ['info', 'warning', 'error', 'debug'] as const) {
-      vi.spyOn(logger, lvl).mockImplementation((m: string) => { logs.push(String(m)) })
+      vi.spyOn(logger, lvl).mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(" ")) })
     }
     const r = await plur.registerEnterpriseServer(URL_, { token: 'k-new', personalScope: ME })
     expect(r.status).toBe('updated')
