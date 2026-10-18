@@ -37,10 +37,14 @@ case "$MODE" in
     git fetch -q origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
     # Run after `pnpm install --frozen-lockfile && pnpm -r build`, as on GitHub.
     python3 scripts/test_check_eval_separation.py
-    python3 scripts/check-eval-separation.py "origin/$BASE" | tee "$OUT/separation.txt"
+    # A stacked base (the overnight agent's branch) gets the strict check: only product
+    # source and product tests may change (fourth audit A4-01).
+    STRICT=""
+    case "$BASE" in integration/*) STRICT=--strict ;; esac
+    python3 scripts/check-eval-separation.py "origin/$BASE" $STRICT | tee "$OUT/separation.txt"
     python3 scripts/test_evals_harness.py | tee "$OUT/harness.txt"
     # Install and build may not have rewritten the judge on the way to the gate.
-    git diff --exit-code -- .evals evals scripts/check-eval-separation.py scripts/evals-local.sh package.json
+    bash scripts/judge-intact.sh
     python3 .evals/gate.py --config evals/evals.yaml --base "origin/$BASE" | tee "$OUT/gate.txt"
     ;;
   nightly)
