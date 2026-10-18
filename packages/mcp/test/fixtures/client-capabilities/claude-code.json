@@ -1,13 +1,18 @@
 {
   "clientInfo": {
     "name": "claude-code",
-    "version": "1.0.0"
+    "title": "Claude Code",
+    "version": "2.1.302"
   },
   "capabilities": {
     "roots": {
       "listChanged": true
+    },
+    "elicitation": {
+      "form": {},
+      "url": {}
     }
   },
-  "recorded": null,
-  "source": "unverified"
+  "recorded": "2026-10-18",
+  "source": "manual check"
 }
