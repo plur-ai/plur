@@ -203,11 +203,30 @@ describe('atomicWrite on Windows: owner-only access list before the first conten
     expect(calls.some(c => c.includes('/inheritance:r'))).toBe(false)
   }
 
-  it('icacls fails on the destination (owner-only mode): refuses, no write, no rename, destination unchanged', () => {
+  it('icacls fails, owner-only mode WITHOUT secret: written, not refused (only secret writes fail closed)', () => {
+    // Known residual, reported: config.yaml and folder-map writers pass only
+    // an owner-only mode and have not opted in to failing closed.
     const f = join(root, 'folders.yaml')
     realFs.writeFileSync(f, 'a\n')
     _atomicWriteAcl.exec = (cmd, args) => { calls.push([cmd, ...args]); return { status: null, stdout: '' } }
-    expectRefusedUntouched(f, () => atomicWrite(f, 'b\n', { mode: 0o600 }))
+    atomicWrite(f, 'b\n', { mode: 0o600 })
+    expect(realFs.readFileSync(f, 'utf8')).toBe('b\n')
+    expect(calls.some(c => c.includes('/inheritance:r'))).toBe(false)
+  })
+
+  it('icacls fails on the destination (secret + owner-only mode): refuses, destination unchanged', () => {
+    const f = join(root, 'config.yaml')
+    realFs.writeFileSync(f, 'a\n')
+    _atomicWriteAcl.exec = (cmd, args) => { calls.push([cmd, ...args]); return { status: null, stdout: '' } }
+    expectRefusedUntouched(f, () => atomicWrite(f, 'b\n', { mode: 0o600, secret: true }))
+  })
+
+  it('Windows account unknown, owner-only mode without secret: written', () => {
+    const f = join(root, 'folders.yaml')
+    realFs.writeFileSync(f, 'a\n')
+    _atomicWriteAcl.env = {}
+    atomicWrite(f, 'b\n', { mode: 0o600 })
+    expect(realFs.readFileSync(f, 'utf8')).toBe('b\n')
   })
 
   it('icacls fails on the destination (secret): refuses, destination unchanged', () => {

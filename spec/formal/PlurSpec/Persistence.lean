@@ -1130,8 +1130,11 @@ protection, only what an `icacls` inspection reports, and that inspection is
 tri-state (`Insp`): `ownerOnly`, `shared`, or `unknown` (icacls failed, its output
 named no account, or the Windows account is not known). The round-2 helper read
 `unknown` as "not protected" and wrote the credential into an unprotected temp file
-(`traceR2`, replayed by `r2_unknown_leaks`). Now a credential write over an existing
-destination whose inspection is `unknown` is refused before any temp file exists.
+(`traceR2`, replayed by `r2_unknown_leaks`). Now a `secret` write over an existing
+destination whose inspection is `unknown` is refused before any temp file exists. A
+write that only passes an owner-only mode (`credential` without `secret`: the folder
+map, config.yaml today) still gets the protection on an `ownerOnly` reading but is
+not refused on `unknown`; `mode_only_unknown_wide` records that residual.
 
 Modelled: the order of create / protect / write / final-mode / rename and the
 protection each content write lands in. Left out: umask arithmetic (the creation mode
@@ -1162,6 +1165,7 @@ structure Call where
   insp       : Insp
   optsMode   : Bool   -- the caller passed a mode
   credential : Bool   -- `secret`, or an owner-only `mode` (Windows trigger)
+  secret     : Bool   -- the caller passed `secret: true` (fails closed on `unknown`)
   aclOk      : Bool   -- icacls set + read back named only the current account
 
 /-- The destination is protected, so its content must never sit in a wider file. -/
@@ -1176,9 +1180,9 @@ def traceOld (_c : Call) : List Ev :=
   [.create .wide, .write .wide, .rename]
 
 /-- The Windows credential branch once the inspection is in hand. -/
-def winCredential (aclOk : Bool) (i : Insp) : List Ev :=
+def winCredential (secret aclOk : Bool) (i : Insp) : List Ev :=
   match i with
-  | .unknown   => [.refuse]
+  | .unknown   => if secret then [.refuse] else [.create .wide, .write .wide, .rename]
   | .shared    => [.create .wide, .write .wide, .rename]
   | .ownerOnly =>
       if aclOk then [.create .wide, .protect true, .write .ownerOnly, .rename]
@@ -1186,7 +1190,7 @@ def winCredential (aclOk : Bool) (i : Insp) : List Ev :=
 
 def traceNew (c : Call) : List Ev :=
   if c.windows then
-    if c.credential && c.destExists then winCredential c.aclOk c.insp
+    if c.credential && c.destExists then winCredential c.secret c.aclOk c.insp
     else [.create .wide, .write .wide, .rename]
   else
     let p := if c.destExists || c.optsMode then Prot.ownerOnly else Prot.wide
@@ -1208,15 +1212,16 @@ def traceR2 (c : Call) : List Ev :=
 credentials — config writers, enterprise cleanup — declare), whatever the
 inspection reported, provided a `shared` report is not a lie. -/
 theorem write_protected (c : Call) (hp : protectedDest c = true)
-    (hw : c.windows = true → c.credential = true) (hs : inspSound c) :
+    (hw : c.windows = true → c.credential = true)
+    (hu : c.windows = true → c.insp = .unknown → c.secret = true) (hs : inspSound c) :
     ∀ p, Ev.write p ∈ traceNew c → p = .ownerOnly := by
   intro p h
   cases c with
-  | mk windows destExists destProt insp optsMode credential aclOk =>
+  | mk windows destExists destProt insp optsMode credential secret aclOk =>
     simp only [protectedDest, Bool.and_eq_true, beq_iff_eq] at hp
     obtain ⟨he, hd⟩ := hp
     obtain ⟨hs1, _⟩ := hs
-    cases windows <;> cases insp <;> cases aclOk <;>
+    cases windows <;> cases insp <;> cases aclOk <;> cases secret <;>
       simp_all [traceNew, winCredential]
 
 /-- A Windows credential write that cannot be protected — the inspection is `unknown`,
@@ -1224,15 +1229,21 @@ or the temp file's owner-only list does not verify — writes nothing and does n
 rename: the destination keeps its old bytes and its own list. -/
 theorem refused_leaves_dest (c : Call) (hwin : c.windows = true) (hc : c.credential = true)
     (he : c.destExists = true)
-    (hbad : c.insp = .unknown ∨ (c.insp = .ownerOnly ∧ c.aclOk = false)) :
+    (hbad : (c.insp = .unknown ∧ c.secret = true) ∨ (c.insp = .ownerOnly ∧ c.aclOk = false)) :
     (∀ p, Ev.write p ∉ traceNew c) ∧ Ev.rename ∉ traceNew c := by
-  rcases hbad with h | ⟨h1, h2⟩ <;> simp [traceNew, winCredential, *]
+  rcases hbad with ⟨h1, h2⟩ | ⟨h1, h2⟩ <;> simp [traceNew, winCredential, *]
 
 /-- An `unknown` inspection never even creates the temp file. -/
 theorem unknown_creates_nothing (c : Call) (hwin : c.windows = true) (hc : c.credential = true)
-    (he : c.destExists = true) (hu : c.insp = .unknown) :
+    (he : c.destExists = true) (hu : c.insp = .unknown) (hsec : c.secret = true) :
     traceNew c = [.refuse] := by
-  simp [traceNew, winCredential, hwin, hc, he, hu]
+  simp [traceNew, winCredential, hwin, hc, he, hu, hsec]
+
+/-- Residual (reported): an owner-only `mode` without `secret` over an owner-only
+destination whose list cannot be inspected is still written through a wide temp. -/
+theorem mode_only_unknown_wide :
+    Ev.write .wide ∈ traceNew ⟨true, true, .ownerOnly, .unknown, true, true, false, true⟩ := by
+  decide
 
 /-- Ordinary (non-credential) Windows writes never refuse on inspection. -/
 theorem ordinary_never_refused (c : Call) (hwin : c.windows = true) (hc : c.credential = false) :
@@ -1241,21 +1252,21 @@ theorem ordinary_never_refused (c : Call) (hwin : c.windows = true) (hc : c.cred
 
 /-- The protected-write path is reachable on both platforms (the theorem is not vacuous). -/
 theorem reachable :
-    Ev.write .ownerOnly ∈ traceNew ⟨false, true, .ownerOnly, .unknown, false, false, true⟩ ∧
-    Ev.write .ownerOnly ∈ traceNew ⟨true, true, .ownerOnly, .ownerOnly, false, true, true⟩ := by
+    Ev.write .ownerOnly ∈ traceNew ⟨false, true, .ownerOnly, .unknown, false, false, false, true⟩ ∧
+    Ev.write .ownerOnly ∈ traceNew ⟨true, true, .ownerOnly, .ownerOnly, false, true, false, true⟩ := by
   decide
 
 /-- **The finding (replayed):** the old helper wrote a 0600 destination's content into
 a wide file. -/
 theorem old_leaks :
-    Ev.write .wide ∈ traceOld ⟨false, true, .ownerOnly, .unknown, false, false, true⟩ := by
+    Ev.write .wide ∈ traceOld ⟨false, true, .ownerOnly, .unknown, false, false, false, true⟩ := by
   decide
 
 /-- **Round 3, finding 1 (replayed):** with icacls failing on an owner-only
 destination, the round-2 helper wrote the credential into an unprotected temp file
 and renamed it over the destination. -/
 theorem r2_unknown_leaks :
-    let c : Call := ⟨true, true, .ownerOnly, .unknown, true, true, true⟩
+    let c : Call := ⟨true, true, .ownerOnly, .unknown, true, true, true, true⟩
     protectedDest c = true ∧ inspSound c ∧ Ev.write .wide ∈ traceR2 c ∧ Ev.rename ∈ traceR2 c := by
   refine ⟨by decide, ⟨by simp, by simp⟩, by decide, by decide⟩
 
