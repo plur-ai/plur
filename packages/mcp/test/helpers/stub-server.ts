@@ -118,17 +118,17 @@ export class StubServer {
     if (method === 'GET' && path === '/api/v1/me') {
       this.meCalls++
       // #1631: meStatus/meBody override — simulate 503 scope_lookup_failed etc.
-      if (this.meStatus !== null) {
-        this.json(res, this.meStatus, this.meBody ?? { error: `forced ${this.meStatus}` })
-        return
+      // The answer (forced or not) is sent only after `beforeMe` settles.
+      const answer = (): void => {
+        if (this.meStatus !== null) this.json(res, this.meStatus, this.meBody ?? { error: `forced ${this.meStatus}` })
+        else this.json(res, 200, this.me)
       }
       const hook = this.beforeMe
       if (hook) {
-        const me = this.me
-        Promise.resolve().then(() => hook()).then(() => this.json(res, 200, me), () => this.json(res, 500, { error: 'beforeMe failed' }))
+        Promise.resolve().then(() => hook()).then(answer, () => this.json(res, 500, { error: 'beforeMe failed' }))
         return
       }
-      this.json(res, 200, this.me)
+      answer()
       return
     }
 

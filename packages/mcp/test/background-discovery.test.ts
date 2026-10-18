@@ -39,12 +39,14 @@ function holdMe(): void {
   stub.beforeMe = () => gate
 }
 
-function seed(opts: { scopes: string[]; scope?: string; url?: string }): string {
+function seed(opts: { scopes: string[]; scope?: string; url?: string; enterprise?: boolean; discovery?: Record<string, unknown> }): string {
   const dir = mkdtempSync(join(tmpdir(), 'plur-mcp-bg-discovery-'))
   dirs.push(dir)
   const entry: Record<string, unknown> = {
-    url: opts.url ?? baseUrl, token: TOKEN, scopes: opts.scopes, enterprise: {},
+    url: opts.url ?? baseUrl, token: TOKEN, scopes: opts.scopes,
+    ...(opts.enterprise === false ? {} : { enterprise: {} }),
     ...(opts.scope ? { scope: opts.scope } : {}),
+    ...(opts.discovery ? { discovery: opts.discovery } : {}),
   }
   // JSON is valid YAML (this package has no js-yaml dependency).
   writeFileSync(join(dir, 'config.yaml'), JSON.stringify({ embeddings: { enabled: false }, stores: [entry] }))
@@ -91,20 +93,27 @@ afterEach(async () => {
 
 describe('MCP scope discovery runs in the background (#1631)', () => {
   it('startup and session_start return while /me is still hanging', async () => {
+    // Deterministic, no wall clock: /me is held open until the test releases
+    // it. Had startup or session_start awaited the refresh, it would have
+    // settled (5 s timeout) before returning and the status would not be
+    // `pending`; had session_start awaited the legacy probe, /me would have
+    // been called twice.
     holdMe()
     const plur = new Plur({ path: seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL }) })
-    const t0 = Date.now()
     const client = await connect(plur)
     const r = await call(client, 'plur_session_start', { task: 'x' })
-    // /me never answers: waiting on it at all would take at least the
-    // refresh's 5 s budget (or the legacy probe's 3 s). The bound leaves room
-    // for a loaded CI machine running the whole suite in parallel.
-    expect(Date.now() - t0).toBeLessThan(2500)
     expect(r.discovery).toEqual([{ url: baseUrl, status: 'pending', scopes: 2 }])
     // The guide is built from the cached scopes.
     expect(r.guide).toContain(`"${BACKEND}"`)
+    // Another tool answers from the cache while /me is still held.
+    const recall = await call(client, 'plur_recall', { query: 'anything' })
+    expect(recall).toBeTruthy()
+    expect(discoverySummary(plur)[0].status).toBe('pending')
     // One refresh in flight: session_start did not start a second one.
     expect(stub.meCalls).toBe(1)
+    release?.()
+    await whenDiscoverySettled(plur)
+    expect(discoverySummary(plur)[0].status).toBe('ok')
   })
 
   it('a refreshed scope list is used by the next learn without a restart', async () => {
@@ -153,17 +162,20 @@ describe('MCP scope discovery runs in the background (#1631)', () => {
   })
 
   it('a failing /me does not delay session_start, keeps the cache and is logged by safe origin only', async () => {
+    holdMe()
     stub.meStatus = 503
     stub.meBody = { error: 'scope_lookup_failed', echoed: TOKEN }
     const writes: string[] = []
     vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => { writes.push(String(chunk)); return true }) as any)
     const dir = seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL, url: `${baseUrl}/` })
     const plur = new Plur({ path: dir })
-    const t0 = Date.now()
     const client = await connect(plur)
+    // The failing answer is held back: session_start answers before it.
+    const pending = await call(client, 'plur_session_start', { task: 'x' })
+    expect(pending.discovery[0].status).toBe('pending')
+    release?.()
     await whenDiscoverySettled(plur)
     const r = await call(client, 'plur_session_start', { task: 'x' })
-    expect(Date.now() - t0).toBeLessThan(2500)
     await whenDiscoverySettled(plur)
     expect((await plur.listStores()).map(s => s.scope).filter(sc => sc !== 'global')).toEqual(expect.arrayContaining([PERSONAL, BACKEND]))
     expect(r.discovery[0].scopes).toBe(2)
@@ -190,6 +202,72 @@ describe('MCP scope discovery runs in the background (#1631)', () => {
     expect(JSON.stringify(r.discovery)).not.toContain('hunter2')
     expect(r.discovery[0].url).toBe(baseUrl)
     for (const l of writes.filter(w => w.includes('[plur:discovery]'))) expect(l).not.toContain('hunter2')
+  })
+
+  it('an entry with a scopes list but no enterprise block keeps the legacy probe and its warning', async () => {
+    // Background discovery refreshes only entries with an enterprise block;
+    // anything it does not refresh must still get the awaited legacy probe,
+    // so a refused key is reported instead of silently skipped.
+    stub.meStatus = 401
+    const plur = new Plur({ path: seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL, enterprise: false }) })
+    const client = await connect(plur)
+    await whenDiscoverySettled(plur)
+    const r = await call(client, 'plur_session_start', { task: 'x' })
+    await whenDiscoverySettled(plur)
+    expect(r.discovery).toBeUndefined()
+    expect(r.guide).toContain('AUTH FAILED')
+  })
+
+  it('a refused key is reported in the discovery field and the guide, never as ok', async () => {
+    stub.meStatus = 401
+    const plur = new Plur({ path: seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL, discovery: { status: 'ok' } }) })
+    const client = await connect(plur)
+    await whenDiscoverySettled(plur)
+    expect(discoverySummary(plur)[0].status).toBe('auth_failed')
+    // Hold the next answer: session_start's own refresh is then still running.
+    holdMe()
+    const r = await call(client, 'plur_session_start', { task: 'x' })
+    release?.()
+    await whenDiscoverySettled(plur)
+    // The row reports the new check pending and carries the refused key from
+    // the settled one; the guide says it out loud.
+    expect(r.discovery[0]).toMatchObject({ url: baseUrl, status: 'pending', last_status: 'auth_failed' })
+    expect(r.guide).toContain(baseUrl)
+    expect(r.guide).toMatch(/key .*refused|refused .*key/i)
+    expect(discoverySummary(plur)[0].status).toBe('auth_failed')
+  })
+
+  it('while a refresh is pending, a failure cached from an earlier run is still reported', async () => {
+    holdMe()
+    const plur = new Plur({ path: seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL, discovery: { status: 'auth_failed' } }) })
+    const client = await connect(plur)
+    const r = await call(client, 'plur_session_start', { task: 'x' })
+    expect(r.discovery[0]).toMatchObject({ status: 'pending', last_status: 'auth_failed' })
+    expect(r.guide).toMatch(/key .*refused|refused .*key/i)
+  })
+
+  it('a refresh that rejects is reported as failed, not as the cached ok, and leaks no rejection', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (e: unknown) => { unhandled.push(e) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as any)
+      const plur = new Plur({ path: seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL, discovery: { status: 'ok' } }) })
+      vi.spyOn(plur, 'refreshServerScopes').mockRejectedValue(new Error(`boom ${baseUrl} ${TOKEN}`))
+      await connect(plur)
+      await whenDiscoverySettled(plur)
+      expect(discoverySummary(plur)[0].status).toBe('failed')
+      // An answer of the wrong shape is a failure too, never an escaped throw.
+      vi.spyOn(plur, 'refreshServerScopes').mockResolvedValue(null as any)
+      const { startBackgroundDiscovery } = await import('../src/background-discovery.js')
+      expect(startBackgroundDiscovery(plur)).toBe(true)
+      await whenDiscoverySettled(plur)
+      expect(discoverySummary(plur)[0].status).toBe('failed')
+      await new Promise(r => setTimeout(r, 20))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 
   it('an install with no server entry gets no discovery field and no extra /me', async () => {

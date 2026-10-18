@@ -6,7 +6,7 @@ import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
-import { startBackgroundDiscovery, discoverySummary, isServerEndpoint } from './background-discovery.js'
+import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys } from './background-discovery.js'
 import { z } from 'zod'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
@@ -3939,8 +3939,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // #1631: an endpoint served by a company server entry is not
             // probed here — its /me runs in the background (never awaited).
             // With none, the legacy call is exactly as before.
+            const background = serverEndpointKeys(plur)
             const endpoints = plur._distinctRemoteEndpoints()
-            const legacy = endpoints.filter(e => !isServerEndpoint(plur, e.url))
+            const legacy = endpoints.filter(e => !background.has(normalizeEndpointUrl(e.url)))
             const discoveries = legacy.length === endpoints.length
               ? await plur.discoverRemoteScopes({ timeoutMs: 3000 })
               : (await Promise.all(legacy.map(e => plur.discoverRemoteScopes({ url: e.url, timeoutMs: 3000 })))).flat()
@@ -3996,6 +3997,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
           } catch { /* best-effort */ }
         }
 
+        // #1631: each company server's discovery status, from the background
+        // refresh (never awaited). A refused key or failed check is said in
+        // the guide too: the legacy warning above no longer probes these.
+        let server_discovery: ReturnType<typeof discoverySummary> = []
+        try {
+          server_discovery = discoverySummary(plur)
+          for (const w of discoveryWarnings(server_discovery)) guide += `\n\n${w}`
+        } catch { /* a status row is never worth failing session_start over */ }
+
         // #761: the lean surface is invisible in tools/list, and session_start
         // is the first tool an agent calls — one line here tells it the
         // gateway exists BEFORE it ever misses a name and concludes the MCP
@@ -4013,8 +4023,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
             '(send { action: "help" } for the full action list).'
         }
 
-        let server_discovery: ReturnType<typeof discoverySummary> = []
-        try { server_discovery = discoverySummary(plur) } catch { /* a status row is never worth failing session_start over */ }
         const sessionResponse: Record<string, unknown> = {
           session_id,
           engrams: engrams ?? [],

@@ -64,26 +64,37 @@ export function setBackgroundDiscovery(plur: Plur, enabled: boolean): void {
   stateOf(plur).enabled = enabled
 }
 
+/** Record `failed` for every server endpoint: a refresh that could not run or answered nonsense. */
+function markAllFailed(plur: Plur, st: DiscoveryState): void {
+  try { for (const key of plur._serverDiscoveryUrls()) st.last.set(key, 'failed') } catch { /* status only */ }
+}
+
 /**
  * Start one background refresh unless discovery is off or one is already in
- * flight. Returns at once; true when a refresh was started.
+ * flight. Returns at once; true when a refresh was started. The returned work
+ * never rejects: every failure becomes a `failed` status and one log line.
  */
 export function startBackgroundDiscovery(plur: Plur): boolean {
   const st = stateOf(plur)
   if (!st.enabled || st.inFlight) return false
   let run: Promise<ServerDiscoveryOutcome[]>
   try {
-    run = plur.refreshServerScopes({ timeoutMs: BACKGROUND_DISCOVERY_TIMEOUT_MS })
+    run = Promise.resolve(plur.refreshServerScopes({ timeoutMs: BACKGROUND_DISCOVERY_TIMEOUT_MS }))
   } catch (err) {
+    markAllFailed(plur, st)
     log(`scope discovery could not start (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
     return false
   }
   const settled: Promise<void> = run.then(outcomes => {
+    if (!Array.isArray(outcomes)) throw new TypeError('refreshServerScopes answered without a list')
     for (const o of outcomes) {
       st.last.set(normalizeEndpointUrl(o.url), o.status)
       if (o.status !== 'ok') log(`${safeOrigin(o.url)}: scope discovery ${o.status}; the cached scopes stay in use`)
     }
-  }, err => {
+  }).catch(err => {
+    // A refresh that did not finish is a failure — never the cached status,
+    // which may say `ok` from an earlier run.
+    markAllFailed(plur, st)
     // The error's text can carry a configured url or a server's answer: only its kind is logged.
     log(`scope discovery did not finish (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
   }).finally(() => {
@@ -99,21 +110,27 @@ export async function whenDiscoverySettled(plur: Plur): Promise<void> {
   while (st?.inFlight) await st.inFlight
 }
 
-/** The in-memory store entries expanded from a server entry, grouped by endpoint. */
+/**
+ * The in-memory store entries of the endpoints background discovery refreshes
+ * (core's own selection, {@link Plur._serverDiscoveryUrls}), grouped by endpoint.
+ * An entry with a `scopes` list but no `enterprise` block on disk is not
+ * refreshed, so it is not here: it keeps the legacy session-start probe.
+ */
 function serverEndpoints(plur: Plur): Map<string, { url: string; scopes: Set<string>; status?: unknown }> {
   const out = new Map<string, { url: string; scopes: Set<string>; status?: unknown }>()
-  for (const { url } of plur._distinctRemoteEndpoints()) {
-    for (const s of plur._storesForEndpoint(url)) {
-      const raw = s as unknown as Record<string, unknown>
-      if (!isPlainObject(raw.enterprise) || !s.url) continue
-      const key = normalizeEndpointUrl(s.url)
-      let g = out.get(key)
-      if (!g) {
-        g = { url: s.url, scopes: new Set(), status: isPlainObject(raw.discovery) ? raw.discovery.status : undefined }
-        out.set(key, g)
-      }
-      g.scopes.add(s.scope)
+  const refreshed = plur._serverDiscoveryUrls()
+  if (refreshed.size === 0) return out
+  for (const key of refreshed) for (const s of plur._storesForEndpoint(key)) {
+    const raw = s as unknown as Record<string, unknown>
+    // Expanded server entries carry the enterprise block; a separate
+    // per-scope entry on the same url (another key) is not counted.
+    if (!s.url || !isPlainObject(raw.enterprise)) continue
+    let g = out.get(key)
+    if (!g) {
+      g = { url: s.url, scopes: new Set(), status: isPlainObject(raw.discovery) ? raw.discovery.status : undefined }
+      out.set(key, g)
     }
+    g.scopes.add(s.scope)
   }
   return out
 }
@@ -124,21 +141,54 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 const STATUSES: ReadonlySet<string> = new Set<DiscoveryStatus>(['ok', 'not_synced', 'failed', 'auth_failed', 'degraded'])
 
-/** True when this endpoint is served by a server entry — its /me belongs to background discovery. */
-export function isServerEndpoint(plur: Plur, url: string): boolean {
-  return serverEndpoints(plur).has(normalizeEndpointUrl(url))
+/** Normalized urls of the endpoints whose /me belongs to background discovery. */
+export function serverEndpointKeys(plur: Plur): Set<string> {
+  return plur._serverDiscoveryUrls()
+}
+
+export interface DiscoveryRow {
+  url: string
+  status: DiscoveryStatus | 'pending'
+  scopes: number
+  /** While `pending`: the previous check's status, when one is known. */
+  last_status?: DiscoveryStatus
 }
 
 /**
  * One row per server entry for the session_start result: the cached scope
- * count and the discovery status — `pending` while a refresh is in flight,
- * else the last settled outcome, else the status cached in config.yaml.
+ * count and the discovery status — `pending` while a refresh is in flight
+ * (with the previous check's status as `last_status`, so a refused key is not
+ * hidden behind it), else the last settled outcome, else the status cached in
+ * config.yaml.
  */
-export function discoverySummary(plur: Plur): Array<{ url: string; status: DiscoveryStatus | 'pending'; scopes: number }> {
+export function discoverySummary(plur: Plur): DiscoveryRow[] {
   const st = states.get(plur)
   return [...serverEndpoints(plur)].map(([key, g]) => {
     const cached = typeof g.status === 'string' && STATUSES.has(g.status) ? g.status as DiscoveryStatus : undefined
-    const status: DiscoveryStatus | 'pending' = st?.inFlight ? 'pending' : (st?.last.get(key) ?? cached ?? 'pending')
-    return { url: displayUrl(g.url), status, scopes: g.scopes.size }
+    const known = st?.last.get(key) ?? cached
+    const row: DiscoveryRow = { url: displayUrl(g.url), status: st?.inFlight ? 'pending' : (known ?? 'pending'), scopes: g.scopes.size }
+    if (row.status === 'pending' && known) row.last_status = known
+    return row
   })
+}
+
+/**
+ * Guide warnings for server endpoints whose last known check failed (#295:
+ * a refused key or an unreachable server is said out loud). Nothing for `ok`,
+ * `not_synced` or `degraded`, nor before any check has finished.
+ */
+export function discoveryWarnings(rows: DiscoveryRow[]): string[] {
+  const out: string[] = []
+  for (const r of rows) {
+    const s = r.status === 'pending' ? r.last_status : r.status
+    const when = r.status === 'pending' ? ' (at the last check; a new check is running)' : ''
+    if (s === 'auth_failed') {
+      out.push(`⚠️ COMPANY SERVER REFUSED THIS DEVICE'S KEY${when}: ${r.url}. Its scope list cannot be refreshed and ` +
+        `team-scoped saves queue in the outbox until the key is replaced: sign in to the server again.`)
+    } else if (s === 'failed') {
+      out.push(`⚠️ COMPANY SERVER SCOPE CHECK FAILED${when}: ${r.url}. The cached scope list stays in use; ` +
+        `check connectivity/VPN.`)
+    }
+  }
+  return out
 }

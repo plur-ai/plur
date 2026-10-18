@@ -13934,6 +13934,17 @@ Generate an improved version of the procedure that prevents this failure. Return
    * entries under the config lock, so every other key of the entry (unknown
    * keys too) is kept as it is on disk.
    */
+  /**
+   * The endpoints {@link refreshServerScopes} probes, by normalized url: the
+   * server entries in config.yaml that carry a `scopes` list and an
+   * `enterprise` block (C6). Reads the file, never the network. The MCP server
+   * uses it so an endpoint is either refreshed in the background or probed by
+   * the legacy session-start path, never neither (#1631).
+   */
+  _serverDiscoveryUrls(): Set<string> {
+    return new Set(this._readRawStores().filter(isEnterpriseServerEntry).map(r => normalizeEndpointUrl(r.url)))
+  }
+
   async refreshServerScopes(opts?: { url?: string; timeoutMs?: number }): Promise<ServerDiscoveryOutcome[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
     this.reloadConfigIfChanged()
