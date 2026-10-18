@@ -303,6 +303,32 @@ describe('connectServerStore', () => {
     expect(printed.join('\n')).not.toContain(KEY)
   })
 
+  it('a key reflected in a scope map key (queued saves) is not returned', async () => {
+    writeFileSync(cfg, 'stores: []\n')
+    const p = plur()
+    const orig = p.registerEnterpriseServer.bind(p)
+    vi.spyOn(p, 'registerEnterpriseServer').mockImplementation(async (...args) => {
+      const r = await orig(...args)
+      return { ...r, fold: { ...r.fold, queued_by_scope: { [`group:acme/${KEY}`]: 1 } } }
+    })
+    const r = await connectServerStore({ plur: p, server: stub.url, token: KEY, personalScope: 'user:acme:alice', configPath: cfg })
+    expect(JSON.stringify(r)).not.toContain(KEY)
+    expect(Object.values(r.fold.queued_by_scope)).toEqual([1])
+  })
+
+  it('a takeover refusal whose personal scope repeats the key: the error, its fields and the refusal lines never carry it', async () => {
+    const leakyScope = `user:acme:${KEY}`
+    const holder = { url: 'https://plur.old.example.com', token: 'plur_sk_old_0123456789abcdef', scope: leakyScope, readonly: true }
+    writeFileSync(cfg, yaml.dump({ stores: [holder] }))
+    const before = readFileSync(cfg)
+    const err = await connectServerStore({ plur: plur(), server: stub.url, token: KEY, personalScope: leakyScope, configPath: cfg }).then(() => null, (e: unknown) => e)
+    expect(err).toBeInstanceOf(PersonalScopeTakenError)
+    const e = err as PersonalScopeTakenError
+    expect(JSON.stringify({ m: e.message, s: e.personalScope, h: e.holders })).not.toContain(KEY)
+    expect(storeRefusalLines(e, stub.url, cfg, { reused: false }).join('\n')).not.toContain(KEY)
+    expect(readFileSync(cfg).equals(before)).toBe(true)
+  })
+
   it('a failure on a fresh machine removes the config.yaml the registration created', async () => {
     const p = plur()
     rmSync(cfg, { force: true })
