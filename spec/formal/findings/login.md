@@ -51,8 +51,20 @@ Fixed: the poll has one deadline (no wait past it, no key after it); the request
 
 Fixed: a poll in flight at the deadline no longer hands over a key (its timeout is the time left, and a late answer does not count); an unknown token error is not echoed (only known codes are named); a local store that keeps the personal scope also exits 1; a key reflected into `/me` scope metadata is not logged (remote-store.ts names only a granted scope there; a logging change, outside every model); `plur login` builds Plur without project-store discovery, so nothing is written before the sign-in; YAML aliases no longer confuse the holder-to-position mapping in `registerServerEntry` (each position is copied first, so §2's "exactly the holders" holds per position).
 
+## L7. The installer's store step: the key is stored at most once, only once it is known to work, and a failure leaves config.yaml unchanged (plan C task 4, 2026-10-18)
+
+**Verdict:** holds for the new code (`packages/cli/src/enterprise/server-store.ts`).
+
+`checkExistingKey` gives one of four verdicts on a key config.yaml already holds for the server; `unknown` (503, a network error, a timeout, two entries) stops the run before any sign-in. `connectServerStore` copies config.yaml (owner-only) before core's `registerEnterpriseServer` writes the key, then refreshes the scopes; a failure after the write puts the copy's exact bytes back through `writeConfigFile`, and a refused registration (B5's takeover refusal among them) writes nothing.
+- Theorems (`Store`, Login.lean §4): `key_written_at_most_once`, `unknown_stops` (review focus 1: no mint, no write), `failure_unchanged` and `connect_failure_unchanged` (any outcome but `stored` leaves the config as it was), `stored_only_after_ok`, `works_no_mint`, `stored_reachable`, `rollback_reachable`.
+- Counterexamples: `naive_blip_overwrites` (reading "no verdict" as "the key does not work" mints a new key and overwrites one that may still work during a server blip), `late_backup_keeps_key` (a rollback to a copy taken after the write keeps the new key).
+- Replays: `enterprise-server-store.test.ts` "transient /me failure keeps the key and stops", "503 … → unknown", "a failure after the key was written is rolled back: config.yaml is byte-identical", "B5: a takeover … nothing is written".
+- Mutation checks (each reverted; each breaks the build): the failure branch keeping the written config (`m5`) breaks `connect_failure_unchanged`, `rollback_reachable` and `late_backup_keeps_key`; `unknown` signing in like the other verdicts (`m6`) breaks `unknown_stops`, `failure_unchanged`, `stored_only_after_ok`, `key_written_at_most_once` and `naive_blip_overwrites`; a reused key also minting (`m7`) breaks `works_no_mint` and `rollback_reachable`. In the code: removing the rollback turns the two rollback tests red; reading `unknown` as `rejected` turns the two `unknown` tests red.
+- Not modelled: another process writing config.yaml between the copy and a rollback (the rollback would undo that write too). The rollback runs under the config lock, but the copy is taken before registration takes it.
+
 ## Not verified
 
 - A real server: the device endpoints are tested through a scripted fetch and an in-test server with the C3 shapes (the enterprise contract stub's), not the A8 server.
 - Windows: the backups of config.yaml and config.json go through the cleanup's `backupWriter` and core's `protectOwnerOnly` (owner-only access list, verified; tested with icacls mocked). A real Windows run of `plur login` is not part of this PR.
 - SIGTERM or a kill during the write itself: the write is synchronous and atomic (temp file and rename), so config.yaml is old or new, but a lock file could be left; not tested here.
+- The installer's store step on real Windows: the key file protection and the backup go through core's `protectOwnerOnly` (tested with icacls and whoami faked; core's own Windows CI test runs the real tools). No caller runs `connectServerStore` yet: `plur-enterprise init` (plan C task 10) wires it.

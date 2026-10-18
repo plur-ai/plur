@@ -4,7 +4,9 @@
 Models of `packages/cli/src/commands/login.ts` (`pollForToken`,
 `deviceSignIn`, `runSignIn`), `packages/cli/src/enterprise/legacy-login.ts`
 and `packages/cli/src/enterprise/device-name.ts` (epic "enterprise first
-install", plan C task 3, plur-ai/plur #1638), 2026-10-18. Findings, replays
+install", plan C task 3, plur-ai/plur #1638), 2026-10-18; §4 models the
+installer's store step, `packages/cli/src/enterprise/server-store.ts` (plan C
+task 4), 2026-10-18. Findings, replays
 and mutation checks: `spec/formal/findings/login.md`.
 
 What is abstract: the config (`Cfg`, any type), registration (an oracle that
@@ -402,5 +404,147 @@ theorem old_replaces_held :
     (migrate (Cfg := Nat) true .ok (fun c => .written (c + 1)) false 0).1 = none := by decide
 
 end Legacy
+
+/-! ## 4. The installer's store step (`server-store.ts`, plan C task 4, 2026-10-18)
+
+`checkExistingKey`, `connectServerStore` and `rollbackServerStore`
+(`packages/cli/src/enterprise/server-store.ts`), as `plur-enterprise init`
+drives them. `Existing` is `checkExistingKey`'s verdict: no server entry
+(or no key in it), a key `/me` accepted, a key `/me` refused (401/403), or
+no verdict (503, a network error, a timeout, two entries). `signedIn`: a
+fresh device sign-in whose key passed the checks and whose `/me` named the
+user (§1). `register` is core's `registerEnterpriseServer` (one locked
+atomic write of the whole config, or a refusal that writes nothing — B5's
+takeover refusal among them). `refresh` is `refreshServerScopes` (its own
+discovery write, or a throw: `none`). The backup is the config as it is
+before registration — taken first, so a rollback restores exactly it. The
+result is the outcome, the config left behind, the configs registration
+wrote (each holds the key), and whether a sign-in was asked for (a new key
+minted). Left out: another process writing config.yaml between the backup
+and the rollback (the rollback would undo that write too; not modelled). -/
+namespace Store
+
+inductive Existing | none | works | rejected | unknown
+  deriving DecidableEq, Repr
+
+inductive Outcome | stored | refused | failed | stopped
+  deriving DecidableEq, Repr
+
+variable {Cfg : Type}
+
+/-- `connectServerStore`. -/
+def connect (register : Cfg → Option Cfg) (refresh : Cfg → Option Cfg) (cfg : Cfg) : Outcome × Cfg × List Cfg :=
+  let backup := cfg
+  match register cfg with
+  | none => (.refused, cfg, [])
+  | some c => match refresh c with
+    | some c' => (.stored, c', [c])
+    | none => (.failed, backup, [c])
+
+/-- The store step: `unknown` stops before any sign-in; a working key is
+reused; otherwise a sign-in is asked for and its key stored. -/
+def step (ex : Existing) (signedIn : Bool) (register : Cfg → Option Cfg) (refresh : Cfg → Option Cfg)
+    (cfg : Cfg) : Outcome × Cfg × List Cfg × Bool :=
+  match ex with
+  | .unknown => (.stopped, cfg, [], false)
+  | .works => ((connect register refresh cfg).1, (connect register refresh cfg).2.1, (connect register refresh cfg).2.2, false)
+  | .none | .rejected =>
+    if signedIn then ((connect register refresh cfg).1, (connect register refresh cfg).2.1, (connect register refresh cfg).2.2, true)
+    else (.stopped, cfg, [], true)
+
+theorem connect_writes_le_one (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    (connect register refresh cfg).2.2.length ≤ 1 := by
+  unfold connect
+  cases register cfg with
+  | none => simp
+  | some c => cases h : refresh c <;> simp [h]
+
+/-- Any outcome but `stored` leaves the config exactly as it was. -/
+theorem connect_failure_unchanged (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    (connect register refresh cfg).1 ≠ .stored → (connect register refresh cfg).2.1 = cfg := by
+  unfold connect
+  cases register cfg with
+  | none => simp
+  | some c => cases h : refresh c <;> simp [h]
+
+/-- The key is stored at most once per run. -/
+theorem key_written_at_most_once (ex : Existing) (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    (step ex signedIn register refresh cfg).2.2.1.length ≤ 1 := by
+  unfold step
+  cases ex <;> simp
+  · cases signedIn <;> simp [connect_writes_le_one]
+  · exact connect_writes_le_one register refresh cfg
+  · cases signedIn <;> simp [connect_writes_le_one]
+
+/-- Review focus 1: a re-run while the server blips (no verdict on the stored
+key) mints no key, writes nothing and leaves the config as it was. -/
+theorem unknown_stops (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    step .unknown signedIn register refresh cfg = (.stopped, cfg, [], false) := by
+  simp [step]
+
+/-- A failure anywhere (no key, a refused registration, a failure after the
+write) leaves the config byte-identical. -/
+theorem failure_unchanged (ex : Existing) (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    (step ex signedIn register refresh cfg).1 ≠ .stored → (step ex signedIn register refresh cfg).2.1 = cfg := by
+  unfold step
+  cases ex <;> simp
+  · cases signedIn <;> simp; exact connect_failure_unchanged register refresh cfg
+  · exact connect_failure_unchanged register refresh cfg
+  · cases signedIn <;> simp; exact connect_failure_unchanged register refresh cfg
+
+/-- A key is stored only when it is known to work: the stored key `/me`
+accepted, or a fresh sign-in that passed §1's checks. -/
+theorem stored_only_after_ok (ex : Existing) (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    (step ex signedIn register refresh cfg).2.2.1 ≠ [] → ex = .works ∨ (ex ≠ .unknown ∧ signedIn = true) := by
+  unfold step
+  cases ex <;> cases signedIn <;> simp
+
+/-- A working key is reused: no sign-in, no new key. -/
+theorem works_no_mint (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) :
+    (step .works signedIn register refresh cfg).2.2.2 = false := by
+  simp [step]
+
+/-- Reachable: a revoked key, a fresh sign-in, one write, scopes fetched. -/
+theorem stored_reachable :
+    step (Cfg := Nat) .rejected true (fun c => some (c + 1)) (fun c => some (c + 10)) 0 = (.stored, 11, [1], true) := by decide
+
+/-- Reachable: the scope refresh throws after the key was written; the config
+is back to what it was. -/
+theorem rollback_reachable :
+    step (Cfg := Nat) .works false (fun c => some (c + 1)) (fun _ => none) 0 = (.failed, 0, [1], false) := by decide
+
+/-! ### Counterexamples -/
+
+/-- A store step that reads "no verdict" as "the key does not work" (the
+plain reading of "reuse a working key"): a server blip mints a new key and
+overwrites a key that may still work. -/
+def naiveStep (ex : Existing) (signedIn : Bool) (register refresh : Cfg → Option Cfg) (cfg : Cfg) : Outcome × Cfg × List Cfg × Bool :=
+  match ex with
+  | .works => ((connect register refresh cfg).1, (connect register refresh cfg).2.1, (connect register refresh cfg).2.2, false)
+  | _ => if signedIn then ((connect register refresh cfg).1, (connect register refresh cfg).2.1, (connect register refresh cfg).2.2, true)
+         else (.stopped, cfg, [], true)
+
+/-- Counterexample (replayed: enterprise-server-store.test.ts, "transient /me
+failure keeps the key and stops" and "503 … → unknown"). -/
+theorem naive_blip_overwrites :
+    naiveStep (Cfg := Nat) .unknown true (fun c => some (c + 1)) (fun c => some c) 0 = (.stored, 1, [1], true) ∧
+    step (Cfg := Nat) .unknown true (fun c => some (c + 1)) (fun c => some c) 0 = (.stopped, 0, [], false) := by decide
+
+/-- A rollback to a copy taken after registration wrote (or no copy at all):
+a failure after the write keeps the new key. -/
+def lateBackupConnect (register refresh : Cfg → Option Cfg) (cfg : Cfg) : Outcome × Cfg × List Cfg :=
+  match register cfg with
+  | none => (.refused, cfg, [])
+  | some c => match refresh c with
+    | some c' => (.stored, c', [c])
+    | none => (.failed, c, [c])
+
+/-- Counterexample (replayed: "a failure after the key was written is rolled
+back: config.yaml is byte-identical"). -/
+theorem late_backup_keeps_key :
+    (lateBackupConnect (Cfg := Nat) (fun c => some (c + 1)) (fun _ => none) 0).2.1 = 1 ∧
+    (connect (Cfg := Nat) (fun c => some (c + 1)) (fun _ => none) 0).2.1 = 0 := by decide
+
+end Store
 
 end PlurSpec.Login

@@ -377,7 +377,14 @@ only by full path (no path known on Windows → nothing runs, a failed `setStatu
 Checked against #1638's gate (`plur login`, 2026-10-18): still holds. cleanup.ts only exports
 `backupWriter` (and its `Backup` type), unchanged; `plur login --remove-stale` and the one-time
 config.json move make their owner-only copies through it (sign-in-shared.ts `backupSecretFile`),
-so this rule now also covers those copies. -/
+so this rule now also covers those copies.
+
+Checked against plan C task 4 (#1638, 2026-10-18): still holds. `protectKeyFile`
+(key-file.ts) passes straight through to core's `protectOwnerOnly(path, { platform, exec,
+account })` — no second implementation; with no runner given, core's full-path runner is
+used. The installer's store step backs config.yaml up through `backupSecretFile` (this
+rule) and writes the key only through core (`registerEnterpriseServer`, `writeConfigFile`);
+its ordering and rollback are modelled in Login.lean §4. -/
 namespace OwnerOnly
 
 /-- One icacls run pair. `principals` are the trustees `readAcl` parsed from the saved SDDL;
