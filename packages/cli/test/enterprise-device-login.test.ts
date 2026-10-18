@@ -44,6 +44,20 @@ describe('device name and headless detection', () => {
     expect(deviceName('x'.repeat(100), 'linux', true).length).toBe(80)
   })
 
+  it('the name always passes the server\'s device_name rule: no control, format or separator characters, no half of a surrogate pair', () => {
+    // The server refuses a device_name with any \\p{Cc}, \\p{Cf}, \\p{Cs}, \\p{Zl} or \\p{Zp}
+    // character, or longer than 80 UTF-16 units (enterprise: deviceNameOf).
+    const serverRefuses = (v: string) => v.length > 80 || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(v)
+    expect(deviceName('ws\u200e-01\u202e42\u0085\u2028', 'win32', false)).toBe('ws-0142 (Windows)')
+    for (const host of ['x'.repeat(69) + '\u{1F600}'.repeat(5), '\u{1F600}'.repeat(60), 'a\uD800b', '\u200b\u2029']) {
+      for (const wsl of [false, true]) {
+        const name = deviceName(host, 'linux', wsl)
+        expect(serverRefuses(name), JSON.stringify(name)).toBe(false)
+        expect(name).toMatch(wsl ? / \(Linux \(WSL\)\)$/ : / \(Linux\)$/)
+      }
+    }
+  })
+
   it('is headless over SSH, and on Linux without a display', () => {
     expect(isHeadless({ SSH_CONNECTION: '1 2 3 4' }, 'darwin')).toBe(true)
     expect(isHeadless({}, 'linux')).toBe(true)
@@ -135,6 +149,13 @@ describe('deviceSignIn', () => {
     await expect(signIn(h)).rejects.toThrow('unexpected answer from the server')
   })
 
+  it('a username or key name with control characters is refused (they are printed to the terminal)', async () => {
+    for (const bad of [{ username: 'alice\u001b[2J' }, { key_name: 'alice \u001b]8;;https://evil.example.net\u0007x' }, { key_id: 'k\r1' }]) {
+      const h = harness({ '/api/v1/auth/device': [{ status: 200, body: DEVICE }], '/api/v1/auth/token': [{ status: 200, body: { ...GRANT, ...bad } }] })
+      await expect(signIn(h)).rejects.toThrow('unexpected answer from the server')
+    }
+  })
+
   it('a key that is not a PLUR device key is refused, and the message does not carry it', async () => {
     const h = harness({ '/api/v1/auth/device': [{ status: 200, body: DEVICE }], '/api/v1/auth/token': [{ status: 200, body: { ...GRANT, access_token: 'short-sekrit' } }] })
     const err = await signIn(h).then(() => null, (e: Error) => e)
@@ -192,6 +213,12 @@ describe('deviceSignIn', () => {
       expect(h.sleeps).toEqual([5000, 30000])
       expect(h.calls.filter(c => c.path === '/api/v1/auth/device')).toHaveLength(1)
       expect(h.calls.filter(c => c.path === '/api/v1/auth/token').every(c => (c.body as { device_code: string }).device_code === 'dc-1')).toBe(true)
+    })
+
+    it('/auth/token 429 with a Retry-After shorter than the interval still waits the interval (no tight loop)', async () => {
+      const h = harness({ '/api/v1/auth/device': [{ status: 200, body: DEVICE }], '/api/v1/auth/token': [{ status: 429, body: {}, headers: { 'retry-after': '0' } }, { status: 429, body: {}, headers: { 'retry-after': '1' } }, ok] })
+      await signIn(h)
+      expect(h.sleeps).toEqual([5000, 5000, 5000])
     })
 
     it('/auth/token 429 without Retry-After is treated like slow_down', async () => {
@@ -380,6 +407,20 @@ describe('plur login <host> (process, contract server)', () => {
     expect(r2.status, r2.out).toBe(0)
   }, 40_000)
 
+  it('a config.json for a server config.yaml already signs in to: the newer key in config.yaml is kept, config.json is set aside unread by the server', async () => {
+    const current = 'plur_sk_current_0123456789abcdef'
+    const seed = `stores:\n  - url: ${stub.url}\n    token: ${current}\n    scope: user:acme:alice\n    scopes: []\n`
+    writeFileSync(cfg(), seed)
+    writeFileSync(join(home, '.plur', 'config.json'), JSON.stringify({ enterprise: { url: stub.url, token: stub.legacyToken } }))
+    const r = await runCli(['login', '--status', '--json'], home)
+    expect(r.out).toMatch(/already/)
+    expect(r.out).not.toContain(stub.legacyToken)
+    expect(r.out).not.toContain(current)
+    expect(stores()).toEqual([expect.objectContaining({ url: stub.url, token: current })])
+    expect(readFileSync(cfg(), 'utf8')).not.toContain(stub.legacyToken)
+    expect(existsSync(join(home, '.plur', 'config.json'))).toBe(false)
+  }, 40_000)
+
   it('a config.json whose sign-in the server rejects is not moved into config.yaml; the old file is set aside', async () => {
     writeFileSync(join(home, '.plur', 'config.json'), JSON.stringify({ enterprise: { url: stub.url, token: 'plur_sk_revoked_0123456789abc' } }))
     const r = await runCli(['login', '--status', '--json'], home)
@@ -389,4 +430,81 @@ describe('plur login <host> (process, contract server)', () => {
     expect(existsSync(join(home, '.plur', 'config.json'))).toBe(false)
     expect(existsSync(cfg()) ? stores() : []).toEqual([])
   }, 40_000)
+})
+
+// ── Backups that hold a key: owner-only through core's helper (#1631) ───────
+
+describe('backups of config.yaml and config.json (Windows, icacls mocked)', () => {
+  const ACCOUNT = 'ACME\\alice'
+  const SID = 'S-1-5-21-1111-2222-3333-1001'
+  type Call = string[]
+  type Answer = { status: number | null; stdout: string }
+  function fakeExec(answer: (args: string[]) => Answer) {
+    const calls: Call[] = []
+    const exec = (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args])
+      return cmd === 'whoami' ? { status: 0, stdout: `"${ACCOUNT}","${SID}"\r\n` } : answer(args)
+    }
+    return { calls, exec }
+  }
+  const saved = (args: string[], trustees: string[]): Answer => {
+    writeFileSync(args[2], Buffer.from(`x\r\nD:PAI${trustees.map(t => `(A;OICI;FA;;;${t})`).join('')}\r\n`, 'utf16le'))
+    return { status: 0, stdout: 'Successfully processed 1 files; Failed processing 0 files\n' }
+  }
+  const ownerOnly = (args: string[]) => args[1] === '/save'
+    ? saved(args, [SID])
+    : { status: 0, stdout: 'Successfully processed 1 files; Failed processing 0 files\n' }
+  const grants = (calls: Call[]) => calls.filter(c => c[0] === 'icacls' && c[2] === '/inheritance:r').map(c => [c[1], c[4]])
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'plur-login-backup-')); mkdirSync(join(root, '.plur')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  it('the config.yaml backup of --remove-stale: folder and file get an owner-only access list, verified', async () => {
+    const { backupSecretFile } = await import('../src/enterprise/sign-in-shared.js')
+    const src = join(root, '.plur', 'config.yaml')
+    writeFileSync(src, 'stores: []  # plur_sk_secret_0123456789abcdef\n')
+    const { calls, exec } = fakeExec(ownerOnly)
+    const dest = backupSecretFile(join(root, '.plur'), src, { platform: 'win32', exec, account: ACCOUNT })
+    expect(dest.startsWith(join(root, '.plur', 'backups'))).toBe(true)
+    expect(readFileSync(dest, 'utf8')).toBe(readFileSync(src, 'utf8'))
+    const dir = join(dest, '..')
+    expect(grants(calls)).toEqual([[dir, `*${SID}:(OI)(CI)F`], [dest, `*${SID}:F`]])
+  })
+
+  it('a backup that cannot be made owner-only is refused, and no copy of the key is left', async () => {
+    const { backupSecretFile } = await import('../src/enterprise/sign-in-shared.js')
+    const src = join(root, '.plur', 'config.yaml')
+    writeFileSync(src, 'stores: []  # plur_sk_secret_0123456789abcdef\n')
+    const { exec } = fakeExec(args => (args[1] === '/inheritance:r' && args[3] === `*${SID}:F`) ? { status: 5, stdout: '' } : ownerOnly(args))
+    expect(() => backupSecretFile(join(root, '.plur'), src, { platform: 'win32', exec, account: ACCOUNT })).toThrow(/could not be made private/)
+    const stamp = readdirSync(join(root, '.plur', 'backups'))
+    expect(stamp.flatMap(d => readdirSync(join(root, '.plur', 'backups', d)))).toEqual([])
+  })
+
+  it('config.json is set aside through the same helper; when that fails it stays where it is, with a notice', async () => {
+    const { migrateLegacyLogin } = await import('../src/enterprise/legacy-login.js')
+    const file = join(root, '.plur', 'config.json')
+    const noPlur = () => { throw new Error('not reached') }
+    // Holds no sign-in: set aside, owner-only.
+    writeFileSync(file, '{}')
+    const ok = fakeExec(ownerOnly)
+    const printed: string[] = []
+    expect(await migrateLegacyLogin({ home: root, plur: noPlur, print: l => printed.push(l), backupHost: { platform: 'win32', exec: ok.exec, account: ACCOUNT } })).toBe('set-aside')
+    expect(existsSync(file)).toBe(false)
+    expect(grants(ok.calls).map(g => g[1])).toEqual([`*${SID}:(OI)(CI)F`, `*${SID}:F`])
+    // Protection fails: the file is kept, nothing half-moved.
+    writeFileSync(file, '{}')
+    const bad = fakeExec(() => ({ status: 5, stdout: '' }))
+    const printed2: string[] = []
+    expect(await migrateLegacyLogin({ home: root, plur: noPlur, print: l => printed2.push(l), backupHost: { platform: 'win32', exec: bad.exec, account: ACCOUNT } })).toBe('kept')
+    expect(readFileSync(file, 'utf8')).toBe('{}')
+    expect(printed2.join('\n')).toMatch(/could not be set aside/)
+  })
+})
+
+describe('module structure', () => {
+  it('legacy-login does not import commands/login (no import cycle)', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'enterprise', 'legacy-login.ts'), 'utf8')
+    expect(src).not.toMatch(/from '\.\.\/commands\/login\.js'/)
+  })
 })
