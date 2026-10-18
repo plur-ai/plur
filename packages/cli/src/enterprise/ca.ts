@@ -3,7 +3,7 @@ import { closeSync, fchmodSync, fstatSync, fsyncSync, mkdirSync, openSync, readF
 import { dirname, join } from 'path'
 import * as tls from 'tls'
 import type { ExecFn } from './exec.js'
-import { currentWindowsAccount, protectOwnerOnlyWindows, type OwnerOnlyExec } from './owner-only.js'
+import { currentWindowsAccount, defaultExec as defaultOwnerOnlyExec, protectOwnerOnlyWindows, type OwnerOnlyExec } from './owner-only.js'
 
 /**
  * The company CA, accepted only by its pinned fingerprint (#1638).
@@ -90,9 +90,25 @@ const WIN_SYSTEM_ROOT = /^[A-Za-z]:\\Windows$/i
  * user folder) runs nothing: the store is then simply not searched.
  */
 export function win32PowerShellPath(env: NodeJS.ProcessEnv): string | null {
+  const root = win32SystemRoot(env)
+  return root && `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+}
+
+function win32SystemRoot(env: NodeJS.ProcessEnv): string | null {
   const root = env.SystemRoot
-  if (typeof root !== 'string' || !WIN_SYSTEM_ROOT.test(root)) return null
-  return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+  return typeof root === 'string' && WIN_SYSTEM_ROOT.test(root) ? root : null
+}
+
+/**
+ * The icacls runner for the owner-only step: `<SystemRoot>\\System32\\icacls.exe`
+ * by absolute path (same reason as PowerShell above), or null when SystemRoot
+ * is not trustworthy — then the file is not written.
+ */
+export function win32IcaclsExec(env: NodeJS.ProcessEnv, run: OwnerOnlyExec = defaultOwnerOnlyExec): OwnerOnlyExec | null {
+  const root = win32SystemRoot(env)
+  if (!root) return null
+  const icacls = `${root}\\System32\\icacls.exe`
+  return (_cmd, args) => run(icacls, args)
 }
 
 /** macOS `security`, by absolute path (never looked up on PATH). */
@@ -208,10 +224,13 @@ export function installCompanyCa(opts: {
   const path = join(opts.plurDir, COMPANY_CA_FILE)
   const content = found.pem.endsWith('\n') ? found.pem : `${found.pem}\n`
   try {
+    const env = opts.env ?? process.env
+    const aclExec = opts.platform === 'win32' ? (opts.aclExec ?? win32IcaclsExec(env)) : undefined
+    if (opts.platform === 'win32' && !aclExec) throw new Error('no trustworthy SystemRoot for icacls')
     writeOwnerOnly(path, content, {
       platform: opts.platform,
-      account: opts.account !== undefined ? opts.account : currentWindowsAccount(opts.env ?? process.env),
-      aclExec: opts.aclExec,
+      account: opts.account !== undefined ? opts.account : currentWindowsAccount(env),
+      aclExec,
     })
   } catch {
     return { ok: false, reason: 'unprotected' }

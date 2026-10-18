@@ -14,6 +14,7 @@ import {
   findCompanyCa,
   installCompanyCa,
   COMPANY_CA_FILE,
+  win32IcaclsExec,
 } from '../src/enterprise/ca.js'
 import type { ExecFn } from '../src/enterprise/exec.js'
 
@@ -274,6 +275,22 @@ describe('installCompanyCa', () => {
     expect(readdirSync(plurDir)).toEqual([COMPANY_CA_FILE])
   })
 
+  it('win32: icacls runs from System32 by absolute path, never by bare name', () => {
+    const runs: string[][] = []
+    const run = (cmd: string, args: string[]) => { runs.push([cmd, ...args]); return { status: 0, stdout: '' } }
+    const icacls = win32IcaclsExec({ SystemRoot: 'D:\\Windows' }, run)!
+    icacls('icacls', ['x', '/inheritance:r'])
+    expect(runs).toEqual([['D:\\Windows\\System32\\icacls.exe', 'x', '/inheritance:r']])
+    expect(win32IcaclsExec({ SystemRoot: 'C:\\Users\\Public\\evil' }, run)).toBeNull()
+    expect(win32IcaclsExec({}, run)).toBeNull()
+  })
+
+  it('win32: with no trustworthy SystemRoot for icacls, nothing is written (refused)', () => {
+    const r = installCompanyCa({ sha256: sha, caFile: join(plurDir, 'ca.pem'), plurDir, platform: 'win32', exec: noExec, readFile: () => pem, env: { SystemRoot: 'C:\\Users\\Public\\evil' }, account: 'ACME\\alice' })
+    expect(r).toEqual({ ok: false, reason: 'unprotected' })
+    expect(readdirSync(plurDir)).toEqual([])
+  })
+
   it('win32: when owner-only cannot be established, nothing is written (refused)', () => {
     for (const opts of [
       { account: 'ACME\\alice', aclExec: fakeIcacls(['ACME\\alice', 'BUILTIN\\Users']) },
@@ -286,7 +303,7 @@ describe('installCompanyCa', () => {
     }
   })
 
-  it.skipIf(process.platform === 'win32')('a replaced file is never in place at a wider mode, not even briefly', () => {
+  it.skipIf(process.platform === 'win32')('a wider earlier copy is replaced by a new file (new inode) at 0600, no temp file left', () => {
     writeFileSync(join(plurDir, COMPANY_CA_FILE), otherPem)
     chmodSync(join(plurDir, COMPANY_CA_FILE), 0o666)
     const before = statSync(join(plurDir, COMPANY_CA_FILE)).ino
