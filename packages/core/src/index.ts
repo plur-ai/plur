@@ -75,6 +75,7 @@ import {
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome, stampStoreRow} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { RemoteOnlyStoreGuard, QueueHoldStore, isQueuedForFolder } from './store/remote-only-store-guard.js'
+import { isRemoteOnlyQueued } from './remote-only-rows.js'
 import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
@@ -216,6 +217,7 @@ export {
   type RemoteOnlyRefusal,
 } from './remote-only.js'
 export { renderFolderMapText, FOLDER_MAP_TEMPLATE } from './folder-map-text.js'
+export { isRemoteOnlyQueued, withoutRemoteOnlyQueued } from './remote-only-rows.js'
 // Pinpointing and repairing a broken folders.yaml (#1526): pure text checks.
 export {
   checkFolderMapText,
@@ -3155,6 +3157,9 @@ export class Plur {
     // remote-only (gate review of #1663): a provenance record can carry the
     // statement, and the default store is this machine's disk.
     if (this._activeBinding()) throw this._remoteOnlyError('local-store', undefined, 'Writing a provenance record')
+    // A queued remote-only save gets no local provenance, bound or not (gate review of #1663).
+    const queuedRow = (await this._basePrimaryStore.loadCached()).find(e => e.id === engramId)
+    if (queuedRow && isRemoteOnlyQueued(queuedRow)) throw this._queuedStaysRemote(queuedRow)
     const record = await this.provenanceFor(engramId, options)
     if (!record) return undefined
     const store = options.store ?? this._provenanceStore()
@@ -3320,12 +3325,14 @@ export class Plur {
     else callback()
   }
 
-  private _maybeWriteProvenance(engramId: string): void {
+  private _maybeWriteProvenance(engramId: string, row?: Engram): void {
     if (provenanceMode(this.config) !== 'always') return
-    // remote-only: no provenance kept on this machine (gate review of #1663).
-    if (this._activeBinding()) return
+    // remote-only: no provenance kept on this machine (gate review of #1663),
+    // bound, or for a queued remote-only save being delivered.
+    if (this._activeBinding() || isRemoteOnlyQueued(row)) return
     this._afterStoreCommit(() => {
       void this.writeProvenance(engramId).catch(err => {
+        if (err instanceof RemoteOnlyWriteError) return
         logger.warning(`[plur:provenance] could not write a record for ${engramId}: ${(err as Error).message}`)
       })
     })
@@ -5485,7 +5492,7 @@ export class Plur {
           data: { type: localPlaceholder.type, scope, source: localPlaceholder.source, routed_to: 'outbox', error: (err as Error).message },
         })
         if (unpersistableHit) await this._noteUnpersistableRecurrence(unpersistableHit, scope, localPlaceholder.id)
-        this._maybeWriteProvenance(localPlaceholder.id)
+        this._maybeWriteProvenance(localPlaceholder.id, localPlaceholder)
         logger.warning(`[plur:outbox] remote write failed for ${localPlaceholder.id}, queued for retry: ${(err as Error).message}`)
         return localPlaceholder
       }
@@ -10929,7 +10936,8 @@ export class Plur {
         logger.debug(`[plur] auto-embed skip: active embedder dim differs from indexed column (${indexedDim}). Run 'plur sync --reembed --full' to migrate.`)
         return
       }
-      const active = (await this._loadAllEngrams()).filter(e => e.status === 'active' && !(e as any)._originalId && !(e as any)._pack)
+      // A queued remote-only save is never embedded (gate review of #1663).
+      const active = (await this._loadAllEngrams()).filter(e => e.status === 'active' && !(e as any)._originalId && !(e as any)._pack && !isRemoteOnlyQueued(e))
       if (active.length === 0) return
       const { engramSearchText, embeddingContentHash } = await import('./fts.js')
       for (const engram of active) {
@@ -11035,10 +11043,15 @@ export class Plur {
       // `embeddingContentHash`), and this set makes that a warning instead of a
       // hang if they ever stop agreeing.
       const embeddedThisPass = new Set<string>()
+      // A queued remote-only save is never embedded (gate review of #1663): it
+      // stays "missing", so it is set aside, and a batch of only those ends the pass.
+      const skippedRemoteOnly = new Set<string>()
       for (;;) {
         const batch = await adapter.listEngramsMissingEmbeddings(PRIMARY_AUTO_EMBED_BATCH, { includeStale: true })
         if (batch.length === 0) return
-        const fresh = batch.filter(e => !embeddedThisPass.has(e.id))
+        for (const e of batch) if (isRemoteOnlyQueued(e)) skippedRemoteOnly.add(e.id)
+        const fresh = batch.filter(e => !embeddedThisPass.has(e.id) && !skippedRemoteOnly.has(e.id))
+        if (fresh.length === 0 && batch.every(e => skippedRemoteOnly.has(e.id))) return
         if (fresh.length === 0) {
           logger.warning(
             `[plur] primary-store auto-embed stopped: ${batch.length} engram(s) still report a stale `
@@ -12182,7 +12195,7 @@ export class Plur {
           timestamp: now.toISOString(),
           data: { routed_to: 'remote', outbox_flush: true, scope: engram.scope },
         })
-        this._maybeWriteProvenance(engram.id)
+        this._maybeWriteProvenance(engram.id, engram)
       } catch (err) {
         // #1269: cut at the caller's budget. Not a failure of the remote, so
         // the breaker is not fed. Recorded as an attempt so `plur outbox`
@@ -14284,7 +14297,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /** A queued save made in a remote-only folder (bound or not, it stays remote-bound). */
   private static _isRemoteOnlyQueued(e: Engram | undefined): boolean {
-    return !!(e as any)?.structured_data?._outbox?.remote_only
+    return isRemoteOnlyQueued(e)
   }
 
   private _queuedStaysRemote(e: Engram): RemoteOnlyWriteError {

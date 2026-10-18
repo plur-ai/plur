@@ -31,6 +31,7 @@ import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind, SaveOptions } from './primary-store.js'
 import { RemoteOnlyWriteError } from '../remote-only.js'
 import { logger } from '../logger.js'
+import { isRemoteOnlyQueued } from '../remote-only-rows.js'
 import { escapedPath } from '../folder-ask.js'
 
 export interface RemoteOnlyStoreBinding {
@@ -70,10 +71,9 @@ function marker(e: unknown): Record<string, unknown> | undefined {
   return (e as { structured_data?: { _outbox?: Record<string, unknown> } } | null)?.structured_data?._outbox
 }
 
-/** A row that carries a remote-only queue marker (well-formed or not). */
+/** A row that carries a remote-only queue marker (well-formed or not): the shared predicate. */
 function isQueuedRow(e: Engram): boolean {
-  const ob = marker(e)
-  return !!ob && (ob.remote_only === true || ob.remote_only_folder !== undefined)
+  return isRemoteOnlyQueued(e)
 }
 
 /**

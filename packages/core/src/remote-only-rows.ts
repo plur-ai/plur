@@ -9,8 +9,11 @@
 import type { Engram } from './schemas/engram.js'
 
 export function isRemoteOnlyQueued(e: unknown): boolean {
-  return !!(e as { structured_data?: { _outbox?: { remote_only?: unknown } } } | null | undefined)
-    ?.structured_data?._outbox?.remote_only
+  // Either marker field counts, so a half-stripped marker still keeps the row
+  // out of every sink (well-formed or not).
+  const ob = (e as { structured_data?: { _outbox?: { remote_only?: unknown; remote_only_folder?: unknown } } } | null | undefined)
+    ?.structured_data?._outbox
+  return !!ob && (ob.remote_only === true || ob.remote_only_folder !== undefined)
 }
 
 /** `rows` without the queued remote-only saves. */
