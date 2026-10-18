@@ -39,6 +39,9 @@ an array or has a member the grammar drops; the filtered `scopes` list it
 returns is unchanged. The flag only feeds discovery's decision
 (`RoutingDiscovery.lean` §3, `malformed_keeps_cache`). No fetch, host-health,
 row-origin or recall behaviour modelled here changed.
+Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
+exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
+this model covers changed.
 -/
 
 namespace PlurSpec.R2CoreB

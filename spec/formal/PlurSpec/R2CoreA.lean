@@ -35,6 +35,11 @@ index.ts's predicates now read `resolveScopeTarget` (WritePath §3c).
   reload, the update walk and Decision R are not in the diff. The new code
   (`refreshServerScopes`, the server-entry `persistStores` collapse, the
   server-key rotation in `addStore`) is StoreEntry's territory, not modelled here.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; no section here reads it.
 -/
 
 namespace PlurSpec.R2CoreA

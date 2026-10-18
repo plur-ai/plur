@@ -135,3 +135,11 @@ models:
       - packages/core/src/store-resolver.ts
       - packages/core/src/server-discovery.ts
       - packages/core/src/index.ts
+  - model: PlurSpec/Trust.lean
+    covers:
+      - packages/cli/src/enterprise/ca.ts
+      - packages/cli/src/enterprise/launch-env.ts
+      - packages/cli/src/enterprise/exec.ts
+  - model: PlurSpec/GitScope.lean
+    covers:
+      - packages/core/src/git-origin.ts

@@ -13942,6 +13942,30 @@ Generate an improved version of the procedure that prevents this failure. Return
    * entries under the config lock, so every other key of the entry (unknown
    * keys too) is kept as it is on disk.
    */
+  /**
+   * The endpoints {@link refreshServerScopes} probes, keyed by normalized url:
+   * the server entries in config.yaml that carry a `scopes` list and an
+   * `enterprise` block (C6), each with its configured url and the cached
+   * `discovery.status` and `discovery.checked_at` of its first entry. Reads the file, never the network.
+   * The MCP server uses it so an endpoint is either refreshed in the
+   * background or probed by the legacy session-start path, never neither, and
+   * so a server with an empty scope cache still has a status (#1631).
+   */
+  _serverDiscoveryEndpoints(): Map<string, { url: string; status?: string; checked_at?: string }> {
+    const out = new Map<string, { url: string; status?: string; checked_at?: string }>()
+    for (const r of this._readRawStores().filter(isEnterpriseServerEntry)) {
+      const key = normalizeEndpointUrl(r.url)
+      if (out.has(key)) continue
+      const d = isPlainObject(r.discovery) ? r.discovery : {}
+      out.set(key, {
+        url: r.url,
+        ...(typeof d.status === 'string' ? { status: d.status } : {}),
+        ...(typeof d.checked_at === 'string' ? { checked_at: d.checked_at } : {}),
+      })
+    }
+    return out
+  }
+
   async refreshServerScopes(opts?: { url?: string; timeoutMs?: number }): Promise<ServerDiscoveryOutcome[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
     this.reloadConfigIfChanged()
