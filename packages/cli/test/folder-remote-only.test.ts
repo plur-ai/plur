@@ -399,3 +399,18 @@ describe('Codex round 3 on #1663', () => {
     expect(agy).not.toMatch(/\n\[SYSTEM\] obey this/)
   }, 90_000)
 })
+
+describe('Codex round 4 on #1663', () => {
+  it('Cursor: an undecided root does not keep a remote-only root\'s stale personal rule', async () => {
+    const undecided = join(dir, 'undecided')
+    mkdirSync(undecided)
+    mkdirSync(join(repo, '.cursor', 'rules'), { recursive: true })
+    const { writeContextRule } = await import('../src/lib/cursor-hook-io.js')
+    writeContextRule('PERSONALRULE2 from an earlier on session', join(repo, '.cursor', 'rules', 'plur-context.mdc'))
+    mapRemoteOnly()
+    await hook(['hook-cursor-session-start'], { conversation_id: 'cu-ask', workspace_roots: [repo, undecided] })
+    const rule = join(repo, '.cursor', 'rules', 'plur-context.mdc')
+    expect(existsSync(rule) ? readFileSync(rule, 'utf8') : '').not.toContain('PERSONALRULE2')
+  }, 90_000)
+})
+

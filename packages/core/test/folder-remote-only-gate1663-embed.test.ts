@@ -61,3 +61,15 @@ describe('no embedder in a remote-only folder', () => {
     expect(calls).toEqual([])
   })
 })
+
+describe('Codex round 4 on #1663: every embedding entry point', () => {
+  it('nearDuplicates and similaritySearch embed nothing in a remote-only folder', async () => {
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    calls.length = 0
+    await plur.nearDuplicates('client deploys go through the blue lane').catch(() => null)
+    await plur.similaritySearch('client deploys').catch(() => [])
+    expect(calls).toEqual([])
+  })
+})
+
