@@ -361,6 +361,33 @@ describe.runIf(isWin)('Windows, real icacls', () => {
     expect(checkOwnerOnly(shared).ok).toBe(false)
   })
 
+  it('diagnostic: raw icacls bytes for a path that is not ASCII, /save output, whoami (printed to the log)', () => {
+    const d = join(root, 'M\u00fcller \u010crt')
+    realFs.mkdirSync(d)
+    const f = join(d, 'diag.txt')
+    realFs.writeFileSync(f, 'x')
+    const raw = spawnSync('icacls', [f])
+    console.log('[diag-enc] path ' + JSON.stringify(f) + ' exit ' + raw.status + ' bytes ' + raw.stdout.subarray(0, 200).toString('hex'))
+    console.log('[diag-enc] utf8 ' + JSON.stringify(raw.stdout.toString('utf8')))
+    const saved = join(root, 'acl.save')
+    const sv = spawnSync('icacls', [f, '/save', saved])
+    console.log('[diag-enc] /save exit ' + sv.status + (realFs.existsSync(saved) ? ' bytes ' + realFs.readFileSync(saved).toString('hex') : ' no file'))
+    const who = spawnSync('whoami', ['/user', '/fo', 'csv', '/nh'])
+    console.log('[diag-enc] whoami exit ' + who.status + ' ' + JSON.stringify(who.stdout.toString('utf8')))
+    const cp = spawnSync('cmd', ['/d', '/c', 'chcp'])
+    console.log('[diag-enc] chcp ' + JSON.stringify(cp.stdout.toString('utf8')))
+  })
+
+  it('a config.yaml in a folder whose name is not ASCII (a profile like C:\\Users\\M\u00fcller) is protected and verifies', () => {
+    const d = join(root, 'M\u00fcller \u010crt')
+    realFs.mkdirSync(d)
+    const c = join(d, 'config.yaml')
+    expect(writeConfigFile(c, 'stores: []\n')).toEqual({ ok: true })
+    expect(checkOwnerOnly(c)).toEqual({ ok: true })
+    realFs.writeFileSync(join(d, 'shared.txt'), 'x')
+    expect(checkOwnerOnly(join(d, 'shared.txt')).ok).toBe(false)
+  })
+
   it('a folder gets an owner-only, inheritable list', () => {
     const d = join(root, 'backups')
     realFs.mkdirSync(d)
