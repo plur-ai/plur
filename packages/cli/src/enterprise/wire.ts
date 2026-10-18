@@ -34,7 +34,7 @@ import { readCodexEntry, codexMcpEnvironment, patchCodexEntry } from '../codex-c
 import { unambiguousJsonc } from '../opencode-config.js'
 import { parseJsonc } from '../lib/jsonc.js'
 import { resolveCodexBinary } from '../lib/codex-binary.js'
-import { TOOL_ENV_KEYS } from './launch-env.js'
+import { TOOL_ENV_KEYS, buildToolMcpEnv } from './launch-env.js'
 import { isNpxLaunch } from './launch-check.js'
 import { TOOL_LABEL, type ToolId } from './hello.js'
 import type { ExecFn } from './exec.js'
@@ -179,6 +179,8 @@ export function applyMcpEnv(tool: ToolId, env: Env, loc: WireLocation = {}): App
   if (foreign.length > 0) {
     return { status: 'refused', path, detail: `not a PLUR launch setting: ${foreign.join(', ')}` }
   }
+  const bad = valueProblem(env)
+  if (bad) return { status: 'refused', path, detail: `${bad}; left unchanged` }
   let snapshot: string
   try {
     snapshot = readFileSync(path, 'utf8')
@@ -204,6 +206,24 @@ export function applyMcpEnv(tool: ToolId, env: Env, loc: WireLocation = {}): App
     return { status: 'refused', path, detail: `could not write the file (${e instanceof Error ? e.message : String(e)})` }
   }
   return { status: 'updated', path }
+}
+
+/**
+ * Why a value must not be written, or null. The same rules as
+ * `buildToolMcpEnv`, applied again here so no caller can put a proxy user
+ * name or password into an editor config, or a line break into a config
+ * line. The detail names the setting, never its value.
+ */
+function valueProblem(env: Env): string | null {
+  for (const [k, v] of Object.entries(env)) {
+    if (/[\r\n\0]/.test(v)) return `${k} contains a line break or NUL`
+  }
+  try {
+    buildToolMcpEnv({ caPath: env.NODE_EXTRA_CA_CERTS, proxy: { https: env.HTTPS_PROXY, http: env.HTTP_PROXY, noProxy: env.NO_PROXY } })
+  } catch (e) {
+    return e instanceof Error ? e.message.replace(/\.$/, '') : 'a launch setting cannot be written'
+  }
+  return null
 }
 
 /** Atomic replace (temp file, rename, mode kept), through a symlink to its target so the link survives. */
@@ -474,18 +494,25 @@ export function toolLaunch(
 }
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'cmd', 'powershell', 'pwsh'])
+/** Launchers that start PLUR as a child of their own (package runners, WSL, busybox). */
+const WRAPPERS = new Set(['bunx', 'pnpx', 'pnpm', 'yarn', 'npm', 'uvx', 'wsl', 'busybox'])
+
+const baseName = (p: string) => (p.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.exe$/, '')
 
 /**
  * Why the proof must not run this launch, or null for a direct one. Through
- * npx, cmd.exe or a shell, the process the proof starts is not the server, so
+ * npx, cmd.exe, a shell or another package runner (bunx, pnpm, uvx, wsl, …;
+ * an `env` prefix is looked through), the process the proof starts is not the server, so
  * a timeout kill can leave the server running; a `.cmd`/`.bat` cannot start
  * at all on Windows without a shell (EINVAL).
  */
 export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJS.Platform): string | null {
   const fix = 're-run `plur init` after installing @plur-ai/mcp so it starts PLUR directly'
   if (isNpxLaunch(launch)) return `${label} starts PLUR through npx — ${fix}`
-  const base = (launch.command.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.exe$/, '')
-  if (SHELLS.has(base)) return `${label} starts PLUR through ${base} — ${fix}`
+  let base = baseName(launch.command)
+  // `env [-opts] [NAME=value…] program …` runs `program`: judge that one.
+  if (base === 'env') base = baseName(launch.args.find(a => !a.startsWith('-') && !a.includes('=')) ?? '')
+  if (SHELLS.has(base) || WRAPPERS.has(base)) return `${label} starts PLUR through ${base} — ${fix}`
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(launch.command)) {
     return `${label} starts PLUR through a .cmd launcher, which cannot start without a shell — ${fix}`
   }

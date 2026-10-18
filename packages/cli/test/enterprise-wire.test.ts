@@ -204,6 +204,26 @@ describe('applyMcpEnv: claude-code and cursor', () => {
     expect(readFileSync(path, 'utf8')).toBe(text)
   })
 
+  it('a proxy with a user name or password, or a value with a line break, is refused, nothing written', () => {
+    const text = JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp', args: [] } } })
+    const path = put('.claude.json', text)
+    const toml = '[mcp_servers.plur]\ncommand = "plur-mcp"\n'
+    const codexPath = put('.codex/config.toml', toml)
+    for (const env of <Array<Record<string, string>>>[
+      { HTTPS_PROXY: 'http://alice:s3cret@proxy.example.com:3128', NODE_USE_ENV_PROXY: '1' },
+      { HTTP_PROXY: 'http://alice@proxy.example.com:3128', NODE_USE_ENV_PROXY: '1' },
+      { NO_PROXY: 'localhost\n[mcp_servers.evil]' },
+      { NODE_EXTRA_CA_CERTS: '/h/ca.pem\r\nX=1' },
+    ]) {
+      const r = applyMcpEnv('claude-code', env, loc)
+      expect(r.status).toBe('refused')
+      expect(r.detail ?? '').not.toContain('s3cret')
+      expect(applyMcpEnv('codex', env, loc).status).toBe('refused')
+    }
+    expect(readFileSync(path, 'utf8')).toBe(text)
+    expect(readFileSync(codexPath, 'utf8')).toBe(toml)
+  })
+
   it('keeps the file mode (a 0600 ~/.claude.json stays 0600)', () => {
     if (process.platform === 'win32') return
     const path = put('.claude.json', JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp', args: [] } } }))
@@ -232,6 +252,12 @@ describe('launchProblem', () => {
     expect(launchProblem('Codex', { command: 'cmd.exe', args: ['/c', 'plur-mcp'], env }, 'win32')).toMatch(/through cmd/)
     expect(launchProblem('Cursor', { command: '/bin/sh', args: ['-lc', 'exec plur-mcp'], env }, 'darwin')).toMatch(/through sh/)
     expect(launchProblem('Codex', { command: 'C:\\Users\\a\\.plur\\bin\\plur-mcp.cmd', args: [], env }, 'win32')).toMatch(/\.cmd/)
+    expect(launchProblem('Codex', { command: '/usr/bin/env', args: ['bash', '-c', 'plur-mcp'], env }, 'linux')).toMatch(/through bash/)
+    expect(launchProblem('Codex', { command: '/usr/bin/env', args: ['-S', 'NODE_OPTIONS=x', 'sh', '-c', 'plur-mcp'], env }, 'linux')).toMatch(/through sh/)
+    for (const command of ['bunx', 'pnpx', 'pnpm', 'yarn', 'uvx', 'C:\\Windows\\System32\\wsl.exe', 'busybox']) {
+      expect(launchProblem('Codex', { command, args: ['@plur-ai/mcp'], env }, 'win32')).toMatch(/starts PLUR through/)
+    }
+    expect(launchProblem('Codex', { command: '/usr/bin/env', args: ['/usr/bin/node', '/x/index.js'], env }, 'linux')).toBeNull()
   })
 })
 
