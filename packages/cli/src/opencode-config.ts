@@ -96,8 +96,12 @@ function upgradePluginSpec(spec: unknown): unknown {
   return old[4] && !current[4] ? PLUGIN + '@' + CURRENT_OPENCODE_PLUGIN_VERSION : spec
 }
 
-/** A duplicate key makes offset edits ambiguous, even if JSON.parse accepts it. */
-function unambiguousJsonc(text: string): boolean {
+/**
+ * A duplicate key makes offset edits ambiguous, even if JSON.parse accepts it:
+ * JSON.parse (and opencode) keep the LAST occurrence while an offset edit
+ * changes the FIRST. Also used by the enterprise legacy cleanup.
+ */
+export function unambiguousJsonc(text: string): boolean {
   const errors: ParseError[] = []
   const tree = parseTree(text, errors, { allowTrailingComma: true })
   const unique = (node: JsonNode): boolean => {

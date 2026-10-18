@@ -128,6 +128,155 @@ theorem backup_never_overwrites (present : Nat → Bool) (dest : Nat) :
     openExcl present dest = true → present dest = false := by
   simp [openExcl]
 
+/-! ### 1d. One snapshot per replacement, verified before it is written (Codex round 3, findings 3 and 4)
+
+`replaceFromSnapshot`. Each attempt reads the file ONCE (`f`), plans the edit from
+those bytes (`edit f`; `none` is absent or refused — for OpenCode that includes a
+config with a duplicate key, `ambiguous`), verifies the edited document (`ok`: the
+targeted entry is no longer active when re-parsed the way the editor reads it),
+backs up `f` itself, and re-reads just before the replacement. `writer k` is the
+concurrent writer during attempt `k` (identity = no change). The replacement is
+written only when the re-read equals the snapshot (`f' = f`); otherwise the next
+attempt plans from the current contents, and after `fuel` attempts the target is
+refused. `replaced` is the file just before cleanup's own write.
+
+Left out: the remaining gap between the last comparison and the rename (no
+lock-free writer closes it), and which bytes the edit cuts. -/
+namespace Snapshot
+
+structure Res (α : Type) where
+  status   : Status
+  final    : α
+  backup   : Option α
+  replaced : Option α
+
+/-- Fixed: plan, verify, back up and replace from one snapshot; retry on change. -/
+def run {α : Type} [DecidableEq α] (edit : α → Option α) (ok : α → Bool)
+    (writer : Nat → α → α) : (fuel k : Nat) → α → Res α
+  | 0, _, f => ⟨.refused, f, none, none⟩
+  | fuel + 1, k, f =>
+    match edit f with
+    | none => ⟨.absent, f, none, none⟩
+    | some out =>
+      if ok out = false then ⟨.refused, f, none, none⟩
+      else
+        let f' := writer k f
+        if f' = f then ⟨.removed, out, some f, some f⟩ else run edit ok writer fuel (k + 1) f'
+
+/-- A removal is built from exactly the bytes it replaced, and those are the backup. -/
+theorem removed_from_replaced {α : Type} [DecidableEq α] (edit : α → Option α) (ok : α → Bool)
+    (writer : Nat → α → α) :
+    ∀ fuel k f, (run edit ok writer fuel k f).status = .removed →
+      ∃ r, (run edit ok writer fuel k f).replaced = some r ∧
+        (run edit ok writer fuel k f).backup = some r ∧
+        edit r = some (run edit ok writer fuel k f).final := by
+  intro fuel
+  induction fuel with
+  | zero => intro k f h; simp [run] at h
+  | succ n ih =>
+    intro k f h
+    simp only [run] at h ⊢
+    split at h
+    · simp at h
+    · rename_i out he
+      split at h
+      · simp at h
+      · split at h
+        · rename_i hw
+          simp_all
+        · rename_i hb hw
+          simp only [hb, hw, ite_false]
+          exact ih (k + 1) _ h
+
+/-- Every written edit passed the post-edit verification. -/
+theorem removed_verified {α : Type} [DecidableEq α] (edit : α → Option α) (ok : α → Bool)
+    (writer : Nat → α → α) :
+    ∀ fuel k f, (run edit ok writer fuel k f).status = .removed →
+      ok (run edit ok writer fuel k f).final = true := by
+  intro fuel
+  induction fuel with
+  | zero => intro k f h; simp [run] at h
+  | succ n ih =>
+    intro k f h
+    simp only [run] at h ⊢
+    split at h
+    · simp at h
+    · rename_i out he
+      split at h
+      · simp at h
+      · rename_i hb
+        split at h
+        · rename_i hw
+          simp_all
+        · rename_i hw
+          simp only [hb, hw, ite_false]
+          exact ih (k + 1) _ h
+
+/-- The OpenCode plan refuses an ambiguous (duplicate-key) config before editing. -/
+def guarded {α : Type} (ambiguous : α → Bool) (edit : α → Option α) (f : α) : Option α :=
+  if ambiguous f then none else edit f
+
+/-- A config that stays ambiguous is never reported removed. -/
+theorem ambiguous_never_removed {α : Type} [DecidableEq α] (ambiguous : α → Bool)
+    (edit : α → Option α) (ok : α → Bool) (writer : Nat → α → α) (hA : ∀ x, ambiguous x = true) :
+    ∀ fuel k f, (run (guarded ambiguous edit) ok writer fuel k f).status ≠ .removed := by
+  intro fuel
+  induction fuel with
+  | zero => intro k f; simp [run]
+  | succ n _ => intro k f; simp [run, guarded, hA]
+
+/-! Instances on lists of server names: `0` is `plur-enterprise`; the edit removes it. -/
+def rmEntry (l : List Nat) : Option (List Nat) := if 0 ∈ l then some (l.erase 0) else none
+def noEntry (l : List Nat) : Bool := !(l.contains 0)
+/-- The editor adds server 7 during the first attempt only. -/
+def addsOnce (k : Nat) (l : List Nat) : List Nat := if k = 0 ∧ ¬ 7 ∈ l then 7 :: l else l
+
+/-- Reachable: a concurrent addition is retried and survives the removal. -/
+theorem concurrent_setting_survives :
+    let r := run rmEntry noEntry addsOnce 3 0 [0, 1]
+    r.status = .removed ∧ r.final = [7, 1] ∧ r.backup = some [7, 0, 1] := by
+  decide
+
+/-- A file that keeps changing is refused after the bounded attempts. -/
+theorem always_changing_refused :
+    (run rmEntry noEntry (fun _ l => 7 :: l) 3 0 [0]).status = .refused := by
+  decide
+
+/-- Original (finding 3): plan from the first read, back up a fresh re-read,
+replace without comparing. -/
+def runOld {α : Type} (edit : α → Option α) (writer : Nat → α → α) (f : α) : Res α :=
+  match edit f with
+  | none => ⟨.absent, f, none, none⟩
+  | some out => let f' := writer 0 f; ⟨.removed, out, some f', some f'⟩
+
+/-- **Finding 3 (replayed):** the old cleanup replaced `[7, 0, 1]` with `[1]` —
+the server the editor added is gone, and the status says removed. -/
+theorem old_loses_concurrent_setting :
+    let r := runOld rmEntry addsOnce [0, 1]
+    r.status = .removed ∧ r.replaced = some [7, 0, 1] ∧ r.final = [1] ∧ rmEntry [7, 0, 1] ≠ some [1] := by
+  decide
+
+/-- **Finding 4 (replayed):** two `mcp` objects; the offset edit removes the entry
+from the first, the last-wins parse still sees it in the second. Modelled as a
+document `(first, last)` whose active entry is in `last`; the old code reported
+removed without verifying. -/
+def editFirst (d : List Nat × List Nat) : Option (List Nat × List Nat) :=
+  if 0 ∈ d.1 then some (d.1.erase 0, d.2) else none
+def activeGone (d : List Nat × List Nat) : Bool := !(d.2.contains 0)
+
+theorem old_unverified_reports_removed :
+    let r := runOld editFirst (fun _ d => d) ([0], [0, 1])
+    r.status = .removed ∧ activeGone r.final = false := by
+  decide
+
+/-- The same document under the fixed code (no duplicate-key guard even needed):
+verification refuses it. -/
+theorem verified_refuses_duplicate :
+    (run editFirst activeGone (fun _ d => d) 3 0 ([0], [0, 1])).status = .refused := by
+  decide
+
+end Snapshot
+
 end Cleanup
 
 /-! ## 2. The shared header file (`headerHolders`, finding I2)
