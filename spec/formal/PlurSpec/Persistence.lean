@@ -1114,4 +1114,89 @@ theorem registry_shared_row :
 
 end Packs
 
+/-! ## AtomicTemp — `atomicWrite` protects its temporary file from the first byte (sync.ts)
+
+Codex round 2, finding 3. The temporary file used to be created at the platform
+default (0644 under umask 022 — readable by other accounts), filled and fsynced, and
+only then chmodded to the destination's 0600 (`traceOld`). Now it is created
+exclusively (`wx`) at 0600 whenever a mode is known — the destination exists (its
+mode is read first) or the caller passed one — and on Windows a credential write
+over a destination whose access list names only the current account first sets and
+verifies an owner-only list on the EMPTY file; a failed verification unlinks it and
+writes nothing (`traceNew`).
+
+Modelled: the order of create / protect / write / final-mode / rename and the
+protection each content write lands in. Left out: umask arithmetic (the creation mode
+can only lose bits), the chmod to the exact final mode before the rename (it can widen
+a 0600 temp to a 0644 destination's own mode, after the bytes are written), EEXIST
+retries, and fsync. A Windows temp file inherits the folder's list, modelled as
+`wide` (the adversarial case). -/
+namespace AtomicTemp
+
+inductive Prot | ownerOnly | wide
+  deriving DecidableEq, Repr
+
+inductive Ev | create (p : Prot) | protect (ok : Bool) | write (p : Prot) | rename | unlink
+  deriving DecidableEq, Repr
+
+/-- One call. `destProt` is the destination's protection when it exists (POSIX:
+`mode & 077 = 0`; Windows: the list names only the current account). -/
+structure Call where
+  windows    : Bool
+  destExists : Bool
+  destProt   : Prot
+  optsMode   : Bool   -- the caller passed a mode
+  credential : Bool   -- `secret`, or an owner-only `mode` (Windows trigger)
+  aclOk      : Bool   -- icacls set + read back named only the current account
+
+/-- The destination is protected, so its content must never sit in a wider file. -/
+def protectedDest (c : Call) : Bool := c.destExists && c.destProt == .ownerOnly
+
+def traceOld (_c : Call) : List Ev :=
+  [.create .wide, .write .wide, .rename]
+
+def traceNew (c : Call) : List Ev :=
+  if c.windows then
+    if c.credential && protectedDest c then
+      if c.aclOk then [.create .wide, .protect true, .write .ownerOnly, .rename]
+      else [.create .wide, .protect false, .unlink]
+    else [.create .wide, .write .wide, .rename]
+  else
+    let p := if c.destExists || c.optsMode then Prot.ownerOnly else Prot.wide
+    [.create p, .write p, .rename]
+
+/-- Every content write of a protected destination lands in an owner-only file
+(POSIX always; Windows for credential writes, which is what the callers that carry
+credentials — config writers, enterprise cleanup — declare). -/
+theorem write_protected (c : Call) (hp : protectedDest c = true)
+    (hw : c.windows = true → c.credential = true) :
+    ∀ p, Ev.write p ∈ traceNew c → p = .ownerOnly := by
+  intro p h
+  cases c with
+  | mk windows destExists destProt optsMode credential aclOk =>
+    simp only [protectedDest, Bool.and_eq_true, beq_iff_eq] at hp
+    obtain ⟨he, hd⟩ := hp
+    cases windows <;> cases aclOk <;> simp_all [traceNew, protectedDest]
+
+/-- A Windows protection that cannot be verified writes nothing and does not rename:
+the destination keeps its old bytes and its own list. -/
+theorem refused_leaves_dest (c : Call) (hwin : c.windows = true) (hc : c.credential = true)
+    (hp : protectedDest c = true) (hbad : c.aclOk = false) :
+    (∀ p, Ev.write p ∉ traceNew c) ∧ Ev.rename ∉ traceNew c := by
+  simp [traceNew, hwin, hc, hp, hbad]
+
+/-- The protected-write path is reachable on both platforms (the theorem is not vacuous). -/
+theorem reachable :
+    Ev.write .ownerOnly ∈ traceNew ⟨false, true, .ownerOnly, false, false, true⟩ ∧
+    Ev.write .ownerOnly ∈ traceNew ⟨true, true, .ownerOnly, false, true, true⟩ := by
+  decide
+
+/-- **The finding (replayed):** the old helper wrote a 0600 destination's content into
+a wide file. -/
+theorem old_leaks :
+    Ev.write .wide ∈ traceOld ⟨false, true, .ownerOnly, false, false, true⟩ := by
+  decide
+
+end AtomicTemp
+
 end PlurSpec.Persistence

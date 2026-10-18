@@ -516,6 +516,10 @@ structure Me (S O : Type) where
   org    : Option O        -- `none` = empty org_id
   status : ServerStatus
   scopes : List S
+  /-- `!scopes_malformed`: the body's `scopes` was an array whose every member passed the
+  grammar (an explicit `[]` included). Missing, null, non-array or any rejected member is
+  `false` (remote-store.ts `me()`, Codex round 2 finding 2). -/
+  wellFormed : Bool := true
 
 structure Acc (S : Type) where
   status  : Status
@@ -529,7 +533,7 @@ def filt (inOrg : O → S → Bool) (claimed : S → Bool) (m : Me S O) : List S
     | some o => inOrg o x && !claimed x
     | none => false)
 
-/-- `acceptDiscoveredScopes` (server-discovery.ts:84–115). `err = some auth` is a thrown
+/-- `acceptDiscoveredScopes` (server-discovery.ts). A malformed scope list is checked first. `err = some auth` is a thrown
 answer, `auth` = its status was 401/403. -/
 def accept (inOrg : O → S → Bool) (claimed : S → Bool) (me : Option (Me S O))
     (err : Option Bool) (cached : List S) : Acc S :=
@@ -539,7 +543,9 @@ def accept (inOrg : O → S → Bool) (claimed : S → Bool) (me : Option (Me S 
   | some auth, _ => keep (if auth then .authFailed else .failed)
   | none, none => keep .failed
   | none, some m =>
-    if m.org.isNone && m.status ≠ .notSynced then
+    if !m.wellFormed then
+      (if cached.isEmpty then empty .degraded else keep .degraded)
+    else if m.org.isNone && m.status ≠ .notSynced then
       (if cached.isEmpty then empty .degraded else keep .degraded)
     else match m.status with
       | .ok => { status := .ok, replace := true, scopes := filt inOrg claimed m }
@@ -562,6 +568,9 @@ theorem nonempty_cache_replaced_only_by_ok (inOrg : O → S → Bool) (claimed :
   | none, none => simp at h
   | none, some m =>
     simp only at h ⊢
+    cases hw : m.wellFormed
+    · simp [hw, hce] at h
+    simp only [hw, Bool.not_true, Bool.false_eq_true, ite_false] at h ⊢
     by_cases hd : m.org.isNone && decide (m.status ≠ .notSynced)
     · simp only [hd, ite_true, hce] at h; simp at h
     · simp only [hd, ite_false] at h ⊢
@@ -586,6 +595,9 @@ theorem kept_is_cached (inOrg : O → S → Bool) (claimed : S → Bool) (me : O
   | none, none => rfl
   | none, some m =>
     simp only at h ⊢
+    cases hw : m.wellFormed
+    · simp only [hw, Bool.not_false, ite_true] at h ⊢; split <;> simp_all
+    simp only [hw, Bool.not_true, Bool.false_eq_true, ite_false] at h ⊢
     split
     · split <;> simp_all
     · rename_i hd; simp only [hd, ite_false] at h
@@ -617,6 +629,9 @@ theorem accepted_within_org (inOrg : O → S → Bool) (claimed : S → Bool) (m
   | none, none => simp at h
   | none, some m =>
     simp only at h hx
+    cases hw : m.wellFormed
+    · simp only [hw, Bool.not_false, ite_true] at h hx; split at hx <;> simp_all
+    simp only [hw, Bool.not_true, Bool.false_eq_true, ite_false] at h hx
     split at hx
     · split at hx <;> simp_all
     · rename_i hd
@@ -632,9 +647,26 @@ theorem accepted_within_org (inOrg : O → S → Bool) (claimed : S → Bool) (m
 answer without an org keeps it (owner decision 16). -/
 theorem accept_reachable :
     let inOrg : Nat → Nat → Bool := fun o x => decide (x / 10 = o)
-    let m : Me Nat Nat := ⟨some 1, .ok, [10, 21, 12]⟩
+    let m : Me Nat Nat := ⟨some 1, .ok, [10, 21, 12], true⟩
     accept inOrg (fun _ => false) (some m) none [99] = ⟨.ok, true, [10, 12]⟩ ∧
     accept inOrg (fun _ => false) (some { m with org := none }) none [99] = ⟨.degraded, false, [99]⟩ := by
+  decide
+
+/-- Codex round 2 finding 2 FIXED: a malformed scope list (`scopes` missing, null, not an array
+or with a rejected member) never replaces a non-empty cache, whatever `scopes_status` says.
+Before the fix `me()` turned it into `[]` and an `ok` answer cleared the cache. -/
+theorem malformed_keeps_cache (inOrg : O → S → Bool) (claimed : S → Bool) (m : Me S O)
+    (cached : List S) (hw : m.wellFormed = false) (hc : cached ≠ []) :
+    accept inOrg claimed (some m) none cached = ⟨.degraded, false, cached⟩ := by
+  have hce : cached.isEmpty = false := by cases cached <;> simp_all
+  simp [accept, hw, hce]
+
+/-- Non-vacuity: an explicit, well-formed `[]` with `ok` is the valid clearing case (plan B
+Task 4 table); the same answer marked malformed keeps the cache. -/
+theorem malformed_reachable :
+    let inOrg : Nat → Nat → Bool := fun o x => decide (x / 10 = o)
+    accept inOrg (fun _ => false) (some ⟨some 1, .ok, [], true⟩) none [99] = ⟨.ok, true, []⟩ ∧
+    accept inOrg (fun _ => false) (some ⟨some 1, .ok, [], false⟩) none [99] = ⟨.degraded, false, [99]⟩ := by
   decide
 
 /-! ## 4. The cache write of refreshServerScopes (candidate 3) -/
@@ -713,38 +745,68 @@ theorem refresh_reachable :
     written true 4 id (⟨4, some 0, some 0⟩ : Cache Nat) DAY = ⟨4, some DAY, some DAY⟩ ∧
     written true 4 id (⟨4, some 0, some 0⟩ : Cache Nat) 1 = ⟨4, some 0, some 0⟩ := by decide
 
-/-! ### Which entry an answer is written to (D4, fixed this round) -/
+/-! ### Which entry an answer is written to (D4; credential binding, Codex round 2 finding 1)
+
+An entry is abstracted to its identity: the normalized url and the credential revision the
+request used (`credentialRevision` in index.ts: the source, `token` or `token_env:<NAME>`, plus
+a sha256 fingerprint of the resolved token; never the token). `p` is the entry as read before
+the request; `l` is the `stores` list as it is under the config lock, which another process may
+have changed in between in any way. Nothing is assumed about `l`. -/
 
 structure Srv (U : Type) where
-  url   : U
-  token : Nat
+  url  : U
+  cred : Nat
 deriving DecidableEq
 
-/-- Before the fix: the first server entry with the answer's url. -/
+/-- Before D4: the first server entry with the answer's url. -/
 def targetOld (l : List (Srv U)) (u : U) : Option (Srv U) := l.find? (fun e => decide (e.url = u))
 
-/-- Fixed: only when exactly one server entry has that url; otherwise nothing is written. -/
+/-- D4: only when exactly one server entry has that url; otherwise nothing is written. -/
 def targetNew (l : List (Srv U)) (u : U) : Option (Srv U) :=
   if (l.filter (fun e => decide (e.url = u))).length = 1 then l.find? (fun e => decide (e.url = u))
   else none
 
-/-- D4 FIXED: an answer obtained with entry `p`'s key is written to `p` or to nothing. -/
-theorem answer_lands_on_its_entry (l : List (Srv U)) (p e : Srv U) (hp : p ∈ l)
-    (h : targetNew l p.url = some e) : e = p := by
-  unfold targetNew at h
+/-- Finding 1 fixed: the single entry on the url must still carry the credential revision the
+request was made with; otherwise the answer is discarded ("entry changed during refresh"). -/
+def targetBound (l : List (Srv U)) (p : Srv U) : Option (Srv U) :=
+  match targetNew l p.url with
+  | some e => if e.cred = p.cred then some e else none
+  | none => none
+
+/-- FIXED (D4 + finding 1): an answer obtained with `p`'s url and credential is written to an
+entry with that same url and credential, or to nothing — whatever happened to the list while
+the request was in flight. (The pre-fix theorem needed `p ∈ l`, which the code did not
+establish: the entry could be rotated in between.) -/
+theorem answer_lands_on_its_entry (l : List (Srv U)) (p e : Srv U)
+    (h : targetBound l p = some e) : e = p := by
+  unfold targetBound at h
   split at h
-  · rename_i hlen
-    have he := List.mem_of_find?_eq_some h
-    have hpe := List.find?_some h; simp at hpe
-    exact eq_of_len_le_one (Nat.le_of_eq hlen) (List.mem_filter.mpr ⟨he, by simp [hpe]⟩)
-      (List.mem_filter.mpr ⟨hp, by simp⟩)
+  · rename_i e' he'
+    split at h
+    · rename_i hc
+      cases h
+      unfold targetNew at he'
+      split at he'
+      · have hu := List.find?_some he'; simp at hu
+        cases e; cases p; simp_all
+      · cases he'
+    · cases h
   · cases h
 
-/-- REPLAYED (pre-fix): bob's answer (token 2) lands on alice's entry (token 1). -/
+/-- REPLAYED (pre-D4): bob's answer (credential 2) lands on alice's entry (credential 1). -/
 theorem old_answer_mistargets :
     targetOld [(⟨10, 1⟩ : Srv Nat), ⟨10, 2⟩] 10 = some ⟨10, 1⟩ ∧
     targetNew [(⟨10, 1⟩ : Srv Nat), ⟨10, 2⟩] 10 = none := by decide
 
-theorem target_good_case : targetNew [(⟨10, 1⟩ : Srv Nat), ⟨11, 2⟩] 11 = some ⟨11, 2⟩ := by decide
+/-- REPLAYED (finding 1, pre-fix): alice's request (credential 1) was in flight when the entry
+was rotated to credential 2; the url-only target writes alice's answer onto the rotated entry,
+the bound target discards it. -/
+theorem rotated_answer_mistargets :
+    targetNew [(⟨10, 2⟩ : Srv Nat)] 10 = some ⟨10, 2⟩ ∧
+    targetBound [(⟨10, 2⟩ : Srv Nat)] ⟨10, 1⟩ = none := by decide
+
+/-- Non-vacuity: an unchanged entry still receives its answer. -/
+theorem target_good_case :
+    targetBound [(⟨10, 1⟩ : Srv Nat), ⟨11, 2⟩] ⟨11, 2⟩ = some ⟨11, 2⟩ := by decide
 
 end PlurSpec.RoutingDiscovery

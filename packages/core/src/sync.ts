@@ -1180,10 +1180,88 @@ export interface AtomicWriteOptions {
    * durability note on {@link atomicWrite}.
    */
   durable?: boolean
+  /**
+   * The content may carry a credential (an editor config holding another
+   * server's token, say). On Windows, when the destination exists and its
+   * access list names only the current account, the temp file is made
+   * owner-only — and verified — before the first byte, and the write is
+   * refused when that cannot be done. An owner-only `mode` implies this. No
+   * effect elsewhere: on POSIX the destination's mode already governs the
+   * temp file from creation.
+   */
+  secret?: boolean
 }
 
 /** Counter making each tmp name unique within a process (pid makes it unique across them). */
 let tmpCounter = 0
+
+/** One external command run for the Windows access-list path ({@link _atomicWriteAcl}). */
+export type AclExec = (cmd: string, args: string[]) => { status: number | null; stdout: string }
+
+const defaultAclExec: AclExec = (cmd, args) => {
+  try {
+    const stdout = execFileSync(cmd, args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+    return { status: 0, stdout }
+  } catch (e) {
+    const err = e as { status?: number | null; stdout?: string }
+    return { status: typeof err.status === 'number' ? err.status : null, stdout: typeof err.stdout === 'string' ? err.stdout : '' }
+  }
+}
+
+/**
+ * Platform, environment and command runner for atomicWrite's Windows
+ * owner-only path. Internal — not exported from the package; tests swap the
+ * fields to drive the Windows branch on any OS.
+ *
+ * This is the minimal Windows path core needs so a secret never lands in a
+ * temp file other accounts can read. It follows the same rule as the CLI's
+ * enterprise `owner-only.ts` (remove inherited access, grant only the current
+ * account, read the list back, accept only entries naming that account); the
+ * shared owner-only helper is planned to replace both copies.
+ */
+export const _atomicWriteAcl: { platform: NodeJS.Platform; env: NodeJS.ProcessEnv; exec: AclExec } = {
+  platform: process.platform,
+  env: process.env,
+  exec: defaultAclExec,
+}
+
+function windowsAccount(env: NodeJS.ProcessEnv): string | null {
+  const user = env.USERNAME
+  if (!user) return null
+  return env.USERDOMAIN ? `${env.USERDOMAIN}\\${user}` : user
+}
+
+/** Principals named in `icacls <path>` output (same parse as the CLI helper). */
+function aclPrincipals(path: string, stdout: string): string[] {
+  const out: string[] = []
+  let first = true
+  for (const raw of stdout.split(/\r?\n/)) {
+    let line = raw
+    if (first && line.toLowerCase().startsWith(path.toLowerCase())) line = line.slice(path.length)
+    first = false
+    const t = line.trim()
+    if (!t || /^Successfully processed/i.test(t) || /^Failed processing/i.test(t)) continue
+    const m = /^(.+?):\(/.exec(t)
+    if (m) out.push(m[1])
+  }
+  return out
+}
+
+/** True when every access entry on `path` names `account` only. */
+function aclIsOwnerOnly(path: string, account: string): boolean {
+  const read = _atomicWriteAcl.exec('icacls', [path])
+  if (read.status !== 0) return false
+  const ps = aclPrincipals(path, read.stdout)
+  return ps.length > 0 && ps.every(p => p.toLowerCase() === account.toLowerCase())
+}
+
+/** Make `path` owner-only and verify it; throws when that cannot be established. */
+function protectWindowsOwnerOnly(path: string, account: string | null): void {
+  if (!account) throw new Error('atomicWrite: cannot make the temporary file owner-only: the Windows account is not known (USERNAME is not set)')
+  const set = _atomicWriteAcl.exec('icacls', [path, '/inheritance:r', '/grant:r', `${account}:F`])
+  if (set.status !== 0) throw new Error(`atomicWrite: cannot make the temporary file owner-only: icacls failed (exit ${set.status ?? 'unknown'})`)
+  if (!aclIsOwnerOnly(path, account)) throw new Error('atomicWrite: cannot make the temporary file owner-only: its access list still names another account')
+}
 
 /**
  * Atomic write: write to a temp file, flush it, then rename over the target.
@@ -1212,12 +1290,24 @@ let tmpCounter = 0
  * a hard `ENOENT: rename '…/episodes.yaml.tmp'` crash when the loser's tmp had
  * already been renamed away. Unique names make concurrent writers independent;
  * the last rename wins cleanly instead of publishing a half-written blend.
+ *
+ * ## Why the tmp is protected before the first byte (Codex round 2, finding 3)
+ *
+ * The tmp used to be opened at the default mode (0644 under umask 022), filled,
+ * fsynced, and only then chmodded to the destination's 0600 — so a credential
+ * sat in a world-readable file for that window, and a descriptor another
+ * account opened in it stayed readable afterwards. The tmp is now created
+ * exclusively (`wx`: never through a link or file planted at its name) at 0600
+ * whenever a mode is known, and given its exact final mode just before the
+ * rename. On Windows, a credential write (`secret` or an owner-only `mode`)
+ * over a destination whose access list names only the current account gets a
+ * verified owner-only list on the EMPTY tmp; when that cannot be established,
+ * nothing is written and the destination is left as it was.
  */
 export function atomicWrite(filePath: string, content: string | Buffer, opts: AtomicWriteOptions = {}): void {
   const durable = opts.durable !== false
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const tmp = `${filePath}.${process.pid}.${tmpCounter++}.tmp`
   // Preserve the destination's permissions (audit 2026-08-03, finding 7).
   //
   // A replace-by-rename creates a NEW inode, so the result carries the tmp
@@ -1232,34 +1322,67 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
   // path. A missing destination means there is nothing to preserve — a first
   // write keeps the platform default, which is what created it today.
   let destMode: number | undefined = opts.mode
+  const destExists = existsSync(filePath)
   try {
     // An EXISTING file's own mode wins over opts.mode: the operator may have
     // tightened it further, and a write must never loosen what it found.
-    if (existsSync(filePath)) destMode = statSync(filePath).mode & 0o7777
+    if (destExists) destMode = statSync(filePath).mode & 0o7777
   } catch { /* unreadable stat — fall through and keep opts.mode/default */ }
+
+  // Windows keeps access in an ACL, not the mode bits, and a tmp file inherits
+  // the folder's list — so the rename would replace a protected file with one
+  // the folder's other accounts can read. For a credential write (`secret`, or
+  // an owner-only `mode`) over a destination whose list names only the current
+  // account, the tmp gets that same protection before its first byte. Ordinary
+  // writes never run icacls. Making a NEW file owner-only on Windows is not
+  // done here; that belongs to the shared owner-only helper.
+  let winAccount: string | null = null
+  let winProtect = false
+  if (_atomicWriteAcl.platform === 'win32' && destExists) {
+    const credential = opts.secret === true || (opts.mode !== undefined && (opts.mode & 0o077) === 0)
+    if (credential) {
+      winAccount = windowsAccount(_atomicWriteAcl.env)
+      winProtect = winAccount !== null && aclIsOwnerOnly(filePath, winAccount)
+    }
+  }
+
+  // Create the tmp exclusively, owner-only whenever a mode is known. With no
+  // mode to keep the result is the platform default anyway, so the default is
+  // used for the tmp too and nothing changes for ordinary files.
+  const createMode = destMode === undefined ? 0o666 : 0o600
+  let tmp = ''
+  let fd: number | undefined
+  for (let attempt = 0; fd === undefined; attempt++) {
+    tmp = `${filePath}.${process.pid}.${tmpCounter++}.tmp`
+    try {
+      fd = openSync(tmp, 'wx', createMode)
+    } catch (err) {
+      // A stale tmp (or anything planted) at this name: never reuse it, take the next name.
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST' && attempt < 1000) continue
+      throw err
+    }
+  }
   try {
-    if (durable) {
-      const fd = openSync(tmp, 'w')
-      try {
-        writeFileSync(fd, content)
-        fsyncSync(fd)
-      } finally {
-        closeSync(fd)
-      }
-    } else {
-      writeFileSync(tmp, content)
+    try {
+      if (winProtect) protectWindowsOwnerOnly(tmp, winAccount)
+      writeFileSync(fd, content)
+      if (durable) fsyncSync(fd)
+    } finally {
+      closeSync(fd)
     }
     if (destMode !== undefined) {
       // Best-effort: a filesystem without POSIX modes (some Windows/network
-      // mounts) must not fail an otherwise good write over cosmetics.
+      // mounts) must not fail an otherwise good write over cosmetics. If it
+      // fails the tmp stays at its 0600 creation mode — stricter, never wider.
       try { chmodSync(tmp, destMode) } catch { /* not a mode-bearing filesystem */ }
     }
     renameSync(tmp, filePath)
     if (durable) fsyncDir(dir)
   } catch (err) {
     // Never leave the tmp behind on a failed write — it would accumulate, and
-    // with a unique name nothing would ever clean it up.
-    try { unlinkSync(tmp) } catch { /* already gone, or never created */ }
+    // with a unique name nothing would ever clean it up. Only a tmp this call
+    // created reaches here (an EEXIST name is skipped above, never unlinked).
+    try { unlinkSync(tmp) } catch { /* already gone */ }
     throw err
   }
 }

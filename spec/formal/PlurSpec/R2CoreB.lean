@@ -32,6 +32,13 @@ goes through the same `fetchBounded`, so §5's rule (only a thrown network fetch
 marks a host down) is unchanged, and `load()`, recall, row origin, activation
 and namespacing (§1–§4) are not in the diff. index.ts's `_loadSecondaryAndPacks`
 is not in the diff either.
+
+Checked against Codex round 2 finding 2 (2026-10-18): still holds. `me()` now
+also reports `scopes_malformed` when the body's `scopes` is missing, null, not
+an array or has a member the grammar drops; the filtered `scopes` list it
+returns is unchanged. The flag only feeds discovery's decision
+(`RoutingDiscovery.lean` §3, `malformed_keeps_cache`). No fetch, host-health,
+row-origin or recall behaviour modelled here changed.
 -/
 
 namespace PlurSpec.R2CoreB
