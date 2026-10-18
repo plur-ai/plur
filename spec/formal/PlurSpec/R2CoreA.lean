@@ -54,6 +54,8 @@ Codex round 3 (2026-10-18): still holds. While bound, the bare-id update uses th
 target and a held team row (tri-state probe), the explicit-scope check is tri-state (unknown refuses),
 getByIds drops a personal row from the team host, and cache warming, store listing and old-form id
 resolution contact only the folder's own team store. Again only filters; unbound, unchanged.
+Codex round 4 (2026-10-18): still holds. nearDuplicates and similaritySearch use no embedder while
+bound, and a bound operation starts no embedding pass; no modelled branch changed.
 
 Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
 refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
