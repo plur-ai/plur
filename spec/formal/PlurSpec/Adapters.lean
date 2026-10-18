@@ -41,6 +41,15 @@ tools.ts's only change is in plur_stores_add's reply: on `token_rotated` for a
 scope of a server entry it adds `token_scopes` and a note. That is not in any
 section here (learn entry points, session lifecycle, hook merges, exit codes,
 dsh, hermes, array coercion, `.plur.yaml` trust).
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+The hooks (hook-inject, hook-codex-inject, hook-cursor-session-start, hook-agy-pre-invocation)
+call `bindHookFolder` right after `createPlur` and add `remoteOnlyLines` to the header; plur.ts
+binds a CLI command's instance to its folder (read-only; left unbound when the folder map cannot
+be read, as on development); tools.ts adds the remote-only block to plur_session_start and lets
+plur_learn rethrow `RemoteOnlyWriteError` instead of its local fallback. In a folder that is not
+remote-only the binding is cleared and every modelled path is unchanged; in a remote-only folder
+the write gate is WritePath §3d.
 -/
 
 namespace PlurSpec.Adapters

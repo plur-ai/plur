@@ -21,6 +21,11 @@ tools.ts's only change is two reply fields of plur_stores_add (`token_scopes`
 and a note, on `token_rotated` only, so they never collide with the
 `scopeDropped` note, which needs `already_registered`). No tool's annotations,
 effects or plur_admin dispatch changed (§1), and §2–§7 do not read tools.ts.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+tools.ts adds the remote-only block and guide line to plur_session_start and the refusal
+pass-through in plur_learn; annotations, plur_admin dispatch, the recall session rule and the
+outbox count (§1, §3) are unchanged.
 -/
 
 namespace PlurSpec.R2Integrations

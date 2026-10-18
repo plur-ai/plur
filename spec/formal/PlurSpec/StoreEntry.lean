@@ -14,6 +14,10 @@ What is abstracted: metadata values are an arbitrary type `V` with a parse oracl
 theorems hold for every oracle that satisfies the stated hypotheses, and §2 shows the
 sensitivity merge satisfies them. Left out: YAML key order, `storeEntryForDisk`'s token_env
 rule (#1561, modelled elsewhere), non-server entries in §3.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+index.ts adds the remote-only binding and its guards; expand / collapse, sensitivity
+writeback, stable identity, rotation and metadata handling are not touched.
 -/
 
 set_option linter.deprecated false

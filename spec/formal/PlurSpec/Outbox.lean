@@ -29,6 +29,13 @@ deliver it; modelled in §8b (`conflict_untouched`, `keptC_only_bookkeeping`).
 Keys, retry, claims, the listing and the breaker (§1–§7) are unchanged.
 remote-store.ts changed only `me()` (C1 /me fields; a non-2xx now throws
 `RemoteHttpError` with the same message), which the push path does not call.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+`_flushOutboxClaimed` gained one more hold for an entry marked `remote_only`: when its target
+scope is no longer a deliverable team scope, or the target's policy now forbids its content,
+the entry is held exactly like the #1631 conflict hold of §8b — no push, no demotion to a local
+row, only `last_attempt` / `last_error` bookkeeping and a `failed` count. Keys, retry, claims,
+the listing and the breaker (§1–§7) are unchanged.
 -/
 
 namespace PlurSpec.Outbox

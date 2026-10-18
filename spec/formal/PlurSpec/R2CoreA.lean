@@ -31,6 +31,13 @@ index.ts's predicates now read `resolveScopeTarget` (WritePath §3c).
   reload, the update walk and Decision R are not in the diff. The new code
   (`refreshServerScopes`, the server-entry `persistStores` collapse, the
   server-key rotation in `addStore`) is StoreEntry's territory, not modelled here.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+While bound to a remote-only folder, `_probeIdCollisions` and the remote walks of forget,
+feedback, setPinned and update skip url stores whose scope is not a deliverable team scope,
+and a bare id only on a team-scope row; the local row they would act on is refused first
+(`_remoteOnlyRefuseLocalRow`) unless it is this folder's queued save. Unbound, every walk is
+as modelled in §2–§4. `peek_absent_sound` reads the same cache. The write gate is WritePath §3d.
 -/
 
 namespace PlurSpec.R2CoreA

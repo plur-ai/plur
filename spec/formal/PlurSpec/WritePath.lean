@@ -1324,6 +1324,162 @@ theorem old_router_sends_conflicted :
     let es := [(⟨some 1, 7, false, none⟩ : SEntry), ⟨some 2, 7, false, none⟩]
     routeOld es 7 = some 1 ∧ routeOf (resolveNP (fun _ => none) es 7) = .refuse := by decide
 
+/-! ### 3d. Remote-only folders: the bound instance's write gate (#1521; merged onto development 2026-10-18)
+
+A Plur instance bound to a `remote-only` folder (`bindFolderPolicy`) runs
+index.ts `_remoteOnlyContext` before every write (`_guardSensitiveScope`,
+`learnAsync`, `learnBatch`):
+  - blocked (the folder map could not be read, or the folder not resolved) → refuse;
+  - `visibility: private` → refuse;
+  - target := the explicit scope, else the folder's scope; none → refuse;
+  - `_refuseScopeConflict(target)`: a scope two servers claim → refuse (#1631);
+  - target not deliverable → refuse (an explicit scope other than the folder's
+    is first checked for `isSharedScope`, which `deliverable` includes);
+  - then `_guardSensitiveScope` refuses an offending hit for the target
+    instead of demoting it to local.
+`_isDeliverableTeamScope` (one rule, re-audit 3 of #1521, R3-1): shared, not
+local-only, not `user:`, and the shared resolver says `remote` and writable
+(`writeScope`). It used "some writable url entry has exactly this scope" before
+the merge onto development; `old_deliverable_accepts_conflict` is why that changed.
+The grammar predicates are oracles. -/
+
+structure ROBind where
+  blocked     : Bool
+  folderScope : Option Nat
+  deriving DecidableEq, Repr
+
+inductive RODecision where
+  | write (s : Nat) | refuse
+  deriving DecidableEq, Repr
+
+/-- `_isDeliverableTeamScope`, given the resolver's target for the scope. -/
+def deliverable (shared localOnly personal : Bool) (t : Target) : Bool :=
+  shared && !localOnly && !personal && writeScope t
+
+/-- The checks on a chosen target: conflict, deliverable, offending hit. -/
+def roCheck (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat) : RODecision :=
+  if res t = .conflict then .refuse
+  else if deliverable (shared t) (localOnly t) (personal t) (res t) = false then .refuse
+  else if offending t = true then .refuse
+  else .write t
+
+/-- `_remoteOnlyContext` followed by the offending-hit refusal. -/
+def roGate (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) : RODecision :=
+  if b.blocked = true then .refuse
+  else if priv = true then .refuse
+  else match explicit.orElse (fun _ => b.folderScope) with
+    | none => .refuse
+    | some t => roCheck shared localOnly personal offending res t
+
+theorem roCheck_write (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t' t : Nat)
+    (h : roCheck shared localOnly personal offending res t' = .write t) :
+    t' = t ∧ deliverable (shared t') (localOnly t') (personal t') (res t') = true ∧ offending t' = false := by
+  unfold roCheck at h
+  by_cases h1 : res t' = .conflict
+  · simp [h1] at h
+  · by_cases h2 : deliverable (shared t') (localOnly t') (personal t') (res t') = true
+    · by_cases h3 : offending t' = true
+      · simp [h1, h2, h3] at h
+      · simp [h1, h2, h3] at h
+        exact ⟨h, h2, by simpa using h3⟩
+    · simp [h1, h2] at h
+
+theorem roGate_write (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat)
+    (h : roGate b priv explicit shared localOnly personal offending res = .write t) :
+    b.blocked = false ∧ priv = false ∧ explicit.orElse (fun _ => b.folderScope) = some t ∧
+      deliverable (shared t) (localOnly t) (personal t) (res t) = true ∧ offending t = false := by
+  unfold roGate at h
+  by_cases hb : b.blocked = true
+  · simp [hb] at h
+  · by_cases hp : priv = true
+    · simp [hb, hp] at h
+    · simp only [hb, hp, if_false, Bool.false_eq_true] at h
+      cases ho : explicit.orElse (fun _ => b.folderScope) with
+      | none => rw [ho] at h; cases h
+      | some t' =>
+        rw [ho] at h
+        obtain ⟨rfl, hd, hof⟩ := roCheck_write shared localOnly personal offending res t' t h
+        exact ⟨by simpa using hb, by simpa using hp, rfl, hd, hof⟩
+
+/-- Every write a remote-only folder accepts leaves through the router to one
+writable server: it never stays on this machine. -/
+theorem ro_write_is_sent (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat)
+    (h : roGate b priv explicit shared localOnly personal offending res = .write t) :
+    routeOf (res t) = .send := by
+  obtain ⟨_, _, _, hd, _⟩ := roGate_write b priv explicit shared localOnly personal offending res t h
+  apply (send_iff_writeScope _).mpr
+  simp [deliverable] at hd
+  exact hd.2
+
+/-- …and it is a shared, non-local-only, non-personal scope with no offending hit. -/
+theorem ro_write_is_team (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat)
+    (h : roGate b priv explicit shared localOnly personal offending res = .write t) :
+    shared t = true ∧ localOnly t = false ∧ personal t = false ∧ offending t = false := by
+  obtain ⟨_, _, _, hd, hof⟩ := roGate_write b priv explicit shared localOnly personal offending res t h
+  simp [deliverable] at hd
+  exact ⟨hd.1.1.1, hd.1.1.2, hd.1.2, hof⟩
+
+/-- An unreadable map or an unresolved folder writes nothing, an explicit team
+scope included (re-audit of #1521, S-1). -/
+theorem ro_blocked_refuses (b : ROBind) (hb : b.blocked = true) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) :
+    roGate b priv explicit shared localOnly personal offending res = .refuse := by
+  simp [roGate, hb]
+
+/-- A private write is refused, never kept locally. -/
+theorem ro_private_refuses (b : ROBind) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) :
+    roGate b true explicit shared localOnly personal offending res = .refuse := by
+  simp [roGate]
+
+/-- A scope two servers claim is refused here too. -/
+theorem ro_conflict_refuses (b : ROBind) (priv : Bool) (t : Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (hc : res t = .conflict) :
+    roGate b priv (some t) shared localOnly personal offending res = .refuse := by
+  simp [roGate, roCheck, Option.orElse, hc]
+
+/-- With no explicit scope, the write goes to the folder's scope. -/
+theorem ro_default_is_folder (b : ROBind) (priv : Bool)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat)
+    (h : roGate b priv none shared localOnly personal offending res = .write t) :
+    b.folderScope = some t := by
+  obtain ⟨_, _, ho, _, _⟩ := roGate_write b priv none shared localOnly personal offending res t h
+  simpa [Option.orElse] using ho
+
+/-- Non-vacuity: the folder's team scope, served by one writable server, is written. -/
+theorem ro_team_write :
+    roGate ⟨false, some 7⟩ false none (fun _ => true) (fun _ => false) (fun _ => false) (fun _ => false)
+      (fun _ => .remote true) = .write 7 := by decide
+
+/-- Mutant (the S-1 bug): the blocked check dropped. An unreadable map then
+writes an explicit team scope. Removing the first branch of `roGate` makes
+`ro_blocked_refuses` fail to build. -/
+def roGateNoBlock (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) : RODecision :=
+  roGate { b with blocked := false } priv explicit shared localOnly personal offending res
+
+theorem no_block_writes_when_blocked :
+    roGateNoBlock ⟨true, none⟩ false (some 7) (fun _ => true) (fun _ => false) (fun _ => false) (fun _ => false)
+      (fun _ => .remote true) = .write 7 := by decide
+
+/-- The pre-merge rule: some writable url entry with exactly this scope. -/
+def deliverableOld (es : List SEntry) (s : Nat) : Bool :=
+  es.any (fun e => claims s e && !e.readonly)
+
+/-- Counterexample on the pre-merge rule: two servers claim scope 7; the old
+rule called it deliverable (the write would have been sent to whichever entry
+the router met first), the resolver-based rule does not, and the gate refuses. -/
+theorem old_deliverable_accepts_conflict :
+    let es := [(⟨some 1, 7, false, none⟩ : SEntry), ⟨some 2, 7, false, none⟩]
+    deliverableOld es 7 = true ∧
+      deliverable true false false (resolveNP (fun _ => none) es 7) = false ∧
+      roGate ⟨false, some 7⟩ false none (fun _ => true) (fun _ => false) (fun _ => false) (fun _ => false)
+        (resolveNP (fun _ => none) es) = .refuse := by decide
+
 /-! ## 4. "Private stays local" — three predicates (core-index#2)
 
 Code: learn() remote branch (`remoteDriver && context?.visibility === 'private'`

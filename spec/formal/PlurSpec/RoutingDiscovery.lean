@@ -17,6 +17,12 @@ scan's verdict on the content. Every theorem holds for every such oracle. The pe
 (`personalStoreEntry`'s first-minimum-rank reduce) is modelled by the equivalent cascade of
 `find?` per rank. Left out: string grammar of scopes, the cooldown/held-back filters of the flush
 (they only skip), YAML key order.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+The resolver (§1) is unchanged and is now also what a remote-only folder calls deliverable
+(`_isDeliverableTeamScope` = shared, not local-only, not `user:`, resolver `remote` and
+writable). The remote-only gate runs before the leak guard and the write paths of §2 and only
+refuses (WritePath §3d); discovery and the cache write (§3, §4) are not touched.
 -/
 
 set_option linter.unusedSimpArgs false
