@@ -172,6 +172,21 @@ function metadataOnly(obj: object | undefined): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj ?? {}).filter(([k, v]) => v !== undefined && !RESERVED_ENTRY_KEYS.has(k)))
 }
 
+/**
+ * The metadata of a raw per-scope entry (every key that is not identity,
+ * credentials or routing: dial, description, covers, sensitivity, unknown
+ * keys), as it moves into a server entry's `scope_settings[scope]` when the
+ * entry is folded into it (#1631, registerEnterpriseServer).
+ */
+export function entryMetadata(raw: Record<string, unknown>): Record<string, unknown> {
+  return metadataOnly(raw)
+}
+
+/** True when a scope string passes the safe grammar expansion keeps (#426, #408). */
+export function isSafeScopeName(scope: string): boolean {
+  return SCOPE_RE.test(scope)
+}
+
 /** Keys of an expanded entry that metadata (scope_settings or top level) must not set. */
 const RESERVED_ENTRY_KEYS = new Set<string>([
   'url', 'path', 'scope', 'scopes', 'pinned_scopes', 'token', 'token_env', 'readonly', 'shared',

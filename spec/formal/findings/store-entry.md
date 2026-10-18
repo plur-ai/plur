@@ -141,3 +141,55 @@ Not fixed: it changes which entries persist on disk (Q2). Not modelled in Lean.
 - Replay: `packages/core/test/codex4-compat-scope-metadata.test.ts` (3 tests; 2 red on the original code).
 - Mutation check: keeping the top level on the recompat'd entry breaks `recompat_new_own_only` and `fixed_team_keeps_dial`; dropping the move breaks `recompat_keeps_old`. In the code, letting moved values win over `scope_settings[oldScope]` turns the precedence test red.
 - Left as is: a key whose `scope_settings[oldScope]` value is present but malformed keeps that value on disk (it wins, as an explicit value), and the schema drops it, so the top-level value it replaced is lost for that key. `recompat_keeps_old` states the well-formedness hypothesis. An entry with no compat scope keeps its ownerless top-level metadata at the top, where it now attaches to the new personal compat scope, as before.
+
+### Registration and fold — plan B Task 5 (#1631, 2026-10-18)
+`Plur.registerEnterpriseServer` (index.ts) runs `registerServerEntry` and `foldStoresIntoServerEntry` (server-discovery.ts) inside `_updateRawStores`: one locked read-modify-write of the raw `stores`, written atomically only when something changed. The compat `scope` is set at registration from the caller's `personalScope` (owner decision O6).
+- Theorems (§6): `fold_preserves_routing` (every scope has the same url/key/readonly routes before and after; no scope is dropped), `fold_preserves_metadata` and `fold_md_untouched` (a folded entry's metadata lands in `scope_settings[scope]`, every other scope's settings are unchanged), `fold_kept` (entries kept separate are byte-for-byte the input), `fold_keeps_server`, `register_only_selected` (only the selected server entry's key changes; it always carries the compat scope), `register_two_refused`.
+- Counterexample: `foldAll_breaks_routing` — folding a same-server entry that holds another key moves its scope onto the server entry's key. Replayed: `register-enterprise-server.test.ts` ("keeps an entry with a different token separate"). `rekeyAll_changes_other_route`: rekeying every entry on the url moves a per-scope entry's old key.
+- Mutation checks: dropping the key from `fmatch` breaks `fmatch_eq`/`fold_preserves_routing` and `fold_keeps_other_key`; not pinning the folded scope breaks `serves_foldOne`/`fold_preserves_routing`; letting existing `scope_settings` win breaks `fold_md`/`fold_preserves_metadata`. In the code, removing the inline-key comparison in `keptReason` turns 3 tests red.
+- Left out of the model: the `shared` and grammar refusals (they only keep more entries separate), the compat-scope metadata move (§1b), entry order.
+
+#### Gate review: order (2026-10-18)
+The §6 routes are a set, but a write takes the FIRST entry in config order that serves its scope (`remoteOf`; `personalStoreEntry` ties). Two cases moved a scope onto another key while every route triple survived: folding an entry while an entry that stays serves the same scope with another key ahead of the server entry, and moving the server entry to the first folded entry's place, ahead of an entry that serves one of its scopes with another key.
+- Fix: the server entry stays where it is (a new one is appended), and an entry is folded only when no entry that stays serves its scope (new `kept_separate` reason `scope-served-elsewhere`; `user:` scopes compared case-folded, as the personal selection does).
+- Theorem (§6b): `ordered_fold_preserves_first` — with those two rules, the first entry serving any scope has the same route before and after.
+- Counterexamples: `fold_moves_first_route`, `move_server_moves_first_route`. Replayed: `register-enterprise-server.test.ts`, "a per-scope entry is not folded while another entry …" and "folding never moves the server entry ahead of …" (both red on the code before the fix).
+- Mutation check: dropping the `hnoother` hypothesis (the `scope-served-elsewhere` rule) breaks `ordered_fold_preserves_first`.
+
+#### Codex audit round 1 (2026-10-18)
+- A new personal scope replaced the old compat scope; when nothing else on the entry listed it, its route was dropped or passed to another entry with another key. Fix: the old compat scope is pinned. Model: `rekey` (used by `register`), theorem `rekey_keeps_served`, mutation `rekey_unpinned_drops` (and dropping the pin breaks `rekey_keeps_served`). Replayed: "a new personal scope keeps the old compat scope served by the entry (pinned)".
+- Folding two same-key entries for one scope with different metadata, or one whose metadata differs from the server entry's own settings for the scope, changed the policy in force (the first declaring entry in config order wins, `getScopeMetadata`) — e.g. a weaker sensitivity `allow`. Fix: such entries are kept separate (`metadata-differs`). Like the `shared`/grammar refusals this only keeps more entries separate, so §6 still holds; the policy-in-force selection is not modelled. Replayed: the two `metadata-differs` tests.
+- A YAML error's reason can name an alias or tag from config.yaml; the error now names the line number only (code, not modelled).
+
+#### Codex audit round 2 (2026-10-18)
+- Claiming the new compat scope could take a personal scope's writes from another entry (another server or key) that served it first. Fix: `registerServerEntry` computes the personal route as `personalStoreEntry` selects it, before and after, and refuses (nothing written) when an existing route would move, unless the entry already served that scope (a re-run with a new key changes that entry's key by design). Code and tests only; the refusal is not modelled (the caller writes nothing, as in `register_two_refused`).
+- A `__proto__` scope was folded into `scope_settings['__proto__']`, which sets the object's prototype, and its metadata was lost. Fix: kept separate (`invalid-scope`).
+- Model: `PerScope.ok` now stands for the code's other eligibility checks and `fmatch` requires it, so `fold_kept` and `fold_preserves_metadata` describe the code's retained list and settings. New `fold_md_keeps_set`: with the `metadata-differs` check (every folding entry agrees with the server entry's value or has none), a value the server entry had stays. Mutation: dropping that hypothesis breaks the proof.
+
+#### Codex audit round 3 (2026-10-18)
+- The personal-route check selected among raw entries, so an entry the loader drops (the primary store's path entry, a schema-invalid one) could hide a takeover. Now judged conservatively on every raw entry: refused when this entry would rank ahead of any other url entry serving the personal scope exactly, or when any entry serves it only in another letter case.
+- A server entry that does not load (e.g. `readonly: "false"`) was folded into, turning a working per-scope route local. The resulting server entry is now validated (`ServerStoreEntrySchema`) and the registration refused, writing nothing.
+- On POSIX, a config.yaml readable by others is made owner-only before the key is written (atomicWrite keeps an existing file's mode). Windows ACLs remain B1b.
+- `queued_by_scope` is built from a Map, so a scope named like an Object property counts as a number.
+All code-level refusals and checks; replayed by the round-3 tests in `register-enterprise-server.test.ts`. Not modelled (the caller writes nothing on a refusal, as in `register_two_refused`).
+
+#### Codex audit round 4 (2026-10-18)
+- The re-run exemption trusted an entry the loader had rejected; only an entry that passes `ServerStoreEntrySchema` counts as already serving the personal scope.
+- The owner-only step now runs inside the config lock, right before atomicWrite reads the mode it keeps.
+- An existing server entry whose url carries a user name or password is refused, and config.ts's unset-`token_env` warning names the url by its origin only.
+Code-level; replayed by the round-4 tests. Not modelled.
+
+#### Codex audit round 5 (2026-10-18)
+- A per-scope entry the loader rejects (e.g. `readonly: "true"`) was folded, so its scope would start going to the server; such an entry is now kept separate (`invalid-entry`, `StoreEntrySchema`).
+- `dial` is read per entry, so its absence counts: entries whose dial differs from each other, or from the server entry's when it serves the scope, are kept separate (`metadata-differs`).
+- The outbox is read before the write, so an unreadable outbox fails the registration with nothing written.
+Code-level (eligibility is `PerScope.ok` in §6); replayed by the round-5 tests.
+
+#### Codex audit round 6 (2026-10-18, PASS with one medium, fixed)
+- An entry serving the personal scope in another letter case (with `dial: never`) was folded in, and the new exact compat scope took its selection. The takeover check now also refuses when the server entry itself, after the fold, serves the personal scope in another case. Replayed by the round-6 test.
+
+#### Codex audit round 7 (2026-10-18, PASS with one medium, fixed)
+- A personal scope in another letter case could still be folded into a server entry that already served the scope, reordering the case-folded personal selection (and its dial). The fold now keeps an entry separate when any entry, the server entry and other folding entries included, serves its personal scope in another letter case (`scope-served-elsewhere`). Replayed by the round-7 tests.
+
+#### Codex audit round 8 (2026-10-18, PASS with one medium, fixed)
+- A metadata-free entry folded into a server entry whose `scope_settings` held a dormant value for its scope woke that value (e.g. `dial: never`). The fold now requires every source in force (each folding entry, and the server entry when it serves the scope) to equal the folded result exactly, absent keys included; otherwise `metadata-differs`. Stricter than `fold_md_keeps_set`'s hypothesis, so that theorem still applies (`PerScope.ok`). The pure test "a scope already pinned is not repeated" now gives the server entry the same settings, since a fold no longer changes them. Replayed by the round-8 test.

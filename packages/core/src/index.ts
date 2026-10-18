@@ -8,10 +8,10 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
-import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope } from './store-expand.js'
+import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope, isSafeScopeName } from './store-expand.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
-import { acceptDiscoveredScopes, type DiscoveryStatus, type ScopeRejection } from './server-discovery.js'
+import { acceptDiscoveredScopes, registerServerEntry, type DiscoveryStatus, type ScopeRejection, type FoldReport } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
@@ -640,8 +640,8 @@ export interface RemoteScopeDiscovery {
   error?: string
 }
 
-export { acceptDiscoveredScopes } from './server-discovery.js'
-export type { DiscoveryStatus, ScopeRejection, AcceptedDiscovery } from './server-discovery.js'
+export { acceptDiscoveredScopes, foldStoresIntoServerEntry } from './server-discovery.js'
+export type { DiscoveryStatus, ScopeRejection, AcceptedDiscovery, FoldReport, FoldKeptReason } from './server-discovery.js'
 
 /**
  * Result of {@link Plur.refreshServerScopes} for one server entry (#1631).
@@ -13208,6 +13208,107 @@ Generate an improved version of the procedure that prevents this failure. Return
       : [...(config.stores ?? []), newEntry]
     this.persistStores(stores)
     return { status: scopeConflict ? 'overwritten' : 'added', scope }
+  }
+
+  /**
+   * Register a company server as one store entry and fold the per-scope
+   * entries that hold the same key into it (#1631, plan B Task 5).
+   *
+   * Creates or updates the one server entry for the url's canonical endpoint
+   * identity ({@link normalizeEndpointUrl}). A new entry gets its compat
+   * `scope` here, from `personalScope` — the `user:<org>:<username>` scope of
+   * the /me answer the caller already holds (owner decision O6) — so an entry
+   * is never without one. A new key for the same server replaces the key in
+   * that same entry (`updated`) and keeps its `scope`, `scopes`,
+   * `pinned_scopes`, `scope_settings`, `discovery` and `enterprise`; no other
+   * entry's key changes. `opts.enterprise` is merged into the `enterprise`
+   * block. Per-scope entries on the same server whose `token`, `token_env` and
+   * `readonly` equal the server entry's are folded into it
+   * ({@link foldStoresIntoServerEntry}); the others are listed in
+   * `kept_separate`. Two server entries for the url are refused.
+   *
+   * No network call: the caller runs `refreshServerScopes({ url })` next. The
+   * read-modify-write runs under the config lock on the file as it is then and
+   * is written atomically, only when something changed (`unchanged` leaves the
+   * file byte-identical). With `tokenEnv` the file holds the variable's name,
+   * never the key. No key reaches the result, an error or the log.
+   */
+  async registerEnterpriseServer(url: string, opts: {
+    token?: string; tokenEnv?: string; personalScope: string; enterprise?: Record<string, string>
+  }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport }> {
+    let parsed: URL
+    try { parsed = new URL(url) } catch {
+      throw new Error('registerEnterpriseServer: the server address is not a valid http(s) URL')
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`registerEnterpriseServer: the server address must be http(s), not ${parsed.protocol}`)
+    }
+    if (parsed.username || parsed.password) {
+      // A key in the address would be written to config.yaml and shown in logs.
+      throw new Error(`registerEnterpriseServer: the server address for ${safeOrigin(url)} carries a user name or password; pass the key as token or tokenEnv instead`)
+    }
+    const tokenEnv = opts?.tokenEnv || undefined
+    if (tokenEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) {
+      throw new Error('registerEnterpriseServer: tokenEnv must be an environment variable name')
+    }
+    if (!tokenEnv && (typeof opts?.token !== 'string' || opts.token === '')) {
+      throw new Error(`registerEnterpriseServer: no key was given for ${safeOrigin(url)} (token or tokenEnv)`)
+    }
+    const personal = opts?.personalScope
+    if (typeof personal !== 'string' || !/^user:[^:/\s]+:[^:/\s]+$/.test(personal) || !isSafeScopeName(personal)) {
+      throw new Error('registerEnterpriseServer: personalScope must be the personal scope (user:<org>:<username>) the server named')
+    }
+
+    // Read the outbox first: a failure here must not follow a written key.
+    const outbox = await this.listOutbox()
+    let result: ReturnType<typeof registerServerEntry> | undefined
+    try {
+      this._updateRawStores(rawStores => {
+        try {
+          result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise })
+        } catch (err) {
+          throw new Error(`registerEnterpriseServer: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        if (result.status === 'unchanged') return false
+        // The file is about to hold a key: owner-only on POSIX, under the lock
+        // and before atomicWrite reads the mode it keeps. Windows ACLs: B1b.
+        if (process.platform !== 'win32') {
+          try {
+            const mode = fs.statSync(this.paths.config).mode & 0o777
+            if (mode & 0o077) fs.chmodSync(this.paths.config, mode & 0o700)
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+              throw new Error(`registerEnterpriseServer: config.yaml could not be made owner-only (${(err as NodeJS.ErrnoException)?.code ?? 'error'}). Nothing was changed.`)
+            }
+          }
+        }
+        rawStores.splice(0, rawStores.length, ...result.stores)
+        return true
+      })
+    } catch (err) {
+      const e = err as { message?: unknown; name?: unknown; mark?: { line?: unknown }; code?: unknown }
+      if (typeof e?.message === 'string' && e.message.startsWith('registerEnterpriseServer: ')) throw err
+      // A YAML error quotes the lines around the fault, and its reason can
+      // name an alias or tag from the file; either can hold a key. Name the
+      // line number only.
+      if (e?.name === 'YAMLException') {
+        const line = typeof e.mark?.line === 'number' ? ` at line ${e.mark.line + 1}` : ''
+        throw new Error(`registerEnterpriseServer: config.yaml is not valid YAML${line}. Nothing was changed.`)
+      }
+      throw new Error(`registerEnterpriseServer: config.yaml could not be updated${typeof e?.code === 'string' ? ` (${e.code})` : ''}. Nothing was changed.`)
+    }
+    const r = result!
+    const served = new Set<string>([
+      ...(typeof r.entry.scope === 'string' ? [r.entry.scope] : []),
+      ...stringList(r.entry.scopes), ...stringList(r.entry.pinned_scopes),
+    ])
+    const counts = new Map<string, number>()
+    for (const row of outbox) {
+      if (served.has(row.target_scope)) counts.set(row.target_scope, (counts.get(row.target_scope) ?? 0) + 1)
+    }
+    const queued_by_scope: Record<string, number> = Object.fromEntries(counts)
+    logger.info(`[plur:register] ${r.status} the server entry for ${safeOrigin(url)}: ${r.report.folded.length} folded, ${r.report.kept_separate.length} kept separate`)
+    return { status: r.status, fold: { ...r.report, queued_by_scope } }
   }
 
   /**
