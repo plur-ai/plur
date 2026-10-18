@@ -830,7 +830,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // is the ceiling on the WHOLE run (embedder load, fs stalls, stray async).
   // Installed after the folder gate so it only fires for
   // sessions that actually do work. unref() prevents it from delaying clean exit.
-  runStartedAt = Date.now()
+  // Counted from PROCESS START, not from here: Claude Code's 20s kill counts
+  // from when it spawned the hook, and module loading on a busy machine
+  // otherwise came on top of the ceiling (HK-3 ran past 20s with a 15s ceiling).
+  runStartedAt = performance.timeOrigin
   // #1343: the watchdog can fire mid-way through a store write, and exiting
   // there leaves the lock behind. Wait (bounded) until the store is idle first.
   const watchdog = setTimeout(() => {
@@ -844,7 +847,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
       process.exit(0)
     })
-  }, HOOK_CEILING_MS)
+  }, Math.max(0, runStartedAt + HOOK_CEILING_MS - Date.now()))
   watchdog.unref()
 
   const key = sessionKey(input)
