@@ -43,6 +43,10 @@ As first built, a remaining `~/.plur/config.json` whose key the server still acc
 - Replays: the process test "a config.json for a server config.yaml already signs in to …" (red before the fix: the old key replaced the current one), and "config.json is set aside through the same helper; when that fails it stays where it is".
 - Mutation checks: dropping the `held` test breaks `held_never_replaced` and `old_replaces_held`; setting the file aside without the copy breaks `moved_only_when_copied`.
 
+## L5. Gate review, Codex round 1 (2026-10-18)
+
+Fixed: the poll has one deadline (no wait past it, no key after it); the request timeout covers the body; every line after sign-in is redacted with the key; the `--remove-stale` backup is taken under registration's lock (`beforeRemove`); the config.json move re-checks `held` under the lock (`keepSignIn`). An older entry that keeps serving the personal scope ahead of the new one is not refused by core (by design, `register-enterprise-server.test.ts`); `plur login` now says so and exits 1. Whether registration should refuse it is an owner question.
+
 ## Not verified
 
 - A real server: the device endpoints are tested through a scripted fetch and an in-test server with the C3 shapes (the enterprise contract stub's), not the A8 server.

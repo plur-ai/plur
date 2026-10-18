@@ -254,7 +254,9 @@ Registration names the entries that hold the personal scope (`holder`;
 registration's own verdict — a path entry serving it exactly is not one, it
 keeps the writes either way). Without `removeStale`, a holder refuses the
 whole registration. With it, and when every holder can be removed, exactly the
-holders are dropped before the server entry is written, in the same write. -/
+holders are dropped before the server entry is written, in the same write.
+The backup of config.yaml is taken under the same lock, from the file as
+read (`beforeRemove`, gate of #1665); a backup that fails writes nothing. -/
 namespace Stale
 
 structure Entry where
@@ -324,7 +326,10 @@ Gate review of #1665, 2026-10-18. `held`: config.yaml already holds a sign-in
 locked write; `takeover` refused because another entry holds the personal
 scope; `failed` any other refusal). `copied`: the owner-only copy of the file
 (core's `protectOwnerOnly`) was made. The result is the config written, if
-any, and whether the file left its place. -/
+any, and whether the file left its place. `held` is judged twice: before
+`/me` (so the old key is not sent) and again by registration under the
+config lock (`keepSignIn`), so a sign-in another process writes meanwhile
+counts as held too; the model takes the value registration sees. -/
 namespace Legacy
 
 inductive Me | ok | rejected | unknown

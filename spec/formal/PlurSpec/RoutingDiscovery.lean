@@ -49,6 +49,11 @@ holders, the same message); it is now a `PersonalScopeTakenError` that names tho
 `removeStale` drops exactly them before the same registration runs again, in the same locked write
 (modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
 Discovery and the cache write are untouched.
+Gate of #1665 (same day): two options added, both still within one locked write. `keepSignIn`
+refuses (`SignInHeldError`, nothing written) when any entry already has the server's url — the
+one-time config.json move uses it (Login.lean §3, `held`, now judged under the lock). `beforeRemove`
+runs under the lock before a write that removes holders, and a throw writes nothing (the
+owner-only backup of config.yaml). The holder rule itself is unchanged.
 -/
 
 set_option linter.unusedSimpArgs false
