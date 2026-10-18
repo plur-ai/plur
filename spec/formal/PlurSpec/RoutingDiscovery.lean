@@ -1022,9 +1022,12 @@ theorem no_write_to_other_scope (personal : S → Bool) (orgOf : S → Option O)
     route personal orgOf s l ≠ some e :=
   fun h => he (route_exact personal orgOf s l e h).2.1
 
-/-- The explicit-scope id lookups (index.ts `_scopedUrlEntry`: forget, feedback, setPinned;
-row 34): `none` = refused (ScopeConflictError, no server asked); `some none` = no url store
-claims the scope exactly (the local paths and guards run); `some (some e)` = act on `e`. -/
+/-- The explicit-scope id lookups (index.ts `_scopedUrlEntry`: forget, feedback; row 34):
+`none` = refused (ScopeConflictError, no server asked); `some none` = no url store claims the
+scope exactly (the local paths and guards run); `some (some e)` = act on `e`. setPinned and
+pinnedQuota (`_pinTargetEntry`) run the same lookup over the writable entries only (a readonly
+store never receives the PATCH, #1532 R6); every theorem below holds for any list, so for that
+sublist too, and an entry of the sublist is an entry of the config. -/
 def lookup (personal : S → Bool) (orgOf : S → Option O) (s : S) (l : List (Entry S U O)) :
     Option (Option (Entry S U O)) :=
   match resolve personal orgOf s l with

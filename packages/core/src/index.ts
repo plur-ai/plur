@@ -2593,6 +2593,18 @@ export class Plur {
   }
 
   /**
+   * The store a scoped pin PATCHes (#1633 row 34): {@link _scopedUrlEntry}
+   * over the writable stores only, so a readonly store listed for the same
+   * scope never competes (#1532 re-audit R6) and two writable servers are a
+   * refused conflict.
+   */
+  private _pinTargetEntry(scope: string, outcome: string): StoreEntry | undefined {
+    const target = resolveScopeTarget(scope, (this.config.stores ?? []).filter(s => s.readonly !== true))
+    if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers, outcome)
+    return target.kind === 'remote' ? target.entry : undefined
+  }
+
+  /**
    * Decision E1 "me-only" (2026-09-26): the `/me` identity each remote token
    * last reported, keyed `normalizedUrl::token`. Filled by every successful
    * `/me` this instance makes (`discoverRemoteScopes`, `checkRemoteHealth`);
@@ -9048,12 +9060,13 @@ export class Plur {
       throw new TypeError('plur.setPinned: scope must be a non-empty string')
     }
     if (targetScope) this.reloadConfigIfChanged()
-    // The resolver's entry (#1633 row 34); a scope two servers claim is
-    // refused before either is asked.
-    const named = targetScope && targetScope !== 'primary'
-      ? this._scopedUrlEntry(targetScope, `nothing was ${pinned ? 'pinned' : 'unpinned'}`)
+    // The resolver's entry over the stores a pin can write to (#1633 row 34):
+    // a readonly store never receives the PATCH, so it does not compete
+    // (#1532 re-audit R6), and a scope two WRITABLE servers claim is refused
+    // before either is asked.
+    const scopedEntry = targetScope && targetScope !== 'primary'
+      ? this._pinTargetEntry(targetScope, `nothing was ${pinned ? 'pinned' : 'unpinned'}`)
       : undefined
-    const scopedEntry = named && named.readonly !== true ? named : undefined
     if (targetScope && targetScope !== 'primary' && !scopedEntry) {
       throw new Error(`Cannot pin in scope "${targetScope}": no writable url store is registered for it. Use scope "primary" for the local engram.`)
     }
@@ -9384,7 +9397,7 @@ export class Plur {
     // no pin to cost — and no server is asked for the row.
     const quotaScope = options?.scope
     const quotaTarget = quotaScope && quotaScope !== 'primary'
-      ? resolveScopeTarget(quotaScope, this.config.stores ?? [])
+      ? resolveScopeTarget(quotaScope, (this.config.stores ?? []).filter(s => s.readonly !== true))
       : undefined
     if (candidateId && quotaTarget?.kind !== 'conflict') {
       // #1532 review F6: cost the engram the pin will actually change. A bare
