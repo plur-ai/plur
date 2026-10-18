@@ -8,6 +8,7 @@ import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, v
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
+import { setBackgroundDiscovery, startBackgroundDiscovery } from './background-discovery.js'
 import { VERSION } from './version.js'
 
 // ── Enterprise login helpers ──────────────────────────────────────────────────
@@ -200,9 +201,15 @@ export async function closeWhenIdle(server: Server, timeoutMs?: number): Promise
 // (tests create one per case — stacking an interval per server would leak).
 let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
 
-export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
+export async function createServer(plur?: Plur, options?: { profile?: ToolProfile; discovery?: boolean }): Promise<Server> {
   const instance = plur ?? new Plur()
   const profile = options?.profile ?? 'lean'
+  // A company server's scopes are discovered in the background (#1631): the
+  // editor's startup window must never wait on /me. Started, not awaited;
+  // tools use the cached scopes until it settles. `discovery: false` turns it
+  // off for this instance (plur_session_start then starts none either).
+  setBackgroundDiscovery(instance, options?.discovery !== false)
+  startBackgroundDiscovery(instance)
   // #761: record what we actually exposed, so plur_doctor reports THIS surface
   // rather than re-deriving one from the environment — which is not the
   // authority here, since the profile arrives as an option.

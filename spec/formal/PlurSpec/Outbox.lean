@@ -32,6 +32,11 @@ remote-store.ts changed only `me()` (C1 /me fields; a non-2xx now throws
 Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
 exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
 this model covers changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; the outbox and the push path are untouched.
 -/
 
 namespace PlurSpec.Outbox

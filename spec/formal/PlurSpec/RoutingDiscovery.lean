@@ -17,6 +17,11 @@ scan's verdict on the content. Every theorem holds for every such oracle. The pe
 (`personalStoreEntry`'s first-minimum-rank reduce) is modelled by the equivalent cascade of
 `find?` per rank. Left out: string grammar of scopes, the cooldown/held-back filters of the flush
 (they only skip), YAML key order.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; routing and the refresh's cache write are untouched.
 -/
 
 set_option linter.unusedSimpArgs false
