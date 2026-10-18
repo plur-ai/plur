@@ -59,6 +59,10 @@ Codex round 3 (2026-10-18): still holds. In a remote-only folder the semantic pa
 (no embedder, no reranker), plur migrate up/down refuses, auto-rate binds before its lookups, agy does
 not replay a turn cache from another folder mode, Cursor removes other roots' generated rules, and the
 session hooks omit the raw Project scope line. Outside remote-only folders nothing changed.
+Codex rounds 6-7 (2026-10-18): still holds. plur tensions --scan and plur audit refuse in a remote-only
+folder; agy replays a turn cache only under the same decision and scope; Cursor treats an unreadable
+map as off for the whole workspace and removes every root's generated rule. pinnedQuota asks only a
+team store while bound. No modelled adapter path changes outside remote-only folders and broken maps.
 
 Checked against #1631 background discovery (2026-10-18): still holds.
 plur_session_start starts a background scope refresh for company server
