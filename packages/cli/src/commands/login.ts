@@ -1,15 +1,23 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, chmodSync, rmSync, constants as fsConstants } from 'fs'
+import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir, hostname, release } from 'os'
 import {
   doctorRemoteRemediation, normalizeEndpointUrl, redactToken, detectPlurStorage, PersonalScopeTakenError,
-  type RemoteHealth, type ScopeHolder,
+  type RemoteHealth,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputInfo, outputError, outputJson, shouldOutputJson } from '../output.js'
 import { urlOpener } from '../lib/open-url.js'
 import { deviceName, isHeadless, isWslRelease } from '../enterprise/device-name.js'
 import { migrateLegacyLogin } from '../enterprise/legacy-login.js'
+import {
+  normaliseHost, readJson, fetchMe, personalScopeOf, holderLine, takeoverMessage, backupSecretFile,
+  type FetchFn, type MeAnswer,
+} from '../enterprise/sign-in-shared.js'
+
+// Shared with enterprise/legacy-login.ts through sign-in-shared.ts (no import
+// cycle); re-exported here, where callers and tests have always found them.
+export { normaliseHost, fetchMe, personalScopeOf, takeoverMessage, type MeAnswer }
 
 /**
  * plur login — enterprise token status (#587) and device sign-in (#1638).
@@ -183,35 +191,6 @@ export function signalReload(baseDir?: string): string {
 
 // ── OAuth device flow (RFC 8628, contract C3) ────────────────────────────────
 
-/** True for a loopback host, the only place http:// is allowed. */
-function isLoopback(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
-}
-
-/**
- * Normalise the host to an origin URL (strips trailing slashes and paths).
- * Rejects http:// for non-localhost hosts — enterprise tokens must not travel over plaintext.
- */
-export function normaliseHost(host: string): string {
-  let origin: string
-  try {
-    origin = new URL(host).origin
-  } catch {
-    // If missing scheme, try prepending https://
-    try {
-      origin = new URL(`https://${host}`).origin
-    } catch {
-      throw new Error(`Invalid host: ${host}. Provide a full URL, e.g. https://plur.example.com`)
-    }
-  }
-  if (origin === 'null') throw new Error(`Invalid host: ${host}. Provide a full URL, e.g. https://plur.example.com`)
-  const parsed = new URL(origin)
-  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopback(parsed.hostname))) {
-    throw new Error(`Insecure host: ${host}. Use https:// (http:// is only permitted for localhost).`)
-  }
-  return origin
-}
-
 /** The client id the server knows this CLI by (C3). */
 export const DEVICE_CLIENT_ID = 'plur-cli'
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
@@ -229,7 +208,6 @@ const TRANSIENT_MAX = 3
 const REQUEST_TIMEOUT_MS = 10_000
 const DEFAULT_RERUN_HINT = 'Run `plur login` again.'
 
-type FetchFn = typeof fetch
 type SleepFn = (ms: number) => Promise<void>
 
 function sleep(ms: number): Promise<void> {
@@ -259,15 +237,6 @@ async function postJson(f: FetchFn, url: string, body: unknown): Promise<Respons
     })
   } finally {
     clearTimeout(timer)
-  }
-}
-
-async function readJson(r: Response): Promise<Record<string, unknown> | undefined> {
-  try {
-    const v = await r.json() as unknown
-    return v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : undefined
-  } catch {
-    return undefined
   }
 }
 
@@ -356,8 +325,10 @@ export async function pollForToken(
       continue
     }
     if (r.status === 429) {
+      // Never sooner than the interval: a Retry-After of 0 must not turn the
+      // poll into a tight loop against the server.
       const ra = retryAfterSeconds(r)
-      if (ra !== undefined) nextWaitMs = ra * 1000
+      if (ra !== undefined) nextWaitMs = Math.max(ra * 1000, intervalMs)
       else intervalMs += SLOW_DOWN_MS
       continue
     }
@@ -434,55 +405,14 @@ export async function deviceSignIn(opts: DeviceSignInOptions): Promise<DeviceSig
   const tok = await pollForToken(origin, dev.device_code, interval, timeout, undefined,
     { fetch: opts.fetch, sleep: opts.sleep, rerunHint: opts.rerunHint })
 
-  const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 256
+  // These are printed (the user name and key name): no control characters,
+  // so a server answer cannot drive the terminal.
+  const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 256 && !/\p{Cc}/u.test(v)
   if (typeof tok.token_type !== 'string' || tok.token_type.toLowerCase() !== 'bearer' ||
     !KEY_RE.test(tok.access_token) || !str(tok.username) || !str(tok.key_id) || !str(tok.key_name)) {
     throw new Error(UNEXPECTED)
   }
   return { key: tok.access_token, keyId: tok.key_id, keyName: tok.key_name, username: tok.username }
-}
-
-export type MeAnswer =
-  | { status: 'ok'; username: string; orgId: string; scopes: string[] }
-  | { status: 'rejected'; httpStatus: number }
-  | { status: 'unknown'; reason: string }
-
-/**
- * GET /api/v1/me with the key: who the key belongs to. 401/403 → rejected;
- * a network error, a timeout, another status or an answer without a username
- * and org → unknown. Never throws; the reason never carries the key.
- */
-export async function fetchMe(origin: string, key: string, opts: { fetch?: FetchFn; timeoutMs?: number } = {}): Promise<MeAnswer> {
-  const f = opts.fetch ?? fetch
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 5_000)
-  try {
-    const r = await f(`${origin}/api/v1/me`, {
-      signal: ctrl.signal,
-      headers: { 'authorization': `Bearer ${key}`, 'accept': 'application/json' },
-    })
-    if (r.status === 401 || r.status === 403) return { status: 'rejected', httpStatus: r.status }
-    if (!r.ok) return { status: 'unknown', reason: `HTTP ${r.status}` }
-    const data = await readJson(r)
-    const username = data?.username
-    const orgId = data?.org_id
-    if (typeof username !== 'string' || !username || typeof orgId !== 'string' || !orgId) {
-      return { status: 'unknown', reason: 'the answer names no user and org' }
-    }
-    const scopes = Array.isArray(data!.scopes) ? (data!.scopes as unknown[]).filter((s): s is string => typeof s === 'string') : []
-    return { status: 'ok', username, orgId, scopes }
-  } catch (err) {
-    return { status: 'unknown', reason: (err as Error)?.name === 'AbortError' ? 'timed out' : 'network error' }
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-/** The personal scope of a /me answer: the one the server lists for this
- *  user (its own spelling), else `user:<org>:<username>`. */
-export function personalScopeOf(me: { username: string; orgId: string; scopes: string[] }): string {
-  const want = `user:${me.orgId}:${me.username}`
-  return me.scopes.find(s => s.toLowerCase() === want.toLowerCase()) ?? want
 }
 
 /**
@@ -759,51 +689,6 @@ function parseArgs(args: string[]): ParsedArgs {
 
 // ── Sign-in: write the server entry ──────────────────────────────────────────
 
-/** How one registered entry is named to the user: origin or path, scope, readonly. */
-function holderLine(h: ScopeHolder): string {
-  const where = h.url ?? (h.path ? `path ${h.path}` : '(an entry without url or path)')
-  return `  - ${where} (scope ${h.scope}${h.readonly ? ', read-only' : ''}${h.sameServer ? ', this server\'s own entry' : ''})`
-}
-
-/**
- * The message for a refused takeover of the personal scope (owner decision on
- * B5: refuse; the installer offers to remove the stale entry). Names every
- * entry that holds the scope and the command that removes them.
- */
-export function takeoverMessage(err: PersonalScopeTakenError, origin: string, configPath: string,
-  wording: { lead?: string; notSaved?: string } = {}): string[] {
-  const one = err.holders.length === 1
-  const lines = [
-    `${wording.lead ?? `Signed in, but ${origin} was not saved:`} your personal scope ${err.personalScope} is already served by`,
-    `${one ? 'another entry' : 'other entries'} in ${configPath}:`,
-    ...err.holders.map(holderLine),
-    `Saving ${origin} would move your personal writes away from ${one ? 'it' : 'them'}. Nothing was changed${wording.notSaved ?? ', and the key from this sign-in was not saved'}.`,
-  ]
-  if (err.removable) {
-    lines.push(
-      `To remove ${one ? 'that entry' : 'those entries'} and sign in again (config.yaml is backed up first):`,
-      `  plur login ${origin} --remove-stale`,
-    )
-  } else {
-    lines.push(
-      `${origin}'s own entry serves your personal scope in another spelling. Remove that spelling from its`,
-      `scope, scopes or pinned_scopes in ${configPath}, then run \`plur login ${origin}\` again.`,
-    )
-  }
-  return lines
-}
-
-/** Copy config.yaml to `<root>/backups/<stamp>/config.yaml`, owner-only. Undefined when there is none. */
-function backupConfig(configPath: string, root: string): string | undefined {
-  if (!existsSync(configPath)) return undefined
-  const dir = join(root, 'backups', new Date().toISOString().replace(/[:.]/g, '-'))
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const dest = join(dir, 'config.yaml')
-  copyFileSync(configPath, dest, fsConstants.COPYFILE_EXCL)
-  try { chmodSync(dest, 0o600) } catch { /* Windows: the folder's ACL applies */ }
-  return dest
-}
-
 async function runSignIn(origin: string, parsed: ParsedArgs, flags: GlobalFlags): Promise<never> {
   // Nothing is written until the key has arrived, been checked and its /me
   // answered; registration is then one locked, atomic write. A ctrl-C before
@@ -856,7 +741,7 @@ async function runSignIn(origin: string, parsed: ParsedArgs, flags: GlobalFlags)
   let backup: string | undefined
   let result: Awaited<ReturnType<typeof plur.registerEnterpriseServer>>
   try {
-    if (parsed.removeStale) backup = backupConfig(configPath, dirname(configPath))
+    if (parsed.removeStale && existsSync(configPath)) backup = backupSecretFile(dirname(configPath), configPath)
     result = await plur.registerEnterpriseServer(origin, { token: key, personalScope, removeStale: parsed.removeStale === true })
     saved = true
   } catch (err) {

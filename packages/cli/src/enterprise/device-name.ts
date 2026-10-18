@@ -14,16 +14,29 @@ const PLATFORM_LABEL: Partial<Record<NodeJS.Platform, string>> = {
 }
 
 /**
- * `"<host> (Windows|macOS|Linux|Linux (WSL))"`, at most 80 characters. A long
- * host name is cut so the platform suffix survives; control characters in the
- * host name are dropped.
+ * The characters the server refuses in a device name (it is shown to the
+ * approving user): control, format (bidi overrides), surrogate, line and
+ * paragraph separator characters. The server's own rule, `deviceNameOf`.
+ */
+const SERVER_REFUSED = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu
+
+/**
+ * `"<host> (Windows|macOS|Linux|Linux (WSL))"`, at most 80 characters (UTF-16
+ * units, as the server counts). A long host name is cut so the platform suffix
+ * survives, never inside a surrogate pair; the characters the server refuses
+ * are dropped from the host name.
  */
 export function deviceName(hostname: string, platform: NodeJS.Platform, isWsl: boolean): string {
   const label = platform === 'linux' && isWsl ? 'Linux (WSL)' : PLATFORM_LABEL[platform] ?? platform
   const suffix = ` (${label})`
-  // eslint-disable-next-line no-control-regex
-  const host = hostname.replace(/[\u0000-\u001f\u007f]/g, '').trim() || 'unknown host'
-  return host.slice(0, Math.max(1, DEVICE_NAME_MAX - suffix.length)) + suffix
+  const host = hostname.replace(SERVER_REFUSED, '').trim() || 'unknown host'
+  const room = Math.max(1, DEVICE_NAME_MAX - suffix.length)
+  let cut = ''
+  for (const ch of host) {   // whole code points
+    if (cut.length + ch.length > room) break
+    cut += ch
+  }
+  return (cut.trim() || 'unknown host').slice(0, room) + suffix
 }
 
 /**
