@@ -23,6 +23,12 @@ Checked against #1349 (merged into #1228 on 2026-09-30): still holds.
 (`pendingStoreLockOps`) around the same `processLocks.run(… withFileLock …)`
 call. The counter only observes. Acquire, the crash-safe steal and release
 are unchanged.
+
+Checked against the enterprise-first-install epic (2026-10-18): still holds. sync.ts changed only
+`atomicWrite`'s temp-file creation (opened `wx` with an owner-only mode before the first byte, and
+an owner-only ACL check on Windows for protected destinations). Rename, fsync and symlink handling
+are unchanged, and no section here models file permissions; that property is proved in
+`Persistence` §AtomicTemp (`write_protected`, `refused_leaves_dest`).
 -/
 
 set_option linter.deprecated false
