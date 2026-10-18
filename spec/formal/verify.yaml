@@ -140,3 +140,8 @@ models:
   - model: PlurSpec/GitScope.lean
     covers:
       - packages/core/src/git-origin.ts
+  - model: PlurSpec/Login.lean
+    covers:
+      - packages/cli/src/commands/login.ts
+      - packages/cli/src/enterprise/legacy-login.ts
+      - packages/cli/src/enterprise/device-name.ts
