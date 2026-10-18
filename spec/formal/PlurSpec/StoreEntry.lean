@@ -582,8 +582,10 @@ theorem old_settings_redirects :
 write). Urls are their canonical endpoint identity (`normalizeEndpointUrl`, the url part of
 §3's identity base), so `u` is a number. `c` is the stored credential (`token_env`, then
 `token`, as on disk); `ro` is `readonly`. Metadata of a per-scope entry is `md k`, the
-server entry's `scope_settings[s][k]` is `set s k`. Left out: the `shared`/grammar refusals
-(they only keep more entries separate), the compat-scope metadata move (§1b), order.
+server entry's `scope_settings[s][k]` is `set s k`. `ok` is the code's other eligibility
+checks (grammar and `__proto__`, `shared`, `scope-served-elsewhere`, `metadata-differs`),
+decided before the fold; `fmatch` requires it. Left out: the compat-scope metadata move (§1b),
+order (§6b).
 
 A scope's *routes* are the (url, credential, readonly) triples of the entries that serve it:
 a per-scope entry serves its scope, a server entry its `scopes`, `pinned_scopes` and compat
@@ -596,6 +598,7 @@ structure PerScope where
   c : Nat
   ro : Bool
   md : Nat → Option Nat
+  ok : Bool := true
 
 structure Server where
   u : Nat
@@ -607,7 +610,7 @@ structure Server where
   set : Nat → Nat → Option Nat
 
 /-- The fold condition (server-discovery.ts `keptReason` returns null). -/
-def fmatch (v : Server) (p : PerScope) : Bool := p.u == v.u && p.c == v.c && p.ro == v.ro
+def fmatch (v : Server) (p : PerScope) : Bool := p.u == v.u && p.c == v.c && p.ro == v.ro && p.ok
 
 /-- One folded entry: its scope joins `pinned_scopes`, its metadata goes to
 `scope_settings[scope]` over a value already there for the same key. -/
@@ -658,7 +661,7 @@ theorem serves_foldOne (v : Server) (p : PerScope) (s : Nat) : serves (foldOne v
 
 theorem fmatch_eq {v : Server} {p : PerScope} (h : fmatch v p = true) : (p.u, p.c, p.ro) = (v.u, v.c, v.ro) := by
   simp [fmatch] at h
-  obtain ⟨⟨hu, hc⟩, hr⟩ := h
+  obtain ⟨⟨⟨hu, hc⟩, hr⟩, _⟩ := h
   rw [hu, hc, hr]
 
 /-- The server entry keeps its url, key, readonly, compat scope and scopes. -/
@@ -793,6 +796,29 @@ theorem fold_preserves_metadata (v : Server) (pre post : List PerScope) (p : Per
 theorem fold_md_untouched (v : Server) (ps : List PerScope) (s k : Nat)
     (h : ∀ p ∈ ps, ¬ (fmatch v p = true ∧ p.s = s)) : (fold v ps).1.set s k = v.set s k := by
   rw [fold_md]; exact mdAfter_skip v ps s k _ h
+
+/-- THEOREM (metadata in force, `metadata-differs`): when every entry that folds into scope `s`
+agrees with the server entry's value for key `k` or has none (the code's eligibility check),
+a value the server entry already had for `s`/`k` is the value after the fold. -/
+theorem fold_md_keeps_set (v : Server) (s k x : Nat) : ∀ ps : List PerScope,
+    (∀ p ∈ ps, fmatch v p = true → p.s = s → p.md k = some x ∨ p.md k = none) →
+    v.set s k = some x → (fold v ps).1.set s k = some x := by
+  intro ps h hv
+  rw [fold_md]
+  unfold mdAfter
+  rw [hv]
+  clear hv
+  induction ps with
+  | nil => rfl
+  | cons q qs ih =>
+    simp only [List.foldl_cons]
+    have hq := h q (List.mem_cons_self ..)
+    have ih' := ih (fun p hp => h p (List.mem_cons_of_mem _ hp))
+    by_cases hc : (fmatch v q && q.s == s) = true
+    · simp only [hc, if_true]
+      have ⟨h1, h2⟩ := Bool.and_eq_true_iff.mp hc
+      rcases hq h1 (beq_iff_eq.mp h2) with hm | hm <;> rw [hm] <;> exact ih'
+    · simp only [hc]; exact ih'
 
 /-! ### Mutation: fold without the key check (the bug `keptReason` prevents)
 

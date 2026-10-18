@@ -191,12 +191,33 @@ function sameRoute(x: string, scope: string): boolean {
   return scope.toLowerCase().startsWith('user:') && x.toLowerCase() === scope.toLowerCase()
 }
 
+/**
+ * Where a write to the personal scope `scope` goes, from raw entries, as
+ * scope-target.ts `personalStoreEntry` selects it: the entries serving it
+ * exactly (else case-folded), then a path entry, a writable url entry, a
+ * readonly one, config order breaking ties. The route is the url's canonical
+ * identity (or the path), the stored credential and readonly; undefined when
+ * no entry serves it.
+ */
+function personalRoute(rawStores: unknown[], scope: string): string | undefined {
+  const serving = (exact: boolean) => rawStores.filter(r => isPlainObj(r) &&
+    servedScopes(r).some(x => (exact ? x === scope : x.toLowerCase() === scope.toLowerCase()))) as Record<string, unknown>[]
+  const exact = serving(true)
+  const cands = exact.length ? exact : serving(false)
+  const rank = (r: Record<string, unknown>): number => (typeof r.url !== 'string' ? 0 : r.readonly !== true ? 1 : 2)
+  const best = cands.reduce<Record<string, unknown> | undefined>((b, r) => (b === undefined || rank(r) < rank(b) ? r : b), undefined)
+  if (!best) return undefined
+  return JSON.stringify([typeof best.url === 'string' ? normalizeEndpointUrl(best.url) : `path:${String(best.path)}`,
+    str(best.token_env) ?? null, str(best.token) ?? null, best.readonly === true])
+}
+
 /** The reason a same-server per-scope entry is not folded, or null to fold it.
  *  The credential is compared as stored on disk: the reference (`token_env`)
  *  first, then the inline key, then `readonly`. */
 function keptReason(r: Record<string, unknown>, scope: string, token: string | undefined, tokenEnv: string | undefined,
   readonly: boolean): FoldKeptReason | null {
-  if (!isSafeScopeName(scope)) return 'invalid-scope'
+  // `__proto__` would set the prototype of scope_settings, not a key of it.
+  if (!isSafeScopeName(scope) || scope === '__proto__') return 'invalid-scope'
   if (str(r.token_env) !== tokenEnv) return 'different-token-env'
   if (str(r.token) !== token) return 'different-token'
   if ((r.readonly === true) !== readonly) return 'readonly-differs'
@@ -368,6 +389,18 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   }
   const { stores: folded, report } = foldStoresIntoServerEntry(stores, reg.url, token, tokenEnv)
   const entry = folded[serverEntriesAt(folded, key)[0]] as Record<string, unknown>
+  // The compat scope is the one claim registration adds. When another entry
+  // already takes the personal scope's writes, this entry must not take them
+  // over (another server or key); a re-run with a new key for the entry that
+  // already serves it changes its key, which is the point of the re-run.
+  const oldEntry = at.length ? rawStores[at[0]] : undefined
+  const alreadyServed = servedScopes(oldEntry).includes(reg.personalScope)
+  if (!alreadyServed) {
+    const before = personalRoute(rawStores, reg.personalScope)
+    if (before !== undefined && before !== personalRoute(folded, reg.personalScope)) {
+      throw new Error(`the personal scope ${reg.personalScope} is already served by another entry in config.yaml, and registering ${safeOrigin(reg.url)} would move its writes there. Nothing was changed. Remove that entry, then register again.`)
+    }
+  }
   const status = at.length === 0 ? 'added' : isDeepStrictEqual(folded, rawStores) ? 'unchanged' : 'updated'
   return { stores: folded, status, report, entry }
 }

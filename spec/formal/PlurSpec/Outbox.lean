@@ -23,6 +23,9 @@ does not. What the network does to each attempt is an adversarial outcome
 chosen per event, so every theorem holds for every schedule of outcomes.
 
 Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
 index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
 `_updateRawStores` (config lock, atomic write) and reads `listOutbox` (read only: the
 queued count per scope it reports); no existing branch modelled
