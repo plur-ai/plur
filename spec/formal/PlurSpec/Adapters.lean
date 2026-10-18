@@ -55,6 +55,10 @@ Claude Code and Codex session-end hooks bind their outbox flush to the payload f
 cursorHookFolder also reads remote-only from every root spelling and the payload cwd; `plur restore
 --yes` and MCP plur_history (no id) / plur_profile refuse in a remote-only folder. Each only removes
 work in a remote-only folder; no modelled path changes elsewhere.
+Codex round 3 (2026-10-18): still holds. In a remote-only folder the semantic paths rank by keyword
+(no embedder, no reranker), plur migrate up/down refuses, auto-rate binds before its lookups, agy does
+not replay a turn cache from another folder mode, Cursor removes other roots' generated rules, and the
+session hooks omit the raw Project scope line. Outside remote-only folders nothing changed.
 
 Checked against #1631 background discovery (2026-10-18): still holds.
 plur_session_start starts a background scope refresh for company server

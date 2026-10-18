@@ -50,6 +50,10 @@ Gate review of #1663 (2026-10-18): still holds. While bound, those walks (and th
 are narrowed further, to the folder's own team store or the store of an explicit deliverable team
 scope, and an explicit team scope first checks that the row it names there is in that team scope.
 Each is a filter that only removes candidates before the modelled walk; unbound, nothing changed.
+Codex round 3 (2026-10-18): still holds. While bound, the bare-id update uses the resolver's exact
+target and a held team row (tri-state probe), the explicit-scope check is tri-state (unknown refuses),
+getByIds drops a personal row from the team host, and cache warming, store listing and old-form id
+resolution contact only the folder's own team store. Again only filters; unbound, unchanged.
 
 Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
 refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
