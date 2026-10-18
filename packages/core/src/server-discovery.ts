@@ -215,6 +215,12 @@ function takesPersonalScope(stores: unknown[], si: number, scope: string): boole
   })
 }
 
+/** True when a url string carries a user name or password. */
+function hasUserinfo(url: unknown): boolean {
+  if (typeof url !== 'string') return false
+  try { const u = new URL(url); return u.username !== '' || u.password !== '' } catch { return false }
+}
+
 /** The reason a same-server per-scope entry is not folded, or null to fold it.
  *  The credential is compared as stored on disk: the reference (`token_env`)
  *  first, then the inline key, then `readonly`. */
@@ -372,6 +378,9 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   } else {
     const i = at[0]
     const old = rawStores[i] as Record<string, unknown>
+    if (hasUserinfo(old.url)) {
+      throw new Error(`the server entry for ${safeOrigin(reg.url)} in config.yaml has a user name or password in its url. Nothing was changed. Remove them from the url (the key belongs in token or token_env), then register again.`)
+    }
     // The old compat scope stays served by this entry (pinned) when nothing
     // else on it lists it: replacing it would drop its route, or hand it to
     // another entry with another key.
@@ -403,8 +412,10 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
     // Field paths only: a schema message can quote the value (#408).
     throw new Error(`the server entry for ${safeOrigin(reg.url)} in config.yaml is not valid (${parsed.error.issues.map(it => it.path.join('.') || '(root)').join(', ')}), so it would not load. Nothing was changed. Fix or remove it, then register again.`)
   }
+  // Only an entry that loaded served its scopes: one the loader rejected
+  // (a numeric token, say) gets no re-run exemption.
   const oldEntry = at.length ? rawStores[at[0]] : undefined
-  const alreadyServed = servedScopes(oldEntry).includes(reg.personalScope)
+  const alreadyServed = ServerStoreEntrySchema.safeParse(oldEntry).success && servedScopes(oldEntry).includes(reg.personalScope)
   if (!alreadyServed) {
     if (takesPersonalScope(folded, si, reg.personalScope)) {
       throw new Error(`the personal scope ${reg.personalScope} is already served by another entry in config.yaml, and registering ${safeOrigin(reg.url)} would move its writes there. Nothing was changed. Remove that entry, then register again.`)

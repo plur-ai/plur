@@ -13251,18 +13251,6 @@ Generate an improved version of the procedure that prevents this failure. Return
       throw new Error('registerEnterpriseServer: personalScope must be the personal scope (user:<org>:<username>) the server named')
     }
 
-    // The file is about to hold a key: owner-only on POSIX before it is written
-    // (atomicWrite keeps an existing file's mode). Windows ACLs: B1b.
-    if (process.platform !== 'win32') {
-      try {
-        const mode = fs.statSync(this.paths.config).mode & 0o777
-        if (mode & 0o077) fs.chmodSync(this.paths.config, mode & 0o700)
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-          throw new Error(`registerEnterpriseServer: config.yaml could not be made owner-only (${(err as NodeJS.ErrnoException)?.code ?? 'error'}). Nothing was changed.`)
-        }
-      }
-    }
     let result: ReturnType<typeof registerServerEntry> | undefined
     try {
       this._updateRawStores(rawStores => {
@@ -13272,6 +13260,18 @@ Generate an improved version of the procedure that prevents this failure. Return
           throw new Error(`registerEnterpriseServer: ${err instanceof Error ? err.message : String(err)}`)
         }
         if (result.status === 'unchanged') return false
+        // The file is about to hold a key: owner-only on POSIX, under the lock
+        // and before atomicWrite reads the mode it keeps. Windows ACLs: B1b.
+        if (process.platform !== 'win32') {
+          try {
+            const mode = fs.statSync(this.paths.config).mode & 0o777
+            if (mode & 0o077) fs.chmodSync(this.paths.config, mode & 0o700)
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+              throw new Error(`registerEnterpriseServer: config.yaml could not be made owner-only (${(err as NodeJS.ErrnoException)?.code ?? 'error'}). Nothing was changed.`)
+            }
+          }
+        }
         rawStores.splice(0, rawStores.length, ...result.stores)
         return true
       })

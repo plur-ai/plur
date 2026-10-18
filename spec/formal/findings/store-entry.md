@@ -172,3 +172,9 @@ The §6 routes are a set, but a write takes the FIRST entry in config order that
 - On POSIX, a config.yaml readable by others is made owner-only before the key is written (atomicWrite keeps an existing file's mode). Windows ACLs remain B1b.
 - `queued_by_scope` is built from a Map, so a scope named like an Object property counts as a number.
 All code-level refusals and checks; replayed by the round-3 tests in `register-enterprise-server.test.ts`. Not modelled (the caller writes nothing on a refusal, as in `register_two_refused`).
+
+#### Codex audit round 4 (2026-10-18)
+- The re-run exemption trusted an entry the loader had rejected; only an entry that passes `ServerStoreEntrySchema` counts as already serving the personal scope.
+- The owner-only step now runs inside the config lock, right before atomicWrite reads the mode it keeps.
+- An existing server entry whose url carries a user name or password is refused, and config.ts's unset-`token_env` warning names the url by its origin only.
+Code-level; replayed by the round-4 tests. Not modelled.
