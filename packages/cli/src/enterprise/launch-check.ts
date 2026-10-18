@@ -1,12 +1,10 @@
+import type { ExecFn } from './exec.js'
+
 // Minimal launch description — will be replaced by wire.ts's LaunchConfig when Task 5 lands.
 export type LaunchConfig = { command: string; args: string[]; env: NodeJS.ProcessEnv }
 
-// Sync exec abstraction — matches the shape used across enterprise tasks.
-export type ExecFn = (
-  cmd: string,
-  args: string[],
-  opts?: { env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string }
-) => { status: number; stdout: string }
+// The shared exec type (env, timeout and stdin) lives in exec.ts with the real adapter.
+export type { ExecFn }
 
 const NPX_NAMES = new Set(['npx', 'npx.cmd', 'npx.exe'])
 
