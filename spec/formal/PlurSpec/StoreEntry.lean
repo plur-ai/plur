@@ -832,10 +832,54 @@ the compat scope; exactly one → its key and compat scope set; more → refused
 writes nothing, so the file is as read). PerScope-scope entries are not touched by this step;
 the fold above then keeps every non-matching one unchanged (`fold_kept`). -/
 
+/-- The selected entry after registration: the new key and compat scope `p`; an old compat
+scope nothing else on the entry lists is pinned, so it stays served (Codex audit round 1). -/
+def rekey (v : Server) (c p : Nat) : Server :=
+  { v with c := c, compat := some p,
+           pinned := match v.compat with
+             | some o => if o = p ∨ o ∈ v.scopes ∨ o ∈ v.pinned then v.pinned else v.pinned ++ [o]
+             | none => v.pinned }
+
+/-- THEOREM: registration keeps every scope the selected entry served (its old compat scope
+included), and adds the new compat scope. -/
+theorem rekey_keeps_served (v : Server) (c p s : Nat) (h : serves v s) : serves (rekey v c p) s := by
+  unfold serves rekey at *
+  cases hc : v.compat with
+  | none =>
+    rw [hc] at h
+    rcases h with h | h | h
+    · exact Or.inl h
+    · exact Or.inr (Or.inl h)
+    · cases h
+  | some o =>
+    rw [hc] at h
+    simp only
+    by_cases hk : o = p ∨ o ∈ v.scopes ∨ o ∈ v.pinned
+    · simp only [hk, if_true]
+      rcases h with h | h | h
+      · exact Or.inl h
+      · exact Or.inr (Or.inl h)
+      · cases h
+        rcases hk with hk | hk | hk
+        · subst hk; exact Or.inr (Or.inr rfl)
+        · exact Or.inl hk
+        · exact Or.inr (Or.inl hk)
+    · simp only [hk, if_false]
+      rcases h with h | h | h
+      · exact Or.inl h
+      · exact Or.inr (Or.inl (List.mem_append_left _ h))
+      · cases h; exact Or.inr (Or.inl (List.mem_append_right _ (List.mem_singleton_self _)))
+
+/-- Mutation: replacing the compat scope without pinning the old one drops its route. -/
+theorem rekey_unpinned_drops :
+    serves srv0 9 ∧ ¬ serves { srv0 with c := 2, compat := some 8 } 9 := by
+  refine ⟨Or.inr (Or.inr rfl), ?_⟩
+  intro h; rcases h with h | h | h <;> simp [srv0] at h
+
 def register (vs : List Server) (u c p : Nat) : Except Unit (List Server) :=
   match (vs.filter (fun v => v.u = u)).length with
   | 0 => .ok (vs ++ [{ u := u, c := c, ro := false, compat := some p, scopes := [], pinned := [], set := fun _ _ => none }])
-  | 1 => .ok (vs.map (fun v => if v.u = u then { v with c := c, compat := some p } else v))
+  | 1 => .ok (vs.map (fun v => if v.u = u then rekey v c p else v))
   | _ => .error ()
 
 /-- THEOREM: on success every server entry for another url is unchanged, and the one for `u`
@@ -864,11 +908,11 @@ theorem register_only_selected (vs vs' : List Server) (u c p : Nat) (h : registe
       | nil => rw [hl] at h1; simp at h1
       | cons a _ => exact ⟨a, List.mem_cons_self ..⟩
     have ⟨hwm, hwu⟩ := List.mem_filter.mp hw
-    refine ⟨?_, ?_, ⟨{ w with c := c, compat := some p }, List.mem_map.mpr ⟨w, hwm, by simp at hwu; simp [hwu]⟩, by simp at hwu; exact hwu⟩⟩
+    refine ⟨?_, ?_, ⟨rekey w c p, List.mem_map.mpr ⟨w, hwm, by simp at hwu; simp [hwu]⟩, by simp at hwu; exact hwu⟩⟩
     · intro v hv hne
       obtain ⟨x, hx, hxv⟩ := List.mem_map.mp hv
       by_cases hxu : x.u = u
-      · simp [hxu] at hxv; subst hxv; exact absurd rfl hne
+      · simp [hxu] at hxv; subst hxv; exact absurd (by simp [rekey, hxu]) hne
       · simp [hxu] at hxv; subst hxv; exact hx
     · intro v hv hu
       obtain ⟨x, hx, hxv⟩ := List.mem_map.mp hv

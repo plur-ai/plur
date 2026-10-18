@@ -13264,13 +13264,14 @@ Generate an improved version of the procedure that prevents this failure. Return
         return true
       })
     } catch (err) {
-      const e = err as { message?: unknown; name?: unknown; reason?: unknown; mark?: { line?: unknown }; code?: unknown }
+      const e = err as { message?: unknown; name?: unknown; mark?: { line?: unknown }; code?: unknown }
       if (typeof e?.message === 'string' && e.message.startsWith('registerEnterpriseServer: ')) throw err
-      // A YAML error quotes the lines around the fault, and those can hold a
-      // key: name the line and the reason only.
+      // A YAML error quotes the lines around the fault, and its reason can
+      // name an alias or tag from the file; either can hold a key. Name the
+      // line number only.
       if (e?.name === 'YAMLException') {
         const line = typeof e.mark?.line === 'number' ? ` at line ${e.mark.line + 1}` : ''
-        throw new Error(`registerEnterpriseServer: config.yaml is not valid YAML${line} (${typeof e.reason === 'string' ? e.reason : 'parse error'}). Nothing was changed.`)
+        throw new Error(`registerEnterpriseServer: config.yaml is not valid YAML${line}. Nothing was changed.`)
       }
       throw new Error(`registerEnterpriseServer: config.yaml could not be updated${typeof e?.code === 'string' ? ` (${e.code})` : ''}. Nothing was changed.`)
     }

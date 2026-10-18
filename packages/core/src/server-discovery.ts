@@ -141,6 +141,11 @@ export type FoldKeptReason =
    *  scope; which of them a write takes depends on config order, so moving it
    *  into the server entry could move the scope onto another key. */
   | 'scope-served-elsewhere'
+  /** Its metadata differs from another source for the scope (another entry
+   *  folded with it, or the server entry's own settings); the one in force
+   *  is the first in config order, so merging could change it — for one,
+   *  weaken a sensitivity policy. */
+  | 'metadata-differs'
 
 export interface FoldReport {
   /** Per-scope entries absorbed into the server entry. */
@@ -255,6 +260,23 @@ export function foldStoresIntoServerEntry(
     const elsewhere = rawStores.some((r, j) => j !== si && why.get(j) !== null && servedScopes(r).some(x => sameRoute(x, scope)))
     if (elsewhere) why.set(i, 'scope-served-elsewhere')
   }
+  // Pass 3: fold a scope only when its metadata has one value: every folding
+  // entry that declares any agrees, and so does the server entry's own
+  // (scope_settings, and the top level for its compat scope).
+  const byScope = new Map<string, number[]>()
+  for (const [i, w] of why) {
+    if (w !== null) continue
+    const scope = (rawStores[i] as Record<string, unknown>).scope as string
+    byScope.set(scope, [...(byScope.get(scope) ?? []), i])
+  }
+  for (const [scope, idx] of byScope) {
+    const own = {
+      ...(server.scope === scope ? entryMetadata(server) : {}),
+      ...(isPlainObj(settings[scope]) ? entryMetadata(settings[scope] as Record<string, unknown>) : {}),
+    }
+    const mds = [own, ...idx.map(i => entryMetadata(rawStores[i] as Record<string, unknown>))].filter(m => Object.keys(m).length)
+    if (mds.some(m => !isDeepStrictEqual(m, mds[0]))) for (const i of idx) why.set(i, 'metadata-differs')
+  }
 
   const slot = Symbol('server entry')
   const out: unknown[] = []
@@ -325,7 +347,16 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   } else {
     const i = at[0]
     const old = rawStores[i] as Record<string, unknown>
-    let e: Record<string, unknown> = withCompatScope({ ...old }, reg.personalScope)
+    // The old compat scope stays served by this entry (pinned) when nothing
+    // else on it lists it: replacing it would drop its route, or hand it to
+    // another entry with another key.
+    const base: Record<string, unknown> = { ...old }
+    const oldScope = old.scope
+    if (typeof oldScope === 'string' && oldScope !== '' && oldScope !== reg.personalScope &&
+      ![...(Array.isArray(old.scopes) ? old.scopes : []), ...(Array.isArray(old.pinned_scopes) ? old.pinned_scopes : [])].includes(oldScope)) {
+      base.pinned_scopes = [...(Array.isArray(old.pinned_scopes) ? old.pinned_scopes : []), oldScope]
+    }
+    let e: Record<string, unknown> = withCompatScope(base, reg.personalScope)
     if (str(e.token_env) !== tokenEnv || str(e.token) !== token || ('token' in e && token === undefined) || ('token_env' in e && tokenEnv === undefined)) {
       e = { ...e }
       if (tokenEnv) { delete e.token; e.token_env = tokenEnv } else { delete e.token_env; e.token = token }

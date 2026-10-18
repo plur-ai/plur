@@ -155,3 +155,8 @@ The §6 routes are a set, but a write takes the FIRST entry in config order that
 - Theorem (§6b): `ordered_fold_preserves_first` — with those two rules, the first entry serving any scope has the same route before and after.
 - Counterexamples: `fold_moves_first_route`, `move_server_moves_first_route`. Replayed: `register-enterprise-server.test.ts`, "a per-scope entry is not folded while another entry …" and "folding never moves the server entry ahead of …" (both red on the code before the fix).
 - Mutation check: dropping the `hnoother` hypothesis (the `scope-served-elsewhere` rule) breaks `ordered_fold_preserves_first`.
+
+#### Codex audit round 1 (2026-10-18)
+- A new personal scope replaced the old compat scope; when nothing else on the entry listed it, its route was dropped or passed to another entry with another key. Fix: the old compat scope is pinned. Model: `rekey` (used by `register`), theorem `rekey_keeps_served`, mutation `rekey_unpinned_drops` (and dropping the pin breaks `rekey_keeps_served`). Replayed: "a new personal scope keeps the old compat scope served by the entry (pinned)".
+- Folding two same-key entries for one scope with different metadata, or one whose metadata differs from the server entry's own settings for the scope, changed the policy in force (the first declaring entry in config order wins, `getScopeMetadata`) — e.g. a weaker sensitivity `allow`. Fix: such entries are kept separate (`metadata-differs`). Like the `shared`/grammar refusals this only keeps more entries separate, so §6 still holds; the policy-in-force selection is not modelled. Replayed: the two `metadata-differs` tests.
+- A YAML error's reason can name an alias or tag from config.yaml; the error now names the line number only (code, not modelled).
