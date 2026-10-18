@@ -47,6 +47,10 @@ As first built, a remaining `~/.plur/config.json` whose key the server still acc
 
 Fixed: the poll has one deadline (no wait past it, no key after it); the request timeout covers the body; every line after sign-in is redacted with the key; the `--remove-stale` backup is taken under registration's lock (`beforeRemove`); the config.json move re-checks `held` under the lock (`keepSignIn`). An older entry that keeps serving the personal scope ahead of the new one is not refused by core (by design, `register-enterprise-server.test.ts`); `plur login` now says so and exits 1. Whether registration should refuse it is an owner question.
 
+## L6. Gate review, Codex round 2 (2026-10-18)
+
+Fixed: a poll in flight at the deadline no longer hands over a key (its timeout is the time left, and a late answer does not count); an unknown token error is not echoed (only known codes are named); a local store that keeps the personal scope also exits 1; a key reflected into `/me` scope metadata is not logged (remote-store.ts names only a granted scope there; a logging change, outside every model); `plur login` builds Plur without project-store discovery, so nothing is written before the sign-in; YAML aliases no longer confuse the holder-to-position mapping in `registerServerEntry` (each position is copied first, so §2's "exactly the holders" holds per position).
+
 ## Not verified
 
 - A real server: the device endpoints are tested through a scripted fetch and an in-test server with the C3 shapes (the enterprise contract stub's), not the A8 server.
