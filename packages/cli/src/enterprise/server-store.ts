@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { dirname } from 'path'
 import {
-  normalizeEndpointUrl, redactToken, redactTokenDeep, tokenFromEnv, withLock, writeConfigFile,
+  normalizeEndpointUrl, redactToken, tokenFromEnv, withLock, writeConfigFile,
   PersonalScopeTakenError, SignInHeldError, type FoldReport, type OwnerOnlyResult, type Plur, type ServerDiscoveryOutcome,
 } from '@plur-ai/core'
 import { backupSecretFile, fetchMe, redactConsoleWith, takeoverMessage, type BackupHost, type FetchFn, type MeAnswer } from './sign-in-shared.js'
@@ -125,7 +125,12 @@ export async function connectServerStore(opts: {
 }): Promise<ConnectResult> {
   const { plur, server, token, configPath } = opts
   const scrub = (err: unknown): Error => {
-    if (err instanceof PersonalScopeTakenError) return err
+    if (err instanceof PersonalScopeTakenError) {
+      // Keeps its type and fields for storeRefusalLines; a server can name
+      // a personal scope that repeats the key, so every field is redacted.
+      return new PersonalScopeTakenError(redactToken(err.message, token), redactToken(err.personalScope, token),
+        redactDeep(err.holders, token), err.removable)
+    }
     return new Error(redactToken(err instanceof Error ? err.message : String(err), token))
   }
 
@@ -146,7 +151,8 @@ export async function connectServerStore(opts: {
     } catch (err) {
       // A refusal writes nothing. Any other throw may come after core wrote
       // (a reload after the write, say): put the backup back first.
-      if (err instanceof PersonalScopeTakenError || err instanceof SignInHeldError) throw err
+      if (err instanceof PersonalScopeTakenError) throw scrub(err)
+      if (err instanceof SignInHeldError) throw new SignInHeldError(redactToken(err.message, token))
       throw restoreThen(scrub(err), backupPath, configPath, scrub)
     }
 
@@ -156,13 +162,34 @@ export async function connectServerStore(opts: {
         url: server, status: 'failed' as const, applied: false, scopes: [], rejected: [], pinned_unlisted: [],
         error: 'the server entry was not found after registration',
       }
-      return redactTokenDeep({ backupPath, status: registered.status, fold: registered.fold, discovery }, token)
+      return redactDeep({ backupPath, status: registered.status, fold: registered.fold, discovery }, token)
     } catch (err) {
       throw restoreThen(scrub(err), backupPath, configPath, scrub)
     }
   } finally {
     undoConsole()
   }
+}
+
+/**
+ * `value` with every string AND every property name redacted with `token`
+ * (core's `redactTokenDeep` leaves names, and `queued_by_scope` is keyed by
+ * scope). Two names that redact alike: numbers are added, else the first is kept.
+ */
+function redactDeep<T>(value: T, token: string): T {
+  if (typeof value === 'string') return redactToken(value, token) as unknown as T
+  if (Array.isArray(value)) return value.map(v => redactDeep(v, token)) as unknown as T
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const rk = redactToken(k, token)
+      const rv = redactDeep(v, token)
+      if (!(rk in out)) out[rk] = rv
+      else if (typeof out[rk] === 'number' && typeof rv === 'number') out[rk] = (out[rk] as number) + rv
+    }
+    return out as T
+  }
+  return value
 }
 
 /** Roll back, then hand back `e` (or, when the restore failed, an error naming both and the backup). */
