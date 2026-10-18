@@ -233,6 +233,13 @@ describe('deviceSignIn', () => {
       expect(h2.calls.filter(c => c.path === '/api/v1/auth/token')).toHaveLength(0)
     })
 
+    it('the time spent opening the browser counts against the code\'s expiry', async () => {
+      const h = harness({ '/api/v1/auth/device': [{ status: 200, body: { ...DEVICE, expires_in: 2, interval: 1 } }], '/api/v1/auth/token': [ok] },
+        { openBrowser: async () => { await new Promise(r => setTimeout(r, 1100)); return true } })
+      await expect(signIn(h)).rejects.toThrow(/expired before it was entered/)
+      expect(h.calls.filter(c => c.path === '/api/v1/auth/token')).toHaveLength(0)
+    })
+
     it('a poll still in flight at the deadline does not hand over a key', async () => {
       const slowOk = (async (u: string, init?: RequestInit) => {
         if (new URL(u).pathname === '/api/v1/auth/device') return new Response(JSON.stringify(DEVICE), { status: 200 })
@@ -512,6 +519,15 @@ describe('plur login <host> (process, contract server)', () => {
     expect(stores()).toEqual([expect.objectContaining({ url: stub.url, token: current })])
     expect(readFileSync(cfg(), 'utf8')).not.toContain(stub.legacyToken)
     expect(existsSync(join(home, '.plur', 'config.json'))).toBe(false)
+  }, 40_000)
+
+  it('a config.json for a server whose config.yaml entry holds no key is moved in (that entry is no sign-in)', async () => {
+    writeFileSync(cfg(), `stores:\n  - url: ${stub.url}\n    scope: user:acme:alice\n    scopes: []\n`)
+    writeFileSync(join(home, '.plur', 'config.json'), JSON.stringify({ enterprise: { url: stub.url, token: stub.legacyToken } }))
+    const r = await runCli(['login', '--status', '--json'], home)
+    expect(r.out).toMatch(/moved into .*config\.yaml/i)
+    expect(stores()).toEqual([expect.objectContaining({ url: stub.url, token: stub.legacyToken })])
+    expect(r.out).not.toContain(stub.legacyToken)
   }, 40_000)
 
   it('a config.json whose sign-in the server rejects is not moved into config.yaml; the old file is set aside', async () => {
