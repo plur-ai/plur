@@ -64,6 +64,16 @@ one file instead of one deep one. Each section lists what it leaves out.
   and an upper-case kind are refused.
 - Noted, not changed: an `ok` answer whose scopes are ALL refused still empties a non-empty
   cache, as the plan table says ("ok (any length, incl. 0)").
+- CONFIRMED + FIXED (Codex round 2 finding 2, 2026-10-18), `malformed_keeps_cache` /
+  `malformed_reachable`: `me()` turned a missing, null or non-array `scopes` into `[]` and kept
+  `scopes_status: ok`, so a malformed answer cleared a non-empty cache. `me()` now sets
+  `scopes_malformed` (also for a member the grammar drops), and `accept` treats it as
+  `degraded` before any other rule. An explicit, valid `[]` with `ok` still clears the cache
+  (plan B Task 4 table). The model's `Me` carries `wellFormed`.
+  - Test first: codex2-refresh-server-scopes.test.ts §2, six malformed bodies through real
+    HTTP, red (`status: ok, applied: true`), then green; the explicit-`[]` case stays green.
+  - Mutation: deleting the `wellFormed` branch of `accept` breaks `malformed_keeps_cache` and
+    `decide` refutes `malformed_reachable`.
 
 ## D4. refreshServerScopes: cache write rules — REFUTED (holds); answer mis-targeting CONFIRMED + FIXED
 
@@ -85,6 +95,26 @@ one file instead of one deep one. Each section lists what it leaves out.
     are failed" was red (`[['ok',true],['ok',true]]`), then green.
   - Mutation: replacing `targetNew` with the old `find?` breaks `answer_lands_on_its_entry`.
     `decide` then refutes the fixed half of `old_answer_mistargets`.
+- CONFIRMED + FIXED (Codex round 2 finding 1, 2026-10-18), `rotated_answer_mistargets` /
+  `answer_lands_on_its_entry`: the D4 theorem assumed the requested entry was still in the list
+  under the lock (`hp : p ∈ l`), which the code did not establish. A key rotated while `/me`
+  was in flight got the old key's scopes, compatibility scope and identity.
+  - Fix (index.ts `refreshServerScopes`, `serverCredential`): each answer carries the
+    credential revision it was requested with (source `token` or `token_env:<NAME>`, plus a
+    sha256 fingerprint of the resolved key, never the key). Under the lock an entry whose
+    revision differs gets nothing written; the outcome is `failed`, "entry changed during
+    refresh".
+  - Model: `Srv` is (url, credential revision); `targetBound` adds the revision check, and
+    `answer_lands_on_its_entry` now holds for ANY locked list, with no membership assumption.
+  - Test first: codex2-refresh-server-scopes.test.ts §1 (inline key replaced, token_env value
+    changed, inline→token_env) red, then green; an unrelated edit to the same entry still
+    applies.
+  - Mutation: dropping the revision check from `targetBound` breaks `answer_lands_on_its_entry`
+    and `decide` refutes `rotated_answer_mistargets`.
+- Also fixed in the same round (not modelled, tested): errors in outcomes have the request's
+  key redacted (`redactToken`, every encoding; inline and token_env), and an accepted answer
+  keeps unknown `discovery` keys while removing known ones the answer lacks
+  (`key_expires_at`, `gitlab_host`).
 
 ## D5. Owner decision 17: collapse writes nothing for an ambiguous identity — CONFIRMED + FIXED
 

@@ -1235,6 +1235,27 @@ function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<str
   return out
 }
 
+/** The key a server entry's /me request is sent with, and its revision (#1631,
+ *  Codex round 2 finding 1): the source (`token`, or `token_env:<NAME>`) plus a
+ *  sha256 fingerprint of the resolved key — never the key. An answer may land
+ *  only on an entry whose revision is still the one it was requested with. */
+function serverCredential(r: Record<string, unknown>): { token: string | undefined; tokenEnv: string | undefined; revision: string } {
+  const tokenEnv = typeof r.token_env === 'string' ? r.token_env : undefined
+  const inline = typeof r.token === 'string' && r.token ? r.token : undefined
+  const token = inline ?? tokenFromEnv(tokenEnv)
+  const source = inline ? 'token' : tokenEnv ? `token_env:${tokenEnv}` : 'none'
+  const revision = `${source}:${token ? createHash('sha256').update(token).digest('hex') : '-'}`
+  return { token, tokenEnv, revision }
+}
+
+/** The known fields of a server entry's `discovery` snapshot that an accepted
+ *  answer replaces; every other key is kept as it is on disk (#1631, Codex
+ *  round 2 finding 5). */
+const DISCOVERY_SNAPSHOT_KEYS = [
+  'discovered_at', 'scopes_status', 'gitlab_host', 'project_paths', 'username',
+  'org_id', 'key_expires_at', 'status', 'checked_at',
+] as const
+
 /** How often an unchanged discovery answer refreshes its timestamp (#1631).
  *  Well inside the 7-day stale-cache limit, so an unchanged answer keeps the
  *  cache fresh while writing config.yaml at most once a day. */
@@ -13905,21 +13926,24 @@ Generate an improved version of the procedure that prevents this failure. Return
 
     // Network first, outside the lock; each answer is judged against the file
     // as it is when the write happens.
-    const answers = await Promise.all(servers.map(async (r): Promise<{ url: string; me: MeResponse | null; error?: { status?: number; message: string } }> => {
+    type Answer = { url: string; revision: string; me: MeResponse | null; error?: { status?: number; message: string } }
+    const answers = await Promise.all(servers.map(async (r): Promise<Answer> => {
       const url = r.url
-      const tokenEnv = typeof r.token_env === 'string' ? r.token_env : undefined
-      const token = (typeof r.token === 'string' && r.token) ? r.token : tokenFromEnv(tokenEnv)
+      const { token, tokenEnv, revision } = serverCredential(r)
       if (!token) {
         const message = tokenEnv ? tokenEnvUnsetMessage(tokenEnv, safeOrigin(url)) : `no key is configured for ${safeOrigin(url)}`
-        return { url, me: null, error: { message } }
+        return { url, revision, me: null, error: { message } }
       }
       try {
         const me = await this._probeMe(url, token, timeoutMs, typeof r.scope === 'string' ? r.scope : '')
         this._noteMeIdentity(url, token, me)
-        return { url, me }
+        return { url, revision, me }
       } catch (err) {
         this._noteMeIdentity(url, token, null)
-        return { url, me: null, error: { status: err instanceof RemoteHttpError ? err.status : undefined, message: err instanceof Error ? err.message : String(err) } }
+        // A server or proxy can echo the key back in its error body: every
+        // encoding of it is removed before the message is kept (finding 4).
+        const message = redactToken(err instanceof Error ? err.message : String(err), token)
+        return { url, revision, me: null, error: { status: err instanceof RemoteHttpError ? err.status : undefined, message } }
       }
     }))
 
@@ -13927,7 +13951,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     const now = new Date().toISOString()
     this._updateRawStores(rawStores => {
       let changed = false
-      for (const { url, me, error } of answers) {
+      for (const { url, revision, me, error } of answers) {
         const key = normalizeEndpointUrl(url)
         const matches = rawStores.flatMap((r, i) => (isEnterpriseServerEntry(r) && normalizeEndpointUrl(r.url) === key ? [i] : []))
         if (matches.length === 0) {
@@ -13947,17 +13971,30 @@ Generate an improved version of the procedure that prevents this failure. Return
         }
         const idx = matches[0]
         const entry = rawStores[idx] as Record<string, unknown> & { url: string }
+        if (serverCredential(entry).revision !== revision) {
+          // The entry's key was replaced (or its token_env now resolves to
+          // another key) while /me was in flight: this answer describes the
+          // old key, so it is not written to the new one (finding 1).
+          outcomes.push({ url, status: 'failed', applied: false, scopes: stringList(entry.scopes), rejected: [], pinned_unlisted: [],
+            error: `entry changed during refresh: the key for ${safeOrigin(url)} changed while its scopes were requested; nothing was changed. Run the refresh again.` })
+          continue
+        }
         const cached = stringList(entry.scopes)
         const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key) })
         const oldDiscovery = isPlainObject(entry.discovery) ? entry.discovery : {}
         let next: Record<string, unknown>
         if (decision.replaceCache && me) {
           const personal = decision.scopes.find(sc => sc.toLowerCase() === `user:${me.org_id}:${me.username}`.toLowerCase())
+          // Unknown discovery keys (a newer client's) are kept; every known
+          // snapshot key is replaced or, when this answer lacks it, removed.
+          const unknownDiscovery = Object.fromEntries(Object.entries(oldDiscovery)
+            .filter(([k]) => !(DISCOVERY_SNAPSHOT_KEYS as readonly string[]).includes(k)))
           next = {
             ...entry,
             ...(personal ? { scope: personal } : {}),
             scopes: decision.scopes,
             discovery: {
+              ...unknownDiscovery,
               discovered_at: now,
               ...(me.scopes_status !== 'absent' ? { scopes_status: me.scopes_status } : {}),
               ...(me.gitlab_host !== undefined ? { gitlab_host: me.gitlab_host } : {}),

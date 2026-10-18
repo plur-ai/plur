@@ -9,6 +9,9 @@
  * - A failed, unauthorised, timed-out or network answer never replaces the
  *   cache (not even an empty one).
  * - `scopes_status: 'ok'` replaces the cache with the server's list, even [].
+ * - A malformed scope list (`MeResponse.scopes_malformed`: missing, null, not
+ *   an array, or with an invalid member) is `degraded`: it never replaces a
+ *   non-empty cache. Only an explicit, valid `[]` clears one.
  * - `scopes_status: 'not_synced'`, or an older server (no `scopes_status`)
  *   answering an empty list, replaces only an empty cache (with []).
  * - An answer with no `org_id` cannot be checked against an org, so every
@@ -91,6 +94,13 @@ export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): Acce
   if (error || !me) {
     const status = error?.status
     return keep(status === 401 || status === 403 ? 'auth_failed' : 'failed')
+  }
+
+  // A malformed scope list (missing, null, not an array, or a member that
+  // failed the grammar) is not the server's list: whatever scopes_status
+  // says, it never clears or replaces a non-empty cache (Codex round 2).
+  if (me.scopes_malformed) {
+    return cached.length > 0 ? keep('degraded') : empty('degraded')
   }
 
   // An empty org_id means the server's response cannot be checked against an

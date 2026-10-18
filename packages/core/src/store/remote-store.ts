@@ -380,6 +380,13 @@ export interface MeResponse {
   project_paths: Record<string, string>
   /** undefined = absent = unknown; null = no expiry; string = ISO-8601. */
   key_expires_at: string | null | undefined
+  /**
+   * True when the body's `scopes` was missing, null, not an array, or an array
+   * with a member that failed the grammar: `scopes` above is then not the
+   * server's list, and discovery treats the answer as degraded (keeps a
+   * non-empty cache). Absent/false = an explicit, valid array (`[]` included).
+   */
+  scopes_malformed?: boolean
 }
 
 /**
@@ -651,7 +658,8 @@ export class RemoteStore {
       ? (body['capabilities'] as unknown[]).filter((c): c is string => typeof c === 'string' && /^[\w.:-]{1,64}$/.test(c))
       : []
     CAPABILITY_CACHE.set(this.capabilityKey(), Promise.resolve(capabilities))
-    const scopes = Array.isArray(body['scopes'])
+    const rawScopes = body['scopes']
+    const scopes = Array.isArray(rawScopes)
       // Validate every /me scope to a safe grammar at the trust boundary:
       //  - #427: a non-string element would later throw in isSharedScope's
       //    `scope.startsWith(...)` BEFORE the per-scope try/catch — drop non-strings.
@@ -659,8 +667,13 @@ export class RemoteStore {
       //    agent's directive surface); a name carrying newlines/control chars is a
       //    prompt-injection channel — require `[\w:./-]+` (allows group:org/team,
       //    user:*, etc.) so nothing malformed enters from a hostile/MITM remote.
-      ? (body['scopes'] as unknown[]).filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
+      ? (rawScopes as unknown[]).filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
       : []
+    // Only an explicit array whose every member passed is the server's list.
+    // Missing/null/non-array or a dropped member must not read as an
+    // authoritative [] that clears a cache (Codex round 2, finding 2).
+    const scopes_malformed = !Array.isArray(rawScopes) || scopes.length !== (rawScopes as unknown[]).length
+    if (scopes_malformed && rawScopes !== undefined) dropped.push(Array.isArray(rawScopes) ? `scopes: ${(rawScopes as unknown[]).length - scopes.length} invalid` : 'scopes: not a list')
 
     // C1: scopes_status — unknown values → 'absent' (forward-compat) (#1631)
     const rawScopesStatus = body['scopes_status']
@@ -721,6 +734,7 @@ export class RemoteStore {
       gitlab_host,
       project_paths,
       key_expires_at,
+      ...(scopes_malformed ? { scopes_malformed: true } : {}),
       // #345 D2: self-describing scope metadata served by the enterprise
       // `scopes` table. Validate each entry through the SAME ScopeMetadataSchema
       // the local config path uses — a hostile/old remote can send anything, so
