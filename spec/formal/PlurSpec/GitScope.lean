@@ -27,6 +27,11 @@ What is proved:
   boundaries (older than `maxAge`, more than `skew` in the future).
 - Counterexamples (replayed by `decide`): reading `pinned` too, or skipping the freshness check,
   hands out a scope the fixed function refuses.
+
+Checked 2026-10-18 (gate review): `parseGitRemoteUrl` now also parses an scp-style origin whose
+host is a bracketed IPv6 address (`git@[2001:db8::1]:team/backend.git`), in the same canonical
+form as an https/ssh remote. Still holds: parsing is the abstract `R` / `url (r : Option R)`
+input, so every theorem covers the new parses unchanged.
 -/
 
 set_option linter.unusedSimpArgs false
