@@ -4765,7 +4765,10 @@ export class Plur {
 
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.learn(statement, context))
+    return this._captured(() => this._learnBound(statement, context))
+  }
+
+  private async _learnBound(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
@@ -5266,7 +5269,10 @@ export class Plur {
 
   async learnRouted(statement: string, context?: LearnContext, options?: LearnRoutedOptions): Promise<Engram> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.learnRouted(statement, context, options))
+    return this._captured(() => this._learnRoutedBound(statement, context, options))
+  }
+
+  private async _learnRoutedBound(statement: string, context?: LearnContext, options?: LearnRoutedOptions): Promise<Engram> {
     // 0.21.1: the caller's deadline for the server leg ONLY. Local work (load,
     // dedup, write, index) is never raced: a slow local save is a success. A
     // server that does not answer inside the deadline takes the existing
@@ -5876,7 +5882,10 @@ export class Plur {
   /** Async learn with LLM-driven deduplication (Ideas 1+2+19). */
   async learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.learnAsync(statement, context))
+    return this._captured(() => this._learnAsyncBound(statement, context))
+  }
+
+  private async _learnAsyncBound(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
     this._assertWritable()
     // remote-only: fill/refuse the scope up front, so the LLM dedup pass only
     // ever compares against (and merges into) the folder's team scope.
@@ -5903,7 +5912,14 @@ export class Plur {
     opts?: { maxLlmCalls?: number },
   ): Promise<LearnBatchResult> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.learnBatch(statements, llm, opts))
+    return this._captured(() => this._learnBatchBound(statements, llm, opts))
+  }
+
+  private async _learnBatchBound(
+    statements: Array<{ statement: string; context?: LearnAsyncContext }>,
+    llm?: LlmFunction,
+    opts?: { maxLlmCalls?: number },
+  ): Promise<LearnBatchResult> {
     this._assertWritable()
     // remote-only: every item is checked BEFORE any is written, so a refused
     // item never leaves the batch half-applied.
@@ -8755,7 +8771,15 @@ export class Plur {
     options?: { source?: FeedbackSource },
   ): Promise<MutationOutcome> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.feedback(id, signal, scope, options))
+    return this._captured(() => this._feedbackBound(id, signal, scope, options))
+  }
+
+  private async _feedbackBound(
+    id: string,
+    signal: 'positive' | 'negative' | 'neutral',
+    scope?: string,
+    options?: { source?: FeedbackSource },
+  ): Promise<MutationOutcome> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Rating', scope)
     const warnings: string[] = []
@@ -9146,7 +9170,10 @@ export class Plur {
    */
   async updateEngram(updated: Engram): Promise<boolean> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.updateEngram(updated))
+    return this._captured(() => this._updateEngramBound(updated))
+  }
+
+  private async _updateEngramBound(updated: Engram): Promise<boolean> {
     return (await this._updateEngramReturning(updated)) !== null
   }
 
@@ -9474,7 +9501,10 @@ export class Plur {
    */
   async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.setPinned(id, pinned, options))
+    return this._captured(() => this._setPinnedBound(id, pinned, options))
+  }
+
+  private async _setPinnedBound(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Pinning', options?.scope)
     // Which store holds it (0.21.1). Ids are minted per store, so a bare id
@@ -9953,7 +9983,10 @@ export class Plur {
    * other's reference should remain). */
   async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.forget(id, reason, options))
+    return this._captured(() => this._forgetBound(id, reason, options))
+  }
+
+  private async _forgetBound(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
     this._assertWritable()
     // remote-only (audit of #1521, B2): a save queued from a remote-only
     // folder is DELETED, not retired — a retired row would keep its content
@@ -10435,7 +10468,14 @@ export class Plur {
     options?: RescopeOptions,
   ): Promise<{ results: RescopeResult[]; success: boolean }> {
     // One binding for the whole operation (Codex round 8 on #1663).
-    if (Plur._lockBinding.getStore()?.plur !== this) return this._captured(() => this.rescope(idOrIds, targetScope, options))
+    return this._captured(() => this._rescopeBound(idOrIds, targetScope, options))
+  }
+
+  private async _rescopeBound(
+    idOrIds: string | string[],
+    targetScope: string,
+    options?: RescopeOptions,
+  ): Promise<{ results: RescopeResult[]; success: boolean }> {
     // Public mutator (#731): both routes mutate — the remote push retires the
     // local source, the local route rewrites scope in place — so gate before
     // any routing, like every other mutator.
