@@ -4386,12 +4386,39 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         const status = await plur.status()
 
+        // Team memories still waiting in the outbox are reported here, with
+        // the true count: ending a session must never look like a clean
+        // success while writes for a team store were never sent. Nothing is
+        // said when the queue is empty, and a queue that cannot be read is
+        // reported as such rather than passed off as empty.
+        let unsent = 0
+        let outbox_error: string | undefined
+        try {
+          unsent = await plur.outboxCount()
+        } catch (err) {
+          outbox_error = (err as Error).message
+        }
+
         return {
           engrams_created,
           ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode.id,
           total_engrams: status.engram_count,
           ...(injection_summary ? { injection_summary } : {}),
+          ...(unsent > 0 ? {
+            outbox: {
+              pending: unsent,
+              warning:
+                `${unsent} item(s) for a team store have not been sent and stay queued locally. ` +
+                'They are retried on the next session start or plur_sync; plur_outbox lists them.',
+            },
+          } : {}),
+          ...(outbox_error ? {
+            outbox_error,
+            outbox_warning:
+              `The queue of team memories waiting to be sent could not be checked — ${outbox_error}. ` +
+              'Some may not have been sent; run plur_outbox to see what is queued.',
+          } : {}),
           hint: engrams_failed.length
             ? `${engrams_failed.length} suggestion(s) could not be stored — see engrams_failed. The rest were.`
             : engrams_created === 0
