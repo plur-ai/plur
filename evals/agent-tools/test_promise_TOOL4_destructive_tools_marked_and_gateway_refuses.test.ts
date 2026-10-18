@@ -28,11 +28,14 @@
 //     proof moved from the marking to the behaviour.)
 //  2. The automatic overwrite, by effect. A scripted duplicate checker (a real
 //     HTTP server on 127.0.0.1 answering as the OpenAI chat endpoint; no model,
-//     no network, no credential) answers UPDATE, then MERGE, for an existing
-//     memory. For every NEVER_OVERWRITES tool, called directly AND through
-//     plur_admin, the existing memory's text must be unchanged on disk (fresh
-//     reopen); a gateway refusal also keeps it unchanged. Other tools on the
-//     checker path that did overwrite must be listed with destructiveHint.
+//     no network, no credential) answers UPDATE, MERGE or NOOP for an existing
+//     memory, plain or locked, with the statement once or twice in one call.
+//     For every NEVER_OVERWRITES tool, called directly AND through plur_admin,
+//     the call must run and reach the checker (a refusal proves nothing), and
+//     the existing memory's text must be unchanged on disk (fresh reopen).
+//     Each exempt name carries its own scenario, and must be a checker-path
+//     tool (fourth audit A4-05). Other tools on the checker path that did
+//     overwrite must be listed with destructiveHint.
 //  3. Effects sweep. Every gateway action is called with harmless arguments on
 //     a seeded store, the checker scripted as above, and after each call the
 //     store is reopened fresh: no seeded memory may have changed its text or
@@ -69,10 +72,19 @@ const OVERWRITES_TEXT = /\.statement\s*=(?!=)[\s\S]*?\bplur\.updateEngram\(/
 const AUTOMATIC_MERGE = /\bplur\.(learnBatch|learnAsync)\(/
 /**
  * Checker-path tools proven by effect (check 2) never to overwrite, directly or
- * through the gateway. Adding a name here without that proof is impossible: the
- * effect tests iterate this list.
+ * through the gateway. Each name carries the scenario that proves it: the
+ * arguments that save `incoming` (and, for `repeated`, the same statement twice
+ * in one call). The effect tests iterate this map, so a name cannot be added
+ * without a scenario, and every scenario must reach the scripted checker (fourth
+ * audit A4-05).
  */
-const NEVER_OVERWRITES = ['plur_learn_batch']
+const NEVER_OVERWRITES: Record<string, { save: (incoming: string) => Record<string, unknown>; repeated: (incoming: string) => Record<string, unknown> }> = {
+  plur_learn_batch: {
+    save: incoming => ({ engrams: [{ statement: incoming, scope: 'global' }] }),
+    repeated: incoming => ({ engrams: [{ statement: incoming, scope: 'global' }, { statement: incoming, scope: 'global' }] }),
+  },
+}
+const EXEMPT = Object.keys(NEVER_OVERWRITES)
 /** Moving to another scope: not counted as overwriting (the promise says so). */
 const MOVES = /\bplur\.rescope\(/
 
@@ -87,7 +99,7 @@ function classifyFromSource(): Classified {
     out.all.push(s.name)
     if (AUTOMATIC_MERGE.test(block)) out.checker.push(s.name)
     if (DELETES.some(re => re.test(block)) || OVERWRITES_TEXT.test(block) ||
-        (AUTOMATIC_MERGE.test(block) && !NEVER_OVERWRITES.includes(s.name))) out.deleting.push(s.name)
+        (AUTOMATIC_MERGE.test(block) && !EXEMPT.includes(s.name))) out.deleting.push(s.name)
     else if (MOVES.test(block)) out.moving.push(s.name)
   })
   return out
@@ -102,7 +114,7 @@ type ListedTool = { name: string; annotations?: { destructiveHint?: boolean } }
 interface Checker {
   url: string
   /** What a duplicate-check prompt is answered with. */
-  decision: 'UPDATE' | 'MERGE'
+  decision: 'UPDATE' | 'MERGE' | 'NOOP'
   /** The memory a duplicate-check answer points at. */
   target: string
   calls: number
@@ -258,36 +270,45 @@ describe('TOOL-4 deleting and overwriting tools are marked destructive, and the 
     for (const name of destructive) if (gatewayActions.includes(name)) problems.push(`the gateway offers the destructive tool ${name}`)
 
     expect(problems, `deleting/overwriting tools checked: ${JSON.stringify(required)}; ` +
-      `moves (not counted): ${JSON.stringify(found.moving)}; proven never to overwrite (effect tests): ${JSON.stringify(NEVER_OVERWRITES)}\n` + problems.join('\n')).toEqual([])
+      `moves (not counted): ${JSON.stringify(found.moving)}; proven never to overwrite (effect tests): ${JSON.stringify(EXEMPT)}\n` + problems.join('\n')).toEqual([])
   })
 
-  for (const decision of ['UPDATE', 'MERGE'] as const) {
-    for (const via of ['plur_admin', 'direct'] as const) {
-    it(`${via === 'direct' ? 'plur_learn_batch called directly' : 'plur_admin plur_learn_batch'} with the duplicate checker answering ${decision}: the existing memory's text is unchanged on disk`, async () => {
-      expect(NEVER_OVERWRITES, 'this proof covers the batch save').toContain('plur_learn_batch')
-      useEmbedder('bag-of-words')
-      s = await mcpSession({ profile: via === 'direct' ? 'full' : 'lean' })
-      const old = await s.plur.learn(OLD, { scope: 'global' })
-      checker = await startChecker()
-      checker.decision = decision
-      checker.target = old.id
+  it('every tool exempted from the marking rule is a checker-path tool with an effect scenario', () => {
+    const found = classifyFromSource()
+    for (const name of EXEMPT) expect(found.checker, `${name} is exempt but its handler does not save through the duplicate checker`).toContain(name)
+  })
 
-      const batch = { engrams: [{ statement: INCOMING, scope: 'global' }] }
-      const res = via === 'direct'
-        ? await s.call('plur_learn_batch', batch)
-        : await s.call('plur_admin', { action: 'plur_learn_batch', args: batch })
-      if (via === 'direct') expect(res.isError, `precondition: the direct batch call ran: ${res.text.slice(0, 300)}`).toBe(false)
-      const refused = res.isError || res.json?.success === false
-      const disk = await snapshot(s.dir)
-      const oldNow = disk.get(old.id)
-      if (!refused) {
-        // Non-vacuous: the checker was asked, so the overwrite path was reachable.
-        expect(checker.calls, `precondition: the gateway ran the batch and its duplicate checker was asked (reply: ${res.text.slice(0, 300)})`).toBeGreaterThan(0)
+  // Each exempt tool, each verdict, a plain and a locked target, one and two copies
+  // of the statement in the call, directly and through the gateway. A refusal
+  // proves nothing: the call must run and must reach the checker.
+  for (const [tool, scenario] of Object.entries(NEVER_OVERWRITES)) {
+    for (const decision of ['UPDATE', 'MERGE', 'NOOP'] as const) {
+      for (const target of ['plain', 'locked'] as const) {
+        for (const copies of ['once', 'repeated'] as const) {
+          for (const via of ['plur_admin', 'direct'] as const) {
+            if (target === 'locked' && copies === 'repeated') continue
+            if (decision === 'NOOP' && (target === 'locked' || copies === 'repeated')) continue
+            it(`${via === 'direct' ? `${tool} called directly` : `plur_admin ${tool}`}, checker ${decision}, ${target} target, statement ${copies}: the existing memory's text is unchanged on disk`, async () => {
+              useEmbedder('bag-of-words')
+              s = await mcpSession({ profile: via === 'direct' ? 'full' : 'lean' })
+              const old = await s.plur.learn(OLD, target === 'locked'
+                ? { scope: 'global', commitment: 'locked', locked_reason: 'eval: owner rule' } : { scope: 'global' })
+              checker = await startChecker()
+              checker.decision = decision
+              checker.target = old.id
+
+              const args = copies === 'once' ? scenario.save(INCOMING) : scenario.repeated(INCOMING)
+              const res = via === 'direct' ? await s.call(tool, args) : await s.call('plur_admin', { action: tool, args })
+              expect(res.isError || res.json?.success === false, `precondition: ${tool} ran (${via}); a refusal proves nothing: ${res.text.slice(0, 300)}`).toBe(false)
+              expect(checker.calls, `precondition: the duplicate checker was asked, so the overwrite path was reached (reply: ${res.text.slice(0, 300)})`).toBeGreaterThan(0)
+              const oldNow = (await snapshot(s.dir)).get(old.id)
+              expect(oldNow,
+                `${tool} (${via}) with the checker answering ${decision} overwrote, retired or deleted an existing ${target} memory: ` +
+                `${old.id} was "${OLD}", on disk it is now "${oldNow ?? '(gone)'}". Reply: ${res.text.slice(0, 400)}`).toBe(`active|${OLD}`)
+            })
+          }
+        }
       }
-      expect(oldNow,
-        `${via === 'direct' ? 'plur_learn_batch' : 'the gateway ran plur_learn_batch and'} the checker's ${decision} overwrote, retired or deleted an existing memory: ` +
-        `${old.id} was "${OLD}", on disk it is now "${oldNow ?? '(gone)'}". Reply: ${res.text.slice(0, 400)}`).toBe(`active|${OLD}`)
-    })
     }
   }
 
