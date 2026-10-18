@@ -50,6 +50,11 @@ be read, as on development); tools.ts adds the remote-only block to plur_session
 plur_learn rethrow `RemoteOnlyWriteError` instead of its local fallback. In a folder that is not
 remote-only the binding is cleared and every modelled path is unchanged; in a remote-only folder
 the write gate is WritePath §3d.
+Gate review of #1663 (2026-10-18): still holds. hook-observe records only in an `on` folder; the
+Claude Code and Codex session-end hooks bind their outbox flush to the payload folder;
+cursorHookFolder also reads remote-only from every root spelling and the payload cwd; `plur restore
+--yes` and MCP plur_history (no id) / plur_profile refuse in a remote-only folder. Each only removes
+work in a remote-only folder; no modelled path changes elsewhere.
 
 Checked against #1631 background discovery (2026-10-18): still holds.
 plur_session_start starts a background scope refresh for company server

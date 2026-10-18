@@ -46,6 +46,10 @@ feedback, setPinned and update skip url stores whose scope is not a deliverable 
 and a bare id only on a team-scope row; the local row they would act on is refused first
 (`_remoteOnlyRefuseLocalRow`) unless it is this folder's queued save. Unbound, every walk is
 as modelled in §2–§4. `peek_absent_sound` reads the same cache. The write gate is WritePath §3d.
+Gate review of #1663 (2026-10-18): still holds. While bound, those walks (and the bare-id update)
+are narrowed further, to the folder's own team store or the store of an explicit deliverable team
+scope, and an explicit team scope first checks that the row it names there is in that team scope.
+Each is a filter that only removes candidates before the modelled walk; unbound, nothing changed.
 
 Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
 refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
