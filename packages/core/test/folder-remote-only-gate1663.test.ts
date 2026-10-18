@@ -386,3 +386,19 @@ describe('Codex round 5 on #1663', () => {
   })
 })
 
+describe('Codex round 7 on #1663', () => {
+  it('the pin quota lookup does not reach a personal url store from a remote-only folder', async () => {
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({
+      index: false, embeddings: { enabled: false },
+      stores: [
+        { url: other.url, token: TOKEN, scope: 'user:me', readonly: false },
+        { url: teamUrl, token: TOKEN, scope: TEAM, shared: true, readonly: false },
+      ],
+    }))
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    await plur.pinnedQuota('ENG-2026-10-18-016', { scope: 'user:me' }).catch(() => null)
+    expect(other.requests).toEqual([])
+  })
+})
+

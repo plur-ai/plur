@@ -426,3 +426,50 @@ describe('Codex round 6 on #1663', () => {
   }, 90_000)
 })
 
+describe('Codex round 7 on #1663', () => {
+  it('plur tensions --scan and plur audit are refused in a remote-only folder', () => {
+    mapRemoteOnly()
+    const scan = cli(['tensions', '--scan', '--no-persist', '--llm-base-url', 'http://127.0.0.1:9/v1', '--llm-api-key', 'k'])
+    expect(scan.status).not.toBe(0)
+    expect(scan.stdout + scan.stderr).toMatch(/is remote-only/)
+    const audit = cli(['audit', '--json'])
+    expect(audit.status).not.toBe(0)
+    expect(audit.stdout + audit.stderr).toMatch(/is remote-only/)
+  }, 60_000)
+
+  it('agy: a cache from another remote-only scope, or under an unreadable map, is not replayed', async () => {
+    const { safeSessionKey } = await import('../src/lib/session-key.js')
+    const sessDir = join(dir, 'tmp', 'plur-agy-sessions')
+    mkdirSync(sessDir, { recursive: true, mode: 0o700 })
+    const put = (cid: string, mode: string, scope: string | undefined, message: string) => writeFileSync(join(sessDir, `${safeSessionKey(cid)}.turncache`),
+      JSON.stringify({ conversationId: cid, step: 0, textHash: '', message, mode, ...(scope ? { scope } : {}) }), { mode: 0o600 })
+    // Remote-only now in another scope than the one the cache was made under.
+    writeFileSync(join(plurHome, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${TEAM}"\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "group:acme/b"\n`)
+    writeFileSync(join(plurHome, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${repo}\n    plur: remote-only\n    scope: group:acme/b\n`)
+    put('ag-scope', 'remote-only', TEAM, 'TEAMACACHED memory')
+    const a = cli(['hook-agy-pre-invocation'], { conversationId: 'ag-scope', invocationNum: 1, workspacePaths: [repo] })
+    expect(a.stdout).not.toContain('TEAMACACHED')
+    // An unreadable map with an earlier `on` cache.
+    writeFileSync(join(plurHome, 'folders.yaml'), 'version: 1\nfolders: [[[\n')
+    put('ag-broken', 'on', undefined, 'PERSONALONCACHED memory')
+    const b = cli(['hook-agy-pre-invocation'], { conversationId: 'ag-broken', invocationNum: 1, workspacePaths: [repo] })
+    expect(b.stdout).not.toContain('PERSONALONCACHED')
+  }, 60_000)
+
+  it('Cursor: an unreadable map removes the generated rules of every root, with or without a conversation id', async () => {
+    const plain = join(dir, 'plain')
+    const { writeContextRule } = await import('../src/lib/cursor-hook-io.js')
+    for (const r of [repo, plain]) {
+      mkdirSync(join(r, '.cursor', 'rules'), { recursive: true })
+      writeContextRule('PERSONALRULE4 from an earlier on session', join(r, '.cursor', 'rules', 'plur-context.mdc'))
+    }
+    writeFileSync(join(plurHome, 'folders.yaml'), 'version: 1\nfolders: [[[\n')
+    await hook(['hook-cursor-session-start'], { workspace_roots: [repo, plain] })
+    for (const r of [repo, plain]) {
+      const rule = join(r, '.cursor', 'rules', 'plur-context.mdc')
+      expect(existsSync(rule) ? readFileSync(rule, 'utf8') : '', r).not.toContain('PERSONALRULE4')
+    }
+  }, 90_000)
+})
+
