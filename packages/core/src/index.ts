@@ -13251,6 +13251,8 @@ Generate an improved version of the procedure that prevents this failure. Return
       throw new Error('registerEnterpriseServer: personalScope must be the personal scope (user:<org>:<username>) the server named')
     }
 
+    // Read the outbox first: a failure here must not follow a written key.
+    const outbox = await this.listOutbox()
     let result: ReturnType<typeof registerServerEntry> | undefined
     try {
       this._updateRawStores(rawStores => {
@@ -13293,7 +13295,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       ...stringList(r.entry.scopes), ...stringList(r.entry.pinned_scopes),
     ])
     const counts = new Map<string, number>()
-    for (const row of await this.listOutbox()) {
+    for (const row of outbox) {
       if (served.has(row.target_scope)) counts.set(row.target_scope, (counts.get(row.target_scope) ?? 0) + 1)
     }
     const queued_by_scope: Record<string, number> = Object.fromEntries(counts)

@@ -28,6 +28,11 @@ here changed. The registration and fold are modelled in StoreEntry §6.
 server-discovery.ts gains `foldStoresIntoServerEntry` and `registerServerEntry` beside
 `acceptDiscoveredScopes`, which is unchanged. A registration refuses two server entries on one
 url, like the cache write (D4), and never writes `scopes` or `discovery`.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
 -/
 
 set_option linter.unusedSimpArgs false

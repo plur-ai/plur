@@ -178,3 +178,9 @@ All code-level refusals and checks; replayed by the round-3 tests in `register-e
 - The owner-only step now runs inside the config lock, right before atomicWrite reads the mode it keeps.
 - An existing server entry whose url carries a user name or password is refused, and config.ts's unset-`token_env` warning names the url by its origin only.
 Code-level; replayed by the round-4 tests. Not modelled.
+
+#### Codex audit round 5 (2026-10-18)
+- A per-scope entry the loader rejects (e.g. `readonly: "true"`) was folded, so its scope would start going to the server; such an entry is now kept separate (`invalid-entry`, `StoreEntrySchema`).
+- `dial` is read per entry, so its absence counts: entries whose dial differs from each other, or from the server entry's when it serves the scope, are kept separate (`metadata-differs`).
+- The outbox is read before the write, so an unreadable outbox fails the registration with nothing written.
+Code-level (eligibility is `PerScope.ok` in §6); replayed by the round-5 tests.

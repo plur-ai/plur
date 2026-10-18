@@ -39,6 +39,11 @@ index.ts's predicates now read `resolveScopeTarget` (WritePath §3c).
   reload, the update walk and Decision R are not in the diff. The new code
   (`refreshServerScopes`, the server-entry `persistStores` collapse, the
   server-key rotation in `addStore`) is StoreEntry's territory, not modelled here.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
 -/
 
 namespace PlurSpec.R2CoreA

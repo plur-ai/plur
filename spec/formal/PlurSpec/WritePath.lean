@@ -30,6 +30,11 @@ a conflicted scope is refused). §1's merge-back, §4's private-stays-local test
 §5 and §6 are unchanged (rescope resolves its route before touching a row, so
 a conflict throws first). remote-store.ts changed only `me()` (the C1 /me
 fields), which no section reads.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
 -/
 
 namespace PlurSpec.WritePath

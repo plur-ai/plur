@@ -38,6 +38,11 @@ deliver it; modelled in §8b (`conflict_untouched`, `keptC_only_bookkeeping`).
 Keys, retry, claims, the listing and the breaker (§1–§7) are unchanged.
 remote-store.ts changed only `me()` (C1 /me fields; a non-2xx now throws
 `RemoteHttpError` with the same message), which the push path does not call.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
 -/
 
 namespace PlurSpec.Outbox

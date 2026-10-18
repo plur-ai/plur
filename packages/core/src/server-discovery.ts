@@ -25,7 +25,7 @@ import type { MeResponse } from './store/remote-store.js'
 import { normalizeEndpointUrl, safeOrigin } from './store/remote-store.js'
 import { isServerStoreEntry, withCompatScope, entryMetadata, isSafeScopeName } from './store-expand.js'
 import { isSharedScope } from './scope-util.js'
-import { ServerStoreEntrySchema } from './schemas/config.js'
+import { ServerStoreEntrySchema, StoreEntrySchema } from './schemas/config.js'
 
 export type DiscoveryStatus = 'ok' | 'not_synced' | 'failed' | 'auth_failed' | 'degraded'
 
@@ -147,6 +147,9 @@ export type FoldKeptReason =
    *  is the first in config order, so merging could change it — for one,
    *  weaken a sensitivity policy. */
   | 'metadata-differs'
+  /** The loader rejects the entry (schema), so it serves nothing today;
+   *  folding it would start sending its scope to the server. */
+  | 'invalid-entry'
 
 export interface FoldReport {
   /** Per-scope entries absorbed into the server entry. */
@@ -228,6 +231,7 @@ function keptReason(r: Record<string, unknown>, scope: string, token: string | u
   readonly: boolean): FoldKeptReason | null {
   // `__proto__` would set the prototype of scope_settings, not a key of it.
   if (!isSafeScopeName(scope) || scope === '__proto__') return 'invalid-scope'
+  if (!StoreEntrySchema.safeParse(r).success) return 'invalid-entry'
   if (str(r.token_env) !== tokenEnv) return 'different-token-env'
   if (str(r.token) !== token) return 'different-token'
   if ((r.readonly === true) !== readonly) return 'readonly-differs'
@@ -306,7 +310,13 @@ export function foldStoresIntoServerEntry(
       ...(isPlainObj(settings[scope]) ? entryMetadata(settings[scope] as Record<string, unknown>) : {}),
     }
     const mds = [own, ...idx.map(i => entryMetadata(rawStores[i] as Record<string, unknown>))].filter(m => Object.keys(m).length)
-    if (mds.some(m => !isDeepStrictEqual(m, mds[0]))) for (const i of idx) why.set(i, 'metadata-differs')
+    // `dial` is read per entry, so its absence (the default) counts too:
+    // among the folding entries, and the server entry's when it serves the scope.
+    const servesIt = servedScopes(server).includes(scope)
+    const dials = [...(servesIt ? [own.dial] : []), ...idx.map(i => (rawStores[i] as Record<string, unknown>).dial)]
+    if (mds.some(m => !isDeepStrictEqual(m, mds[0])) || dials.some(d => !isDeepStrictEqual(d, dials[0]))) {
+      for (const i of idx) why.set(i, 'metadata-differs')
+    }
   }
 
   const slot = Symbol('server entry')
