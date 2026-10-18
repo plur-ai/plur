@@ -11098,6 +11098,17 @@ export class Plur {
             + `scope to cancel the delivery).`,
         }
       }
+      // A scope two servers now claim is held, never pushed to whichever is
+      // listed first (#1631): the same refusal as learn, non-destructively —
+      // the row stays queued until one of the entries is removed.
+      const target = resolveScopeTarget(outbox.target_scope, this.config.stores ?? [])
+      if (target.kind === 'conflict') {
+        return {
+          skip: 'failed',
+          warning: `${engram.id}: NOT pushed — scope "${outbox.target_scope}" is claimed by two servers `
+            + `(${target.servers.join(', ')}). Remove it from one of them in config.yaml; the save stays queued.`,
+        }
+      }
       // Resolve remote driver from current config (don't store tokens in outbox)
       const storeEntry = (this.config.stores ?? []).find(
         s => s.url && s.scope === outbox.target_scope && !s.readonly
