@@ -398,6 +398,16 @@ describe('Windows (simulated host): every config write is a protected write', ()
     expect(protectedPaths.has(cfg)).toBe(true)
   })
 
+  it('registerEnterpriseServer writes the key through the shared helper: owner-only on Windows too', async () => {
+    realFs.writeFileSync(cfg, 'stores: []\n')
+    followRenames()
+    const plur = new Plur({ path: root })
+    await plur.registerEnterpriseServer('https://plur.example.com', { token: 'k1', personalScope: 'user:acme:alice' })
+    expect(realFs.readFileSync(cfg, 'utf8')).toContain('plur.example.com')
+    expect(protectedPaths.has(cfg)).toBe(true)
+    expect(calls.some(c => c[2] === '/inheritance:r' && /config\.yaml\.\d+\.\d+\.tmp$/.test(c[1]))).toBe(true)
+  })
+
   it('protection that cannot be established: the write is refused and config.yaml is unchanged', () => {
     realFs.writeFileSync(cfg, 'stores: []\n')
     followRenames()
@@ -532,8 +542,10 @@ describe('Windows (simulated host): every config write is a protected write', ()
 
 describe('no config writer bypasses it', () => {
   const read = (f: string) => realFs.readFileSync(join(SRC, f), 'utf8')
-  it('index.ts has no atomicWrite(this.paths.config call left', () => {
+  it('index.ts has no atomicWrite(this.paths.config call left, and no owner-only step of its own', () => {
     expect(read('index.ts')).not.toMatch(/atomicWrite\(this\.paths\.config/)
+    // registerEnterpriseServer's own POSIX chmod is replaced by writeConfigFile's (one rule).
+    expect(read('index.ts')).not.toMatch(/chmodSync\(this\.paths\.config/)
   })
   /** Every `atomicWrite(...)` call (TypeScript parser) whose arguments name CONFIG_FILE_MODE. */
   const callsWithConfigMode = (src: string): string[] => {

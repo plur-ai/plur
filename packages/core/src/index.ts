@@ -13270,18 +13270,9 @@ Generate an improved version of the procedure that prevents this failure. Return
           throw new Error(`registerEnterpriseServer: ${err instanceof Error ? err.message : String(err)}`)
         }
         if (result.status === 'unchanged') return false
-        // The file is about to hold a key: owner-only on POSIX, under the lock
-        // and before atomicWrite reads the mode it keeps. Windows ACLs: B1b.
-        if (process.platform !== 'win32') {
-          try {
-            const mode = fs.statSync(this.paths.config).mode & 0o777
-            if (mode & 0o077) fs.chmodSync(this.paths.config, mode & 0o700)
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-              throw new Error(`registerEnterpriseServer: config.yaml could not be made owner-only (${(err as NodeJS.ErrnoException)?.code ?? 'error'}). Nothing was changed.`)
-            }
-          }
-        }
+        // The key is written by _updateRawStores through writeConfigFile, under
+        // this lock: owner-only on POSIX (tightened before the write) and on
+        // Windows (a verified access list, or the write is refused) (#1631).
         rawStores.splice(0, rawStores.length, ...result.stores)
         return true
       })

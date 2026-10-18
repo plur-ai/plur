@@ -5,6 +5,10 @@ Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. `persis
 and `_updateRawStores` write the same bytes under the same lock, now through
 `writeConfigFile` (owner-only protection, modelled in Persistence §AtomicTemp); the
 expand/collapse/rotation logic is unchanged.
+After merging B5 (same day): `registerEnterpriseServer`'s own POSIX chmod step is removed;
+its key is written by `_updateRawStores` through `writeConfigFile` under the same lock
+(tightened before the write on POSIX, a verified access list or a refusal on Windows). The
+registration and fold (§6/§6b) are unchanged.
 
 Models of `packages/core/src/store-expand.ts` (expandServerEntry, collapseExpandedStores,
 serverEntryIdentities), `packages/core/src/sensitivity-writeback.ts`
