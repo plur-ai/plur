@@ -151,6 +151,7 @@ describe('every public Plur method in a remote-only folder', () => {
       confirmTension: [tensionId], dismissTension: [tensionId], resolveTension: [tensionId, pid], hasUnresolvedTension: [pid],
       getTensionsConfig: [], purgeTensions: [], statConfigMtime: [], ignoredDuplicateStores: [], removeDuplicatePrimaryStores: [],
       reloadConfigIfChanged: [], persistStores: null, mergeStoresForWriteback: null, persistDismissedScopes: null, // config writers, no engram store access
+      registerEnterpriseServer: null, // config writer (development, #1631 B5): registers a server entry in config.yaml
       addStore: [join(base, 'nope.yaml'), 'project:nope'], addRemoteStore: [{ url: 'http://127.0.0.1:9', scope: 'group:nope/x' }],
       verifyRemoteStore: [{ url: baseUrl, token: TOKEN, scope: TEAM }], autoDiscoveryEnabled: [], isDirectoryTrusted: [work],
       trustDirectory: [join(base, 'elsewhere')], untrustDirectory: [join(base, 'elsewhere')], listTrustedDirectories: [],
