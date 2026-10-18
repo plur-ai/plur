@@ -1444,6 +1444,16 @@ function receiptSummary(r: Receipt): string {
   )
 }
 
+/**
+ * remote-only folder: refuse a tool that reads or writes a file of this
+ * machine's store directly, past the bound Plur instance (gate review of #1663).
+ */
+function refuseLocalFileInRemoteOnly(plur: Plur, what: string): void {
+  const ro = plur.remoteOnlyFolder()
+  if (!ro) return
+  throw new RemoteOnlyWriteError(ro.folder, ro.scope, undefined, ro.blocked ? 'blocked' : 'local-store', ro.blocked ?? what)
+}
+
 function getAllToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -4920,6 +4930,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           }
         }
 
+        // remote-only: the local history is personal-store bookkeeping (gate
+        // review of #1663); getEngramHistory above answers [] there too.
+        refuseLocalFileInRemoteOnly(plur, 'Reading the history of this machine\'s store')
         // Return recent history across all engrams
         const { listHistoryMonths, readHistory } = await import('@plur-ai/core')
         const status = await plur.status()
@@ -5118,6 +5131,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         },
       },
       handler: async (args, plur) => {
+        // remote-only: the profile cache is derived from personal memory, and
+        // a profile generated here would be kept on this machine (gate review of #1663).
+        refuseLocalFileInRemoteOnly(plur, 'The cognitive profile (kept in this machine\'s store)')
         const status = await plur.status()
         const storagePath = status.storage_root
         if (!args.force_regenerate) {

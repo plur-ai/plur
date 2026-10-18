@@ -8,7 +8,7 @@
  * `--yes` actually writes.
  */
 import type { GlobalFlags } from '../plur.js'
-import { detectPlurStorage, listBackups, planRestore, restoreBackup } from '@plur-ai/core'
+import { detectPlurStorage, listBackups, planRestore, restoreBackup, resolveFolderPolicy, RemoteOnlyWriteError } from '@plur-ai/core'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
 function usage(): never {
@@ -44,6 +44,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--date' && i + 1 < args.length) date = args[++i]
     else if (arg === '--help' || arg === '-h') usage()
     else usage()
+  }
+
+  // A remote-only folder never uses the personal store (gate review of #1663):
+  // restoring it from there is refused, as compact and sync are. A folder map
+  // that cannot be read leaves this command as on development (decision 1).
+  if (confirm) {
+    let policy: ReturnType<typeof resolveFolderPolicy> | null = null
+    try { policy = resolveFolderPolicy(process.cwd(), { root, readOnly: true }) } catch { policy = null }
+    if (policy?.mode === 'remote-only') {
+      return exit(1, new RemoteOnlyWriteError(process.cwd(), policy.scope ?? null, undefined, 'local-store',
+        'Restoring the store from a snapshot (run it outside the remote-only folder)').message)
+    }
   }
 
   if (list) {

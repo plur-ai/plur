@@ -1394,6 +1394,23 @@ export class Plur {
     return ro ? new RemoteOnlyStoreGuard(this._holdStore, ro, true, sc => this._isDeliverableTeamScope(sc)) : this._holdStore
   }
   private _holdStore: QueueHoldStore | null = null
+  /**
+   * A history event's `data` with only metadata kept (remote-only): numbers,
+   * booleans and null; strings only under keys that hold ids, scopes, states
+   * or kinds; arrays of such strings under those keys. Anything else is left
+   * out, so a new free-text field is never recorded by default.
+   */
+  private static _metadataOnly(data: Record<string, unknown>): Record<string, unknown> {
+    const SAFE = /^(id|ids|engram_id|engram_ids|.*_id|.*_ids|scope|scopes|.*_scope|.*_scopes|store|stores|signal|status|.*_status|state|kind|type|mode|event|operation|op)$/
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(data ?? {})) {
+      if (v === null || typeof v === 'number' || typeof v === 'boolean') out[k] = v
+      else if (SAFE.test(k) && typeof v === 'string' && v.length <= 200 && !/[\r\n]/.test(v)) out[k] = v
+      else if (SAFE.test(k) && Array.isArray(v) && v.every(x => typeof x === 'string' && x.length <= 200 && !/[\r\n]/.test(x))) out[k] = v
+    }
+    return out
+  }
+
   /** The binding a locked store operation captured at its start (R3-5). */
   private static _lockBinding = new AsyncLocalStorage<{ plur: Plur; binding: RemoteOnlyBinding | null }>()
   private _activeBinding(): RemoteOnlyBinding | null {
@@ -3109,13 +3126,11 @@ export class Plur {
    *   back out of step with the log it is supposed to be explained by.
    */
   private _appendHistory(event: HistoryEventType): boolean {
-    // remote-only: the local history never holds statement text (audit of
-    // #1521, S6) — events keep their ids and counts, not previews.
-    if (this._remoteOnly && (event as any).data) {
-      const data = { ...(event as any).data }
-      delete data.incoming_preview
-      delete data.statement
-      event = { ...(event as any), data } as HistoryEventType
+    // remote-only: the local history never holds free text (audit of #1521,
+    // S6; gate review of #1663) — events keep ids, scopes, counts, flags and
+    // enum-like values, never a statement, preview, reason or message.
+    if (this._activeBinding() && (event as any).data) {
+      event = { ...(event as any), data: Plur._metadataOnly((event as any).data) } as HistoryEventType
     }
     if (!event.actor) {
       event.actor = {
@@ -9204,7 +9219,13 @@ export class Plur {
       && (this.config.stores ?? []).some(e => typeof e.scope === 'string' && storePrefix(e.scope) === ns.prefix)) {
       return null
     }
-    for (const entry of (namedBy.length > 0 ? namedBy : writableRemotes)) {
+    // remote-only (gate review of #1663): a bare id is sent only to the
+    // store(s) serving the row's own scope, never first to another team
+    // server that merely might hold the id.
+    const walk = namedBy.length > 0 || !this._activeBinding()
+      ? (namedBy.length > 0 ? namedBy : writableRemotes)
+      : writableRemotes.filter(e => typeof updated.scope === 'string' && isScopeWithin(updated.scope, e.scope))
+    for (const entry of walk) {
       // Leak guard (#353): remote-resident, explicit update → THROW on a
       // forbidden hit (no coherent demotion for a remote engram).
       // LOW-2: scan context fields too, not just the statement.
@@ -14331,7 +14352,9 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async warmRemoteCaches(): Promise<void> {
     const stores = this.config.stores ?? []
-    const remoteStores = stores.filter(s => s.url)
+    // remote-only (gate review of #1663): only the folder's own team store.
+    const ro = this._activeBinding()
+    const remoteStores = stores.filter(s => s.url && (!ro || (!ro.blocked && !!ro.scope && s.scope === ro.scope)))
     const REMOTE_LOAD_TIMEOUT_MS = 5000
     await Promise.all(
       remoteStores.map(s => {

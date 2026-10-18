@@ -1175,7 +1175,7 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
     }
     if (!(opts.remoteScopes ?? []).includes(change.scope)) {
       throw new FolderMapError('scope-unconfigured',
-        `"${change.scope}" is not served by a remote store (a url store in config.yaml), so a remote-only ` +
+        `${escapedPath(change.scope)} is not served by a remote store (a url store in config.yaml), so a remote-only ` +
         `folder would have nowhere to keep its memory. Add the team store first (plur remote / plur stores add), then retry.`)
     }
   }
@@ -1237,6 +1237,15 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
     ...nameOnly.map(i => map.folders[i].plur).filter(m => m !== 'on'),
   ])
   if (mode !== undefined) entry.plur = mode
+  // `--scope` alone on a folder that is remote-only through a PARENT entry
+  // (a glob or an ancestor): the exact entry this write makes must not turn
+  // it back into local memory (owner decision 2 on #1521; gate review of
+  // #1663). The decision in effect is read from the map as it is now.
+  if (change.scope !== undefined && change.mode === undefined && entry.plur !== 'remote-only' && entry.plur !== 'off') {
+    let inherited: FolderPolicy | null = null
+    try { inherited = resolveFolderPolicy(folder, { root, home, readOnly: true }) } catch { inherited = null }
+    if (inherited?.mode === 'remote-only') entry.plur = 'remote-only'
+  }
   if (change.scope !== undefined) {
     entry.scope = change.scope
     if (change.mode === undefined && entry.plur === 'remote-only') {

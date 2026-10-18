@@ -295,11 +295,12 @@ export function cursorHookFolder(
   if (policy.mode === 'remote-only') return { dir, policy }
   const remoteOnlyRoot = askable.find(r => r.policy.mode === 'remote-only')
   if (remoteOnlyRoot) return { dir, policy: remoteOnlyRoot.policy }
-  // The payload cwd too, as for `off` (gate review of #1663): a remote-only
-  // folder inside an `on` root keeps the workspace remote-only.
-  for (const p of cwd ? [...new Set([cwd, ...(cwdReal ? [cwdReal] : [])])] : []) {
-    const cwdPolicy = hookFolderPolicy(p, flags)
-    if (cwdPolicy.mode === 'remote-only') return { dir, policy: cwdPolicy }
+  // Every spelling `off` is checked on, too (gate review of #1663): each root
+  // as given and as resolved — a home-or-above root included — and the
+  // payload cwd. A remote-only one keeps the workspace remote-only.
+  for (const p of offChecks) {
+    const restricted = hookFolderPolicy(p, flags)
+    if (restricted.mode === 'remote-only') return { dir, policy: restricted }
   }
   // A home-or-above root that is undecided is on here, by the MCP rule, never `ask`.
   const on: FolderPolicy = policy.mode === 'on'

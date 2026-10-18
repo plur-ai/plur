@@ -31,6 +31,7 @@ import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind, SaveOptions } from './primary-store.js'
 import { RemoteOnlyWriteError } from '../remote-only.js'
 import { logger } from '../logger.js'
+import { escapedPath } from '../folder-ask.js'
 
 export interface RemoteOnlyStoreBinding {
   folder: string
@@ -297,6 +298,11 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
    * for a YAML store, and concurrent bound writes lost saves.
    */
   readonly withExclusiveAccess?: <T>(fn: () => Promise<T>) => Promise<T>
+  /**
+   * Forwarded only when the inner store has it (gate review of #1663): a
+   * transactional store runs background work after its commit, never before.
+   */
+  readonly afterCommit?: (callback: () => void) => void
 
   constructor(
     private readonly _inner: PrimaryStore,
@@ -318,6 +324,7 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
     }
     if (_inner.nextEngramId) this.nextEngramId = prefix => _inner.nextEngramId!(prefix)
     if (_inner.withExclusiveAccess) this.withExclusiveAccess = fn => _inner.withExclusiveAccess!(fn)
+    if (_inner.afterCommit) this.afterCommit = cb => _inner.afterCommit!(cb)
     if (_inner.append) {
       this.append = async engram => {
         this._assertQueued(engram, 'Saving a new memory on this machine')
@@ -351,7 +358,7 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
     if (isDeliverableQueuedSave(e, this._binding.folder, this._isDeliverableScope)) return true
     if (!RemoteOnlyStoreGuard._warned.has(e.id)) {
       RemoteOnlyStoreGuard._warned.add(e.id)
-      logger.warning(`[plur] ${e.id} is a queued save from ${this._binding.folder} that can no longer be delivered ` +
+      logger.warning(`[plur] ${e.id} is a queued save from ${escapedPath(this._binding.folder)} that can no longer be delivered ` +
         `(its scope or status changed, or no writable team store serves it). It is set aside; forget it by id to remove it.`)
     }
     return false
