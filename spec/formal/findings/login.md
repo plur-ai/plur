@@ -33,8 +33,18 @@ Registration refuses to take over the personal scope's writes (owner decision on
 - Replays: `register-enterprise-server-stale.test.ts` (core), and the process test "a stale entry holding the personal scope …".
 - Mutation check: dropping the flag (`m3`) breaks `no_flag_no_removal`. In the code, ignoring `removeStale` in `registerServerEntry` turns 11 refusal tests red (the new suite and the existing Codex-round refusals).
 
+## L4. The one-time config.json move never replaces a sign-in config.yaml holds (gate review, 2026-10-18)
+
+**Verdict:** found and fixed in the gate (the move as first built replaced config.yaml's newer key with config.json's old one).
+
+As first built, a remaining `~/.plur/config.json` whose key the server still accepted was registered for its server even when config.yaml already held a newer sign-in to that server (one written by `plur-enterprise init`, say), so `plur login --status` silently swapped the newer key for the old one, possibly another account's. Now a config.json for a server config.yaml already signs in to is set aside without contacting the server, and the file leaves its place only once its owner-only copy exists.
+- Theorems: `Legacy.held_never_replaced`, `Legacy.written_only_after_ok`, `Legacy.moved_only_when_copied`, `Legacy.unreachable_kept`, `Legacy.move_reachable`.
+- Counterexample: `Legacy.old_replaces_held` (the first build).
+- Replays: the process test "a config.json for a server config.yaml already signs in to …" (red before the fix: the old key replaced the current one), and "config.json is set aside through the same helper; when that fails it stays where it is".
+- Mutation checks: dropping the `held` test breaks `held_never_replaced` and `old_replaces_held`; setting the file aside without the copy breaks `moved_only_when_copied`.
+
 ## Not verified
 
 - A real server: the device endpoints are tested through a scripted fetch and an in-test server with the C3 shapes (the enterprise contract stub's), not the A8 server.
-- Windows: the backups of config.yaml and config.json are made with mode 0600/0700, which Windows does not enforce; the owner-only ACL helper (B1b) is not merged yet.
+- Windows: the backups of config.yaml and config.json go through the cleanup's `backupWriter` and core's `protectOwnerOnly` (owner-only access list, verified; tested with icacls mocked). A real Windows run of `plur login` is not part of this PR.
 - SIGTERM or a kill during the write itself: the write is synchronous and atomic (temp file and rename), so config.yaml is old or new, but a lock file could be left; not tested here.

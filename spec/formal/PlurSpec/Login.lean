@@ -15,7 +15,9 @@ the key format check and the 429/slow_down arithmetic are folded into the
 answer kinds below. Every theorem holds for all configs and oracles.
 
 Left out: the device name and headless rules (`device-name.ts`, string
-formatting only), printing, and the backup copy `--remove-stale` makes.
+formatting only), printing, and how the owner-only backup copies are made
+(core's `protectOwnerOnly`, modelled in Installer.lean); §3 only records
+whether the copy of config.json exists.
 -/
 
 namespace PlurSpec.Login
@@ -313,5 +315,87 @@ theorem byScope_drops_non_holder :
     (⟨1, true, false⟩ : Entry) ∈ (kept true true [⟨1, true, false⟩, ⟨2, true, true⟩]).getD [] := by decide
 
 end Stale
+
+/-! ## 3. The one-time `~/.plur/config.json` move (`legacy-login.ts`, owner decision O15)
+
+Gate review of #1665, 2026-10-18. `held`: config.yaml already holds a sign-in
+(any credential) to the file's server. `me`: the `/me` answer for the old key.
+`register`: registration's result (`written` the whole new config, one
+locked write; `takeover` refused because another entry holds the personal
+scope; `failed` any other refusal). `copied`: the owner-only copy of the file
+(core's `protectOwnerOnly`) was made. The result is the config written, if
+any, and whether the file left its place. -/
+namespace Legacy
+
+inductive Me | ok | rejected | unknown
+  deriving DecidableEq, Repr
+
+inductive Reg (Cfg : Type) | written (c : Cfg) | takeover | failed
+
+variable {Cfg : Type}
+
+def migrate (held : Bool) (me : Me) (register : Cfg → Reg Cfg) (copied : Bool) (cfg : Cfg) : Option Cfg × Bool :=
+  if held then (none, copied)
+  else match me with
+    | .unknown => (none, false)
+    | .rejected => (none, copied)
+    | .ok => match register cfg with
+      | .written c => (some c, copied)
+      | .takeover => (none, copied)
+      | .failed => (none, false)
+
+/-- A sign-in config.yaml already holds for the server is never replaced by
+the old key. -/
+theorem held_never_replaced (me : Me) (register : Cfg → Reg Cfg) (copied : Bool) (cfg : Cfg) :
+    (migrate true me register copied cfg).1 = none := by
+  simp [migrate]
+
+/-- The old key is written only after the server accepted it, and only when
+config.yaml holds no sign-in to that server. -/
+theorem written_only_after_ok (held : Bool) (me : Me) (register : Cfg → Reg Cfg) (copied : Bool) (cfg c : Cfg)
+    (h : (migrate held me register copied cfg).1 = some c) : held = false ∧ me = .ok := by
+  unfold migrate at h
+  cases held <;> simp at h
+  cases me <;> simp at h
+  simp
+
+/-- The file leaves its place only once its owner-only copy exists. -/
+theorem moved_only_when_copied (held : Bool) (me : Me) (register : Cfg → Reg Cfg) (copied : Bool) (cfg : Cfg)
+    (h : (migrate held me register copied cfg).2 = true) : copied = true := by
+  unfold migrate at h
+  split at h
+  · exact h
+  · split at h
+    · simp at h
+    · exact h
+    · split at h <;> simp_all
+
+/-- A server that cannot be reached keeps the file for the next run. -/
+theorem unreachable_kept (register : Cfg → Reg Cfg) (copied : Bool) (cfg : Cfg) :
+    migrate false .unknown register copied cfg = (none, false) := by
+  simp [migrate]
+
+/-- Reachable: an accepted key with no sign-in held is written and the file set aside. -/
+theorem move_reachable :
+    migrate (Cfg := Nat) false .ok (fun c => .written (c + 1)) true 0 = (some 1, true) := by decide
+
+/-- Counterexample: the move as first built (no `held` check; the file was
+moved even when the copy could not be protected) replaced config.yaml's newer
+key with the old one (replayed: enterprise-device-login.test.ts, "a
+config.json for a server config.yaml already signs in to"). -/
+def oldMigrate (_held : Bool) (me : Me) (register : Cfg → Reg Cfg) (_copied : Bool) (cfg : Cfg) : Option Cfg × Bool :=
+  match me with
+  | .unknown => (none, false)
+  | .rejected => (none, true)
+  | .ok => match register cfg with
+    | .written c => (some c, true)
+    | .takeover => (none, true)
+    | .failed => (none, false)
+
+theorem old_replaces_held :
+    (oldMigrate (Cfg := Nat) true .ok (fun c => .written (c + 1)) false 0) = (some 1, true) ∧
+    (migrate (Cfg := Nat) true .ok (fun c => .written (c + 1)) false 0).1 = none := by decide
+
+end Legacy
 
 end PlurSpec.Login
