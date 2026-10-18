@@ -73,7 +73,7 @@ jobs:
       # Install and build ran this change's package scripts; none of them may have
       # rewritten the judge on the way to the gate.
       - name: The judge is as committed
-        run: git diff --exit-code -- .evals evals scripts/check-eval-separation.py package.json
+        run: bash scripts/judge-intact.sh
       # Fails when a promise recorded green in evals/baseline.json is red now, when the
       # baseline is missing or unreadable, when a retirement is invalid, and (on a pull
       # request) when a promise green in the target branch's baseline was dropped without

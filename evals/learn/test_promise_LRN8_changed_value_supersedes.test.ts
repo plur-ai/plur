@@ -17,18 +17,21 @@
 //  * new.relations.supersedes holds the old id and old.relations.superseded_by
 //    holds the new id (the link inject.ts honours, COR-1);
 //  * the old memory is therefore no longer live.
-// Then injection for the subject is checked: the new statement is given, the
-// old one is not.
+// Then injection for the subject is checked, after a single and a batch save:
+// the new statement's full text is in what the agent receives, the old one's is
+// not. A pair on a subject made up at run time repeats both checks, so the
+// public pairs cannot be special-cased.
 //
 // Pairs are from the public dev set (evals/gold/dedup-v2), label `supersede`.
 // A control pair labelled `distinct` with an ADD verdict must stay two live
 // memories with no link: supersede must not leak onto a different subject.
+import { randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { Plur } from '../../packages/core/src/index.js'
 import { judgeDedupOutcome, type SavePath } from '../helpers/dedup-outcome.js'
 import { dedupPairs, type DedupPair } from '../helpers/quality.js'
 import { tempStore } from '../helpers/store.js'
-import { given } from '../helpers/corrections-inject-feedback-util.js'
+import { deliversText, given } from '../helpers/corrections-inject-feedback-util.js'
 
 const pairs = dedupPairs('dev')
 const byId = (id: string): DedupPair => {
@@ -64,22 +67,41 @@ describe('LRN-8 a changed value is saved as its own memory that supersedes the o
     })
   }
 
-  it('after a single save says UPDATE, injection gives the new statement and not the old one', async () => {
-    const p = SUPERSEDE[0]
-    const s = await tempStore({ embedder: 'bag-of-words' })
-    try {
-      const old = await s.plur.learn(p.existing, { scope: 'global' })
-      await s.plur.learnAsync(p.incoming, { scope: 'global', llm: says('UPDATE') })
-      const fresh = new Plur({ path: s.dir, autoDiscover: false })
-      await fresh.ready()
-      const stored = await fresh.list()
-      const neu = stored.find(e => e.id !== old.id && e.statement === p.incoming)
-      expect(neu, `the new statement was not stored as its own memory (stored: ${stored.map(e => e.id).join(', ')})`).toBeTruthy()
-      const ids = given(await fresh.inject('write review summaries for Dovren Toolworks', { budget: 4000 }))
-      expect(ids, 'precondition: injection for the subject gave the new memory').toContain(neu!.id)
-      expect(ids, 'the superseded memory is still given to the agent').not.toContain(old.id)
-    } finally {
-      s.cleanup()
+  // A subject made up at run time: no fixture text to special-case (fourth audit, overnight-agent risks).
+  const name = `Kv${randomBytes(4).toString('hex')} Works`
+  const UNSEEN: DedupPair = {
+    id: 'RUNTIME', label: 'supersede',
+    existing: `At ${name}, send the weekly status summary to the release channel every Tuesday.`,
+    incoming: `At ${name}, send the weekly status summary to the release channel every Wednesday.`,
+  }
+  for (const path of ['single', 'batch'] as SavePath[]) {
+    it(`${path} save, checker says UPDATE on a subject made up at run time: new memory supersedes`, async () => {
+      const j = await judgeDedupOutcome(UNSEEN, says('UPDATE'), 'bag-of-words', path)
+      expect(j.asked, `precondition: the checker was shown the pair (${j.detail})`).toBeGreaterThan(0)
+      expect(j.outcome, `${path} save of a changed value on an unseen subject did not leave a superseding memory: ${j.detail}`).toBe('superseded')
+    })
+
+    for (const [p, task] of [[SUPERSEDE[0], 'write review summaries for Dovren Toolworks'], [UNSEEN, `send the weekly status summary for ${name}`]] as const) {
+      it(`after a ${path} save says UPDATE (${p.id}), the agent receives the new statement whole and not the old one`, async () => {
+        const s = await tempStore({ embedder: 'bag-of-words' })
+        try {
+          const old = await s.plur.learn(p.existing, { scope: 'global' })
+          if (path === 'single') await s.plur.learnAsync(p.incoming, { scope: 'global', llm: says('UPDATE') })
+          else await s.plur.learnBatch([{ statement: p.incoming, context: { scope: 'global' } }], says('UPDATE'))
+          const fresh = new Plur({ path: s.dir, autoDiscover: false })
+          await fresh.ready()
+          const stored = await fresh.list()
+          const neu = stored.find(e => e.id !== old.id && e.statement === p.incoming)
+          expect(neu, `the new statement was not stored as its own memory (stored: ${stored.map(e => e.id).join(', ')})`).toBeTruthy()
+          const r = await fresh.inject(task, { budget: 4000 })
+          // The text the agent reads, not the ids PLUR reports (fourth audit A4-03).
+          expect(deliversText(r, p.incoming), 'the new statement is not given whole to the agent').toBe(true)
+          expect(deliversText(r, p.existing), 'the superseded statement is still in the text the agent receives').toBe(false)
+          expect(given(r), 'the superseded memory is still tagged in the text the agent receives').not.toContain(old.id)
+        } finally {
+          s.cleanup()
+        }
+      })
     }
-  })
+  }
 })

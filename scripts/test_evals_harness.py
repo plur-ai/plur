@@ -504,11 +504,25 @@ def test_local_script_keeps_the_workflow_refusals():
     assert max(nightly.index(c) for c in wf_checks) < nightly.index(".evals/run.py")
     gate = sh[sh.index("  gate)"):sh.index("  nightly)")]
     for needle in ("test_check_eval_separation.py", "check-eval-separation.py", "test_evals_harness.py",
-                   "git diff --exit-code -- .evals evals", "python3 .evals/gate.py --config evals/evals.yaml --base"):
+                   "scripts/judge-intact.sh", "python3 .evals/gate.py --config evals/evals.yaml --base"):
         assert needle in gate, needle
+    # a stacked base gets the strict separation check (fourth audit A4-01)
+    assert 'integration/*) STRICT=--strict' in gate and 'check-eval-separation.py "origin/$BASE" $STRICT' in gate
     assert "pnpm evals" not in sh and "pnpm -s evals" not in sh
     agents = sh[sh.index("  agents)"):]
     assert "unset ANTHROPIC_API_KEY" in agents and "--agents" in agents
+    # A configured holdout is validated before any agent eval reads it (fourth audit A4-06):
+    # the same hash and label checks as the nightly, before run.py.
+    assert wf_checks and all(c in agents for c in wf_checks), [c for c in wf_checks if c not in agents]
+    assert max(agents.index(c) for c in wf_checks) < agents.index(".evals/run.py")
+    assert 'PLUR_EVAL_HOLDOUT_DIR:-' in agents[:agents.index(wf_checks[0])]
+
+
+def test_the_agents_job_on_github_reads_no_holdout():
+    # The manual agents job scores the public dev set only; were it ever given a holdout
+    # it would need the nightly's validation first (fourth audit A4-06).
+    job = _workflow()["jobs"]["agents"]
+    assert "PLUR_EVAL_HOLDOUT_DIR" not in json.dumps(job) and "holdout" not in json.dumps(job).lower(), job
 
 
 def _check_dedup(pairs_yaml: str, same_as: bool = False):
@@ -556,6 +570,41 @@ def test_dedup_check_rejects_an_unknown_label_and_a_changed_text():
     assert r.returncode == 1 and "0 distinct" in r.stdout, r.stdout
 
 
+
+
+def test_judge_integrity_covers_every_judge_path_and_untracked_files():
+    # Fourth audit A4-01: after install and build ran the change's package scripts,
+    # every judge file must be as committed, the shared helpers and harness tests
+    # included, and no new file may have appeared among them.
+    sh = (ROOT / "scripts" / "judge-intact.sh").read_text()
+    assert "--untracked-files=all" in sh and "git status --porcelain" in sh
+    for path in (".evals", "evals", "scripts", "package.json", ".github", "packages/*/test/helpers"):
+        assert path in sh, path
+    steps = [st.get("run", "") for st in _workflow()["jobs"]["gate"]["steps"]]
+    build = next(i for i, r in enumerate(steps) if "pnpm -r build" in r)
+    intact = next(i for i, r in enumerate(steps) if "scripts/judge-intact.sh" in r)
+    gate = next(i for i, r in enumerate(steps) if ".evals/gate.py" in r)
+    assert build < intact < gate, (build, intact, gate)
+
+
+def test_judge_integrity_refuses_a_rewritten_helper_and_a_new_file():
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run(["git", "init", "-q", d], check=True)
+        helper = Path(d, "packages/core/test/helpers/stub-server.ts")
+        helper.parent.mkdir(parents=True)
+        helper.write_text("export const ok = true\n")
+        subprocess.run(["git", "-C", d, "add", "."], check=True)
+        subprocess.run(["git", "-C", d, "-c", "user.email=e@x", "-c", "user.name=e", "commit", "-qm", "base"], check=True)
+        run = lambda: subprocess.run(["bash", str(ROOT / "scripts" / "judge-intact.sh")], cwd=d, capture_output=True, text=True)
+        assert run().returncode == 0, run().stdout
+        helper.write_text("export const ok = false\n")
+        r = run()
+        assert r.returncode == 1 and "stub-server.ts" in r.stdout, r.stdout
+        subprocess.run(["git", "-C", d, "checkout", "-q", "--", "."], check=True)
+        Path(d, "evals").mkdir()
+        Path(d, "evals/shadow.ts").write_text("x\n")
+        r = run()
+        assert r.returncode == 1 and "evals/shadow.ts" in r.stdout, r.stdout
 if __name__ == "__main__":
     import traceback
     failed = []

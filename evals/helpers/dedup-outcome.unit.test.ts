@@ -28,6 +28,11 @@ describe('classify: hand-built store snapshots', () => {
     ['the superseding memory holds altered text', [mem('A', OLD, { superseded_by: ['B'] }), mem('B', NEW + ' Also ping the lead.', { supersedes: ['A'] })], 'wrong-shape'],
     ['the superseding memory is itself superseded', [mem('A', OLD, { superseded_by: ['B'] }), mem('B', NEW, { supersedes: ['A'], superseded_by: ['A'] })], 'wrong-shape'],
     ['two memories both claim to replace the old one', [mem('A', OLD, { superseded_by: ['B', 'C'] }), mem('B', NEW, { supersedes: ['A'] }), mem('C', NEW, { supersedes: ['A'] })], 'wrong-shape'],
+    // Fourth audit A4-03: a valid link beside a third, live, unlinked copy is not a supersede.
+    ['linked pair plus a live unlinked copy of the old statement', [mem('A', OLD, { superseded_by: ['B'] }), mem('B', NEW, { supersedes: ['A'] }), mem('C', OLD)], 'wrong-shape'],
+    ['linked pair plus a live unlinked copy of the new statement', [mem('A', OLD, { superseded_by: ['B'] }), mem('B', NEW, { supersedes: ['A'] }), mem('C', NEW)], 'wrong-shape'],
+    ['the existing memory plus a second live copy of it', [mem('A', OLD), mem('C', OLD)], 'wrong-shape'],
+    ['two live memories plus a third live copy', [mem('A', OLD), mem('B', NEW), mem('C', NEW)], 'wrong-shape'],
   ]
   for (const [name, stored, want] of cases) {
     it(`${name} -> ${want}`, () => {

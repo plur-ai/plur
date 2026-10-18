@@ -22,6 +22,7 @@ import type { DedupPair } from './quality.js'
 import { tempStore, type EmbedderMode } from './store.js'
 
 /**
+ * Every shape is exact: the store holds those memories and no others.
  * one-memory          one live memory, no supersede link, existing text unchanged
  * superseded          the new statement live and saved as said, linked both ways
  *                     (new.supersedes has the old id, old.superseded_by has the new),
@@ -64,19 +65,21 @@ export function classify(p: Pick<DedupPair, 'existing' | 'incoming'>, existingId
   if (linked.length > 0) {
     const n = linked[0]
     const both = sup(n).includes(existingId) && supBy(old).includes(n.id)
-    if (linked.length === 1 && both && n.statement === p.incoming && isLive(n) && !isLive(old)) {
+    // Exactly the two memories: a third live copy beside a valid link is not a supersede (fourth audit A4-03).
+    if (linked.length === 1 && both && n.statement === p.incoming && isLive(n) && !isLive(old) && stored.length === 2) {
       return { outcome: 'superseded', detail: `${summary}; the new memory supersedes the old, linked both ways` }
     }
     const why = linked.length > 1 ? 'more than one memory claims to replace the old one'
       : !both ? 'the supersede link is one-sided'
       : n.statement !== p.incoming ? 'the superseding memory does not hold the new statement as said'
       : isLive(old) ? 'the old memory is still live beside the one that replaces it'
-      : 'the superseding memory is not live'
+      : !isLive(n) ? 'the superseding memory is not live'
+      : 'another memory is stored beside the old one and the one that replaces it'
     return { outcome: 'wrong-shape', detail: `${summary}; ${why}` }
   }
-  if (live.length === 1 && isLive(old)) return { outcome: 'one-memory', detail: `${summary}; only the existing memory` }
+  if (stored.length === 1 && isLive(old)) return { outcome: 'one-memory', detail: `${summary}; only the existing memory` }
   const fresh = others.filter(isLive)
-  if (live.length === 2 && isLive(old) && fresh.length === 1 && fresh[0].statement === p.incoming) {
+  if (stored.length === 2 && live.length === 2 && isLive(old) && fresh.length === 1 && fresh[0].statement === p.incoming) {
     return { outcome: 'kept-separate', detail: `${summary}; both live, no link` }
   }
   return { outcome: 'wrong-shape', detail: `${summary}; not one of the expected shapes` }

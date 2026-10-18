@@ -201,6 +201,10 @@ describe('BEH-2 correction graders', () => {
       'Larkspur config files may use .cfg or .conf.',
       'Use .conf instead of .cfg for Larkspur config files.',
       'Larkspur config files must never end in .cfg.',
+      // Fourth audit A4-04: .cfg mentioned as context, the rule about config files says something else.
+      'The documentation contains an example filename sample.cfg. Configuration files use TOML.',
+      'The old README mentions .cfg. Larkspur config files use .yaml.',
+      'Larkspur config files use the .cfg extension; Larkspur config files also use .toml.',
     ]) expect(saysCfgNotConf(s).ok, s).toBe(false)
   })
 
@@ -213,6 +217,8 @@ describe('BEH-2 correction graders', () => {
       'Config files in Larkspur must use the .cfg extension and never .conf.',
       'In the Larkspur project, configuration files use the .cfg extension (not .conf).',
       'Larkspur naming convention: config files end in .cfg. Never use .conf.',
+      'Use .cfg instead of .yaml or .conf for Larkspur config files.',
+      'Larkspur config files use .cfg, not .toml and not .conf.',
     ]) expect(saysCfgNotConf(s).ok, `${s} → ${saysCfgNotConf(s).why}`).toBe(true)
   })
 
@@ -286,6 +292,17 @@ describe('BEH-2 correction graders', () => {
   })
 })
 
+describe('a failed record nested in a lookup reply is never a returned memory (fourth audit A4-04)', () => {
+  it('a nested success:false record carrying the statement does not count', () => {
+    const STORED = 'Larkspur keeps its log files for 11 days.'
+    const payload = JSON.stringify({ count: 0, results: [{ success: false, error: 'store unreachable', id: 'ENG-X', statement: STORED }] })
+    const v = gradeRetrieved(run('', [recallHit(payload)]), STORED)
+    expect(v.ok, v.why).toBe(false)
+    const good = JSON.stringify({ count: 1, results: [{ id: 'ENG-X', statement: STORED }] })
+    expect(gradeRetrieved(run('', [recallHit(good)]), STORED).ok).toBe(true)
+  })
+})
+
 describe('BEH-3 explicit-save graders', () => {
   const RULE = 'Larkspur keeps its log files for 11 days.'
 
@@ -295,6 +312,10 @@ describe('BEH-3 explicit-save graders', () => {
     expect(saysElevenDays('Larkspur retention is 11 days.').ok).toBe(false) // no mention of logs
     expect(saysElevenDays('A different project keeps logs for 11 days.').ok).toBe(false)
     expect(saysElevenDays('Keeping Larkspur logs for 11 days is wrong.').ok).toBe(false)
+    // Fourth audit A4-04: the target's logs get another (spelled-out) count, eleven goes to another project.
+    expect(saysElevenDays('Larkspur keeps logs for thirty days, and Bramble keeps logs for eleven days.').ok).toBe(false)
+    expect(saysElevenDays('Larkspur logs: thirty days. Bramble logs: 11 days.').ok).toBe(false)
+    expect(saysElevenDays('Bramble keeps its logs for 11 days. Larkspur has logs too.').ok).toBe(false)
   })
 
   it('accepts the fact in other words', () => {

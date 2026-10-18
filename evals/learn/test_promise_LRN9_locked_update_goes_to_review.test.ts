@@ -14,17 +14,24 @@
 // `decide:`): whether the new statement is given to the agent while the review
 // waits, and the setting by which a user "specifies differently". LRN-6 already
 // pins that the locked text is never rewritten.
+import { randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { Plur } from '../../packages/core/src/index.js'
 import { tempStore } from '../helpers/store.js'
-import { given } from '../helpers/corrections-inject-feedback-util.js'
+import { deliversText, given } from '../helpers/corrections-inject-feedback-util.js'
 
-const LOCKED = 'Review summaries for Dovren Toolworks go to the plant manager every Monday'
-const SAID = 'Review summaries for Dovren Toolworks go to the plant manager every Thursday'
+// One fixed subject, and one made up at run time so the fixture cannot be special-cased.
+const unseen = `Kv${randomBytes(4).toString('hex')} Works`
+const SUBJECTS = [
+  { name: 'Dovren Toolworks', task: 'write review summaries for Dovren Toolworks' },
+  { name: unseen, task: `write review summaries for ${unseen}` },
+]
 
 describe('LRN-9 an update onto a locked memory goes to my review queue', () => {
-  for (const path of ['single', 'batch'] as const) {
-    it(`${path} save, checker says UPDATE onto the locked memory`, async () => {
+  for (const [path, { name, task }] of (['single', 'batch'] as const).flatMap(p => SUBJECTS.map(x => [p, x] as const))) {
+    const LOCKED = `Review summaries for ${name} go to the plant manager every Monday`
+    const SAID = `Review summaries for ${name} go to the plant manager every Thursday`
+    it(`${path} save, checker says UPDATE onto the locked memory (${name === unseen ? 'unseen subject' : name})`, async () => {
       const s = await tempStore({ embedder: 'bag-of-words' })
       try {
         const locked = await s.plur.learn(LOCKED, { scope: 'global', commitment: 'locked', locked_reason: 'eval: owner rule' })
@@ -55,8 +62,9 @@ describe('LRN-9 an update onto a locked memory goes to my review queue', () => {
         expect(waiting.length, `no review item links the locked memory ${locked.id} and the new statement ${neu!.id}; ` +
           `review queue: ${JSON.stringify(fresh.listTensions().map(t => [t.engram_a, t.engram_b, t.status]))}`).toBe(1)
 
-        const ids = given(await fresh.inject('write review summaries for Dovren Toolworks', { budget: 4000 }))
-        expect(ids, 'the locked memory is no longer given to the agent while my review waits').toContain(locked.id)
+        const r = await fresh.inject(task, { budget: 4000 })
+        expect(given(r), 'the locked memory is no longer given to the agent while my review waits').toContain(locked.id)
+        expect(deliversText(r, LOCKED), 'the locked memory is not given whole while my review waits (fourth audit A4-03)').toBe(true)
       } finally {
         s.cleanup()
       }
