@@ -139,3 +139,30 @@ The first launch saved and recalled in the same process. A successful save puts 
 - Replay: `enterprise-hello.test.ts` "recalled means a live answer from the intended server" (6), `enterprise-hello-real-mcp.test.ts` single launch with `/recall` answering 401, 500 and no rows (3); all red on the original code.
 - Mutation check: `recalled := idIn` breaks `recalled_means_live` and `old_accepts_cached_row`; going back to recall-in-the-saving-session breaks `save_closed_before_recall`. In the code, the id-only check turns 4 unit tests red.
 - Left as is: the report names hosts and row counts, not which ids each host returned, so a fresh process whose server answered with other rows while the id came from the server's own listing (`GET /engrams`) would still pass. Both are answers from the intended server.
+  (Closed by round 5: the report now lists the ids each host returned, and only those count.)
+
+### Codex round 5, findings 1 and 2 — the hello proof was neither complete nor bound to the intended server (2026-10-18)
+- Finding 2 (soundness): the proof combined two separate facts. The intended host answered with SOME row, and the merged results held the saved id. With two servers on the personal scope, the first writable one (not the intended one) could take the save and return the id, while the intended server answered with an unrelated row. One server's ids can also equal another's, and merged rows keep the first host's copy, so neither the results nor the id shape tells where a row came from.
+- Finding 1 (completeness): the proof required `results_complete`, which also covers local semantic search. On a fresh install with no embedding model (`embedding_model_missing`), a successful round trip was refused.
+- What the MCP answers exposed: `plur_learn` gave `delivery: remote` but no server; recall rows carry no origin, and `remote.hosts[]` gave counts, not ids. No parameter restricts the save or the recall to one store, and targeting would need a change to the user's config. So two report fields were added instead. Neither changes routing or results.
+  - core `remote-recall.ts`: every host report lists the ids of the rows THAT host returned (`ids`), before the merge.
+  - core `deliveryOf` reports `host` (normalized endpoint, no userinfo). This is the endpoint a write was POSTed to, or, for a save absorbed by a copy already loaded from a url store, that store. It is kept in a per-object map, never on the row. MCP `plur_learn` returns it as `delivered_to`.
+- Fix (hello.ts):
+  - The save counts only when `delivered_to` is the intended server (by `normalizeEndpointUrl`). A missing `delivered_to` is not confirmed.
+  - A recall counts only when a host report for the intended server answered `ok` and lists the saved id.
+  - `results_complete`, `remote.state` and the merged results are no longer read. The recall uses `mode: "keyword"`, so a fresh install neither needs the local model nor tries to download it inside the timeout.
+- Theorems (`Installer.lean` §4):
+  - `Hello.saved_means_remote` (now with `deliveredTo = some target`), `Hello.recalled_means_live` (the target's own report holds the id), `Hello.proven_means_target_stored_and_returned`;
+  - completeness: `Hello.recalled_ignores_local`, `Hello.recalled_ignores_other_hosts`, `Hello.local_degradation_never_blocks`;
+  - counterexamples: `Hello.old_accepts_save_elsewhere`, `Hello.r4_accepts_other_servers_id`, `Hello.r4_rejects_missing_model`, `Hello.r4_rejects_other_server_down`; the older `Hello.old_accepts_cached_row` is kept.
+- Replay:
+  - `enterprise-hello.test.ts` "the intended server stored and returned the saved id" (7);
+  - `enterprise-hello-real-mcp.test.ts`: "embeddings on but the model is not downloaded" (default embeddings, empty `PLUR_MODEL_CACHE_DIR`, `PLUR_MODEL_DOWNLOAD=off`), "the save reached the other server", "only the other server returned the hello id", plus a two-server control;
+  - `packages/core/test/codex5-row-origin.test.ts` (6).
+  - All new tests except the control were red on the round-4 code.
+- Mutation check:
+  - Lean: `recalled := results.contains id` breaks 9 declarations; dropping `deliveredTo` from `saveConfirmed` breaks 5; requiring `complete` breaks 8.
+  - Code: judging the merged results turns 2 hello tests red, dropping the `delivered_to` check turns 4 red, and requiring `results_complete` again turns 2 red.
+- Left as is:
+  - `delivered_to` and `hosts[].host` keep a configured url's query string, as the round-3 endpoint identity does.
+  - A save absorbed by a copy that the process did not load from a url store (for example an absorbed write in a path store) names no server, so the hello reports it as not confirmed.

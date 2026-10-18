@@ -33,45 +33,66 @@ export function helloStatement(p: {
 interface LearnResult {
   id?: string
   delivery?: string
+  /** The server that holds the saved memory, as a normalized endpoint (Codex round 5). */
+  delivered_to?: string
   destination?: string
   plur?: string
 }
 
 interface RecallResult {
   results?: Array<{ id: string; statement?: string }>
-  /** What the server (remote) leg did on THIS call (#1586). */
-  remote?: { state?: string; hosts?: Array<{ host?: string; state?: string; count?: number }> }
+  /** What the server (remote) leg did on THIS call (#1586), with the ids each host returned. */
+  remote?: { state?: string; hosts?: Array<{ host?: string; state?: string; count?: number; ids?: unknown }> }
   results_complete?: boolean
 }
 
+/** A server named in a reason: its origin only, never userinfo, path or query. */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin
+  } catch {
+    return 'another server'
+  }
+}
+
 /**
- * Whether one recall answer proves the round trip (Codex round 4, finding 1).
- * The id coming back is not enough: a row can come from a cache while the
- * server's recall failed. Proven only when this call's server leg answered
- * completely (`remote.state` ok, `results_complete` true), the intended
- * server is among the hosts it dialed and answered ok with at least one row,
- * and the saved id is in the results. Returns null when proven, else why not.
+ * Whether one recall answer proves that the intended server returned the
+ * saved id (Codex rounds 4 and 5). Proven only when a host report for the
+ * intended server (by endpoint identity) answered ok on THIS call and lists
+ * the saved id among the rows it returned itself. The merged `results` are
+ * not used: one server's ids can equal another's, and a cached row can stand
+ * in for a failed server. Nor are `results_complete` or `remote.state`: they
+ * also cover local semantic search and other servers, which say nothing
+ * about this one. Returns null when proven, else why not.
  */
 function recallShortfall(r: RecallResult | undefined, savedId: string, serverKey: string, label: string): string | null {
   const notRecalled = `saved, but ${label}'s environment could not recall it`
-  const remote = r?.remote
-  const host = remote?.hosts?.find((h) => typeof h.host === 'string' && h.host === serverKey)
-  if (!remote || remote.state !== 'ok' || r?.results_complete !== true || !host || host.state !== 'ok') {
-    const state = host?.state ?? (remote ? (remote.state ?? 'unknown') : 'no report')
-    return `saved, but ${label}'s recall did not get a complete answer from the server (${state})`
+  const mine = (r?.remote?.hosts ?? []).filter((h) => typeof h.host === 'string' && h.host === serverKey)
+  if (mine.length === 0 || !mine.some((h) => h.state === 'ok')) {
+    const state = mine[0]?.state ?? (r?.remote ? 'not dialed' : 'no report')
+    return `saved, but ${label}'s recall did not get an answer from the server (${state})`
   }
-  if (!(typeof host.count === 'number' && host.count >= 1)) return notRecalled
-  return r?.results?.some((x) => x.id === savedId) ? null : notRecalled
+  const returned = mine.some((h) => h.state === 'ok' && Array.isArray(h.ids) && h.ids.includes(savedId))
+  return returned ? null : notRecalled
 }
 
-function failReason(result: LearnResult): string | null {
+function failReason(result: LearnResult, serverKey: string, serverUrl: string): string | null {
   if (result.plur === 'off') {
     return 'PLUR is turned off in this environment'
   }
   if (result.delivery === 'remote') {
-    return typeof result.id === 'string' && result.id.length > 0
-      ? null
-      : 'the server did not return an id for the saved memory'
+    if (!(typeof result.id === 'string' && result.id.length > 0)) {
+      return 'the server did not return an id for the saved memory'
+    }
+    // The save must have reached THIS server (Codex round 5, finding 2): with
+    // several servers on the personal scope, another one can take the write.
+    if (typeof result.delivered_to !== 'string') {
+      return `saved, but this environment did not say which server received it, so it is not confirmed on ${originOf(serverUrl)}`
+    }
+    if (normalizeEndpointUrl(result.delivered_to) !== serverKey) {
+      return `saved to a different server (${originOf(result.delivered_to)}), not to ${originOf(serverUrl)}`
+    }
+    return null
   }
   if (result.delivery === 'outbox') {
     return 'queued on this device, not delivered to the server'
@@ -95,6 +116,7 @@ export async function runHello(opts: {
   timeoutMs?: number
 }): Promise<HelloResult> {
   const timeout = opts.timeoutMs ?? 30000
+  const serverKey = normalizeEndpointUrl(opts.serverUrl)
   const perTool: HelloResult['perTool'] = []
 
   if (opts.launches.length === 0) {
@@ -139,7 +161,7 @@ export async function runHello(opts: {
         learnArgs.supersedes = [opts.previousId]
       }
       const learnResult = (await session.callTool('plur_learn', learnArgs)) as LearnResult
-      const reason = failReason(learnResult)
+      const reason = failReason(learnResult, serverKey, opts.serverUrl)
       if (reason !== null) {
         await session.close()
         return { saved: { ok: false, reason }, perTool: [] }
@@ -160,9 +182,10 @@ export async function runHello(opts: {
 
     // plur_recall is exposed by the server's default tool profile
     // (plur_recall_hybrid is not). The personal scope makes the recall dial
-    // the server that holds it; `recallShortfall` checks that it did.
-    const recallArgs = { query: opts.statement, scope: opts.personalScope }
-    const serverKey = normalizeEndpointUrl(opts.serverUrl)
+    // the server that holds it; `recallShortfall` checks that it did. Keyword
+    // mode: the proof is about the server, and a fresh install may not have
+    // the local embedding model yet (Codex round 5, finding 1).
+    const recallArgs = { query: opts.statement, scope: opts.personalScope, mode: 'keyword' }
 
     // Every launch — the saving one included — recalls from a fresh process.
     for (const { tool, launch } of opts.launches) {

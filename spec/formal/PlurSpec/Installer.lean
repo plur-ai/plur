@@ -501,18 +501,34 @@ def terminated (exitedOnTerm : Bool) : List String :=
 theorem kill_escalates (b : Bool) : b = false → "SIGKILL" ∈ terminated b := by
   intro h; simp [terminated, h]
 
-/-- `failReason`: a save counts only when it reached the server with an id. -/
+/-- `failReason`: a save counts only when it reached the INTENDED server with
+an id. Endpoints are abstract `Nat`s compared by identity (`normalizeEndpointUrl`
+equality); `deliveredTo` is `plur_learn`'s `delivered_to` (Codex round 5). -/
 structure Learn where
-  off      : Bool
-  delivery : Option String
-  idOk     : Bool    -- a non-empty string id
+  off         : Bool
+  delivery    : Option String
+  idOk        : Bool        -- a non-empty string id
+  deliveredTo : Option Nat  -- the server that holds the saved memory, if named
 
-def saveConfirmed (r : Learn) : Bool := !r.off && r.delivery == some "remote" && r.idOk
+/-- Fixed (round 5): remote, with an id, and delivered to the target endpoint. -/
+def saveConfirmed (target : Nat) (r : Learn) : Bool :=
+  !r.off && r.delivery == some "remote" && r.idOk && r.deliveredTo == some target
 
-theorem saved_means_remote (r : Learn) :
-    saveConfirmed r = true → r.off = false ∧ r.delivery = some "remote" ∧ r.idOk = true := by
+/-- Round 4 and before: any remote delivery with an id. -/
+def saveConfirmedOld (r : Learn) : Bool := !r.off && r.delivery == some "remote" && r.idOk
+
+theorem saved_means_remote (t : Nat) (r : Learn) :
+    saveConfirmed t r = true →
+    r.off = false ∧ r.delivery = some "remote" ∧ r.idOk = true ∧ r.deliveredTo = some t := by
   simp only [saveConfirmed, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq]
-  intro h; exact ⟨h.1.1, h.1.2, h.2⟩
+  intro h; exact ⟨h.1.1.1, h.1.1.2, h.1.2, h.2⟩
+
+/-- Counterexample for round 4 (finding 2, replayed by the real-MCP test "the
+save reached the other server"): the first writable store (endpoint 1) took
+the save; the old check confirmed it for target 0. -/
+theorem old_accepts_save_elsewhere :
+    saveConfirmedOld ⟨false, some "remote", true, some 1⟩ = true ∧
+    saveConfirmed 0 ⟨false, some "remote", true, some 1⟩ = false := by decide
 
 /-- The saving session is closed before the first recall call: no recall
 runs in the process whose optimistic cache holds the saved row. -/
@@ -526,34 +542,109 @@ before `close 0`, inside the saving session. -/
 theorem old_recalls_in_saving_session :
     bodyOld ⟨fun _ => true, true⟩ [] = [.openS 0, .call 0, .call 0, .close 0] := by decide
 
-/-- One recall answer, as `recallShortfall` reads it (`hello.ts`). -/
-structure Recall where
-  remoteOk : Bool   -- `remote.state` = ok for THIS call
-  complete : Bool   -- `results_complete` = true
-  hostOk   : Bool   -- the intended server is a dialed host and answered ok
-  hostRows : Bool   -- that host returned at least one row
-  idIn     : Bool   -- the saved id is among the results
+/-- One host's part in one recall call: `remote.hosts[]` with the ids THAT
+host returned, before rows from several hosts merge (core `remote-recall.ts`). -/
+structure HostReport where
+  host : Nat
+  ok   : Bool
+  ids  : List Nat
 
-/-- Fixed: recalled only with the live-remote evidence. -/
-def recalled (r : Recall) : Bool := r.remoteOk && r.complete && r.hostOk && r.hostRows && r.idIn
+/-- One recall answer. `remoteOk` (`remote.state` ok: EVERY dialed host
+answered) and `complete` (`results_complete`: also covers LOCAL search) are
+kept so the older checks can be stated; `results` are the merged ids. -/
+structure Recall where
+  remoteOk : Bool
+  complete : Bool
+  hosts    : List HostReport
+  results  : List Nat
+
+def hostReturned (t id : Nat) (h : HostReport) : Bool := h.host == t && h.ok && h.ids.contains id
+
+/-- Fixed (round 5, `recallShortfall`): a report for the target endpoint
+answered ok and lists the saved id among its own rows. -/
+def recalled (t id : Nat) (r : Recall) : Bool := r.hosts.any (hostReturned t id)
+
+/-- Round 4: this call complete, the target answered ok with at least one row
+(`count ≥ 1`, i.e. a non-empty id list), and the id among the MERGED results. -/
+def recalledR4 (t id : Nat) (r : Recall) : Bool :=
+  r.remoteOk && r.complete && r.hosts.any (fun h => h.host == t && h.ok && !h.ids.isEmpty) &&
+    r.results.contains id
 
 /-- Original: the id alone. -/
-def recalledOld (r : Recall) : Bool := r.idIn
+def recalledOld (id : Nat) (r : Recall) : Bool := r.results.contains id
 
-theorem recalled_means_live (r : Recall) :
-    recalled r = true →
-    r.remoteOk = true ∧ r.complete = true ∧ r.hostOk = true ∧ r.hostRows = true ∧ r.idIn = true := by
-  simp only [recalled, Bool.and_eq_true]
-  intro h; exact ⟨h.1.1.1.1, h.1.1.1.2, h.1.1.2, h.1.2, h.2⟩
+/-- Soundness: recalled means the TARGET's own live answer carried the id. -/
+theorem recalled_means_live (t id : Nat) (r : Recall) :
+    recalled t id r = true → ∃ h ∈ r.hosts, h.host = t ∧ h.ok = true ∧ id ∈ h.ids := by
+  simp only [recalled, hostReturned, List.any_eq_true, Bool.and_eq_true, beq_iff_eq,
+    List.contains_iff_mem]
+  intro ⟨h, hm, ⟨ht, hok⟩, hid⟩
+  exact ⟨h, hm, ht, hok, hid⟩
 
-theorem recalled_reachable : recalled ⟨true, true, true, true, true⟩ = true := by decide
+/-- The whole proof for one tool: the save delivered to the target, and the
+target returned that id. -/
+def proven (t : Nat) (s : Learn) (id : Nat) (r : Recall) : Bool := saveConfirmed t s && recalled t id r
+
+theorem proven_means_target_stored_and_returned (t : Nat) (s : Learn) (id : Nat) (r : Recall) :
+    proven t s id r = true →
+    s.deliveredTo = some t ∧ ∃ h ∈ r.hosts, h.host = t ∧ h.ok = true ∧ id ∈ h.ids := by
+  simp only [proven, Bool.and_eq_true]
+  intro ⟨hs, hr⟩
+  exact ⟨(saved_means_remote t s hs).2.2.2, recalled_means_live t id r hr⟩
+
+/-- Completeness (finding 1): local search state, `results_complete`,
+`remote.state` and the merged results never change the verdict. -/
+theorem recalled_ignores_local (t id : Nat) (r : Recall) (rOk c : Bool) (res : List Nat) :
+    recalled t id { r with remoteOk := rOk, complete := c, results := res } = recalled t id r := rfl
+
+/-- Completeness: other servers' reports (failed or not) never change it. -/
+theorem recalled_ignores_other_hosts (t id : Nat) (r : Recall) (others : List HostReport)
+    (h : ∀ o ∈ others, o.host ≠ t) :
+    recalled t id { r with hosts := others ++ r.hosts } = recalled t id r := by
+  simp only [recalled, List.any_append]
+  have : others.any (hostReturned t id) = false := by
+    simp only [List.any_eq_false, hostReturned]
+    intro o ho
+    simp [h o ho]
+  simp [this]
+
+/-- Completeness, stated directly: whenever the target answered ok with the
+id, the recall is proven, whatever local search and the other servers did. -/
+theorem local_degradation_never_blocks (t id : Nat) (r : Recall)
+    (hh : ∃ h ∈ r.hosts, h.host = t ∧ h.ok = true ∧ id ∈ h.ids) (rOk c : Bool) (res : List Nat) :
+    recalled t id { r with remoteOk := rOk, complete := c, results := res } = true := by
+  rw [recalled_ignores_local]
+  obtain ⟨h, hm, ht, hok, hid⟩ := hh
+  simp only [recalled, List.any_eq_true]
+  exact ⟨h, hm, by simp [hostReturned, ht, hok, hid]⟩
+
+theorem recalled_reachable : recalled 0 5 ⟨true, true, [⟨0, true, [5]⟩], [5]⟩ = true := by decide
 
 /-- Counterexample for the original (replayed: enterprise-hello.test.ts
 "a cached row"; enterprise-hello-real-mcp.test.ts 401/500/no rows): the server
 leg failed, the cached id came back, and the old check called it recalled. -/
 theorem old_accepts_cached_row :
-    recalledOld ⟨false, false, false, false, true⟩ = true ∧
-    recalled ⟨false, false, false, false, true⟩ = false := by decide
+    recalledOld 5 ⟨false, false, [⟨0, false, []⟩], [5]⟩ = true ∧
+    recalled 0 5 ⟨false, false, [⟨0, false, []⟩], [5]⟩ = false := by decide
+
+/-- Counterexample for round 4, finding 2 (replayed: real-MCP "only the other
+server returned the hello id"): server 1 returned the id, the target (0)
+answered ok with an unrelated row 7; round 4 called it recalled. -/
+theorem r4_accepts_other_servers_id :
+    recalledR4 0 5 ⟨true, true, [⟨1, true, [5]⟩, ⟨0, true, [7]⟩], [5, 7]⟩ = true ∧
+    recalled 0 5 ⟨true, true, [⟨1, true, [5]⟩, ⟨0, true, [7]⟩], [5, 7]⟩ = false := by decide
+
+/-- Counterexample for round 4, finding 1 (replayed: real-MCP "embeddings on
+but the model is not downloaded"): the target returned the id, but the
+embedding model is missing, so `results_complete` is false; round 4 refused. -/
+theorem r4_rejects_missing_model :
+    recalledR4 0 5 ⟨true, false, [⟨0, true, [5]⟩], [5]⟩ = false ∧
+    recalled 0 5 ⟨true, false, [⟨0, true, [5]⟩], [5]⟩ = true := by decide
+
+/-- And another server failing (`remote.state` timeout) no longer blocks it. -/
+theorem r4_rejects_other_server_down :
+    recalledR4 0 5 ⟨false, false, [⟨1, false, []⟩, ⟨0, true, [5]⟩], [5]⟩ = false ∧
+    recalled 0 5 ⟨false, false, [⟨1, false, []⟩, ⟨0, true, [5]⟩], [5]⟩ = true := by decide
 
 theorem reachable : live (trace ⟨fun _ => true, true⟩ [1, 2]) [] = [] := by decide
 
