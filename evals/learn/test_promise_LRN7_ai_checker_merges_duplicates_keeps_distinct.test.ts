@@ -44,10 +44,10 @@
 //
 // Ceilings: 10% each (owner, 2026-10-18). The false-merge rate also needs at
 // least MIN_DISTINCT_PAIRS distinct pairs in the set before it counts: with the
-// 3 each set holds today one miss is 33% and no miss proves nothing, so the
-// run fails as "not measurable" until an independent labeller adds the pairs
-// the owner commissioned (evals/gold/dedup-v2/LABELLER-CHECKLIST.md, "Known
-// weakness").
+// 3 the sets first held, one miss was 33% and no miss proved nothing. Each set
+// now holds 20, 17 of them written by a labeller from another model family
+// (evals/gold/dedup-v2/LABELLER-CHECKLIST.md); a set that drops below fails as
+// "not measurable".
 import { afterAll, describe, expect, it } from 'vitest'
 import { authEnv, claudeLlm, logReport, requireEnabled } from '../helpers/agent-behaviour-harness.js'
 import { inBatches, judgeDedupOutcome } from '../helpers/dedup-outcome.js'

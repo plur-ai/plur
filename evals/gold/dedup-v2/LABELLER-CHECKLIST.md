@@ -17,7 +17,8 @@ Rewriting the existing memory's text is wrong under every label.
 - Every version-1 `duplicate` pair stays `duplicate`.
 - Every version-1 `distinct` pair was judged again against the definitions above. The reasons for the dev set are in the round-4 hand-back, by pair id. The private holdout was relabelled by the same rules, and is referred to by id only.
 - Result, in both sets: 30 duplicate, 27 supersede, 3 distinct.
+- Then (owner, 2026-10-18) 17 more `distinct` pairs per set, ids P061 to P077, written by a labeller from a different model family (a GPT model through Codex, run in an empty folder with no access to the code) from `LABELLER-PROMPT.md`. Each shares at least 70% of its content words, which `evals/gold/check.py` enforces for every pair after P060. Final count in both sets: 30 duplicate, 27 supersede, 20 distinct (77 pairs).
 
-## Known weakness
+## Known weakness (closed 2026-10-18)
 
-Three `distinct` pairs are too few to measure a false-merge rate with any confidence (the 95% interval for 3 of 3 runs from about 44% to 100%). The `distinct` class needs at least 17 more pairs, written by a labeller from a different model family that has not seen the code, before its rate means anything. Until then `evals/gold/check.py` accepts the set but prints this warning.
+With 3 `distinct` pairs a false-merge rate meant nothing (the 95% interval for 3 of 3 ran from about 44% to 100%). Each set now has 20, the minimum the duplicate-checker promise (LRN-7) requires before it grades false merges. Twenty is still a small sample: one false merge is 5%.

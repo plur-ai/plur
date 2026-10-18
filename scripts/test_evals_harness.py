@@ -524,7 +524,26 @@ def test_dedup_v2_labels_are_valid_and_keep_the_frozen_texts():
     r = subprocess.run([sys.executable, str(ROOT / "evals/gold/check.py"), "--dedup", str(ROOT / "evals/gold/dedup-v2"),
                         "--same-pairs-as", str(ROOT / "evals/gold/recall-v1")], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "warning: only 3 distinct" in r.stdout, r.stdout
+    # 3 distinct pairs relabelled from the frozen 60, plus 17 written by an independent
+    # labeller (owner, 2026-10-18): the false-merge rate is measurable.
+    assert "warning" not in r.stdout, r.stdout
+    pairs = yaml.safe_load((ROOT / "evals/gold/dedup-v2/dedup_pairs.yaml").read_text())["pairs"]
+    assert sum(p["label"] == "distinct" for p in pairs) >= 20
+
+
+def test_dedup_check_keeps_the_frozen_60_and_holds_added_pairs_to_the_overlap_rule():
+    base = (ROOT / "evals/gold/dedup-v2/dedup_pairs.yaml").read_text()
+    pairs = yaml.safe_load(base)["pairs"]
+    frozen = [p for p in pairs if int(p["id"][1:]) <= 60]
+    added = [p for p in pairs if int(p["id"][1:]) > 60]
+    assert len(frozen) == 60 and added, (len(frozen), len(added))
+    # a frozen pair may not be dropped
+    r = _check_dedup(yaml.safe_dump({"pairs": pairs[1:]}), same_as=True)
+    assert r.returncode == 1 and "missing" in r.stdout and "P001" in r.stdout, r.stdout
+    # an added pair must be hard: high word overlap, or it tests nothing
+    easy = dict(added[0], incoming="Bake sourdough at dawn with rye flour and sea salt.")
+    r = _check_dedup(yaml.safe_dump({"pairs": frozen + [easy] + added[1:]}))
+    assert r.returncode == 1 and "overlap" in r.stdout and added[0]["id"] in r.stdout, r.stdout
 
 
 def test_dedup_check_rejects_an_unknown_label_and_a_changed_text():
