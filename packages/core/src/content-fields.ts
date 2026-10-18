@@ -68,6 +68,8 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   // Becomes `provenance.origin` (`session:<id>`) — free text on the engram.
   session_episode_id: 'content',
   supersedes: 'content',
+  // Engram ids written to `relations.related` (batch never-overwrite link).
+  related: 'content',
   measured_under: 'content',
   // #1002: who said it, what kind of claim it is, and the licence, which lands
   // in `provenance.license`.

@@ -47,8 +47,11 @@ describe('decision I: removal tools are destructive and direct', () => {
     }
   })
 
-  it('lean profile grows by the two gated removers: 11 + 2 direct tools + plur_admin = 14', () => {
-    expect(getToolDefinitions('lean').length).toBe(14)
+  // TOOL-4 (2026-10-18) adds plur_report_failure as a direct destructive tool:
+  // 11 + 2 removers + 1 = 14 direct + plur_admin. (plur_learn_batch never
+  // overwrites, so it stays behind plur_admin.)
+  it('lean profile: 11 + 2 gated removers + 1 TOOL-4 tool (report_failure) + plur_admin = 15', () => {
+    expect(getToolDefinitions('lean').length).toBe(15)
   })
 
   it('plur_rescope stays a move: not destructive, still dispatchable through plur_admin', () => {

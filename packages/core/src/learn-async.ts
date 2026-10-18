@@ -217,7 +217,34 @@ async function executeDedupDecision(
   context: LearnContext | undefined,
   decision: DedupDecision,
   targetId: string | null,
+  opts: LearnAsyncOptions = {},
 ): Promise<LearnAsyncResult> {
+  // Batch learning never overwrites an existing memory (owner decision
+  // 2026-10-18). An UPDATE or MERGE answer from the duplicate checker becomes
+  // an ADD of the incoming statement, linked to the memory the checker named
+  // (`relations.related`, forward edge only), and the result says so. The
+  // existing memory is not touched: not its text, not its tags, not its
+  // version. NOOP (nothing written) is unaffected.
+  if (opts.neverOverwrite && (decision === 'UPDATE' || decision === 'MERGE')) {
+    const existing = targetId ? await deps.getById(targetId) : null
+    if (!existing || existing.status !== 'active') {
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
+    }
+    const related = [...new Set([...(context?.related ?? []), existing.id])]
+    const engram = await deps.learn(statement, { ...context, related })
+    return {
+      engram,
+      decision: 'ADD',
+      likely_duplicate_of: {
+        id: existing.id,
+        checker_decision: decision,
+        note:
+          `The duplicate checker suggested ${decision === 'UPDATE' ? 'replacing' : 'merging this into'} ${existing.id}. ` +
+          `Batch learning never overwrites an existing memory, so this was saved as its own memory and linked to ` +
+          `${existing.id} as a likely duplicate; ${existing.id} is unchanged.`,
+      },
+    }
+  }
   // Name the model behind a dedup verdict (#962). A model rewrote the
   // statement, and that rewrite became the memory. Without naming it the
   // decision cannot be reviewed later. Omitted when the caller did not say
@@ -328,10 +355,23 @@ async function executeDedupDecision(
  * Async learn with LLM-driven deduplication.
  * Flow: hash dedup → semantic recall → LLM decision → execute.
  */
+/** Options for learnAsync that callers other than learnBatch do not set. */
+export interface LearnAsyncOptions {
+  /**
+   * Never rewrite an existing memory (owner decision 2026-10-18, batch only).
+   * An UPDATE or MERGE answer from the duplicate checker saves the statement
+   * as its own memory, linked to the one the checker named, and reports it in
+   * `likely_duplicate_of`. Default false: a single learnAsync keeps its
+   * UPDATE/MERGE behaviour.
+   */
+  neverOverwrite?: boolean
+}
+
 export async function learnAsync(
   deps: LearnAsyncDeps,
   statement: string,
   context?: LearnAsyncContext,
+  opts: LearnAsyncOptions = {},
 ): Promise<LearnAsyncResult> {
   // Step 1: Content hash fast-path (scope-aware — issue #136)
   const hashMatch = await deps.hashDedup(statement, context?.scope)
@@ -518,7 +558,7 @@ export async function learnAsync(
   }
 
   // Step 5: Execute
-  const executed = await executeDedupDecision(deps, statement, context, decision, targetId)
+  const executed = await executeDedupDecision(deps, statement, context, decision, targetId, opts)
   return { ...executed, dedup: { mode: dedupMode, ...(nearDuplicates ? { near_duplicates: nearDuplicates } : {}) } }
 }
 
@@ -568,6 +608,10 @@ interface BatchAccumulatorEntry {
 
 /**
  * Batch learn: process multiple statements sequentially with LLM dedup.
+ *
+ * Never overwrites (owner decision 2026-10-18): an UPDATE or MERGE answer is
+ * saved as a new memory linked to the one the checker named (see
+ * LearnAsyncOptions.neverOverwrite); NOOP still writes nothing.
  *
  * LLM dedup calls are bounded by opts.maxLlmCalls (default 50). The cap only
  * bites on large batches of novel-but-similar statements — exact-hash NOOPs
@@ -661,7 +705,9 @@ export async function learnBatch(
     // consolidated findings should keep the 49 that succeed. Capture the error
     // against its input index and continue; the caller inspects `failures`.
     try {
-      const result = await learnAsync(batchDeps, statement, ctx)
+      // Batch learning never overwrites an existing memory (owner decision
+      // 2026-10-18): UPDATE/MERGE answers become a linked ADD.
+      const result = await learnAsync(batchDeps, statement, ctx, { neverOverwrite: true })
       // Tag with the input position so a caller can map this result back to its
       // input even though `results` is compacted (failed statements absent). #281
       results.push({ ...result, input_index: i })

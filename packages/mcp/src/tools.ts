@@ -1159,9 +1159,17 @@ export type ToolProfile = 'full' | 'lean' | 'cursor'
 // is `destructiveHint: true` and therefore listed here: plur_forget,
 // plur_packs_uninstall, plur_tensions_purge, plur_tensions (action:"resolve"
 // retires the losing engram — exactly forget's effect) and plur_validate_meta
-// (a third failed validation retires a non-top meta-engram). 13 core tools +
-// plur_admin = 14 exposed. plur_rescope is deliberately NOT here: a rescope
-// always leaves a copy, so it is a move, not a removal (see its annotation).
+// (a third failed validation retires a non-top meta-engram). plur_rescope is
+// deliberately NOT here: a rescope always leaves a copy, so it is a move, not
+// a removal (see its annotation).
+//
+// TOOL-4 (2026-10-18): "every tool that deletes a memory or overwrites its
+// text is marked destructive, and the gateway can never delete or overwrite".
+// plur_report_failure joins for that reason: procedure evolution replaces a
+// procedure's text with what its checker returns. plur_learn_batch does not:
+// batch learning never overwrites (owner decision 2026-10-18), proven by
+// behaviour rather than by a marking, so it stays an ordinary gateway action.
+// 14 core tools + plur_admin = 15 exposed.
 // Exported (audit fix — evaluator review, iteration 2, 2026-07-09) so
 // server.ts's plur://guide resource can build its cursor-profile redirect
 // note FROM this set instead of hardcoding a second, independent copy of
@@ -1182,6 +1190,7 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_tensions_purge',
   'plur_tensions',
   'plur_validate_meta',
+  'plur_report_failure',
 ])
 
 /**
@@ -1414,7 +1423,7 @@ export function describeToolSurface(profile: ToolProfile = activeToolProfile()):
 export function getToolDefinitions(profile: ToolProfile = 'lean'): ToolDefinition[] {
   const all = getAllToolDefinitions()
   if (profile === 'full') return all
-  // 'lean' and 'cursor' are identical: 13 core tools + plur_admin dispatch (14 exposed)
+  // 'lean' and 'cursor' are identical: 14 core tools + plur_admin dispatch (15 exposed)
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
 }
@@ -1844,7 +1853,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
       description:
         'Create many engrams in one call — the batch form of plur_learn. Accepts an array of engram objects and ' +
         'writes them sequentially through the SAME dedup + policy pipeline as plur_learn (content-hash NOOP → semantic ' +
-        'recall → LLM ADD/UPDATE/MERGE decision, or local cosine REPORTING when no LLM is configured). Exact-hash dedup ' +
+        'recall → LLM duplicate check, or local cosine REPORTING when no LLM is configured). A batch NEVER overwrites ' +
+        'an existing memory: when the duplicate checker says an item should replace or be merged into an existing ' +
+        'memory, the item is saved as its own memory instead (decision ADD), linked to that memory, and its result ' +
+        'carries `likely_duplicate_of` { id, checker_decision: UPDATE | MERGE, note }; the existing memory is unchanged. ' +
+        'A checker NOOP writes nothing and returns the existing id. Exact-hash dedup ' +
         'also applies WITHIN the batch: a statement duplicating an earlier item in the same array resolves to NOOP ' +
         'against it. Similarity never suppresses a write — each result carries `dedup.mode` (llm | cosine | hash-only) ' +
         'and, when similarity ran, `dedup.near_duplicates`. Read dedup.mode before trusting an ADD: hash-only means ' +
@@ -1860,6 +1873,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         'default ("private" — excluded from packs and shared git sync), and an item whose scope is a team store ' +
         'still goes to that team store; to keep a team-scope memory local, use plur_learn with an explicit ' +
         'visibility: "private". See plur-ai/plur#281.',
+      // TOOL-4: a batch never overwrites or deletes an existing memory (see the
+      // description), so it is not destructive and stays behind plur_admin.
       annotations: { title: 'Learn (batch)', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
@@ -2087,6 +2102,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: r.engram.type,
             decision: r.decision,
             ...(r.existing_id ? { existing_id: r.existing_id } : {}),
+            // Batch learning never overwrites (2026-10-18): the checker's
+            // UPDATE/MERGE became a linked ADD, said here in plain words.
+            ...(r.likely_duplicate_of ? { likely_duplicate_of: r.likely_duplicate_of } : {}),
             // #856 audit: `dedup` was computed and then dropped here, so the
             // reporting it exists for reached no caller — "anything below the
             // bar is still reported" was not observable anywhere.
@@ -4904,7 +4922,10 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     {
       name: 'plur_report_failure',
       description: 'Report a failure for a procedural engram — triggers procedure evolution via LLM if configured. Only works on procedural engrams. Max 3 revisions per procedure per 24h.',
-      annotations: { title: 'Report Failure', destructiveHint: false, idempotentHint: false },
+      // TOOL-4: procedure evolution replaces the procedure's text with what the
+      // checker returns, so this is destructive: a direct tool in every
+      // profile, refused by plur_admin. Behaviour unchanged.
+      annotations: { title: 'Report Failure', destructiveHint: true, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
