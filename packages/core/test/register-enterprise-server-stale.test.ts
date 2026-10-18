@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, PersonalScopeTakenError } from '../src/index.js'
+import { Plur, PersonalScopeTakenError, SignInHeldError } from '../src/index.js'
 import { loadConfig } from '../src/config.js'
 import { resolveScopeTarget } from '../src/store-resolver.js'
 
@@ -131,5 +131,38 @@ describe('removeStale: remove the named entries and register, in one write', () 
   it('without removeStale the result reports nothing removed', async () => {
     const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
     expect(r.removed).toEqual([])
+  })
+})
+
+describe('gate review of #1665: a held sign-in, the backup under the lock', () => {
+  it('keepSignIn: a sign-in config.yaml holds for the server is never replaced; nothing is written', async () => {
+    for (const before of [
+      `stores:\n  - url: ${URL_}\n    token: current-sekrit\n    scope: ${ME}\n    scopes: []\n`,
+      `stores:\n  - url: ${URL_}/sse\n    token: current-sekrit\n    scope: group:acme/team\n`,
+    ]) {
+      seed(before)
+      const err = await plur.registerEnterpriseServer(URL_, { token: 'legacy-sekrit', personalScope: ME, keepSignIn: true }).then(() => null, (e: Error) => e)
+      expect(err).toBeInstanceOf(SignInHeldError)
+      expect(err!.message).not.toMatch(/sekrit/)
+      expect(readFileSync(configPath(), 'utf8')).toBe(before)
+    }
+  })
+
+  it('beforeRemove runs under the lock on the file as it is then, only when entries are removed; a throw writes nothing', async () => {
+    // The server entry comes first, so it would outrank the other server's entry: a holder.
+    const before = `stores:\n  - url: ${URL_}\n    token: k1-sekrit\n    scope: user:acme:bob\n    scopes: []\n  - url: https://b.example.com/sse\n    token: k0-sekrit\n    scope: ${ME}\n`
+    seed(before)
+    const seen: string[] = []
+    await plur.registerEnterpriseServer(URL_, { token: 'k1-sekrit', personalScope: ME, removeStale: true, beforeRemove: p => { seen.push(readFileSync(p, 'utf8')) } })
+    expect(seen).toEqual([before])
+    seed(before)
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'k1-sekrit', personalScope: ME, removeStale: true, beforeRemove: () => { throw new Error('no backup') } }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/backup/)
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+    // No removal → not called.
+    seed('stores: []\n')
+    const calls: string[] = []
+    await plur.registerEnterpriseServer(URL_, { token: 'k1-sekrit', personalScope: ME, removeStale: true, beforeRemove: p => { calls.push(p) } })
+    expect(calls).toEqual([])
   })
 })

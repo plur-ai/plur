@@ -221,6 +221,34 @@ describe('deviceSignIn', () => {
       expect(h.sleeps).toEqual([5000, 5000, 5000])
     })
 
+    it('no wait runs past the code\'s expiry and no key is taken after it', async () => {
+      const h = harness({ '/api/v1/auth/device': [{ status: 200, body: { ...DEVICE, expires_in: 12 } }], '/api/v1/auth/token': [{ status: 429, body: {}, headers: { 'retry-after': '120' } }, ok] })
+      await expect(signIn(h)).rejects.toThrow(/expired before it was entered/)
+      expect(h.sleeps).toEqual([5000, 7000])
+      expect(h.calls.filter(c => c.path === '/api/v1/auth/token')).toHaveLength(1)
+      // --timeout shorter than the interval: no poll at all, so no key.
+      const h2 = harness({ '/api/v1/auth/device': [{ status: 200, body: DEVICE }], '/api/v1/auth/token': [ok] }, { timeoutSecs: 1 })
+      await expect(signIn(h2)).rejects.toThrow(/expired before it was entered/)
+      expect(h2.sleeps).toEqual([1000])
+      expect(h2.calls.filter(c => c.path === '/api/v1/auth/token')).toHaveLength(0)
+    })
+
+    it('a body that never finishes is cut off by the request timeout', async () => {
+      const { requestDeviceCode } = await import('../src/commands/login.js')
+      const f = (async (_u: string, init?: RequestInit) => {
+        const stream = new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"device_code":'))
+            init?.signal?.addEventListener('abort', () => c.error(new DOMException('aborted', 'AbortError')))
+          },
+        })
+        return new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } })
+      }) as unknown as typeof fetch
+      const started = Date.now()
+      await expect(requestDeviceCode('https://plur.example.com', { fetch: f, requestTimeoutMs: 200 })).rejects.toThrow(/Unexpected response/)
+      expect(Date.now() - started).toBeLessThan(5000)
+    })
+
     it('/auth/token 429 without Retry-After is treated like slow_down', async () => {
       const h = harness({ '/api/v1/auth/device': [{ status: 200, body: DEVICE }], '/api/v1/auth/token': [{ status: 429, body: {} }, ok] })
       await signIn(h)
@@ -250,6 +278,8 @@ interface Stub {
   mode: 'grant' | 'pending'
   minted: string[]
   legacyToken: string
+  /** Repeat the key in the user name and key name (a misbehaving server). */
+  reflect?: boolean
 }
 
 async function startStub(): Promise<Stub> {
@@ -282,7 +312,7 @@ async function startStub(): Promise<Stub> {
         codes.delete(dc)
         const key = `${KEY}${stub.minted.length}`
         stub.minted.push(key)
-        return json(res, 200, { access_token: key, token_type: 'Bearer', username: 'alice', key_id: `k${stub.minted.length}`, key_name: 'alice — test device' })
+        return json(res, 200, { access_token: key, token_type: 'Bearer', username: stub.reflect ? `alice-${key}` : 'alice', key_id: `k${stub.minted.length}`, key_name: stub.reflect ? `alice ${key}` : 'alice — test device' })
       }
       if (req.method === 'GET' && path === '/api/v1/me') {
         const bearer = (req.headers.authorization ?? '').replace(/^Bearer /, '')
@@ -389,6 +419,23 @@ describe('plur login <host> (process, contract server)', () => {
     expect(r2.out).toContain('https://b.example.com')
     expect(r2.out).not.toContain(stub.minted[1])
   }, 60_000)
+
+  it('a key the server repeats in the key name or user name is never printed', async () => {
+    stub.reflect = true
+    const r = await runCli(['login', stub.url, '--no-open'], home)
+    expect(r.status, r.out).toBe(0)
+    expect(stub.minted).toHaveLength(1)
+    expect(r.out).not.toContain(stub.minted[0])
+  }, 40_000)
+
+  it('an older entry for the server that keeps the personal scope: saved, but the personal writes still go there — said, exit 1', async () => {
+    writeFileSync(cfg(), `stores:\n  - url: ${stub.url}\n    token: plur_sk_old_0123456789abcdef\n    scope: user:acme:alice\n`)
+    const r = await runCli(['login', stub.url, '--no-open'], home)
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toMatch(/still served by another entry for .* with another key/)
+    expect(r.out).not.toContain(stub.minted[0])
+    expect(r.out).not.toContain('plur_sk_old')
+  }, 40_000)
 
   it('a remaining ~/.plur/config.json is moved into config.yaml once, with a notice, then not read again', async () => {
     const legacy = JSON.stringify({ enterprise: { url: stub.url, token: stub.legacyToken, username: 'alice' } })
@@ -499,6 +546,31 @@ describe('backups of config.yaml and config.json (Windows, icacls mocked)', () =
     expect(await migrateLegacyLogin({ home: root, plur: noPlur, print: l => printed2.push(l), backupHost: { platform: 'win32', exec: bad.exec, account: ACCOUNT } })).toBe('kept')
     expect(readFileSync(file, 'utf8')).toBe('{}')
     expect(printed2.join('\n')).toMatch(/could not be set aside/)
+  })
+})
+
+describe('the config.json move against a concurrent sign-in', () => {
+  it('a sign-in written to config.yaml while /me answers is kept; config.json is set aside', async () => {
+    const { migrateLegacyLogin } = await import('../src/enterprise/legacy-login.js')
+    const { Plur } = await import('@plur-ai/core')
+    const root = mkdtempSync(join(tmpdir(), 'plur-login-race-'))
+    try {
+      const plurDir = join(root, '.plur')
+      mkdirSync(plurDir)
+      writeFileSync(join(plurDir, 'config.json'), JSON.stringify({ enterprise: { url: 'https://plur.example.com', token: 'plur_sk_legacy_0123456789abcdef' } }))
+      const current = `stores:\n  - url: https://plur.example.com\n    token: plur_sk_current_0123456789abcdef\n    scope: user:acme:alice\n    scopes: []\n`
+      const f = (async () => {
+        writeFileSync(join(plurDir, 'config.yaml'), current)   // another process signs in meanwhile
+        return new Response(JSON.stringify({ username: 'alice', org_id: 'acme', scopes: ['user:acme:alice'] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }) as unknown as typeof fetch
+      const printed: string[] = []
+      const out = await migrateLegacyLogin({ home: root, plur: () => new Plur({ path: plurDir }), print: l => printed.push(l), fetch: f })
+      expect(out).toBe('set-aside')
+      expect(readFileSync(join(plurDir, 'config.yaml'), 'utf8')).toBe(current)
+      expect(existsSync(join(plurDir, 'config.json'))).toBe(false)
+      expect(printed.join('\n')).toMatch(/already holds a sign-in/)
+      expect(printed.join('\n')).not.toContain('plur_sk_')
+    } finally { rmSync(root, { recursive: true, force: true }) }
   })
 })
 
