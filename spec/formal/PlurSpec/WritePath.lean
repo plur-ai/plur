@@ -22,6 +22,11 @@ a conflicted scope is refused). §1's merge-back, §4's private-stays-local test
 §5 and §6 are unchanged (rescope resolves its route before touching a row, so
 a conflict throws first). remote-store.ts changed only `me()` (the C1 /me
 fields), which no section reads.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryUrls()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; no write-path branch changed.
 -/
 
 namespace PlurSpec.WritePath

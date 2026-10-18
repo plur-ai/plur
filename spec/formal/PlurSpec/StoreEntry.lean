@@ -14,6 +14,11 @@ What is abstracted: metadata values are an arbitrary type `V` with a parse oracl
 theorems hold for every oracle that satisfies the stated hypotheses, and §2 shows the
 sensitivity merge satisfies them. Left out: YAML key order, `storeEntryForDisk`'s token_env
 rule (#1561, modelled elsewhere), non-server entries in §3.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryUrls()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; expand, collapse and rotation are untouched.
 -/
 
 set_option linter.deprecated false

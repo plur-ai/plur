@@ -44,7 +44,9 @@ dsh, hermes, array coercion, `.plur.yaml` trust).
 
 Checked against #1631 background discovery (2026-10-18): still holds.
 plur_session_start starts a background scope refresh for company server
-entries, skips the awaited `/me` probe for their endpoints, caps the guide's
+entries, skips the awaited `/me` probe for their endpoints (exactly those
+refreshServerScopes probes: a scopes list and an enterprise block), reports a
+failed check in the guide, caps the guide's
 scope list and adds a `discovery` reply field. It does not touch the
 session-scope registry or its default-scope slot (§1), `_cleanExpiredSessions`
 or session_end (§2), or the `.plur.yaml` trust gate (§9): `default_scope` and
