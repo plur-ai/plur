@@ -457,7 +457,10 @@ function protectBackupDir(dir: string, o: { platform: NodeJS.Platform; exec?: Ow
 /**
  * Replace a config file's content atomically (temp file, fsync, rename; the
  * file's mode is kept). A symlinked config is resolved first, so the rename
- * lands on the real file and the link survives.
+ * lands on the real file and the link survives. The content can still hold
+ * other servers' credentials, so the write is `secret`: the temp file is as
+ * protected as the config before the first byte (an owner-only access list on
+ * Windows when the config has one; on Unix the config's mode).
  */
 function writeInPlace(path: string, content: string): void {
   let target = path
@@ -466,7 +469,7 @@ function writeInPlace(path: string, content: string): void {
   } catch {
     // not there or not statable — write at the given path
   }
-  atomicWrite(target, content)
+  atomicWrite(target, content, { secret: true })
 }
 
 function opencodeDir(home: string, env: NodeJS.ProcessEnv): string {

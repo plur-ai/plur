@@ -128,3 +128,6 @@ No fix here: the plan says the CLI takes the origin and allows only localhost, 1
    - (c) the CLI keeps the path, if the remote client supports a base path (not checked).
    Also: the server's `:\d{1,5}` accepts a port above 65535. Should it be held to 1–65535?
 3. **Version check not run (I6).** Should a tool with no `version` result be "not proven", since "could not check is a failure"? Today it can still show as plainly wired. The plan's fresh-machine fixture has no version, so changing this means changing that pinned fixture.
+
+### Codex round 2, finding 3 — cleanup rewrites (2026-10-18)
+Cleanup's `writeInPlace` rewrites editor configs that still hold other servers' credentials through core's `atomicWrite`, whose temp file was world-readable until the final chmod. Fixed at the helper (model `Persistence.AtomicTemp`, see findings/persistence.md); cleanup now passes `{ secret: true }` so that on Windows an owner-only config's temp file is made owner-only before the first byte. `packages/cli/test/codex2-cleanup-secret-write.test.ts` checks the option reaches the helper. The Installer model's §3 (backups) is unchanged: backups were already created owner-only.
