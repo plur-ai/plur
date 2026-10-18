@@ -452,8 +452,9 @@ function isSupersededEngram(engram: ScoredEngram): boolean {
  * current: the correction that replaced it is, so it is not injected (outside
  * a historical prompt). When no replacement is deliverable here — retired,
  * living only in a remote store, a draft awaiting approval (#1141), expired,
- * or in an on_request pack — dropping the old engram would leave the session
- * with neither, so the ×0.3 re-rank still applies instead.
+ * in an on_request pack, or in a scope this injection cannot see (#1237) —
+ * dropping the old engram would leave the session with neither, so the ×0.3
+ * re-rank still applies instead.
  *
  * A supersede loop is not a replacement. Self-supersession, and a replacement
  * whose own superseded_by chain leads back to this engram (A → B → A), would
@@ -901,10 +902,12 @@ export function selectAndSpread(
   // "retired" nor "unresolvable" — it is simply not part of this view — so it
   // is skipped without feeding spread_drops.
   const scopeExcludedIds = new Set<string>()
-  // Every engram this session could deliver, in scope or not, for the
-  // "replaced by a deliverable engram" test: active, approved, valid, and not
-  // in an on_request pack. A correction stored in another scope still replaces
-  // (whether it should is #1237). Filled by the scoring loops below.
+  // Every engram this injection could deliver, for the "replaced by a
+  // deliverable engram" test: active, approved, valid, visible under this
+  // inject's scope filter, and not in an on_request pack. A correction kept in
+  // a scope this injection cannot see is not deliverable here, so the engram
+  // it replaces stays injectable rather than leaving neither (#1237).
+  // Filled by the scoring loops below.
   const deliverableIds = new Set<string>()
   // superseded_by edges of every engram the loops see, for loop detection.
   const supersededBy = new Map<string, readonly string[]>()
@@ -921,10 +924,10 @@ export function selectAndSpread(
     // unresolvable targets, and a pending-review engram is neither.
     const deliverable = !skipForApproval(engram)
       && !skipForValidity(engram, nowMs, expiryMode, graceDays)
-    if (deliverable) deliverableIds.add(engram.id)
     // Visibility BEFORE the map and the score (see isInjectVisible): nothing
     // below — pinned exemption, embedding boost, spreading — may revive it.
     if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
+    if (deliverable) deliverableIds.add(engram.id)
     if (!deliverable) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
@@ -967,8 +970,8 @@ export function selectAndSpread(
       if (engram.status !== 'active') continue
       const deliverable = !skipForApproval(engram)
         && !skipForValidity(engram, nowMs, expiryMode, graceDays)
-      if (deliverable) deliverableIds.add(engram.id)
       if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
+      if (deliverable) deliverableIds.add(engram.id)
       if (!deliverable) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
