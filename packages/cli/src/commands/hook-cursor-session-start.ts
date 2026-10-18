@@ -63,9 +63,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   if (dir && policy.mode === 'ask') removeStaleAsk(cursorContextRulePath(dir))
-  // remote-only: another root's generated rule may hold personal memory from
-  // an earlier session; this session writes its own rule in `dir` only.
-  if (policy.mode === 'remote-only') {
+  // remote-only (also an `ask` workspace with a remote-only root): another
+  // root's generated rule may hold personal memory from an earlier session;
+  // this session writes its own rule in `dir` only.
+  if (policy.mode === 'remote-only' || (policy.mode === 'ask' && cleanupDirs)) {
     for (const root of cleanupDirs ?? []) if (root !== dir) removeGeneratedContextRules(root)
   }
 

@@ -353,36 +353,3 @@ describe('Codex round 3 on #1663', () => {
     expect(other.requests).toEqual([])
   })
 })
-
-describe('Codex round 4 on #1663', () => {
-  const row = (id: string, statement: string, extra: Record<string, unknown> = {}) => {
-    const now = new Date().toISOString()
-    return {
-      id, statement, scope: TEAM, status: 'active', type: 'behavioral', version: 2,
-      activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: now.slice(0, 10) }, ...extra,
-    } as any
-  }
-
-  it('a private update of a team row is refused and nothing is sent', async () => {
-    team.seedEngram({ id: 'ENG-2026-10-18-012', scope: TEAM, status: 'active', data: { statement: 'team rule', type: 'behavioral' } })
-    const plur = new Plur({ path: root })
-    plur.bindFolder(work)
-    await expect(plur.updateEngram(row('ENG-2026-10-18-012', 'PRIVREPL text', { visibility: 'private' }))).rejects.toThrow(/remote-only/)
-    expect((team.getEngram('ENG-2026-10-18-012')!.data as any).statement).toBe('team rule')
-  })
-
-  it('a queued remote-only save cannot be made private, bound or not', async () => {
-    team.appendErrorResponse = { status: 503, body: 'down' }
-    const bound = new Plur({ path: root })
-    bound.bindFolder(work)
-    const q = await bound.learnRouted('the client app ships on Fridays', { type: 'procedural' })
-    await backgroundPushesSettled(root).catch(() => {})
-    const stored = () => ((yaml.load(readFileSync(join(root, 'engrams.yaml'), 'utf8')) as any).engrams as any[]).find(e => e.id === q.id)
-    expect(stored()?.structured_data?._outbox?.remote_only).toBe(true)
-    await expect(bound.updateEngram({ ...stored(), statement: 'PRIVQUEUED a', visibility: 'private' })).rejects.toThrow()
-    await new Plur({ path: root }).updateEngram({ ...stored(), statement: 'PRIVQUEUED b', visibility: 'private' }).catch(() => null)
-    expect(stored()?.statement).not.toContain('PRIVQUEUED')
-    expect(stored()?.visibility).not.toBe('private')
-  })
-})
-

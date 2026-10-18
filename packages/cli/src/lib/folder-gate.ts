@@ -267,7 +267,12 @@ export function cursorHookFolder(
   const ask = askable.find(r => r.policy.mode === 'ask')
   if (ask) {
     const dir = ask.real ?? existingAskable[0]?.real ?? null
-    return { dir, policy: ask.policy, ...(ask.real === null ? { askAbout: ask.given } : {}) }
+    // A remote-only root or cwd in the same workspace (Codex round 4 on
+    // #1663): the question is still asked, and every root is named so the
+    // session start removes a generated rule an earlier session left there.
+    const remoteOnlyHere = offChecks.some(p => hookFolderPolicy(p, flags).mode === 'remote-only')
+    const all = remoteOnlyHere ? { cleanupDirs: [...new Set(roots.flatMap(r => r.real ? [r.real] : []))] } : {}
+    return { dir, policy: ask.policy, ...(ask.real === null ? { askAbout: ask.given } : {}), ...all }
   }
 
   // On. With no root to ask about (only the home folder or above), memory is

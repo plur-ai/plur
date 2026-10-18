@@ -5184,6 +5184,8 @@ export class Plur {
     // for by default; it should not be unavoidable.
     const dedupCfg = this.config.dedup ?? {}
     if (dedupCfg.enabled === false || dedupCfg.mode === 'off') return { mode: 'hash-only' }
+    // remote-only: no embedder (Codex round 4 on #1663; see recallSemantic).
+    if (this._activeBinding()) return { mode: 'hash-only' }
     try {
       let candidates: Engram[] = []
       try {
@@ -6677,6 +6679,8 @@ export class Plur {
     query: string,
     options?: { limit?: number; scope?: string; domain?: string },
   ): Promise<SimilarityResult[]> {
+    // remote-only: no embedder, so no similarity scores (Codex round 4 on #1663).
+    if (this._activeBinding()) return []
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
     return embeddingSearchWithScores(filtered, query, limit, this.paths.root)
@@ -11031,8 +11035,10 @@ export class Plur {
       // auto-embed any new engrams so they're vector-searchable.
       const adapter = this.pgliteAdapter
       this._lastIndexError = null // new pass — stale failures cleared on success
+      // remote-only: no embedding pass started from a bound operation (Codex round 4 on #1663).
+      const bound = !!this._activeBinding()
       this._pgliteInitPromise = adapter.syncFromYaml()
-        .then(() => this._autoEmbedNewEngrams(adapter))
+        .then(() => bound ? undefined : this._autoEmbedNewEngrams(adapter))
         .catch((err: unknown) => {
           this._recordIndexError('sync-from-yaml', err)
           logger.warning(`[plur] PGLite syncFromYaml failed (YAML is still source of truth): ${(err as Error).message}`)
@@ -11047,7 +11053,8 @@ export class Plur {
     const primary = this._primaryQueryAdapter()
     if (primary && typeof primary.listEngramsMissingEmbeddings === 'function') {
       this._lastIndexError = null // new pass — stale failures cleared on success
-      this._afterStoreCommit(() => this._kickPrimaryAutoEmbed(primary))
+      // remote-only: no embedding pass started from a bound operation (Codex round 4 on #1663).
+      if (!this._activeBinding()) this._afterStoreCommit(() => this._kickPrimaryAutoEmbed(primary))
       return
     }
     if (this.indexedStorage) {
