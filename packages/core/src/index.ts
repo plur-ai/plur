@@ -44,7 +44,7 @@ export { LEARN_CONTEXT_FIELD_ROLES, LEARN_CONTENT_FIELDS, learnContextContent, e
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { writeConfigFile } from './config-file.js'
-import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
+import { sync as gitSync, getSyncStatus, withLock, REFUSED_CREDENTIAL_WRITE, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
 import { detectSecrets, detectSensitive, detectPromptInjection, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
@@ -13279,6 +13279,11 @@ Generate an improved version of the procedure that prevents this failure. Return
     } catch (err) {
       const e = err as { message?: unknown; name?: unknown; mark?: { line?: unknown }; code?: unknown }
       if (typeof e?.message === 'string' && e.message.startsWith('registerEnterpriseServer: ')) throw err
+      // A refused credential write (owner-only protection, #1631) keeps its cause and the
+      // opt-out; its text is fixed wording plus icacls details, never the key.
+      if (typeof e?.message === 'string' && e.message.startsWith(REFUSED_CREDENTIAL_WRITE)) {
+        throw new Error(`registerEnterpriseServer: ${e.message.slice('atomicWrite: '.length)}`)
+      }
       // A YAML error quotes the lines around the fault, and its reason can
       // name an alias or tag from the file; either can hold a key. Name the
       // line number only.

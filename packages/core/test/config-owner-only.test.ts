@@ -408,6 +408,18 @@ describe('Windows (simulated host): every config write is a protected write', ()
     expect(calls.some(c => c[2] === '/inheritance:r' && /config\.yaml\.\d+\.\d+\.tmp$/.test(c[1]))).toBe(true)
   })
 
+  it('a refused registerEnterpriseServer names the cause and the opt-out, never the key (Codex gate round 4)', async () => {
+    realFs.writeFileSync(cfg, 'stores: []\n')
+    _atomicWriteAcl.exec = () => ({ status: 1, stdout: '' })   // a drive without access lists
+    const plur = new Plur({ path: root })
+    const err = await plur.registerEnterpriseServer('https://plur.example.com', { token: 'sekrit-key-1', personalScope: 'user:acme:alice' }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/^registerEnterpriseServer: refusing a credential write: cannot inspect the destination's access list/)
+    expect(err?.message).toContain('PLUR_ALLOW_UNPROTECTED_CONFIG=1')
+    expect(err?.message).toContain('Nothing was written')
+    expect(err?.message).not.toContain('sekrit')
+    expect(realFs.readFileSync(cfg, 'utf8')).toBe('stores: []\n')
+  })
+
   it('protection that cannot be established: the write is refused and config.yaml is unchanged', () => {
     realFs.writeFileSync(cfg, 'stores: []\n')
     followRenames()

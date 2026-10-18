@@ -1247,6 +1247,9 @@ function inspectAcl(path: string, account: string): AclInspection {
  */
 export const ALLOW_UNPROTECTED_ENV = 'PLUR_ALLOW_UNPROTECTED_CONFIG'
 
+/** How a refused credential write's error starts. The rest names the cause and the opt-out, never content. */
+export const REFUSED_CREDENTIAL_WRITE = 'atomicWrite: refusing a credential write: '
+
 function allowUnprotected(env: NodeJS.ProcessEnv): boolean {
   const v = env[ALLOW_UNPROTECTED_ENV]?.trim().toLowerCase()
   return v === '1' || v === 'true' || v === 'yes'
@@ -1264,7 +1267,7 @@ function refuseUnprotected(filePath: string, cause: string, onUnprotected?: (cau
     else console.error(`[plur:config] writing ${basename(filePath)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${cause}`)
     return
   }
-  throw new Error(`atomicWrite: refusing a credential write: ${cause}. Nothing was written. ` +
+  throw new Error(`${REFUSED_CREDENTIAL_WRITE}${cause}. Nothing was written. ` +
     `If this drive cannot keep access lists (FAT/exFAT, some network shares), set ${ALLOW_UNPROTECTED_ENV}=1 to write it without that protection.`)
 }
 
