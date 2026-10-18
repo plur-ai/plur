@@ -231,7 +231,7 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
     // UTF-16 whose name line starts with a character above U+00FF (no zero second byte).
     const wide = (c: string, a: string[]) => {
       if (c === 'whoami') return { status: 0, stdout: `"ACME\\alice","${SELF}"` }
-      realFs.writeFileSync(a[2], Buffer.from(`\u010crt.yaml\r\nD:PAI(A;;FA;;;${SELF})(A;;FA;;;BU)\r\n`, 'utf16le'))
+      realFs.writeFileSync(a[2], Buffer.from(`\u010ce\u0161nja.yaml\r\nD:PAI(A;;FA;;;${SELF})(A;;FA;;;BU)\r\n`, 'utf16le'))
       return { status: 0, stdout: '' }
     }
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: wide, account: ACCT })).toEqual({ ok: false, detail: 'also readable by BUILTIN\\Users' })
@@ -642,7 +642,7 @@ describe.runIf(isWin)('Windows, real icacls', () => {
   // runner: `ü` → byte 0x81, `Č` → `C`), so text matching refused every write
   // under such a folder. The list is now read as SDDL with SIDs.
   it('a config.yaml in a folder whose name is not ASCII (a profile like C:\\Users\\M\u00fcller) is protected and verifies', () => {
-    const d = join(root, 'M\u00fcller \u010crt')
+    const d = join(root, '\u00c4pfel \u010ce\u0161nja')
     realFs.mkdirSync(d)
     const c = join(d, 'config.yaml')
     expect(writeConfigFile(c, 'stores: []\n')).toEqual({ ok: true })
