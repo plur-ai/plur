@@ -132,3 +132,6 @@ models:
       - packages/core/src/store-resolver.ts
       - packages/core/src/server-discovery.ts
       - packages/core/src/index.ts
+  - model: PlurSpec/GitScope.lean
+    covers:
+      - packages/core/src/git-origin.ts
