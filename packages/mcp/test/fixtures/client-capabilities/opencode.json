@@ -1,13 +1,11 @@
 {
   "clientInfo": {
     "name": "opencode",
-    "version": "1.0.0"
+    "version": "1.18.35"
   },
   "capabilities": {
-    "roots": {
-      "listChanged": true
-    }
+    "roots": {}
   },
-  "recorded": null,
-  "source": "unverified"
+  "recorded": "2026-10-18",
+  "source": "manual check"
 }
