@@ -34,9 +34,11 @@ export function parseInitArgs(
     const arg = args[i]
     if (VALUE_FLAGS.has(arg)) {
       // A flag without its value is an error: silently dropping e.g.
-      // --ca-sha256 would skip the CA check the caller asked for.
+      // --ca-sha256 would skip the CA check the caller asked for. An empty
+      // value (`--server "$UNSET"`) is a missing value too: `--server ""`
+      // would otherwise fall back to PLUR_SERVER without a word.
       const value = args[i + 1]
-      if (value === undefined || value.startsWith('--')) {
+      if (value === undefined || value === '' || value.startsWith('--')) {
         return { error: `${arg} needs a value` }
       }
       i++

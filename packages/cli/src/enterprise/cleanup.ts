@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, unlinkSync, chmodSync, lstatSync, realpathSync, openSync, closeSync, writeSync, fstatSync } from 'fs'
+import { existsSync, readFileSync, mkdirSync, unlinkSync, chmodSync, lstatSync, realpathSync, openSync, closeSync, writeSync, fstatSync, fsyncSync, statSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
 import { atomicWrite } from '@plur-ai/core'
@@ -112,7 +112,15 @@ function headerHolders(home: string, env: NodeJS.ProcessEnv): string[] {
   ]
   const holders: string[] = []
   for (const c of checks) {
-    if (!existsSync(c.path)) continue
+    // Only a config KNOWN to be absent counts as no reference. existsSync
+    // answers false for every failed stat (e.g. EACCES on a parent folder),
+    // which would read "could not look" as "not there".
+    const seen = lookup(c.path)
+    if (seen === 'absent') continue
+    if (seen === 'unknown') {
+      holders.push(`${c.tool}'s config ${c.path} could not be read`)
+      continue
+    }
     let text: string
     try {
       text = readFileSync(c.path, 'utf8')
@@ -131,6 +139,17 @@ function headerHolders(home: string, env: NodeJS.ProcessEnv): string[] {
     else if (text.includes(HEADER_FILE)) holders.push(`${c.path} still names ${HEADER_FILE}`)
   }
   return holders
+}
+
+/** 'absent' only when the path is known not to exist; any other failure to look is 'unknown'. */
+function lookup(path: string): 'present' | 'absent' | 'unknown' {
+  try {
+    statSync(path)
+    return 'present'
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'unknown'
+  }
 }
 
 function mcpServersHas(config: unknown): boolean {
@@ -390,7 +409,15 @@ function backupWriter(
       } else if ((fstatSync(fd).mode & 0o077) !== 0) {
         throw new Error(`the backup ${dest} could not be made private`)
       }
-      writeSync(fd, data)
+      // writeSync may write fewer bytes than asked; a backup counts only when
+      // all of it is written and on disk, since the config change after it
+      // is itself fsynced (atomicWrite).
+      for (let off = 0; off < data.length; ) {
+        const n = writeSync(fd, data, off, data.length - off)
+        if (n <= 0) throw new Error(`the backup ${dest} could not be written`)
+        off += n
+      }
+      fsyncSync(fd)
       written = true
     } finally {
       closeSync(fd)
