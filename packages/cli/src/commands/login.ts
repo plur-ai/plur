@@ -404,7 +404,9 @@ export interface DeviceSignInResult {
 export async function deviceSignIn(opts: DeviceSignInOptions): Promise<DeviceSignInResult> {
   const origin = normaliseHost(opts.server)
   const dev = await requestDeviceCode(origin, { deviceName: opts.deviceName, fetch: opts.fetch, sleep: opts.sleep, rerunHint: opts.rerunHint })
-  const issued = Date.now()   // the code's lifetime runs from here, browser time included
+  // The code's lifetime runs from here, the browser wait included (whole
+  // seconds: the lifetime is given in seconds).
+  const issued = Date.now()
 
   if (!USER_CODE_RE.test(dev.user_code)) throw new Error(UNEXPECTED)
   let page: URL
@@ -423,7 +425,7 @@ export async function deviceSignIn(opts: DeviceSignInOptions): Promise<DeviceSig
   }
   opts.print('Waiting for you to approve the sign-in…')
 
-  const tok = await pollForToken(origin, dev.device_code, interval, timeout - (Date.now() - issued) / 1000, undefined,
+  const tok = await pollForToken(origin, dev.device_code, interval, timeout - Math.floor((Date.now() - issued) / 1000), undefined,
     { fetch: opts.fetch, sleep: opts.sleep, rerunHint: opts.rerunHint })
 
   // These are printed (the user name and key name): no control characters,
