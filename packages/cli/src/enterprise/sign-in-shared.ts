@@ -7,7 +7,7 @@
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { currentWindowsAccount, type OwnerOnlyExec, type PersonalScopeTakenError, type ScopeHolder } from '@plur-ai/core'
+import { currentWindowsAccount, redactToken, type OwnerOnlyExec, type PersonalScopeTakenError, type ScopeHolder } from '@plur-ai/core'
 import { backupWriter } from './cleanup.js'
 
 export type FetchFn = typeof fetch
@@ -151,4 +151,19 @@ export function backupSecretFile(root: string, source: string, host: BackupHost 
     account: host.account !== undefined ? host.account : currentWindowsAccount(process.env),
   })
   return write(source, readFileSync(source))
+}
+
+/**
+ * From now on, every console line this process prints is redacted with
+ * `key`: core logs some server-supplied text itself (scope names, metadata
+ * values), and a server could repeat the key there. Returns the undo.
+ */
+export function redactConsoleWith(key: string): () => void {
+  const methods = ['log', 'info', 'warn', 'error', 'debug'] as const
+  const saved = methods.map(m => console[m])
+  methods.forEach((m, i) => {
+    const orig = saved[i]
+    console[m] = (...args: unknown[]) => orig(...args.map(a => (typeof a === 'string' ? redactToken(a, key) : a)))
+  })
+  return () => { methods.forEach((m, i) => { console[m] = saved[i] }) }
 }

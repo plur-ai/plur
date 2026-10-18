@@ -27,17 +27,28 @@
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { redactToken, normalizeEndpointUrl, PersonalScopeTakenError, SignInHeldError, type Plur } from '@plur-ai/core'
-import { fetchMe, personalScopeOf, normaliseHost, takeoverMessage, backupSecretFile, type BackupHost } from './sign-in-shared.js'
+import { fetchMe, personalScopeOf, normaliseHost, takeoverMessage, backupSecretFile, redactConsoleWith, type BackupHost } from './sign-in-shared.js'
 
 export type LegacyLoginOutcome = 'none' | 'migrated' | 'set-aside' | 'kept'
 
-export async function migrateLegacyLogin(opts: {
+export async function migrateLegacyLogin(opts: Parameters<typeof migrate>[0]): Promise<LegacyLoginOutcome> {
+  // The old key is redacted from every console line while it is handled.
+  let undo: (() => void) | undefined
+  try {
+    return await migrate({ ...opts, onKey: k => { undo = redactConsoleWith(k) } })
+  } finally {
+    undo?.()
+  }
+}
+
+async function migrate(opts: {
   home: string
   plur: () => Plur
   print: (line: string) => void
   fetch?: typeof fetch
   /** Tests: the host the owner-only protection of the copy runs on. */
   backupHost?: BackupHost
+  onKey?: (key: string) => void
 }): Promise<LegacyLoginOutcome> {
   const file = join(opts.home, '.plur', 'config.json')
   if (!existsSync(file)) return 'none'
@@ -52,6 +63,7 @@ export async function migrateLegacyLogin(opts: {
   let origin: string | undefined
   try { origin = typeof ent?.url === 'string' ? normaliseHost(ent.url) : undefined } catch { origin = undefined }
   const token = typeof ent?.token === 'string' && ent.token ? ent.token : undefined
+  if (token) opts.onKey?.(token)
   const say = (line: string): void => opts.print(token ? redactToken(line, token) : line)
 
   /** Move the file to an owner-only copy; on failure it stays, and false. */

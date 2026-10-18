@@ -12,7 +12,7 @@ import { urlOpener } from '../lib/open-url.js'
 import { deviceName, isHeadless, isWslRelease } from '../enterprise/device-name.js'
 import { migrateLegacyLogin } from '../enterprise/legacy-login.js'
 import {
-  normaliseHost, readJson, fetchMe, personalScopeOf, holderLine, takeoverMessage, backupSecretFile,
+  normaliseHost, readJson, fetchMe, personalScopeOf, holderLine, takeoverMessage, backupSecretFile, redactConsoleWith,
   type FetchFn, type MeAnswer,
 } from '../enterprise/sign-in-shared.js'
 
@@ -741,6 +741,9 @@ async function runSignIn(origin: string, parsed: ParsedArgs, flags: GlobalFlags)
     process.exit(1)
   }
   const key = signedIn.key
+  // Core logs some server text itself (during registration and the scope
+  // refresh); the key is redacted from every line this process prints.
+  redactConsoleWith(key)
   const fail = (lines: string[]): never => {
     for (const l of lines) outputError(redactToken(l, key))
     process.exit(1)
