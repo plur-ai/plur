@@ -92,6 +92,14 @@ describe('gitDefaultScope', () => {
         .toEqual({ kind: 'unknown', reason: 'scopes-unavailable' })
   })
 
+  // A server that has not synced this account yet answers scopes_status
+  // not_synced with no scopes; discovery stores that with a discovered_at. The
+  // rule makes only a missing discovered_at 'scopes-unavailable', so the repo is
+  // local with no project scope (the session line names not_synced on its own).
+  it('not_synced with no scopes and a fresh discovered_at → local, no scope for project', () =>
+    expect(gitDefaultScope('/r', [{ ...SRC, status: 'not_synced', scopes: [], project_paths: {} }], { now, read: at(BACKEND) }))
+      .toEqual({ kind: 'local', reason: 'no-scope-for-project' }))
+
   it('a failed refresh over a fresh cache still uses the cache', () =>
     expect(gitDefaultScope('/r', [{ ...SRC, status: 'failed' }], { now, read: at(BACKEND) }))
       .toMatchObject({ kind: 'scope', scope: 'project:acme/team/backend' }))
@@ -163,6 +171,9 @@ describe('gitDefaultScope', () => {
     it('matches an ssh:// origin', () =>
       expect(gitDefaultScope('/r', [{ ...SRC, gitlab_host: '[2001:db8::1]' }], { now, read: at('ssh://git@[2001:db8::1]:2222/team/backend.git') }))
         .toMatchObject({ kind: 'scope' }))
+    it('matches an scp-style origin (git@[addr]:path)', () =>
+      expect(gitDefaultScope('/r', [{ ...SRC, gitlab_host: '[2001:db8::1]' }], { now, read: at('git@[2001:DB8::1]:team/backend.git') }))
+        .toEqual({ kind: 'scope', scope: 'project:acme/team/backend', server: 'https://plur.example.com' }))
     it('another address does not match', () =>
       expect(gitDefaultScope('/r', [V6], { now, read: at('https://[2001:db8::2]:8443/team/backend.git') }))
         .toEqual({ kind: 'local', reason: 'not-company-gitlab' }))
