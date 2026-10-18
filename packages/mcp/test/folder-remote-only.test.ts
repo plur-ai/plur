@@ -255,3 +255,30 @@ describe('gate review of #1663: MCP tools that read this machine\'s files direct
     expect(profile).toContain('remote-only')
   })
 })
+
+describe('Codex round 6 on #1663: no memory goes to a model the user names', () => {
+  it('plur_tensions scan, plur_extract_meta, plur_validate_meta and plur_report_failure with a model are refused, nothing sent', async () => {
+    const { createServer: http } = await import('http')
+    const seen: string[] = []
+    const llmHost = http((req, res) => { seen.push(`${req.method} ${req.url}`); res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"choices":[{"message":{"content":"[]"}}]}') })
+    await new Promise<void>(r => llmHost.listen(0, '127.0.0.1', () => r()))
+    try {
+      const a = llmHost.address() as { port: number }
+      const llm = { llm_base_url: `http://127.0.0.1:${a.port}/v1`, llm_api_key: 'k' }
+      stub.seedEngram({ id: 'ENG-2026-10-18-015', scope: TEAM, status: 'active', data: { statement: 'TEAMSECRETX the release key rotates monthly', type: 'procedural' } })
+      const c = await client()
+      const calls: Array<[string, Record<string, unknown>]> = [
+        ['plur_tensions', { scan: true, persist: false, ...llm }],
+        ['plur_extract_meta', { ...llm, dry_run: true }],
+        ['plur_validate_meta', { meta_engram_id: 'ENG-2026-10-18-015', test_domain: 'x', ...llm }],
+        ['plur_report_failure', { engram_id: 'ENG-2026-10-18-015', failure_context: 'it failed', ...llm }],
+      ]
+      for (const [name, args] of calls) {
+        const text = JSON.stringify(await c.callTool({ name, arguments: args }))
+        expect(text, name).toContain('remote-only')
+      }
+      expect(seen).toEqual([])
+    } finally { await new Promise<void>(r => llmHost.close(() => r())) }
+  })
+})
+

@@ -414,3 +414,15 @@ describe('Codex round 4 on #1663', () => {
   }, 90_000)
 })
 
+describe('Codex round 6 on #1663', () => {
+  it('Cursor: a remote-only root\'s own stale rule is removed even when the payload has no conversation id', async () => {
+    mkdirSync(join(repo, '.cursor', 'rules'), { recursive: true })
+    const { writeContextRule } = await import('../src/lib/cursor-hook-io.js')
+    writeContextRule('PERSONALRULE3 from an earlier on session', join(repo, '.cursor', 'rules', 'plur-context.mdc'))
+    mapRemoteOnly()
+    await hook(['hook-cursor-session-start'], { workspace_roots: [repo] })
+    const rule = join(repo, '.cursor', 'rules', 'plur-context.mdc')
+    expect(existsSync(rule) ? readFileSync(rule, 'utf8') : '').not.toContain('PERSONALRULE3')
+  }, 90_000)
+})
+
