@@ -31,7 +31,10 @@ What is proved:
 Checked 2026-10-18 (gate review): `parseGitRemoteUrl` now also parses an scp-style origin whose
 host is a bracketed IPv6 address (`git@[2001:db8::1]:team/backend.git`), in the same canonical
 form as an https/ssh remote. Still holds: parsing is the abstract `R` / `url (r : Option R)`
-input, so every theorem covers the new parses unchanged.
+input, so every theorem covers the new parses unchanged. `loadGitScopeSources` (outside the
+model) now keeps a server entry with a malformed `scopes` value as a source with no scopes, and
+gives an entry whose url is not http(s) an empty identity and no scopes: such a source can only
+add a freshness `problem`, which `problem_unknown` already covers.
 -/
 
 set_option linter.unusedSimpArgs false
