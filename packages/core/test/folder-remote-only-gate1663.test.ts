@@ -18,7 +18,7 @@ import { createServer, type Server } from 'http'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, resolveFolderPolicy } from '../src/index.js'
+import { Plur, resolveFolderPolicy, namespaceEngramId } from '../src/index.js'
 import { RemoteOnlyStoreGuard } from '../src/store/remote-only-store-guard.js'
 import { StubServer } from './helpers/stub-server.js'
 import { backgroundPushesSettled } from './helpers/background-pushes.js'
@@ -247,5 +247,109 @@ describe('Codex round 2 on #1663', () => {
     const ev = historyText().split('\n').filter(Boolean).map(l => JSON.parse(l)).find(e => e.event === 'co_injection')
     expect(ev?.data?.query_hash).toEqual(expect.any(String))
     expect(ev?.data?.source).toBe('session_start')
+  })
+})
+
+/** A team server whose answers are scripted per request; records every request. */
+class Scripted {
+  requests: string[] = []
+  handler: (method: string, path: string, n: number) => { status: number; body: unknown } = () => ({ status: 404, body: { error: 'Not found' } })
+  private server: Server | null = null
+  url = ''
+  async start(): Promise<void> {
+    this.server = createServer((req, res) => {
+      let body = ''
+      req.on('data', d => { body += String(d) })
+      req.on('end', () => {
+        this.requests.push(`${req.method} ${req.url} ${body}`)
+        const r = this.handler(req.method ?? 'GET', req.url ?? '/', this.requests.length)
+        res.writeHead(r.status, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(r.body))
+      })
+    })
+    await new Promise<void>(r => this.server!.listen(0, '127.0.0.1', () => r()))
+    const a = this.server.address()
+    this.url = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`
+  }
+  async stop(): Promise<void> { await new Promise<void>(r => this.server ? this.server.close(() => r()) : r()) }
+}
+
+describe('Codex round 3 on #1663', () => {
+  it('a bare-id update goes only to the store the resolver names, not to a parent-scope server', async () => {
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({
+      index: false, embeddings: { enabled: false },
+      stores: [
+        { url: other.url, token: TOKEN, scope: 'group:acme', shared: true, readonly: false },
+        { url: teamUrl, token: TOKEN, scope: TEAM, shared: true, readonly: false },
+      ],
+    }))
+    team.seedEngram({ id: 'ENG-2026-10-18-007', scope: TEAM, status: 'active', data: { statement: 'x', type: 'behavioral' } })
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    const now = new Date().toISOString()
+    await plur.updateEngram({
+      id: 'ENG-2026-10-18-007', statement: 'PARENTSECRET update', scope: TEAM, status: 'active',
+      type: 'behavioral', version: 2, activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: now.slice(0, 10) },
+    } as any).catch(() => null)
+    expect(other.requests.filter(r => r.includes('PARENTSECRET'))).toEqual([])
+  })
+
+  it('a personal row on the team host is neither returned by id nor updated', async () => {
+    team.setMe({ username: 'u', org_id: 'o', role: 'developer', scopes: [TEAM], capabilities: ['feedback.source'] } as any)
+    team.seedEngram({ id: 'ENG-2026-10-18-008', scope: 'user:me', status: 'active', data: { statement: 'PERSONALHOSTROW', type: 'behavioral' } })
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    const nsId = namespaceEngramId('ENG-2026-10-18-008', TEAM)
+    const got = await plur.getByIds([nsId], { remoteCapability: 'feedback.source' })
+    expect(JSON.stringify(got)).not.toContain('PERSONALHOSTROW')
+    const now = new Date().toISOString()
+    await plur.updateEngram({
+      id: 'ENG-2026-10-18-008', statement: 'overwritten', scope: TEAM, status: 'active',
+      type: 'behavioral', version: 2, activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: now.slice(0, 10) },
+    } as any).catch(() => null)
+    expect((team.getEngram('ENG-2026-10-18-008')!.data as any).statement).toBe('PERSONALHOSTROW')
+  })
+
+  it('an ownership check that cannot tell refuses: a 503 then a personal row is never deleted', async () => {
+    const host = new Scripted()
+    await host.start()
+    try {
+      let gets = 0
+      host.handler = (method, path) => {
+        if (path === '/api/v1/me') return { status: 200, body: { username: 'u', org_id: 'o', role: 'developer', scopes: [TEAM] } }
+        if (method === 'GET' && path.startsWith('/api/v1/engrams/')) {
+          gets++
+          if (gets === 1) return { status: 503, body: { error: 'down' } }
+          return { status: 200, body: { engram: { id: 'ENG-2026-10-18-009', scope: 'user:me', status: 'active', data: { statement: 'mine', type: 'behavioral' } } } }
+        }
+        if (method === 'HEAD') return { status: 200, body: {} }
+        return { status: 200, body: { ok: true } }
+      }
+      writeFileSync(join(root, 'config.yaml'), yaml.dump({
+        index: false, embeddings: { enabled: false },
+        stores: [{ url: host.url, token: TOKEN, scope: TEAM, shared: true, readonly: false }],
+      }))
+      const plur = new Plur({ path: root })
+      plur.bindFolder(work)
+      // Refused as remote-only: whose row it is could not be established.
+      await expect(plur.forget('ENG-2026-10-18-009', 'x', { scope: TEAM })).rejects.toThrow(/remote-only/)
+      expect(host.requests.filter(r => r.startsWith('DELETE'))).toEqual([])
+    } finally { await host.stop() }
+  })
+
+  it('warming caches and listing stores contact no store but the folder team store; a personal folder scope warms nothing', async () => {
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    await plur.listStoresAsync()
+    expect(other.requests).toEqual([])
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({
+      index: false, embeddings: { enabled: false },
+      stores: [{ url: other.url, token: TOKEN, scope: 'user:me', readonly: false }],
+    }))
+    writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: work, plur: 'remote-only', scope: 'user:me' }] }))
+    const mine = new Plur({ path: root })
+    mine.bindFolder(work)
+    await mine.warmRemoteCaches()
+    expect(other.requests).toEqual([])
   })
 })
