@@ -804,9 +804,13 @@ export class RemoteStore {
               const why = parsed.error.issues
                 .map(i => `${i.path.join('.') || '(root)'}: ${i.code}`)
                 .join('; ')
-              const safeScope = String((m as { scope?: unknown } | null)?.scope ?? '<unknown>')
-                .replace(/[^\w:./-]/g, '?')
-                .slice(0, 64)
+              // Named only when it is a scope this answer granted: any other
+              // text is the server's and could carry anything, the bearer key
+              // included (#1665 gate: a key reflected here reached the log).
+              const rawScope = (m as { scope?: unknown } | null)?.scope
+              const safeScope = typeof rawScope === 'string' && scopes.includes(rawScope)
+                ? rawScope.replace(/[^\w:./-]/g, '?').slice(0, 64)
+                : '<a scope not granted>'
               logger.warning(
                 `[plur:remote-store] ${safeOrigin(this.url)} sent scope metadata for "${safeScope}" that does not conform ` +
                 `(${why}) — DROPPED. That scope cannot participate in covers-based auto-routing until the ` +

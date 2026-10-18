@@ -47,6 +47,12 @@ Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
 writes nothing and is read only by the MCP server; no write-path branch changed.
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+No write-path branch changed: the entries left are routed as before.
 -/
 
 namespace PlurSpec.WritePath

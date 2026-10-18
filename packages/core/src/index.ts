@@ -11,7 +11,7 @@ import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
 import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope, isSafeScopeName } from './store-expand.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
-import { acceptDiscoveredScopes, registerServerEntry, type DiscoveryStatus, type ScopeRejection, type FoldReport } from './server-discovery.js'
+import { acceptDiscoveredScopes, registerServerEntry, PersonalScopeTakenError, SignInHeldError, type DiscoveryStatus, type ScopeRejection, type FoldReport, type ScopeHolder } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
@@ -640,8 +640,8 @@ export interface RemoteScopeDiscovery {
   error?: string
 }
 
-export { acceptDiscoveredScopes, foldStoresIntoServerEntry } from './server-discovery.js'
-export type { DiscoveryStatus, ScopeRejection, AcceptedDiscovery, FoldReport, FoldKeptReason } from './server-discovery.js'
+export { acceptDiscoveredScopes, foldStoresIntoServerEntry, PersonalScopeTakenError, SignInHeldError } from './server-discovery.js'
+export type { DiscoveryStatus, ScopeRejection, AcceptedDiscovery, FoldReport, FoldKeptReason, ScopeHolder } from './server-discovery.js'
 
 /**
  * Result of {@link Plur.refreshServerScopes} for one server entry (#1631).
@@ -13225,7 +13225,11 @@ Generate an improved version of the procedure that prevents this failure. Return
    * block. Per-scope entries on the same server whose `token`, `token_env` and
    * `readonly` equal the server entry's are folded into it
    * ({@link foldStoresIntoServerEntry}); the others are listed in
-   * `kept_separate`. Two server entries for the url are refused.
+   * `kept_separate`. Two server entries for the url are refused. Taking over
+   * the personal scope's writes from another entry is refused with a
+   * {@link PersonalScopeTakenError} that names those entries; with
+   * `removeStale` they are removed in the same write and listed in `removed`
+   * (#1638: `plur login --remove-stale`).
    *
    * No network call: the caller runs `refreshServerScopes({ url })` next. The
    * read-modify-write runs under the config lock on the file as it is then and
@@ -13234,8 +13238,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    * never the key. No key reaches the result, an error or the log.
    */
   async registerEnterpriseServer(url: string, opts: {
-    token?: string; tokenEnv?: string; personalScope: string; enterprise?: Record<string, string>
-  }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport }> {
+    token?: string; tokenEnv?: string; personalScope: string; enterprise?: Record<string, string>; removeStale?: boolean
+    /** Refuse ({@link SignInHeldError}) when config.yaml already holds a sign-in for the url. */
+    keepSignIn?: boolean
+    /** Called under the config lock with config.yaml's path, before a write
+     *  that removes stale entries (the file is still as read); a throw writes
+     *  nothing. `plur login --remove-stale` backs config.yaml up here. */
+    beforeRemove?: (configPath: string) => void
+  }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[] }> {
     let parsed: URL
     try { parsed = new URL(url) } catch {
       throw new Error('registerEnterpriseServer: the server address is not a valid http(s) URL')
@@ -13265,11 +13275,22 @@ Generate an improved version of the procedure that prevents this failure. Return
     try {
       this._updateRawStores(rawStores => {
         try {
-          result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise })
+          result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise, removeStale: opts.removeStale === true, keepSignIn: opts.keepSignIn === true })
         } catch (err) {
+          if (err instanceof SignInHeldError) throw new SignInHeldError(`registerEnterpriseServer: ${err.message}`)
+          // The refusal keeps its type and the entries it names (#1638), so
+          // `plur login` can name them and offer to remove them.
+          if (err instanceof PersonalScopeTakenError) {
+            throw new PersonalScopeTakenError(`registerEnterpriseServer: ${err.message}`, err.personalScope, err.holders, err.removable)
+          }
           throw new Error(`registerEnterpriseServer: ${err instanceof Error ? err.message : String(err)}`)
         }
         if (result.status === 'unchanged') return false
+        if (result.removed.length && opts.beforeRemove) {
+          try { opts.beforeRemove(this.paths.config) } catch (err) {
+            throw new Error(`registerEnterpriseServer: the backup of config.yaml before removing the stale ${result.removed.length === 1 ? 'entry' : 'entries'} could not be made (${err instanceof Error ? err.message : String(err)}). Nothing was changed.`)
+          }
+        }
         // The key is written by _updateRawStores through writeConfigFile, under
         // this lock: owner-only on POSIX (tightened before the write) and on
         // Windows (a verified access list, or the write is refused) (#1631).
@@ -13303,8 +13324,8 @@ Generate an improved version of the procedure that prevents this failure. Return
       if (served.has(row.target_scope)) counts.set(row.target_scope, (counts.get(row.target_scope) ?? 0) + 1)
     }
     const queued_by_scope: Record<string, number> = Object.fromEntries(counts)
-    logger.info(`[plur:register] ${r.status} the server entry for ${safeOrigin(url)}: ${r.report.folded.length} folded, ${r.report.kept_separate.length} kept separate`)
-    return { status: r.status, fold: { ...r.report, queued_by_scope } }
+    logger.info(`[plur:register] ${r.status} the server entry for ${safeOrigin(url)}: ${r.report.folded.length} folded, ${r.report.kept_separate.length} kept separate${r.removed.length ? `, ${r.removed.length} stale removed` : ''}`)
+    return { status: r.status, fold: { ...r.report, queued_by_scope }, removed: r.removed }
   }
 
   /**

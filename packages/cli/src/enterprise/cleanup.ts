@@ -23,7 +23,7 @@ const ENTRY = 'plur-enterprise'
  * Writes `data` — the snapshot of `source` the cleanup is about to replace —
  * as a backup and returns its path; throws when it cannot be made safely.
  */
-type Backup = (source: string, data: Buffer) => string
+export type Backup = (source: string, data: Buffer) => string
 
 /** Called after a target's backup is written and before the file is re-read and replaced. */
 type AfterBackup = (target: string, attempt: number) => void
@@ -478,9 +478,10 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * gets a numbered name. When protection cannot be established the writer
  * throws, and the target is refused with nothing changed. The Windows rule is
  * core's `protectOwnerOnly` (#1631) — one implementation for config.yaml,
- * these backups and the installer's key file.
+ * these backups and the installer's key file. `plur login` backs up
+ * config.yaml and config.json through it too (sign-in-shared.ts).
  */
-function backupWriter(
+export function backupWriter(
   backupDir: string,
   o: { platform: NodeJS.Platform; exec?: OwnerOnlyExec; account: string | null },
 ): Backup {

@@ -86,6 +86,7 @@ Commands:
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
+  login <host>            Sign this device in to a PLUR server and save it (device flow)
   login --status          Enterprise token validity per host (probe + expiry) (#587)
   init --keep-opencode-plugin  Keep an intentionally older OpenCode plugin pin
   init --keep-codex-mcp    Keep an intentionally older Codex MCP launch entry
@@ -191,11 +192,8 @@ const COMMANDS: Record<string, string> = {
   init: './commands/init.js',
   // Hidden alias of `remote` (#1413); `--verify` is bare `plur remote`.
   'init-remote': './commands/init-remote.js',
-  // `login` is registered for `--status` (#587: token validity per host). The
-  // OAuth device flow itself (#532) stays GATED INSIDE the command — it is
-  // happy-path only (no paste-token fallback, no refresh tokens) and targets
-  // device-flow endpoints enterprise servers don't expose yet; attempting it
-  // prints the sign-in-URL + plur_stores_add path instead. See #300.
+  // `login --status` (#587: token validity per host) and `login <host>`, the
+  // device sign-in (#1638) that saves the server's entry in config.yaml.
   login: './commands/login.js',
   doctor: './commands/doctor.js',
   'rerank-eval': './commands/rerank-eval.js',
