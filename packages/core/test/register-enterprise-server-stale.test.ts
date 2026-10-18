@@ -176,4 +176,11 @@ describe('gate review of #1665: a held sign-in, the backup under the lock', () =
     expect(r.removed).toHaveLength(1)
     expect(rawConfig().stores.map((e: { url: string }) => e.url)).toEqual(['https://b.example.com/sse', URL_])
   })
+
+  it('keepSignIn: an entry for the server with no key (no token, no token_env) is not a sign-in; registration goes ahead', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    scope: ${ME}\n    scopes: []\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'legacy-sekrit', personalScope: ME, keepSignIn: true })
+    expect(r.status).toBe('updated')
+    expect(rawConfig().stores[0].token).toBe('legacy-sekrit')
+  })
 })

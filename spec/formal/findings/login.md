@@ -51,7 +51,11 @@ Fixed: the poll has one deadline (no wait past it, no key after it); the request
 
 Fixed: a poll in flight at the deadline no longer hands over a key (its timeout is the time left, and a late answer does not count); an unknown token error is not echoed (only known codes are named); a local store that keeps the personal scope also exits 1; a key reflected into `/me` scope metadata is not logged (remote-store.ts names only a granted scope there; a logging change, outside every model); `plur login` builds Plur without project-store discovery, so nothing is written before the sign-in; YAML aliases no longer confuse the holder-to-position mapping in `registerServerEntry` (each position is copied first, so §2's "exactly the holders" holds per position).
 
-## L7. The installer's store step: the key is stored at most once, only once it is known to work, and a failure leaves config.yaml unchanged (plan C task 4, 2026-10-18)
+## L7. Gate review, Codex rounds 3–4 (2026-10-18)
+
+Fixed: once the key is held, every console line of the process is redacted with it (core logs some server text itself); `held` (§3) counts only an entry for the server that has a key or key reference (token or token_env), so a keyless entry no longer blocks the move; the code's lifetime includes the time spent opening the browser.
+
+## L8. The installer's store step: the key is stored at most once, only once it is known to work, and a failure leaves config.yaml unchanged (plan C task 4, 2026-10-18)
 
 **Verdict:** holds for the new code (`packages/cli/src/enterprise/server-store.ts`).
 
