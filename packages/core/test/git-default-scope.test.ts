@@ -250,6 +250,36 @@ describe('loadGitScopeSources', () => {
       scopes: ['project:acme/team/backend'], project_paths: { 'project:acme/team/backend': 'team/backend' } }])
   })
 
+  const FRESH_A = {
+    url: 'https://plur-a.example.com', token: 'k1', enterprise: {}, scopes: ['project:acme/team/backend'],
+    discovery: { status: 'ok', discovered_at: '2026-10-16T12:00:00Z', gitlab_host: 'gitlab.example.com',
+      project_paths: { 'project:acme/team/backend': 'team/backend' } },
+  }
+
+  it('a server entry with a malformed scopes list still counts: its stale cache makes the answer unknown', () => {
+    const r = withConfig({ stores: [FRESH_A, {
+      url: 'https://plur-b.example.com', token: 'k2', enterprise: {}, scopes: 'oops',
+      discovery: { status: 'ok', discovered_at: '2026-01-01T00:00:00Z', gitlab_host: 'gitlab.example.com', project_paths: {} },
+    }] })
+    expect(loadGitScopeSources(r)[1]).toMatchObject({ server: 'https://plur-b.example.com', scopes: [] })
+    expect(gitDefaultScope('/r', loadGitScopeSources(r), { now, read: at(BACKEND) }))
+      .toEqual({ kind: 'unknown', reason: 'cache-stale' })
+  })
+
+  it('a server url that is not a valid http(s) url never reaches a source or outcome, and never yields a scope', () => {
+    for (const url of ['https://alice:FAKE-SECRET@plur.example.com:bad', 'ssh://alice:FAKE-SECRET@plur.example.com']) {
+      const r = withConfig({ stores: [{ ...FRESH_A, url }] })
+      const s = loadGitScopeSources(r)
+      expect(s).toHaveLength(1)
+      expect(JSON.stringify(s)).not.toContain('FAKE-SECRET')
+      const o = gitDefaultScope('/r', s, { now, read: at(BACKEND) })
+      expect(o).toEqual({ kind: 'local', reason: 'no-scope-for-project' })
+      // Its stale cache still counts against another server's fresh mapping.
+      const r2 = withConfig({ stores: [FRESH_A, { ...FRESH_A, url, discovery: { ...FRESH_A.discovery, discovered_at: '2026-01-01T00:00:00Z' } }] })
+      expect(gitDefaultScope('/r', loadGitScopeSources(r2), { now, read: at(BACKEND) })).toEqual({ kind: 'unknown', reason: 'cache-stale' })
+    }
+  })
+
   it('no config.yaml, unparsable YAML, or no stores → []', () => {
     root = mkdtempSync(join(tmpdir(), 'plur-git-sources-'))
     expect(loadGitScopeSources(root)).toEqual([])
