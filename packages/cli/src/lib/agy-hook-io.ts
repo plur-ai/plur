@@ -135,6 +135,8 @@ export interface AgyTurnCache {
    * folder. Optional: older caches lack it.
    */
   mode?: string
+  /** The folder's scope when the message was cached (Codex round 7 on #1663). */
+  scope?: string
 }
 
 /**
@@ -168,6 +170,7 @@ export function readAgyTurnCache(conversationId: string): AgyTurnCache | null {
       message: raw.message,
       ...(typeof raw.offset === 'number' && Number.isSafeInteger(raw.offset) ? { offset: raw.offset } : {}),
       ...(typeof raw.mode === 'string' ? { mode: raw.mode } : {}),
+      ...(typeof raw.scope === 'string' ? { scope: raw.scope } : {}),
     }
   } catch {
     return null // missing, torn, or corrupt — degrade to a fresh recall

@@ -15,6 +15,7 @@ import {
   type FolderPolicy,
   type Plur,
   type RemoteOnlyStatus,
+  folderEscapedPath,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 
@@ -56,6 +57,20 @@ export {
 /** The PLUR home the hooks read the map from: `--path`, else PLUR_PATH, else ~/.plur. */
 export function plurRoot(flags?: { path?: string }): string {
   return flags?.path ?? process.env.PLUR_PATH ?? join(homedir(), '.plur')
+}
+
+/**
+ * The refusal for a CLI command that must not run in a remote-only folder
+ * (Codex round 7 on #1663), or null. `what` says what the command would do
+ * with memory there. A folder map that cannot be read leaves the command as
+ * on development (owner decision 1 on #1663).
+ */
+export function remoteOnlyCommandRefusal(flags: { path?: string } | undefined, what: string, cwd: string = process.cwd()): string | null {
+  let policy: FolderPolicy
+  try { policy = resolveFolderPolicy(cwd, { root: plurRoot(flags), readOnly: true }) } catch { return null }
+  if (policy.mode !== 'remote-only') return null
+  return `This folder (${folderEscapedPath(cwd)}) is remote-only: its memory lives only on the team server. ${what}, so nothing was done. ` +
+    'Run it outside the remote-only folder.'
 }
 
 /**
@@ -264,6 +279,12 @@ export function cursorHookFolder(
     .filter(r => !coversHome(r.path))
     .map(r => ({ ...r, policy: hookFolderPolicy(r.path, flags) }))
   const existingAskable = askable.filter(r => r.real !== null)
+  // A map that cannot be read decides nothing for any root (Codex round 7 on
+  // #1663): off, as MCP refuses, and every root's generated rule is removed.
+  const allKnownRoots = [...new Set(roots.flatMap(r => r.real ? [r.real] : []))]
+  if (askable.some(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')) {
+    return { dir: firstDir, policy: WORKSPACE_UNKNOWN, cleanupDirs: allKnownRoots }
+  }
   const ask = askable.find(r => r.policy.mode === 'ask')
   if (ask) {
     const dir = ask.real ?? existingAskable[0]?.real ?? null
@@ -292,7 +313,7 @@ export function cursorHookFolder(
   const dir = inCwd ?? pool[0] ?? null
   const policy = dir ? hookFolderPolicy(dir, flags) : null
   // A map that cannot be read decides nothing: off, as MCP refuses (fail safe).
-  if (!policy || policy.reason === 'malformed-map' || policy.reason === 'resolver-error') return { dir, policy: WORKSPACE_UNKNOWN }
+  if (!policy || policy.reason === 'malformed-map' || policy.reason === 'resolver-error') return { dir, policy: WORKSPACE_UNKNOWN, cleanupDirs: allKnownRoots }
   // remote-only (#1521) is kept as it is, never turned into `on`: memory
   // there lives only on the team server. Any root that is remote-only makes
   // the workspace remote-only (fail closed), from the output folder's own

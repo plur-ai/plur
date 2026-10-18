@@ -9804,7 +9804,11 @@ export class Plur {
       const entry = scope && scope !== 'primary'
         ? (this.config.stores ?? []).find(s => s.url && s.scope === scope && s.readonly !== true)
         : undefined
-      const e = scope === 'primary'
+      // remote-only: only a deliverable team scope's store is asked (Codex round 7 on #1663).
+      const bound = this._activeBinding()
+      const e = bound && entry && !this._isDeliverableTeamScope(entry.scope)
+        ? null
+        : scope === 'primary'
         ? (await this._loadTargeted([candidateId])).find(r => r.id === candidateId) ?? null
         : entry
           ? await this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })

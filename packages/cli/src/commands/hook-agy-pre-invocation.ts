@@ -103,7 +103,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // A message cached under another folder mode is not this turn's in a
     // remote-only folder (gate review of #1663): it may hold personal memory.
     const rawCached = readAgyTurnCache(conversationId)
-    const cached = rawCached && policy?.mode === 'remote-only' && rawCached.mode !== 'remote-only' ? null : rawCached
+    // Replayed only under the same folder decision (Codex round 7 on #1663):
+    // never when the map cannot be read, and in a remote-only folder only a
+    // message cached there for the same team scope.
+    const unresolved = policy?.reason === 'malformed-map' || policy?.reason === 'resolver-error'
+    const cached = rawCached && (unresolved ||
+      (policy?.mode === 'remote-only' && (rawCached.mode !== 'remote-only' || rawCached.scope !== policy.scope))) ? null : rawCached
 
     // "First" is the conversation's first turn. The absence of a cache alone
     // cannot say that: with an unusable cache dir it is absent on EVERY turn,
@@ -222,7 +227,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       textHash: userHash,
       message,
       ...(user ? { offset: user.offset } : {}),
-      ...(policy ? { mode: policy.mode } : {}),
+      ...(policy ? { mode: policy.mode, ...(policy.scope ? { scope: policy.scope } : {}) } : {}),
     })
 
     if (!message) return
