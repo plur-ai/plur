@@ -273,7 +273,8 @@ describe('registerEnterpriseServer — re-running', () => {
 describe('foldStoresIntoServerEntry — pure', () => {
   it('folds into the one server entry; a scope already pinned is not repeated', () => {
     const raw = [
-      { url: URL_, token: 'k1', scope: ME, enterprise: {}, scopes: [], pinned_scopes: ['group:acme/a'] },
+      // The server entry already serves the scope with the same settings (round 8: a fold never changes them).
+      { url: URL_, token: 'k1', scope: ME, enterprise: {}, scopes: [], pinned_scopes: ['group:acme/a'], scope_settings: { 'group:acme/a': { description: 'A' } } },
       { url: `${URL_}/sse`, token: 'k1', scope: 'group:acme/a', description: 'A' },
     ]
     const { stores, report } = foldStoresIntoServerEntry(raw, URL_, 'k1', undefined)
@@ -596,5 +597,14 @@ describe('registerEnterpriseServer — Codex audit round 7', () => {
     ]
     const { report } = foldStoresIntoServerEntry(raw, URL_, 'k1', undefined)
     expect(report.folded).toEqual([])
+  })
+})
+
+describe('registerEnterpriseServer — Codex audit round 8', () => {
+  it('folding never wakes dormant scope_settings: an entry without that setting is kept separate', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n    scopes: []\n    scope_settings:\n      group:acme/team:\n        dial: never\n` +
+      `  - url: ${URL_}\n    token: k1\n    scope: group:acme/team\n    shared: true\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.kept_separate).toEqual([{ scope: 'group:acme/team', why: 'metadata-differs' }])
   })
 })
