@@ -62,7 +62,8 @@ describe('the remote-only refusal names the folder as data', () => {
 
 describe('gate review of #1663: setFolder on a remote-only folder names the folder as data', () => {
   it('a refused --scope change prints no raw folder and no command for an unsafe folder name', () => {
-    const nasty = join(home, 'x$(touch PWNED)`id`')
+    // A bidi control makes the name unofferable by the shared rule (#1418).
+    const nasty = join(home, 'x$(touch PWNED)`id`\u202E')
     mkdirSync(nasty)
     writeFileSync(join(root, 'config.yaml'), [
       'stores:',
@@ -81,6 +82,7 @@ describe('gate review of #1663: setFolder on a remote-only folder names the fold
     expect(msg).toMatch(/remote-only/)
     expect(msg).not.toContain('$(touch')
     expect(msg).not.toContain('`id`')
+    expect(msg).not.toContain('\u202E')
     expect(msg).not.toMatch(/plur folders set \S/)
     expect(resolveFolderPolicy(nasty, { root, home }).mode).toBe('remote-only')
   })
