@@ -129,7 +129,7 @@ describe('checkExistingKey', () => {
 
 // ── connectServerStore / rollbackServerStore (real core, contract server) ─────
 
-interface Stub { url: string; server: Server; keys: string[]; meCalls: number }
+interface Stub { url: string; server: Server; keys: string[]; meCalls: number; me?: Record<string, unknown> }
 
 async function startStub(): Promise<Stub> {
   const stub = { keys: [KEY, NEW_KEY], meCalls: 0 } as Stub
@@ -142,7 +142,7 @@ async function startStub(): Promise<Stub> {
         const bearer = (req.headers.authorization ?? '').replace(/^Bearer /, '')
         if (!stub.keys.includes(bearer)) { res.writeHead(401).end(); return }
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ...ME, scope_metadata: [], scope_metadata_status: 'ok', gitlab_host: null, project_paths: {} }))
+        res.end(JSON.stringify(stub.me ?? { ...ME, scope_metadata: [], scope_metadata_status: 'ok', gitlab_host: null, project_paths: {} }))
         return
       }
       res.writeHead(404).end()
@@ -273,6 +273,36 @@ describe('connectServerStore', () => {
     expect(printed.join('\n')).not.toContain(KEY)
   })
 
+  it('registration that throws after it wrote is rolled back too: config.yaml is byte-identical', async () => {
+    const before = Buffer.from('# hand-written\nstores: []\nindex: false\n')
+    writeFileSync(cfg, before)
+    const p = plur()
+    const orig = p.registerEnterpriseServer.bind(p)
+    vi.spyOn(p, 'registerEnterpriseServer').mockImplementation(async (...args) => {
+      await orig(...args)
+      throw new Error(`reload failed near ${KEY}`)
+    })
+    const ref = vi.spyOn(p, 'refreshServerScopes')
+    const err = await connectServerStore({ plur: p, server: stub.url, token: KEY, personalScope: 'user:acme:alice', configPath: cfg }).then(() => null, (e: Error) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err!.message).not.toContain(KEY)
+    expect(ref).not.toHaveBeenCalled()
+    expect(readFileSync(cfg).equals(before)).toBe(true)
+  })
+
+  it('a key the server reflects back (in a scope name, its metadata) is never printed or returned', async () => {
+    writeFileSync(cfg, 'stores: []\n')
+    const leaky = `group:acme/${KEY}`
+    stub.me = {
+      ...ME, scopes: [...ME.scopes, leaky],
+      scope_metadata: [{ scope: leaky, description: 42 }], scope_metadata_status: 'ok', gitlab_host: null, project_paths: {},
+    }
+    const r = await connectServerStore({ plur: plur(), server: stub.url, token: KEY, personalScope: 'user:acme:alice', configPath: cfg })
+    expect(stub.meCalls).toBeGreaterThan(0)
+    expect(JSON.stringify(r)).not.toContain(KEY)
+    expect(printed.join('\n')).not.toContain(KEY)
+  })
+
   it('a failure on a fresh machine removes the config.yaml the registration created', async () => {
     const p = plur()
     rmSync(cfg, { force: true })
@@ -311,7 +341,7 @@ describe('rollbackServerStore', () => {
   afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
   it('restores the exact bytes (owner-only), whatever was written since', () => {
-    const before = Buffer.concat([Buffer.from('stores: []\n# '), Buffer.from([0xc3, 0xa9]), Buffer.from(' no trailing newline')])
+    const before = Buffer.concat([Buffer.from('stores: []\n# '), Buffer.from([0xc3, 0xa9, 0xff, 0xfe]), Buffer.from(' not UTF-8, no trailing newline')])
     const backup = join(root, 'backups', 'x', 'config.yaml')
     mkdirSync(dirname(backup), { recursive: true })
     writeFileSync(backup, before)
