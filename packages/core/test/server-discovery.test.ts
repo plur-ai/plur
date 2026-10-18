@@ -1,15 +1,15 @@
 /**
- * Pure unit tests for acceptDiscoveredScopes — the decision table that decides
- * whether a /me answer replaces the cached scope list or is discarded.
+ * acceptDiscoveredScopes — the pure decision table for a server's /me answer.
+ *
+ * A failed, unauthorised, not-yet-synced or degraded answer never replaces a
+ * non-empty cached scope list; an empty list is accepted only when the server
+ * says `scopes_status: 'ok'`. Accepted scopes are filtered to the server's org.
  *
  * No HTTP, no filesystem, no timers — just the pure function.
  * Refs plur-ai/plur#1631
  */
 import { describe, it, expect } from 'vitest'
-import {
-  acceptDiscoveredScopes,
-  type AcceptedDiscovery,
-} from '../src/server-discovery.js'
+import { acceptDiscoveredScopes } from '../src/server-discovery.js'
 import type { MeResponse } from '../src/store/remote-store.js'
 
 const me = (o: Partial<MeResponse>): MeResponse => ({
@@ -29,49 +29,51 @@ const me = (o: Partial<MeResponse>): MeResponse => ({
 
 const none = new Map<string, string>()
 
-describe('acceptDiscoveredScopes — error cases', () => {
-  it('503 keeps a non-empty cache (status: failed, replaceCache: false)', () => {
+describe('acceptDiscoveredScopes — decision table', () => {
+  it('503 keeps a non-empty cache', () => {
     expect(
       acceptDiscoveredScopes({
         me: null,
-        error: { status: 503, message: 'scope_lookup_failed' },
+        error: { status: 503, message: 'x' },
         cached: ['group:acme/team'],
         otherServersScopes: none,
       }),
     ).toMatchObject({ status: 'failed', replaceCache: false })
   })
 
-  it('network error keeps a non-empty cache (status: failed, replaceCache: false)', () => {
+  it('401 and 403 are auth_failed and keep the cache', () => {
+    for (const status of [401, 403]) {
+      expect(
+        acceptDiscoveredScopes({
+          me: null,
+          error: { status, message: 'x' },
+          cached: ['group:acme/team'],
+          otherServersScopes: none,
+        }),
+      ).toMatchObject({ status: 'auth_failed', replaceCache: false })
+    }
+  })
+
+  it('a timeout or network error (no status) is failed and keeps the cache', () => {
     expect(
       acceptDiscoveredScopes({
         me: null,
-        error: { message: 'ECONNREFUSED' },
+        error: { message: 'timed out' },
         cached: ['group:acme/team'],
         otherServersScopes: none,
       }),
     ).toMatchObject({ status: 'failed', replaceCache: false })
   })
 
-  it('401 → auth_failed, replaceCache: false', () => {
+  it('a failed answer never replaces even an empty cache', () => {
     expect(
       acceptDiscoveredScopes({
         me: null,
-        error: { status: 401, message: 'Unauthorized' },
-        cached: ['group:acme/team'],
+        error: { status: 500, message: 'x' },
+        cached: [],
         otherServersScopes: none,
       }),
-    ).toMatchObject({ status: 'auth_failed', replaceCache: false })
-  })
-
-  it('403 → auth_failed, replaceCache: false', () => {
-    expect(
-      acceptDiscoveredScopes({
-        me: null,
-        error: { status: 403, message: 'Forbidden' },
-        cached: ['group:acme/team'],
-        otherServersScopes: none,
-      }),
-    ).toMatchObject({ status: 'auth_failed', replaceCache: false })
+    ).toMatchObject({ status: 'failed', replaceCache: false })
   })
 
   it('auth_failed on empty cache still replaceCache: false', () => {
@@ -84,9 +86,19 @@ describe('acceptDiscoveredScopes — error cases', () => {
       }),
     ).toMatchObject({ status: 'auth_failed', replaceCache: false })
   })
-})
 
-describe('acceptDiscoveredScopes — scopes_status: ok', () => {
+  it('when the cache is kept, scopes is a copy of the cached list', () => {
+    const cached = ['group:acme/team', 'user:acme:alice']
+    const r = acceptDiscoveredScopes({
+      me: null,
+      error: { status: 503, message: 'x' },
+      cached,
+      otherServersScopes: none,
+    })
+    expect(r).toEqual({ status: 'failed', replaceCache: false, scopes: cached, rejected: [] })
+    expect(r.scopes).not.toBe(cached)
+  })
+
   it('scopes_status ok with [] replaces the cache with []', () => {
     expect(
       acceptDiscoveredScopes({
@@ -97,21 +109,52 @@ describe('acceptDiscoveredScopes — scopes_status: ok', () => {
     ).toEqual({ status: 'ok', replaceCache: true, scopes: [], rejected: [] })
   })
 
-  it('scopes_status ok with scopes replaces the cache', () => {
-    const r = acceptDiscoveredScopes({
-      me: me({ scopes: ['user:acme:alice', 'group:acme/team'] }),
-      cached: [],
-      otherServersScopes: none,
+  it('scopes_status ok with a list replaces the cache', () => {
+    expect(
+      acceptDiscoveredScopes({
+        me: me({ scopes: ['user:acme:alice', 'group:acme/team'] }),
+        cached: ['group:acme/old'],
+        otherServersScopes: none,
+      }),
+    ).toEqual({
+      status: 'ok',
+      replaceCache: true,
+      scopes: ['user:acme:alice', 'group:acme/team'],
+      rejected: [],
     })
-    expect(r.status).toBe('ok')
-    expect(r.replaceCache).toBe(true)
-    expect(r.scopes).toEqual(['user:acme:alice', 'group:acme/team'])
-    expect(r.rejected).toEqual([])
   })
-})
 
-describe('acceptDiscoveredScopes — scopes_status: not_synced', () => {
-  it('not_synced keeps a non-empty cache (replaceCache: false)', () => {
+  it('older server empty list keeps cache', () => {
+    expect(
+      acceptDiscoveredScopes({
+        me: me({ scopes: [], scopes_status: 'absent' }),
+        cached: ['group:acme/team'],
+        otherServersScopes: none,
+      }),
+    ).toMatchObject({ status: 'degraded', replaceCache: false })
+  })
+
+  it('older server empty list with an empty cache replaces it with []', () => {
+    expect(
+      acceptDiscoveredScopes({
+        me: me({ scopes: [], scopes_status: 'absent' }),
+        cached: [],
+        otherServersScopes: none,
+      }),
+    ).toEqual({ status: 'degraded', replaceCache: true, scopes: [], rejected: [] })
+  })
+
+  it('older server with a non-empty list is ok and replaces the cache', () => {
+    expect(
+      acceptDiscoveredScopes({
+        me: me({ scopes: ['user:acme:alice'], scopes_status: 'absent' }),
+        cached: [],
+        otherServersScopes: none,
+      }),
+    ).toEqual({ status: 'ok', replaceCache: true, scopes: ['user:acme:alice'], rejected: [] })
+  })
+
+  it('not_synced keeps a non-empty cache', () => {
     expect(
       acceptDiscoveredScopes({
         me: me({ scopes: [], scopes_status: 'not_synced' }),
@@ -121,7 +164,7 @@ describe('acceptDiscoveredScopes — scopes_status: not_synced', () => {
     ).toMatchObject({ status: 'not_synced', replaceCache: false })
   })
 
-  it('not_synced on empty cache replaces with [] (replaceCache: true)', () => {
+  it('not_synced with an empty cache replaces it with []', () => {
     expect(
       acceptDiscoveredScopes({
         me: me({ scopes: [], scopes_status: 'not_synced' }),
@@ -132,49 +175,11 @@ describe('acceptDiscoveredScopes — scopes_status: not_synced', () => {
   })
 })
 
-describe('acceptDiscoveredScopes — scopes_status: absent (older server)', () => {
-  it('older server empty list keeps cache (status: degraded, replaceCache: false)', () => {
-    expect(
-      acceptDiscoveredScopes({
-        me: me({ scopes: [], scopes_status: 'absent' }),
-        cached: ['group:acme/team'],
-        otherServersScopes: none,
-      }),
-    ).toMatchObject({ status: 'degraded', replaceCache: false })
-  })
-
-  it('older server non-empty list → ok, replaceCache: true', () => {
-    const r = acceptDiscoveredScopes({
-      me: me({ scopes: ['user:acme:alice'], scopes_status: 'absent' }),
-      cached: [],
-      otherServersScopes: none,
-    })
-    expect(r.status).toBe('ok')
-    expect(r.replaceCache).toBe(true)
-  })
-
-  it('older server empty list on empty cache → degraded, replaceCache: true (empty replaces empty)', () => {
-    expect(
-      acceptDiscoveredScopes({
-        me: me({ scopes: [], scopes_status: 'absent' }),
-        cached: [],
-        otherServersScopes: none,
-      }),
-    ).toMatchObject({ status: 'degraded', replaceCache: true })
-  })
-})
-
-describe('acceptDiscoveredScopes — scope filtering', () => {
+describe('acceptDiscoveredScopes — org filter', () => {
   it('org prefix: rejects another org, another user, global', () => {
     const r = acceptDiscoveredScopes({
       me: me({
-        scopes: [
-          'group:acme/team',
-          'group:acmex/team',
-          'user:acme:bob',
-          'user:acme:alice',
-          'global',
-        ],
+        scopes: ['group:acme/team', 'group:acmex/team', 'user:acme:bob', 'user:acme:alice', 'global'],
       }),
       cached: [],
       otherServersScopes: none,
@@ -187,39 +192,40 @@ describe('acceptDiscoveredScopes — scope filtering', () => {
     ])
   })
 
-  it('project: and team: and space: scopes must share the org prefix', () => {
-    const r = acceptDiscoveredScopes({
-      me: me({
-        scopes: [
-          'project:acme/backend',
-          'project:other/backend',
-          'team:acme/eng',
-          'team:other/eng',
-          'space:acme/docs',
-          'space:other/docs',
-        ],
-      }),
-      cached: [],
-      otherServersScopes: none,
-    })
-    expect(r.scopes).toEqual(['project:acme/backend', 'team:acme/eng', 'space:acme/docs'])
-    expect(r.rejected.map((x) => x.scope)).toEqual([
-      'project:other/backend',
-      'team:other/eng',
-      'space:other/docs',
+  it('group/project/team/space accept <kind>:<org> and <kind>:<org>/…; org: only org:<org>', () => {
+    const scopes = [
+      'group:acme',
+      'project:acme/team/backend',
+      'team:acme/web',
+      'space:acme',
+      'org:acme',
+      'org:acme/x',
+      'org:other',
+      'project:acmeteam/x',
+    ]
+    const r = acceptDiscoveredScopes({ me: me({ scopes }), cached: [], otherServersScopes: none })
+    expect(r.scopes).toEqual([
+      'group:acme',
+      'project:acme/team/backend',
+      'team:acme/web',
+      'space:acme',
+      'org:acme',
     ])
-    expect(r.rejected.every((x) => x.reason === 'org-prefix')).toBe(true)
+    expect(r.rejected).toEqual([
+      { scope: 'org:acme/x', reason: 'org-prefix' },
+      { scope: 'org:other', reason: 'org-prefix' },
+      { scope: 'project:acmeteam/x', reason: 'org-prefix' },
+    ])
   })
 
-  it('org: scope: exact match org:<org_id> passes, anything else is rejected', () => {
+  it('the personal scope compares case-folded and keeps its original spelling', () => {
     const r = acceptDiscoveredScopes({
-      me: me({ scopes: ['org:acme', 'org:other', 'org:acme/sub'] }),
+      me: me({ username: 'Alice', org_id: 'Acme', scopes: ['user:acme:ALICE'] }),
       cached: [],
       otherServersScopes: none,
     })
-    expect(r.scopes).toEqual(['org:acme'])
-    expect(r.rejected.map((x) => x.scope)).toEqual(['org:other', 'org:acme/sub'])
-    expect(r.rejected.every((x) => x.reason === 'org-prefix')).toBe(true)
+    expect(r.scopes).toEqual(['user:acme:ALICE'])
+    expect(r.rejected).toEqual([])
   })
 
   it('user: exact match is case-folded, original spelling kept', () => {
@@ -232,80 +238,74 @@ describe('acceptDiscoveredScopes — scope filtering', () => {
     expect(r.rejected).toEqual([])
   })
 
-  it('user: wrong org is foreign-personal', () => {
+  it('a user: scope of another org is foreign-personal', () => {
     const r = acceptDiscoveredScopes({
-      me: me({ scopes: ['user:other:alice'] }),
+      me: me({ scopes: ['user:other:alice', 'user:alice'] }),
       cached: [],
       otherServersScopes: none,
     })
-    expect(r.rejected).toEqual([{ scope: 'user:other:alice', reason: 'foreign-personal' }])
-  })
-
-  it('a scope another server already serves is refused (claimed-by-other-server)', () => {
-    const r = acceptDiscoveredScopes({
-      me: me({ scopes: ['group:acme/team', 'project:acme/backend'] }),
-      cached: [],
-      otherServersScopes: new Map([['group:acme/team', 'https://other.example.com']]),
-    })
-    expect(r.scopes).toEqual(['project:acme/backend'])
     expect(r.rejected).toEqual([
-      { scope: 'group:acme/team', reason: 'claimed-by-other-server' },
+      { scope: 'user:other:alice', reason: 'foreign-personal' },
+      { scope: 'user:alice', reason: 'foreign-personal' },
     ])
   })
 
-  it('empty org_id rejects all scopes with org-prefix and returns degraded', () => {
+  it('an empty org_id rejects everything as org-prefix and is degraded: a non-empty cache stays', () => {
     const r = acceptDiscoveredScopes({
-      me: me({ org_id: '', scopes: ['group:acme/team', 'user:acme:alice'] }),
-      cached: [],
-      otherServersScopes: none,
-    })
-    expect(r.status).toBe('degraded')
-    expect(r.scopes).toEqual([])
-    expect(r.rejected.every((x) => x.reason === 'org-prefix')).toBe(true)
-  })
-
-  it('empty org_id with non-empty cache keeps cache (replaceCache: false)', () => {
-    const r = acceptDiscoveredScopes({
-      me: me({ org_id: '', scopes: ['group:acme/team'], scopes_status: 'ok' }),
+      me: me({ org_id: '', scopes: ['group:/team', 'user::alice', 'group:acme/team'] }),
       cached: ['group:acme/team'],
       otherServersScopes: none,
     })
-    expect(r.status).toBe('degraded')
-    expect(r.replaceCache).toBe(false)
+    expect(r).toEqual({
+      status: 'degraded',
+      replaceCache: false,
+      scopes: ['group:acme/team'],
+      rejected: [
+        { scope: 'group:/team', reason: 'org-prefix' },
+        { scope: 'user::alice', reason: 'org-prefix' },
+        { scope: 'group:acme/team', reason: 'org-prefix' },
+      ],
+    })
   })
 
-  it('scope that is exactly <kind>:<org_id> (no sub-path) is accepted', () => {
+  it('an empty org_id from an older server (no scopes_status) is degraded too', () => {
+    expect(
+      acceptDiscoveredScopes({
+        me: me({ org_id: '', scopes_status: 'absent', scopes: ['group:acme/team'] }),
+        cached: ['group:acme/team'],
+        otherServersScopes: none,
+      }),
+    ).toMatchObject({ status: 'degraded', replaceCache: false, scopes: ['group:acme/team'] })
+  })
+
+  it('an empty org_id with an empty cache replaces it with [] (degraded)', () => {
+    expect(
+      acceptDiscoveredScopes({
+        me: me({ org_id: '', scopes: ['group:acme/team'] }),
+        cached: [],
+        otherServersScopes: none,
+      }),
+    ).toMatchObject({ status: 'degraded', replaceCache: true, scopes: [] })
+  })
+
+  it('a scope another server already serves is refused', () => {
+    const other = new Map([['group:acme/team', 'https://other.example.com']])
     const r = acceptDiscoveredScopes({
-      me: me({ scopes: ['group:acme'] }),
+      me: me({ scopes: ['group:acme/team', 'user:acme:alice'] }),
       cached: [],
-      otherServersScopes: none,
+      otherServersScopes: other,
     })
-    expect(r.scopes).toEqual(['group:acme'])
-    expect(r.rejected).toEqual([])
+    expect(r.scopes).toEqual(['user:acme:alice'])
+    expect(r.rejected).toEqual([{ scope: 'group:acme/team', reason: 'claimed-by-other-server' }])
   })
 
   it('scope filtering returns empty rejected list when all scopes pass', () => {
     const r = acceptDiscoveredScopes({
-      me: me({
-        scopes: ['user:acme:alice', 'group:acme/team', 'project:acme/backend'],
-      }),
+      me: me({ scopes: ['user:acme:alice', 'group:acme/team', 'project:acme/backend'] }),
       cached: [],
       otherServersScopes: none,
     })
     expect(r.rejected).toEqual([])
     expect(r.scopes).toEqual(['user:acme:alice', 'group:acme/team', 'project:acme/backend'])
-  })
-})
-
-describe('acceptDiscoveredScopes — replaceCache false returns empty scopes', () => {
-  it('when replaceCache is false, scopes is [] and rejected is []', () => {
-    const r = acceptDiscoveredScopes({
-      me: null,
-      error: { status: 503, message: 'x' },
-      cached: ['group:acme/team'],
-      otherServersScopes: none,
-    })
-    expect(r.scopes).toEqual([])
-    expect(r.rejected).toEqual([])
   })
 })
