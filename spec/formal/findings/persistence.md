@@ -592,3 +592,11 @@ share misread long non-Latin names — now any zero byte means UTF-16; an opted-
 write printed two lines — now one (`onUnprotected`); the static writer guard missed nested
 calls — now balanced-parenthesis scan with fixtures. Inside `aclOk` / reporting; no theorem
 changed.
+
+Codex gate round 2 (PASS, one medium and two lows, fixed the same day): the reader accepted
+any letters as list flags and any entry body naming the account (`D:GARBAGE(...)`,
+`(bogus;;;;;SID)`) — the access list now has to be SDDL (flags `P`/`AI`/`AR`; entries
+`A`/`D`/`OA`/`OD` with SDDL flags, hex or SDDL rights, GUIDs, a SID or abbreviation), else
+`unknown`; the opt-out line is printed whenever the content went out unprotected, even when
+the file in place could be protected afterwards (this is `reported` in the model); the
+static writer guard uses the TypeScript parser. No theorem changed.

@@ -39,10 +39,12 @@ export function writeConfigFile(path: string, content: string): OwnerOnlyResult 
   // re-protected (and verified) rather than trusted.
   const seen = _atomicWriteAcl.platform === 'win32' ? checkOwnerOnly(path) : null
   const r: OwnerOnlyResult = seen?.ok === true ? { ok: true } : protectOwnerOnly(path)
-  if (!r.ok) {
-    console.error(unprotected !== null
-      ? `[plur:config] wrote ${basename(path)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${unprotected}`
-      : `[plur:config] could not restrict ${basename(path)} to your account: ${r.detail}`)
+  // One line: the opt-out's (whenever the content went out unprotected, even
+  // if the file in place could be protected afterwards), else the plan's.
+  if (unprotected !== null) {
+    console.error(`[plur:config] wrote ${basename(path)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${unprotected}`)
+  } else if (!r.ok) {
+    console.error(`[plur:config] could not restrict ${basename(path)} to your account: ${r.detail}`)
   }
   return r
 }

@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
+import ts from 'typescript'
 
 const chmodOff = vi.hoisted(() => ({ on: false, onRename: null as null | ((from: string, to: string) => void) }))
 vi.mock('fs', async importOriginal => {
@@ -257,7 +258,23 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
     ]) {
       expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(body), account: ACCT }).ok, body).toBe('unknown')
     }
-    // Well-formed variants are still read: owner and group sections, a SACL.
+    // A descriptor whose list flags or entries are not SDDL (Codex gate round 2).
+    for (const body of [
+      `D:GARBAGE(A;;FA;;;${SELF})`,
+      `D:PAI(bogus;;;;;${SELF})`,
+      `D:PAI(A;;FA;;${SELF})`,                                // five fields
+      `D:PAI(A;;FA;;;;${SELF})`,                              // seven fields
+      `D:PAI(A;XX;FA;;;${SELF})`,                             // unknown entry flag
+      `D:PAI(A;;fa;;;${SELF})`,                               // rights not SDDL
+      `D:PAI(A;;FA;not-a-guid;;${SELF})`,
+      `D:PAI(A;;FA;;;nobody)`,
+    ]) {
+      expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(body), account: ACCT }).ok, body).toBe('unknown')
+    }
+    // Well-formed variants are still read: owner and group sections, a SACL, entry flags,
+    // hex rights, an inherited entry, a deny entry for another account (not owner-only).
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`D:PAI(A;OICIID;0x1F01FF;;;${SELF})`), account: ACCT })).toEqual({ ok: true })
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`D:AI(A;ID;FA;;;${SELF})(D;;FA;;;BU)`), account: ACCT })).toEqual({ ok: false, detail: 'also readable by BUILTIN\\Users' })
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`O:${SELF}G:SYD:PAI(A;;FA;;;${SELF})S:AI(ML;;NW;;;LW)`), account: ACCT })).toEqual({ ok: true })
   })
 
@@ -421,6 +438,23 @@ describe('Windows (simulated host): every config write is a protected write', ()
       })
     }
 
+    it('set: the temp file could not be protected but the file in place could — still one line (Codex gate round 2)', () => {
+      realFs.writeFileSync(cfg, 'stores: []\n')
+      followRenames()
+      // The grant fails on temp files only; the file in place takes it.
+      const fake = fakeAclExec({
+        acl: p => realFs.existsSync(p) ? (protectedPaths.has(p) ? [SELF] : [SELF, 'BU']) : null,
+        grant: p => { if (/\.tmp$/.test(p)) return 5; protectedPaths.add(p); return 0 },
+      })
+      _atomicWriteAcl.exec = fake.exec
+      _atomicWriteAcl.env = { USERNAME: 'alice', PLUR_ALLOW_UNPROTECTED_CONFIG: '1' }
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect(writeConfigFile(cfg, 'token: x\n')).toEqual({ ok: true })
+      expect(protectedPaths.has(cfg)).toBe(true)
+      expect(err).toHaveBeenCalledTimes(1)
+      expect(String(err.mock.calls[0][0])).toMatch(/^\[plur:config\] wrote config\.yaml WITHOUT owner-only protection \(PLUR_ALLOW_UNPROTECTED_CONFIG is set\): /)
+    })
+
     it('set: a NEW config.yaml whose temp file cannot be protected is written', () => {
       noAcl()
       _atomicWriteAcl.env = { USERNAME: 'alice', PLUR_ALLOW_UNPROTECTED_CONFIG: '1' }
@@ -471,25 +505,26 @@ describe('no config writer bypasses it', () => {
   it('index.ts has no atomicWrite(this.paths.config call left', () => {
     expect(read('index.ts')).not.toMatch(/atomicWrite\(this\.paths\.config/)
   })
-  /** Every `atomicWrite(...)` call (balanced parentheses) whose arguments name CONFIG_FILE_MODE. */
+  /** Every `atomicWrite(...)` call (TypeScript parser) whose arguments name CONFIG_FILE_MODE. */
   const callsWithConfigMode = (src: string): string[] => {
     const found: string[] = []
-    for (let i = src.indexOf('atomicWrite('); i >= 0; i = src.indexOf('atomicWrite(', i + 1)) {
-      let depth = 0
-      let j = i + 'atomicWrite'.length
-      for (; j < src.length; j++) {
-        if (src[j] === '(') depth++
-        else if (src[j] === ')' && --depth === 0) break
-      }
-      const call = src.slice(i, j + 1)
-      if (call.includes('CONFIG_FILE_MODE')) found.push(call)
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && /(^|\.)atomicWrite$/.test(n.expression.getText(file).replace(/\s+/g, ''))
+        && n.arguments.some(a => a.getText(file).includes('CONFIG_FILE_MODE'))) found.push(n.getText(file))
+      ts.forEachChild(n, visit)
     }
+    const file = ts.createSourceFile('x.ts', src, ts.ScriptTarget.Latest, true)
+    visit(file)
     return found
   }
   it('the guard sees a bypass with nested calls in its arguments (Codex gate round 1)', () => {
     expect(callsWithConfigMode('atomicWrite(configPath, yaml.dump(data), { mode: CONFIG_FILE_MODE })')).toHaveLength(1)
     expect(callsWithConfigMode('atomicWrite(p, yaml.dump(x, { a: f(1) }),\n  { mode: CONFIG_FILE_MODE, durable: true })')).toHaveLength(1)
     expect(callsWithConfigMode('atomicWrite(p, yaml.dump(x)); const m = CONFIG_FILE_MODE')).toHaveLength(0)
+    // Codex gate round 2: a parenthesis inside a string, a space before the call, a namespace.
+    expect(callsWithConfigMode("atomicWrite(configPath, yaml.dump({ marker: ')' }), { mode: CONFIG_FILE_MODE })")).toHaveLength(1)
+    expect(callsWithConfigMode('atomicWrite (configPath, yaml.dump(data), { mode: CONFIG_FILE_MODE })')).toHaveLength(1)
+    expect(callsWithConfigMode('sync.atomicWrite(configPath, data, { mode: sync.CONFIG_FILE_MODE })')).toHaveLength(1)
   })
   it('no source file passes CONFIG_FILE_MODE to atomicWrite except the shared helper', () => {
     const offenders: string[] = []

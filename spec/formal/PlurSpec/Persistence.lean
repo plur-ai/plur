@@ -1436,7 +1436,8 @@ def traceAllow (allow : Bool) (c : Call) : List Ev :=
   if allow then relax (traceNew (allowCall c)) else traceNew c
 
 /-- The code prints its stderr line exactly when the opt-out let a protection failure
-through: the trace it ran has a failed protection or nothing to protect with. -/
+through: the trace it ran has a failed protection or nothing to protect with — whatever
+the re-check after the rename then finds (Codex gate round 2). -/
 def reported (allow : Bool) (c : Call) : Bool :=
   allow && decide (traceAllow allow c ≠ traceNew (allowCall c))
 

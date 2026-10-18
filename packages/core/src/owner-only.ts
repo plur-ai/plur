@@ -171,16 +171,22 @@ function decodeSaved(buf: Buffer): string {
   return (utf16 ? buf.toString('utf16le') : buf.toString('utf8')).replace(/^\uFEFF/, '')
 }
 
-const ACE = String.raw`\([^()]*\)`
-const TRUSTEE = String.raw`(?:S-1-[0-9-]+|[A-Z]{2})`
+const TRUSTEE = String.raw`(?:S-1-\d+(?:-\d+)+|[A-Z]{2})`
+const GUID = String.raw`(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})?`
+/**
+ * One access entry: `type;flags;rights;object guid;inherited object guid;trustee`
+ * — an allow or deny entry (plain or object), SDDL entry flags, rights as hex
+ * or SDDL codes. Anything else (a conditional entry, a malformed one) does not
+ * match, so the list is unknown.
+ */
+const ACE = String.raw`\((?:A|D|OA|OD);(?:CI|OI|NP|IO|ID|SA|FA|TP|CR)*;(?:0x[0-9A-Fa-f]+|(?:[A-Z]{2})+);${GUID};${GUID};${TRUSTEE}\)`
+const SACL_ACE = String.raw`\([^()]*\)`
 /**
  * One whole security descriptor: optional owner and group, the access list
- * (`D:`), an optional audit list (`S:`), nothing else. A conditional entry
- * (nested parentheses), a second list or any trailing text does not match.
+ * (`D:` with SDDL list flags), an optional audit list (`S:`), nothing else.
  */
 const DESCRIPTOR = new RegExp(
-  `^(?:O:${TRUSTEE})?(?:G:${TRUSTEE})?D:(NO_ACCESS_CONTROL|[A-Z]*)((?:${ACE})*)(?:S:(?:NO_ACCESS_CONTROL|[A-Z]*)(?:${ACE})*)?$`,
-  'i',
+  `^(?:O:${TRUSTEE})?(?:G:${TRUSTEE})?D:(NO_ACCESS_CONTROL|(?:P|AI|AR)*)((?:${ACE})*)(?:S:(?:NO_ACCESS_CONTROL|(?:P|AI|AR)*)(?:${SACL_ACE})*)?$`,
 )
 
 /**
@@ -209,7 +215,7 @@ function readAcl(path: string, exec: OwnerOnlyExec, sid: string): AclRead {
   const m = DESCRIPTOR.exec(lines[1])
   if (!m) return { kind: 'unknown', detail: 'icacls wrote an access list PLUR cannot read' }
   // A null access list grants everyone everything.
-  if (m[1].toUpperCase() === 'NO_ACCESS_CONTROL') return { kind: 'shared', others: ['WD'] }
+  if (m[1] === 'NO_ACCESS_CONTROL') return { kind: 'shared', others: ['WD'] }
   const aces = [...m[2].matchAll(/\(([^)]*)\)/g)].map(a => a[1].split(';'))
   if (aces.length === 0) return { kind: 'unknown', detail: 'icacls listed no access entries' }
   const others = new Set<string>()
