@@ -35,7 +35,7 @@ export function _setBackgroundDiscoveryTimeoutForTests(ms: number | undefined): 
 interface DiscoveryState {
   enabled: boolean
   inFlight: Promise<void> | null
-  /** normalized endpoint url → this process's last settled outcome and when it settled (ISO). */
+  /** normalized endpoint url → this process's last settled outcome and when its check started (ISO). */
   last: Map<string, { status: DiscoveryStatus; at: string }>
 }
 
@@ -47,19 +47,25 @@ function stateOf(plur: Plur): DiscoveryState {
   return st
 }
 
+/** An http(s) url, parsed; anything else (an opaque `data:` url can carry prose) is not shown. */
+function httpUrl(url: string): URL | undefined {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** `scheme://host[:port]` of a url: never userinfo, path or query. */
 function safeOrigin(url: string): string {
-  try { return new URL(url).origin } catch { return '<invalid url>' }
+  return httpUrl(url)?.origin ?? '<invalid url>'
 }
 
 /** The url as reported to the agent: origin plus base path, no userinfo, query or trailing slash. */
 function displayUrl(url: string): string {
-  try {
-    const u = new URL(url)
-    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`
-  } catch {
-    return '<invalid url>'
-  }
+  const u = httpUrl(url)
+  return u ? `${u.origin}${u.pathname.replace(/\/+$/, '')}` : '<invalid url>'
 }
 
 function log(line: string): void {
@@ -77,9 +83,8 @@ export function isDiscoveryEnabled(plur: Plur): boolean {
 }
 
 /** Record `failed` for every server endpoint: a refresh that could not run or answered nonsense. */
-function markAllFailed(plur: Plur, st: DiscoveryState): void {
+function markAllFailed(plur: Plur, st: DiscoveryState, at: string): void {
   try {
-    const at = new Date().toISOString()
     for (const key of plur._serverDiscoveryEndpoints().keys()) st.last.set(key, { status: 'failed', at })
   } catch { /* status only */ }
 }
@@ -92,24 +97,28 @@ function markAllFailed(plur: Plur, st: DiscoveryState): void {
 export function startBackgroundDiscovery(plur: Plur): boolean {
   const st = stateOf(plur)
   if (!st.enabled || st.inFlight) return false
+  // An outcome is dated by when its check started — never later than the
+  // checked_at core writes for it — so a status another process writes after
+  // that is seen as newer (discoverySummary).
+  const startedAt = new Date().toISOString()
   let run: Promise<ServerDiscoveryOutcome[]>
   try {
     run = Promise.resolve(plur.refreshServerScopes({ timeoutMs: timeoutOverrideMs ?? BACKGROUND_DISCOVERY_TIMEOUT_MS }))
   } catch (err) {
-    markAllFailed(plur, st)
+    markAllFailed(plur, st, startedAt)
     log(`scope discovery could not start (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
     return false
   }
   const settled: Promise<void> = run.then(outcomes => {
     if (!Array.isArray(outcomes)) throw new TypeError('refreshServerScopes answered without a list')
     for (const o of outcomes) {
-      st.last.set(normalizeEndpointUrl(o.url), { status: o.status, at: new Date().toISOString() })
+      st.last.set(normalizeEndpointUrl(o.url), { status: o.status, at: startedAt })
       if (o.status !== 'ok') log(`${safeOrigin(o.url)}: scope discovery ${o.status}; the cached scopes stay in use`)
     }
   }).catch(err => {
     // A refresh that did not finish is a failure — never the cached status,
     // which may say `ok` from an earlier run.
-    markAllFailed(plur, st)
+    markAllFailed(plur, st, startedAt)
     // The error's text can carry a configured url or a server's answer: only its kind is logged.
     log(`scope discovery did not finish (${err instanceof Error ? err.name : 'error'}); the cached scopes stay in use`)
   }).finally(() => {
@@ -195,7 +204,9 @@ export function discoverySummary(plur: Plur): DiscoveryRow[] {
  */
 export function discoveryWarnings(rows: DiscoveryRow[]): string[] {
   const out: string[] = []
-  for (const r of rows) {
+  for (const row of rows) {
+    // The guide is the agent's directive surface: the server by its origin only.
+    const r = { ...row, url: safeOrigin(row.url) }
     const s = r.status === 'pending' ? r.last_status : r.status
     const when = r.status === 'pending' ? ' (at the last check; a new check is running)' : ''
     if (s === 'auth_failed') {
