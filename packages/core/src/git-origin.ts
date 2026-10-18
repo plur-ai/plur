@@ -286,14 +286,29 @@ const DISCOVERY_STATUSES: readonly string[] = ['ok', 'not_synced', 'failed', 'au
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v)
 
+/** The canonical identity of an http(s) endpoint url, or null for anything
+ *  else (normalizeEndpointUrl returns other strings as written, userinfo included). */
+function httpEndpoint(url: string): string | null {
+  try {
+    const u = new URL(url)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+  } catch {
+    return null
+  }
+  return normalizeEndpointUrl(url)
+}
+
 /**
  * The git scope sources in `<plurRoot>/config.yaml`: one per company server
- * entry (C6: a string `url`, a `scopes` list and an `enterprise` object — the
- * entries discovery writes). Reads the file only; no network, never throws.
- * Fields come from the entry's `discovery` cache; a field of the wrong shape
- * is dropped (a `gitlab_host` outside the host grammar becomes null, an
- * unknown status becomes 'never'). The token and the url's userinfo never
- * reach a source.
+ * entry (C6: a string `url` and an `enterprise` object — the entries discovery
+ * writes). Reads the file only; no network, never throws. Fields come from the
+ * entry's `discovery` cache; a field of the wrong shape is dropped (a
+ * `gitlab_host` outside the host grammar becomes null, an unknown status
+ * becomes 'never', a `scopes` value that is not a list becomes []), never the
+ * entry: a malformed entry still takes part in the freshness check, so its
+ * stale cache cannot be skipped. A `url` that is not a valid http(s) url gives
+ * `server: ''` and no scopes: it can only make the answer `unknown`, never a
+ * scope. The token and the url's userinfo never reach a source.
  */
 export function loadGitScopeSources(plurRoot: string): GitScopeSource[] {
   let raw: unknown
@@ -305,17 +320,18 @@ export function loadGitScopeSources(plurRoot: string): GitScopeSource[] {
   if (!isPlainObject(raw) || !Array.isArray(raw.stores)) return []
   const out: GitScopeSource[] = []
   for (const e of raw.stores) {
-    if (!isPlainObject(e) || typeof e.url !== 'string' || !Array.isArray(e.scopes) || !isPlainObject(e.enterprise)) continue
+    if (!isPlainObject(e) || typeof e.url !== 'string' || !isPlainObject(e.enterprise)) continue
+    const server = httpEndpoint(e.url)
     const d = isPlainObject(e.discovery) ? e.discovery : {}
     const project_paths: Record<string, string> = {}
     if (isPlainObject(d.project_paths)) {
       for (const [k, v] of Object.entries(d.project_paths)) if (typeof v === 'string') project_paths[k] = v
     }
     const src: GitScopeSource = {
-      server: normalizeEndpointUrl(e.url),
+      server: server ?? '',
       gitlab_host: typeof d.gitlab_host === 'string' && isSafeHost(d.gitlab_host) ? d.gitlab_host : null,
       status: typeof d.status === 'string' && DISCOVERY_STATUSES.includes(d.status) ? d.status as DiscoveryStatus : 'never',
-      scopes: e.scopes.filter((x): x is string => typeof x === 'string'),
+      scopes: server !== null && Array.isArray(e.scopes) ? e.scopes.filter((x): x is string => typeof x === 'string') : [],
       project_paths,
     }
     if (typeof d.discovered_at === 'string') src.discovered_at = d.discovered_at
