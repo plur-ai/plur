@@ -568,3 +568,13 @@ describe('registerEnterpriseServer — Codex audit round 5', () => {
     expect(readFileSync(configPath(), 'utf8')).toBe(before)
   })
 })
+
+describe('registerEnterpriseServer — Codex audit round 6', () => {
+  it('a personal scope served in another letter case (dial: never) is not taken over by folding it in', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: user:acme:Alice\n    dial: never\n`)
+    const before = readFileSync(configPath(), 'utf8')
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/already served by another entry/)
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+  })
+})
