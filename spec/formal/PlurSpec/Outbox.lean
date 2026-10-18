@@ -59,6 +59,9 @@ Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-stor
 exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
 this model covers changed.
 
+Gate structural change 1 on #1663 (2026-10-18): still holds. A delivery no longer writes automatic
+provenance for a queued remote-only save; keys, retry, claims, holds and the breaker are unchanged.
+
 Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
 urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It

@@ -11,6 +11,10 @@ Checked against the pre-merge audit fixes (commit c0ddc498, 2026-09-27): telemet
 now rolls a stale counters.json over before `settleSpilledEvents` folds today's spills. The
 §Spill model counts events per day without dates, so conservation (`conserved`,
 `fold_counts_all`) is unaffected; the rollover fix only decides WHICH day's file an event lands in.
+
+Checked against gate structural change 1 on #1663 (2026-10-18): still holds. embeddings.ts's
+fill and searches drop queued remote-only saves (isRemoteOnlyQueued) before embedding; the
+ranking, cache keys and degradation paths this model covers are unchanged.
 -/
 
 namespace PlurSpec.R2Retrieval

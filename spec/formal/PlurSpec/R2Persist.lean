@@ -44,6 +44,10 @@ Checked again after Codex round 3 (2026-10-18): still holds. atomicWrite now ref
 credential write whose destination access list cannot be inspected, before any temp file exists.
 That only adds an early throw; no state this file models is touched. The refusal is proved in
 `Persistence` §AtomicTemp (`refused_leaves_dest`, `unknown_creates_nothing`).
+
+Checked against gate structural change 1 on #1663 (2026-10-18): still holds. storage-pglite.ts's
+sync and reindex leave queued remote-only saves out of the rows they read from YAML; the
+fingerprint, transaction and sweep this model covers are unchanged.
 -/
 
 set_option linter.deprecated false
