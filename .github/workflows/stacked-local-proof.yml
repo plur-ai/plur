@@ -1,35 +1,99 @@
 name: Stacked local proof
 
-# Pull requests into integration/** skip the GitHub test runs (owner,
-# 2026-10-18: "let's not burn GitHub usage where we don't need to"). A skipped
-# run must not read as a pass, so this job fails unless the description carries
-# the output of `scripts/evals-local.sh gate <base>`, run after the package
-# tests. It reads the description only; it proves the agent pasted the proof,
-# not that the proof is true. The integration branch gets every run once, when
-# it comes into development. scripts/test_stacked_ci_skip.py pins all of this.
+# Pull requests into integration/** skip the GitHub test matrix (owner,
+# 2026-10-18: "let's not burn GitHub usage where we don't need to"). They are
+# not taken on trust either (fourth audit A4-02: pasted gate output proved
+# nothing). One Linux job, no matrix, no Windows:
+#   1. the strict separation check: only product source and product tests may
+#      change (no manifest, lockfile, config, workflow, script, helper or eval);
+#   2. install and build, then the judge is as committed;
+#   3. the evals of the promises the pull request names on its `Promises:` line
+#      are run again here, and every one must be green.
+# It runs from the BASE branch's copy of this file (pull_request_target), so a
+# pull request cannot rewrite its own check. The token is read-only, no secret
+# is used and nothing is cached, so the pull request's code, which this job
+# builds and runs, can take nothing and poison nothing. The full matrix and the
+# full gate run once, when the integration branch comes into development.
+# scripts/test_stacked_ci_skip.py pins all of this.
 
 on:
-  pull_request:
+  pull_request_target:
     branches: ['integration/**']
     types: [opened, edited, synchronize, reopened]
 
 permissions:
   contents: read
 
+concurrency:
+  group: stacked-proof-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PLUR_MODEL_CACHE_DIR: ${{ github.workspace }}/../plur-model-cache
+
 jobs:
   local-proof:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 40
     steps:
-      - name: The description carries the local gate output
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The promises this pull request claims
+        id: claimed
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |
-          missing=0
-          for needle in "evals-local: results in" "regressed: 0"; do
-            if ! printf '%s' "$BODY" | grep -qF "$needle"; then
-              echo "::error::The description lacks \"$needle\". Paste the output of scripts/evals-local.sh gate <base> (and the package test run) into it."
-              missing=1
-            fi
-          done
-          exit "$missing"
+          line="$(printf '%s\n' "$BODY" | grep -m1 -E '^Promises:' || true)"
+          ids="$(printf '%s' "${line#Promises:}" | tr ',' '\n' | tr -d ' \r' | grep -E '^[A-Z]+-[0-9]+$' | paste -sd, - || true)"
+          if [ -z "$ids" ]; then
+            echo "::error::The description needs a line 'Promises: ID, ID' naming the promises this change makes green."
+            exit 1
+          fi
+          echo "ids=$ids" >> "$GITHUB_OUTPUT"
+      - name: Only product source and product tests changed
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch -q origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
+          python3 scripts/check-eval-separation.py "origin/$BASE" --strict
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - name: The judge is as committed
+        run: bash scripts/judge-intact.sh
+      - name: The embedding model loads offline
+        run: |
+          node evals/helpers/provision-model.mjs fetch
+          node evals/helpers/provision-model.mjs verify
+      - name: Every claimed promise is green here
+        env:
+          IDS: ${{ steps.claimed.outputs.ids }}
+        run: |
+          python3 .evals/run.py --config evals/evals.yaml --only "$IDS" --exclude-kind agent --json > claimed.json || true
+          python3 - "$IDS" <<'PY'
+          import json, re, sys
+          want = sys.argv[1].split(",")
+          norm = lambda p: re.sub(r"^([A-Z]+)[^A-Z0-9]*0*(\d+)$", r"\1\2", p)   # as .evals/run.py: LRN-8 -> LRN8
+          got = json.load(open("claimed.json"))["promises"]
+          # A promise already protected by the baseline proves no new work.
+          base = json.load(open("evals/baseline.json"))
+          held = set(base.get("green", base) if isinstance(base, dict) else base)
+          already = [p for p in want if norm(p) in {norm(h) for h in held}]
+          if already:
+              print(f"::error::Already green in evals/baseline.json, so they prove no new work: {already}")
+              sys.exit(1)
+          bad = {p: got.get(p, "unknown promise") for p in want if got.get(p) != "green"}
+          for p in want:
+              print(f"{got.get(p, 'unknown promise'):10} {p}")
+          if bad:
+              print(f"::error::Not green here: {bad}")
+              sys.exit(1)
+          PY
