@@ -383,7 +383,7 @@ const IPV6_HOST_RE = /^(\[[0-9a-f:.]+\])(?::(\d{1,5}))?$/
  * IPv6 literal in the canonical form the URL parser prints, with an optional
  * port in range. No userinfo, path or other characters can pass.
  */
-function isSafeHost(h: string): boolean {
+export function isSafeHost(h: string): boolean {
   if (HOST_RE.test(h)) return true
   const m = IPV6_HOST_RE.exec(h)
   if (!m) return false
