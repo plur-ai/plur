@@ -402,3 +402,43 @@ describe('Codex round 7 on #1663', () => {
   })
 })
 
+describe('Codex round 8 on #1663', () => {
+  it('a rebind while a save is on the wire does not strip the remote-only queue marker', async () => {
+    let arrived!: () => void
+    const arrivedP = new Promise<void>(r => { arrived = r })
+    let release!: () => void
+    const released = new Promise<void>(r => { release = r })
+    const host = createServer((req, res) => {
+      let body = ''
+      req.on('data', d => { body += String(d) })
+      req.on('end', async () => {
+        if (req.url === '/api/v1/me') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ username: 'u', org_id: 'o', role: 'developer', scopes: [TEAM] })); return }
+        if (req.method === 'POST' && req.url === '/api/v1/engrams') { arrived(); await released; res.writeHead(503); res.end('down'); return }
+        res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":"Not found"}')
+      })
+    })
+    await new Promise<void>(r => host.listen(0, '127.0.0.1', () => r()))
+    try {
+      const a = host.address() as { port: number }
+      writeFileSync(join(root, 'config.yaml'), yaml.dump({
+        index: false, embeddings: { enabled: false },
+        stores: [{ url: `http://127.0.0.1:${a.port}`, token: TOKEN, scope: TEAM, shared: true, readonly: false }],
+      }))
+      const plain = join(home, 'plain')
+      mkdirSync(plain, { recursive: true })
+      const plur = new Plur({ path: root })
+      plur.bindFolder(work)
+      const saving = plur.learnRouted('the client deploy convention REBINDSECRET', { type: 'procedural' })
+      await arrivedP
+      plur.bindFolder(plain)
+      release()
+      const saved = await saving
+      await backgroundPushesSettled(root).catch(() => {})
+      const rows = () => ((yaml.load(readFileSync(join(root, 'engrams.yaml'), 'utf8')) as any).engrams as any[])
+      const row = rows().find(e => e.id === saved.id)
+      expect(row?.structured_data?._outbox?.remote_only).toBe(true)
+      await new Plur({ path: root }).updateEngram({ ...row, scope: 'local' }).catch(() => null)
+      expect(rows().find(e => e.id === saved.id)?.structured_data?._outbox?.remote_only).toBe(true)
+    } finally { await new Promise<void>(r => host.close(() => r())) }
+  })
+})
