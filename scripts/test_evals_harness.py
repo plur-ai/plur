@@ -475,11 +475,13 @@ def test_nightly_never_scores_after_a_failed_holdout_check():
 
 # --- local first (owner, 2026-10-18): GitHub runs only the merge gate --------------------------
 
-def test_github_runs_evals_only_for_pull_requests_into_main_and_has_no_schedule():
+def test_github_runs_evals_only_for_pull_requests_into_development_and_main_and_has_no_schedule():
+    # Owner 2026-10-18: work merges into development (the eval branch goes there first),
+    # and development goes to main; stacked branches are proven locally.
     on = _workflow().get(True) or _workflow().get("on")   # yaml reads a bare `on:` as True
     assert "schedule" not in on, on
-    assert on["pull_request"] == {"branches": ["main"]}, on["pull_request"]
-    assert on["push"] == {"branches": ["main"]}, on["push"]
+    assert on["pull_request"] == {"branches": ["development", "main"]}, on["pull_request"]
+    assert on["push"] == {"branches": ["development", "main"]}, on["push"]
     jobs = _workflow()["jobs"]
     assert "schedule" not in str(jobs["nightly"]["if"]) and "workflow_dispatch" in str(jobs["nightly"]["if"])
     assert "schedule" not in str(jobs["agents"]["if"]) and "inputs.agents" in str(jobs["agents"]["if"])

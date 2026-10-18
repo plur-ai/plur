@@ -42,22 +42,25 @@
 // classification is proven on hand-built snapshots and a scripted checker in
 // helpers/dedup-outcome.unit.test.ts.
 //
-// Ceilings: NOT SET. The owner has not chosen the highest acceptable rates
-// (`decide:` in promises.yaml suggests 10% each); the nulls below fail after the
-// rates are measured and printed. The dev and holdout sets hold only 3 distinct
-// pairs each, so the false-merge rate is reported but not yet measurable
-// (evals/gold/dedup-v2/LABELLER-CHECKLIST.md, "Known weakness").
+// Ceilings: 10% each (owner, 2026-10-18). The false-merge rate also needs at
+// least MIN_DISTINCT_PAIRS distinct pairs in the set before it counts: with the
+// 3 each set holds today one miss is 33% and no miss proves nothing, so the
+// run fails as "not measurable" until an independent labeller adds the pairs
+// the owner commissioned (evals/gold/dedup-v2/LABELLER-CHECKLIST.md, "Known
+// weakness").
 import { afterAll, describe, expect, it } from 'vitest'
 import { authEnv, claudeLlm, logReport, requireEnabled } from '../helpers/agent-behaviour-harness.js'
 import { inBatches, judgeDedupOutcome } from '../helpers/dedup-outcome.js'
 import { dedupPairs, fmt, holdoutConfigured, rate } from '../helpers/quality.js'
 
-/** Highest acceptable false-merge rate — PLACEHOLDER until the owner sets it. */
-const MAX_FALSE_MERGE_RATE: number | null = null
-/** Highest acceptable missed-duplicate rate — PLACEHOLDER until the owner sets it. */
-const MAX_MISSED_DUPLICATE_RATE: number | null = null
-/** Highest acceptable failed-supersede rate — PLACEHOLDER until the owner sets it. */
-const MAX_FAILED_SUPERSEDE_RATE: number | null = null
+/** Highest acceptable false-merge rate (owner, 2026-10-18). */
+const MAX_FALSE_MERGE_RATE = 0.1
+/** Highest acceptable missed-duplicate rate (owner, 2026-10-18). */
+const MAX_MISSED_DUPLICATE_RATE = 0.1
+/** Highest acceptable failed-supersede rate (owner, 2026-10-18). */
+const MAX_FAILED_SUPERSEDE_RATE = 0.1
+/** Fewest distinct pairs for the false-merge rate to mean anything (3 + 17 commissioned). */
+const MIN_DISTINCT_PAIRS = 20
 
 const PARALLEL = 4
 const TIMEOUT = 90 * 60_000
@@ -95,17 +98,15 @@ describe('LRN-7 with an AI checker, a duplicate leaves one memory, a changed val
         `LRN-7 ${which} set (${pairs.length} pairs):`,
         `  missed duplicates: ${fmt(missedRate)} — ${list('duplicate')}`,
         `  failed supersedes: ${fmt(supersedeRate)} — ${list('supersede')}`,
-        `  false merges: ${fmt(falseMergeRate)} (only ${of('distinct').length} distinct pairs: not yet measurable) — ${list('distinct')}`,
+        `  false merges: ${fmt(falseMergeRate)} (${of('distinct').length} distinct pairs; at least ${MIN_DISTINCT_PAIRS} needed to measure) — ${list('distinct')}`,
         `  pairs the checker was never shown (no candidate found): ${neverShown.join(', ') || 'none'}`,
       ].join('\n')
       reports.push(text)
 
-      expect(MAX_FALSE_MERGE_RATE, `the owner has not set the highest acceptable false-merge rate (placeholder).\n${text}`).not.toBeNull()
-      expect(MAX_MISSED_DUPLICATE_RATE, `the owner has not set the highest acceptable missed-duplicate rate (placeholder).\n${text}`).not.toBeNull()
-      expect(MAX_FAILED_SUPERSEDE_RATE, `the owner has not set the highest acceptable failed-supersede rate (placeholder).\n${text}`).not.toBeNull()
-      expect(falseMergeRate.rate, `false merges above the owner's ceiling.\n${text}`).toBeLessThanOrEqual(MAX_FALSE_MERGE_RATE!)
-      expect(missedRate.rate, `missed duplicates above the owner's ceiling.\n${text}`).toBeLessThanOrEqual(MAX_MISSED_DUPLICATE_RATE!)
-      expect(supersedeRate.rate, `failed supersedes above the owner's ceiling.\n${text}`).toBeLessThanOrEqual(MAX_FAILED_SUPERSEDE_RATE!)
+      expect(missedRate.rate, `missed duplicates above the owner's ceiling.\n${text}`).toBeLessThanOrEqual(MAX_MISSED_DUPLICATE_RATE)
+      expect(supersedeRate.rate, `failed supersedes above the owner's ceiling.\n${text}`).toBeLessThanOrEqual(MAX_FAILED_SUPERSEDE_RATE)
+      expect(of('distinct').length, `could not tell: too few distinct pairs to measure false merges.\n${text}`).toBeGreaterThanOrEqual(MIN_DISTINCT_PAIRS)
+      expect(falseMergeRate.rate, `false merges above the owner's ceiling.\n${text}`).toBeLessThanOrEqual(MAX_FALSE_MERGE_RATE)
     }, TIMEOUT)
   }
 })

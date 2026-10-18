@@ -19,8 +19,8 @@ node evals/helpers/provision-model.mjs verify   # ...and prove it loads with dow
 The `pnpm` scripts are shortcuts for people. CI calls `python3 .evals/gate.py`,
 `run.py` and `bite.py` directly, because a pull request can rewrite `package.json`.
 
-**Local first.** GitHub runs only the merge gate: pull requests into `main` and
-pushes to `main`. The nightly and the agent evals run on a machine of ours, with
+**Local first.** GitHub runs only the merge gate: pull requests into `development`
+or `main`, and pushes to them. The nightly and the agent evals run on a machine of ours, with
 the same steps and refusals as the workflow:
 
 ```bash
@@ -29,7 +29,7 @@ scripts/evals-local.sh nightly       # model verified offline, holdout hash and 
 scripts/evals-local.sh agents        # agent evals, 3 runs each, subscription login only (never a paid API key)
 ```
 
-A pull request into a branch other than `main` pastes the output of
+A pull request into any other branch pastes the output of
 `scripts/evals-local.sh gate <its base>` into its description. The nightly and
 agents jobs in the workflow remain for a manual run (`workflow_dispatch`).
 
