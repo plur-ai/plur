@@ -184,3 +184,6 @@ Code-level; replayed by the round-4 tests. Not modelled.
 - `dial` is read per entry, so its absence counts: entries whose dial differs from each other, or from the server entry's when it serves the scope, are kept separate (`metadata-differs`).
 - The outbox is read before the write, so an unreadable outbox fails the registration with nothing written.
 Code-level (eligibility is `PerScope.ok` in §6); replayed by the round-5 tests.
+
+#### Codex audit round 6 (2026-10-18, PASS with one medium, fixed)
+- An entry serving the personal scope in another letter case (with `dial: never`) was folded in, and the new exact compat scope took its selection. The takeover check now also refuses when the server entry itself, after the fold, serves the personal scope in another case. Replayed by the round-6 test.

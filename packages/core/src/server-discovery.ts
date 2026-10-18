@@ -209,8 +209,11 @@ function takesPersonalScope(stores: unknown[], si: number, scope: string): boole
   const me = stores[si] as Record<string, unknown>
   const rank = (r: Record<string, unknown>): number => (r.readonly === true ? 2 : 1)
   return stores.some((r, j) => {
-    if (j === si || !isPlainObj(r)) return false
+    if (!isPlainObj(r)) return false
     const served = servedScopes(r)
+    // The entry itself, after the fold, serving it in another case: an entry
+    // folded into it served the personal scope (case-folded) before.
+    if (j === si) return served.some(x => x !== scope && x.toLowerCase() === scope.toLowerCase())
     const exact = served.includes(scope)
     if (!exact) return served.some(x => x.toLowerCase() === scope.toLowerCase())
     if (typeof r.url !== 'string') return false
