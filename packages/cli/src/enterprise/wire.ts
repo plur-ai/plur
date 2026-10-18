@@ -295,6 +295,13 @@ function removeJsonProperty(text: string, objectPath: string[], key: string): st
   // The property, and one separating comma cut on its own: whatever lies
   // between them (comments, line breaks) stays.
   const cuts: Array<[number, number]> = [[prop.offset, prop.offset + prop.length]]
+  // Comments inside the property (between key and value) stay, in its place.
+  const kept: string[] = []
+  const inner = createScanner(text, false)
+  inner.setPosition(prop.offset)
+  for (let k = inner.scan(); inner.getTokenOffset() < prop.offset + prop.length && k !== 17; k = inner.scan()) {
+    if (k === 12 || k === 13) kept.push(text.slice(inner.getTokenOffset(), inner.getTokenOffset() + inner.getTokenLength()))
+  }
   const next = tokenAfter(prop.offset + prop.length)
   if (next.kind === COMMA) cuts.push([next.offset, next.offset + 1])
   else if (i > 0) {
@@ -302,7 +309,9 @@ function removeJsonProperty(text: string, objectPath: string[], key: string): st
     if (prev.kind === COMMA) cuts.push([prev.offset, prev.offset + 1])
   }
   let out = text
-  for (const [from, to] of [...cuts].sort((x, y) => y[0] - x[0])) out = out.slice(0, from) + out.slice(to)
+  for (const [from, to] of [...cuts].sort((x, y) => y[0] - x[0])) {
+    out = out.slice(0, from) + (from === prop.offset ? kept.join(' ') : '') + out.slice(to)
+  }
   const at = prop.offset - cuts.filter(([from]) => from < prop.offset).reduce((n, [from, to]) => n + to - from, 0)
   const from = out.lastIndexOf('\n', at - 1) + 1
   const nl = out.indexOf('\n', at)
@@ -444,26 +453,34 @@ function planCodex(text: string, env: Env): Plan {
   let content: string
   const envNode = kvs.find(e => same(e.path, ENV_PATH))
   const envKeyNodes = kvs.filter(e => e.path.length === ENV_PATH.length + 1 && same(e.path.slice(0, -1), ENV_PATH))
-  if (envNode || (!envTable && envKeyNodes.length === 0 && !plurTable)) {
-    // `env = { … }` inline, or a plur entry written inline or with dotted keys
-    // and no env yet: one value, replaced or added by the shared Codex patcher.
+  const commandNode = kvs.find(e => same(e.path, [...PLUR_PATH, 'command']))
+  const noEnvYet = !envNode && !envTable && envKeyNodes.length === 0 && !plurTable
+  if (noEnvYet && commandNode?.inline) {
+    // The plur entry sits in an inline table (`plur = { … }`, or
+    // `mcp_servers = { plur.command = … }`): its env goes inside those braces,
+    // keyed relative to that table.
+    const inline = commandNode.inline
+    const prefix = [...PLUR_PATH.slice(commandNode.owner.length), 'env'].map(tomlKey).join('.')
+    const value = '{ ' + Object.entries(desired).map(([k, v]) => `${tomlKey(k)} = ${tomlString(v)}`).join(', ') + ' }'
+    const at = inline.body[inline.body.length - 1].range[1]
+    content = text.slice(0, at) + `, ${prefix} = ${value}` + text.slice(at)
+  } else if (envNode || noEnvYet) {
+    // `env = { … }` inline, or a plur entry written with dotted keys and no
+    // env yet: one value, replaced or added by the shared Codex patcher.
     content = patchCodexEntry(text, { env: desired })
   } else {
     const edits: Array<{ start: number; end: number; text: string }> = []
     const adds: string[] = []
+    const inlineRemovals = new Map<AST.TOMLInlineTable, Set<AST.TOMLKeyValue>>()
     for (const k of new Set([...Object.keys(current), ...Object.keys(desired)])) {
       if (current[k] === desired[k]) continue
       const node = envKeyNodes.find(e => e.path[e.path.length - 1] === k)
       if (desired[k] === undefined) {
         if (!node) return { status: 'refused', detail: `could not find ${k} in the plur env to remove it` }
         if (node.inline) {
-          // Inside `{ … }` (one line, no comments): the kv and one comma.
-          const [a, b] = node.kv.range
-          const after = /^\s*,\s*/.exec(text.slice(b))
-          const before = /,\s*$/.exec(text.slice(node.inline.range[0], a))
-          if (after) edits.push({ start: a, end: b + after[0].length, text: '' })
-          else if (before) edits.push({ start: a - before[0].length, end: b, text: '' })
-          else edits.push({ start: a, end: b, text: '' })
+          // Inside `{ … }`: cut below, per run of removed keys, with their commas.
+          const set = inlineRemovals.get(node.inline) ?? new Set<AST.TOMLKeyValue>()
+          inlineRemovals.set(node.inline, set.add(node.kv))
           continue
         }
         const [from, to] = lineOf(text, node.kv.range[0], node.kv.range[1])
@@ -508,8 +525,29 @@ function planCodex(text: string, env: Env): Plan {
         edits.push({ start: at, end: at, text: (at === text.length && !text.endsWith('\n') ? newline : '') + lines })
       }
     }
+    // An inline table (one line, no comments): each run of removed keys goes
+    // with the comma before it, or, at the start, the comma after it.
+    for (const [inline, removed] of inlineRemovals) {
+      const body = inline.body
+      for (let i = 0; i < body.length; ) {
+        if (!removed.has(body[i])) { i++; continue }
+        let j = i
+        while (j + 1 < body.length && removed.has(body[j + 1])) j++
+        if (i > 0) edits.push({ start: body[i - 1].range[1], end: body[j].range[1], text: '' })
+        else if (j + 1 < body.length) edits.push({ start: body[i].range[0], end: body[j + 1].range[0], text: '' })
+        else edits.push({ start: body[i].range[0], end: body[j].range[1], text: '' })
+        i = j + 1
+      }
+    }
+    // Overlapping deletions (none expected) are merged rather than applied twice.
+    const merged: typeof edits = []
+    for (const e of edits.sort((a, b) => a.start - b.start)) {
+      const last = merged[merged.length - 1]
+      if (last && last.text === '' && e.text === '' && e.start < last.end) last.end = Math.max(last.end, e.end)
+      else merged.push({ ...e })
+    }
     content = text
-    for (const e of edits.sort((a, b) => b.start - a.start)) content = content.slice(0, e.start) + e.text + content.slice(e.end)
+    for (const e of merged.reverse()) content = content.slice(0, e.start) + e.text + content.slice(e.end)
   }
 
   let after: unknown
@@ -582,7 +620,7 @@ const WRAPPERS = new Set(['bunx', 'pnpx', 'pnpm', 'yarn', 'npm', 'uvx', 'wsl', '
 const baseName = (p: string) => (p.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.exe$/, '')
 
 /** A script of a package manager or runner run by Node itself (`node …/npm/bin/npx-cli.js`). */
-const RUNNER_SCRIPT = /(^|[\\/])node_modules[\\/](npm|corepack|pnpm|yarn|bun)[\\/]|(^|[\\/])(npx|npm|pnpm|pnpx|yarn|corepack)(-cli)?\.c?js$/i
+const RUNNER_SCRIPT = /(^|[\\/])(node_modules[\\/](npm|corepack|pnpm|yarn|bun)|\.yarn)[\\/]|(^|[\\/])(npx|npm|pnpm|pnpx|yarn|corepack)([-.][^\\/]*)?\.c?js$/i
 
 /**
  * The only launches the proof runs: PLUR's own `plur-mcp` (the `.plur/bin`
@@ -595,7 +633,7 @@ function isDirectLaunch(launch: ToolLaunch): boolean {
   if (base === 'plur-mcp') return true
   if (base !== 'node') return false
   const script = launch.args[0]
-  return script !== undefined && /\.(c|m)?js$/i.test(script) && !RUNNER_SCRIPT.test(script)
+  return script !== undefined && !script.startsWith('-') && /\.(c|m)?js$/i.test(script) && !RUNNER_SCRIPT.test(script)
 }
 
 /**
