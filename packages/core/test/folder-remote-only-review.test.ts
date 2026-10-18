@@ -59,3 +59,48 @@ describe('the remote-only refusal names the folder as data', () => {
     expect(msg).toContain('plur folders rm /work/client')
   })
 })
+
+describe('gate review of #1663: setFolder on a remote-only folder names the folder as data', () => {
+  it('a refused --scope change prints no raw folder and no command for an unsafe folder name', () => {
+    const nasty = join(home, 'x$(touch PWNED)`id`')
+    mkdirSync(nasty)
+    writeFileSync(join(root, 'config.yaml'), [
+      'stores:',
+      '  - url: "http://127.0.0.1:9/"',
+      '    token: "t"',
+      '    scope: "group:acme/client"',
+      `  - path: "${join(base, 'other.yaml')}"`,
+      '    scope: "group:acme/other"',
+      '',
+    ].join('\n'))
+    writeFileSync(join(root, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: ${JSON.stringify(nasty)}\n    plur: remote-only\n    scope: group:acme/client\n`)
+    const plur = new Plur({ path: root })
+    let msg = ''
+    try { plur.setFolder(nasty, { scope: 'group:acme/other' }) } catch (err) { msg = (err as Error).message }
+    expect(msg).toMatch(/remote-only/)
+    expect(msg).not.toContain('$(touch')
+    expect(msg).not.toContain('`id`')
+    expect(msg).not.toMatch(/plur folders set \S/)
+    expect(resolveFolderPolicy(nasty, { root, home }).mode).toBe('remote-only')
+  })
+
+  it('an ordinary folder gets the command, quoted by the shared rule', () => {
+    const plain = join(home, 'client')
+    mkdirSync(plain)
+    writeFileSync(join(root, 'config.yaml'), [
+      'stores:',
+      '  - url: "http://127.0.0.1:9/"',
+      '    token: "t"',
+      '    scope: "group:acme/client"',
+      `  - path: "${join(base, 'other.yaml')}"`,
+      '    scope: "group:acme/other"',
+      '',
+    ].join('\n'))
+    writeFileSync(join(root, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: ${plain}\n    plur: remote-only\n    scope: group:acme/client\n`)
+    let msg = ''
+    try { new Plur({ path: root }).setFolder(plain, { scope: 'group:acme/other' }) } catch (err) { msg = (err as Error).message }
+    expect(msg).toContain(`plur folders set ${plain} --on`)
+  })
+})

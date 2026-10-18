@@ -13,7 +13,7 @@
  * PLUR_PATH inside a temp directory in every spawn.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawn } from 'child_process'
@@ -277,5 +277,32 @@ describe('re-audit of #1521: no capture when in doubt, fail closed', () => {
     }
     processDeferredWrapups(fake as never, plurHome)
     expect(captured).toEqual([])
+  })
+})
+
+describe('gate review of #1663: nothing of the session is kept on this machine', () => {
+  it('the observe hook records no tool input in a remote-only folder', () => {
+    mapRemoteOnly()
+    const input = { session_id: 'ro-obs', cwd: repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo OBSERVEDOTTER' } }
+    const r = cli(['hook-observe'], input)
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toBe(JSON.stringify(input)) // passthrough is the hook contract
+    const post = cli(['hook-observe', '--post'], { ...input, hook_event_name: 'PostToolUse' })
+    expect(post.status, post.stderr).toBe(0)
+    const obsDir = join(plurHome, 'observations')
+    const all = existsSync(obsDir) ? readdirSync(obsDir).map(f => readFileSync(join(obsDir, f), 'utf8')).join('') : ''
+    expect(all).not.toContain('OBSERVEDOTTER')
+    expect(all).not.toContain('"tool":"Bash"')
+  }, 60_000)
+
+  it('Cursor: a payload cwd in a remote-only folder inside an on root keeps the workspace remote-only', async () => {
+    const { cursorHookFolder } = await import('../src/lib/folder-gate.js')
+    const client = join(repo, 'client-sub')
+    mkdirSync(client)
+    writeFileSync(join(plurHome, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: ${repo}\n    plur: on\n  - path: ${client}\n    plur: remote-only\n    scope: ${TEAM}\n`)
+    const decision = cursorHookFolder({ workspace_roots: [repo], cwd: client }, { path: plurHome })
+    expect(decision.policy.mode).toBe('remote-only')
+    expect(decision.policy.scope).toBe(TEAM)
   })
 })
