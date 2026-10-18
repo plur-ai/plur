@@ -8912,7 +8912,9 @@ export class Plur {
    *     (attempts reset). The leak guard has already run against the new
    *     scope (`_guardExplicitUpdate` above); a demotion lands on `local` and
    *     so takes the first branch;
-   *   - otherwise (no store, or only a readonly one) → cancelled, with a warning.
+   *   - otherwise (no store, or only a readonly one) → cancelled, with a warning;
+   *   - a scope two servers claim → the update is refused (ScopeConflictError)
+   *     before anything is written. The target comes from resolveScopeTarget.
    * The queue entry is read from the STORED row, never the caller's object,
    * and so is `_retireRemote` (decision D1) — a caller-set value of either
    * would otherwise direct a push or a remote DELETE. Mutates `toWrite`.
@@ -8931,11 +8933,14 @@ export class Plur {
       // A personal scope goes where the ONE selected store is (#1515 re-audit
       // 3): a local store sharing the identical scope keeps the row local, so
       // its pending delivery is cancelled rather than retargeted to the url.
-      const personal = this._exactPersonalStore(newScope)
-      const writable = personal !== undefined
-        ? (personal?.url && personal.readonly !== true ? personal : undefined)
-        : stores.find(st => !!st.url && st.scope === newScope && st.readonly !== true)
-      if (personal && !personal.url) {
+      // One resolver (#1631): the retarget is the store a fresh write would
+      // use, and a scope two servers claim refuses the whole update before
+      // anything is saved, as learn does (formal RoutingDiscovery D6).
+      const target = resolveScopeTarget(newScope, stores)
+      if (target.kind === 'conflict') throw new ScopeConflictError(newScope, target.servers)
+      const writable = target.kind === 'remote' && target.writable ? target.entry : undefined
+      const personalLocal = target.kind === 'local' && !!target.entry && newScope.toLowerCase().startsWith('user:')
+      if (personalLocal) {
         delete sd._outbox
         logger.warning(
           `[plur] update of ${stored.id} moved it to "${newScope}", which a local store holds, and cancelled its `
@@ -13924,12 +13929,23 @@ Generate an improved version of the procedure that prevents this failure. Return
       let changed = false
       for (const { url, me, error } of answers) {
         const key = normalizeEndpointUrl(url)
-        const idx = rawStores.findIndex(r => isEnterpriseServerEntry(r) && normalizeEndpointUrl(r.url) === key)
-        if (idx < 0) {
+        const matches = rawStores.flatMap((r, i) => (isEnterpriseServerEntry(r) && normalizeEndpointUrl(r.url) === key ? [i] : []))
+        if (matches.length === 0) {
           // Removed by another process since the read above: nothing to write.
           outcomes.push({ url, status: 'failed', applied: false, scopes: [], rejected: [], pinned_unlisted: [], error: 'the server entry is no longer in config.yaml' })
           continue
         }
+        if (matches.length > 1) {
+          // Two server entries on one url (another key each): which one this
+          // answer belongs to cannot be told here, so neither is written — the
+          // same refusal as key rotation and owner decision 17. Applying it to
+          // the first one put another key's scopes on it (formal
+          // RoutingDiscovery D4).
+          outcomes.push({ url, status: 'failed', applied: false, scopes: [], rejected: [], pinned_unlisted: [],
+            error: `more than one server entry in config.yaml has the url ${safeOrigin(url)}; nothing was changed. Keep one of them.` })
+          continue
+        }
+        const idx = matches[0]
         const entry = rawStores[idx] as Record<string, unknown> & { url: string }
         const cached = stringList(entry.scopes)
         const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key) })

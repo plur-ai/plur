@@ -6,7 +6,8 @@ serverEntryIdentities), `packages/core/src/sensitivity-writeback.ts`
 (mergeSensitivityForWriteback) and the store parts of `packages/core/src/index.ts`
 (persistStores, addStore's server-entry rotation). Findings, verdicts and replays:
 `spec/formal/findings/store-entry.md`. Checked against branch formal/epic-1797 (5a0dedc3)
-plus the fix in this round (legacy top-level metadata is shape-checked).
+plus the fix in this round (legacy top-level metadata is shape-checked), and owner decision 17
+(2026-10-18, §3 `findIdFixed`: no write for an identity base two entries share).
 
 What is abstracted: metadata values are an arbitrary type `V` with a parse oracle `norm`
 (`none` = the schema drops the value); the per-key writeback merge is an oracle `wb`. The
@@ -356,10 +357,63 @@ theorem insert_other_base (pre post : List Ent) (e : Ent) (b : Nat) (he : e.base
 /-- The reachable good case: the identity recorded at load finds its own entry. -/
 theorem good_case : findId [⟨7, 1⟩, ⟨9, 2⟩] (9, 0) = some ⟨9, 2⟩ := by decide
 
-/-- CONFIRMED (NEEDS-OWNER): an entry with the SAME base (same url/scopes/readonly/token_env,
-another token) inserted before ours takes `#0`, so our metadata lands on it (replayed). -/
+/-- CONFIRMED, pre-fix lookup: an entry with the SAME base (same url/scopes/readonly/token_env,
+another token) inserted before ours takes `#0`, so `findId` alone lands our metadata on it
+(replayed). Fixed by owner decision 17: the collapse uses `findIdFixed` below. -/
 theorem same_base_insert_mistargets :
     findId [⟨9, 1⟩] (9, 0) = some ⟨9, 1⟩ ∧ findId [⟨9, 2⟩, ⟨9, 1⟩] (9, 0) = some ⟨9, 2⟩ := by decide
+
+/-! ### Owner decision 17 (fixed, 2026-10-18): collapse writes nothing for an ambiguous base
+
+`typed` are the identities the loaded (typed) entries carry. A base is ambiguous when two entries
+on disk now share it, or a typed entry came from `#1` or later (two shared it at load).
+store-expand.ts `collapseExpandedStores` (`ambiguous`). -/
+
+def ambiguousB (l1 : List Ent) (typed : List (Nat × Nat)) (b : Nat) : Bool :=
+  decide (1 < (l1.filter (fun e => e.base = b)).length) || typed.any (fun x => x.1 = b && x.2 ≠ 0)
+
+/-- The entry a typed identity's metadata is written to after the fix. -/
+def findIdFixed (l1 : List Ent) (typed : List (Nat × Nat)) (x : Nat × Nat) : Option Ent :=
+  if ambiguousB l1 typed x.1 then none else findId l1 x
+
+theorem len_le_one_eq {L : List Ent} {a b : Ent} (h : L.length ≤ 1) (ha : a ∈ L) (hb : b ∈ L) :
+    a = b := by
+  match L, h with
+  | [], _ => simp at ha
+  | [x], _ => simp at ha hb; rw [ha, hb]
+  | _ :: _ :: _, h => simp at h
+
+/-- FIXED: metadata recorded at load for entry `e0` is written to `e0` (if it is still on
+disk) or to nothing — never to another entry, whatever the other process inserted or removed. -/
+theorem mistarget_impossible (l0 l1 : List Ent) (typed : List (Nat × Nat)) (b n : Nat)
+    (e0 e1 : Ent) (hx : (b, n) ∈ typed) (h0 : findId l0 (b, n) = some e0) (hmem : e0 ∈ l1)
+    (h1 : findIdFixed l1 typed (b, n) = some e1) : e1 = e0 := by
+  unfold findIdFixed at h1
+  split at h1
+  · cases h1
+  · rename_i hna
+    simp only [ambiguousB, Bool.or_eq_true, decide_eq_true_eq, List.any_eq_true, not_or,
+      not_exists, not_and, Bool.and_eq_true, ne_eq, decide_not, Bool.not_eq_true',
+      decide_eq_false_iff_not, Classical.not_not] at hna
+    obtain ⟨hlen, hn⟩ := hna
+    have hn0 : n = 0 := by
+      have := hn (b, n) hx; simp at this; exact this
+    subst hn0
+    rw [findId_filter] at h0 h1
+    have he0 : e0 ∈ l0.filter (fun e => e.base = b) := List.mem_of_getElem? h0
+    have hb0 : e0.base = b := by simpa using (List.mem_filter.mp he0).2
+    have he1 : e1 ∈ l1.filter (fun e => e.base = b) := List.mem_of_getElem? h1
+    exact len_le_one_eq (by omega) he1 (List.mem_filter.mpr ⟨hmem, by simp [hb0]⟩)
+
+/-- FIXED: the C3 counterexample now writes nothing (neither the inserted entry nor ours). -/
+theorem fixed_same_base_insert :
+    findIdFixed [⟨9, 2⟩, ⟨9, 1⟩] [(9, 0)] (9, 0) = none := by decide
+
+/-- FIXED: loaded as two, one removed since: the survivor is not written either. -/
+theorem fixed_removed_twin : findIdFixed [⟨9, 2⟩] [(9, 0), (9, 1)] (9, 0) = none := by decide
+
+/-- Non-vacuity: an unambiguous identity is still written to its own entry. -/
+theorem fixed_good_case : findIdFixed [⟨7, 1⟩, ⟨9, 2⟩] [(9, 0)] (9, 0) = some ⟨9, 2⟩ := by decide
 
 /-! ## 4. Rotation (candidate 4) — persistStores `serverEntryToken`
 

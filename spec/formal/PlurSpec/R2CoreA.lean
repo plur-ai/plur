@@ -16,6 +16,21 @@ lease changes neither — so every theorem still holds. The lease itself: WriteP
 
 Checked against #1349 (merged into #1228 on 2026-09-30): still holds. index.ts's
 only change is a re-export of `pendingStoreLockOps`, and no modelled branch changed.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+index.ts's predicates now read `resolveScopeTarget` (WritePath §3c).
+- §1: `provenanceFor` passes `_isRemoteWriteScope` (the section text said
+  `_isRemoteBackedScope`; the code has passed the write rule since
+  core-index#9b). A conflicted or ungranted scope now answers false, which by
+  `unknown_backing_stricter` can only withhold more.
+- §5b: `_crossScopeRecurrenceApplies = !_isRemoteWriteScope` is true for a
+  conflicted scope, but learn() and learnRouted() throw `ScopeConflictError`
+  (`_refuseScopeConflict`) before dedup, so no conflicted write reaches §5.
+  For one server the writable rule is the old one.
+- §2–§4, §6–§8: the forget/feedback guard, refcounted retirement, the egress
+  reload, the update walk and Decision R are not in the diff. The new code
+  (`refreshServerScopes`, the server-entry `persistStores` collapse, the
+  server-key rotation in `addStore`) is StoreEntry's territory, not modelled here.
 -/
 
 namespace PlurSpec.R2CoreA

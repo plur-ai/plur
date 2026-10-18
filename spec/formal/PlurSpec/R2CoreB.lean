@@ -22,6 +22,16 @@ Checked against the merge of main into #1228 (2026-09-30, #1277): still holds.
   A caller's abort throws `RemoteAbortedError`, which does not mark the host
   down, and `load()` passes no caller signal. So §5's rule, that only a thrown
   network fetch marks, is unchanged.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+remote-store.ts's only behavioural change is `me()`: it reads the C1 fields
+(`scopes_status`, `scope_metadata_status`, `gitlab_host`, `project_paths`,
+`key_expires_at`) through grammar filters, treats a non-object body as an older
+server, and throws `RemoteHttpError` on non-2xx with the old message. `me()`
+goes through the same `fetchBounded`, so §5's rule (only a thrown network fetch
+marks a host down) is unchanged, and `load()`, recall, row origin, activation
+and namespacing (§1–§4) are not in the diff. index.ts's `_loadSecondaryAndPacks`
+is not in the diff either.
 -/
 
 namespace PlurSpec.R2CoreB
