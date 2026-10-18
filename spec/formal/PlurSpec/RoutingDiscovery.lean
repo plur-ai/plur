@@ -1,6 +1,10 @@
 /-!
 # PlurSpec.RoutingDiscovery — where a write goes, and what a /me answer may change (#1631)
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. The discovery
+cache write (`_updateRawStores`) writes the same bytes under the same lock, now through
+`writeConfigFile` (Persistence §AtomicTemp); no routing or acceptance code changed.
+
 Models of `packages/core/src/store-resolver.ts` (resolveScopeTarget, urlGroupsForScope,
 remoteOf), the write paths in `packages/core/src/index.ts` that read it (the router
 `_resolveRemoteStoreForScope`, the scan gate `_hasUrlStoreForScope`, the outbox flush

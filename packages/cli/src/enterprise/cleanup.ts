@@ -1,13 +1,12 @@
 import { existsSync, readFileSync, mkdirSync, unlinkSync, chmodSync, lstatSync, realpathSync, openSync, closeSync, writeSync, fstatSync, fsyncSync, statSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
-import { atomicWrite } from '@plur-ai/core'
+import { atomicWrite, currentWindowsAccount, protectOwnerOnly, type OwnerOnlyExec } from '@plur-ai/core'
 import { codexConfigTomlPath } from '../mcp-config.js'
 import { unambiguousJsonc } from '../opencode-config.js'
 import { parseJsonc } from '../lib/jsonc.js'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
 import { applyEdits, modify } from 'jsonc-parser'
-import { currentWindowsAccount, protectOwnerOnlyWindows, type OwnerOnlyExec } from './owner-only.js'
 
 export type ToolId = 'claude-code' | 'codex' | 'opencode' | 'cursor'
 
@@ -477,7 +476,9 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * written — so a secret is never readable by anyone else, not even briefly.
  * An existing backup is never overwritten: a second backup of the same file
  * gets a numbered name. When protection cannot be established the writer
- * throws, and the target is refused with nothing changed.
+ * throws, and the target is refused with nothing changed. The Windows rule is
+ * core's `protectOwnerOnly` (#1631) — one implementation for config.yaml,
+ * these backups and the installer's key file.
  */
 function backupWriter(
   backupDir: string,
@@ -506,7 +507,7 @@ function backupWriter(
     let written = false
     try {
       if (win) {
-        const r = protectOwnerOnlyWindows(dest, { directory: false, account: o.account, exec: o.exec })
+        const r = protectOwnerOnly(dest, { platform: 'win32', directory: false, account: o.account, exec: o.exec })
         if (!r.ok) throw new Error(`the backup ${dest} could not be made private: ${r.detail}`)
       } else if ((fstatSync(fd).mode & 0o077) !== 0) {
         throw new Error(`the backup ${dest} could not be made private`)
@@ -540,7 +541,7 @@ function protectBackupDir(dir: string, o: { platform: NodeJS.Platform; exec?: Ow
   if (st.isSymbolicLink()) fail('it is a symbolic link')
   if (!st.isDirectory()) fail('it is not a folder')
   if (o.platform === 'win32') {
-    const r = protectOwnerOnlyWindows(dir, { directory: true, account: o.account, exec: o.exec })
+    const r = protectOwnerOnly(dir, { platform: 'win32', directory: true, account: o.account, exec: o.exec })
     if (!r.ok) fail(r.detail)
     return
   }
@@ -560,9 +561,10 @@ function protectBackupDir(dir: string, o: { platform: NodeJS.Platform; exec?: Ow
  * Replace a config file's content atomically (temp file, fsync, rename; the
  * file's mode is kept). A symlinked config is resolved first, so the rename
  * lands on the real file and the link survives. The content can still hold
- * other servers' credentials, so the write is `secret`: the temp file is as
- * protected as the config before the first byte (an owner-only access list on
- * Windows when the config has one; on Unix the config's mode).
+ * other servers' credentials, so the write is `secret`: the temp file is
+ * protected before the first byte (on Windows an owner-only access list,
+ * always — owner decision 38 — and the write is refused when that cannot be
+ * established; on Unix the config's mode).
  */
 function writeInPlace(path: string, content: string): void {
   let target = path
