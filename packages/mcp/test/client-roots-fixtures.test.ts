@@ -1,9 +1,10 @@
 /**
  * B14: Record which editors send MCP workspace roots.
  *
- * Five fixture files capture the clientInfo and capabilities each editor is
- * documented to send. Every fixture is marked "unverified": the real
- * recording is a human step described in docs/runbooks/mcp-roots-by-editor.md.
+ * One fixture file per editor captures the clientInfo and capabilities it
+ * sends at initialize. A fixture with "source": "manual check" was recorded
+ * from a real run (B14v); "unverified" ones still await the run described in
+ * docs/runbooks/mcp-roots-by-editor.md.
  *
  * Tests:
  *  - For each fixture, createWorkspaceDirs behaves correctly based on whether
@@ -65,6 +66,39 @@ it('every editor named in the runbook has a fixture', () => {
     .map(f => basename(f, '.json'))
     .sort()
   expect(editorNames).toEqual(fixtureBasenames)
+})
+
+// --- Runbook status table agrees with each fixture (B14v) ---
+
+it('the runbook status row for each editor states what its fixture records', () => {
+  const runbook = readFileSync(RUNBOOK, 'utf8')
+  // The row cells are read by position, so the header must name them in this order.
+  const header = runbook.split('\n').find(l => l.startsWith('| Editor |'))
+  expect(header?.split('|').slice(1, -1).map(c => c.trim())).toEqual(['Editor', 'Sends roots', 'listChanged', 'Recorded'])
+  const rows = new Map(
+    runbook
+      .split('\n')
+      .filter(l => /^\| [a-z]/.test(l))
+      .map(l => l.split('|').slice(1, -1).map(c => c.trim()))
+      .map(cells => [cells[0], cells] as const),
+  )
+  for (const f of readdirSync(FIXTURES).filter(f => f.endsWith('.json'))) {
+    const name = basename(f, '.json')
+    const fx = JSON.parse(readFileSync(join(FIXTURES, f), 'utf8'))
+    const row = rows.get(name)
+    expect(row, `${name} has a status row`).toBeDefined()
+    const [, sendsRoots, listChanged, recorded] = row!
+    if (fx.source === 'manual check') {
+      expect(fx.recorded, `${name}: a manual check carries its date`).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(recorded, `${name}: runbook date`).toBe(fx.recorded)
+      expect(sendsRoots, `${name}: runbook roots`).toBe(fx.capabilities.roots ? 'yes' : 'no')
+      expect(listChanged, `${name}: runbook listChanged`).toBe(fx.capabilities.roots?.listChanged === true ? 'yes' : 'no')
+    } else {
+      expect(fx.source, `${name}: source`).toBe('unverified')
+      expect(fx.recorded, `${name}: an unverified fixture has no date`).toBeNull()
+      expect([sendsRoots, listChanged, recorded], `${name}: runbook row`).toEqual(['unverified', 'unverified', '—'])
+    }
+  }
 })
 
 // --- PLUR_LOG_CLIENT_INFO stderr line (requires built dist) ---

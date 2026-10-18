@@ -1,9 +1,18 @@
 {
   "clientInfo": {
-    "name": "codex",
-    "version": "1.0.0"
+    "name": "codex-mcp-client",
+    "title": "Codex",
+    "version": "0.161.0"
   },
-  "capabilities": {},
-  "recorded": null,
-  "source": "unverified"
+  "capabilities": {
+    "experimental": {
+      "codex/auth-change": {}
+    },
+    "elicitation": {
+      "form": {},
+      "url": {}
+    }
+  },
+  "recorded": "2026-10-18",
+  "source": "manual check"
 }
