@@ -128,6 +128,28 @@ describe('applyMcpEnv: codex', () => {
     expect(after).toContain('# mine')
   })
 
+  it('consecutive dotted env keys inside an inline table can all be removed', () => {
+    for (const text of [
+      'mcp_servers.plur = { command="plur-mcp", env.HTTPS_PROXY="http://old", env.HTTP_PROXY="http://old" }\n',
+      'mcp_servers.plur = { command="plur-mcp", env.PLUR_PATH="/d", env.HTTPS_PROXY="http://old", env.HTTP_PROXY="http://old" }\n',
+      'mcp_servers.plur = { env.HTTPS_PROXY="http://old", env.HTTP_PROXY="http://old", command="plur-mcp" }\n',
+    ]) {
+      const path = put('.codex/config.toml', text)
+      expect(applyMcpEnv('codex', {}, loc).status, text).toBe('updated')
+      const plur = toml(readFileSync(path, 'utf8')).mcp_servers.plur
+      expect(plur.command).toBe('plur-mcp')
+      expect(plur.env ?? {}).toEqual(text.includes('PLUR_PATH') ? { PLUR_PATH: '/d' } : {})
+    }
+  })
+
+  it('a dotted plur entry inside an inline mcp_servers table gets its first env', () => {
+    const path = put('.codex/config.toml', 'mcp_servers = { plur.command = "plur-mcp", other.command = "other" }\n')
+    expect(applyMcpEnv('codex', { HTTPS_PROXY: 'http://proxy.example.com:3128', NODE_USE_ENV_PROXY: '1' }, loc).status).toBe('updated')
+    const data = toml(readFileSync(path, 'utf8'))
+    expect(data.mcp_servers.plur.env).toEqual({ HTTPS_PROXY: 'http://proxy.example.com:3128', NODE_USE_ENV_PROXY: '1' })
+    expect(data.mcp_servers.other).toEqual({ command: 'other' })
+  })
+
   it('an entry with a url is remote even when a command is left in it: refused, no launch', () => {
     const text = '[mcp_servers.plur]\ncommand = "plur-mcp"\nurl = "https://plur.example.com/mcp"\n'
     const path = put('.codex/config.toml', text)
@@ -168,6 +190,10 @@ describe('applyMcpEnv: opencode', () => {
     const after = readFileSync(path, 'utf8')
     expect(after).toContain('// explanation of my storage location')
     expect(after).toContain('// proxy note')
+    const inner = put('.config/opencode/opencode.jsonc', '{ "mcp": { "plur": { "command": ["plur-mcp"], "environment": {\n  "HTTPS_PROXY" /* keep proxy explanation */ : "http://old",\n  "PLUR_PATH": "/data"\n} } } }\n')
+    expect(applyMcpEnv('opencode', {}, loc).status).toBe('updated')
+    expect(readFileSync(inner, 'utf8')).toContain('/* keep proxy explanation */')
+    expect((parseJsonc(readFileSync(inner, 'utf8')) as any).mcp.plur.environment).toEqual({ PLUR_PATH: '/data' })
     expect((parseJsonc(after) as any).mcp.plur.environment).toEqual({ PLUR_PATH: '/data' })
   })
 
@@ -318,6 +344,9 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
       ['/usr/bin/node', ['/usr/lib/node_modules/npm/bin/npx-cli.js', '-y', '@plur-ai/mcp']],
       ['/usr/bin/node', ['-e', 'require("child_process").spawn("plur-mcp")']],
       ['/usr/bin/python3', ['-m', 'something']],
+      ['node', ['--require=/tmp/setup.js', '/usr/lib/node_modules/npm/bin/npx-cli.js', '-y', '@plur-ai/mcp']],
+      ['node', ['/home/a/project/.yarn/releases/yarn-4.9.2.cjs', 'dlx', '@plur-ai/mcp']],
+      ['node', ['/opt/pnpm/pnpm-9.1.0.cjs', 'dlx', '@plur-ai/mcp']],
     ] as Array<[string, string[]]>) {
       expect(launchProblem('Codex', { command, args, env }, 'linux'), `${command} ${args.join(' ')}`).not.toBeNull()
     }
@@ -326,6 +355,11 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
     expect(launchProblem('Codex', { command: '/h/.plur/bin/plur-mcp', args: [], env }, 'linux')).toBeNull()
     expect(launchProblem('Codex', { command: 'C:\\h\\.plur\\bin\\plur-mcp.exe', args: [], env }, 'win32')).toBeNull()
     expect(launchProblem('Codex', { command: '/usr/local/bin/node', args: ['/usr/local/lib/node_modules/@plur-ai/mcp/dist/index.js'], env }, 'darwin')).toBeNull()
+  })
+  it('the version probe never sees a launch with a Node option before the script', async () => {
+    put('.claude.json', JSON.stringify({ mcpServers: { plur: { command: 'node', args: ['--require=/tmp/setup.js', '/usr/lib/node_modules/npm/bin/npx-cli.js', '-y', '@plur-ai/mcp'] } } }))
+    const [claude] = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
+    expect(launchOf(claude)).toBeUndefined()
   })
   it('wireTools hands no launch out for such an entry', async () => {
     put('.claude.json', JSON.stringify({ mcpServers: { plur: { command: 'bun', args: ['x', '@plur-ai/mcp'] } } }))
