@@ -166,6 +166,9 @@ jobs:
         run: |
           python3 evals/gold/hash_set.py "$PLUR_EVAL_HOLDOUT_DIR" --expect "$(cat evals/gold/holdout-recall-v1.sha256)"
           python3 evals/gold/check.py evals/gold/recall-v1 --other "$PLUR_EVAL_HOLDOUT_DIR"
+          python3 evals/gold/hash_set.py "$PLUR_EVAL_HOLDOUT_DIR/../dedup-v2" --expect "$(cat evals/gold/holdout-dedup-v2.sha256)"
+          python3 evals/gold/check.py --dedup evals/gold/dedup-v2 --same-pairs-as evals/gold/recall-v1
+          python3 evals/gold/check.py --dedup "$PLUR_EVAL_HOLDOUT_DIR/../dedup-v2" --same-pairs-as "$PLUR_EVAL_HOLDOUT_DIR"
       # The paid agent evals run weekly, not here: they are listed as not-run, so a
       # healthy night can be green (audit E-05). Nothing is scored unless the holdout
       # check passed: a changed or missing holdout is never measured (second audit).

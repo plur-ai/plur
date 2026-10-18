@@ -2,6 +2,13 @@
 """Check a gold set before it is frozen. Written separately from the labeller's own check.
 
     python3 evals/gold/check.py evals/gold/recall-v1 [--other <holdout dir>]
+    python3 evals/gold/check.py --dedup evals/gold/dedup-v2 --same-pairs-as evals/gold/recall-v1
+
+The second form checks a duplicate-checker pair set with three labels (duplicate,
+supersede, distinct; dedup-v2/LABELLER-CHECKLIST.md): 60 pairs, unique ids, no
+other label, at least 20 duplicate and 20 supersede and one distinct, and the
+same pair texts as the frozen set it relabels. Fewer than 20 distinct pairs is
+printed as a warning: that rate is not yet measurable.
 
 Fails (exit 1) when a count is off, an id is unknown or repeated, a paraphrase
 query shares a content word with the memory it should find (then it tests
@@ -82,11 +89,50 @@ def check(d: Path) -> list[str]:
     return errs
 
 
+DEDUP_LABELS = {"duplicate", "supersede", "distinct"}
+
+
+def check_dedup(d: Path, same_as: Path | None) -> tuple[list[str], list[str]]:
+    pairs = yaml.safe_load((d / "dedup_pairs.yaml").read_text())["pairs"]
+    errs, warns = [], []
+    if len(pairs) != WANT["pairs"]:
+        errs.append(f"pairs: {len(pairs)}, expected {WANT['pairs']}")
+    dup = [i for i, c in Counter(p["id"] for p in pairs).items() if c > 1]
+    if dup:
+        errs.append(f"pairs: repeated ids {dup}")
+    labels = Counter(p.get("label") for p in pairs)
+    unknown = sorted(str(k) for k in labels if k not in DEDUP_LABELS)
+    if unknown:
+        errs.append(f"pairs: unknown labels {unknown}")
+    for k, least in (("duplicate", 20), ("supersede", 20), ("distinct", 1)):
+        if labels.get(k, 0) < least:
+            errs.append(f"pairs: {labels.get(k, 0)} {k}, at least {least} needed")
+    if 0 < labels.get("distinct", 0) < 20:
+        warns.append(f"warning: only {labels['distinct']} distinct pairs; the false-merge rate is not measurable until there are 20")
+    if same_as is not None:
+        old = {p["id"]: (p["existing"], p["incoming"]) for p in yaml.safe_load((same_as / "dedup_pairs.yaml").read_text())["pairs"]}
+        new = {p["id"]: (p["existing"], p["incoming"]) for p in pairs}
+        if old != new:
+            changed = sorted(i for i in old.keys() | new.keys() if old.get(i) != new.get(i))
+            errs.append(f"pairs: texts differ from {same_as} for {changed[:10]} (a relabel changes labels only)")
+    return errs, warns
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("dir")
+    ap.add_argument("dir", nargs="?")
     ap.add_argument("--other", help="a second set that must not overlap this one")
+    ap.add_argument("--dedup", help="check a three-label duplicate-checker pair set instead")
+    ap.add_argument("--same-pairs-as", help="with --dedup: the frozen set whose pair texts must be kept")
     a = ap.parse_args()
+    if a.dedup:
+        errs, warns = check_dedup(Path(a.dedup), Path(a.same_pairs_as) if a.same_pairs_as else None)
+        for line in errs + warns:
+            print(line)
+        print("ok" if not errs else f"{len(errs)} problem(s)")
+        return 1 if errs else 0
+    if not a.dir:
+        ap.error("a set directory or --dedup is required")
     errs = check(Path(a.dir))
     if a.other:
         errs += [f"other: {e}" for e in check(Path(a.other))]

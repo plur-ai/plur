@@ -473,6 +473,32 @@ def test_nightly_never_scores_after_a_failed_holdout_check():
         assert "always()" not in cond and "steps.holdout.outcome == 'success'" in cond, (needle, cond)
 
 
+def _check_dedup(pairs_yaml: str, same_as: bool = False):
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, "dedup_pairs.yaml").write_text(pairs_yaml)
+        cmd = [sys.executable, str(ROOT / "evals/gold/check.py"), "--dedup", d]
+        if same_as:
+            cmd += ["--same-pairs-as", str(ROOT / "evals/gold/recall-v1")]
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def test_dedup_v2_labels_are_valid_and_keep_the_frozen_texts():
+    r = subprocess.run([sys.executable, str(ROOT / "evals/gold/check.py"), "--dedup", str(ROOT / "evals/gold/dedup-v2"),
+                        "--same-pairs-as", str(ROOT / "evals/gold/recall-v1")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "warning: only 3 distinct" in r.stdout, r.stdout
+
+
+def test_dedup_check_rejects_an_unknown_label_and_a_changed_text():
+    base = (ROOT / "evals/gold/dedup-v2/dedup_pairs.yaml").read_text()
+    r = _check_dedup(base.replace('"label": "supersede"', '"label": "maybe"', 1))
+    assert r.returncode == 1 and "unknown labels ['maybe']" in r.stdout, r.stdout
+    r = _check_dedup(base.replace("five bullets", "six bullets", 1), same_as=True)
+    assert r.returncode == 1 and "texts differ" in r.stdout and "P002" in r.stdout, r.stdout
+    r = _check_dedup(base.replace('"label": "distinct"', '"label": "supersede"'))
+    assert r.returncode == 1 and "0 distinct" in r.stdout, r.stdout
+
+
 if __name__ == "__main__":
     import traceback
     failed = []

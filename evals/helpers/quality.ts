@@ -10,14 +10,17 @@
 // 2026-10-14) and runs nightly when PLUR_EVAL_HOLDOUT_DIR points at it; tuning
 // against the dev set that does not carry over to the holdout shows up there.
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
 import type { Plur } from '../../packages/core/src/index.js'
 
 export interface Memory { id: string; scope: string; statement: string }
 export interface Query { id: string; query: string; relevant: string[]; kind: 'lexical' | 'paraphrase' }
+/** recall-v1 pairs, two labels (frozen; the similarity-score diagnostic reads these). */
 export interface Pair { id: string; existing: string; incoming: string; label: 'duplicate' | 'distinct' }
+/** dedup-v2 pairs, three labels (LRN-7; evals/gold/dedup-v2/LABELLER-CHECKLIST.md). */
+export interface DedupPair { id: string; existing: string; incoming: string; label: 'duplicate' | 'supersede' | 'distinct' }
 export interface Task { id: string; task: string; scope: string; must_include: string[]; must_exclude: string[] }
 export interface GoldSet { name: string; corpus: Memory[]; queries: Query[]; pairs: Pair[]; tasks: Task[] }
 
@@ -37,6 +40,26 @@ export function goldSet(which: 'dev' | 'holdout'): GoldSet {
     pairs: read('dedup_pairs.yaml').pairs,
     tasks: read('inject_tasks.yaml').tasks,
   }
+}
+
+const DEDUP_LABELS = new Set(['duplicate', 'supersede', 'distinct'])
+
+/**
+ * The three-label duplicate-checker pairs (dedup-v2). Dev lives in the repo; the
+ * holdout is the `dedup-v2` folder beside the private recall-v1 holdout
+ * (PLUR_EVAL_HOLDOUT_DIR), pinned by evals/gold/holdout-dedup-v2.sha256.
+ * An unknown label is refused, never scored.
+ */
+export function dedupPairs(which: 'dev' | 'holdout'): DedupPair[] {
+  const holdout = process.env.PLUR_EVAL_HOLDOUT_DIR
+  const dir = which === 'dev' ? join(GOLD, 'dedup-v2') : holdout ? join(dirname(holdout), 'dedup-v2') : undefined
+  if (!dir || !existsSync(join(dir, 'dedup_pairs.yaml'))) {
+    throw new Error(`could not tell: duplicate-checker pairs '${which}' not found (${dir ?? 'PLUR_EVAL_HOLDOUT_DIR is not set'})`)
+  }
+  const pairs = (yaml.load(readFileSync(join(dir, 'dedup_pairs.yaml'), 'utf8')) as any).pairs as DedupPair[]
+  const bad = pairs.filter(p => !DEDUP_LABELS.has(p.label)).map(p => `${p.id}: ${p.label}`)
+  if (bad.length) throw new Error(`could not tell: unknown labels in ${which} duplicate-checker pairs: ${bad.join(', ')}`)
+  return pairs
 }
 
 export const holdoutConfigured = (): boolean => Boolean(process.env.PLUR_EVAL_HOLDOUT_DIR)
