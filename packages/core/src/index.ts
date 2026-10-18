@@ -4483,6 +4483,18 @@ export class Plur {
       if (cross.hit) await this._recordCrossScopeRecurrence(cross.hit, engrams, scope, context)
       const unpersistableHit = sameScopeForeign ?? cross.foreign
 
+      // LRN-9: a supersede proposed by the duplicate checker never lands on a
+      // memory that is locked — checked here, under the store lock, so a lock
+      // taken after the checker read the target still wins. The caller sees
+      // the dropped target missing from `relations.supersedes` and sends the
+      // pair to review instead.
+      if (context?.supersedes_unless_locked && context.supersedes?.length) {
+        const wanted = context.supersedes
+        const rows = canDelegate ? await ps.loadByIds!(wanted) : engrams
+        const locked = new Set(rows.filter(e => wanted.includes(e.id) && e.commitment === 'locked').map(e => e.id))
+        if (locked.size > 0) context = { ...context, supersedes: wanted.filter(t => !locked.has(t)) }
+      }
+
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
         : generateEngramId(allEngrams, this._mintedTodayIds())
@@ -5455,6 +5467,9 @@ export class Plur {
       recordLlmFailure: () => this._recordLlmFailure(),
       syncIndex: () => this._syncIndex(),
       offendingHitsForScope: (statement: string, scope: string) => this._offendingHitsForScope(statement, scope),
+      // LRN-9: an UPDATE onto a locked memory waits in the review queue the
+      // user already resolves (tension records, plur_tensions).
+      openReview: async (pair: TensionPair) => (await this.recordTensions([pair])).records[0]?.id,
     }
   }
 

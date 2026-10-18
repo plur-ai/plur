@@ -50,8 +50,10 @@ function makeDeps(candidates: Engram[]): LearnAsyncDeps {
     hashDedup: async () => null,
     recallHybrid: async () => candidates,
     recall: async () => candidates,
+    // Echoes `supersedes` the way learn() writes `relations.supersedes`.
     learn: async (statement: string, context?: any) =>
-      ({ id: 'ENG-2026-0619-001', statement, scope: context?.scope ?? 'global' } as unknown as Engram),
+      ({ id: 'ENG-2026-0619-001', statement, scope: context?.scope ?? 'global',
+        ...(context?.supersedes?.length ? { relations: { supersedes: context.supersedes } } : {}) } as unknown as Engram),
     getById: async (id: string) => candidates.find(c => c.id === id) ?? null,
     store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-test-engrams.yaml',
@@ -130,7 +132,10 @@ describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', 
     return { ...makeDeps(candidates), engramsPath, rootPath: dir, store: new YamlPrimaryStore(engramsPath) }
   }
 
-  it('UPDATE increments engram_version and leaves version untouched', async () => {
+  // LRN-8 (owner decision 2026-10-18): UPDATE saves a new memory that
+  // supersedes the old one; the old row is not rewritten, so neither of its
+  // version fields moves. (Previously: engram_version incremented in place.)
+  it('UPDATE leaves the existing engram_version and version untouched (it supersedes)', async () => {
     const seed = { ...globalCandidate, id: 'ENG-2026-0101-484a', scope: 'global', engram_version: 3, version: 2 } as unknown as Engram
     const deps = depsWithFile([seed])
     const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-484a\nREASON: same topic')
@@ -138,9 +143,12 @@ describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', 
     const result = await learnAsync(deps, 'updated statement', { llm })
 
     expect(result.decision).toBe('UPDATE')
+    expect(result.existing_id).toBe('ENG-2026-0101-484a')
+    expect(result.engram.id).not.toBe('ENG-2026-0101-484a')
     const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-484a') as any
-    expect(persisted.engram_version).toBe(4)   // incremented
-    expect(persisted.version).toBe(2)           // schema-shape, untouched
+    expect(persisted.statement).toBe(seed.statement)
+    expect(persisted.engram_version).toBe(3)
+    expect(persisted.version).toBe(2)
   })
 
   it('MERGE increments engram_version and leaves version untouched', async () => {
@@ -181,9 +189,17 @@ describe('learnAsync demote scans merged tags (#409)', () => {
     }
   }
 
-  it('UPDATE demotes to local when a merged tag carries sensitive content', async () => {
+  // LRN-8 (owner decision 2026-10-18): UPDATE no longer unions tags into the
+  // existing shared engram, so a sensitive tag cannot reach it at all. The new
+  // memory, tags included, is written through learn(), whose own
+  // sensitive-scope guard scans it. (Previously: the existing engram was
+  // demoted in place.)
+  it('UPDATE never carries a sensitive tag into the existing shared engram', async () => {
     const shared = { ...globalCandidate, id: 'ENG-2026-0101-409', scope: 'group:datafund/datafund', statement: 'clean shared note' } as unknown as Engram
     const deps = depsWithFile([shared])
+    const learned: Array<{ statement: string; context: any }> = []
+    const learn = deps.learn
+    deps.learn = async (statement, context) => { learned.push({ statement, context }); return learn(statement, context) }
     const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-409\nREASON: same topic')
 
     // Statement is clean; the sensitive sentinel rides ONLY in a tag.
@@ -191,8 +207,12 @@ describe('learnAsync demote scans merged tags (#409)', () => {
 
     expect(result.decision).toBe('UPDATE')
     const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-409') as any
-    expect(persisted.scope).toBe('local')        // demoted — the merged tag was scanned
-    expect(persisted.visibility).toBe('private')
+    expect(persisted.statement).toBe('clean shared note')
+    expect(persisted.tags).not.toContain('LEAKTAG')
+    // The tag goes to learn(), where the sensitive-scope guard runs.
+    expect(learned).toHaveLength(1)
+    expect(learned[0].context.tags).toContain('LEAKTAG')
+    expect(learned[0].context.supersedes).toEqual(['ENG-2026-0101-409'])
   })
 
   it('UPDATE does NOT demote when statement and tags are clean (no over-block)', async () => {

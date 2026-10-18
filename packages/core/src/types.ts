@@ -91,6 +91,14 @@ export interface LearnContext {
    */
   supersedes?: string[]
   /**
+   * Internal (the duplicate checker's supersede, LRN-8/LRN-9): drop any
+   * `supersedes` target that is locked at write time, checked under the
+   * store lock. A locked memory is never superseded automatically; the
+   * caller reads `relations.supersedes` on the returned engram to see
+   * whether the supersede applied, and sends the pair to review if not.
+   */
+  supersedes_unless_locked?: boolean
+  /**
    * IDs of engrams this one is related to. Written to `relations.related` on
    * the new engram only; the targets are not modified. Batch learning uses it
    * to link an item to the memory the duplicate checker said it resembles,
