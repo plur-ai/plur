@@ -122,7 +122,7 @@ function resolveStoreTokens(config: PlurConfig): PlurConfig {
         const once = `${s.scope}\0${s.token_env}`
         if (warnedUnsetTokenEnv.has(once)) return s
         warnedUnsetTokenEnv.add(once)
-        logger.warning(`[plur:config] store "${s.scope}" (${s.url ?? s.path}): token_env ${s.token_env} is unset or empty — the store has no token`)
+        logger.warning(`[plur:config] store "${s.scope}" (${s.url ? safeOrigin(s.url) : s.path}): token_env ${s.token_env} is unset or empty — the store has no token`)
         return s
       }
       return { ...s, token }
