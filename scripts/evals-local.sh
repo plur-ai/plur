@@ -63,6 +63,16 @@ case "$MODE" in
     # The subscription login only. A paid key in the environment is never used.
     unset ANTHROPIC_API_KEY
     provision_model
+    # A configured holdout is checked exactly as the nightly checks it, before any agent
+    # eval reads it (the duplicate-checker eval does; fourth audit A4-06).
+    if [ -n "${PLUR_EVAL_HOLDOUT_DIR:-}" ]; then
+      export PLUR_EVAL_HOLDOUT_DIR="$(cd "$PLUR_EVAL_HOLDOUT_DIR" && pwd)"
+      python3 evals/gold/hash_set.py "$PLUR_EVAL_HOLDOUT_DIR" --expect "$(cat evals/gold/holdout-recall-v1.sha256)"
+      python3 evals/gold/check.py evals/gold/recall-v1 --other "$PLUR_EVAL_HOLDOUT_DIR"
+      python3 evals/gold/hash_set.py "$PLUR_EVAL_HOLDOUT_DIR/../dedup-v2" --expect "$(cat evals/gold/holdout-dedup-v2.sha256)"
+      python3 evals/gold/check.py --dedup evals/gold/dedup-v2 --same-pairs-as evals/gold/recall-v1
+      python3 evals/gold/check.py --dedup "$PLUR_EVAL_HOLDOUT_DIR/../dedup-v2" --same-pairs-as "$PLUR_EVAL_HOLDOUT_DIR"
+    fi
     IDS="$(python3 -c "import yaml;d=yaml.safe_load(open('evals/promises.yaml'));print(','.join(p['id'] for c in d['capabilities'] for p in c['promises'] if p.get('kind')=='agent'))")"
     python3 .evals/run.py --config evals/evals.yaml --agents --only "$IDS" --json > "$OUT/agents.json"
     say "agent evals: $OUT/agents.json"

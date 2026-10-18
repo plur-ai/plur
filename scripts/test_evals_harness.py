@@ -509,6 +509,18 @@ def test_local_script_keeps_the_workflow_refusals():
     assert "pnpm evals" not in sh and "pnpm -s evals" not in sh
     agents = sh[sh.index("  agents)"):]
     assert "unset ANTHROPIC_API_KEY" in agents and "--agents" in agents
+    # A configured holdout is validated before any agent eval reads it (fourth audit A4-06):
+    # the same hash and label checks as the nightly, before run.py.
+    assert wf_checks and all(c in agents for c in wf_checks), [c for c in wf_checks if c not in agents]
+    assert max(agents.index(c) for c in wf_checks) < agents.index(".evals/run.py")
+    assert 'PLUR_EVAL_HOLDOUT_DIR:-' in agents[:agents.index(wf_checks[0])]
+
+
+def test_the_agents_job_on_github_reads_no_holdout():
+    # The manual agents job scores the public dev set only; were it ever given a holdout
+    # it would need the nightly's validation first (fourth audit A4-06).
+    job = _workflow()["jobs"]["agents"]
+    assert "PLUR_EVAL_HOLDOUT_DIR" not in json.dumps(job) and "holdout" not in json.dumps(job).lower(), job
 
 
 def _check_dedup(pairs_yaml: str, same_as: bool = False):
