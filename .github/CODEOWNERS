@@ -17,4 +17,9 @@
 /.evals/                              @plur9 @crtahlin
 /scripts/check-eval-separation.py     @plur9 @crtahlin
 /scripts/test_check_eval_separation.py @plur9 @crtahlin
+/scripts/test_evals_harness.py        @plur9 @crtahlin
 /spec/formal/                         @plur9 @crtahlin
+# Also judge files (second audit R-02): the root manifest's scripts run before the
+# gate, and evals import the shared test fixtures.
+/package.json                         @plur9 @crtahlin
+/packages/*/test/helpers/             @plur9 @crtahlin
