@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process'
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, chmodSync } from 'fs'
-import { join, dirname, relative } from 'path'
+import { join, dirname, relative, basename } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
 import { engramStoreEntries, sameEngramContent, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
@@ -1230,15 +1230,44 @@ function inspectAcl(path: string, account: string): AclInspection {
   return r.ok === true ? 'owner-only' : r.ok === false ? 'shared' : 'unknown'
 }
 
-/** Make `path` owner-only and verify it; throws when that cannot be established. */
-function protectWindowsOwnerOnly(path: string, account: string | null): void {
-  if (!account) throw new Error('atomicWrite: cannot make the temporary file owner-only: the Windows account is not known (USERNAME is not set)')
-  const r = protectOwnerOnly(path, { platform: 'win32', account })
-  if (!r.ok) {
-    throw new Error(r.detail.startsWith('icacls failed')
-      ? `atomicWrite: cannot make the temporary file owner-only: ${r.detail}`
-      : `atomicWrite: cannot make the temporary file owner-only: its access list still names another account or cannot be read back (${r.detail})`)
+/**
+ * The owner's way out on a drive that cannot keep access lists (FAT/exFAT,
+ * some network shares — icacls fails there, so every credential write would
+ * be refused and PLUR could not save its config at all). Set to `1` (or
+ * `true` / `yes`), a credential write whose owner-only protection cannot be
+ * established is written WITHOUT it, with one stderr line saying so, instead
+ * of being refused. Unset (the default), it is refused (#1631).
+ */
+export const ALLOW_UNPROTECTED_ENV = 'PLUR_ALLOW_UNPROTECTED_CONFIG'
+
+function allowUnprotected(env: NodeJS.ProcessEnv): boolean {
+  const v = env[ALLOW_UNPROTECTED_ENV]?.trim().toLowerCase()
+  return v === '1' || v === 'true' || v === 'yes'
+}
+
+/**
+ * A Windows credential write whose protection cannot be established: refused
+ * (throws; the message names the cause and the opt-out), or — with
+ * {@link ALLOW_UNPROTECTED_ENV} set — reported on stderr and written without
+ * the protection (returns).
+ */
+function refuseUnprotected(filePath: string, cause: string): void {
+  if (allowUnprotected(_atomicWriteAcl.env)) {
+    console.error(`[plur:config] writing ${basename(filePath)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${cause}`)
+    return
   }
+  throw new Error(`atomicWrite: refusing a credential write: ${cause}. Nothing was written. ` +
+    `If this drive cannot keep access lists (FAT/exFAT, some network shares), set ${ALLOW_UNPROTECTED_ENV}=1 to write it without that protection.`)
+}
+
+/** Make `path` owner-only and verify it; returns why it could not, or null. */
+function protectWindowsOwnerOnly(path: string, account: string | null): string | null {
+  if (!account) return 'cannot make the temporary file owner-only: the Windows account is not known (USERNAME is not set)'
+  const r = protectOwnerOnly(path, { platform: 'win32', account })
+  if (r.ok) return null
+  return r.detail.startsWith('icacls failed')
+    ? `cannot make the temporary file owner-only: ${r.detail}`
+    : `cannot make the temporary file owner-only: its access list still names another account or cannot be read back (${r.detail})`
 }
 
 /**
@@ -1336,16 +1365,20 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
     if (credential && destExists) {
       const inspection: AclInspection = winAccount === null ? 'unknown' : inspectAcl(filePath, winAccount)
       if (inspection === 'unknown' && secret) {
-        throw new Error(winAccount === null
-          ? 'atomicWrite: refusing a credential write: cannot tell whether the destination is owner-only (the Windows account is not known: USERNAME is not set)'
-          : 'atomicWrite: refusing a credential write: cannot inspect the destination\'s access list (icacls failed or named no account)')
+        // Refused (throws) unless the owner opted out; then written unprotected.
+        refuseUnprotected(filePath, winAccount === null
+          ? 'cannot tell whether the destination is owner-only (the Windows account is not known: USERNAME is not set)'
+          : 'cannot inspect the destination\'s access list (icacls failed or named no account)')
+        winProtect = false
+      } else {
+        winProtect = inspection === 'owner-only' || secret
       }
-      winProtect = inspection === 'owner-only' || secret
     } else if (secret) {
       if (winAccount === null) {
-        throw new Error('atomicWrite: refusing a credential write: cannot make the new file owner-only (the Windows account is not known: USERNAME is not set)')
+        refuseUnprotected(filePath, 'cannot make the new file owner-only (the Windows account is not known: USERNAME is not set)')
+      } else {
+        winProtect = true
       }
-      winProtect = true
     }
   }
 
@@ -1367,7 +1400,10 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
   }
   try {
     try {
-      if (winProtect) protectWindowsOwnerOnly(tmp, winAccount)
+      if (winProtect) {
+        const failed = protectWindowsOwnerOnly(tmp, winAccount)
+        if (failed !== null) refuseUnprotected(filePath, failed)
+      }
       writeFileSync(fd, content)
       if (durable) fsyncSync(fd)
     } finally {

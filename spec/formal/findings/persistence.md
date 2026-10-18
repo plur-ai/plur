@@ -556,3 +556,26 @@ Real Windows (windows-init on the PR, first run): `/inheritance:r /grant:r` left
 read-back failed and every config write was refused. `protectOwnerOnly` now removes other
 principals by name (`/remove:g`) and reads the list again. In the model this is inside
 `aclOk` (the protection is established and verified, or not); no theorem changed.
+
+Gate review (2026-10-18), two changes:
+
+1. **Names are not ASCII-safe; SIDs are.** On the Windows runner, icacls printed a path
+   containing `ü` as the OEM byte 0x81 (and `Č` as `C`), so the text read-back never matched
+   the path or a non-ASCII account name, and every config write under such a profile folder
+   (or for such an account) was refused. `owner-only.ts` now grants `*<SID>` (from
+   `whoami /user /fo csv /nh`), reads the list as SDDL with `icacls <path> /save` (UTF-16,
+   SIDs and SDDL abbreviations) and removes others with `/remove *<SID>`. An abbreviation
+   with no fixed SID (domain-relative) refuses. Inside `aclOk`; no theorem changed. icacls
+   and whoami run from `%SystemRoot%\System32` by full path.
+2. **Opt-out for drives without access lists** (`PLUR_ALLOW_UNPROTECTED_CONFIG`): set, a
+   write the default refuses is written unprotected and reported on stderr; unset, the
+   behaviour is `traceNew`. Modelled as `traceAllow`/`relax`: `allow_off_is_default`,
+   `allow_keeps_working_protection` (it never skips a protection that can be established),
+   `allow_secret_owner_only_when_protectable`, `allow_wide_is_reported`, `allow_reachable`.
+   Mutation check: `relax` also widening a protected write ⇒ the two protection theorems
+   fail.
+
+Tests: `config-owner-only.test.ts` (21 of the new or changed cases failed against the
+builder's code; the real-Windows case under a folder named `Müller Črt` failed on the
+runner before the change), `codex2-atomic-first-write.test.ts` (fake icacls answers by
+SID and `/save`; assertions unchanged), `enterprise-cleanup.test.ts` (same).

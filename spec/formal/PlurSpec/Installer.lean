@@ -359,11 +359,21 @@ are non-empty and all equal the account (case-insensitive) — with the same `ic
 runner): explicit grants for other principals survive `/inheritance:r`, so when the first
 read-back names another principal they are removed by name (`/remove:g`) and the list is read
 again. `protect` below still describes it, with `readStatus`/`principals` the FINAL read-back
-(a failed removal is a failed `setStatus`). -/
+(a failed removal is a failed `setStatus`).
+
+Gate of #1631 (2026-10-18): on a real Windows runner icacls printed a path with `ü` as the
+OEM byte 0x81, so name matching refused every write under a folder (or for an account)
+whose name is not ASCII. The helper now works on SIDs: `acct` is the current account's SID
+(`whoami /user /fo csv /nh`; `none` when it or USERNAME is unknown), the grant is
+`*<SID>`, `principals` are the trustees of the SDDL that `icacls <path> /save` writes
+(UTF-16), removal is `/remove *<SID>` (an SDDL abbreviation with no fixed SID refuses),
+and `norm` is the SID comparison (case-insensitive; `LA`/`LG` stand for the account's own
+SID when it ends in -500 or -501). The rule modelled — set, read back, non-empty, every
+trustee the account — is unchanged, so `protect_sound` holds as stated. -/
 namespace OwnerOnly
 
-/-- One icacls run pair. `principals` is what `icaclsPrincipals` parsed; names are
-compared after `toLower` (abstracted as `norm`). -/
+/-- One icacls run pair. `principals` are the trustees `readAcl` parsed from the saved SDDL;
+they are compared to the account's SID by `isSelf` (abstracted as `norm`). -/
 structure Icacls where
   setStatus  : Nat
   readStatus : Nat

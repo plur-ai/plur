@@ -14,7 +14,7 @@ Object.defineProperty(process, 'platform', { value: 'win32' })
 if (!process.env.USERNAME) process.env.USERNAME = process.env.USER || 'stub-user'
 // Core protects every config.yaml write with icacls on Windows (#1631) and
 // refuses the write when it cannot. A real Windows process has icacls; give
-// the stub a faithful fake (fake-icacls/icacls: the access list is kept in the
+// the stub a faithful fake (fake-icacls/icacls and whoami: the access list is kept in the
 // file's mode, so it follows the file across a rename). Only on a non-Windows
 // host — on real Windows the real tool is used.
 if (realPlatform !== 'win32') {

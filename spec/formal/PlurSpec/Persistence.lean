@@ -1410,6 +1410,70 @@ theorem config_write_reachable :
     Ev.write .ownerOnly ∈ traceNew (configCall .persistStores ⟨true, false, .wide, .unknown, false, false, false, true⟩) := by
   decide
 
+
+/-! ### #1631 gate: the owner's opt-out on a drive without access lists
+
+`PLUR_ALLOW_UNPROTECTED_CONFIG` (sync.ts `refuseUnprotected`, 2026-10-18 gate). On a drive
+that cannot keep access lists (FAT/exFAT, some network shares) icacls fails, so every
+credential write would be refused and PLUR could not save its config. With the variable
+set, a write the default refuses is written WITHOUT protection and reported (one stderr
+line); with it unset — the default — the trace is exactly `traceNew`. The opt-out never
+removes a protection that can be established: it only turns a refusal into a reported
+wide write. -/
+
+/-- What the opt-out does to a refused trace; every other trace is left alone. -/
+def relax : List Ev → List Ev
+  | [.refuse] => [.create .wide, .write .wide, .rename]
+  | [.create .wide, .protect false, .unlink] => [.create .wide, .protect false, .write .wide, .rename]
+  | t => t
+
+def traceAllow (allow : Bool) (c : Call) : List Ev :=
+  if allow then relax (traceNew c) else traceNew c
+
+/-- The code prints its stderr line exactly when the opt-out changed the outcome. -/
+def reported (allow : Bool) (c : Call) : Bool :=
+  allow && decide (traceAllow allow c ≠ traceNew c)
+
+/-- Unset (the default), nothing changes: every theorem about `traceNew` holds. -/
+theorem allow_off_is_default (c : Call) : traceAllow false c = traceNew c := by
+  simp [traceAllow]
+
+/-- A trace that neither refuses nor unlinks (the protection worked, or none was needed)
+is the same with the opt-out: it never skips a protection that can be established. -/
+theorem allow_keeps_working_protection (c : Call)
+    (hr : Ev.refuse ∉ traceNew c) (hu : Ev.unlink ∉ traceNew c) :
+    traceAllow true c = traceNew c := by
+  simp only [traceAllow, if_true]
+  generalize traceNew c = t at hr hu ⊢
+  unfold relax
+  split <;> simp_all
+
+/-- A Windows `secret` write whose temp file can be protected is still owner-only with the
+opt-out set. -/
+theorem allow_secret_owner_only_when_protectable (c : Call) (hwin : c.windows = true)
+    (hsec : c.secret = true) (hacl : c.aclOk = true)
+    (hi : ¬(c.destExists = true ∧ c.insp = .unknown)) :
+    ∀ p, Ev.write p ∈ traceAllow true c → p = .ownerOnly := by
+  intro p h
+  cases c with
+  | mk windows destExists destProt insp optsMode credential secret aclOk =>
+    simp only at hwin hsec hacl hi
+    subst hwin hsec hacl
+    cases destExists <;> cases insp <;> simp_all [traceAllow, traceNew, winSecret, relax]
+
+/-- Every wide write the opt-out adds is reported. -/
+theorem allow_wide_is_reported (c : Call) (h : traceAllow true c ≠ traceNew c) :
+    reported true c = true := by
+  simp [reported, h]
+
+/-- Non-vacuous: on a drive whose access list cannot be inspected, the default refuses
+and the opt-out writes (reported). -/
+theorem allow_reachable :
+    let c : Call := ⟨true, true, .wide, .unknown, true, true, true, true⟩
+    traceNew c = [.refuse] ∧ traceAllow true c = [.create .wide, .write .wide, .rename] ∧
+      reported true c = true := by
+  decide
+
 end AtomicTemp
 
 end PlurSpec.Persistence

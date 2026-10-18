@@ -575,16 +575,29 @@ describe('backup protection (unix)', () => {
 
 describe('backup protection (Windows, icacls mocked)', () => {
   const ACCOUNT = 'ACME\\alice'
+  /** The account's SID: core identifies the owner by SID, never by name (#1631). */
+  const SID = 'S-1-5-21-1111-2222-3333-1001'
   type Call = string[]
-  function fakeExec(answer: (args: string[]) => { status: number | null; stdout: string }) {
+  type Answer = { status: number | null; stdout: string }
+  /** whoami answers the SID; icacls answers through `answer`. */
+  function fakeExec(answer: (args: string[]) => Answer) {
     const calls: Call[] = []
-    const exec = (cmd: string, args: string[]) => { calls.push([cmd, ...args]); return answer(args) }
+    const exec = (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args])
+      return cmd === 'whoami' ? { status: 0, stdout: `"${ACCOUNT}","${SID}"\r\n` } : answer(args)
+    }
     return { calls, exec }
   }
+  /** What `icacls <path> /save <file>` writes (UTF-16LE SDDL) for these trustees. */
+  const saved = (args: string[], trustees: string[]): Answer => {
+    writeFileSync(args[2], Buffer.from(`x\r\nD:PAI${trustees.map(t => `(A;OICI;FA;;;${t})`).join('')}\r\n`, 'utf16le'))
+    return { status: 0, stdout: 'Successfully processed 1 files; Failed processing 0 files\n' }
+  }
   /** icacls answers: a grant succeeds; a read lists only the account. */
-  const ownerOnly = (args: string[]) => args.length > 1
-    ? { status: 0, stdout: 'processed file: x\nSuccessfully processed 1 files; Failed processing 0 files\n' }
-    : { status: 0, stdout: `${args[0]} ${ACCOUNT}:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\n` }
+  const ownerOnly = (args: string[]) => args[1] === '/save'
+    ? saved(args, [SID])
+    : { status: 0, stdout: 'processed file: x\nSuccessfully processed 1 files; Failed processing 0 files\n' }
+  const icacls = (calls: Call[]) => calls.filter(c => c[0] === 'icacls').map(c => c[2] === '/save' ? c.slice(0, 3) : c)
 
   it('protects the backup dir and each backup file owner-only, verified, with argument arrays', () => {
     const { calls, exec } = fakeExec(ownerOnly)
@@ -593,17 +606,15 @@ describe('backup protection (Windows, icacls mocked)', () => {
     const r = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv(), platform: 'win32', exec, account: ACCOUNT })
       .find(e => e.target === headerPath)
     expect(r?.status).toBe('removed')
-    expect(calls[0]).toEqual(['icacls', backupDir, '/inheritance:r', '/grant:r', `${ACCOUNT}:(OI)(CI)F`])
-    expect(calls[1]).toEqual(['icacls', backupDir])
-    expect(calls[2]).toEqual(['icacls', r!.backup!, '/inheritance:r', '/grant:r', `${ACCOUNT}:F`])
-    expect(calls[3]).toEqual(['icacls', r!.backup!])
+    expect(icacls(calls)[0]).toEqual(['icacls', backupDir, '/inheritance:r', '/grant:r', `*${SID}:(OI)(CI)F`])
+    expect(icacls(calls)[1]).toEqual(['icacls', backupDir, '/save'])
+    expect(icacls(calls)[2]).toEqual(['icacls', r!.backup!, '/inheritance:r', '/grant:r', `*${SID}:F`])
+    expect(icacls(calls)[3]).toEqual(['icacls', r!.backup!, '/save'])
     expect(readFileSync(r!.backup!, 'utf8')).toContain('plur_sk_test_fake')
   })
 
   it('another principal on the backup dir → every cleanup refused, nothing changed, no backup', () => {
-    const { exec } = fakeExec(args => args.length > 1
-      ? { status: 0, stdout: '' }
-      : { status: 0, stdout: `${args[0]} ${ACCOUNT}:(OI)(CI)(F)\n          BUILTIN\\Users:(OI)(CI)(RX)\n\nSuccessfully processed 1 files; Failed processing 0 files\n` })
+    const { exec } = fakeExec(args => args[1] === '/save' ? saved(args, [SID, 'BU']) : { status: 0, stdout: '' })
     const headerPath = join(plurDir, 'mcp-enterprise-header')
     writeFileSync(headerPath, 'Authorization: Bearer plur_sk_test_fake')
     const claudeJson = join(home, '.claude.json')
@@ -618,7 +629,7 @@ describe('backup protection (Windows, icacls mocked)', () => {
   })
 
   it('icacls failing on the dir → refused with its exit code', () => {
-    const { exec } = fakeExec(() => ({ status: 5, stdout: '' }))
+    const { exec } = fakeExec(() => ({ status: 5, stdout: '' }))   // icacls fails; whoami works
     const headerPath = join(plurDir, 'mcp-enterprise-header')
     writeFileSync(headerPath, 'x')
     const r = cleanupLegacy({ tools: [], backupDir, plurDir, home, env: makeEnv(), platform: 'win32', exec, account: ACCOUNT })
@@ -630,7 +641,7 @@ describe('backup protection (Windows, icacls mocked)', () => {
 
   it('a backup file that cannot be protected is deleted before any secret is written, and the target is refused', () => {
     // The dir protects fine; the file's grant fails.
-    const { exec } = fakeExec(args => (args.length > 1 && args[args.length - 1] === `${ACCOUNT}:F`)
+    const { exec, calls } = fakeExec(args => (args[1] === '/inheritance:r' && args[args.length - 1] === `*${SID}:F`)
       ? { status: 5, stdout: '' }
       : ownerOnly(args))
     const headerPath = join(plurDir, 'mcp-enterprise-header')
@@ -640,6 +651,8 @@ describe('backup protection (Windows, icacls mocked)', () => {
     expect(r?.status).toBe('refused')
     expect(existsSync(headerPath)).toBe(true)
     expect(readdirSync(backupDir)).toEqual([])
+    // The folder was protected; it is the FILE's grant that failed.
+    expect(icacls(calls).filter(c => c[2] === '/inheritance:r').map(c => c[4])).toEqual([`*${SID}:(OI)(CI)F`, `*${SID}:F`])
   })
 
   it('no Windows account known → refused', () => {

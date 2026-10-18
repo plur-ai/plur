@@ -36,9 +36,11 @@ vi.mock('fs', async importOriginal => {
 })
 
 const { Plur, protectOwnerOnly, checkOwnerOnly, writeConfigFile, currentWindowsAccount } = await import('../src/index.js')
+const { currentWindowsSid, _systemTool } = await import('../src/owner-only.js')
 const { _atomicWriteAcl } = await import('../src/sync.js')
 const { setSchemaVersion } = await import('../src/migrations/runner.js')
 const { removePrimaryStoreEntries } = await import('../src/store-duplicates.js')
+const { SELF, fakeAclExec, icaclsCalls } = await import('./helpers/fake-acl.js')
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const isWin = process.platform === 'win32'
@@ -142,76 +144,135 @@ describe.skipIf(isWin)('Unix: config.yaml is 0600 after every core write', () =>
 
 describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
   const ACCT = 'ACME\\alice'
-  const ok = (p: string) => ({ status: 0, stdout: `${p} ${ACCT}:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files` })
+  const P = 'C:\\h\\My Files\\.plur\\config.yaml'
 
-  it('icacls is called with an argument array that grants only the account', () => {
-    const calls: string[][] = []
-    const exec = (c: string, a: string[]) => { calls.push([c, ...a]); return { status: 0, stdout: 'C:\\h\\My Files\\.plur\\config.yaml ACME\\alice:(F)\n\nSuccessfully processed 1 files' } }
-    expect(protectOwnerOnly('C:\\h\\My Files\\.plur\\config.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: true })
-    expect(calls[0]).toEqual(['icacls', 'C:\\h\\My Files\\.plur\\config.yaml', '/inheritance:r', '/grant:r', 'ACME\\alice:F'])
-    expect(calls[1]).toEqual(['icacls', 'C:\\h\\My Files\\.plur\\config.yaml'])
+  it('icacls is called with an argument array that grants only the account, by its SID', () => {
+    const { exec, calls } = fakeAclExec({ acl: () => [SELF] })
+    expect(protectOwnerOnly(P, { platform: 'win32', exec, account: ACCT })).toEqual({ ok: true })
+    expect(calls[0]).toEqual(['whoami', '/user', '/fo', 'csv', '/nh'])
+    expect(calls[1]).toEqual(['icacls', P, '/inheritance:r', '/grant:r', `*${SELF}:F`])
+    expect(icaclsCalls(calls)[1]).toEqual(['icacls', P, '/save'])
+    expect(calls).toHaveLength(3)
   })
 
   it('a folder gets an inheritable grant', () => {
-    const calls: string[][] = []
-    const exec = (c: string, a: string[]) => { calls.push([c, ...a]); return ok(a[0]) }
+    const { exec, calls } = fakeAclExec({ acl: () => [SELF] })
     expect(protectOwnerOnly('C:\\b', { platform: 'win32', exec, account: ACCT, directory: true })).toEqual({ ok: true })
-    expect(calls[0]).toEqual(['icacls', 'C:\\b', '/inheritance:r', '/grant:r', 'ACME\\alice:(OI)(CI)F'])
+    expect(icaclsCalls(calls)[0]).toEqual(['icacls', 'C:\\b', '/inheritance:r', '/grant:r', `*${SELF}:(OI)(CI)F`])
   })
 
-  it('another principal in the ACL → { ok:false, detail:"also readable by BUILTIN\\\\Users" }', () => {
-    const exec = (_c: string, a: string[]) => a.length > 1
-      ? { status: 0, stdout: '' }
-      : { status: 0, stdout: `${a[0]} ACME\\alice:(F)\n         BUILTIN\\Users:(RX)\n\nSuccessfully processed 1 files` }
+  it('another principal in the ACL that cannot be removed → { ok:false, detail:"also readable by BUILTIN\\\\Users" }', () => {
+    const { exec } = fakeAclExec({ acl: () => [SELF, 'BU'], remove: () => 0 })
     expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'also readable by BUILTIN\\Users' })
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'also readable by BUILTIN\\Users' })
   })
 
-  it('explicit grants that survive /inheritance:r are removed by name, then the list is read again (seen on a Windows runner)', () => {
-    const calls: string[][] = []
+  it('explicit grants that survive /inheritance:r are removed by SID, then the list is read again (seen on a Windows runner)', () => {
     let removed = false
-    const exec = (c: string, a: string[]) => {
-      calls.push([c, ...a])
-      if (a[1] === '/remove:g') { removed = true; return { status: 0, stdout: 'Successfully processed 1 files' } }
-      if (a.length > 1) return { status: 0, stdout: '' }
-      return { status: 0, stdout: removed
-        ? `${a[0]} ACME\\alice:(F)\n\nSuccessfully processed 1 files`
-        : `${a[0]} NT AUTHORITY\\SYSTEM:(F)\n    BUILTIN\\Administrators:(F)\n    ACME\\alice:(F)\n\nSuccessfully processed 1 files` }
-    }
+    const { exec, calls } = fakeAclExec({
+      acl: () => removed ? [SELF] : ['SY', 'BA', SELF],
+      remove: () => { removed = true; return 0 },
+    })
     expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: true })
-    expect(calls).toEqual([
-      ['icacls', 'C:\\c.yaml', '/inheritance:r', '/grant:r', 'ACME\\alice:F'],
-      ['icacls', 'C:\\c.yaml'],
-      ['icacls', 'C:\\c.yaml', '/remove:g', 'NT AUTHORITY\\SYSTEM', 'BUILTIN\\Administrators'],
-      ['icacls', 'C:\\c.yaml'],
+    expect(icaclsCalls(calls)).toEqual([
+      ['icacls', 'C:\\c.yaml', '/inheritance:r', '/grant:r', `*${SELF}:F`],
+      ['icacls', 'C:\\c.yaml', '/save'],
+      ['icacls', 'C:\\c.yaml', '/remove', '*S-1-5-18', '*S-1-5-32-544'],
+      ['icacls', 'C:\\c.yaml', '/save'],
     ])
   })
 
+  it('every non-owner principal is removed: Users, Authenticated Users, Everyone, CREATOR OWNER, another account', () => {
+    const other = 'S-1-5-21-1111-2222-3333-1002'
+    const sidOf: Record<string, string> = { BU: 'S-1-5-32-545', AU: 'S-1-5-11', WD: 'S-1-1-0', CO: 'S-1-3-0' }
+    let left = ['BU', 'AU', 'WD', 'CO', other, SELF]
+    const { exec, calls } = fakeAclExec({
+      acl: () => left,
+      remove: (_p, sids) => { left = left.filter(t => !sids.includes(`*${sidOf[t] ?? t}`)); return 0 },
+    })
+    expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: true })
+    expect(icaclsCalls(calls)[2]).toEqual(['icacls', 'C:\\c.yaml', '/remove', '*S-1-5-32-545', '*S-1-5-11', '*S-1-1-0', '*S-1-3-0', `*${other}`])
+    expect(left).toEqual([SELF])
+  })
+
+  it('a principal that cannot be named by SID (a domain-relative abbreviation) is not removed: refused, nothing guessed', () => {
+    const { exec, calls } = fakeAclExec({ acl: () => [SELF, 'DA'] })
+    expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'also readable by DA (cannot remove DA)' })
+    expect(calls.some(c => c.includes('/remove'))).toBe(false)
+  })
+
+  it('the built-in Administrator account (RID 500) is listed as LA: it is the owner when the SID ends in -500', () => {
+    const admin = 'S-1-5-21-1111-2222-3333-500'
+    const { exec } = fakeAclExec({ acl: () => ['LA'], whoami: () => ({ status: 0, stdout: `"host\\runneradmin","${admin}"\r\n` }) })
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: 'host\\runneradmin' })).toEqual({ ok: true })
+    const { exec: exec2 } = fakeAclExec({ acl: () => ['LA', SELF] })
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: exec2, account: ACCT })).toEqual({ ok: false, detail: 'also readable by LA' })
+  })
+
+  it('a null access list (everyone) is not owner-only; an empty one or an unreadable entry is unknown', () => {
+    const saving = (sddl: string) => (c: string, a: string[]) => {
+      if (c === 'whoami') return { status: 0, stdout: `"ACME\\alice","${SELF}"` }
+      realFs.writeFileSync(a[2], Buffer.from(`name.yaml\r\n${sddl}\r\n`, 'utf16le'))
+      return { status: 0, stdout: '' }
+    }
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving('D:NO_ACCESS_CONTROL'), account: ACCT })).toEqual({ ok: false, detail: 'also readable by Everyone' })
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving('D:PAI'), account: ACCT }).ok).toBe('unknown')
+    // A conditional entry (nested parentheses) could hide an entry behind it.
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: saving(`D:PAI(A;;FA;;;${SELF})(XA;;FA;;;${SELF};(@User.x == 1))(A;;FA;;;BU)`), account: ACCT }).ok).toBe('unknown')
+    // UTF-8 is read too, and a SACL after the list is not an entry.
+    const utf8 = (c: string, a: string[]) => {
+      if (c === 'whoami') return { status: 0, stdout: `"ACME\\alice","${SELF}"` }
+      realFs.writeFileSync(a[2], `name.yaml\nD:PAI(A;;FA;;;${SELF})S:(ML;;NW;;;LW)\n`)
+      return { status: 0, stdout: '' }
+    }
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: utf8, account: ACCT })).toEqual({ ok: true })
+  })
+
   it('a removal that fails → ok:false with its exit code', () => {
-    const exec = (_c: string, a: string[]) => a[1] === '/remove:g'
-      ? { status: 5, stdout: '' }
-      : a.length > 1 ? { status: 0, stdout: '' } : { status: 0, stdout: `${a[0]} Everyone:(R)\n ACME\\alice:(F)\n` }
+    const { exec } = fakeAclExec({ acl: () => ['WD', SELF], remove: () => 5 })
     expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'icacls failed (exit 5)' })
   })
 
   it('icacls exit 5 → { ok:false, detail:"icacls failed (exit 5)" }', () => {
-    const exec = () => ({ status: 5, stdout: '' })
+    const { exec } = fakeAclExec({ acl: () => [SELF], grant: () => 5 })
     expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'icacls failed (exit 5)' })
   })
 
-  it('account unknown → ok:false (protect) / unknown (check)', () => {
-    const exec = vi.fn(ok)
+  it('account unknown → ok:false (protect) / unknown (check), nothing run', () => {
+    const { exec, calls } = fakeAclExec({ acl: () => [SELF] })
     expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: null }).ok).toBe(false)
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: null }).ok).toBe('unknown')
-    expect(exec).not.toHaveBeenCalled()
+    expect(calls).toEqual([])
   })
 
-  it('checkOwnerOnly: a failed read or an output naming no account is unknown, never ok', () => {
-    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: () => ({ status: 5, stdout: '' }), account: ACCT }).ok).toBe('unknown')
-    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: () => ({ status: 0, stdout: 'Successfully processed 1 files' }), account: ACCT }).ok).toBe('unknown')
-    const calls: string[][] = []
-    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: (c, a) => { calls.push([c, ...a]); return ok(a[0]) }, account: ACCT })).toEqual({ ok: true })
-    expect(calls).toEqual([['icacls', 'C:\\c.yaml']])   // reads only
+  it('the account SID unknown (whoami fails or names none) → ok:false (protect) / unknown (check), no icacls', () => {
+    for (const whoami of [() => ({ status: 1, stdout: '' }), () => ({ status: 0, stdout: '"ACME\\alice","not-a-sid"' })]) {
+      const { exec, calls } = fakeAclExec({ acl: () => [SELF], whoami })
+      expect(protectOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: false, detail: 'the Windows account is not known (whoami named no SID)' })
+      expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT }).ok).toBe('unknown')
+      expect(calls.some(c => c[0] === 'icacls')).toBe(false)
+    }
+  })
+
+  it('checkOwnerOnly: a failed read is unknown, never ok; it only reads', () => {
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: fakeAclExec({ acl: () => null }).exec, account: ACCT }).ok).toBe('unknown')
+    const { exec, calls } = fakeAclExec({ acl: () => [SELF] })
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })).toEqual({ ok: true })
+    expect(icaclsCalls(calls)).toEqual([['icacls', 'C:\\c.yaml', '/save']])   // reads only
+  })
+
+  it('the /save file is removed after reading', () => {
+    const { exec, calls } = fakeAclExec({ acl: () => [SELF] })
+    checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec, account: ACCT })
+    const saved = calls.find(c => c[2] === '/save')![3]
+    expect(realFs.existsSync(saved)).toBe(false)
+  })
+
+  it('icacls and whoami run by full path from %SystemRoot%\\System32 (never a planted copy); other names unchanged', () => {
+    expect(_systemTool('icacls', { SystemRoot: 'C:\\Windows' })).toBe(join('C:\\Windows', 'System32', 'icacls.exe'))
+    expect(_systemTool('whoami', { SYSTEMROOT: 'D:\\Win' })).toBe(join('D:\\Win', 'System32', 'whoami.exe'))
+    expect(_systemTool('icacls', {})).toBe('icacls')   // not Windows (the test stub's fake on PATH)
+    expect(_systemTool('git', { SystemRoot: 'C:\\Windows' })).toBe('git')
   })
 
   it('currentWindowsAccount is DOMAIN\\user, or null without USERNAME', () => {
@@ -230,22 +291,17 @@ describe('Windows (simulated host): every config write is a protected write', ()
 
   beforeEach(() => {
     saved = { ..._atomicWriteAcl }
-    calls = []
     protectedPaths = new Set()
     failGrant = false
+    const fake = fakeAclExec({
+      acl: p => realFs.existsSync(p) ? (protectedPaths.has(p) ? [SELF] : [SELF, 'BU']) : null,
+      grant: p => { if (failGrant) return 5; protectedPaths.add(p); return 0 },
+      remove: () => 0,
+    })
+    calls = fake.calls
     _atomicWriteAcl.platform = 'win32'
     _atomicWriteAcl.env = { USERNAME: 'alice', USERDOMAIN: 'CORP' }
-    _atomicWriteAcl.exec = (cmd, args) => {
-      calls.push([cmd, ...args])
-      const p = args[0]
-      if (args.length > 1) {
-        if (failGrant) return { status: 5, stdout: '' }
-        protectedPaths.add(p)
-        return { status: 0, stdout: '' }
-      }
-      if (!realFs.existsSync(p)) return { status: 2, stdout: '' }
-      return { status: 0, stdout: protectedPaths.has(p) ? `${p} CORP\\alice:(F)\n` : `${p} CORP\\alice:(F)\n BUILTIN\\Users:(RX)\n` }
-    }
+    _atomicWriteAcl.exec = fake.exec
   })
   afterEach(() => { Object.assign(_atomicWriteAcl, saved) })
 
@@ -260,7 +316,7 @@ describe('Windows (simulated host): every config write is a protected write', ()
     const grant = calls.findIndex(c => c.includes('/inheritance:r'))
     expect(grant).toBeGreaterThanOrEqual(0)
     expect(calls[grant][1]).toMatch(/config\.yaml\.\d+\.\d+\.tmp$/)
-    expect(calls[grant]).toContain('CORP\\alice:F')
+    expect(calls[grant]).toContain(`*${SELF}:F`)
     expect(protectedPaths.has(cfg)).toBe(true)
   })
 
@@ -295,6 +351,65 @@ describe('Windows (simulated host): every config write is a protected write', ()
     _atomicWriteAcl.env = {}
     expect(() => writeConfigFile(cfg, 'token: x\n')).toThrow(/account is not known/)
     expect(realFs.existsSync(cfg)).toBe(false)
+  })
+
+  it('a refusal is one line that names the cause and the opt-out', () => {
+    realFs.writeFileSync(cfg, 'stores: []\n')
+    _atomicWriteAcl.exec = () => ({ status: 1, stdout: '' })   // a drive without access lists: icacls fails
+    let msg = ''
+    try { writeConfigFile(cfg, 'token: x\n') } catch (e) { msg = (e as Error).message }
+    expect(msg).not.toContain('\n')
+    expect(msg).toMatch(/cannot inspect the destination's access list/)
+    expect(msg).toMatch(/Nothing was written/)
+    expect(msg).toContain('PLUR_ALLOW_UNPROTECTED_CONFIG=1')
+  })
+
+  describe('PLUR_ALLOW_UNPROTECTED_CONFIG (a drive that cannot keep access lists)', () => {
+    const noAcl = () => { _atomicWriteAcl.exec = (cmd, args) => { calls.push([cmd, ...args]); return { status: 1, stdout: '' } } }
+
+    for (const v of ['1', 'true', 'YES']) {
+      it(`set to ${v}: an existing config.yaml is written without protection, and both steps say so on stderr`, () => {
+        realFs.writeFileSync(cfg, 'stores: []\n')
+        noAcl()
+        _atomicWriteAcl.env = { USERNAME: 'alice', USERDOMAIN: 'CORP', PLUR_ALLOW_UNPROTECTED_CONFIG: v }
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const r = writeConfigFile(cfg, 'token: x\n')
+        expect(r.ok).toBe(false)
+        expect(realFs.readFileSync(cfg, 'utf8')).toBe('token: x\n')
+        const lines = err.mock.calls.map(c => String(c[0]))
+        expect(lines[0]).toMatch(/^\[plur:config\] writing config\.yaml WITHOUT owner-only protection \(PLUR_ALLOW_UNPROTECTED_CONFIG is set\): cannot inspect/)
+        expect(lines[1]).toMatch(/^\[plur:config\] could not restrict config\.yaml to your account: /)
+        expect(lines).toHaveLength(2)
+      })
+    }
+
+    it('set: a NEW config.yaml whose temp file cannot be protected is written', () => {
+      noAcl()
+      _atomicWriteAcl.env = { USERNAME: 'alice', PLUR_ALLOW_UNPROTECTED_CONFIG: '1' }
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      writeConfigFile(cfg, 'token: x\n')
+      expect(realFs.readFileSync(cfg, 'utf8')).toBe('token: x\n')
+      expect(realFs.readdirSync(root).filter(n => n.endsWith('.tmp'))).toEqual([])
+    })
+
+    it('set: protection that works is still applied (the opt-out only covers a failure)', () => {
+      followRenames()
+      _atomicWriteAcl.env = { USERNAME: 'alice', USERDOMAIN: 'CORP', PLUR_ALLOW_UNPROTECTED_CONFIG: '1' }
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect(writeConfigFile(cfg, 'stores: []\n')).toEqual({ ok: true })
+      expect(protectedPaths.has(cfg)).toBe(true)
+      expect(err).not.toHaveBeenCalled()
+    })
+
+    for (const v of ['0', 'false', '', 'no']) {
+      it(`set to "${v}": still refused`, () => {
+        realFs.writeFileSync(cfg, 'stores: []\n')
+        noAcl()
+        _atomicWriteAcl.env = { USERNAME: 'alice', PLUR_ALLOW_UNPROTECTED_CONFIG: v }
+        expect(() => writeConfigFile(cfg, 'token: x\n')).toThrow(/refusing a credential write/)
+        expect(realFs.readFileSync(cfg, 'utf8')).toBe('stores: []\n')
+      })
+    }
   })
 })
 
@@ -361,23 +476,9 @@ describe.runIf(isWin)('Windows, real icacls', () => {
     expect(checkOwnerOnly(shared).ok).toBe(false)
   })
 
-  it('diagnostic: raw icacls bytes for a path that is not ASCII, /save output, whoami (printed to the log)', () => {
-    const d = join(root, 'M\u00fcller \u010crt')
-    realFs.mkdirSync(d)
-    const f = join(d, 'diag.txt')
-    realFs.writeFileSync(f, 'x')
-    const raw = spawnSync('icacls', [f])
-    console.log('[diag-enc] path ' + JSON.stringify(f) + ' exit ' + raw.status + ' bytes ' + raw.stdout.subarray(0, 200).toString('hex'))
-    console.log('[diag-enc] utf8 ' + JSON.stringify(raw.stdout.toString('utf8')))
-    const saved = join(root, 'acl.save')
-    const sv = spawnSync('icacls', [f, '/save', saved])
-    console.log('[diag-enc] /save exit ' + sv.status + (realFs.existsSync(saved) ? ' bytes ' + realFs.readFileSync(saved).toString('hex') : ' no file'))
-    const who = spawnSync('whoami', ['/user', '/fo', 'csv', '/nh'])
-    console.log('[diag-enc] whoami exit ' + who.status + ' ' + JSON.stringify(who.stdout.toString('utf8')))
-    const cp = spawnSync('cmd', ['/d', '/c', 'chcp'])
-    console.log('[diag-enc] chcp ' + JSON.stringify(cp.stdout.toString('utf8')))
-  })
-
+  // icacls prints names and paths in the OEM code page (measured on the
+  // runner: `ü` → byte 0x81, `Č` → `C`), so text matching refused every write
+  // under such a folder. The list is now read as SDDL with SIDs.
   it('a config.yaml in a folder whose name is not ASCII (a profile like C:\\Users\\M\u00fcller) is protected and verifies', () => {
     const d = join(root, 'M\u00fcller \u010crt')
     realFs.mkdirSync(d)
@@ -386,6 +487,24 @@ describe.runIf(isWin)('Windows, real icacls', () => {
     expect(checkOwnerOnly(c)).toEqual({ ok: true })
     realFs.writeFileSync(join(d, 'shared.txt'), 'x')
     expect(checkOwnerOnly(join(d, 'shared.txt')).ok).toBe(false)
+  })
+
+  it('the account is identified by its SID (whoami)', () => {
+    expect(currentWindowsSid()).toMatch(/^S-1-5-\d+(-\d+)+$/)
+  })
+
+  it('a planted icacls.exe in the working folder is never run', () => {
+    const planted = join(root, 'planted')
+    realFs.mkdirSync(planted)
+    // Any other program under the name: if it ran, the protection could not verify.
+    realFs.copyFileSync(join(process.env.SystemRoot!, 'System32', 'whoami.exe'), join(planted, 'icacls.exe'))
+    const before = process.cwd()
+    process.chdir(planted)
+    try {
+      expect(writeConfigFile(cfg, 'stores: []\n')).toEqual({ ok: true })
+    } finally {
+      process.chdir(before)
+    }
   })
 
   it('a folder gets an owner-only, inheritable list', () => {
