@@ -2,7 +2,8 @@ import { existsSync, readFileSync, mkdirSync, unlinkSync, chmodSync, lstatSync, 
 import { join, basename } from 'path'
 import { homedir } from 'os'
 import { atomicWrite } from '@plur-ai/core'
-import { readConfigForWrite, codexConfigTomlPath } from '../mcp-config.js'
+import { codexConfigTomlPath } from '../mcp-config.js'
+import { unambiguousJsonc } from '../opencode-config.js'
 import { parseJsonc } from '../lib/jsonc.js'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
 import { applyEdits, modify } from 'jsonc-parser'
@@ -19,8 +20,22 @@ export interface CleanupEntry {
 
 const ENTRY = 'plur-enterprise'
 
-/** Writes a backup of a file and returns its path; throws when it cannot be made safely. */
-type Backup = (source: string) => string
+/**
+ * Writes `data` — the snapshot of `source` the cleanup is about to replace —
+ * as a backup and returns its path; throws when it cannot be made safely.
+ */
+type Backup = (source: string, data: Buffer) => string
+
+/** Called after a target's backup is written and before the file is re-read and replaced. */
+type AfterBackup = (target: string, attempt: number) => void
+
+/** How often a target that changed under the cleanup is re-read before it is refused. */
+const SNAPSHOT_ATTEMPTS = 3
+
+interface Ctx {
+  backup: Backup
+  afterBackup?: AfterBackup
+}
 
 const HEADER_FILE = 'mcp-enterprise-header'
 
@@ -46,6 +61,11 @@ export function cleanupLegacy(opts: {
   exec?: OwnerOnlyExec
   /** Override for testing: the Windows account (default: USERDOMAIN\\USERNAME from env) */
   account?: string
+  /**
+   * Override for testing: runs after each target's backup, before the file is
+   * re-read and compared with its snapshot (lets a test play a concurrent writer).
+   */
+  afterBackup?: AfterBackup
 }): CleanupEntry[] {
   const home = opts.home ?? homedir()
   const env = opts.env ?? process.env
@@ -60,9 +80,10 @@ export function cleanupLegacy(opts: {
   // One target's failure (unreadable file, backup dir not writable, …) is
   // reported as refused and never stops the others. A write happens only
   // after its backup succeeded, so a throw before that point changed nothing.
-  const run = (target: string, fn: (target: string, backup: Backup) => CleanupEntry): void => {
+  const ctx: Ctx = { backup, afterBackup: opts.afterBackup }
+  const run = (target: string, fn: (target: string, ctx: Ctx) => CleanupEntry): void => {
     try {
-      results.push(fn(target, backup))
+      results.push(fn(target, ctx))
     } catch (e) {
       results.push({ target, status: 'refused', detail: e instanceof Error ? e.message : String(e) })
     }
@@ -77,11 +98,11 @@ export function cleanupLegacy(opts: {
   // The header file is shared by every legacy entry: it goes only when no
   // editor still needs it — checked after the cleanups above, across ALL
   // editors (proven or not).
-  run(join(opts.plurDir, HEADER_FILE), (target, b) => {
+  run(join(opts.plurDir, HEADER_FILE), (target, c) => {
     if (!existsSync(target)) return { target, status: 'absent' }
     const holders = headerHolders(home, env)
     if (holders.length > 0) return { target, status: 'refused', detail: `kept: ${holders.join('; ')}` }
-    return cleanupFile(target, b)
+    return cleanupFile(target, c)
   })
 
   return results
@@ -169,74 +190,151 @@ function opencodeHasEntry(config: unknown): boolean {
   return ENTRY in mcp || (isPlainObject(mcp.servers) && ENTRY in mcp.servers)
 }
 
+// ─── One snapshot per replacement (Codex round 3, finding 3) ─────────────────
+
+/**
+ * What a cleanup does with one snapshot of a file: nothing to remove, refuse,
+ * or replace it with `content` (`null` deletes the file).
+ */
+type Plan =
+  | { status: 'absent' }
+  | { status: 'refused'; detail: string }
+  | { status: 'edit'; content: string | null }
+
+/**
+ * Read `target` ONCE, plan the edit from those bytes, verify the edited
+ * document, back up exactly those bytes, and — right before replacing —
+ * re-read the file and compare. A file that changed since the snapshot (an
+ * editor added a server, say) is planned again from its current contents, up
+ * to {@link SNAPSHOT_ATTEMPTS} times, then refused: the replacement is never
+ * built from a stale read, and the reported backup always holds the bytes
+ * that were replaced. What remains is the gap between that last comparison
+ * and the rename, which no lock-free writer can close.
+ *
+ * `verify` runs on every edited document before anything is written: it
+ * re-parses the result the way the editor reads it and returns why the edit
+ * failed (a targeted entry is still active), or null.
+ */
+function replaceFromSnapshot(
+  target: string,
+  ctx: Ctx,
+  plan: (text: string) => Plan,
+  verify: ((content: string) => string | null) | null,
+): CleanupEntry {
+  for (let attempt = 0; attempt < SNAPSHOT_ATTEMPTS; attempt++) {
+    let snapshot: Buffer
+    try {
+      snapshot = readFileSync(target)
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' || code === 'ENOTDIR') return { target, status: 'absent' }
+      return { target, status: 'refused', detail: 'could not read file' }
+    }
+    const p = plan(snapshot.toString('utf8'))
+    if (p.status === 'absent') return { target, status: 'absent' }
+    if (p.status === 'refused') return { target, status: 'refused', detail: p.detail }
+    if (p.content !== null && verify) {
+      const bad = verify(p.content)
+      if (bad) return { target, status: 'refused', detail: `${bad}; left unchanged` }
+    }
+    const backup = ctx.backup(target, snapshot)
+    ctx.afterBackup?.(target, attempt)
+    let current: Buffer | null
+    try { current = readFileSync(target) } catch { current = null }
+    if (current === null || !current.equals(snapshot)) continue
+    if (p.content === null) unlinkSync(target)
+    else writeInPlace(target, p.content)
+    return { target, status: 'removed', backup }
+  }
+  return {
+    target,
+    status: 'refused',
+    detail: `the file changed during cleanup (${SNAPSHOT_ATTEMPTS} attempts); left as it is now`,
+  }
+}
+
+/** A JSON config parsed the way readConfigForWrite does: a plain object, or null. */
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return isPlainObject(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+const STILL_ACTIVE = `${ENTRY} would still be active after the edit`
+
 // ─── Claude Code ─────────────────────────────────────────────────────────────
 
-function cleanupClaudeJson(target: string, makeBackup: Backup): CleanupEntry {
-  const { config, ok } = readConfigForWrite(target)
-  if (!ok) return { target, status: 'refused', detail: 'file exists but could not be parsed' }
-  if (!existsSync(target)) return { target, status: 'absent' }
+function cleanupClaudeJson(target: string, ctx: Ctx): CleanupEntry {
+  return replaceFromSnapshot(target, ctx, text => {
+    const config = parseJsonObject(text)
+    if (!config) return { status: 'refused', detail: 'file exists but could not be parsed' }
 
-  let changed = false
+    let changed = false
 
-  // Top-level mcpServers
-  const servers = config.mcpServers as Record<string, unknown> | undefined
-  if (servers && ENTRY in servers) {
-    delete servers[ENTRY]
-    changed = true
-  }
+    // Top-level mcpServers
+    const servers = config.mcpServers
+    if (isPlainObject(servers) && ENTRY in servers) {
+      delete servers[ENTRY]
+      changed = true
+    }
 
-  // projects[*].mcpServers
-  const projects = config.projects as Record<string, unknown> | undefined
-  if (projects && typeof projects === 'object') {
-    for (const key of Object.keys(projects)) {
-      const proj = projects[key] as Record<string, unknown> | undefined
-      if (!proj || typeof proj !== 'object') continue
-      const projServers = proj.mcpServers as Record<string, unknown> | undefined
-      if (projServers && ENTRY in projServers) {
-        delete projServers[ENTRY]
-        changed = true
+    // projects[*].mcpServers
+    const projects = config.projects
+    if (isPlainObject(projects)) {
+      for (const key of Object.keys(projects)) {
+        const proj = projects[key]
+        if (!isPlainObject(proj)) continue
+        const projServers = proj.mcpServers
+        if (isPlainObject(projServers) && ENTRY in projServers) {
+          delete projServers[ENTRY]
+          changed = true
+        }
       }
     }
-  }
 
-  if (!changed) return { target, status: 'absent' }
-
-  const backup = makeBackup(target)
-  writeInPlace(target, JSON.stringify(config, null, 2) + '\n')
-  return { target, status: 'removed', backup }
+    if (!changed) return { status: 'absent' }
+    return { status: 'edit', content: JSON.stringify(config, null, 2) + '\n' }
+  }, content => {
+    const after = parseJsonObject(content)
+    return after && !claudeHasEntry(after) ? null : STILL_ACTIVE
+  })
 }
 
 // ─── Generic JSON mcpServers file (Cursor) ────────────────────────────────────
 
-function cleanupJsonMcpFile(target: string, makeBackup: Backup): CleanupEntry {
-  if (!existsSync(target)) return { target, status: 'absent' }
-
-  const { config, ok } = readConfigForWrite(target)
-  if (!ok) return { target, status: 'refused', detail: 'file exists but could not be parsed' }
-
-  const servers = config.mcpServers as Record<string, unknown> | undefined
-  if (!servers || !(ENTRY in servers)) return { target, status: 'absent' }
-
-  delete servers[ENTRY]
-  const backup = makeBackup(target)
-  writeInPlace(target, JSON.stringify(config, null, 2) + '\n')
-  return { target, status: 'removed', backup }
+function cleanupJsonMcpFile(target: string, ctx: Ctx): CleanupEntry {
+  return replaceFromSnapshot(target, ctx, text => {
+    const config = parseJsonObject(text)
+    if (!config) return { status: 'refused', detail: 'file exists but could not be parsed' }
+    const servers = config.mcpServers
+    if (!isPlainObject(servers) || !(ENTRY in servers)) return { status: 'absent' }
+    delete servers[ENTRY]
+    return { status: 'edit', content: JSON.stringify(config, null, 2) + '\n' }
+  }, content => {
+    const after = parseJsonObject(content)
+    return after && !mcpServersHas(after) ? null : STILL_ACTIVE
+  })
 }
 
 // ─── Codex config.toml ────────────────────────────────────────────────────────
 
-function cleanupCodexToml(target: string, makeBackup: Backup): CleanupEntry {
-  if (!existsSync(target)) return { target, status: 'absent' }
-
-  const original = readFileSync(target, 'utf8')
-  const result = removeTomlEnterpriseSection(original)
-  if (result === null) return { target, status: 'refused', detail: 'config.toml could not be parsed' }
-  if (typeof result === 'object') return { target, status: 'refused', detail: result.refused }
-  if (result === original) return { target, status: 'absent' }
-
-  const backup = makeBackup(target)
-  writeInPlace(target, result)
-  return { target, status: 'removed', backup }
+function cleanupCodexToml(target: string, ctx: Ctx): CleanupEntry {
+  return replaceFromSnapshot(target, ctx, original => {
+    const result = removeTomlEnterpriseSection(original)
+    if (result === null) return { status: 'refused', detail: 'config.toml could not be parsed' }
+    if (typeof result === 'object') return { status: 'refused', detail: result.refused }
+    if (result === original) return { status: 'absent' }
+    return { status: 'edit', content: result }
+  }, content => {
+    try {
+      return definesEnterprise(parseTOML(content, { tomlVersion: '1.0' })) ? STILL_ACTIVE : null
+    } catch {
+      return 'config.toml would not parse after the edit'
+    }
+  })
 }
 
 /** Does the parsed TOML still define mcp_servers.plur-enterprise, in any form? */
@@ -303,59 +401,64 @@ function removeTomlEnterpriseSection(text: string): string | null | { refused: s
 
 // ─── OpenCode config (JSONC) ──────────────────────────────────────────────────
 
-function cleanupOpencodeConfig(target: string, makeBackup: Backup): CleanupEntry {
-  if (!existsSync(target)) return { target, status: 'absent' }
+/**
+ * OpenCode reads its config with a last-wins parser, while the offset editor
+ * changes the FIRST occurrence of a key. With a duplicate key on the way to
+ * the entry, an edit could remove an inactive copy and leave the active one
+ * (Codex round 3, finding 4). So a config with any duplicate key is refused,
+ * the same rule `plur init --opencode` applies (`unambiguousJsonc`), and the
+ * edited document is re-parsed last-wins to prove the entry is gone.
+ */
+function cleanupOpencodeConfig(target: string, ctx: Ctx): CleanupEntry {
+  return replaceFromSnapshot(target, ctx, text => {
+    const bom = text.charCodeAt(0) === 0xfeff ? text[0] : ''
+    const source = bom ? text.slice(1) : text
 
-  let source: string
-  try {
-    source = readFileSync(target, 'utf8')
-  } catch {
-    return { target, status: 'refused', detail: 'could not read file' }
-  }
+    let parsed: unknown
+    try {
+      parsed = parseJsonc(source)
+    } catch {
+      return { status: 'refused', detail: 'file could not be parsed as JSONC' }
+    }
+    if (!isPlainObject(parsed)) return { status: 'refused', detail: 'unexpected file shape' }
+    if (!unambiguousJsonc(source)) {
+      return { status: 'refused', detail: 'the file has a duplicate key, so which entry is active is ambiguous; remove it by hand' }
+    }
 
-  let parsed: unknown
-  try {
-    parsed = parseJsonc(source)
-  } catch {
-    return { target, status: 'refused', detail: 'file could not be parsed as JSONC' }
-  }
+    let modified = source
+    let changed = false
 
-  if (!isPlainObject(parsed)) return { target, status: 'refused', detail: 'unexpected file shape' }
+    // Remove from mcp['plur-enterprise'] (legacy location)
+    const mcp = parsed.mcp
+    if (isPlainObject(mcp) && ENTRY in mcp) {
+      modified = applyEdits(modified, modify(modified, ['mcp', ENTRY], undefined, { formattingOptions: {} }))
+      changed = true
+    }
 
-  const cfg = parsed
-  let modified = source
-  let changed = false
+    // Remove from mcp.servers['plur-enterprise'] (native location)
+    const mcpServers = isPlainObject(mcp) ? mcp.servers : undefined
+    if (isPlainObject(mcpServers) && ENTRY in mcpServers) {
+      modified = applyEdits(modified, modify(modified, ['mcp', 'servers', ENTRY], undefined, { formattingOptions: {} }))
+      changed = true
+    }
 
-  // Remove from mcp['plur-enterprise'] (legacy location)
-  const mcp = cfg.mcp
-  if (isPlainObject(mcp) && ENTRY in mcp) {
-    const edits = modify(modified, ['mcp', ENTRY], undefined, { formattingOptions: {} })
-    modified = applyEdits(modified, edits)
-    changed = true
-  }
-
-  // Remove from mcp.servers['plur-enterprise'] (native location)
-  const mcpServers = isPlainObject(mcp) ? (mcp.servers as unknown) : undefined
-  if (isPlainObject(mcpServers) && ENTRY in mcpServers) {
-    const edits = modify(modified, ['mcp', 'servers', ENTRY], undefined, { formattingOptions: {} })
-    modified = applyEdits(modified, edits)
-    changed = true
-  }
-
-  if (!changed) return { target, status: 'absent' }
-
-  const backup = makeBackup(target)
-  writeInPlace(target, modified)
-  return { target, status: 'removed', backup }
+    if (!changed) return { status: 'absent' }
+    return { status: 'edit', content: bom + modified }
+  }, content => {
+    const source = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content
+    try {
+      if (!unambiguousJsonc(source)) return 'the edited file would be ambiguous'
+      return opencodeHasEntry(parseJsonc(source)) ? STILL_ACTIVE : null
+    } catch {
+      return 'the edited file would not parse'
+    }
+  })
 }
 
 // ─── Header file ──────────────────────────────────────────────────────────────
 
-function cleanupFile(target: string, makeBackup: Backup): CleanupEntry {
-  if (!existsSync(target)) return { target, status: 'absent' }
-  const backup = makeBackup(target)
-  unlinkSync(target)
-  return { target, status: 'removed', backup }
+function cleanupFile(target: string, ctx: Ctx): CleanupEntry {
+  return replaceFromSnapshot(target, ctx, () => ({ status: 'edit', content: null }), null)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -393,9 +496,8 @@ function backupWriter(
     }
     if (dirReady !== true) throw dirReady
   }
-  return (source: string): string => {
+  return (source: string, data: Buffer): string => {
     ensureDir()
-    const data = readFileSync(source)
     const name = basename(source)
     let dest = join(backupDir, name)
     for (let n = 1; existsSync(dest); n++) dest = join(backupDir, `${name}.${n}`)

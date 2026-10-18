@@ -198,3 +198,29 @@ one file instead of one deep one. Each section lists what it leaves out.
     match that the retire queue already uses;
   - (b) deliver it to the new server, as it does now; or
   - (c) deliver it only when the new url is the same origin?
+
+## D6. Endpoint identity: two spellings of one server are one server — CONFIRMED + FIXED (Codex round 3 finding 2, 2026-10-18)
+
+- `normalizeEndpointUrl` folded only a trailing `/sse` and slash. `https://plur.example.com`
+  and `https://plur.example.com:443`, or an upper-case host, were two servers to the resolver:
+  a scope listed under both spellings answered `conflict`, the save was refused and queued
+  deliveries were held.
+- Fix (store/remote-store.ts `normalizeEndpointUrl`): URL-parsed. Scheme and host are
+  case-folded, the default port is dropped, userinfo and fragment are never part of it, and a
+  base path is kept as written less a trailing `/sse` and slash. Every comparison site uses
+  it: resolver grouping, refresh and metadata matching, rotation lookup, outbox target
+  matching, and now also the server-entry identity base (store-expand.ts), the outbox cooldown
+  set, the recall-holder key and the persisted id-map lookup (index.ts). The url on disk keeps
+  the user's spelling.
+- Model (RoutingDiscovery.lean §Endpoint identity): `RawEntry` holds the spelling `R`;
+  `RawEntry.ident canon` maps it to the identity `U` with an arbitrary `canon`.
+  `conflict_iff_identity` states the conflict over identities; `one_identity_no_conflict`
+  says spellings of one identity never conflict; `raw_spelling_grouping_conflicts` replays the
+  pre-fix conflict with `canon = id`; `distinct_identities_conflict` keeps the real conflict
+  reachable. StoreEntry.lean §3's identity base is documented as using the identity.
+- Test first: core/test/codex3-endpoint-identity.test.ts (port 443/80, host and scheme case,
+  trailing slash, `/sse`, userinfo for each site; another port, scheme or base path stays
+  another server) was red (23 failing), then green.
+- Mutations (all rejected by Lean): raw-spelling grouping claimed conflict-free; the
+  conflict criterion stated over raw spellings; `one_identity_no_conflict` without its
+  identity hypothesis.

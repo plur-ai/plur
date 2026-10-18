@@ -9,7 +9,8 @@ write of `Plur.refreshServerScopes` (index.ts, with `discoveryChanged`). Finding
 replays: `spec/formal/findings/routing-discovery.md`. Checked against branch formal2/epic-1797
 (b22f01d0) plus the fixes in this round.
 
-Abstracted: scopes `S`, normalized server urls `U` and orgs `O` are arbitrary types with
+Abstracted: scopes `S`, server endpoint identities `U` (the canonical identity of a configured
+url; see §Endpoint identity for the spelling → identity map) and orgs `O` are arbitrary types with
 decidable equality. `personal s` is "starts with `user:`", `orgOf` is `scopeOrg`, `inOrg o x` is
 `orgRejection(x, o, username) === null`, `shared` is `isSharedScope`, `hit` is the secret/policy
 scan's verdict on the content. Every theorem holds for every such oracle. The personal selection
@@ -27,7 +28,7 @@ namespace PlurSpec.RoutingDiscovery
 
 structure Entry (S U O : Type) where
   scope    : S
-  url      : Option U      -- `normalizeEndpointUrl(url)`; `none` = a path store
+  url      : Option U      -- the endpoint identity `normalizeEndpointUrl(url)` (§Endpoint identity); `none` = a path store
   readonly : Bool
   org      : Option O      -- an `enterprise` object with a string `discovery.org_id` (case-folded)
 deriving DecidableEq
@@ -326,6 +327,81 @@ theorem personal_two_servers_not_conflict :
     let b : Entry Nat Nat Nat := ⟨1, some 11, false, none⟩
     resolve (fun _ => true) (fun _ => none) 1 [a, b] = .remote a true ∧ TwoServers 1 [a, b] :=
   ⟨by decide, (two_le_servers_iff 1 _).mp (by decide)⟩
+
+/-! ### Endpoint identity (Codex round 3, finding 2)
+
+Everything above groups by `U`, the endpoint identity. The config holds the user's spellings
+`R`; the code maps each to its identity with `normalizeEndpointUrl` (URL-parsed: scheme and host
+case-folded, default port dropped, userinfo removed, base path kept less a trailing `/sse` and
+slash). Here that map is an arbitrary `canon : R → U`, so the theorems hold for any identity
+function, and the counterexample shows what grouping by the raw spelling (`canon = id`) did. -/
+
+structure RawEntry (S R O : Type) where
+  scope    : S
+  url      : Option R      -- the url as written in config.yaml; `none` = a path store
+  readonly : Bool
+  org      : Option O
+deriving DecidableEq
+
+/-- The entry the resolver sees: the url replaced by its identity, nothing else changed. -/
+def RawEntry.ident {R : Type} (canon : R → U) (e : RawEntry S R O) : Entry S U O :=
+  ⟨e.scope, e.url.map canon, e.readonly, e.org⟩
+
+/-- Two exact-scope url entries whose spellings have different identities. -/
+def TwoServersRaw {R : Type} (canon : R → U) (s : S) (l : List (RawEntry S R O)) : Prop :=
+  ∃ e₁ ∈ l, ∃ e₂ ∈ l, e₁.scope = s ∧ e₂.scope = s ∧ e₁.url.isSome ∧ e₂.url.isSome ∧
+    e₁.url.map canon ≠ e₂.url.map canon
+
+/-- FIXED (Codex round 3, finding 2): outside the personal rule, `conflict` exactly when two
+exact-scope entries name servers with different IDENTITIES — never because two spellings of
+one server differ as strings. -/
+theorem conflict_iff_identity {R : Type} (canon : R → U) (personal : S → Bool)
+    (orgOf : S → Option O) (s : S) (l : List (RawEntry S R O))
+    (hp : personalHit personal s (l.map (RawEntry.ident canon)) = false) :
+    (∃ xs, resolve personal orgOf s (l.map (RawEntry.ident canon)) = .conflict xs) ↔
+      TwoServersRaw canon s l := by
+  rw [conflict_iff personal orgOf s _ hp]
+  constructor
+  · rintro ⟨e₁, h1, e₂, h2, hs1, hs2, hu1, hu2, hne⟩
+    obtain ⟨r₁, hr1, rfl⟩ := List.mem_map.mp h1
+    obtain ⟨r₂, hr2, rfl⟩ := List.mem_map.mp h2
+    simp only [RawEntry.ident, Option.isSome_map] at hs1 hs2 hu1 hu2 hne
+    exact ⟨r₁, hr1, r₂, hr2, hs1, hs2, hu1, hu2, hne⟩
+  · rintro ⟨r₁, hr1, r₂, hr2, hs1, hs2, hu1, hu2, hne⟩
+    exact ⟨r₁.ident canon, List.mem_map_of_mem hr1, r₂.ident canon, List.mem_map_of_mem hr2,
+      hs1, hs2, by simp [RawEntry.ident, hu1], by simp [RawEntry.ident, hu2], hne⟩
+
+/-- Spellings of one server never conflict: when every exact-scope url entry's identity is
+`u`, the resolver does not answer `conflict`, however differently the urls are written. -/
+theorem one_identity_no_conflict {R : Type} (canon : R → U) (personal : S → Bool)
+    (orgOf : S → Option O) (s : S) (l : List (RawEntry S R O)) (u : U)
+    (hp : personalHit personal s (l.map (RawEntry.ident canon)) = false)
+    (h : ∀ e ∈ l, e.scope = s → ∀ r, e.url = some r → canon r = u) :
+    ¬ ∃ xs, resolve personal orgOf s (l.map (RawEntry.ident canon)) = .conflict xs := by
+  rw [conflict_iff_identity canon personal orgOf s l hp]
+  rintro ⟨r₁, hr1, r₂, hr2, hs1, hs2, hu1, hu2, hne⟩
+  obtain ⟨a, ha⟩ := Option.isSome_iff_exists.mp hu1
+  obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp hu2
+  apply hne
+  rw [ha, hb]
+  simp [h r₁ hr1 hs1 a ha, h r₂ hr2 hs2 b hb]
+
+/-- REPLAYED counterexample (pre-fix): spellings 10 and 11 of one server (identity `n / 10`,
+e.g. `https://plur.example.com` and `https://plur.example.com:443`). Grouping by the raw
+spelling (`canon = id`) reports a conflict, so the save is refused; grouping by identity
+routes it to the server. -/
+theorem raw_spelling_grouping_conflicts :
+    let l : List (RawEntry Nat Nat Nat) := [⟨1, some 10, false, none⟩, ⟨1, some 11, false, none⟩]
+    let no : Nat → Bool := fun _ => false
+    resolve no (fun _ => none) 1 (l.map (RawEntry.ident id)) = .conflict [10, 11] ∧
+    resolve no (fun _ => none) 1 (l.map (RawEntry.ident (· / 10))) =
+      .remote ⟨1, some 1, false, none⟩ true := by decide
+
+/-- Non-vacuity: different identities (another port or base path) still conflict. -/
+theorem distinct_identities_conflict :
+    let l : List (RawEntry Nat Nat Nat) := [⟨1, some 10, false, none⟩, ⟨1, some 20, false, none⟩]
+    resolve (fun _ => false) (fun _ => none) 1 (l.map (RawEntry.ident (· / 10))) =
+      .conflict [1, 2] := by decide
 
 /-! ## 2. The leak guard and the write paths (candidate 1) -/
 

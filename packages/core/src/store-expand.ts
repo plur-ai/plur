@@ -1,6 +1,7 @@
 import { isSharedScope } from './scope-util.js'
 import { logger } from './logger.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
+import { normalizeEndpointUrl } from './store/remote-store.js'
 import { ScopeSettingsSchema, type StoreEntry, type ServerStoreEntry } from './schemas/config.js'
 
 /** In-memory marker added to each expanded entry. Value = the server entry's
@@ -23,7 +24,8 @@ export function isServerStoreEntry(raw: unknown): boolean {
 }
 
 /**
- * The identity of a server entry, from its raw YAML: url, compat `scope`,
+ * The identity of a server entry, from its raw YAML: url (canonical endpoint
+ * identity, {@link normalizeEndpointUrl}), compat `scope`,
  * `scopes`, `pinned_scopes`, `readonly` and `token_env` (never the token).
  * These are what tell two server entries apart; metadata (`discovery`,
  * `enterprise`, `scope_settings`) is not part of it, so a metadata change by
@@ -31,7 +33,10 @@ export function isServerStoreEntry(raw: unknown): boolean {
  */
 export function serverEntryIdentityBase(raw: unknown): string {
   const o = raw as Record<string, unknown>
-  return JSON.stringify([o.url, o.scope, o.scopes, o.pinned_scopes, o.readonly, o.token_env])
+  // The url by its canonical endpoint identity: two spellings of one server
+  // are one identity (Codex round 3, finding 2).
+  const url = typeof o.url === 'string' ? normalizeEndpointUrl(o.url) : o.url
+  return JSON.stringify([url, o.scope, o.scopes, o.pinned_scopes, o.readonly, o.token_env])
 }
 
 /**
