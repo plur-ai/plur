@@ -187,3 +187,6 @@ Code-level (eligibility is `PerScope.ok` in §6); replayed by the round-5 tests.
 
 #### Codex audit round 6 (2026-10-18, PASS with one medium, fixed)
 - An entry serving the personal scope in another letter case (with `dial: never`) was folded in, and the new exact compat scope took its selection. The takeover check now also refuses when the server entry itself, after the fold, serves the personal scope in another case. Replayed by the round-6 test.
+
+#### Codex audit round 7 (2026-10-18, PASS with one medium, fixed)
+- A personal scope in another letter case could still be folded into a server entry that already served the scope, reordering the case-folded personal selection (and its dial). The fold now keeps an entry separate when any entry, the server entry and other folding entries included, serves its personal scope in another letter case (`scope-served-elsewhere`). Replayed by the round-7 tests.

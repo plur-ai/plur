@@ -295,7 +295,11 @@ export function foldStoresIntoServerEntry(
   for (const [i, w] of why) {
     if (w !== null) continue
     const scope = (rawStores[i] as Record<string, unknown>).scope as string
-    const elsewhere = rawStores.some((r, j) => j !== si && why.get(j) !== null && servedScopes(r).some(x => sameRoute(x, scope)))
+    // The same spelling counts from an entry that stays; another letter case
+    // of a personal scope counts from any entry, the server entry and other
+    // folding ones included, since the personal selection folds case.
+    const elsewhere = rawStores.some((r, j) => j !== i && servedScopes(r).some(x =>
+      sameRoute(x, scope) && (x !== scope || (j !== si && why.get(j) !== null))))
     if (elsewhere) why.set(i, 'scope-served-elsewhere')
   }
   // Pass 3: fold a scope only when its metadata has one value: every folding
