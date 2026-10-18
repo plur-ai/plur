@@ -2828,7 +2828,7 @@ export class Plur {
       if (!row) continue
       const rowScope = row.scope ?? 'global'
       if (rowScope !== 'global' && !isScopeWithin(rowScope, entry.scope)) continue
-      holders.push({ entry, rowScope, key: `url\0${entry.url.replace(/\/+$/, '')}\0${row.id}` })
+      holders.push({ entry, rowScope, key: `url\0${normalizeEndpointUrl(entry.url)}\0${row.id}` })
     }
     const rows = new Map<string, Holder[]>()
     for (const h of holders) rows.set(h.key, [...(rows.get(h.key) ?? []), h])
@@ -11190,8 +11190,8 @@ export class Plur {
       // this url does not park this one.
       const cooldown = isHostInCooldown(storeEntry.url!, Date.now(), healthPath, storeEntry.token)
       if (cooldown.inCooldown) {
-        if (cooldownSkippedHosts.has(storeEntry.url!)) return { skip: 'skipped' }
-        cooldownSkippedHosts.add(storeEntry.url!)
+        if (cooldownSkippedHosts.has(normalizeEndpointUrl(storeEntry.url!))) return { skip: 'skipped' }
+        cooldownSkippedHosts.add(normalizeEndpointUrl(storeEntry.url!))
         const secs = Math.max(1, Math.ceil(((cooldown.until ?? 0) - Date.now()) / 1000))
         return {
           skip: 'skipped',
@@ -11508,7 +11508,7 @@ export class Plur {
         let refuse: string | null = null
         for (const t of targets) {
           const server = localToServer.get(t)
-            ?? (persistedIdMap[t]?.url === storeEntry.url ? persistedIdMap[t].server_id : undefined)
+            ?? (persistedIdMap[t]?.url !== undefined && normalizeEndpointUrl(persistedIdMap[t].url) === normalizeEndpointUrl(storeEntry.url!) ? persistedIdMap[t].server_id : undefined)
           if (server) { remapped.push(server); continue }
           const localTarget = engrams.find(e => e.id === t)
           if (localTarget && !pendingIds.has(t)) {

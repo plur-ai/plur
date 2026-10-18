@@ -98,11 +98,24 @@ export const LOAD_FETCH_TIMEOUT_MS = 30_000
  * fold, or the three spellings count as three distinct endpoints and a scope
  * registered under one spelling is re-offered under another.
  *
+ * The form is URL-parsed: `https://X.com:443/sse` is `https://x.com` too.
+ * Scheme and host are case-folded and the scheme's default port is dropped;
+ * userinfo and fragment are never part of the identity; a base path is kept
+ * as written (its case matters), less a trailing `/sse` and slash. A url that
+ * does not parse as http(s) only gets the trailing fold.
+ *
  * Comparison-time only: callers must NEVER rewrite a stored config value with
  * the normalized form — the user's spelling is preserved on disk.
  */
 export function normalizeEndpointUrl(url: string): string {
-  return url.replace(/\/sse\/?$/, '').replace(/\/$/, '')
+  const foldPath = (p: string): string => p.replace(/\/sse\/?$/, '').replace(/\/$/, '')
+  let u: URL
+  try { u = new URL(url) } catch { return foldPath(url) }
+  // URL-parsed (Codex round 3, finding 2): scheme and host case-folded, the
+  // scheme's default port dropped, userinfo and fragment never part of it.
+  // The base path keeps its case; only a trailing /sse and slash fold.
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return foldPath(url)
+  return `${u.protocol}//${u.host}${foldPath(u.pathname)}${u.search}`
 }
 
 // ── Host-level failure breaker (#1069) ──────────────────────────────────────
@@ -353,6 +366,25 @@ export const FEEDBACK_SOURCE_CAPABILITY = 'feedback.source'
 
 /** Host grammar for server-supplied strings (#426, #408). */
 const HOST_RE = /^[a-z0-9.-]+(:\d{1,5})?$/
+/** A bracketed IPv6 literal with an optional port, e.g. `[2001:db8::1]:8443`. */
+const IPV6_HOST_RE = /^(\[[0-9a-f:.]+\])(?::(\d{1,5}))?$/
+
+/**
+ * A server-supplied host: a name or IPv4 address (HOST_RE), or a bracketed
+ * IPv6 literal in the canonical form the URL parser prints, with an optional
+ * port in range. No userinfo, path or other characters can pass.
+ */
+function isSafeHost(h: string): boolean {
+  if (HOST_RE.test(h)) return true
+  const m = IPV6_HOST_RE.exec(h)
+  if (!m) return false
+  if (m[2] !== undefined && Number(m[2]) > 65535) return false
+  try {
+    return new URL(`http://${m[1]}/`).hostname === m[1]
+  } catch {
+    return false
+  }
+}
 /** Path grammar for server-supplied project paths (#426, #408).
  *  Each segment must start with a word char to prevent path traversal (e.g. `..`). */
 const PATH_RE = /^[\w][\w.-]*(\/[\w][\w.-]*)*$/
@@ -690,7 +722,7 @@ export class RemoteStore {
     const rawGitlabHost = body['gitlab_host']
     const gitlab_host: MeResponse['gitlab_host'] =
       rawGitlabHost === null ? null
-      : typeof rawGitlabHost === 'string' && HOST_RE.test(rawGitlabHost) ? rawGitlabHost
+      : typeof rawGitlabHost === 'string' && isSafeHost(rawGitlabHost) ? rawGitlabHost
       : undefined
     if (rawGitlabHost !== undefined && gitlab_host === undefined) dropped.push('gitlab_host: invalid')
 
