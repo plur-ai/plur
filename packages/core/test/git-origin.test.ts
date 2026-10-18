@@ -77,6 +77,18 @@ describe('parseGitRemoteUrl', () => {
     expect(parseGitRemoteUrl(u)).toBeNull()
   })
 
+  it.each([
+    ['git@[2001:db8::1]:team/backend.git', { protocol: 'scp', host: '[2001:db8::1]', path: 'team/backend' }],
+    ['[2001:DB8:0::1]:acme/team/backend', { protocol: 'scp', host: '[2001:db8::1]', path: 'acme/team/backend' }],
+  ])('parses an scp-style IPv6 origin %s (host in canonical URL.hostname form)', (url, want) => {
+    expect(parseGitRemoteUrl(url)).toEqual(want)
+  })
+
+  it.each(['git@[not-an-address]:team/backend.git', 'git@[2001:db8::1:team/backend.git', 'git@[]:team/backend.git'])(
+    'rejects a malformed bracketed scp host %s', (u) => {
+      expect(parseGitRemoteUrl(u)).toBeNull()
+    })
+
   it('credentials in origin never leak', () => {
     const p = parseGitRemoteUrl(
       'https://alice:glpat-secret@gitlab.example.com/acme/team/backend.git',

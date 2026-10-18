@@ -36,6 +36,10 @@ scope is no longer a deliverable team scope, or the target's policy now forbids 
 the entry is held exactly like the #1631 conflict hold of §8b — no push, no demotion to a local
 row, only `last_attempt` / `last_error` bookkeeping and a `failed` count. Keys, retry, claims,
 the listing and the breaker (§1–§7) are unchanged.
+
+Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
+exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
+this model covers changed.
 -/
 
 namespace PlurSpec.Outbox
