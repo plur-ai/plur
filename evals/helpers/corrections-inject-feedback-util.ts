@@ -8,14 +8,25 @@ import { Plur } from '../../packages/core/src/index.js'
 import type { InjectionResult } from '../../packages/core/src/types.js'
 import { useEmbedder, type TempStore } from './store.js'
 
-/** Every id the agent was given, in every section. */
+/**
+ * Every id the agent was given, in every section: the ids tagged in the text it
+ * receives, in order. Never `injected_ids` alone: an id reported there but not
+ * rendered was not given (fourth audit A4-03, metadata substituted for delivery).
+ */
 export function given(r: InjectionResult): string[] {
-  return r.injected_ids
+  const out: string[] = []
+  for (const m of renderedText(r).matchAll(/\[(ENG-[^\]\s]+)\]/g)) if (!out.includes(m[1])) out.push(m[1])
+  return out
 }
 
 /** The full text the agent receives, all three sections joined. */
 export function renderedText(r: InjectionResult): string {
   return [r.directives, r.constraints, r.consider].filter(s => s.length > 0).join('\n')
+}
+
+/** Whether the agent receives this statement whole, word for word (not a tag or a truncated line). */
+export function deliversText(r: InjectionResult, statement: string): boolean {
+  return renderedText(r).includes(statement)
 }
 
 /** Position of an id in the rendered text the agent reads (-1 when absent). */
