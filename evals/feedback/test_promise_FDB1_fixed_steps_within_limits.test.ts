@@ -16,7 +16,11 @@ describe('FDB-1 helpful and unhelpful ratings move a memory by fixed steps, with
   let s: TempStore
   afterEach(() => s?.cleanup())
 
-  const strength = async (id: string) => (await s.plur.getById(id))!.activation.retrieval_strength
+  const strength = async (id: string) => {
+    const e = await s.plur.getById(id)
+    expect(e, `memory ${id} can no longer be read after rating it`).toBeTruthy()
+    return e!.activation.retrieval_strength
+  }
 
   it('one helpful rating raises it by the small step; one unhelpful lowers it by the larger step', async () => {
     s = await tempStore({ embedder: 'off' })

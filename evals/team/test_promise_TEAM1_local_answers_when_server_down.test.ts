@@ -19,16 +19,19 @@ const PROJECT = 'project:acme/payments' // org `acme`: the team store is dialed 
 const FACT = 'payments retries use exponential backoff capped at five attempts'
 const QUERY = 'payments retries backoff attempts'
 
-/** Run `p`, or fail once BOUND_MS has passed. */
+/** Run `p`, or fail once BOUND_MS has passed. A late answer fails as an assertion on the
+ *  elapsed time (not a thrown Error), so a planted hang counts as a behavioural kill. */
 async function withinBound<T>(what: string, p: Promise<T>): Promise<{ value: T; ms: number }> {
   const t0 = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${BOUND_MS / 1000} s with the team server down or slow`)), BOUND_MS)
-  })
+  const LATE = Symbol('late')
+  const late = new Promise<typeof LATE>(resolve => { timer = setTimeout(() => resolve(LATE), BOUND_MS) })
   try {
     const value = await Promise.race([p, late])
-    return { value, ms: Date.now() - t0 }
+    const ms = Date.now() - t0
+    expect(value === LATE ? ms : 0,
+      `${what} did not answer within ${BOUND_MS / 1000} s with the team server down or slow`).toBeLessThan(BOUND_MS)
+    return { value: value as T, ms }
   } finally { clearTimeout(timer) }
 }
 
