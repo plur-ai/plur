@@ -188,13 +188,57 @@ describe('atomicWrite on Windows: owner-only access list before the first conten
     expect(realFs.readFileSync(f, 'utf8')).toBe('token: secret\n')
   })
 
-  it('icacls unavailable and destination not provably protected: writes as before', () => {
+  // Codex round 3, finding 1. This case used to pin the fail-open behaviour
+  // (icacls failed → write anyway, unprotected). "Could not inspect" is not
+  // "not protected": a credential write over an existing destination whose
+  // access list cannot be read must refuse, not risk replacing an owner-only
+  // file with one the folder's other accounts can read.
+  const expectRefusedUntouched = (f: string, run: () => void) => {
+    rec.on = true
+    expect(run).toThrow(/cannot (inspect|tell)/)
+    rec.on = false
+    expect(rec.events.some(e => e.kind === 'write')).toBe(false)
+    expect(realFs.readFileSync(f, 'utf8')).toBe('a\n')
+    expect(realFs.readdirSync(root).filter(n => n.endsWith('.tmp'))).toEqual([])
+    expect(calls.some(c => c.includes('/inheritance:r'))).toBe(false)
+  }
+
+  it('icacls fails on the destination (owner-only mode): refuses, no write, no rename, destination unchanged', () => {
     const f = join(root, 'folders.yaml')
     realFs.writeFileSync(f, 'a\n')
     _atomicWriteAcl.exec = (cmd, args) => { calls.push([cmd, ...args]); return { status: null, stdout: '' } }
-    atomicWrite(f, 'b\n', { mode: 0o600 })
+    expectRefusedUntouched(f, () => atomicWrite(f, 'b\n', { mode: 0o600 }))
+  })
+
+  it('icacls fails on the destination (secret): refuses, destination unchanged', () => {
+    const f = join(root, 'editor.json')
+    realFs.writeFileSync(f, 'a\n')
+    _atomicWriteAcl.exec = (cmd, args) => { calls.push([cmd, ...args]); return { status: 5, stdout: '' } }
+    expectRefusedUntouched(f, () => atomicWrite(f, 'b\n', { secret: true }))
+  })
+
+  it('icacls output names no account (unparseable): refuses', () => {
+    const f = join(root, 'editor.json')
+    realFs.writeFileSync(f, 'a\n')
+    readOutput = () => 'Successfully processed 1 files; Failed processing 0 files\n'
+    expectRefusedUntouched(f, () => atomicWrite(f, 'b\n', { secret: true }))
+  })
+
+  it('Windows account unknown (USERNAME unset): refuses a secret write over an existing file', () => {
+    const f = join(root, 'editor.json')
+    realFs.writeFileSync(f, 'a\n')
+    _atomicWriteAcl.env = {}
+    expectRefusedUntouched(f, () => atomicWrite(f, 'b\n', { secret: true }))
+  })
+
+  it('ordinary write over an existing file with icacls failing: still never calls icacls, writes', () => {
+    const f = join(root, 'engrams.yaml')
+    realFs.writeFileSync(f, 'a\n')
+    _atomicWriteAcl.exec = (cmd, args) => { calls.push([cmd, ...args]); return { status: null, stdout: '' } }
+    _atomicWriteAcl.env = {}
+    atomicWrite(f, 'b\n')
+    expect(calls).toEqual([])
     expect(realFs.readFileSync(f, 'utf8')).toBe('b\n')
-    expect(calls.some(c => c.includes('/inheritance:r'))).toBe(false)
   })
 
   it('secret write over a protected destination: protects the temp file before any byte', () => {
