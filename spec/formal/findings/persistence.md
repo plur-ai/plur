@@ -520,3 +520,33 @@ Mutation checks (scratch copies, each restored): (1) POSIX creation mode ignores
 Tests: `packages/core/test/codex2-atomic-first-write.test.ts` (records the temp file's mode, and the icacls calls, at each content write; 9 failed before the change, 13/13 after), `packages/cli/test/codex2-cleanup-secret-write.test.ts` (cleanup passes `secret: true`; red before, green after).
 
 `lake env lean PlurSpec/Persistence.lean`: clean.
+
+### #1631 (plan B Task 1b) — every config.yaml writer is a protected write (2026-10-18)
+Owner decisions 38, 42 and 20 (epic 1797 review). Round 3 left two gaps the AtomicTemp
+model now closes: (1) a Windows `secret` write of a NEW file, or over a destination other
+accounts can read, went through a temp file that inherits the folder's list (`traceR3`;
+replayed by `r3_new_secret_leaks`, `r3_shared_secret_leaks`); (2) config.yaml's six writers
+(`setIdentity`, `persistStores`, `_updateRawStores`, `persistDismissedScopes` in index.ts;
+`setSchemaVersion` in migrations/runner.ts; `removePrimaryStoreEntries` in
+store-duplicates.ts) passed only an owner-only mode, so they were never refused and a new or
+shared config.yaml stayed readable by others (`unprotected_writer_leaks`). Code: a `secret`
+write on Windows always protects and verifies the empty temp file, or refuses (`winSecret`;
+`secret_write_owner_only` holds with no assumption on the destination;
+`secret_unprotectable_refused`); every writer calls `writeConfigFile` (config-file.ts), which marks
+the write `secret`, tightens an existing Unix file to 0600 first, and re-applies
+`protectOwnerOnly` after the rename, reporting (one stderr line, returned result) rather than
+swallowing a failure (`every_config_writer_protected`, `helper_never_silent`,
+`config_write_reachable`). The shared helper is `packages/core/src/owner-only.ts`; the CLI's
+copy is removed and `cleanup.ts` uses core's.
+
+Mutation checks (scratch copies, each restored): (a) `winSecret` skipping protection over a
+`shared` destination ⇒ `secret_write_owner_only` and `secret_unprotectable_refused` fail; (b)
+`viaHelper .dismissedScopes := false` ⇒ `every_config_writer_protected` fails; (c) secret
+writes routed through the round-3 rule ⇒ `unknown_creates_nothing`, `secret_write_owner_only`
+and `secret_unprotectable_refused` fail.
+
+Tests: `packages/core/test/config-owner-only.test.ts` (20 failed before the change; the
+`Windows, real icacls` cases run in `.github/workflows/windows-init.yml`), and the changed
+expectation in `codex2-atomic-first-write.test.ts` (decision 38).
+
+`lake build`: clean.

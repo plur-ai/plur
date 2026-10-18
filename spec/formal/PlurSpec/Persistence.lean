@@ -1133,8 +1133,32 @@ named no account, or the Windows account is not known). The round-2 helper read
 (`traceR2`, replayed by `r2_unknown_leaks`). Now a `secret` write over an existing
 destination whose inspection is `unknown` is refused before any temp file exists. A
 write that only passes an owner-only mode (`credential` without `secret`: the folder
-map, config.yaml today) still gets the protection on an `ownerOnly` reading but is
-not refused on `unknown`; `mode_only_unknown_wide` records that residual.
+map; config.yaml until #1631) still gets the protection on an `ownerOnly` reading but
+is not refused on `unknown`; `mode_only_unknown_wide` records that residual.
+
+#1631 (plan B Task 1b; owner decisions 38, 42 and 20, 2026-10-18). Round 3 still
+wrote a `secret` NEW file, or a `secret` write over a destination other accounts can
+read, through a temp file that inherits the folder's list (`traceR3`, replayed by
+`r3_new_secret_leaks` / `r3_shared_secret_leaks`), and config.yaml's six writers
+passed only an owner-only mode (`mode_only_unknown_wide`). Now a `secret` write on
+Windows ALWAYS protects the empty temp file and refuses when it cannot
+(`winSecret`; `secret_write_owner_only` holds with no assumption on the
+destination), and every config.yaml writer goes through `writeConfigFile`, which
+marks the write `secret` (`Writer`, `every_config_writer_protected`). The writer
+list is the code's: `setIdentity`, `persistStores`, `_updateRawStores`,
+`persistDismissedScopes` (index.ts), `setSchemaVersion` (migrations/runner.ts),
+`removePrimaryStoreEntries` (store-duplicates.ts) — test/config-owner-only.test.ts
+fails when a writer calls atomicWrite with the config mode directly. An
+unprotected writer (`viaHelper w = false`) is the counterexample
+`unprotected_writer_leaks`.
+
+Mutation check (2026-10-18, each reverted): (a) `winSecret` skipping the protection
+over a `shared` destination → `secret_write_owner_only` fails; (b) `viaHelper
+.dismissedScopes := false` → `every_config_writer_protected` fails; (c) `traceNew`
+routing `secret` writes through `winCredential` (the round-3 rule) →
+`secret_write_owner_only` fails. A refusal on an unknown Windows account for a NEW
+file is modelled as a failed protection (`aclOk = false`): the code refuses before
+the temp file exists, the model creates and unlinks it; both write nothing.
 
 Modelled: the order of create / protect / write / final-mode / rename and the
 protection each content write lands in. Left out: umask arithmetic (the creation mode
@@ -1179,7 +1203,8 @@ def inspSound (c : Call) : Prop :=
 def traceOld (_c : Call) : List Ev :=
   [.create .wide, .write .wide, .rename]
 
-/-- The Windows credential branch once the inspection is in hand. -/
+/-- The Windows owner-only-`mode` branch (no `secret`) once the inspection is in hand —
+also the whole credential branch of round 3 (`traceR3`). -/
 def winCredential (secret aclOk : Bool) (i : Insp) : List Ev :=
   match i with
   | .unknown   => if secret then [.refuse] else [.create .wide, .write .wide, .rename]
@@ -1188,7 +1213,26 @@ def winCredential (secret aclOk : Bool) (i : Insp) : List Ev :=
       if aclOk then [.create .wide, .protect true, .write .ownerOnly, .rename]
       else [.create .wide, .protect false, .unlink]
 
+/-- #1631: a Windows `secret` write. An existing destination that cannot be inspected
+is refused before any temp file; otherwise — new, owner-only or shared destination —
+the empty temp file is made owner-only and verified, or the write is refused. -/
+def winSecret (destExists aclOk : Bool) (i : Insp) : List Ev :=
+  if destExists && i == .unknown then [.refuse]
+  else if aclOk then [.create .wide, .protect true, .write .ownerOnly, .rename]
+  else [.create .wide, .protect false, .unlink]
+
 def traceNew (c : Call) : List Ev :=
+  if c.windows then
+    if c.secret then winSecret c.destExists c.aclOk c.insp
+    else if c.credential && c.destExists then winCredential false c.aclOk c.insp
+    else [.create .wide, .write .wide, .rename]
+  else
+    let p := if c.destExists || c.optsMode then Prot.ownerOnly else Prot.wide
+    [.create p, .write p, .rename]
+
+/-- Round 3 (before #1631): the protection only over a destination already reported
+owner-only, for `secret` writes too. -/
+def traceR3 (c : Call) : List Ev :=
   if c.windows then
     if c.credential && c.destExists then winCredential c.secret c.aclOk c.insp
     else [.create .wide, .write .wide, .rename]
@@ -1221,8 +1265,8 @@ theorem write_protected (c : Call) (hp : protectedDest c = true)
     simp only [protectedDest, Bool.and_eq_true, beq_iff_eq] at hp
     obtain ⟨he, hd⟩ := hp
     obtain ⟨hs1, _⟩ := hs
-    cases windows <;> cases insp <;> cases aclOk <;> cases secret <;>
-      simp_all [traceNew, winCredential]
+    cases windows <;> cases insp <;> cases aclOk <;> cases secret <;> cases credential <;>
+      simp_all [traceNew, winCredential, winSecret]
 
 /-- A Windows credential write that cannot be protected — the inspection is `unknown`,
 or the temp file's owner-only list does not verify — writes nothing and does not
@@ -1231,13 +1275,17 @@ theorem refused_leaves_dest (c : Call) (hwin : c.windows = true) (hc : c.credent
     (he : c.destExists = true)
     (hbad : (c.insp = .unknown ∧ c.secret = true) ∨ (c.insp = .ownerOnly ∧ c.aclOk = false)) :
     (∀ p, Ev.write p ∉ traceNew c) ∧ Ev.rename ∉ traceNew c := by
-  rcases hbad with ⟨h1, h2⟩ | ⟨h1, h2⟩ <;> simp [traceNew, winCredential, *]
+  cases c with
+  | mk windows destExists destProt insp optsMode credential secret aclOk =>
+    simp only at hwin hc he hbad
+    subst hwin hc he
+    cases secret <;> cases aclOk <;> cases insp <;> simp_all [traceNew, winCredential, winSecret]
 
 /-- An `unknown` inspection never even creates the temp file. -/
 theorem unknown_creates_nothing (c : Call) (hwin : c.windows = true) (hc : c.credential = true)
     (he : c.destExists = true) (hu : c.insp = .unknown) (hsec : c.secret = true) :
     traceNew c = [.refuse] := by
-  simp [traceNew, winCredential, hwin, hc, he, hu, hsec]
+  simp [traceNew, winSecret, hwin, he, hu, hsec]
 
 /-- Residual (reported): an owner-only `mode` without `secret` over an owner-only
 destination whose list cannot be inspected is still written through a wide temp. -/
@@ -1245,10 +1293,16 @@ theorem mode_only_unknown_wide :
     Ev.write .wide ∈ traceNew ⟨true, true, .ownerOnly, .unknown, true, true, false, true⟩ := by
   decide
 
-/-- Ordinary (non-credential) Windows writes never refuse on inspection. -/
-theorem ordinary_never_refused (c : Call) (hwin : c.windows = true) (hc : c.credential = false) :
+/-- Ordinary (non-credential) Windows writes never refuse on inspection. (`secret`
+implies `credential` in the code: `credential = secret || owner-only mode`.) -/
+theorem ordinary_never_refused (c : Call) (hwin : c.windows = true) (hc : c.credential = false)
+    (hwf : c.secret = true → c.credential = true) :
     Ev.refuse ∉ traceNew c := by
-  simp [traceNew, hwin, hc]
+  have hs : c.secret = false := by
+    cases h : c.secret
+    · rfl
+    · exact absurd (hwf h) (by simp [hc])
+  simp [traceNew, hwin, hc, hs]
 
 /-- The protected-write path is reachable on both platforms (the theorem is not vacuous). -/
 theorem reachable :
@@ -1269,6 +1323,92 @@ theorem r2_unknown_leaks :
     let c : Call := ⟨true, true, .ownerOnly, .unknown, true, true, true, true⟩
     protectedDest c = true ∧ inspSound c ∧ Ev.write .wide ∈ traceR2 c ∧ Ev.rename ∈ traceR2 c := by
   refine ⟨by decide, ⟨by simp, by simp⟩, by decide, by decide⟩
+
+/-! ### #1631: secret writes and the config.yaml writers -/
+
+/-- A Windows `secret` write lands its content only in an owner-only file — whatever
+the destination: new, owner-only, shared, or not inspectable. No assumption on the
+inspection's soundness is needed. -/
+theorem secret_write_owner_only (c : Call) (hwin : c.windows = true) (hsec : c.secret = true) :
+    ∀ p, Ev.write p ∈ traceNew c → p = .ownerOnly := by
+  intro p h
+  cases c with
+  | mk windows destExists destProt insp optsMode credential secret aclOk =>
+    simp only at hwin hsec
+    subst hwin hsec
+    cases destExists <;> cases insp <;> cases aclOk <;> simp_all [traceNew, winSecret]
+
+/-- A Windows `secret` write whose temp file cannot be protected writes nothing and
+renames nothing: the destination keeps its bytes (refuse on failure, decision 38). -/
+theorem secret_unprotectable_refused (c : Call) (hwin : c.windows = true) (hsec : c.secret = true)
+    (hacl : c.aclOk = false) :
+    (∀ p, Ev.write p ∉ traceNew c) ∧ Ev.rename ∉ traceNew c := by
+  cases c with
+  | mk windows destExists destProt insp optsMode credential secret aclOk =>
+    simp only at hwin hsec hacl
+    subst hwin hsec hacl
+    cases destExists <;> cases insp <;> simp [traceNew, winSecret]
+
+/-- **Round 3 (replayed):** a `secret` NEW file was written through a wide temp file. -/
+theorem r3_new_secret_leaks :
+    Ev.write .wide ∈ traceR3 ⟨true, false, .wide, .unknown, true, true, true, true⟩ := by
+  decide
+
+/-- **Round 3 (replayed):** a `secret` write over a destination other accounts can read
+left it readable — the content went through a wide temp file. -/
+theorem r3_shared_secret_leaks :
+    Ev.write .wide ∈ traceR3 ⟨true, true, .wide, .shared, true, true, true, true⟩ := by
+  decide
+
+/-- The six config.yaml writers in the code. -/
+inductive Writer | setIdentity | persistStores | updateRawStores | dismissedScopes
+  | schemaVersion | removeDuplicates
+  deriving DecidableEq, Repr
+
+/-- The writer goes through `writeConfigFile` (test/config-owner-only.test.ts keeps
+every writer on it). -/
+def viaHelper : Writer → Bool
+  | _ => true
+
+/-- The `atomicWrite` call a writer makes: through the helper it is `secret` with the
+owner-only mode; a direct call (the pre-#1631 shape) passes only the mode. -/
+def configCall (w : Writer) (c : Call) : Call :=
+  { c with optsMode := true, credential := true, secret := viaHelper w }
+
+/-- After the write, `writeConfigFile` re-applies the protection: either the file is
+owner-only, or the failure is reported (one stderr line, returned result). -/
+inductive Outcome | ownerOnly | reported
+  deriving DecidableEq, Repr
+
+def helperOutcome (protectOk : Bool) : Outcome :=
+  if protectOk then .ownerOnly else .reported
+
+/-- **Every config.yaml writer is a protected write**: on Windows its content only ever
+lands in an owner-only file (or nothing is written), on any destination; on POSIX
+likewise (the temp file is created 0600 whenever a mode is known). -/
+theorem every_config_writer_protected (w : Writer) (c : Call) :
+    ∀ p, Ev.write p ∈ traceNew (configCall w c) → p = .ownerOnly := by
+  intro p h
+  cases hw : c.windows
+  · cases w <;> simp_all [configCall, viaHelper, traceNew]
+  · cases w <;> exact secret_write_owner_only _ (by simp [configCall, hw]) (by simp [configCall, viaHelper]) p h
+
+/-- And the end state is never silently wide: owner-only, or reported. -/
+theorem helper_never_silent (b : Bool) : helperOutcome b = .ownerOnly ∨ helperOutcome b = .reported := by
+  cases b <;> simp [helperOutcome]
+
+/-- **Counterexample:** a config writer that bypasses the helper (mode only, no
+`secret`) writes a NEW config.yaml on Windows through a wide temp file — the device key
+readable by the folder's other accounts. -/
+theorem unprotected_writer_leaks :
+    let c : Call := ⟨true, false, .wide, .unknown, true, true, false, true⟩
+    c.secret = false ∧ Ev.write .wide ∈ traceNew c := by
+  decide
+
+/-- Non-vacuous: a config write of a new file on Windows does reach an owner-only write. -/
+theorem config_write_reachable :
+    Ev.write .ownerOnly ∈ traceNew (configCall .persistStores ⟨true, false, .wide, .unknown, false, false, false, true⟩) := by
+  decide
 
 end AtomicTemp
 

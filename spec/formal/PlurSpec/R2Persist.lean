@@ -1,6 +1,11 @@
 /-!
 # PlurSpec.R2Persist — round 2 of the persistence cluster
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. sync.ts's change
+is atomicWrite's Windows `secret` branch (modelled in
+Persistence §AtomicTemp, with the new `writeConfigFile`, config-file.ts);
+migrations/runner.ts's `setSchemaVersion` writes the same bytes under the same lock through it. Locks, backups and the migration journal are unchanged.
+
 Models of `packages/core/src/{store/async-lock.ts, sync.ts, engrams.ts, backup.ts,
 storage-pglite.ts, storage-postgres.ts, migrations/runner.ts}`.
 Findings, verdicts and replays: `spec/formal/findings/r2-persist.md`.

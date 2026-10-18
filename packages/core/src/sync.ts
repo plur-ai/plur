@@ -5,6 +5,7 @@ import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
 import { engramStoreEntries, sameEngramContent, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
 import { recordLastWritten } from './backup.js'
+import { _ownerOnlyHost, checkOwnerOnly, currentWindowsAccount, protectOwnerOnly, type OwnerOnlyExec } from './owner-only.js'
 import {
   DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken, startHeartbeat, heartbeatHeldLocks, GIT_COMMAND_TIMEOUT_MS,
   publishLockFileSync, takeOverSync, abandonedByAge,
@@ -1181,15 +1182,16 @@ export interface AtomicWriteOptions {
    */
   durable?: boolean
   /**
-   * The content may carry a credential (an editor config holding another
-   * server's token, say). On Windows, when the destination exists and its
-   * access list names only the current account, the temp file is made
-   * owner-only — and verified — before the first byte, and the write is
-   * refused when that cannot be done, or when the destination's access list
-   * cannot be inspected at all (icacls failed, account unknown). An owner-only
-   * `mode` alone gets the protection but not the refusal on an unknown result. An owner-only `mode` implies this. No
-   * effect elsewhere: on POSIX the destination's mode already governs the
-   * temp file from creation.
+   * The content may carry a credential (config.yaml, an editor config holding
+   * another server's token). On Windows the temp file is made owner-only — and
+   * verified — before the first byte, whether the destination is new, already
+   * owner-only, or readable by other accounts; the write is refused (nothing
+   * written, the destination untouched) when that cannot be done, or when an
+   * existing destination's access list cannot be inspected at all (icacls
+   * failed, account unknown). Owner decisions 38 and 42 (#1631). An owner-only
+   * `mode` alone gets the protection only over a provably owner-only
+   * destination, and no refusal. No effect elsewhere: on POSIX the
+   * destination's mode already governs the temp file from creation.
    */
   secret?: boolean
 }
@@ -1198,56 +1200,21 @@ export interface AtomicWriteOptions {
 let tmpCounter = 0
 
 /** One external command run for the Windows access-list path ({@link _atomicWriteAcl}). */
-export type AclExec = (cmd: string, args: string[]) => { status: number | null; stdout: string }
-
-const defaultAclExec: AclExec = (cmd, args) => {
-  try {
-    const stdout = execFileSync(cmd, args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
-    return { status: 0, stdout }
-  } catch (e) {
-    const err = e as { status?: number | null; stdout?: string }
-    return { status: typeof err.status === 'number' ? err.status : null, stdout: typeof err.stdout === 'string' ? err.stdout : '' }
-  }
-}
+export type AclExec = OwnerOnlyExec
 
 /**
  * Platform, environment and command runner for atomicWrite's Windows
  * owner-only path. Internal — not exported from the package; tests swap the
  * fields to drive the Windows branch on any OS.
  *
- * This is the minimal Windows path core needs so a secret never lands in a
- * temp file other accounts can read. It follows the same rule as the CLI's
- * enterprise `owner-only.ts` (remove inherited access, grant only the current
- * account, read the list back, accept only entries naming that account); the
- * shared owner-only helper is planned to replace both copies.
+ * It is the SAME object as the shared owner-only helper's host
+ * (`owner-only.ts`, #1631), so a simulated host drives both the temp-file
+ * protection here and the re-check `writeConfigFile` (config-file.ts) runs
+ * after the rename. One rule, one implementation: remove inherited access, grant only
+ * the current account, read the list back, accept only entries naming that
+ * account.
  */
-export const _atomicWriteAcl: { platform: NodeJS.Platform; env: NodeJS.ProcessEnv; exec: AclExec } = {
-  platform: process.platform,
-  env: process.env,
-  exec: defaultAclExec,
-}
-
-function windowsAccount(env: NodeJS.ProcessEnv): string | null {
-  const user = env.USERNAME
-  if (!user) return null
-  return env.USERDOMAIN ? `${env.USERDOMAIN}\\${user}` : user
-}
-
-/** Principals named in `icacls <path>` output (same parse as the CLI helper). */
-function aclPrincipals(path: string, stdout: string): string[] {
-  const out: string[] = []
-  let first = true
-  for (const raw of stdout.split(/\r?\n/)) {
-    let line = raw
-    if (first && line.toLowerCase().startsWith(path.toLowerCase())) line = line.slice(path.length)
-    first = false
-    const t = line.trim()
-    if (!t || /^Successfully processed/i.test(t) || /^Failed processing/i.test(t)) continue
-    const m = /^(.+?):\(/.exec(t)
-    if (m) out.push(m[1])
-  }
-  return out
-}
+export const _atomicWriteAcl = _ownerOnlyHost
 
 /**
  * What an access-list inspection established (Codex round 3, finding 1).
@@ -1259,19 +1226,19 @@ type AclInspection = 'owner-only' | 'shared' | 'unknown'
 
 /** Inspect `path`: does every access entry name `account` only? */
 function inspectAcl(path: string, account: string): AclInspection {
-  const read = _atomicWriteAcl.exec('icacls', [path])
-  if (read.status !== 0) return 'unknown'
-  const ps = aclPrincipals(path, read.stdout)
-  if (ps.length === 0) return 'unknown'
-  return ps.every(p => p.toLowerCase() === account.toLowerCase()) ? 'owner-only' : 'shared'
+  const r = checkOwnerOnly(path, { platform: 'win32', account })
+  return r.ok === true ? 'owner-only' : r.ok === false ? 'shared' : 'unknown'
 }
 
 /** Make `path` owner-only and verify it; throws when that cannot be established. */
 function protectWindowsOwnerOnly(path: string, account: string | null): void {
   if (!account) throw new Error('atomicWrite: cannot make the temporary file owner-only: the Windows account is not known (USERNAME is not set)')
-  const set = _atomicWriteAcl.exec('icacls', [path, '/inheritance:r', '/grant:r', `${account}:F`])
-  if (set.status !== 0) throw new Error(`atomicWrite: cannot make the temporary file owner-only: icacls failed (exit ${set.status ?? 'unknown'})`)
-  if (inspectAcl(path, account) !== 'owner-only') throw new Error('atomicWrite: cannot make the temporary file owner-only: its access list still names another account or cannot be read back')
+  const r = protectOwnerOnly(path, { platform: 'win32', account })
+  if (!r.ok) {
+    throw new Error(r.detail.startsWith('icacls failed')
+      ? `atomicWrite: cannot make the temporary file owner-only: ${r.detail}`
+      : `atomicWrite: cannot make the temporary file owner-only: its access list still names another account or cannot be read back (${r.detail})`)
+  }
 }
 
 /**
@@ -1310,14 +1277,16 @@ function protectWindowsOwnerOnly(path: string, account: string | null): void {
  * account opened in it stayed readable afterwards. The tmp is now created
  * exclusively (`wx`: never through a link or file planted at its name) at 0600
  * whenever a mode is known, and given its exact final mode just before the
- * rename. On Windows, a credential write (`secret` or an owner-only `mode`)
- * over a destination whose access list names only the current account gets a
- * verified owner-only list on the EMPTY tmp; when that cannot be established,
- * nothing is written and the destination is left as it was. A `secret` write
- * over an existing destination whose access list cannot be inspected (icacls
- * failed, output names no account, account unknown) is refused the same way —
- * "could not inspect" is never treated as "not protected" (Codex round 3). A
- * write that only passes an owner-only `mode` is not refused on that result.
+ * rename. On Windows, a `secret` write gets a verified owner-only list on the
+ * EMPTY tmp — new destination, owner-only destination or shared destination
+ * alike (owner decisions 38 and 42, #1631) — and an owner-only `mode` write
+ * gets it over a destination whose list names only the current account; when
+ * that cannot be established, nothing is written and the destination is left
+ * as it was. A `secret` write over an existing destination whose access list
+ * cannot be inspected (icacls failed, output names no account, account
+ * unknown) is refused the same way — "could not inspect" is never treated as
+ * "not protected" (Codex round 3). A write that only passes an owner-only
+ * `mode` is not refused on that result.
  */
 export function atomicWrite(filePath: string, content: string | Buffer, opts: AtomicWriteOptions = {}): void {
   const durable = opts.durable !== false
@@ -1345,33 +1314,38 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
   } catch { /* unreadable stat — fall through and keep opts.mode/default */ }
 
   // Windows keeps access in an ACL, not the mode bits, and a tmp file inherits
-  // the folder's list — so the rename would replace a protected file with one
-  // the folder's other accounts can read. For a credential write (`secret`, or
-  // an owner-only `mode`) over a destination whose list names only the current
-  // account, the tmp gets that same protection before its first byte. Ordinary
-  // writes never run icacls. Making a NEW file owner-only on Windows is not
-  // done here; that belongs to the shared owner-only helper.
+  // the folder's list — so the rename would publish the content in a file the
+  // folder's other accounts can read. Ordinary writes never run icacls.
+  //
+  // - A `secret` write (owner decisions 38 and 42, #1631: config.yaml through
+  //   writeConfigFile, the enterprise cleanup's editor configs) ALWAYS gets an
+  //   owner-only, verified list on the EMPTY tmp — for a new file and over a
+  //   destination other accounts can read too — and is refused, with nothing
+  //   written, when that cannot be established. "Could not inspect" an
+  //   existing destination is never read as "not protected" either: it is
+  //   refused before any temp file exists (Codex round 3, finding 1).
+  // - A write that only asks for an owner-only `mode` (the folder map, engram
+  //   files) keeps the round-3 rule: the tmp is protected when the existing
+  //   destination is provably owner-only, and an unknown result is not refused.
   let winAccount: string | null = null
   let winProtect = false
-  if (_atomicWriteAcl.platform === 'win32' && destExists) {
-    const credential = opts.secret === true || (opts.mode !== undefined && (opts.mode & 0o077) === 0)
-    if (credential) {
-      // "Could not inspect" is never read as "not protected" for a write that
-      // declares it carries a credential (`secret`): it is refused before any
-      // temp file exists, so nothing is written, nothing is renamed and the
-      // destination is left as it was. A write that only asks for an
-      // owner-only `mode` (the folder map, engram files, config.yaml today)
-      // still gets the temp-file protection when the destination is provably
-      // owner-only, but is not refused on an unknown result — those writers
-      // have not opted in to failing closed (Codex round 3, finding 1).
-      winAccount = windowsAccount(_atomicWriteAcl.env)
+  if (_atomicWriteAcl.platform === 'win32') {
+    const secret = opts.secret === true
+    const credential = secret || (opts.mode !== undefined && (opts.mode & 0o077) === 0)
+    if (credential) winAccount = currentWindowsAccount(_atomicWriteAcl.env)
+    if (credential && destExists) {
       const inspection: AclInspection = winAccount === null ? 'unknown' : inspectAcl(filePath, winAccount)
-      if (inspection === 'unknown' && opts.secret === true) {
+      if (inspection === 'unknown' && secret) {
         throw new Error(winAccount === null
           ? 'atomicWrite: refusing a credential write: cannot tell whether the destination is owner-only (the Windows account is not known: USERNAME is not set)'
           : 'atomicWrite: refusing a credential write: cannot inspect the destination\'s access list (icacls failed or named no account)')
       }
-      winProtect = inspection === 'owner-only'
+      winProtect = inspection === 'owner-only' || secret
+    } else if (secret) {
+      if (winAccount === null) {
+        throw new Error('atomicWrite: refusing a credential write: cannot make the new file owner-only (the Windows account is not known: USERNAME is not set)')
+      }
+      winProtect = true
     }
   }
 

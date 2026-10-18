@@ -43,7 +43,8 @@ export { LEARN_CONTEXT_FIELD_ROLES, LEARN_CONTENT_FIELDS, learnContextContent, e
 // SP5 imports (deferred — vault-export, registry not yet merged)
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
-import { atomicWrite, CONFIG_FILE_MODE, sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
+import { writeConfigFile } from './config-file.js'
+import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
 import { detectSecrets, detectSensitive, detectPromptInjection, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
@@ -390,6 +391,13 @@ export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
  * the two drift, and the drift is always in the unsafe direction.
  */
 export { atomicWrite, withLock } from './sync.js'
+/**
+ * Owner-only protection (#1631): `writeConfigFile` is how config.yaml is
+ * written; `protectOwnerOnly` / `checkOwnerOnly` are the one rule for files
+ * that hold a secret (the installer's backups and key file reuse them).
+ */
+export { writeConfigFile } from './config-file.js'
+export { protectOwnerOnly, checkOwnerOnly, currentWindowsAccount, type OwnerOnlyExec, type OwnerOnlyResult, type OwnerOnlyCheck, type OwnerOnlyOptions } from './owner-only.js'
 export { markRemoteHostDown, remoteHostDownRemainingMs, clearRemoteHostDown, _resetRemoteHostBreaker, salvageRemoteRow, FEEDBACK_SOURCE_CAPABILITY, _resetRemoteCapabilityCache } from './store/remote-store.js'
 export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
 export { scanForTensions, getCandidatePairs, getCandidatePairsDetailed, measuredUnderDiffers, measuredUnderGateApplies, engramOrigin, MEASURED_UNDER_DIMENSIONS, MEASURED_UNDER_CONFIDENCE_CAP, type CandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
@@ -3042,7 +3050,7 @@ export class Plur {
       if (value) provenance.identity = value
       else delete provenance.identity
       configData.provenance = provenance
-      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
+      writeConfigFile(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     })
     this.config = this._loadConfig()
     this.configMtimeMs = this.statConfigMtime()
@@ -12930,7 +12938,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       // config — so a crash mid-write silently erases store registrations and
       // routes later writes to the local default store. atomicWrite is
       // tmp + fsync + rename, so a crash leaves the previous complete config.
-      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
+      writeConfigFile(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     })
     this.config = this._loadConfig()
     this.configMtimeMs = this.statConfigMtime()
@@ -14099,7 +14107,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       const rawStores = Array.isArray(configData.stores) ? [...(configData.stores as unknown[])] : []
       if (!mutate(rawStores)) return
       configData.stores = rawStores
-      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
+      writeConfigFile(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
       wrote = true
     })
     if (!wrote) return
@@ -14421,7 +14429,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       // config — so a crash mid-write silently erases store registrations and
       // routes later writes to the local default store. atomicWrite is
       // tmp + fsync + rename, so a crash leaves the previous complete config.
-      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
+      writeConfigFile(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     })
     this.config = this._loadConfig()
     this.configMtimeMs = this.statConfigMtime()

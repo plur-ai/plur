@@ -273,13 +273,51 @@ describe('atomicWrite on Windows: owner-only access list before the first conten
     expect((rec.events[set] as { args: string[] }).args[0]).toMatch(/\.tmp$/)
   })
 
-  it('secret write over a destination others can read: access list left alone', () => {
+  // Owner decision 38 (epic 1797 review, #1631): "Core does not protect a new
+  // credential file, or an existing one that is not already owner-only" →
+  // "Best-effort owner-only; refuse on failure". This case used to pin "access
+  // list left alone"; a secret write now makes the temp file owner-only too.
+  it('secret write over a destination others can read: the temp file is made owner-only before any byte', () => {
     const f = join(root, 'editor.json')
     realFs.writeFileSync(f, '{"a":1}')
-    readOutput = p => `${p} CORP\\alice:(F)\n BUILTIN\\Users:(RX)\n`
+    readOutput = p => p.endsWith('.tmp') ? `${p} CORP\\alice:(F)\n` : `${p} CORP\\alice:(F)\n BUILTIN\\Users:(RX)\n`
+    rec.on = true
     atomicWrite(f, '{"a":2}', { secret: true })
-    expect(calls.some(c => c.includes('/inheritance:r'))).toBe(false)
+    rec.on = false
+    const firstWrite = rec.events.findIndex(e => e.kind === 'write')
+    const set = rec.events.findIndex(e => e.kind === 'acl' && e.args.includes('/inheritance:r'))
+    expect(set).toBeGreaterThanOrEqual(0)
+    expect(firstWrite).toBeGreaterThan(set)
+    expect((rec.events[set] as { args: string[] }).args[0]).toMatch(/\.tmp$/)
     expect(realFs.readFileSync(f, 'utf8')).toBe('{"a":2}')
+  })
+
+  it('secret write of a NEW file: the temp file is made owner-only before any byte (owner decision 38)', () => {
+    const f = join(root, 'fresh-secret.json')
+    rec.on = true
+    atomicWrite(f, '{"k":"secret"}', { secret: true })
+    rec.on = false
+    const firstWrite = rec.events.findIndex(e => e.kind === 'write')
+    const set = rec.events.findIndex(e => e.kind === 'acl' && e.args.includes('/inheritance:r'))
+    expect(set).toBeGreaterThanOrEqual(0)
+    expect(firstWrite).toBeGreaterThan(set)
+    expect(realFs.readFileSync(f, 'utf8')).toBe('{"k":"secret"}')
+  })
+
+  it('secret write that cannot be protected (shared destination, grant fails): refused, destination unchanged', () => {
+    const f = join(root, 'editor.json')
+    realFs.writeFileSync(f, 'a\n')
+    _atomicWriteAcl.exec = (cmd, args) => {
+      calls.push([cmd, ...args])
+      if (args.length > 1) return { status: 5, stdout: '' }
+      return { status: 0, stdout: `${args[0]} CORP\\alice:(F)\n BUILTIN\\Users:(RX)\n` }
+    }
+    rec.on = true
+    expect(() => atomicWrite(f, 'b\n', { secret: true })).toThrow(/owner-only/)
+    rec.on = false
+    expect(rec.events.some(e => e.kind === 'write')).toBe(false)
+    expect(realFs.readFileSync(f, 'utf8')).toBe('a\n')
+    expect(realFs.readdirSync(root).filter(n => n.endsWith('.tmp'))).toEqual([])
   })
 
   it('protection that cannot be verified: refuses, writes nothing, destination unchanged', () => {

@@ -1,8 +1,9 @@
 /-!
 # PlurSpec.Installer — the enterprise first install (`plur-enterprise init`)
 
-Models of `packages/cli/src/enterprise/{cleanup,owner-only,hello,mcp-stdio,
-args,summary}.ts` on branch formal/epic-1797 (epic "enterprise first install",
+Models of `packages/cli/src/enterprise/{cleanup,hello,mcp-stdio,args,summary}.ts`
+and the owner-only helper they use (`packages/core/src/owner-only.ts` since #1631;
+it was `packages/cli/src/enterprise/owner-only.ts`) on branch formal/epic-1797 (epic "enterprise first install",
 plan C tasks 1, 6, 7, 8, 10a). Findings, verdicts and replays:
 `spec/formal/findings/installer.md`.
 
@@ -348,7 +349,13 @@ theorem old_removes_referenced :
 
 end Header
 
-/-! ## 3. Owner-only protection (`owner-only.ts`, `backupWriter`, `protectBackupDir`) -/
+/-! ## 3. Owner-only protection (`owner-only.ts`, `backupWriter`, `protectBackupDir`)
+
+#1631 (owner decision 20, 2026-10-18): the CLI's own helper is gone; `backupWriter` and
+`protectBackupDir` call core's `protectOwnerOnly(path, { platform: 'win32', directory, account,
+exec })`, which keeps exactly this rule — set, read back, accept only when the parsed principals
+are non-empty and all equal the account (case-insensitive) — with the same `icacls failed`
+/ `also readable by` details. `protect` below still describes it. -/
 namespace OwnerOnly
 
 /-- One icacls run pair. `principals` is what `icaclsPrincipals` parsed; names are

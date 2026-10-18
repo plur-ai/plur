@@ -1,0 +1,34 @@
+#!/bin/sh
+# Fake `icacls` for the spawned-CLI Windows stub (win32-platform.mjs) on a
+# non-Windows host. It keeps the access list in the file's POSIX mode, so the
+# state travels with the file across atomicWrite's rename exactly as a real
+# explicit list does:
+#   icacls <path> /inheritance:r /grant:r <account>:[(OI)(CI)]F
+#       -> the path becomes owner-only (0600 file / 0700 folder), exit 0
+#   icacls <path>
+#       -> lists <account> only when no group/other bit is set; otherwise also
+#          BUILTIN\Users (what an inherited list shows), exit 0
+# A missing path exits 2, like the real tool ("cannot find the file"); any
+# other form, or a grant to another account, exits 87 (invalid parameter).
+# POSIX sh (not node): it runs on every config write of every stubbed CLI run.
+p="$1"
+[ -n "$p" ] && [ -e "$p" ] || exit 2
+if [ -n "$USERDOMAIN" ]; then acct="$USERDOMAIN\\$USERNAME"; else acct="$USERNAME"; fi
+[ -n "$USERNAME" ] || exit 87
+if [ -d "$p" ]; then dir=1; flags='(OI)(CI)'; else dir=0; flags=''; fi
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+if [ "$#" -eq 4 ] && [ "$2" = "/inheritance:r" ] && [ "$3" = "/grant:r" ]; then
+  [ "$(lower "$4")" = "$(lower "$acct:${flags}F")" ] || exit 87
+  if [ "$dir" = 1 ]; then chmod 700 "$p" || exit 5; else chmod 600 "$p" || exit 5; fi
+  printf 'processed file: %s\nSuccessfully processed 1 files; Failed processing 0 files\n' "$p"
+  exit 0
+fi
+if [ "$#" -eq 1 ]; then
+  mode=$(stat -c %a "$p" 2>/dev/null || stat -f %Lp "$p")
+  go=$(( 0$mode & 077 ))
+  printf '%s %s:%s(F)\n' "$p" "$acct" "$flags"
+  [ "$go" -eq 0 ] || printf '   BUILTIN\\Users:%s(RX)\n' "$flags"
+  printf '\nSuccessfully processed 1 files; Failed processing 0 files\n'
+  exit 0
+fi
+exit 87

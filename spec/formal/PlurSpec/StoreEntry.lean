@@ -1,6 +1,11 @@
 /-!
 # PlurSpec.StoreEntry — server store entries: expand at load, collapse on writeback, rotation
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. `persistStores`
+and `_updateRawStores` write the same bytes under the same lock, now through
+`writeConfigFile` (owner-only protection, modelled in Persistence §AtomicTemp); the
+expand/collapse/rotation logic is unchanged.
+
 Models of `packages/core/src/store-expand.ts` (expandServerEntry, collapseExpandedStores,
 serverEntryIdentities), `packages/core/src/sensitivity-writeback.ts`
 (mergeSensitivityForWriteback) and the store parts of `packages/core/src/index.ts`

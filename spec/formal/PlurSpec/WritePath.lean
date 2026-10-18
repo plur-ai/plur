@@ -1,6 +1,10 @@
 /-!
 # WritePath — the Plur write path (packages/core/src/index.ts)
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
+change swaps four `atomicWrite(this.paths.config, …)` calls for `writeConfigFile` (same
+content, same lock) and adds re-exports; no write-path branch changed.
+
 Models, branch for branch, the parts of the write path the WritePath cluster
 covers. Each section names the code it mirrors. Payloads (statements, ids,
 content scanners, config) are abstracted: theorems quantify over them.
