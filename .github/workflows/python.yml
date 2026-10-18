@@ -8,6 +8,10 @@ on:
   # on another in-review branch) otherwise runs no CI and reads as verified.
   # See the note in ci.yml.
   pull_request:
+    # Pull requests into integration/** (the overnight agent's stacked work) skip
+    # this run; their proof is the local gate (stacked-local-proof.yml), and the
+    # integration branch gets this run when it comes into development.
+    branches-ignore: ['integration/**']
     paths: ['packages/python/**', 'packages/langchain/**', 'packages/cli/**', 'packages/core/**', '.github/workflows/python.yml']
 
 permissions:

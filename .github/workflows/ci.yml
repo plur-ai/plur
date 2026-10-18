@@ -13,7 +13,15 @@ on:
   #
   # Stacking is the normal way to keep a review chain moving when one PR
   # depends on another, so the trigger has to cover it.
+  #
+  # One exception (owner, 2026-10-18: "let's not burn GitHub usage where we
+  # don't need to"): pull requests into integration/**, the branches the
+  # overnight agent stacks its work on. They are not left reading as verified:
+  # stacked-local-proof.yml fails each one whose description lacks the local
+  # gate output, and the integration branch gets this full run once, when it
+  # comes into development.
   pull_request:
+    branches-ignore: ['integration/**']
 
 # Principle of least privilege: workflow only needs to checkout and run tests.
 permissions:
@@ -41,6 +49,8 @@ jobs:
       # fails closed if PyYAML is missing rather than passing unchecked.
       - run: python3 scripts/test_check_workflow_pins.py
       - run: python3 scripts/check-workflow-pins.py
+      # Stacked pull requests skip the test runs only with the local proof in their place.
+      - run: python3 scripts/test_stacked_ci_skip.py
 
   test:
     runs-on: ubuntu-latest

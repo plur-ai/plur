@@ -2,6 +2,10 @@ name: Codex WSL2 upgrade
 
 on:
   pull_request:
+    # Pull requests into integration/** (the overnight agent's stacked work) skip
+    # this run; their proof is the local gate (stacked-local-proof.yml), and the
+    # integration branch gets this run when it comes into development.
+    branches-ignore: ['integration/**']
     paths:
       - 'packages/cli/**'
       - 'packages/core/**'

@@ -1,0 +1,35 @@
+name: Stacked local proof
+
+# Pull requests into integration/** skip the GitHub test runs (owner,
+# 2026-10-18: "let's not burn GitHub usage where we don't need to"). A skipped
+# run must not read as a pass, so this job fails unless the description carries
+# the output of `scripts/evals-local.sh gate <base>`, run after the package
+# tests. It reads the description only; it proves the agent pasted the proof,
+# not that the proof is true. The integration branch gets every run once, when
+# it comes into development. scripts/test_stacked_ci_skip.py pins all of this.
+
+on:
+  pull_request:
+    branches: ['integration/**']
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  local-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: The description carries the local gate output
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          missing=0
+          for needle in "evals-local: results in" "regressed: 0"; do
+            if ! printf '%s' "$BODY" | grep -qF "$needle"; then
+              echo "::error::The description lacks \"$needle\". Paste the output of scripts/evals-local.sh gate <base> (and the package test run) into it."
+              missing=1
+            fi
+          done
+          exit "$missing"
