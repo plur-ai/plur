@@ -13,7 +13,7 @@
  * PLUR_PATH inside a temp directory in every spawn.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawn } from 'child_process'
@@ -305,4 +305,25 @@ describe('gate review of #1663: nothing of the session is kept on this machine',
     expect(decision.policy.mode).toBe('remote-only')
     expect(decision.policy.scope).toBe(TEAM)
   })
+  it('Cursor: a root given through a link inside a remote-only folder keeps the workspace remote-only', async () => {
+    const { cursorHookFolder } = await import('../src/lib/folder-gate.js')
+    const plain = join(dir, 'plain')
+    mkdirSync(plain)
+    symlinkSync(plain, join(repo, 'link'))
+    writeFileSync(join(plurHome, 'folders.yaml'),
+      `version: 1\nfolders:\n  - path: ${plain}\n    plur: on\n  - path: ${repo}\n    plur: remote-only\n    scope: ${TEAM}\n`)
+    const decision = cursorHookFolder({ workspace_roots: [join(repo, 'link')] }, { path: plurHome })
+    expect(decision.policy.mode).toBe('remote-only')
+  })
+
+  it('plur restore in a remote-only folder is refused and changes nothing', () => {
+    seedPersonal()
+    mapRemoteOnly()
+    const before = readFileSync(join(plurHome, 'engrams.yaml'), 'utf8')
+    const r = cli(['restore', '--yes'])
+    expect(r.status).not.toBe(0)
+    // The refusal itself (the temp folder's name also contains "remote-only").
+    expect(r.stdout + r.stderr).toMatch(/is remote-only[\s\S]*personal store/)
+    expect(readFileSync(join(plurHome, 'engrams.yaml'), 'utf8')).toBe(before)
+  }, 60_000)
 })

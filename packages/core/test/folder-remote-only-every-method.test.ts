@@ -12,7 +12,7 @@
  * A method added later fails this test until it is given arguments here.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
@@ -52,6 +52,11 @@ function primaryRows(): any[] {
 }
 const permanent = () => primaryRows().filter(r => !r.structured_data?._outbox)
 const read = (f: string) => (existsSync(f) ? readFileSync(f, 'utf8') : '')
+/** The history log as PLUR writes it: <root>/history/YYYY-MM.jsonl, in month order. */
+const historyText = () => {
+  const d = join(root, 'history')
+  return existsSync(d) ? readdirSync(d).sort().map(f => read(join(d, f))).join('') : ''
+}
 
 describe('every public Plur method in a remote-only folder', () => {
   it('returns no personal statement and creates or changes no permanent row', async () => {
@@ -96,7 +101,9 @@ describe('every public Plur method in a remote-only folder', () => {
     const beforeSecondary = read(secondary)
     const beforeEpisodes = read(join(root, 'episodes.yaml'))
     const beforeTensions = read(join(root, 'tensions.yaml'))
-    const beforeHistory = read(join(root, 'history.jsonl'))
+    const beforeHistory = historyText()
+    // The log the check below reads is the real one: the setup above wrote to it.
+    expect(beforeHistory.length).toBeGreaterThan(0)
 
     // The stub's /me authorises the team scope and the personal one, so
     // verifyRemoteStore must SUCCEED (no tolerated error).
@@ -237,8 +244,8 @@ describe('every public Plur method in a remote-only folder', () => {
       expect(r.structured_data._outbox.remote_only_folder, r.id).toBe(work)
     }
     // The history log gained no personal text.
-    const addedHistory = read(join(root, 'history.jsonl')).slice(beforeHistory.length)
-    for (const m of MARKERS) expect(addedHistory.includes(m), `history.jsonl gained ${m}`).toBe(false)
+    const addedHistory = historyText().slice(beforeHistory.length)
+    for (const m of MARKERS) expect(addedHistory.includes(m), `the history log gained ${m}`).toBe(false)
     expect(JSON.stringify(permanent())).toBe(beforePermanent)
     expect(read(secondary)).toBe(beforeSecondary)
     expect(read(join(root, 'episodes.yaml'))).toBe(beforeEpisodes)

@@ -238,3 +238,20 @@ describe('re-audit 2 of #1521, R2-S3: roots from a client that cannot announce c
     expect(text).not.toContain('NOLISTCHANGED')
   })
 })
+
+describe('gate review of #1663: MCP tools that read this machine\'s files directly', () => {
+  it('plur_history without an id and plur_profile return nothing personal in a remote-only folder', async () => {
+    mkdirSync(join(root, 'history'), { recursive: true })
+    writeFileSync(join(root, 'history', '2026-10.jsonl'),
+      JSON.stringify({ event: 'engram_created', engram_id: 'ENG-2026-10-01-001', timestamp: '2026-10-01T00:00:00Z', data: { statement: 'PERSONALHISTORY fact' } }) + '\n')
+    writeFileSync(join(root, 'profile_cache.json'),
+      JSON.stringify({ profile: 'You are PERSONALPROFILE', generated_at: new Date().toISOString(), engram_count: 1, dirty: false }))
+    const c = await client()
+    const history = JSON.stringify(await c.callTool({ name: 'plur_history', arguments: {} }))
+    expect(history).not.toContain('PERSONALHISTORY')
+    expect(history).toContain('remote-only')
+    const profile = JSON.stringify(await c.callTool({ name: 'plur_profile', arguments: {} }))
+    expect(profile).not.toContain('PERSONALPROFILE')
+    expect(profile).toContain('remote-only')
+  })
+})
