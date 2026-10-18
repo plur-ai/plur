@@ -378,4 +378,62 @@ describe('runHello', () => {
       expect(JSON.stringify(bad)).not.toContain('alice:')
     })
   })
+
+  // Codex round 5. Finding 2: the proof must bind the saved id to the intended
+  // server — the save delivered there, and that server's own answer carrying
+  // the id. Finding 1: local semantic-search readiness must not decide it.
+  describe('the intended server stored and returned the saved id', () => {
+    const readLog = (p: string) => readFileSync(p, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    const hello = (mode: string | undefined, extra: Record<string, string> = {}, log = join(tempDir, 'log')) =>
+      runHello({
+        launches: [fakeLaunch('codex', log, mode, extra)],
+        personalScope: 'user:acme:alice',
+        serverUrl: SERVER,
+        statement: 'PLUR connected: alice',
+      })
+
+    it('the save was delivered to another server: not saved there, nothing recalled', async () => {
+      const result = await hello(undefined, { FAKE_SAVE_HOST: 'https://other.example.com' })
+      expect(result.saved.ok).toBe(false)
+      if (!result.saved.ok) expect(result.saved.reason).toContain('other.example.com')
+      expect(result.perTool).toEqual([])
+    })
+
+    it('a save that does not say which server received it is not confirmed', async () => {
+      const result = await hello(undefined, { FAKE_SAVE_HOST: 'none' })
+      expect(result.saved.ok).toBe(false)
+      expect(result.perTool).toEqual([])
+    })
+
+    it('the id came back from another server, the intended one answered with other rows: not proven', async () => {
+      const result = await hello('recall-other-holds')
+      expect(result.saved).toMatchObject({ ok: true })
+      expect(result.perTool).toHaveLength(1)
+      expect(result.perTool[0]).toMatchObject({ tool: 'codex', recalled: false })
+    })
+
+    it('local semantic search degraded (no embedding model), the server returned the id: proven', async () => {
+      const result = await hello('recall-local-degraded')
+      expect(result.perTool).toEqual([{ tool: 'codex', recalled: true }])
+    })
+
+    it('another dialed server failed, the intended server returned the id: proven', async () => {
+      const result = await hello('recall-other-failed')
+      expect(result.perTool).toEqual([{ tool: 'codex', recalled: true }])
+    })
+
+    it('recalls in keyword mode, which does not use local embeddings', async () => {
+      const log = join(tempDir, 'log.ndjson')
+      await hello(undefined, {}, log)
+      const recall = readLog(log).find((e) => e.tool === 'plur_recall')
+      expect(recall?.args).toMatchObject({ mode: 'keyword', scope: 'user:acme:alice' })
+    })
+
+    it('a reason naming the other server carries no userinfo', async () => {
+      const result = await hello(undefined, { FAKE_SAVE_HOST: 'https://bob:FAKE_PASSWORD@other.example.com' })
+      expect(result.saved.ok).toBe(false)
+      expect(JSON.stringify(result)).not.toContain('FAKE_PASSWORD')
+      expect(JSON.stringify(result)).not.toContain('bob:')
+    })
+  })
 })

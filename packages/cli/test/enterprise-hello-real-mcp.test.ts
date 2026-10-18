@@ -60,7 +60,7 @@ describe('hello proof through the real MCP server', { timeout: 120_000 }, () => 
   })
   afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
-  function launch(tool: ToolId): { tool: ToolId; launch: McpLaunch } {
+  function launch(tool: ToolId, env: Record<string, string> = { PLUR_DISABLE_EMBEDDINGS: '1' }): { tool: ToolId; launch: McpLaunch } {
     return {
       tool,
       launch: {
@@ -71,7 +71,7 @@ describe('hello proof through the real MCP server', { timeout: 120_000 }, () => 
           HOME: home,
           USERPROFILE: home,
           PLUR_PATH: plurHome,
-          PLUR_DISABLE_EMBEDDINGS: '1',
+          ...env,
         },
       },
     }
@@ -155,4 +155,111 @@ describe('hello proof through the real MCP server', { timeout: 120_000 }, () => 
       expect(result.perTool[0]).toMatchObject({ tool: 'codex', recalled: false })
     })
   }
+
+  // Codex round 5, finding 1: the proof must not depend on local semantic
+  // search. Default embeddings, an empty model cache and downloads off: the
+  // model is missing (embedding_model_missing), and the server returned the id.
+  it('embeddings on but the model is not downloaded: proven when the server returns the id', async () => {
+    writeFileSync(join(plurHome, 'config.yaml'),
+      `stores:\n  - url: "${url}"\n    token: "${TOKEN}"\n    scope: "${PERSONAL}"\n`)
+    const emptyCache = join(root, 'model-cache')
+    mkdirSync(emptyCache)
+    const env = { PLUR_MODEL_CACHE_DIR: emptyCache, PLUR_MODEL_DOWNLOAD: 'off' }
+    const result = await runHello({
+      launches: [launch('claude-code', env), launch('codex', env)],
+      personalScope: PERSONAL,
+      serverUrl: url,
+      statement: STATEMENT,
+      timeoutMs: 60_000,
+    })
+    expect(result.saved).toMatchObject({ ok: true })
+    expect(result.perTool).toEqual([
+      { tool: 'claude-code', recalled: true },
+      { tool: 'codex', recalled: true },
+    ])
+    expect(readdirSync(emptyCache)).toEqual([])
+  })
+
+  // Codex round 5, finding 2: two servers serve the personal scope. The proof
+  // is about ONE of them, and only that server's own save and answer count.
+  describe('two servers serve the personal scope', () => {
+    let other: StubServer
+    let otherUrl: string
+    beforeAll(async () => {
+      other = new StubServer(TOKEN)
+      otherUrl = (await other.start()).url
+    })
+    afterAll(async () => { await other.stop() })
+
+    const rowsOf = (s: StubServer) => [...(s as unknown as { engrams: Map<string, Row> }).engrams.values()]
+      .filter(e => e.scope === PERSONAL && e.status === 'active')
+      .map(e => ({ ...e.data, id: e.id, scope: e.scope, status: e.status, score: 1 }))
+    /** A row unrelated to the hello, in the personal scope. */
+    const unrelated = () => [{
+      id: 'ENG-UNRELATED-1', scope: PERSONAL, status: 'active', score: 1,
+      statement: 'PLUR connected: an older, unrelated note', type: 'behavioral', domain: 'plur.connect',
+      tags: [], activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: '2026-10-01' },
+    }]
+    const setRows = (s: StubServer, get: () => unknown[]) =>
+      Object.defineProperty(s, 'recallRows', { configurable: true, get, set: () => {} })
+
+    beforeEach(() => {
+      other.reset()
+      other.setMe({ username: 'alice', org_id: 'acme', scopes: [PERSONAL] })
+      // `url` (the first store) takes the personal scope's writes; the other
+      // server is dialed on every recall too.
+      writeFileSync(join(plurHome, 'config.yaml'),
+        `embeddings:\n  enabled: false\nstores:\n` +
+        `  - url: "${url}"\n    token: "${TOKEN}"\n    scope: "${PERSONAL}"\n` +
+        `  - url: "${otherUrl}"\n    token: "${TOKEN}"\n    scope: "${PERSONAL}"\n    dial: always\n`)
+    })
+
+    it('the save reached the other server: not proven for the intended one', async () => {
+      // The other server answers with an unrelated row; the first one with the hello.
+      setRows(other, unrelated)
+      const result = await runHello({
+        launches: [launch('codex')],
+        personalScope: PERSONAL,
+        serverUrl: otherUrl,
+        statement: STATEMENT,
+        timeoutMs: 60_000,
+      })
+      expect(stub.appendStatements).toEqual([STATEMENT])
+      expect(other.appendStatements).toEqual([])
+      expect(result.saved.ok).toBe(false)
+      expect(result.perTool.every(t => !t.recalled)).toBe(true)
+    })
+
+    it('only the other server returned the hello id: not proven', async () => {
+      // The intended server (first store) took the save but answers with an
+      // unrelated row; the other server hands back the hello row.
+      setRows(stub, unrelated)
+      setRows(other, () => rowsOf(stub))
+      const result = await runHello({
+        launches: [launch('codex')],
+        personalScope: PERSONAL,
+        serverUrl: url,
+        statement: STATEMENT,
+        timeoutMs: 60_000,
+      })
+      expect(result.saved).toMatchObject({ ok: true })
+      expect(other.recallCalls).toBeGreaterThan(0)
+      expect(result.perTool).toHaveLength(1)
+      expect(result.perTool[0]).toMatchObject({ tool: 'codex', recalled: false })
+    })
+
+    it('control: the intended server holds and returns the id: proven', async () => {
+      setRows(other, unrelated)
+      const result = await runHello({
+        launches: [launch('codex')],
+        personalScope: PERSONAL,
+        serverUrl: url,
+        statement: STATEMENT,
+        timeoutMs: 60_000,
+      })
+      expect(result.saved).toMatchObject({ ok: true })
+      expect(other.recallCalls).toBeGreaterThan(0)
+      expect(result.perTool).toEqual([{ tool: 'codex', recalled: true }])
+    })
+  })
 })
