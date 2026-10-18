@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://plur.ai"><img src="assets/plur-banner.png" alt="PLUR — local-first shared memory for AI agents. Haiku + PLUR beats Opus without it, at ~10× less cost." width="100%"></a>
+  <a href="https://plur.ai"><img src="assets/plur-banner.png" alt="PLUR — local-first shared memory for AI agents." width="100%"></a>
 </p>
 
 # PLUR — Your agents share the same memory
@@ -20,26 +20,25 @@ Persistent, **open** memory for AI agents — local-first, zero-cost, shared acr
 
 PLUR is memory, not just retrieval — so we measure it on more than one axis, on the **full** corpus, and we publish the harness so you can reproduce every number.
 
-**Retrieval recall — full LongMemEval-S (N=500), R@5, fully local:**
+**Retrieval recall — full LongMemEval-S (N=500), R@5, chunk granularity, fully local** ([plur-bench headline result](https://github.com/plur-ai/plur-bench/blob/744d133/README.md#headline-result-longmemeval-s-n500-chunk-granularity)):
 
 | Stack | R@5 | Notes |
 |-------|-----|-------|
 | BM25 only | 92.2% | no embedder — fully airgapped |
-| Hybrid (BGE-small, shipping default) | 95.6% | local embedder; one-time model download |
-| **+ BGE-reranker-v2-m3** | **97.6%** | local cross-encoder, max quality — opt-in, ≈5s p50 on CPU |
+| **Hybrid + BGE-reranker-v2-m3** | **97.6%** | local cross-encoder, max quality — opt-in, slower on CPU |
 
 Numbers come from [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench),
 which is the source of truth for every benchmark figure PLUR publishes. Where
 an in-repo number and a plur-bench number disagree, plur-bench wins — it is the
 reproducible harness, and it is what CI regression-checks.
 
-Chunk granularity, canonical-doc scoring, corpus SHA256 pinned — reproduce it in [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench). No cloud call is required for any of these numbers (an *optional* cloud embedder, openai-3-large, reaches 97.0% hybrid). A faster reranker — `ms-marco-minilm-l6` (p50≈245ms vs BGE's ≈5s on CPU) — trades a little recall for sub-second latency.
+Chunk granularity, canonical-doc scoring, corpus SHA256 pinned — reproduce it in [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench). No cloud call is required for any of these numbers (an *optional* cloud embedder, openai-3-large, reaches 97.0% hybrid).
 
 **Run it yourself — and tell us what you get.** The harness is [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench): CPU-runnable, no API key needed for the local path, corpus auto-fetched and SHA-verified. If you run it, we'd genuinely love to see your numbers — open an issue or discussion with your results, **especially if they don't match ours.** Independent reproduction is worth more than any number we publish, and we'll gladly credit you.
 
-**Retrieval ≠ answer accuracy — and we report them separately, never conflated.** End-to-end (LLM-judge) answer accuracy with the reranker stack is **60.5%**, versus **52.0%** for dumping full context into the prompt and **5.5%** with no memory at all.
+**Retrieval ≠ answer accuracy — and we report them separately, never conflated.** End-to-end (LLM-judge) answer accuracy is measured with `--scoring llm_judge` in plur-bench; we will publish that number when its run manifest is in the repository.
 
-**Agent-task impact** — same task, with memory vs without: Haiku + PLUR outperforms Opus *without* it at roughly **10× less cost**; house rules **12–0** across Haiku, Sonnet, and Opus.
+**Agent-task impact** — same task, with memory vs without: the [agent-task A/B harness](https://github.com/plur-ai/plur-bench/tree/744d133/agent-bench) is in plur-bench; its real win-rate run is pending, so we publish no number yet.
 
 **Operational** — local-first, zero-cost search, data-sovereign by design.
 
@@ -50,8 +49,6 @@ Chunk granularity, canonical-doc scoring, corpus SHA256 pinned — reproduce it 
 You correct your agent's coding style on Monday. On Tuesday, it makes the same mistake. You explain your architecture in Cursor. That night, Claude Code has no idea.
 
 PLUR fixes this. Install it once, and corrections, preferences, and conventions persist — across sessions, tools, and machines. Your memory is stored as plain YAML on your disk. No cloud, no API calls, no black box.
-
-The interesting part: in our tool-routing and local-knowledge benchmark, **Haiku with PLUR memory outperformed Opus without it** — 2.6x better on tool routing, at roughly 10x less cost. Turns out the bottleneck isn't model intelligence. It's context.
 
 **The model is rented; your memory is owned.** Swap Haiku for Opus for whatever ships next month — the reasoning is a commodity you don't control. The part that's *yours* — everything the agent has learned about your work, your corrections, your conventions — shouldn't live in someone else's cloud or be baked into weights you can't read. PLUR keeps it in plain files on your disk, in an open format you can inspect, correct, and delete. That's what owning your intelligence actually means.
 
@@ -440,23 +437,9 @@ In both modes **`scope: local` engrams** are machine-specific by design (paths, 
 
 ## Benchmark details
 
-Per-category retrieval recall, from an **earlier in-repo run** — full
-LongMemEval-S (N=500), fully local (BGE-small + BGE-reranker-v2-m3, chunk
-granularity). Its overall figure (98.0%) predates the current plur-bench
-measurement of the same stack (97.6%) and has not been re-run per category;
-treat the shape as indicative and the headline table above as current.
+Per-category retrieval recall is published in plur-bench, from its validated control run (hybrid, openai-3-large embedder, chunk granularity, LongMemEval-S N=500): [per-category table](https://github.com/plur-ai/plur-bench/blob/744d133/README.md#headline-result-longmemeval-s-n500-chunk-granularity). An earlier in-repo per-category table was removed because its run is not archived.
 
-| Category | R@5 | R@10 |
-|----------|-----|------|
-| single-session-assistant | 100.0% | 100.0% |
-| knowledge-update | 100.0% | 100.0% |
-| single-session-user | 98.6% | 100.0% |
-| multi-session | 98.5% | 100.0% |
-| temporal-reasoning | 97.7% | 98.5% |
-| single-session-preference | 86.7% | 90.0% |
-| **overall** | **98.0%** | **99.0%** |
-
-Retrieval recall (finding the right memory) and end-to-end answer accuracy (whether the model then answers correctly) are **different axes** — PLUR measures and reports them separately, never conflated. The agent-impact figures above come from a same-task A/B run (memory vs none).
+Retrieval recall (finding the right memory) and end-to-end answer accuracy (whether the model then answers correctly) are **different axes** — PLUR measures and reports them separately, never conflated.
 
 [Full methodology →](https://plur.ai/benchmark.html)
 
@@ -465,7 +448,7 @@ Retrieval recall (finding the right memory) and end-to-end answer accuracy (whet
 Mem0, Letta (MemGPT), and Zep solve real problems — a drop-in memory API (Mem0), a self-managing agent OS (Letta), a temporal knowledge graph (Zep). PLUR's bet is a combination none of them ship together:
 
 - **Plain-text you own** — engrams are human-readable YAML you can read, `git diff`, edit, and provably delete. Not opaque vectors, agent-state blocks, or graph nodes you need tooling to inspect.
-- **Local-first, zero-cost** — hybrid BM25 + local embeddings, fully offline, no API bill (98% R@5 on the full LongMemEval-S corpus with no cloud call — see above).
+- **Local-first, zero-cost** — hybrid BM25 + local embeddings, fully offline, no API bill (97.6% R@5 on the full LongMemEval-S corpus with no cloud call — see above).
 - **Team-shareable via git** — `plur sync` is git underneath, so the same memory follows you across machines *and* across a team. Most tools are single-user-local *or* cloud-team; PLUR is both, and you keep the data.
 - **Cross-tool** — the same `~/.plur/` store works in Claude Code, Cursor, Windsurf, OpenClaw, and Hermes. Your memory isn't trapped in one vendor.
 - **It learns and forgets** — feedback-trained retrieval with ACT-R decay and an on-demand contradiction scan, not a grow-forever store.
