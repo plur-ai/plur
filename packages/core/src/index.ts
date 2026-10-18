@@ -4771,11 +4771,6 @@ export class Plur {
   }
 
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._learnBound(statement, context))
-  }
-
-  private async _learnBound(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
@@ -5275,11 +5270,6 @@ export class Plur {
   }
 
   async learnRouted(statement: string, context?: LearnContext, options?: LearnRoutedOptions): Promise<Engram> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._learnRoutedBound(statement, context, options))
-  }
-
-  private async _learnRoutedBound(statement: string, context?: LearnContext, options?: LearnRoutedOptions): Promise<Engram> {
     // 0.21.1: the caller's deadline for the server leg ONLY. Local work (load,
     // dedup, write, index) is never raced: a slow local save is a success. A
     // server that does not answer inside the deadline takes the existing
@@ -5888,11 +5878,6 @@ export class Plur {
 
   /** Async learn with LLM-driven deduplication (Ideas 1+2+19). */
   async learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._learnAsyncBound(statement, context))
-  }
-
-  private async _learnAsyncBound(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
     this._assertWritable()
     // remote-only: fill/refuse the scope up front, so the LLM dedup pass only
     // ever compares against (and merges into) the folder's team scope.
@@ -5914,15 +5899,6 @@ export class Plur {
 
   /** Batch learn with LLM dedup. LLM calls are capped (default 50) to bound bulk-import cost. */
   async learnBatch(
-    statements: Array<{ statement: string; context?: LearnAsyncContext }>,
-    llm?: LlmFunction,
-    opts?: { maxLlmCalls?: number },
-  ): Promise<LearnBatchResult> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._learnBatchBound(statements, llm, opts))
-  }
-
-  private async _learnBatchBound(
     statements: Array<{ statement: string; context?: LearnAsyncContext }>,
     llm?: LlmFunction,
     opts?: { maxLlmCalls?: number },
@@ -8777,16 +8753,6 @@ export class Plur {
     scope?: string,
     options?: { source?: FeedbackSource },
   ): Promise<MutationOutcome> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._feedbackBound(id, signal, scope, options))
-  }
-
-  private async _feedbackBound(
-    id: string,
-    signal: 'positive' | 'negative' | 'neutral',
-    scope?: string,
-    options?: { source?: FeedbackSource },
-  ): Promise<MutationOutcome> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Rating', scope)
     const warnings: string[] = []
@@ -9176,11 +9142,6 @@ export class Plur {
    * operation returning the written engram.
    */
   async updateEngram(updated: Engram): Promise<boolean> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._updateEngramBound(updated))
-  }
-
-  private async _updateEngramBound(updated: Engram): Promise<boolean> {
     return (await this._updateEngramReturning(updated)) !== null
   }
 
@@ -9507,11 +9468,6 @@ export class Plur {
    * than a placeholder — {@link setPinnedAsync} is the same call.
    */
   async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._setPinnedBound(id, pinned, options))
-  }
-
-  private async _setPinnedBound(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Pinning', options?.scope)
     // Which store holds it (0.21.1). Ids are minted per store, so a bare id
@@ -9989,11 +9945,6 @@ export class Plur {
    * dedup tracking (two agents learned the same fact; one forgets — the
    * other's reference should remain). */
   async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._forgetBound(id, reason, options))
-  }
-
-  private async _forgetBound(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
     this._assertWritable()
     // remote-only (audit of #1521, B2): a save queued from a remote-only
     // folder is DELETED, not retired — a retired row would keep its content
@@ -10470,15 +10421,6 @@ export class Plur {
    * reports every decision without mutating anything, local or remote.
    */
   async rescope(
-    idOrIds: string | string[],
-    targetScope: string,
-    options?: RescopeOptions,
-  ): Promise<{ results: RescopeResult[]; success: boolean }> {
-    // One binding for the whole operation (Codex round 8 on #1663).
-    return this._captured(() => this._rescopeBound(idOrIds, targetScope, options))
-  }
-
-  private async _rescopeBound(
     idOrIds: string | string[],
     targetScope: string,
     options?: RescopeOptions,
@@ -15542,4 +15484,24 @@ Generate an improved version of the procedure that prevents this failure. Return
 function isUnder(child: string, parent: string): boolean {
   if (child === parent) return false
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
+}
+
+// One folder binding per public call (gate review of #1663, structural
+// change 2). Every public async method of Plur captures the remote-only
+// binding in effect when it is called and keeps it until it settles, so a
+// rebind of the same instance while the call waits cannot change what it
+// reads, refuses or queues. The wrapper runs the ORIGINAL body, never the
+// public name again, so a spy on a method counts each call once. A call made
+// inside another one of the same instance keeps the outer call's binding.
+for (const name of Object.getOwnPropertyNames(Plur.prototype)) {
+  if (name === 'constructor' || name.startsWith('_')) continue
+  const d = Object.getOwnPropertyDescriptor(Plur.prototype, name)
+  if (!d || typeof d.value !== 'function' || d.value.constructor?.name !== 'AsyncFunction') continue
+  const original = d.value as (...args: unknown[]) => Promise<unknown>
+  Object.defineProperty(Plur.prototype, name, {
+    ...d,
+    value: function (this: Plur, ...args: unknown[]) {
+      return (this as unknown as { _captured<T>(fn: () => Promise<T>): Promise<T> })._captured(() => original.apply(this, args))
+    },
+  })
 }
