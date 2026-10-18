@@ -1,5 +1,5 @@
 /**
- * Tests for `plur login` — token status (#587), config write, reload signal,
+ * Tests for `plur login` — token status (#587), legacy config read, reload signal,
  * and arg parsing.
  *
  * The `--status` path is covered at two levels: pure unit tests over the
@@ -7,8 +7,8 @@
  * fan-in via buildStatusReport, remediation strings), and process-level tests
  * spawning the real CLI against the core StubServer (real HTTP) for exit
  * codes, --json shape, and the unreachable-host path. The OAuth device flow
- * helpers are tested via a local stub server; the flow itself is GATED in the
- * command (#300/#532) and the gate is pinned here. Browser-open is not tested
+ * helpers are tested via a local stub server; the full un-gated flow (#1638)
+ * is in enterprise-device-login.test.ts. Browser-open is not tested
  * (it shells out to `open`/`xdg-open`/`start`; those are OS calls we don't
  * control). Signal delivery is tested by asserting the signalReload() return
  * value rather than actually sending a kill, which would require a real process.
@@ -82,41 +82,9 @@ describe('login helpers — config read/write', () => {
     expect(cfg).toEqual({})
   })
 
-  it('writePlurConfig creates parent directory and writes JSON', async () => {
-    const { plurConfigPath, writePlurConfig } = await import('../src/commands/login.js')
-    const configPath = plurConfigPath(tmpHome)
-
-    const data = {
-      enterprise: {
-        url: 'https://plur.example.com',
-        token: 'tok_test_abc',
-        username: 'test-user',
-        scopes: ['user:test'],
-        authed_at: '2026-01-01T00:00:00.000Z',
-      },
-    }
-    writePlurConfig(data, tmpHome)
-
-    expect(existsSync(configPath)).toBe(true)
-    const written = JSON.parse(readFileSync(configPath, 'utf8'))
-    expect(written.enterprise.url).toBe('https://plur.example.com')
-    expect(written.enterprise.token).toBe('tok_test_abc')
-    expect(written.enterprise.username).toBe('test-user')
-    expect(written.enterprise.scopes).toEqual(['user:test'])
-  })
-
-  it('writePlurConfig is idempotent — overwriting preserves other top-level keys', async () => {
-    const { plurConfigPath, writePlurConfig } = await import('../src/commands/login.js')
-    const configPath = plurConfigPath(tmpHome)
-
-    // Write initial config with extra top-level key
-    writePlurConfig({ enterprise: { url: 'https://a.example.com', token: 'tok1' }, custom_key: 'preserved' }, tmpHome)
-    writePlurConfig({ enterprise: { url: 'https://b.example.com', token: 'tok2' }, custom_key: 'preserved' }, tmpHome)
-
-    const written = JSON.parse(readFileSync(configPath, 'utf8'))
-    expect(written.enterprise.url).toBe('https://b.example.com')
-    expect(written.enterprise.token).toBe('tok2')
-    expect(written.custom_key).toBe('preserved')
+  it('writePlurConfig is gone: plur login no longer writes ~/.plur/config.json (#1638, decision O15)', async () => {
+    const mod = await import('../src/commands/login.js')
+    expect('writePlurConfig' in mod).toBe(false)
   })
 })
 
@@ -259,7 +227,8 @@ describe('pollForToken', () => {
   it('throws on access_denied error', async () => {
     const { pollForToken } = await import('../src/commands/login.js')
     responses.push({ status: 200, body: { error: 'access_denied' } })
-    await expect(pollForToken(serverUrl, 'dev_abc', 0, 30)).rejects.toThrow('Access denied')
+    // #1638 plan C Task 3: "access_denied → rejects 'Sign-in was cancelled in the browser. Nothing was changed.'"
+    await expect(pollForToken(serverUrl, 'dev_abc', 0, 30)).rejects.toThrow('Sign-in was cancelled in the browser. Nothing was changed.')
   })
 
   it('throws when timeout is reached before approval', async () => {
@@ -490,16 +459,17 @@ describe('plur login CLI (gated device flow + arg errors)', () => {
     expect(r.stdout).toMatch(/login --status/)
   })
 
-  it('device flow is gated: `plur login <host>` exits 1 with the /auth + plur_stores_add path', async () => {
-    const r = await runCli('login https://plur.example.com', cwd, home)
+  it('the device flow is no longer gated (#1638): an unreachable host exits 1 with a plain error and writes nothing', async () => {
+    // A port that was just closed: nothing listens there.
+    const probe = createServer()
+    await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve))
+    const port = (probe.address() as AddressInfo).port
+    await new Promise<void>(resolve => probe.close(() => resolve()))
+    const r = await runCli(`login http://127.0.0.1:${port}`, cwd, home)
     expect(r.status).toBe(1)
-    expect(r.stdout).toMatch(/not available yet/)
-    expect(r.stdout).toContain('https://plur.example.com/auth')
-    expect(r.stdout).toContain('plur_stores_add')
-    // #1265: the CLI can now register a url store itself — the advice says how.
-    expect(r.stdout).toContain('plur stores add --url https://plur.example.com --token-env')
-    // The flow must not have started — no device code prompt.
-    expect(r.stdout).not.toMatch(/one-time code/)
+    expect(r.stdout).toMatch(/Could not reach http:\/\/127\.0\.0\.1/)
+    expect(r.stdout).not.toMatch(/not available yet/)
+    expect(existsSync(join(home, '.plur', 'config.json'))).toBe(false)
   })
 })
 

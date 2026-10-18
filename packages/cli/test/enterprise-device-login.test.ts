@@ -270,11 +270,12 @@ async function startStub(): Promise<Stub> {
   return stub
 }
 
-function runCli(args: string[], home: string, opts: { onOutput?: (all: string, child: ReturnType<typeof spawn>) => void; timeoutMs?: number } = {}) {
+function runCli(args: string[], home: string, opts: { onSpawn?: (child: ReturnType<typeof spawn>) => void; timeoutMs?: number } = {}) {
   return new Promise<{ out: string; status: number | null; signal: NodeJS.Signals | null }>(resolve => {
     const child = spawn('node', [CLI, ...args], { cwd: home, env: { ...isolatedHomeEnv(home), DISPLAY: '', WAYLAND_DISPLAY: '' } })
     let out = ''
-    const on = (c: Buffer) => { out += c.toString(); opts.onOutput?.(out, child) }
+    const on = (c: Buffer) => { out += c.toString() }
+    opts.onSpawn?.(child)
     child.stdout.on('data', on)
     child.stderr.on('data', on)
     const t = setTimeout(() => { child.kill('SIGKILL') }, opts.timeoutMs ?? 30_000)
@@ -319,11 +320,14 @@ describe('plur login <host> (process, contract server)', () => {
     const before = readFileSync(cfg(), 'utf8')
     let sent = false
     const r = await runCli(['login', stub.url, '--no-open'], home, {
-      onOutput: (_all, child) => {
-        if (!sent && stub.tokenPolls >= 1) { sent = true; child.kill('SIGINT') }
+      // Interrupt once the CLI is polling for the key.
+      onSpawn: child => {
+        const t = setInterval(() => {
+          if (stub.tokenPolls >= 1) { sent = true; clearInterval(t); child.kill('SIGINT') }
+        }, 50)
+        child.on('close', () => clearInterval(t))
       },
     })
-    // A poll is answered before output follows; make sure the signal was sent.
     expect(sent, r.out).toBe(true)
     expect(r.status, r.out).toBe(130)
     expect(r.out).toMatch(/cancelled\. Nothing was changed/i)
