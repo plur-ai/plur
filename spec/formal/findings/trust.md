@@ -1,4 +1,4 @@
-# Findings: Trust (`packages/cli/src/enterprise/{ca,launch-env,exec}.ts`, #1638)
+# Findings: Trust (`packages/cli/src/enterprise/{ca,launch-env,exec,wire}.ts`, #1638)
 
 The model is `spec/formal/PlurSpec/Trust.lean`. It checks cleanly with `lake env lean PlurSpec/Trust.lean`: no sorry, axiom or native_decide. Written with the code (plan C task 2), 2026-10-18, so every section models the shipped code; the counterexamples are for the bugs the code is shaped to prevent.
 
@@ -38,6 +38,13 @@ The shared `ExecFn` now carries `{ env, timeoutMs, input }` (it used to be decla
 - `Exec.zero_means_exit_zero`, `Exec.timeout_nonzero`, `Exec.exit_reachable`.
 - Counterexample `Exec.naive_timeout_is_success`: `r.status ?? 0` reads a killed command as success. Replayed by `enterprise-exec.test.ts` "a timeout is a non-zero status, not null".
 
+## T5. Wiring each tool (`wire.ts`, plan C task 5, 2026-10-18)
+
+- Only PLUR's launch keys change in a tool's `plur` entry: `Wire.user_keys_kept`, `Wire.plur_keys_set`, `Wire.foreign_refused`, `Wire.rerun_unchanged`, non-vacuity `Wire.apply_reachable`. Counterexample `Wire.replace_drops_user_key`: writing the env as one whole value (what the shared Codex patcher does for `env`) drops the user's own `PLUR_PATH`. Replayed by `enterprise-wire.test.ts` "keeps the user's own env keys and comments, removes a PLUR key that is now absent". The code backs the model with a re-parse: an edit whose parsed result differs from the model's env anywhere is refused.
+- The proof gets only a direct launch: `Wire.proof_kill_ends_server`; counterexample `Wire.naive_orphans` (an npx or cmd.exe launch handed to the proof can leave the server running after the kill). Replayed by the `launchProblem` tests and "lists only tools with a plur entry or on the other side, with a launch only when it is direct".
+- The WSL probe runs at most `<root>\System32\wsl.exe` for a validated root, and nothing off Windows: `Wire.runs_only_system32`, `Wire.off_windows_runs_nothing`, `Wire.probe_reachable`; counterexample `Wire.naive_runs_planted` (a SystemRoot on a share). WSL is the kernel release alone: `Wire.wsl_env_irrelevant`. Replayed by the `probeWsl` tests (a share, a user folder, `..` and unset SystemRoot run nothing; `WSL_DISTRO_NAME` does not make plain Linux WSL).
+- The other-side wording carries the side (owner decision O10): `Wire.side_text_distinct`, `Wire.other_side_only_when_absent_here`; counterexample `Wire.old_text_wrong_inside_wsl`.
+
 ## Mutation checks
 
 Each run on a scratch copy of the model; every mutation breaks the named theorems and nothing else had to change.
@@ -51,6 +58,13 @@ Each run on a scratch copy of the model; every mutation breaks the named theorem
 | `build` also emits NODE_TLS_REJECT_UNAUTHORIZED=0 | `keys_allowed`, `build_reachable` |
 | timeout mapped to 0 | `zero_means_exit_zero`, `timeout_nonzero` |
 | `install` ignores `protectable` | `unprotected_writes_nothing` |
+| `merge` takes every key from the new env | `user_keys_kept`, `rerun_unchanged`, `apply_reachable` |
+| `apply` skips the foreign-key refusal | `foreign_refused` |
+| `forProof` passes an npx launch | `proof_kill_ends_server` |
+| `probeRun` skips `validRoot` | `runs_only_system32` |
+| `probeRun` also runs off Windows | `off_windows_runs_nothing`, `runs_only_system32` |
+| one text for both sides | `side_text_distinct` |
+| `side` ignores Codex found here | `other_side_only_when_absent_here` |
 
 ## Review update (2026-10-18)
 

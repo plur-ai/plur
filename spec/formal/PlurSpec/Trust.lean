@@ -2,7 +2,8 @@
 # PlurSpec.Trust — the company CA, the proxy, and the tool launch env
 
 Models of `packages/cli/src/enterprise/{ca,launch-env,exec}.ts` (epic
-"enterprise first install", plan C task 2, plur-ai/plur #1638), 2026-10-18.
+"enterprise first install", plan C task 2, plur-ai/plur #1638), 2026-10-18,
+and of `wire.ts` (plan C task 5, section 4), 2026-10-18.
 Findings, verdicts, replays and mutation checks: `spec/formal/findings/trust.md`.
 
 What is abstract: certificates and fingerprints (`fp` is any function — the
@@ -336,5 +337,186 @@ def naive (r : Spawn) : Nat := r.status.getD 0
 theorem naive_timeout_is_success : naive ⟨none, some .timedOut, 42⟩ = 0 := rfl
 
 end Exec
+
+/-! ## 4. Wiring each tool (`wire.ts`, plan C task 5), 2026-10-18
+
+Four rules, each with the bug it prevents:
+
+- `apply` is `applyMcpEnv`'s env rule. `plur` is `PLUR_ENV_KEYS`. A key
+  outside it in the new env is refused; otherwise PLUR keys take the new
+  value (absent = removed) and every other key keeps its value.
+- `forProof` is the launch `wireTools` hands to the version check and the
+  hello: only a direct launch. Through npx, cmd.exe or a shell the process the
+  proof kills is not the server.
+- `probeRun` is the one program `probeWsl` runs: on Windows only, only when
+  Codex is not here, and only `<root>\System32\wsl.exe` for a root that passed
+  `validRoot` (the real check is `<drive>:\Windows`). WSL itself is read from
+  the kernel release; no env value takes part (`wslFromKernel`).
+- `sideText` is the "other side" wording (owner decision O10): the side is
+  carried, so the text differs by side.
+
+What is abstract: key names and values (strings), `plur` and `validRoot`
+(any predicates), the kernel test. Left out: the file formats (JSON, JSONC,
+TOML) and their byte-level edits; `wire.ts` re-parses every edit and refuses
+one whose result differs from `apply` anywhere, which is what makes the
+format code answer to this model. -/
+namespace Wire
+
+/-- An MCP entry's env: a value per name, or none. -/
+abbrev Env := String → Option String
+
+def lookup (l : List (String × String)) (k : String) : Option String :=
+  (l.find? (fun p => p.1 = k)).map (·.2)
+
+/-- `mergeEnv`: PLUR keys from `next`, every other key from `cur`. -/
+def merge (plur : String → Bool) (cur : Env) (next : List (String × String)) : Env :=
+  fun k => if plur k then lookup next k else cur k
+
+/-- `applyMcpEnv`'s env rule: a foreign key in `next` is refused (none). -/
+def apply (plur : String → Bool) (cur : Env) (next : List (String × String)) : Option Env :=
+  if next.all (fun p => plur p.1) then some (merge plur cur next) else none
+
+/-- Only PLUR keys ever change: a user's own key (PLUR_PATH, say) keeps its value. -/
+theorem user_keys_kept (plur : String → Bool) (cur e : Env) (next : List (String × String)) (k : String)
+    (h : apply plur cur next = some e) (hk : plur k = false) : e k = cur k := by
+  unfold apply at h
+  split at h
+  · cases h; simp [merge, hk]
+  · cases h
+
+/-- Every PLUR key ends up exactly as asked: set when given, removed when not. -/
+theorem plur_keys_set (plur : String → Bool) (cur e : Env) (next : List (String × String)) (k : String)
+    (h : apply plur cur next = some e) (hk : plur k = true) : e k = lookup next k := by
+  unfold apply at h
+  split at h
+  · cases h; simp [merge, hk]
+  · cases h
+
+/-- A key outside the PLUR set (a token, say) is never written. -/
+theorem foreign_refused (plur : String → Bool) (cur : Env) (next : List (String × String)) (p : String × String)
+    (hp : p ∈ next) (hf : plur p.1 = false) : apply plur cur next = none := by
+  unfold apply
+  have : next.all (fun p => plur p.1) = false := by
+    simp only [List.all_eq_false]; exact ⟨p, hp, by simp [hf]⟩
+  simp [this]
+
+/-- A re-run with the same env changes nothing (`unchanged`). -/
+theorem rerun_unchanged (plur : String → Bool) (cur e : Env) (next : List (String × String))
+    (h : apply plur cur next = some e) : apply plur e next = some e := by
+  unfold apply at *
+  split at h
+  · rename_i hall; cases h; simp only [hall, ite_true]; congr 1; funext k; simp only [merge]; split <;> simp_all
+  · cases h
+
+/-- Non-vacuity: the user's PLUR_PATH stays, the proxy is set, the old CA is removed. -/
+def plurKey (k : String) : Bool := k == "HTTPS_PROXY" || k == "NODE_EXTRA_CA_CERTS"
+def userEnv : Env := fun k => if k = "PLUR_PATH" then some "/data" else if k = "NODE_EXTRA_CA_CERTS" then some "/old" else none
+
+theorem apply_reachable :
+    (apply plurKey userEnv [("HTTPS_PROXY", "http://p")]).map (fun e => (e "PLUR_PATH", e "HTTPS_PROXY", e "NODE_EXTRA_CA_CERTS")) =
+      some (some "/data", some "http://p", none) := by decide
+
+/-- Counterexample for the bug the merge prevents: writing the new env as the
+whole env (one `env = {…}` value) drops the user's own PLUR_PATH, which
+silently moves their memory to the default store. -/
+def replaceAll (next : List (String × String)) : Env := lookup next
+
+theorem replace_drops_user_key : replaceAll [("HTTPS_PROXY", "http://p")] "PLUR_PATH" = none ∧ userEnv "PLUR_PATH" = some "/data" := by
+  decide
+
+/-- How a tool's entry starts PLUR. -/
+inductive Launcher | direct | npx | shell | cmdShim
+  deriving DecidableEq
+
+/-- `wireTools`: the launch the proof gets, only when `launchProblem` is null. -/
+def forProof : Launcher → Option Launcher
+  | .direct => some .direct
+  | _ => none
+
+/-- Whether killing the started process ends the server (a wrapper's child outlives it). -/
+def killEndsServer : Launcher → Bool
+  | .direct => true
+  | _ => false
+
+theorem proof_kill_ends_server (l l' : Launcher) (h : forProof l = some l') : killEndsServer l' = true := by
+  cases l <;> simp [forProof] at h <;> subst h <;> rfl
+
+/-- Counterexample: handing every launch to the proof (the review's "cmd.exe /c" and npx case) can orphan the server. -/
+def forProofNaive (l : Launcher) : Option Launcher := some l
+theorem naive_orphans : ∃ l, forProofNaive l = some l ∧ killEndsServer l = false := ⟨.npx, rfl, rfl⟩
+
+inductive Plat | win32 | linux | darwin
+  deriving DecidableEq
+
+/-- The one program `probeWsl` may run. -/
+def probeRun (validRoot : String → Bool) (p : Plat) (codexHere : Bool) (root : Option String) : Option String :=
+  match p, codexHere, root with
+  | .win32, false, some r => if validRoot r then some (r ++ "\\System32\\wsl.exe") else none
+  | _, _, _ => none
+
+/-- Whatever runs is `<root>\System32\wsl.exe` for a validated root, never a name from PATH or the cwd. -/
+theorem runs_only_system32 (validRoot : String → Bool) (p : Plat) (c : Bool) (root : Option String) (cmd : String)
+    (h : probeRun validRoot p c root = some cmd) :
+    ∃ r, root = some r ∧ validRoot r = true ∧ cmd = r ++ "\\System32\\wsl.exe" := by
+  unfold probeRun at h
+  split at h
+  · rename_i r; split at h
+    · rename_i hv; cases h; exact ⟨r, rfl, hv, rfl⟩
+    · cases h
+  · cases h
+
+/-- Outside Windows (inside WSL included) nothing is run. -/
+theorem off_windows_runs_nothing (validRoot : String → Bool) (p : Plat) (c : Bool) (root : Option String)
+    (hp : p ≠ .win32) : probeRun validRoot p c root = none := by
+  unfold probeRun; split
+  · exact absurd rfl hp
+  · rfl
+
+theorem probe_reachable : probeRun (fun _ => true) .win32 false (some "C:\\Windows") = some "C:\\Windows\\System32\\wsl.exe" := rfl
+
+/-- Counterexample: trusting SystemRoot as found runs a program on a share someone else controls. -/
+def probeRunNaive (p : Plat) (codexHere : Bool) (root : Option String) : Option String :=
+  match p, codexHere, root with
+  | .win32, false, some r => some (r ++ "\\System32\\wsl.exe")
+  | _, _, _ => none
+
+theorem naive_runs_planted :
+    probeRunNaive .win32 false (some "\\\\evil\\share") = some "\\\\evil\\share\\System32\\wsl.exe" := rfl
+
+/-- WSL from the kernel release only: no env value (WSL_DISTRO_NAME, WSL_INTEROP) changes the answer. -/
+def wslFromKernel (kernel : String → Bool) (release : String) (_env : String → Option String) : Bool := kernel release
+
+theorem wsl_env_irrelevant (kernel : String → Bool) (release : String) (e₁ e₂ : String → Option String) :
+    wslFromKernel kernel release e₁ = wslFromKernel kernel release e₂ := rfl
+
+inductive Side | here | wsl | windows | absent
+  deriving DecidableEq
+
+/-- `wslSide`. -/
+def side (p : Plat) (codexOnPath codexInWsl isWsl codexOnWindows : Bool) : Side :=
+  if codexOnPath then .here
+  else match p with
+    | .win32 => if codexInWsl then .wsl else .absent
+    | .linux => if isWsl && codexOnWindows then .windows else .absent
+    | .darwin => .absent
+
+/-- The other side is reported only when Codex is not here. -/
+theorem other_side_only_when_absent_here (p : Plat) (a b c d : Bool) (h : side p a b c d = .wsl ∨ side p a b c d = .windows) :
+    a = false := by
+  cases a <;> simp [side] at h ⊢
+
+/-- The wording carries the side (O10). -/
+def sideText : Side → String
+  | .wsl => "runs in WSL — run the installer inside WSL"
+  | .windows => "runs on Windows — run the installer in PowerShell"
+  | _ => ""
+
+theorem side_text_distinct : sideText .wsl ≠ sideText .windows := by decide
+
+/-- Counterexample: one fixed text tells a user inside WSL to "run the installer inside WSL". -/
+def oldText (_ : Side) : String := "runs in WSL — run the installer inside WSL"
+theorem old_text_wrong_inside_wsl : oldText .windows = oldText .wsl := rfl
+
+end Wire
 
 end PlurSpec.Trust
