@@ -80,6 +80,7 @@ describe('buildToolMcpEnv', () => {
   it('a value with a line break is refused (it would inject a second setting into a config file)', () => {
     expect(() => buildToolMcpEnv({ caPath: '/c.pem\nNODE_TLS_REJECT_UNAUTHORIZED=0', proxy: {} })).toThrow(LaunchEnvError)
     expect(() => buildToolMcpEnv({ proxy: { noProxy: 'a\r\nb' } })).toThrow(LaunchEnvError)
+    expect(() => buildToolMcpEnv({ proxy: { https: 'http://proxy.example.com:3128\0x' } })).toThrow(LaunchEnvError)
   })
 })
 

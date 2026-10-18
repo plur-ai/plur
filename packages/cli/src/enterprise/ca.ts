@@ -1,5 +1,5 @@
 import { X509Certificate, createHash } from 'crypto'
-import { readFileSync } from 'fs'
+import { chmodSync, readFileSync } from 'fs'
 import { join } from 'path'
 import * as tls from 'tls'
 import { atomicWrite } from '@plur-ai/core'
@@ -23,6 +23,7 @@ import type { ExecFn } from './exec.js'
  */
 
 export const COMPANY_CA_FILE = 'company-ca.pem'
+const CA_FILE_MODE = 0o600
 
 /** The served installer's rule for INSTALL_CA_SHA256: 64 lower-case hex, no colons. */
 const CA_SHA256_RE = /^[0-9a-f]{64}$/
@@ -43,6 +44,8 @@ export type CaSourceDeps = {
   /** Node's own copy of the OS store (`tls.getCACertificates('system')`, Node 22.15+/23.10+). */
   systemCertificates?: () => string[]
   readFile?: (path: string) => string
+  /** Only SystemRoot is read (win32). Defaults to process.env. */
+  env?: NodeJS.ProcessEnv
 }
 
 const LINUX_BUNDLES = [
@@ -59,11 +62,41 @@ const DARWIN_KEYCHAINS = [
 /**
  * PowerShell, one line so `-Command -` runs it whole: each certificate in the
  * machine and user root stores and the machine intermediate store, as PEM.
+ *
+ * Plain .NET only — no cmdlet, no `Cert:` drive, no `$env:` — so nothing a
+ * module path (PSModulePath), a profile or an environment variable can shadow
+ * or feed decides what runs. The script is a constant; nothing is spliced in.
  */
-const WIN32_EXPORT_SCRIPT = [
-  "$ErrorActionPreference = 'Continue'",
-  "foreach ($s in @('Cert:\\LocalMachine\\Root','Cert:\\CurrentUser\\Root','Cert:\\LocalMachine\\CA')) { Get-ChildItem -Path $s -ErrorAction SilentlyContinue | ForEach-Object { '-----BEGIN CERTIFICATE-----'; [Convert]::ToBase64String($_.RawData, 'InsertLineBreaks'); '-----END CERTIFICATE-----' } }",
-].join('; ') + '\n'
+const WIN32_EXPORT_SCRIPT =
+  "$ErrorActionPreference = 'Continue'; " +
+  "foreach ($p in @('Root/LocalMachine', 'Root/CurrentUser', 'CA/LocalMachine')) { " +
+  "try { $n, $l = $p.Split('/'); " +
+  '$st = [System.Security.Cryptography.X509Certificates.X509Store]::new($n, [System.Security.Cryptography.X509Certificates.StoreLocation]$l); ' +
+  "$st.Open([System.Security.Cryptography.X509Certificates.OpenFlags]'ReadOnly, OpenExistingOnly'); " +
+  'foreach ($c in $st.Certificates) { ' +
+  '[Console]::Out.Write("-----BEGIN CERTIFICATE-----`n" + [Convert]::ToBase64String($c.RawData, [Base64FormattingOptions]::InsertLineBreaks) + "`n-----END CERTIFICATE-----`n") }; ' +
+  '$st.Close() } catch { } }\n'
+
+const WIN32_POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-']
+
+/** A Windows folder we accept from SystemRoot: a plain `X:\\…` path with no `..`, quotes or separators. */
+const WIN_DRIVE_PATH = /^[A-Za-z]:\\[A-Za-z0-9 _().\\-]*$/
+
+/**
+ * Windows PowerShell 5.1 by absolute path. Never the bare name: Windows
+ * process creation looks in the current folder before PATH, so a
+ * `powershell.exe` planted in whatever folder `init` runs from would run
+ * instead. SystemRoot is used only when it is a plain drive path.
+ */
+export function win32PowerShellPath(env: NodeJS.ProcessEnv): string {
+  const root = env.SystemRoot
+  const ok = typeof root === 'string' && WIN_DRIVE_PATH.test(root) && !root.split('\\').includes('..')
+  const base = (ok ? root : 'C:\\Windows').replace(/\\+$/, '')
+  return `${base}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+}
+
+/** macOS `security`, by absolute path (never looked up on PATH). */
+const DARWIN_SECURITY = '/usr/bin/security'
 
 const STORE_TIMEOUT_MS = 30_000
 
@@ -92,9 +125,9 @@ export function systemCaSources(platform: NodeJS.Platform, exec: ExecFn, deps: C
     const read = deps.readFile ?? ((p: string) => readFileSync(p, 'utf8'))
     for (const p of LINUX_BUNDLES) attempt(() => read(p))
   } else if (platform === 'darwin') {
-    attempt(() => exec('security', ['find-certificate', '-a', '-p', ...DARWIN_KEYCHAINS], { timeoutMs: STORE_TIMEOUT_MS }).stdout)
+    attempt(() => exec(DARWIN_SECURITY, ['find-certificate', '-a', '-p', ...DARWIN_KEYCHAINS], { timeoutMs: STORE_TIMEOUT_MS }).stdout)
   } else if (platform === 'win32') {
-    attempt(() => exec('powershell', ['-NoProfile', '-Command', '-'], { input: WIN32_EXPORT_SCRIPT, timeoutMs: STORE_TIMEOUT_MS }).stdout)
+    attempt(() => exec(win32PowerShellPath(deps.env ?? process.env), WIN32_POWERSHELL_ARGS, { input: WIN32_EXPORT_SCRIPT, timeoutMs: STORE_TIMEOUT_MS }).stdout)
   }
   return sources
 }
@@ -141,6 +174,7 @@ export function installCompanyCa(opts: {
   exec: ExecFn
   systemCertificates?: () => string[]
   readFile?: (path: string) => string
+  env?: NodeJS.ProcessEnv
 }): InstallCaResult {
   if (!CA_SHA256_RE.test(opts.sha256)) return { ok: false, reason: 'invalid-fingerprint' }
   let found: { pem: string; subject: string } | null
@@ -157,12 +191,16 @@ export function installCompanyCa(opts: {
     found = findCompanyCa(opts.sha256, systemCaSources(opts.platform, opts.exec, {
       systemCertificates: opts.systemCertificates,
       readFile: opts.readFile,
+      env: opts.env,
     }))
     if (!found) return { ok: false, reason: 'not-found' }
   }
   const path = join(opts.plurDir, COMPANY_CA_FILE)
-  // A CA certificate is public: the default file mode is right. Atomic, so a
-  // reader never sees a half-written file.
-  atomicWrite(path, found.pem.endsWith('\n') ? found.pem : `${found.pem}\n`)
+  // Atomic, so a reader never sees a half-written file. Owner-only: the
+  // certificate is public, but only this account may read or replace the file
+  // every PLUR launch adds to its trust. atomicWrite keeps an existing file's
+  // mode, so a wider earlier copy is tightened explicitly.
+  atomicWrite(path, found.pem.endsWith('\n') ? found.pem : `${found.pem}\n`, { mode: CA_FILE_MODE })
+  if (process.platform !== 'win32') chmodSync(path, CA_FILE_MODE)
   return { ok: true, path, subject: found.subject }
 }

@@ -3,7 +3,7 @@
 // timeout into a non-zero status, and never run a .cmd/.bat without a shell on
 // Windows (spawnSync gives EINVAL there; a shell would re-parse the arguments).
 import { describe, it, expect } from 'vitest'
-import { createExec, EXEC_TIMEOUT_STATUS, EXEC_START_FAILED_STATUS, EXEC_REFUSED_STATUS } from '../src/enterprise/exec.js'
+import { createExec, EXEC_TIMEOUT_STATUS, EXEC_START_FAILED_STATUS, EXEC_REFUSED_STATUS, EXEC_SIGNALLED_STATUS } from '../src/enterprise/exec.js'
 import type { ExecFn as LaunchCheckExecFn } from '../src/enterprise/launch-check.js'
 import type { ExecFn } from '../src/enterprise/exec.js'
 
@@ -37,6 +37,16 @@ describe('createExec', () => {
 
   it('a non-zero exit is reported as is', () => {
     expect(exec(node, ['-e', 'process.exit(3)']).status).toBe(3)
+  })
+
+  it.skipIf(process.platform === 'win32')('killed by a signal that is not the timeout: 128, not 0', () => {
+    expect(exec(node, ['-e', 'process.kill(process.pid, "SIGKILL")']).status).toBe(EXEC_SIGNALLED_STATUS)
+  })
+
+  it('output past the buffer limit is a non-zero status, never a quiet success', () => {
+    const r = exec(node, ['-e', 'process.stdout.write("x".repeat(70 * 1024 * 1024))'], { timeoutMs: 60_000 })
+    expect(r.status).not.toBe(0)
+    expect(r.stdout.length).toBeLessThanOrEqual(65 * 1024 * 1024)
   })
 
   it('win32: a .cmd or .bat is refused without being started', () => {

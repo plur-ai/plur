@@ -4,7 +4,7 @@
 // verification. The win32 source is tested through a fake exec on every OS.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash, X509Certificate } from 'crypto'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync, statSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -74,26 +74,38 @@ describe('findCompanyCa', () => {
 })
 
 describe('systemCaSources', () => {
-  it('win32: runs powershell with the script on stdin and reads the Root and CA stores', () => {
+  it('win32: runs the System32 powershell.exe by absolute path, script on stdin, Root and CA stores', () => {
     const calls: Array<{ cmd: string; args: string[]; input?: string; timeoutMs?: number }> = []
     const exec: ExecFn = (cmd, args, opts) => {
       calls.push({ cmd, args, input: opts?.input, timeoutMs: opts?.timeoutMs })
       return { status: 0, stdout: pem }
     }
-    const sources = systemCaSources('win32', exec, { systemCertificates: () => [] })
+    const sources = systemCaSources('win32', exec, { systemCertificates: () => [], env: { SystemRoot: 'D:\\WINNT' } })
     expect(calls).toHaveLength(1)
-    expect(calls[0].cmd).toBe('powershell')
-    expect(calls[0].args).toEqual(['-NoProfile', '-Command', '-'])
-    expect(calls[0].input).toContain('Cert:\\LocalMachine\\Root')
-    expect(calls[0].input).toContain('Cert:\\CurrentUser\\Root')
-    expect(calls[0].input).toContain('Cert:\\LocalMachine\\CA')
+    // Never a bare name: Windows process creation looks in the current folder
+    // before PATH, so a powershell.exe planted there would run instead.
+    expect(calls[0].cmd).toBe('D:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    expect(calls[0].args).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-'])
+    for (const store of ["'Root/LocalMachine'", "'Root/CurrentUser'", "'CA/LocalMachine'"]) expect(calls[0].input).toContain(store)
+    // Plain .NET, no cmdlet: nothing the module path (PSModulePath) or a profile can shadow,
+    // and nothing taken from the environment.
+    expect(calls[0].input).toContain('System.Security.Cryptography.X509Certificates.X509Store')
+    expect(calls[0].input).not.toMatch(/Get-ChildItem|ForEach-Object|Cert:|\$env:|Import-Module/i)
     expect(calls[0].timeoutMs).toBeGreaterThan(0)
-    // The JS-free script is one line, so `-Command -` runs it whole.
+    // One line, so `-Command -` runs it whole.
     expect(calls[0].input!.trim().split('\n')).toHaveLength(1)
     expect(findCompanyCa(sha, sources)?.subject).toContain('Example Test Root CA')
   })
 
-  it('darwin: reads the System keychain and the system roots through `security`', () => {
+  it('win32: a SystemRoot that is not a plain drive path falls back to C:\\Windows', () => {
+    for (const SystemRoot of [undefined, '', '.', 'Windows', '\\\\evil\\share', 'C:\\Windows\\..\\Users\\x', 'C:\\Win"dows', 'C:\\Win\ndows', 'C:\\a;b']) {
+      const calls: string[] = []
+      systemCaSources('win32', (cmd) => { calls.push(cmd); return { status: 0, stdout: '' } }, { systemCertificates: () => [], env: { SystemRoot } })
+      expect(calls).toEqual(['C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'])
+    }
+  })
+
+  it('darwin: reads the System keychain and the system roots through /usr/bin/security (absolute, never PATH)', () => {
     const calls: Array<{ cmd: string; args: string[] }> = []
     const exec: ExecFn = (cmd, args) => {
       calls.push({ cmd, args })
@@ -102,7 +114,7 @@ describe('systemCaSources', () => {
     const sources = systemCaSources('darwin', exec, { systemCertificates: () => [] })
     expect(calls).toEqual([
       {
-        cmd: 'security',
+        cmd: '/usr/bin/security',
         args: [
           'find-certificate', '-a', '-p',
           '/Library/Keychains/System.keychain',
@@ -221,6 +233,16 @@ describe('installCompanyCa', () => {
     const r = installCompanyCa({ sha256: sha, plurDir, platform: 'darwin', exec: () => ({ status: 0, stdout: pem }), systemCertificates: () => [] })
     expect(r.ok).toBe(true)
     expect(splitPemBundle(readFileSync(join(plurDir, COMPANY_CA_FILE), 'utf8')).map(caSha256)).toEqual([sha])
+  })
+
+  it.skipIf(process.platform === 'win32')('the written file is owner-only (0600), also when an earlier copy was wider', () => {
+    const exec: ExecFn = () => ({ status: 0, stdout: pem })
+    const first = installCompanyCa({ sha256: sha, plurDir, platform: 'darwin', exec, systemCertificates: () => [] })
+    expect(first.ok).toBe(true)
+    expect(statSync(join(plurDir, COMPANY_CA_FILE)).mode & 0o777).toBe(0o600)
+    chmodSync(join(plurDir, COMPANY_CA_FILE), 0o666)
+    installCompanyCa({ sha256: sha, plurDir, platform: 'darwin', exec, systemCertificates: () => [] })
+    expect(statSync(join(plurDir, COMPANY_CA_FILE)).mode & 0o777).toBe(0o600)
   })
 
   it('a refused re-run removes nothing it did not write (an earlier file stays as it was)', () => {
