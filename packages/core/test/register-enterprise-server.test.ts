@@ -407,3 +407,49 @@ describe('registerEnterpriseServer — Codex audit round 1', () => {
     }
   })
 })
+
+describe('registerEnterpriseServer — Codex audit round 2', () => {
+  const route = (scope: string): [string | undefined, string | undefined] => {
+    const t = resolveScopeTarget(scope, loadConfig(configPath()).stores ?? [])
+    return t.kind === 'remote' ? [t.entry.url, t.entry.token] : [t.kind, undefined]
+  }
+
+  it('refuses to claim a personal scope another entry already serves (another server), writing nothing', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: user:acme:bob\n    scopes: []\n  - url: https://b.example.com\n    token: k0\n    scope: ${ME}\n`)
+    const before = readFileSync(configPath(), 'utf8')
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/already served by another entry/)
+    expect(err?.message).not.toMatch(/k0|k1/)
+    expect(readFileSync(configPath(), 'utf8')).toBe(before)
+    expect(route(ME)).toEqual(['https://b.example.com', 'k0'])
+  })
+
+  it('refuses a new writable entry that would outrank a readonly entry serving its personal scope with another key', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k-old\n    readonly: true\n    scope: ${ME}\n`)
+    const err = await plur.registerEnterpriseServer(URL_, { token: 'k-new', personalScope: ME }).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/already served by another entry/)
+    expect(err?.message).not.toMatch(/k-old|k-new/)
+  })
+
+  it('a new entry behind an entry that keeps serving its personal scope is allowed: that route does not move', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k-old\n    scope: ${ME}\n`)
+    const before = route(ME)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k-new', personalScope: ME })
+    expect(r.fold.kept_separate).toEqual([{ scope: ME, why: 'different-token' }])
+    expect(route(ME)).toEqual(before)
+  })
+
+  it('a personal scope served only by an entry that folds is not a conflict', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.folded).toEqual([{ scope: ME }])
+    expect(rawConfig().stores).toHaveLength(1)
+  })
+
+  it('a __proto__ scope is never folded, so its metadata is not lost', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: __proto__\n    dial: never\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.kept_separate).toEqual([{ scope: '__proto__', why: 'invalid-scope' }])
+    expect(rawConfig().stores[0]).toEqual({ url: URL_, token: 'k1', scope: '__proto__', dial: 'never' })
+  })
+})
