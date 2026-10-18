@@ -8,7 +8,9 @@
  * config.json is read once:
  *   - config.yaml already holds a sign-in to that server: nothing is moved —
  *     the sign-in in config.yaml is newer, and is never replaced by the old
- *     key (nor is the old key sent to the server);
+ *     key (nor is the old key sent to the server). Registration judges this
+ *     again under the config lock (`keepSignIn`), so a sign-in written by
+ *     another process meanwhile is kept too;
  *   - the server still accepts its key (/me answers): the key is registered
  *     as that server's entry in config.yaml (`Plur.registerEnterpriseServer`,
  *     the config write path), with the personal scope from /me;
@@ -24,7 +26,7 @@
  */
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
-import { redactToken, normalizeEndpointUrl, PersonalScopeTakenError, type Plur } from '@plur-ai/core'
+import { redactToken, normalizeEndpointUrl, PersonalScopeTakenError, SignInHeldError, type Plur } from '@plur-ai/core'
 import { fetchMe, personalScopeOf, normaliseHost, takeoverMessage, backupSecretFile, type BackupHost } from './sign-in-shared.js'
 
 export type LegacyLoginOutcome = 'none' | 'migrated' | 'set-aside' | 'kept'
@@ -101,8 +103,13 @@ export async function migrateLegacyLogin(opts: {
   }
 
   try {
-    await plur.registerEnterpriseServer(origin, { token, personalScope: personalScopeOf(me) })
+    // keepSignIn: judged again under the config lock, so a sign-in another
+    // process wrote while /me was answering is not replaced either.
+    await plur.registerEnterpriseServer(origin, { token, personalScope: personalScopeOf(me), keepSignIn: true })
   } catch (err) {
+    if (err instanceof SignInHeldError) {
+      return setAside([`config.yaml already holds a sign-in to ${origin}, so the older one in ${shown} was not moved into it. If that sign-in stops working, run \`plur login ${origin}\`.`]) ? 'set-aside' : 'kept'
+    }
     if (err instanceof PersonalScopeTakenError) {
       const lead = `The sign-in to ${origin} in ${shown} was not moved into config.yaml:`
       return setAside(takeoverMessage(err, origin, 'config.yaml', { lead, notSaved: ' in config.yaml' })) ? 'set-aside' : 'kept'

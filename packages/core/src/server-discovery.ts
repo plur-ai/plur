@@ -262,6 +262,18 @@ function describeHolder(r: Record<string, unknown>, scope: string, sameServer: b
   }
 }
 
+/**
+ * Registration with `keepSignIn` refused: config.yaml already holds a sign-in
+ * (an entry with that server's url) for the server, which is never replaced
+ * (#1638: the one-time config.json move). Names the origin only.
+ */
+export class SignInHeldError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SignInHeldError'
+  }
+}
+
 /** True when a url string carries a user name or password. */
 function hasUserinfo(url: unknown): boolean {
   if (typeof url !== 'string') return false
@@ -406,6 +418,9 @@ export interface ServerRegistration {
    *  {@link PersonalScopeTakenError} names) and register, in one result
    *  (#1638). Refused as before when one of them cannot be removed. */
   removeStale?: boolean
+  /** Refuse with {@link SignInHeldError} when any entry already holds a
+   *  sign-in for this server's url; judged on the file under the lock. */
+  keepSignIn?: boolean
 }
 
 /**
@@ -429,6 +444,9 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   removed: ScopeHolder[]
 } {
   const key = normalizeEndpointUrl(reg.url)
+  if (reg.keepSignIn && rawStores.some(r => isPlainObj(r) && typeof r.url === 'string' && normalizeEndpointUrl(r.url) === key)) {
+    throw new SignInHeldError(`config.yaml already holds a sign-in for ${safeOrigin(reg.url)}; it is kept. Nothing was changed.`)
+  }
   const at = serverEntriesAt(rawStores, key)
   if (at.length > 1) {
     throw new Error(`more than one server entry in config.yaml is for ${safeOrigin(reg.url)}, so which key to replace is ambiguous. Nothing was changed. Keep one of them.`)

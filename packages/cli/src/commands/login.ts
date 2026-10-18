@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir, hostname, release } from 'os'
 import {
   doctorRemoteRemediation, normalizeEndpointUrl, redactToken, detectPlurStorage, PersonalScopeTakenError,
+  resolveScopeTarget, loadConfig,
   type RemoteHealth,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -225,16 +226,23 @@ function retryAfterSeconds(r: Response): number | undefined {
   return Math.min(Number(v.trim()), RETRY_AFTER_MAX_S)
 }
 
-async function postJson(f: FetchFn, url: string, body: unknown): Promise<Response> {
+/**
+ * POST a JSON body and read the JSON answer, both under one timeout: the
+ * abort stays armed until the body is read, so a server that sends headers
+ * and then trickles the body cannot hold the run (a body cut off by the
+ * timeout reads as no JSON).
+ */
+async function postJson(f: FetchFn, url: string, body: unknown, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<{ r: Response; data: Record<string, unknown> | undefined }> {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    return await f(url, {
+    const r = await f(url, {
       method: 'POST',
       signal: ctrl.signal,
       headers: { 'content-type': 'application/json', 'accept': 'application/json' },
       body: JSON.stringify(body),
     })
+    return { r, data: await readJson(r) }
   } finally {
     clearTimeout(timer)
   }
@@ -247,7 +255,7 @@ async function postJson(f: FetchFn, url: string, body: unknown): Promise<Respons
  */
 export async function requestDeviceCode(
   origin: string,
-  opts: { deviceName?: string; fetch?: FetchFn; sleep?: SleepFn; rerunHint?: string } = {},
+  opts: { deviceName?: string; fetch?: FetchFn; sleep?: SleepFn; rerunHint?: string; requestTimeoutMs?: number } = {},
 ): Promise<DeviceCodeResponse> {
   const f = opts.fetch ?? fetch
   const pause = opts.sleep ?? sleep
@@ -255,8 +263,9 @@ export async function requestDeviceCode(
   const body = { client_id: DEVICE_CLIENT_ID, ...(opts.deviceName ? { device_name: opts.deviceName } : {}) }
   for (let attempt = 0; ; attempt++) {
     let r: Response
+    let data: Record<string, unknown> | undefined
     try {
-      r = await postJson(f, url, body)
+      ({ r, data } = await postJson(f, url, body, opts.requestTimeoutMs))
     } catch (err) {
       throw new Error(`Could not reach ${origin} (${(err as Error)?.name === 'AbortError' ? 'timed out' : 'network error'}).`)
     }
@@ -270,7 +279,6 @@ export async function requestDeviceCode(
     if (!r.ok) {
       throw new Error(`Device code request failed (HTTP ${r.status}).`)
     }
-    const data = await readJson(r)
     if (!data || typeof data.device_code !== 'string' || !data.device_code ||
       typeof data.user_code !== 'string' || typeof data.verification_uri !== 'string') {
       throw new Error('Unexpected response from the device code endpoint.')
@@ -307,19 +315,22 @@ export async function pollForToken(
   let nextWaitMs: number | undefined
   let transient = 0
 
+  const expired = (): Error => new Error(`Sign-in timed out: the code expired before it was entered. ${rerun}`)
   for (;;) {
-    if (waited >= limitMs || Date.now() - started >= limitMs) {
-      throw new Error(`Sign-in timed out: the code expired before it was entered. ${rerun}`)
-    }
-    const ms = nextWaitMs ?? intervalMs
+    // One deadline: no wait runs past it, and no poll (so no key) after it.
+    const remaining = Math.min(limitMs - waited, limitMs - (Date.now() - started))
+    if (remaining <= 0) throw expired()
+    const ms = Math.min(nextWaitMs ?? intervalMs, remaining)
     nextWaitMs = undefined
     await pause(ms)
     waited += ms
+    if (waited >= limitMs || Date.now() - started >= limitMs) throw expired()
     onPoll?.()
 
     let r: Response
+    let data: Record<string, unknown> | undefined
     try {
-      r = await postJson(f, url, { grant_type: DEVICE_GRANT, device_code: deviceCode, client_id: DEVICE_CLIENT_ID })
+      ({ r, data } = await postJson(f, url, { grant_type: DEVICE_GRANT, device_code: deviceCode, client_id: DEVICE_CLIENT_ID }))
     } catch {
       if (++transient > TRANSIENT_MAX) throw new Error(`Could not reach ${origin} while waiting for the sign-in. ${rerun}`)
       continue
@@ -332,7 +343,6 @@ export async function pollForToken(
       else intervalMs += SLOW_DOWN_MS
       continue
     }
-    const data = await readJson(r)
     if (r.status >= 500) {
       if (++transient > TRANSIENT_MAX) throw new Error(`The server could not complete the sign-in (HTTP ${r.status}). ${rerun}`)
       continue
@@ -738,43 +748,68 @@ async function runSignIn(origin: string, parsed: ParsedArgs, flags: GlobalFlags)
   const root = flags.path || process.env.PLUR_PATH || undefined
   const configPath = detectPlurStorage(root).config
   const plur = createPlur(flags)
+  // Every line from here on is redacted with the key: the server's user
+  // name, key name, scopes and errors are its own text and could repeat it.
+  const say = (line: string): void => outputText(redactToken(line, key))
   let backup: string | undefined
   let result: Awaited<ReturnType<typeof plur.registerEnterpriseServer>>
   try {
-    if (parsed.removeStale && existsSync(configPath)) backup = backupSecretFile(dirname(configPath), configPath)
-    result = await plur.registerEnterpriseServer(origin, { token: key, personalScope, removeStale: parsed.removeStale === true })
+    // The backup is taken under registration's config lock, from the file it
+    // is about to rewrite, and only when stale entries are removed; a backup
+    // that cannot be made owner-only refuses the whole write.
+    result = await plur.registerEnterpriseServer(origin, {
+      token: key, personalScope, removeStale: parsed.removeStale === true,
+      beforeRemove: p => { backup = backupSecretFile(dirname(p), p) },
+    })
     saved = true
   } catch (err) {
-    if (backup) { try { rmSync(dirname(backup), { recursive: true, force: true }) } catch { /* best effort */ } }
     if (err instanceof PersonalScopeTakenError) fail(takeoverMessage(err, origin, configPath))
     fail([
       `Signed in, but ${origin} could not be saved: ${(err as Error).message}`,
       'The key from this sign-in was not saved.',
     ])
   }
-  if (backup && result!.removed.length === 0) {
-    try { rmSync(dirname(backup), { recursive: true, force: true }) } catch { /* best effort */ }
-    backup = undefined
-  }
 
-  outputText(`Signed in to ${origin} as ${signedIn.username}. Saved as the server's entry in ${configPath} (key "${signedIn.keyName}").`)
+  say(`Signed in to ${origin} as ${signedIn.username}. Saved as the server's entry in ${configPath} (key "${signedIn.keyName}").`)
   if (result!.removed.length) {
-    outputText(`Removed ${result!.removed.length === 1 ? 'the entry' : 'the entries'} that held ${personalScope}:`)
-    for (const h of result!.removed) outputText(holderLine(h))
-    if (backup) outputText(`The previous config.yaml was saved to ${backup}`)
+    say(`Removed ${result!.removed.length === 1 ? 'the entry' : 'the entries'} that held ${personalScope}:`)
+    for (const h of result!.removed) say(holderLine(h))
+    if (backup) say(`The previous config.yaml was saved to ${backup}`)
+  }
+  // Registration refuses only a takeover. An entry that keeps serving the
+  // personal scope ahead of the new one (an older entry for this server with
+  // another key, say) still gets the personal writes: say so, and exit 1.
+  let elsewhere: string | undefined
+  try {
+    const t = resolveScopeTarget(personalScope, loadConfig(configPath).stores ?? [])
+    if (t.kind === 'remote' && !(typeof t.entry.url === 'string' && normalizeEndpointUrl(t.entry.url) === normalizeEndpointUrl(origin) && t.entry.token === key)) {
+      let where = 'a server'
+      try { if (typeof t.entry.url === 'string') where = new URL(t.entry.url).origin } catch { /* unnamed */ }
+      elsewhere = `another entry for ${where}${t.entry.token !== key ? ' with another key' : ''}`
+    } else if (t.kind === 'local') {
+      elsewhere = 'a local store (a path entry)'
+    } else if (t.kind === 'conflict') {
+      elsewhere = `no server: ${t.servers.length} servers claim it, so personal writes are refused`
+    }
+  } catch { /* the route could not be read; the entry is saved */ }
+  if (elsewhere) {
+    for (const l of [
+      `Your personal scope ${personalScope} is still served by ${elsewhere} in ${configPath},`,
+      `so your personal writes do not use this sign-in. Remove that entry (or its ${personalScope} scope) from ${configPath}.`,
+    ]) outputError(redactToken(l, key))
   }
   let discovery: Awaited<ReturnType<typeof plur.refreshServerScopes>> = []
   try { discovery = await plur.refreshServerScopes({ url: origin }) } catch { /* reported below */ }
   const d = discovery[0]
   if (d?.status === 'ok' || d?.status === 'degraded') {
-    outputText(`Scopes: ${d.scopes.length ? d.scopes.join(', ') : '(none yet)'}`)
+    say(`Scopes: ${d.scopes.length ? d.scopes.join(', ') : '(none yet)'}`)
   } else if (d?.status === 'not_synced') {
-    outputText('Your account is not in the server\'s graph yet; its scopes will be fetched at a later session start.')
+    say('Your account is not in the server\'s graph yet; its scopes will be fetched at a later session start.')
   } else {
-    outputText(`Scopes could not be fetched now${d?.error ? ` (${redactToken(d.error, key)})` : ''}; they are fetched at the next session start.`)
+    say(`Scopes could not be fetched now${d?.error ? ` (${d.error})` : ''}; they are fetched at the next session start.`)
   }
-  outputInfo(`Server: ${signalReload()}`, flags)
-  process.exit(0)
+  outputInfo(redactToken(`Server: ${signalReload()}`, key), flags)
+  process.exit(elsewhere && !elsewhere.startsWith('a local') ? 1 : 0)
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
