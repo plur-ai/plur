@@ -11,9 +11,11 @@
  *   that does not parse is refused and left untouched; so is an edit whose
  *   re-parsed result differs anywhere but that entry's env.
  * - `toolLaunch` is the command and env the tool itself would start.
- * - `launchProblem` names a launch the proof must not run (npx, cmd.exe, a
- *   shell, a `.cmd`): killing such a wrapper can leave the real server behind,
- *   and on Windows a `.cmd` cannot start without a shell at all.
+ * - `launchProblem` names a launch the proof must not run. Only PLUR itself
+ *   (`plur-mcp`, or Node running a script directly) passes; npx, cmd.exe, a
+ *   shell, a package runner or a `.cmd` does not: killing such a wrapper can
+ *   leave the real server behind, and on Windows a `.cmd` cannot start
+ *   without a shell at all.
  * - `wslSide` / `probeWsl`: Codex on the other side of WSL is reported with
  *   its side, never wired here. Nothing an env variable or a planted file
  *   says can make the probe run a different program: WSL is read from the
@@ -23,11 +25,11 @@
  *
  * Modelled in spec/formal/PlurSpec/Trust.lean, section 4.
  */
-import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
+import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
+import { homedir, release } from 'os'
 import { dirname, join } from 'path'
 import { isDeepStrictEqual } from 'util'
-import { applyEdits, modify } from 'jsonc-parser'
+import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree } from 'jsonc-parser'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
 import { atomicWrite, windowsSystemRoot } from '@plur-ai/core'
 import { readCodexEntry, codexMcpEnvironment, patchCodexEntry } from '../codex-config.js'
@@ -37,7 +39,7 @@ import { resolveCodexBinary } from '../lib/codex-binary.js'
 import { TOOL_ENV_KEYS, buildToolMcpEnv } from './launch-env.js'
 import { isNpxLaunch } from './launch-check.js'
 import { TOOL_LABEL, type ToolId } from './hello.js'
-import type { ExecFn } from './exec.js'
+import { realExec, type ExecFn } from './exec.js'
 
 export { TOOL_LABEL, type ToolId }
 
@@ -116,14 +118,18 @@ function exists(p: string): boolean {
 
 /**
  * Runs `<node> <cliEntry> init --no-prompt` (no shell, this Node by absolute
- * path) and writes its output to `logPath` (0600). `ok` is the exit status
- * only; a log that cannot be written does not change it.
+ * path) and writes its output, stdout then stderr, to `logPath`. The log is
+ * a new owner-only file every run (0600, an owner-only access list on
+ * Windows): an older log, or a link in its place, is removed first, never
+ * written through. `ok` is the exit status only; a log that cannot be
+ * written does not change it.
  */
 export function runPlurInit(exec: ExecFn, cliEntry: string, logPath: string): { ok: boolean } {
-  const r = exec(process.execPath, [cliEntry, 'init', '--no-prompt'], { timeoutMs: 120_000 })
+  const r = exec(process.execPath, [cliEntry, 'init', '--no-prompt'], { timeoutMs: 120_000, stderr: true })
   try {
     mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 })
-    writeFileSync(logPath, r.stdout, { mode: 0o600 })
+    rmSync(logPath, { force: true })
+    atomicWrite(logPath, r.stdout + (r.stderr ?? ''), { mode: 0o600, secret: true })
   } catch {
     // The log is for the user's diagnosis; the result does not depend on it.
   }
@@ -136,6 +142,13 @@ type Env = Record<string, string>
 type Plan = { status: 'absent' } | { status: 'refused'; detail: string } | { status: 'unchanged' } | { status: 'edit'; content: string }
 
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
+
+const REMOTE_TYPES = new Set(['http', 'sse', 'remote', 'streamable-http', 'streamable_http', 'streamablehttp'])
+
+/** A remote (url) entry, even when a `command` was left in it: a launch env does not apply, and nothing is started. */
+function isRemoteEntry(entry: Record<string, unknown>): boolean {
+  return entry.url !== undefined || (typeof entry.type === 'string' && REMOTE_TYPES.has(entry.type.toLowerCase()))
+}
 
 /** The entry's env after PLUR's keys are set to `next`: other keys kept, PLUR keys not in `next` removed. */
 export function mergeEnv(current: Env, next: Env): Env {
@@ -181,9 +194,12 @@ export function applyMcpEnv(tool: ToolId, env: Env, loc: WireLocation = {}): App
   }
   const bad = valueProblem(env)
   if (bad) return { status: 'refused', path, detail: `${bad}; left unchanged` }
+  // A link is edited at its target, so the link survives; the target is
+  // resolved once, read once, and checked again just before the write.
+  const target = linkTarget(path)
   let snapshot: string
   try {
-    snapshot = readFileSync(path, 'utf8')
+    snapshot = readFileSync(target, 'utf8')
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code === 'ENOENT' || code === 'ENOTDIR') return { status: 'absent', path }
@@ -197,11 +213,13 @@ export function applyMcpEnv(tool: ToolId, env: Env, loc: WireLocation = {}): App
   }
   if (plan.status !== 'edit') return plan.status === 'refused' ? { status: 'refused', path, detail: `${plan.detail}; left unchanged` } : { status: plan.status, path }
   try {
-    // One snapshot: an editor that wrote the file meanwhile is not overwritten.
-    if (readFileSync(path, 'utf8') !== snapshot) {
+    // An editor that saved the file (or re-pointed the link) meanwhile is not
+    // overwritten. This narrows the window to the atomic write itself; editors
+    // take no lock PLUR could honour, so it cannot be closed completely.
+    if (linkTarget(path) !== target || readFileSync(target, 'utf8') !== snapshot) {
       return { status: 'refused', path, detail: 'the file changed while PLUR was editing it; left as it is now' }
     }
-    writeInPlace(path, plan.content)
+    atomicWrite(target, plan.content, { secret: true })
   } catch (e) {
     return { status: 'refused', path, detail: `could not write the file (${e instanceof Error ? e.message : String(e)})` }
   }
@@ -226,15 +244,14 @@ function valueProblem(env: Env): string | null {
   return null
 }
 
-/** Atomic replace (temp file, rename, mode kept), through a symlink to its target so the link survives. */
-function writeInPlace(path: string, content: string): void {
-  let target = path
+/** The file a write lands in: a symlink's final target, else the path itself. Writes are atomic (temp file, rename, mode kept). */
+function linkTarget(path: string): string {
   try {
-    if (lstatSync(path).isSymbolicLink()) target = realpathSync(path)
+    if (lstatSync(path).isSymbolicLink()) return realpathSync(path)
   } catch {
-    // Not a link, or it vanished: write the path as given.
+    // Not a link, or it vanished: the path as given.
   }
-  atomicWrite(target, content, { secret: true })
+  return path
 }
 
 const JSON_FORMAT = { formattingOptions: { insertSpaces: true, tabSize: 2 } }
@@ -247,8 +264,50 @@ function editJsonEnv(text: string, entryPath: string[], envKey: string, current:
   let out = text
   for (const k of new Set([...Object.keys(current), ...Object.keys(desired)])) {
     if (current[k] === desired[k]) continue
-    out = applyEdits(out, modify(out, [...entryPath, envKey, k], desired[k], JSON_FORMAT))
+    out = desired[k] === undefined
+      ? removeJsonProperty(out, [...entryPath, envKey], k)
+      : applyEdits(out, modify(out, [...entryPath, envKey, k], desired[k], JSON_FORMAT))
   }
+  return out
+}
+
+const COMMA = 5 // jsonc-parser SyntaxKind.CommaToken
+const TRIVIA = new Set([12, 13, 14, 15]) // line comment, block comment, line break, whitespace
+
+/**
+ * Removes `key` from the object at `objectPath`: the property and one comma,
+ * nothing else, so every comment stays (jsonc-parser's own removal takes the
+ * comments up to the next property with it). A line left blank goes too.
+ */
+function removeJsonProperty(text: string, objectPath: string[], key: string): string {
+  const object = findNodeAtLocation(parseTree(text) ?? { type: 'null', offset: 0, length: 0 } as never, objectPath)
+  const props = object?.type === 'object' ? object.children ?? [] : []
+  const i = props.map(p => p.children?.[0]?.value).lastIndexOf(key)
+  if (i < 0) return text
+  const prop = props[i]
+  const tokenAfter = (pos: number) => {
+    const scanner = createScanner(text, false)
+    scanner.setPosition(pos)
+    let kind = scanner.scan()
+    while (TRIVIA.has(kind)) kind = scanner.scan()
+    return { kind, offset: scanner.getTokenOffset() }
+  }
+  // The property, and one separating comma cut on its own: whatever lies
+  // between them (comments, line breaks) stays.
+  const cuts: Array<[number, number]> = [[prop.offset, prop.offset + prop.length]]
+  const next = tokenAfter(prop.offset + prop.length)
+  if (next.kind === COMMA) cuts.push([next.offset, next.offset + 1])
+  else if (i > 0) {
+    const prev = tokenAfter(props[i - 1].offset + props[i - 1].length)
+    if (prev.kind === COMMA) cuts.push([prev.offset, prev.offset + 1])
+  }
+  let out = text
+  for (const [from, to] of [...cuts].sort((x, y) => y[0] - x[0])) out = out.slice(0, from) + out.slice(to)
+  const at = prop.offset - cuts.filter(([from]) => from < prop.offset).reduce((n, [from, to]) => n + to - from, 0)
+  const from = out.lastIndexOf('\n', at - 1) + 1
+  const nl = out.indexOf('\n', at)
+  const to = nl < 0 ? out.length : nl + 1
+  if (out.slice(from, to).trim() === '') out = out.slice(0, from) + out.slice(to)
   return out
 }
 
@@ -297,7 +356,7 @@ function planMcpServersJson(text: string, env: Env): Plan {
     const servers = data.mcpServers
     if (!isRecord(servers) || servers.plur === undefined) return null
     return ['mcpServers', 'plur']
-  }, 'env', env, entry => typeof entry.command === 'string' && entry.command.length > 0)
+  }, 'env', env, entry => !isRemoteEntry(entry) && typeof entry.command === 'string' && entry.command.length > 0)
 }
 
 /**
@@ -320,7 +379,7 @@ function planOpencode(text: string, env: Env): Plan {
     const servers = isRecord(mcp.servers) ? mcp.servers : undefined
     if (servers && (servers.plur != null || mcp.plur == null)) return servers.plur != null ? ['mcp', 'servers', 'plur'] : null
     return mcp.plur != null ? ['mcp', 'plur'] : null
-  }, 'environment', env, entry => Array.isArray(entry.command) && entry.command.length > 0)
+  }, 'environment', env, entry => !isRemoteEntry(entry) && Array.isArray(entry.command) && entry.command.length > 0)
   return plan.status === 'edit' ? { status: 'edit', content: bom + plan.content } : plan
 }
 
@@ -353,7 +412,7 @@ function planCodex(text: string, env: Env): Plan {
   const plur = isRecord(servers) ? servers.plur : undefined
   if (plur === undefined) return { status: 'absent' }
   if (!isRecord(plur)) return { status: 'refused', detail: 'the plur entry is not a table' }
-  if (typeof plur.command !== 'string') return { status: 'refused', detail: 'the plur entry is a remote entry with no command; a launch env does not apply to it' }
+  if (isRemoteEntry(plur) || typeof plur.command !== 'string') return { status: 'refused', detail: 'the plur entry is a remote entry with no command; a launch env does not apply to it' }
   const current = plur.env === undefined ? {} : stringRecord(plur.env)
   if (current === null) return { status: 'refused', detail: 'the plur entry\'s env is not a set of text values' }
   const desired = mergeEnv(current, env)
@@ -362,21 +421,23 @@ function planCodex(text: string, env: Env): Plan {
   const newline = text.includes('\r\n') ? '\r\n' : '\n'
   const top = ast.body[0]
   // Every key/value with its full path, and the tables that matter.
-  const kvs: Array<{ path: string[]; kv: AST.TOMLKeyValue; base: string[] }> = []
+  // `owner` is the path the kv's key is relative to (its table, or the key of
+  // the inline table it sits in); `inline` is that inline table, if any.
+  const kvs: Array<{ path: string[]; kv: AST.TOMLKeyValue; owner: string[]; inline: AST.TOMLInlineTable | null }> = []
   let envTable: AST.TOMLTable | null = null
   let plurTable: AST.TOMLTable | null = null
-  const visit = (base: string[], kv: AST.TOMLKeyValue, inTable: string[]) => {
-    const path = [...base, ...keyPath(kv.key)]
-    kvs.push({ path, kv, base: inTable })
-    if (kv.value.type === 'TOMLInlineTable') for (const child of kv.value.body) visit(path, child, inTable)
+  const visit = (owner: string[], kv: AST.TOMLKeyValue, inline: AST.TOMLInlineTable | null) => {
+    const path = [...owner, ...keyPath(kv.key)]
+    kvs.push({ path, kv, owner, inline })
+    if (kv.value.type === 'TOMLInlineTable') for (const child of kv.value.body) visit(path, child, kv.value)
   }
   for (const node of top.body) {
-    if (node.type === 'TOMLKeyValue') visit([], node, [])
+    if (node.type === 'TOMLKeyValue') visit([], node, null)
     else {
       const rk = node.resolvedKey.map(String)
       if (node.kind === 'standard' && same(rk, ENV_PATH)) envTable = node
       if (node.kind === 'standard' && same(rk, PLUR_PATH)) plurTable = node
-      for (const kv of node.body) visit(rk, kv, rk)
+      for (const kv of node.body) visit(rk, kv, null)
     }
   }
 
@@ -395,9 +456,23 @@ function planCodex(text: string, env: Env): Plan {
       const node = envKeyNodes.find(e => e.path[e.path.length - 1] === k)
       if (desired[k] === undefined) {
         if (!node) return { status: 'refused', detail: `could not find ${k} in the plur env to remove it` }
+        if (node.inline) {
+          // Inside `{ … }` (one line, no comments): the kv and one comma.
+          const [a, b] = node.kv.range
+          const after = /^\s*,\s*/.exec(text.slice(b))
+          const before = /,\s*$/.exec(text.slice(node.inline.range[0], a))
+          if (after) edits.push({ start: a, end: b + after[0].length, text: '' })
+          else if (before) edits.push({ start: a - before[0].length, end: b, text: '' })
+          else edits.push({ start: a, end: b, text: '' })
+          continue
+        }
         const [from, to] = lineOf(text, node.kv.range[0], node.kv.range[1])
         if (text.slice(from, node.kv.range[0]).trim() !== '') return { status: 'refused', detail: `${k} shares a line with another setting` }
-        edits.push({ start: from, end: to, text: '' })
+        // A comment after the value stays, on its own line.
+        const rest = text.slice(node.kv.range[1], to).trim()
+        if (rest !== '' && !rest.startsWith('#')) return { status: 'refused', detail: `${k} shares a line with another setting` }
+        const eol = /\r?\n$/.exec(text.slice(from, to))?.[0] ?? ''
+        edits.push({ start: from, end: to, text: rest ? text.slice(from, node.kv.range[0]) + rest + eol : '' })
       } else if (node) {
         edits.push({ start: node.kv.value.range[0], end: node.kv.value.range[1], text: tomlString(desired[k]) })
       } else {
@@ -411,10 +486,17 @@ function planCodex(text: string, env: Env): Plan {
         const [, at] = lineOf(text, last, last)
         const lines = adds.map(k => `${tomlKey(k)} = ${tomlString(desired[k])}`).join(newline) + newline
         edits.push({ start: at, end: at, text: (at === text.length && !text.endsWith('\n') ? newline : '') + lines })
+      } else if (envKeyNodes.length > 0 && envKeyNodes[envKeyNodes.length - 1].inline) {
+        // Dotted keys inside an inline table: added inside its braces.
+        const lastNode = envKeyNodes[envKeyNodes.length - 1]
+        const inline = lastNode.inline as AST.TOMLInlineTable
+        const prefix = ENV_PATH.slice(lastNode.owner.length).map(tomlKey).join('.')
+        const at = inline.body[inline.body.length - 1].range[1]
+        edits.push({ start: at, end: at, text: adds.map(k => `, ${prefix}.${tomlKey(k)} = ${tomlString(desired[k])}`).join('') })
       } else if (envKeyNodes.length > 0) {
         // Dotted keys (`env.X = …`): add beside the last one, in the same form.
         const lastNode = envKeyNodes[envKeyNodes.length - 1]
-        const prefix = ENV_PATH.slice(lastNode.base.length).map(tomlKey).join('.')
+        const prefix = ENV_PATH.slice(lastNode.owner.length).map(tomlKey).join('.')
         const [, at] = lineOf(text, lastNode.kv.range[1], lastNode.kv.range[1])
         const lines = adds.map(k => `${prefix}.${tomlKey(k)} = ${tomlString(desired[k])}`).join(newline) + newline
         edits.push({ start: at, end: at, text: (at === text.length && !text.endsWith('\n') ? newline : '') + lines })
@@ -473,7 +555,7 @@ export function toolLaunch(
       const mcp = isRecord(data) && isRecord(data.mcp) ? data.mcp : undefined
       const servers = mcp && isRecord(mcp.servers) ? mcp.servers : undefined
       const entry = servers && (servers.plur != null || mcp?.plur == null) ? servers.plur : mcp?.plur
-      if (!isRecord(entry) || !Array.isArray(entry.command) || entry.command.length === 0) return null
+      if (!isRecord(entry) || isRemoteEntry(entry) || !Array.isArray(entry.command) || entry.command.length === 0) return null
       if (!entry.command.every((c): c is string => typeof c === 'string')) return null
       const environment = entry.environment === undefined ? {} : stringRecord(entry.environment)
       if (environment === null) return null
@@ -482,7 +564,7 @@ export function toolLaunch(
     const data: unknown = JSON.parse(text)
     const servers = isRecord(data) && isRecord(data.mcpServers) ? data.mcpServers : undefined
     const entry = servers?.plur
-    if (!isRecord(entry) || typeof entry.command !== 'string' || entry.command.length === 0) return null
+    if (!isRecord(entry) || isRemoteEntry(entry) || typeof entry.command !== 'string' || entry.command.length === 0) return null
     const args = Array.isArray(entry.args) ? entry.args : []
     if (!args.every((a): a is string => typeof a === 'string')) return null
     const env = entry.env === undefined ? {} : stringRecord(entry.env)
@@ -499,10 +581,27 @@ const WRAPPERS = new Set(['bunx', 'pnpx', 'pnpm', 'yarn', 'npm', 'uvx', 'wsl', '
 
 const baseName = (p: string) => (p.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.exe$/, '')
 
+/** A script of a package manager or runner run by Node itself (`node …/npm/bin/npx-cli.js`). */
+const RUNNER_SCRIPT = /(^|[\\/])node_modules[\\/](npm|corepack|pnpm|yarn|bun)[\\/]|(^|[\\/])(npx|npm|pnpm|pnpx|yarn|corepack)(-cli)?\.c?js$/i
+
 /**
- * Why the proof must not run this launch, or null for a direct one. Through
- * npx, cmd.exe, a shell or another package runner (bunx, pnpm, uvx, wsl, …;
- * an `env` prefix is looked through), the process the proof starts is not the server, so
+ * The only launches the proof runs: PLUR's own `plur-mcp` (the `.plur/bin`
+ * shim execs Node in place, so its pid is the server's), or Node running a
+ * script file directly — the script first, no Node option before it, and not
+ * a package runner's script.
+ */
+function isDirectLaunch(launch: ToolLaunch): boolean {
+  const base = baseName(launch.command)
+  if (base === 'plur-mcp') return true
+  if (base !== 'node') return false
+  const script = launch.args[0]
+  return script !== undefined && /\.(c|m)?js$/i.test(script) && !RUNNER_SCRIPT.test(script)
+}
+
+/**
+ * Why the proof must not run this launch, or null for a direct one
+ * (`isDirectLaunch`). Through npx, cmd.exe, a shell, `env` or a package
+ * runner (bunx, pnpm, uvx, wsl, …), the process the proof starts is not the server, so
  * a timeout kill can leave the server running; a `.cmd`/`.bat` cannot start
  * at all on Windows without a shell (EINVAL).
  */
@@ -516,6 +615,7 @@ export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJ
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(launch.command)) {
     return `${label} starts PLUR through a .cmd launcher, which cannot start without a shell — ${fix}`
   }
+  if (!isDirectLaunch(launch)) return `${label} starts PLUR through ${baseName(launch.command) || 'an unknown command'}, not PLUR itself — ${fix}`
   return null
 }
 
@@ -624,7 +724,7 @@ export async function wireTools(opts: {
   /** The env the tools start from (default process.env). */
   parentEnv?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
-  /** Precomputed WSL facts; otherwise `probeWsl` runs with `exec` and `osRelease`. */
+  /** Precomputed WSL facts; otherwise `probeWsl` runs with `exec` (default the real one) and `osRelease` (default `os.release()`). */
   probes?: WslProbes
   exec?: ExecFn
   osRelease?: string
@@ -636,10 +736,8 @@ export async function wireTools(opts: {
   for (const tool of TOOLS) {
     const configPath = toolConfigPath(tool, loc)
     if (tool === 'codex') {
-      const probes = opts.probes ?? (opts.exec
-        ? probeWsl({ platform, env: opts.env ?? process.env, osRelease: opts.osRelease ?? '', exec: opts.exec })
-        : null)
-      const side = probes ? wslSide(platform, probes) : 'here'
+      const probes = opts.probes ?? probeWsl({ platform, env: opts.env ?? process.env, osRelease: opts.osRelease ?? release(), exec: opts.exec ?? realExec })
+      const side = wslSide(platform, probes)
       if (side === 'wsl' || side === 'windows') {
         results.push({ tool, status: 'other-side', side, configPath, detail: OTHER_SIDE_TEXT[side] })
         continue
