@@ -67,21 +67,35 @@ def read_baseline(baseline: Path | None) -> set[str]:
     return {_norm(x) for x in doc["green"]}
 
 
+class NoBaseConfig(ValueError):
+    """The base commit exists but has no evals config: the evals are new in this change."""
+
+
 def trusted_greens(cfg, base: str) -> set[str]:
     """The green ids of the baseline at `base` (the pull request's target), read from git
     with the base's own evals config -- so a pull request cannot lower the bar by editing
-    the baseline or pointing the config at another file."""
+    the baseline or pointing the config at another file.
+
+    Raises NoBaseConfig when `base` is a real commit without the evals config (the first
+    pull request that brings the evals), ValueError for anything else it cannot read."""
     import subprocess
     import yaml
     root = cfg.root
 
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+
     def show(path: str) -> str:
-        out = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root, capture_output=True, text=True)
+        out = git("show", f"{base}:{path}")
         if out.returncode != 0:
             raise ValueError(f"could not read {path} at {base}: {out.stderr.strip()}")
         return out.stdout
 
     cfg_rel = os.path.relpath(cfg.path, root)
+    if git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").returncode != 0:
+        raise ValueError(f"{base} is not a commit here (is the base branch fetched?)")
+    if git("cat-file", "-e", f"{base}:{cfg_rel}").returncode != 0:
+        raise NoBaseConfig(f"the base {base} has no evals config ({cfg_rel})")
     base_cfg = yaml.safe_load(show(cfg_rel)) or {}
     rel = base_cfg.get("baseline")
     if not rel:
@@ -115,6 +129,9 @@ def main(argv=None) -> int:
     ap.add_argument("--base", default=None,
                     help="git ref of the pull request's target: its baseline is gated too, and a green "
                          "promise may leave it only by being retired")
+    ap.add_argument("--bootstrap", action="store_true",
+                    help="with --base: when the base has no evals config at all (the change that brings the "
+                         "evals), gate only against this change's own baseline. Ignored when the base has one.")
     args = ap.parse_args(argv)
     run = _sibling("run")
     cfg = _sibling("config").load(args.config, root=args.root)
@@ -123,13 +140,31 @@ def main(argv=None) -> int:
     except ValueError as e:
         print(f"could not tell: {e}. A lost baseline is a failure, never 'nothing to gate'.")
         return 1
+    problems = run.retirement_problems(cfg)
+    if problems:
+        print("could not tell: the retired promises are invalid, so what the gate may drop is unknown:")
+        for p in problems:
+            print(f"  {p}")
+        return 1
     gone = set(run.retired(cfg))
     if args.base:
         try:
             base_held = trusted_greens(cfg, args.base)
+        except NoBaseConfig as e:
+            if not args.bootstrap:
+                print(f"could not tell: {e}, so there is no trusted baseline to compare against. If this change "
+                      f"brings the evals for the first time, rerun with --bootstrap (evals/README.md, "
+                      f"'First baseline'); otherwise check the base ref.")
+                return 1
+            print(f"BOOTSTRAP: {e}. Gating only against this change's own baseline ({len(held)} green); "
+                  f"nothing on the base can be checked for drops. Review the baseline by hand.")
+            base_held = set()
         except ValueError as e:
             print(f"could not tell: {e}")
             return 1
+        else:
+            if args.bootstrap:
+                print(f"--bootstrap ignored: the base {args.base} has an evals config, so it is gated normally.")
         dropped = sorted(base_held - held - gone)
         for p in dropped:
             print(f"REGRESSED {p}: green in the baseline at {args.base}, removed here without being retired")

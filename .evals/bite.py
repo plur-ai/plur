@@ -85,16 +85,26 @@ def dirty(root: Path) -> list[str]:
     return [line[3:] for line in out.stdout.splitlines() if line.strip()]
 
 
-INFRA = re.compile(r"could not tell|timeout after|outside any test case|SyntaxError|Transform failed"
-                   r"|Failed to load|Cannot find module|ERR_MODULE_NOT_FOUND|error TS\d+", re.I)
+# The runner's own words for a run it could not finish or account for (run.py).
+RUN_BROKE = re.compile(r"could not tell|timeout after \d+s|outside any test case", re.I)
+# A failed assertion, as run.py writes it: `<case>: failure (AssertionError): ...`.
+ASSERTION = re.compile(r": (?:failure|error) \(AssertionError\): ")
 
 
 def _not_behaviour(detail: str) -> bool:
-    """True when the red came from the run breaking, not from an eval's assertion.
-    A planted bug that stops the code compiling or hangs the run proves nothing about
-    the eval (audit, section 4)."""
-    lines = [ln for ln in detail.splitlines() if ln.strip()]
-    return bool(lines) and all(INFRA.search(ln) for ln in lines)
+    """True when the red did not come from an eval's assertion.
+
+    A planted bug that stops the code compiling, crashes it before any assertion (a
+    TypeError on a missing value), hangs a test or breaks the run outside its cases
+    proves nothing about the eval (audit, section 4). Only a failure whose error type is
+    an assertion counts as a kill; text matching on multi-line reports counted stack
+    traces and import errors as kills (second audit R-04). An eval that asserts a value
+    is there (`expect(x).toBeDefined()`) fails as an assertion and counts; one that
+    crashes dereferencing the missing value does not. Any sign the run itself broke
+    makes the whole red could-not-tell."""
+    if not detail.strip() or RUN_BROKE.search(detail):
+        return True
+    return ASSERTION.search(detail) is None
 
 
 def check(cfg, only=None, runner=None) -> list[Result]:

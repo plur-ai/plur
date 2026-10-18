@@ -101,6 +101,37 @@ def retired(cfg) -> dict[str, dict]:
     return out
 
 
+def retirement_problems(cfg) -> list[str]:
+    """What is wrong with the `retired:` entries; empty when every one is valid.
+
+    A retirement takes a promise out of the gate, so it must be a deliberate, complete
+    change (second audit R-05): an id, a reason, and `replaced_by` naming a promise that
+    is still active. An id that is both active and retired, or a replacement that is
+    itself retired or unknown, would let a stale entry stop gating a promised behaviour."""
+    active = {norm(p) for p in promises(cfg)}
+    problems: list[str] = []
+    seen: set[str] = set()
+    for doc in _docs(cfg):
+        for r in doc.get("retired") or []:
+            if not isinstance(r, dict) or not str(r.get("id") or "").strip():
+                problems.append(f"a retired entry has no id: {r!r}")
+                continue
+            rid = str(r["id"])
+            if norm(rid) in seen:
+                problems.append(f"retired {rid} is listed twice")
+            seen.add(norm(rid))
+            if norm(rid) in active:
+                problems.append(f"retired {rid} is still an active promise")
+            if not str(r.get("reason") or "").strip():
+                problems.append(f"retired {rid} has no reason")
+            repl = str(r.get("replaced_by") or "").strip()
+            if not repl:
+                problems.append(f"retired {rid} names no replacement (replaced_by)")
+            elif norm(repl) not in active:
+                problems.append(f"retired {rid} is replaced_by {repl}, which is not an active promise")
+    return problems
+
+
 def eval_files(cfg) -> dict[str, list[tuple[str, Path]]]:
     """{normalized id: [(suite name, file)]}"""
     pat = re.compile(cfg.id_pattern)
@@ -123,6 +154,26 @@ def _file_of(case, names: set[str]) -> str | None:
             if f"{part}.py" in names:
                 return f"{part}.py"
     return None
+
+
+def _error_type(child) -> str:
+    """The error class behind a junit failure: vitest writes it in `type`; pytest's report
+    names an assertion only in its message or text."""
+    if child.get("type"):
+        return str(child.get("type")).rsplit(".", 1)[-1]
+    text = f"{child.get('message') or ''}\n{child.text or ''}"
+    if re.match(r"\s*assert\b", child.get("message") or "") or re.search(r"^E\s+AssertionError\b", text, re.M):
+        return "AssertionError"
+    return "unknown"
+
+
+def _note(name, child) -> str:
+    """One failure line: `<case>: failure (<ErrorType>): <message>`. The error type is how
+    bite.py tells an assertion that caught a planted bug from a crash (second audit R-04)."""
+    if child.tag == "skipped":
+        return f"{name}: skipped: {(child.get('message') or '')[:900]}"
+    msg = " ".join(filter(None, [child.get("message"), (child.text or "").strip()[-600:]]))
+    return f"{name}: {child.tag} ({_error_type(child)}): {msg[:900]}"
 
 
 def run_chunk(cwd: Path, files: list[Path], env: dict, timeout_s: int) -> dict[str, tuple[bool, str]]:
@@ -156,35 +207,44 @@ def run_chunk(cwd: Path, files: list[Path], env: dict, timeout_s: int) -> dict[s
         for child in case:
             if child.tag in ("failure", "error", "skipped"):
                 ok = False
-                what = "skipped" if child.tag == "skipped" else child.tag
-                msg = " ".join(filter(None, [child.get("message"), (child.text or "").strip()[-600:]]))
-                notes.append(f"{case.get('name')}: {what}: {msg[:900]}")
+                notes.append(_note(case.get("name"), child))
         seen[fname] = (ok, notes)
     for fname, (ok, notes) in seen.items():
         result[fname] = (ok, "\n".join(notes))
     return _process_failure(proc.returncode, proc.stdout + proc.stderr, result)
 
 
-def _process_failure(code: int, output: str, result: dict[str, tuple[bool, str]]) -> dict[str, tuple[bool, str]]:
-    """A run that exited with an error cannot prove a promise, whatever its report says.
+# What a test process prints when something failed outside every test case. vitest
+# reports an unhandled error or rejection with an "Unhandled ..." banner, and a global
+# teardown that throws as "error during close" -- after the report was written, and with
+# exit 0 when every case passed (second audit R-06).
+LIFECYCLE = re.compile(r"unhandled (?:error|rejection)|error during close", re.I)
 
-    vitest exits 1 on an unhandled rejection or a teardown error that happened outside
-    every test case, while its JUnit report lists each case as passed; reading only the
-    report turned such a run green (audit E-01). An error vitest attributes to a file
-    ("This error originated in <file>") reds that file; one nobody can attribute, or a
-    failed exit with no failing case at all, reds every file in the chunk. Failures the
-    report already attributes keep their attribution."""
-    if code == 0:
+
+def _process_failure(code: int, output: str, result: dict[str, tuple[bool, str]]) -> dict[str, tuple[bool, str]]:
+    """A run that failed outside its test cases cannot prove a promise, whatever its report says.
+
+    vitest exits 1 on an unhandled rejection that happened outside every test case, while
+    its JUnit report lists each case as passed; reading only the report turned such a run
+    green (audit E-01). A global teardown that throws is worse: exit 0 and a passing report
+    (R-06). An error vitest attributes to a file ("This error originated in <file>") reds
+    that file; one nobody can attribute, or a failed exit with no failing case at all, reds
+    every file in the chunk -- also when another file failed an assertion, because that
+    failure does not account for the process error. Failures the report already attributes
+    keep their attribution."""
+    lifecycle = LIFECYCLE.search(output)
+    if code == 0 and lifecycle is None:
         return result
+    attributed = any(not ok for ok, _ in result.values())
+    if attributed and lifecycle is None:
+        return result      # the failed exit is explained by the failing cases
     tail = output.strip()[-600:]
     named = {n for n in result if re.search(r"originated in \"?[^\n\"]*" + re.escape(n), output)}
-    unhandled = re.search(r"unhandled (error|rejection)", output, re.I) is not None
-    attributed = any(not ok for ok, _ in result.values())
-    if attributed and not unhandled:
-        return result
     victims = named or set(result)
+    seen = f"; it printed: {output[lifecycle.start():][:300].strip()}" if lifecycle else ""
     why = (f"the test process exited {code} with an error outside any test case "
-           f"(unhandled error, teardown or startup failure){'' if named else '; it could not be attributed to one file'}: {tail}")
+           f"(unhandled error, teardown or startup failure){'' if named else '; it could not be attributed to one file'}"
+           f"{seen}: {tail}")
     return {n: ((False, (d + "\n" if d and not ok else "") + why) if n in victims else (ok, d))
             for n, (ok, d) in result.items()}
 
@@ -232,9 +292,7 @@ def run_vitest_chunk(cwd: Path, files: list[Path], env: dict, timeout_s: int,
             for child in case:
                 if child.tag in ("failure", "error", "skipped"):
                     ok = False
-                    what = "skipped" if child.tag == "skipped" else child.tag
-                    msg = " ".join(filter(None, [child.get("message"), (child.text or "").strip()[-600:]]))
-                    notes.append(f"{case.get('name')}: {what}: {msg[:900]}")
+                    notes.append(_note(case.get("name"), child))
             seen[fname] = (ok, notes)
     for fname, (ok, notes) in seen.items():
         result[fname] = (ok, "\n".join(notes))
@@ -318,10 +376,19 @@ def write_baseline(cfg, board: Board, only: set[str], allow_drop: bool = False) 
 
     A promise green in the old baseline that is not green now is a regression, and the
     baseline is NOT rewritten (a full rewrite used to drop it silently, audit E-03) --
-    unless it was retired on purpose (`retired:`) or `allow_drop` is given."""
+    unless it was retired on purpose (`retired:`) or `allow_drop` is given.
+
+    Raises ValueError, writing nothing, when the retirements are invalid or an earlier
+    baseline exists but cannot be read: a corrupt baseline is lost history, not an empty
+    one (second audit R-05). With no baseline file at all it is created."""
     gate = _sibling("gate")
+    problems = retirement_problems(cfg)
+    if problems:
+        raise ValueError("invalid retirements: " + "; ".join(problems))
     greens = {norm(p) for p, st in board.status.items() if st == "green"}
-    prev = gate.green(cfg.baseline) if cfg.baseline and Path(cfg.baseline).exists() else set()
+    if cfg.baseline is None:
+        raise ValueError("the config names no baseline file")
+    prev = gate.read_baseline(cfg.baseline) if Path(cfg.baseline).exists() else set()
     gone = retired(cfg)
     lost = sorted(prev - greens - set(gone)) if not only else []
     if lost and not allow_drop:
@@ -365,11 +432,28 @@ def main(argv=None) -> int:
             print("\n" + "  ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
         return 1
 
+    problems = retirement_problems(cfg)
+    if problems:
+        print("could not tell: the retired promises are invalid, so what is promised is unknown:")
+        for p in problems:
+            print(f"  {p}")
+        return 1
+    if args.write_baseline and cfg.baseline is not None and Path(cfg.baseline).exists():
+        try:
+            _sibling("gate").read_baseline(cfg.baseline)     # refuse before spending a full run
+        except ValueError as e:
+            print(f"could not tell: {e}. The baseline is NOT rewritten: an unreadable baseline is lost "
+                  f"history, not an empty one. Restore it from git (or delete it on purpose to start over).")
+            return 1
     board = score(cfg, only=only, agents=args.agents,
                   exclude_kinds=[k.strip() for k in args.exclude_kind.split(",") if k.strip()])
     regressed = []
     if args.write_baseline:
-        regressed = write_baseline(cfg, board, only, allow_drop=args.allow_drop)
+        try:
+            regressed = write_baseline(cfg, board, only, allow_drop=args.allow_drop)
+        except ValueError as e:
+            print(f"could not tell: {e}. The baseline is NOT written.")
+            return 1
         if regressed:
             print(f"REGRESSED since the last baseline: {', '.join(regressed)}"
                   + ("" if args.allow_drop else " -- baseline NOT written (retire them, or --allow-drop)"))
