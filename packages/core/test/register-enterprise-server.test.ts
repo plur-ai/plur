@@ -578,3 +578,23 @@ describe('registerEnterpriseServer — Codex audit round 6', () => {
     expect(readFileSync(configPath(), 'utf8')).toBe(before)
   })
 })
+
+describe('registerEnterpriseServer — Codex audit round 7', () => {
+  it('a personal scope in another letter case is not folded into a server entry that serves the scope', async () => {
+    seed(`stores:\n  - url: ${URL_}\n    token: k1\n    scope: user:acme:Alice\n    dial: never\n` +
+      `  - url: ${URL_}\n    token: k1\n    scope: ${ME}\n    enterprise: {}\n    scopes: [${ME}]\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.fold.kept_separate).toEqual([{ scope: 'user:acme:Alice', why: 'scope-served-elsewhere' }])
+    expect(r.status).toBe('unchanged')
+  })
+
+  it('two folding entries for one personal scope in different letter cases are both kept', () => {
+    const raw = [
+      { url: URL_, token: 'k1', scope: ME, enterprise: {}, scopes: [] },
+      { url: URL_, token: 'k1', scope: 'user:acme:Bob' },
+      { url: URL_, token: 'k1', scope: 'user:acme:bob' },
+    ]
+    const { report } = foldStoresIntoServerEntry(raw, URL_, 'k1', undefined)
+    expect(report.folded).toEqual([])
+  })
+})
