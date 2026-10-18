@@ -233,6 +233,27 @@ describe('deviceSignIn', () => {
       expect(h2.calls.filter(c => c.path === '/api/v1/auth/token')).toHaveLength(0)
     })
 
+    it('a poll still in flight at the deadline does not hand over a key', async () => {
+      const slowOk = (async (u: string, init?: RequestInit) => {
+        if (new URL(u).pathname === '/api/v1/auth/device') return new Response(JSON.stringify(DEVICE), { status: 200 })
+        // The key arrives 1.5 s after the poll is sent — past the deadline.
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(resolve, 1500)
+          init?.signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('aborted', 'AbortError')) })
+        })
+        return new Response(JSON.stringify(GRANT), { status: 200 })
+      }) as unknown as typeof fetch
+      const h = harness({}, { fetch: slowOk, timeoutSecs: 6 })
+      await expect(signIn(h)).rejects.toThrow(/expired before it was entered/)
+    })
+
+    it('an unknown token error is not echoed (it could carry anything, a key included)', async () => {
+      const h = harness({ '/api/v1/auth/device': [{ status: 200, body: DEVICE }], '/api/v1/auth/token': [{ status: 400, body: { error: 'plur_sk_' + 'a'.repeat(43) } }] })
+      const err = await signIn(h).then(() => null, (e: Error) => e)
+      expect(err?.message).toMatch(/unexpected answer from the server/)
+      expect(err?.message).not.toContain('plur_sk_')
+    })
+
     it('a body that never finishes is cut off by the request timeout', async () => {
       const { requestDeviceCode } = await import('../src/commands/login.js')
       const f = (async (_u: string, init?: RequestInit) => {
@@ -280,6 +301,8 @@ interface Stub {
   legacyToken: string
   /** Repeat the key in the user name and key name (a misbehaving server). */
   reflect?: boolean
+  /** Repeat the key as a malformed scope_metadata entry in /me. */
+  reflectMeta?: boolean
 }
 
 async function startStub(): Promise<Stub> {
@@ -317,7 +340,7 @@ async function startStub(): Promise<Stub> {
       if (req.method === 'GET' && path === '/api/v1/me') {
         const bearer = (req.headers.authorization ?? '').replace(/^Bearer /, '')
         if (!stub.minted.includes(bearer) && bearer !== stub.legacyToken) { res.writeHead(401).end(); return }
-        return json(res, 200, { username: 'alice', org_id: 'acme', role: 'developer', scopes: ['user:acme:alice', 'group:acme/team'], scopes_status: 'ok', scope_metadata: [], scope_metadata_status: 'ok', gitlab_host: null, project_paths: {} })
+        return json(res, 200, { username: 'alice', org_id: 'acme', role: 'developer', scopes: ['user:acme:alice', 'group:acme/team'], scopes_status: 'ok', scope_metadata: stub.reflectMeta ? [{ scope: bearer }] : [], scope_metadata_status: 'ok', gitlab_host: null, project_paths: {} })
       }
       res.writeHead(404).end()
     })
@@ -436,6 +459,28 @@ describe('plur login <host> (process, contract server)', () => {
     expect(r.out).not.toContain(stub.minted[0])
     expect(r.out).not.toContain('plur_sk_old')
   }, 40_000)
+
+  it('a local store that keeps the personal scope: said, exit 1', async () => {
+    const local = join(home, 'local-store')
+    mkdirSync(local)
+    writeFileSync(cfg(), `stores:\n  - path: ${local}\n    scope: user:acme:alice\n`)
+    const r = await runCli(['login', stub.url, '--no-open'], home)
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toMatch(/still served by a local store/)
+  }, 40_000)
+
+  it('a key the server reflects into /me scope metadata is not logged', async () => {
+    stub.reflectMeta = true
+    const r = await runCli(['login', stub.url, '--no-open'], home)
+    expect(stub.minted).toHaveLength(1)
+    expect(r.out).not.toContain(stub.minted[0])
+  }, 40_000)
+
+  it('login and the config.json move build Plur without project-store discovery (no config write before the sign-in)', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'commands', 'login.ts'), 'utf8')
+    expect(src).not.toMatch(/createPlur\(flags\)(?!,)/)
+    expect(src.match(/createPlur\(flags, \{ autoDiscover: false \}\)/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+  })
 
   it('a remaining ~/.plur/config.json is moved into config.yaml once, with a notice, then not read again', async () => {
     const legacy = JSON.stringify({ enterprise: { url: stub.url, token: stub.legacyToken, username: 'alice' } })

@@ -165,4 +165,15 @@ describe('gate review of #1665: a held sign-in, the backup under the lock', () =
     await plur.registerEnterpriseServer(URL_, { token: 'k1-sekrit', personalScope: ME, removeStale: true, beforeRemove: p => { calls.push(p) } })
     expect(calls).toEqual([])
   })
+
+  it('YAML aliases: removeStale removes the holder at its own position, not the first copy of the same object', async () => {
+    // The old entry appears twice through an alias: before the server entry (it keeps the
+    // writes; not a holder) and after it (a holder). Only the holder position is removed.
+    seed(`stores:\n  - &old\n    url: https://b.example.com/sse\n    token: k0-sekrit\n    scope: ${ME}\n  - url: ${URL_}\n    token: k1-sekrit\n    scope: user:acme:bob\n    scopes: []\n  - *old\n`)
+    const err = await refusal({ token: 'k1-sekrit' })
+    expect(err.removable).toBe(true)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1-sekrit', personalScope: ME, removeStale: true })
+    expect(r.removed).toHaveLength(1)
+    expect(rawConfig().stores.map((e: { url: string }) => e.url)).toEqual(['https://b.example.com/sse', URL_])
+  })
 })
