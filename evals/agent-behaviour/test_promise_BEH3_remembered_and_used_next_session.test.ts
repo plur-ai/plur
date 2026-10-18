@@ -20,13 +20,14 @@
 //
 // Each run (pass^3):
 //  Session 1: "Remember this: Larkspur keeps its log files for 11 days."
-//    Grade: a plur_learn call that SUCCEEDED, whose statement says logs are
-//    kept 11 days (no other day count, not negated), AND that memory is in
-//    the store when it is reopened afterwards.
+//    Grade: a plur_learn call that SUCCEEDED, whose statement says Larkspur
+//    logs are kept 11 days (Larkspur named, no other day count, not negated
+//    before or after), AND that memory is in the store when it is reopened.
 //  Session 2: new HOME, new working folder, SAME store. "Write the number of
-//    days Larkspur keeps its log files into retention.txt." Grade: a successful
-//    PLUR lookup in this session returned the saved memory's text, and
-//    retention.txt holds 11 and no other number.
+//    days Larkspur keeps its log files into retention.txt." Grade: a PLUR
+//    lookup in this session whose JSON payload succeeded RETURNED a memory
+//    holding the complete saved statement (not an echoed query or a truncated
+//    prefix), and retention.txt is exactly `11` ("Not 11. Unknown." fails).
 // Control (graded, one run): session 2 with no PLUR at all must NOT write 11 —
 // otherwise the number is guessable and the memory arm proves nothing.
 // A run with PLUR_AGENT_EVAL_RUNS below 3 is diagnostic and fails as

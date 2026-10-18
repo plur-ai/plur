@@ -16,15 +16,28 @@
 // fictional fact no model can know. The folder is switched on for memory
 // FIRST — folder consent is a prerequisite the user gives, not something the
 // agent gets past (the harness checks the folder map says "on" before the run).
+// The prompt ends with an ANSWER CONTRACT (audit R-01, 2026-10-18): the reply
+// must close with one line `ANSWER: <weekday>` or `ANSWER: UNKNOWN`, and only
+// that line is graded, exactly. Prose heuristics could not tell "Tuesday is
+// forbidden" from "deploy on Tuesday", nor "Today is Sunday" (calendar
+// context) from a second deploy day; a fixed final line can be read exactly.
+// A missing, repeated, non-final or compound line ("Tuesday or Wednesday") is
+// not an answer.
 // Asked about the fact, every run (pass^3) must
-// (a) call PLUR recall / session start and get the fact back in a reply that
-//     succeeded, and
-// (b) give an answer that MEANS Tuesday: it affirms Tuesday, never negates it,
-//     and affirms no other day. "Never Tuesday; deploy Friday" fails
-//     (graders: ../helpers/agent-behaviour-graders.ts, proven on synthetic
-//     transcripts in agent-behaviour-graders.unit.test.ts).
-// The control arm: the same prompt with no PLUR at all. No run may mention
-// Tuesday at all — that is what proves the answer came from memory, not a guess.
+// (a) call PLUR recall / session start, and a reply that SUCCEEDED (JSON
+//     payload, no error / success:false) must RETURN a memory holding the
+//     complete seeded fact — an echoed query or a truncated statement does not
+//     count, and
+// (b) end with `ANSWER: Tuesday`.
+// The control arm: the same prompt with no PLUR at all. No run may answer
+// Tuesday on its contract line — that is what proves the answer came from
+// memory, not a guess. Refusals and uncertainty pass even when they name a
+// weekday as context; with no valid contract line, any mention of Tuesday
+// fails (a guess and a hedge cannot be told apart, and failing is the safe
+// direction).
+// Graders: ../helpers/agent-behaviour-graders.ts, proven on synthetic
+// transcripts (including the real 2026-10-18 answers) in
+// agent-behaviour-graders.unit.test.ts.
 // The promise is green only when BOTH hold, over three runs each; a run with
 // PLUR_AGENT_EVAL_RUNS below 3 is diagnostic and fails as non-certifying.
 import { describe, expect, it } from 'vitest'
@@ -32,7 +45,7 @@ import {
   RUNS, authEnv, copyScaffold, folderOn, freshDir, installClaudeMd, logReport, recallFrom, report, requireCertifying, requireEnabled,
   requireMcpBuilt, runSession, seededStore, writeMcpConfig, type AgentRun, type Graded,
 } from '../helpers/agent-behaviour-harness.js'
-import { gradeAnswerFromMemory } from '../helpers/agent-behaviour-graders.js'
+import { ANSWER_CONTRACT, gradeAnswerFromMemory, gradeControlAnswer } from '../helpers/agent-behaviour-graders.js'
 
 const FACT = 'The Larkspur project deploys only on Tuesdays, never on Fridays.'
 const SEEDS = [
@@ -43,17 +56,16 @@ const SEEDS = [
   'Code review needs one approval from someone outside the author\'s team.',
   'Log timestamps are always written in UTC with an explicit Z suffix.',
 ]
-const PROMPT = 'Which day can I deploy Larkspur?'
+const PROMPT = `Which day can I deploy Larkspur? ${ANSWER_CONTRACT}`
 const TIMEOUT = 20 * 60_000
 
 function gradeMemory(run: AgentRun): { ok: boolean; why: string } {
-  return gradeAnswerFromMemory(run, 'tuesday', /larkspur/i)
+  return gradeAnswerFromMemory(run, 'tuesday', FACT)
 }
 
 function gradeControl(run: AgentRun): { ok: boolean; why: string } {
-  if (run.timedOut || (run.isError && !run.text)) return { ok: false, why: 'the control session did not produce an answer, so it proves nothing' }
-  if (/tuesday/i.test(run.text)) return { ok: false, why: `without PLUR the agent still answered Tuesday — the fact is guessable, so the memory arm proves nothing: ${JSON.stringify(run.text.slice(0, 200))}` }
-  return { ok: true, why: 'without PLUR the agent could not say Tuesday' }
+  if (run.isError && !run.text) return { ok: false, why: 'the control session did not produce an answer, so it proves nothing' }
+  return gradeControlAnswer(run, 'tuesday')
 }
 
 describe('BEH-1 an agent answers from memory where the same agent without PLUR cannot', () => {

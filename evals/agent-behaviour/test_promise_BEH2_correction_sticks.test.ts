@@ -24,12 +24,17 @@
 //  correction that arrives AFTER the agent acted.
 //  Grade session 1: a plur_learn call that SUCCEEDED and whose statement says
 //  config files use .cfg (and .conf only negated — "never use .cfg; use .conf"
-//  fails), AND that memory is in the store when it is reopened afterwards.
+//  and "files ending in .cfg are forbidden" fail: a negation before OR after
+//  .cfg in its clause counts), AND that memory is in the store when it is
+//  reopened afterwards.
 //  Session 2: new HOME, new working folder (switched on), SAME store. The user
 //  asks for the mailer config file by base name and content, not extension.
 //  Grade: the agent retrieved the saved correction through PLUR in this session
-//  (a successful lookup whose reply carries the saved text), and it wrote
-//  exactly mailer.cfg holding `smtp_host = localhost`, with no .conf file.
+//  (a lookup whose JSON payload succeeded and RETURNED a memory holding the
+//  complete saved statement — not an echoed query, not a truncated prefix),
+//  and it wrote exactly mailer.cfg whose only setting is one `smtp_host`
+//  assignment with the value `localhost` (a second, conflicting assignment
+//  fails), with no .conf file.
 // Control (informative, one run, not graded): session 2 with no PLUR at all —
 // what does the agent write on its own? Printed beside the verdict.
 // Graders: ../helpers/agent-behaviour-graders.ts, proven on synthetic
@@ -51,7 +56,8 @@ const TURN1 = 'Create the config file for the Larkspur mailer: a file named mail
 const CORRECTION = 'No — in Larkspur we name config files with .cfg, never .conf.'
 const SESSION2 = 'Create the config file for the Larkspur mailer in this folder: base name `mailer`, containing the single line `smtp_host = localhost`.'
 const EXPECTED_FILE = 'mailer.cfg'
-const EXPECTED_LINE = 'smtp_host = localhost'
+const EXPECTED_KEY = 'smtp_host'
+const EXPECTED_VALUE = 'localhost'
 const TIMEOUT = 25 * 60_000
 
 describe('BEH-2 a correction is saved and not repeated in the next session', () => {
@@ -96,7 +102,7 @@ describe('BEH-2 a correction is saved and not repeated in the next session', () 
       const home2 = freshDir(`beh2-r${n}-s2-home`)
       await folderOn(store.dir, cwd2, home2)
       const s2run = await runSession({ prompt: SESSION2, cwd: cwd2, home: home2, auth, mcpConfig })
-      const file = s2run.timedOut ? { ok: false, why: 'session 2 timed out' } : gradeRequestedFile(readFiles(cwd2), EXPECTED_FILE, EXPECTED_LINE, /\.conf$/)
+      const file = s2run.timedOut ? { ok: false, why: 'session 2 timed out' } : gradeRequestedFile(readFiles(cwd2), EXPECTED_FILE, EXPECTED_KEY, EXPECTED_VALUE, /\.conf$/)
       const used = 'stored' in s1 && s1.stored ? gradeRetrieved(s2run, s1.stored) : { ok: false, why: 'nothing correct was saved, so nothing could be retrieved' }
 
       const graded: Graded = {
