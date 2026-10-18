@@ -4,9 +4,10 @@
  * 1. plur_learn_batch never overwrites an existing memory (owner decision
  *    2026-10-18). A duplicate checker answering UPDATE or MERGE saves the item
  *    as its own memory, linked to the existing one, and the per-item result
- *    names the likely duplicate. The tool is still marked destructive, direct
- *    in every profile and refused by plur_admin: it saves through the AI
- *    duplicate check, which the promise counts with the overwriting tools.
+ *    names the likely duplicate. Because it never overwrites, it is NOT marked
+ *    destructive and stays behind plur_admin (owner decision 2026-10-18: the
+ *    promise is proven by behaviour, not by the marking); through the gateway
+ *    it behaves exactly as when called directly.
  * 2. plur_report_failure rewrites a procedure's text with whatever its checker
  *    returns, so it is marked destructive, is a direct tool in every profile,
  *    and the gateway refuses it. What it does is unchanged.
@@ -24,8 +25,26 @@ const PROC = 'To roll back the ledger service, revert the release tag and redepl
 
 const tool = (profile: 'full' | 'lean' | 'cursor', name: string) => getToolDefinitions(profile).find(t => t.name === name)
 
-describe('TOOL-4: plur_learn_batch and plur_report_failure are marked destructive, direct, and refused by the gateway', () => {
-  for (const name of ['plur_learn_batch', 'plur_report_failure']) {
+describe('TOOL-4: plur_learn_batch is an ordinary gateway action, not destructive', () => {
+  it('plur_learn_batch is annotated destructiveHint:false', () => {
+    expect(tool('full', 'plur_learn_batch')?.annotations?.destructiveHint).toBe(false)
+  })
+
+  it('plur_learn_batch is not a lean/cursor direct tool and plur_admin offers it', async () => {
+    expect(CURSOR_CORE_TOOL_NAMES.has('plur_learn_batch')).toBe(false)
+    expect(tool('lean', 'plur_learn_batch')).toBeUndefined()
+    expect(tool('full', 'plur_learn_batch')).toBeDefined()
+    const admin = tool('lean', 'plur_admin')!
+    const dir = mkdtempSync(join(tmpdir(), 'plur-tool4-help-'))
+    try {
+      const help = await admin.handler({ action: 'help' }, new Plur({ path: dir })) as any
+      expect(help.actions.map((a: { action: string }) => a.action)).toContain('plur_learn_batch')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+describe('TOOL-4: plur_report_failure is marked destructive, direct, and refused by the gateway', () => {
+  for (const name of ['plur_report_failure']) {
     it(`${name} is annotated destructiveHint:true`, () => {
       expect(tool('full', name)?.annotations?.destructiveHint).toBe(true)
     })
@@ -87,7 +106,7 @@ describe('TOOL-4: behaviour over the tools', () => {
       const old = await plur.learn(OLD, { scope: 'global' })
       const checker = scriptChecker(() => `DECISION: ${decision}\nTARGET: ${old.id}\nREASON: scripted`)
 
-      const res = await tool('lean', 'plur_learn_batch')!.handler({ engrams: [{ statement: INCOMING, scope: 'global' }] }, plur) as any
+      const res = await tool('full', 'plur_learn_batch')!.handler({ engrams: [{ statement: INCOMING, scope: 'global' }] }, plur) as any
 
       expect(checker.calls, 'precondition: the duplicate checker was asked').toBeGreaterThan(0)
       const fresh = new Plur({ path: dir })
@@ -104,15 +123,20 @@ describe('TOOL-4: behaviour over the tools', () => {
     })
   }
 
-  it('plur_learn_batch through plur_admin is refused and nothing is written', async () => {
-    const old = await plur.learn(OLD, { scope: 'global' })
-    const before = (await plur.list()).length
-    const res = await tool('lean', 'plur_admin')!.handler({ action: 'plur_learn_batch', args: { engrams: [{ statement: INCOMING, scope: 'global' }] } }, plur) as any
-    expect(res.success).toBe(false)
-    expect(res.error).toContain('plur_learn_batch')
-    expect((await plur.list()).length).toBe(before)
-    expect((await plur.getById(old.id))?.statement).toBe(OLD)
-  })
+  for (const decision of ['UPDATE', 'MERGE'] as const) {
+    it(`plur_learn_batch through plur_admin with the checker answering ${decision}: runs, never overwrites, saves the item linked`, async () => {
+      const old = await plur.learn(OLD, { scope: 'global' })
+      const checker = scriptChecker(() => `DECISION: ${decision}\nTARGET: ${old.id}\nREASON: scripted`)
+      const res = await tool('lean', 'plur_admin')!.handler({ action: 'plur_learn_batch', args: { engrams: [{ statement: INCOMING, scope: 'global' }] } }, plur) as any
+      expect(res.success, JSON.stringify(res).slice(0, 300)).not.toBe(false)
+      expect(checker.calls, 'precondition: the duplicate checker was asked').toBeGreaterThan(0)
+      const fresh = new Plur({ path: dir })
+      expect((await fresh.getById(old.id))?.statement).toBe(OLD)
+      const added = (await fresh.list()).find(e => e.statement === INCOMING)
+      expect(added, 'the incoming item was saved as its own memory').toBeDefined()
+      expect(added!.relations?.related ?? []).toContain(old.id)
+    })
+  }
 
   it('plur_report_failure through plur_admin is refused and the procedure keeps its text', async () => {
     const proc = await plur.learn(PROC, { scope: 'global', type: 'procedural' })

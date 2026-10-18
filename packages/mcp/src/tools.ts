@@ -1165,12 +1165,11 @@ export type ToolProfile = 'full' | 'lean' | 'cursor'
 //
 // TOOL-4 (2026-10-18): "every tool that deletes a memory or overwrites its
 // text is marked destructive, and the gateway can never delete or overwrite".
-// Two more tools join for that reason: plur_report_failure (procedure
-// evolution replaces a procedure's text with what its checker returns) and
-// plur_learn_batch (it saves through the AI duplicate check; batch learning
-// itself never overwrites since the owner decision of 2026-10-18, but the
-// promise counts saves through that check with the overwriting tools). 15
-// core tools + plur_admin = 16 exposed.
+// plur_report_failure joins for that reason: procedure evolution replaces a
+// procedure's text with what its checker returns. plur_learn_batch does not:
+// batch learning never overwrites (owner decision 2026-10-18), proven by
+// behaviour rather than by a marking, so it stays an ordinary gateway action.
+// 14 core tools + plur_admin = 15 exposed.
 // Exported (audit fix — evaluator review, iteration 2, 2026-07-09) so
 // server.ts's plur://guide resource can build its cursor-profile redirect
 // note FROM this set instead of hardcoding a second, independent copy of
@@ -1192,7 +1191,6 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_tensions',
   'plur_validate_meta',
   'plur_report_failure',
-  'plur_learn_batch',
 ])
 
 /**
@@ -1425,7 +1423,7 @@ export function describeToolSurface(profile: ToolProfile = activeToolProfile()):
 export function getToolDefinitions(profile: ToolProfile = 'lean'): ToolDefinition[] {
   const all = getAllToolDefinitions()
   if (profile === 'full') return all
-  // 'lean' and 'cursor' are identical: 15 core tools + plur_admin dispatch (16 exposed)
+  // 'lean' and 'cursor' are identical: 14 core tools + plur_admin dispatch (15 exposed)
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
 }
@@ -1875,10 +1873,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         'default ("private" — excluded from packs and shared git sync), and an item whose scope is a team store ' +
         'still goes to that team store; to keep a team-scope memory local, use plur_learn with an explicit ' +
         'visibility: "private". See plur-ai/plur#281.',
-      // TOOL-4: marked destructive, a direct tool in every profile, refused by
-      // plur_admin. It saves through the AI duplicate check, which the promise
-      // counts with the overwriting tools, though a batch never overwrites.
-      annotations: { title: 'Learn (batch)', destructiveHint: true, idempotentHint: false },
+      // TOOL-4: a batch never overwrites or deletes an existing memory (see the
+      // description), so it is not destructive and stays behind plur_admin.
+      annotations: { title: 'Learn (batch)', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
