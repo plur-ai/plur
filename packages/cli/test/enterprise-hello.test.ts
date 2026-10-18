@@ -5,6 +5,7 @@ import { tmpdir, homedir } from 'os'
 import { helloStatement, runHello, type ToolId, type McpLaunch as HelloMcpLaunch } from '../src/enterprise/hello.js'
 
 const FAKE_SERVER = join(__dirname, 'helpers', 'fake-mcp-server.mjs')
+const SERVER = 'https://plur.example.com'
 
 function fakeLaunch(
   tool: ToolId,
@@ -58,6 +59,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', logPath)],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: stmt,
       previousId: 'ENG-OLD',
     })
@@ -80,6 +82,7 @@ describe('runHello', () => {
     await runHello({
       launches: [fakeLaunch('codex', logPath)],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice on ws-0142 (Windows), Codex, PLUR 0.22.0, 2026-10-16',
     })
     const entries = readFileSync(logPath, 'utf-8')
@@ -96,6 +99,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', logPath, 'queued')],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
     })
     expect(result.saved).toEqual({
@@ -110,6 +114,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', logPath, 'off')],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
     })
     expect(result.saved.ok).toBe(false)
@@ -124,6 +129,7 @@ describe('runHello', () => {
     await runHello({
       launches: [fakeLaunch('codex', logPath)],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
     })
     const entries = readFileSync(logPath, 'utf-8')
@@ -152,6 +158,7 @@ describe('runHello', () => {
         fakeLaunch('opencode', log2, 'recall-miss'),
       ],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice on ws-0142 (Windows), Codex, OpenCode, PLUR 0.22.0, 2026-10-16',
     })
     expect(result.saved).toMatchObject({ ok: true })
@@ -169,6 +176,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', logPath, 'no-start')],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
       timeoutMs: 800,
     })
@@ -201,6 +209,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', logPath)],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
     })
     expect(result.perTool).toEqual([{ tool: 'codex', recalled: true }])
@@ -214,6 +223,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', join(tempDir, 'log'), 'no-start', { FAKE_PID: pidPath })],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
       timeoutMs: 800,
     })
@@ -228,6 +238,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', join(tempDir, 'log'), 'hang-call', { FAKE_PID: pidPath })],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
       timeoutMs: 800,
     })
@@ -246,6 +257,7 @@ describe('runHello', () => {
         },
       ],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
       timeoutMs: 2000,
     })
@@ -257,6 +269,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', join(tempDir, 'log'), 'tool-error')],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
     })
     expect(result.saved).toEqual({ ok: false, reason: 'scope user:acme:alice is not writable' })
@@ -266,6 +279,7 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', join(tempDir, 'log'), 'no-id')],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
     })
     expect(result.saved.ok).toBe(false)
@@ -275,10 +289,93 @@ describe('runHello', () => {
     const result = await runHello({
       launches: [fakeLaunch('codex', join(tempDir, 'log'), 'noisy-stderr')],
       personalScope: 'user:acme:alice',
+      serverUrl: SERVER,
       statement: 'PLUR connected: alice',
       timeoutMs: 10_000,
     })
     expect(result.saved).toEqual({ ok: true, id: 'ENG-HELLO-1' })
     expect(JSON.stringify(result)).not.toContain('xxxx')
   }, 20_000)
+
+  describe('recalled means a live answer from the intended server', () => {
+    const readLog = (p: string) => readFileSync(p, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+
+    it('a single launch recalls from a fresh process, not the one that saved', async () => {
+      const logPath = join(tempDir, 'log.ndjson')
+      const result = await runHello({
+        launches: [fakeLaunch('codex', logPath)],
+        personalScope: 'user:acme:alice',
+        serverUrl: SERVER,
+        statement: 'PLUR connected: alice',
+      })
+      expect(result.perTool).toEqual([{ tool: 'codex', recalled: true }])
+      const entries = readLog(logPath)
+      const learn = entries.find((e) => e.tool === 'plur_learn')
+      const recall = entries.find((e) => e.tool === 'plur_recall')
+      expect(learn.pid).toBeTypeOf('number')
+      expect(recall.pid).not.toBe(learn.pid)
+    })
+
+    it('the id came back but the server leg failed (a cached row): not proven', async () => {
+      const result = await runHello({
+        launches: [fakeLaunch('codex', join(tempDir, 'log'), 'recall-degraded')],
+        personalScope: 'user:acme:alice',
+        serverUrl: SERVER,
+        statement: 'PLUR connected: alice',
+      })
+      expect(result.saved).toMatchObject({ ok: true })
+      expect(result.perTool).toHaveLength(1)
+      expect(result.perTool[0]).toMatchObject({ tool: 'codex', recalled: false })
+      expect(result.perTool[0].reason).toContain('server')
+    })
+
+    it('a recall answer without the server report is not proven', async () => {
+      const result = await runHello({
+        launches: [fakeLaunch('codex', join(tempDir, 'log'), 'recall-no-report')],
+        personalScope: 'user:acme:alice',
+        serverUrl: SERVER,
+        statement: 'PLUR connected: alice',
+      })
+      expect(result.perTool[0]).toMatchObject({ tool: 'codex', recalled: false })
+    })
+
+    it('the server leg answered with nothing: not proven', async () => {
+      const result = await runHello({
+        launches: [fakeLaunch('codex', join(tempDir, 'log'), 'recall-miss')],
+        personalScope: 'user:acme:alice',
+        serverUrl: SERVER,
+        statement: 'PLUR connected: alice',
+      })
+      expect(result.perTool[0]).toMatchObject({ tool: 'codex', recalled: false })
+    })
+
+    it('a live answer from a different server is not proven', async () => {
+      const result = await runHello({
+        launches: [fakeLaunch('codex', join(tempDir, 'log'), undefined, { FAKE_HOST: 'https://other.example.com' })],
+        personalScope: 'user:acme:alice',
+        serverUrl: SERVER,
+        statement: 'PLUR connected: alice',
+      })
+      expect(result.perTool[0]).toMatchObject({ tool: 'codex', recalled: false })
+    })
+
+    it('the intended server is matched by its endpoint identity, and its userinfo never reaches a reason', async () => {
+      const ok = await runHello({
+        launches: [fakeLaunch('codex', join(tempDir, 'log1'))],
+        personalScope: 'user:acme:alice',
+        serverUrl: 'https://alice:FAKE_PASSWORD@PLUR.example.com:443/',
+        statement: 'PLUR connected: alice',
+      })
+      expect(ok.perTool).toEqual([{ tool: 'codex', recalled: true }])
+      const bad = await runHello({
+        launches: [fakeLaunch('codex', join(tempDir, 'log2'), 'recall-degraded')],
+        personalScope: 'user:acme:alice',
+        serverUrl: 'https://alice:FAKE_PASSWORD@plur.example.com',
+        statement: 'PLUR connected: alice',
+      })
+      expect(bad.perTool[0].recalled).toBe(false)
+      expect(JSON.stringify(bad)).not.toContain('FAKE_PASSWORD')
+      expect(JSON.stringify(bad)).not.toContain('alice:')
+    })
+  })
 })

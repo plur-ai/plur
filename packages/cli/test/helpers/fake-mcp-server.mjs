@@ -12,19 +12,28 @@
  *                (lean) tool profile answers a tool it does not expose
  *   queued       plur_learn → { id:'ENG-L1', delivery:'outbox', ... }
  *   off          plur_learn → { plur:'off' }
- *   recall-miss  plur_recall → { results:[] }
+ *   recall-miss  plur_recall → { results:[] }, the server leg answered with nothing
+ *   recall-degraded plur_recall → the saved id (a cached row) but the server
+ *                leg failed: remote.state 'degraded', results_complete false
+ *   recall-no-report plur_recall → the saved id with no remote report at all
  *   no-start     never responds to initialize (client will time out)
  *   hang-call    answers initialize, never answers tools/call
  *   tool-error   plur_learn → isError result with a plain-text message
  *   no-id        plur_learn → { delivery:'remote' } without an id
  *   noisy-stderr writes 1 MiB to stderr before each answer
  *   FAKE_PID     path to write this process's pid to (to check it was killed)
+ *   FAKE_HOST    the server the recall report names (default https://plur.example.com)
+ *
+ * Every plur_recall answer (but recall-no-report) carries the per-call remote
+ * report the real server attaches: `remote` { state, hosts[] } and
+ * `results_complete`. Each log line carries this process's pid.
  */
 import { appendFileSync, writeFileSync } from 'fs'
 import { createInterface } from 'readline'
 
 const MODE = process.env.FAKE_MODE ?? 'remote'
 const LOG_PATH = process.env.FAKE_LOG
+const HOST = process.env.FAKE_HOST ?? 'https://plur.example.com'
 if (process.env.FAKE_PID) writeFileSync(process.env.FAKE_PID, String(process.pid))
 
 if (MODE === 'no-start') {
@@ -71,7 +80,7 @@ if (MODE === 'no-start') {
       if (LOG_PATH) {
         appendFileSync(
           LOG_PATH,
-          JSON.stringify({ tool, args, cwd: process.cwd() }) + '\n',
+          JSON.stringify({ tool, args, cwd: process.cwd(), pid: process.pid }) + '\n',
         )
       }
 
@@ -125,15 +134,26 @@ if (MODE === 'no-start') {
       }
 
       if (tool === 'plur_recall') {
+        const report = (state, count) => ({
+          remote: { state, hosts: [{ host: HOST, state, ms: 3, count }] },
+          results_complete: state === 'ok',
+        })
         if (MODE === 'recall-miss') {
-          replyTool(msg.id, { results: [] })
+          replyTool(msg.id, { results: [], ...report('ok', 0) })
           return
         }
         // Return the saved id (or the default for standalone recall launches).
         const id = savedId ?? 'ENG-HELLO-1'
-        replyTool(msg.id, {
-          results: [{ id, statement: args.query ?? '', similarity: 1.0 }],
-        })
+        const results = [{ id, statement: args.query ?? '', similarity: 1.0 }]
+        if (MODE === 'recall-degraded') {
+          replyTool(msg.id, { results, ...report('degraded', 0) })
+          return
+        }
+        if (MODE === 'recall-no-report') {
+          replyTool(msg.id, { results })
+          return
+        }
+        replyTool(msg.id, { results, ...report('ok', 1) })
         return
       }
 

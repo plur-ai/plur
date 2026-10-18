@@ -414,12 +414,22 @@ structure Oracle where
   openOk  : Nat → Bool
   learnOk : Bool        -- the learn call returned and `failReason` was null
 
-/-- Launches 1..n-1: open → recall → close, on the success and the catch path alike. -/
+/-- Recall launches: open a FRESH process → recall → close, on the success and
+the catch path alike. Every launch, the saving one (0) included, recalls this
+way (Codex round 4, finding 1). -/
 def rest (o : Oracle) : List Nat → List Act
   | [] => []
   | i :: is => (if o.openOk i then [.openS i, .call i, .close i] else []) ++ rest o is
 
+/-- Fixed: the saving session (open 0, learn, close 0) ends before any recall. -/
 def body (o : Oracle) (others : List Nat) : List Act :=
+  if !o.openOk 0 then []
+  else if !o.learnOk then [.openS 0, .call 0, .close 0]
+  else [.openS 0, .call 0, .close 0] ++ rest o (0 :: others)
+
+/-- Original: the first launch recalled inside the saving session, where the
+saved row sits in the remote store's optimistic cache. -/
+def bodyOld (o : Oracle) (others : List Nat) : List Act :=
   if !o.openOk 0 then []
   else if !o.learnOk then [.openS 0, .call 0, .close 0]
   else [.openS 0, .call 0, .call 0, .close 0] ++ rest o others
@@ -503,6 +513,47 @@ theorem saved_means_remote (r : Learn) :
     saveConfirmed r = true → r.off = false ∧ r.delivery = some "remote" ∧ r.idOk = true := by
   simp only [saveConfirmed, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq]
   intro h; exact ⟨h.1.1, h.1.2, h.2⟩
+
+/-- The saving session is closed before the first recall call: no recall
+runs in the process whose optimistic cache holds the saved row. -/
+theorem save_closed_before_recall (o : Oracle) (others : List Nat)
+    (h0 : o.openOk 0 = true) (hl : o.learnOk = true) :
+    body o others = [.openS 0, .call 0, .close 0] ++ rest o (0 :: others) := by
+  simp [body, h0, hl]
+
+/-- Counterexample for the original: the second `call 0` (the recall) comes
+before `close 0`, inside the saving session. -/
+theorem old_recalls_in_saving_session :
+    bodyOld ⟨fun _ => true, true⟩ [] = [.openS 0, .call 0, .call 0, .close 0] := by decide
+
+/-- One recall answer, as `recallShortfall` reads it (`hello.ts`). -/
+structure Recall where
+  remoteOk : Bool   -- `remote.state` = ok for THIS call
+  complete : Bool   -- `results_complete` = true
+  hostOk   : Bool   -- the intended server is a dialed host and answered ok
+  hostRows : Bool   -- that host returned at least one row
+  idIn     : Bool   -- the saved id is among the results
+
+/-- Fixed: recalled only with the live-remote evidence. -/
+def recalled (r : Recall) : Bool := r.remoteOk && r.complete && r.hostOk && r.hostRows && r.idIn
+
+/-- Original: the id alone. -/
+def recalledOld (r : Recall) : Bool := r.idIn
+
+theorem recalled_means_live (r : Recall) :
+    recalled r = true →
+    r.remoteOk = true ∧ r.complete = true ∧ r.hostOk = true ∧ r.hostRows = true ∧ r.idIn = true := by
+  simp only [recalled, Bool.and_eq_true]
+  intro h; exact ⟨h.1.1.1.1, h.1.1.1.2, h.1.1.2, h.1.2, h.2⟩
+
+theorem recalled_reachable : recalled ⟨true, true, true, true, true⟩ = true := by decide
+
+/-- Counterexample for the original (replayed: enterprise-hello.test.ts
+"a cached row"; enterprise-hello-real-mcp.test.ts 401/500/no rows): the server
+leg failed, the cached id came back, and the old check called it recalled. -/
+theorem old_accepts_cached_row :
+    recalledOld ⟨false, false, false, false, true⟩ = true ∧
+    recalled ⟨false, false, false, false, true⟩ = false := by decide
 
 theorem reachable : live (trace ⟨fun _ => true, true⟩ [1, 2]) [] = [] := by decide
 

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { normalizeEndpointUrl } from '@plur-ai/core'
 import { openMcpSession, type McpLaunch } from './mcp-stdio.js'
 
 export type { McpLaunch }
@@ -38,6 +39,29 @@ interface LearnResult {
 
 interface RecallResult {
   results?: Array<{ id: string; statement?: string }>
+  /** What the server (remote) leg did on THIS call (#1586). */
+  remote?: { state?: string; hosts?: Array<{ host?: string; state?: string; count?: number }> }
+  results_complete?: boolean
+}
+
+/**
+ * Whether one recall answer proves the round trip (Codex round 4, finding 1).
+ * The id coming back is not enough: a row can come from a cache while the
+ * server's recall failed. Proven only when this call's server leg answered
+ * completely (`remote.state` ok, `results_complete` true), the intended
+ * server is among the hosts it dialed and answered ok with at least one row,
+ * and the saved id is in the results. Returns null when proven, else why not.
+ */
+function recallShortfall(r: RecallResult | undefined, savedId: string, serverKey: string, label: string): string | null {
+  const notRecalled = `saved, but ${label}'s environment could not recall it`
+  const remote = r?.remote
+  const host = remote?.hosts?.find((h) => typeof h.host === 'string' && h.host === serverKey)
+  if (!remote || remote.state !== 'ok' || r?.results_complete !== true || !host || host.state !== 'ok') {
+    const state = host?.state ?? (remote ? (remote.state ?? 'unknown') : 'no report')
+    return `saved, but ${label}'s recall did not get a complete answer from the server (${state})`
+  }
+  if (!(typeof host.count === 'number' && host.count >= 1)) return notRecalled
+  return r?.results?.some((x) => x.id === savedId) ? null : notRecalled
 }
 
 function failReason(result: LearnResult): string | null {
@@ -64,6 +88,8 @@ function failReason(result: LearnResult): string | null {
 export async function runHello(opts: {
   launches: Array<{ tool: ToolId; launch: McpLaunch }>
   personalScope: string
+  /** The server the save must have reached; a recall proves only when THIS server answered it. */
+  serverUrl: string
   statement: string
   previousId?: string
   timeoutMs?: number
@@ -87,9 +113,9 @@ export async function runHello(opts: {
     // a folder-map `off` that covers this folder still wins.
     writeFileSync(join(neutralCwd, '.plur.yaml'), '# PLUR connection check: memory is on in this temporary folder\n')
 
-    const { tool: firstTool, launch: firstLaunch } = opts.launches[0]
+    const { launch: firstLaunch } = opts.launches[0]
 
-    // Open session for the first launch (save + recall)
+    // Open session for the first launch (the save)
     let session
     try {
       session = await openMcpSession(firstLaunch, { cwd: neutralCwd, timeoutMs: timeout })
@@ -127,68 +153,35 @@ export async function runHello(opts: {
       }
     }
 
+    // The saving process is closed before any recall: a successful save puts
+    // the row in that process's optimistic cache, where a recall would find
+    // it even when the server's recall fails (Codex round 4, finding 1).
+    await session.close()
+
     // plur_recall is exposed by the server's default tool profile
     // (plur_recall_hybrid is not). The personal scope makes the recall dial
-    // the server that holds it, so a hit proves the round trip.
+    // the server that holds it; `recallShortfall` checks that it did.
     const recallArgs = { query: opts.statement, scope: opts.personalScope }
+    const serverKey = normalizeEndpointUrl(opts.serverUrl)
 
-    // Recall from the first launch (session still open)
-    try {
-      const recallResult = (await session.callTool('plur_recall', recallArgs)) as RecallResult
-      const recalled = recallResult?.results?.some((r) => r.id === savedId) ?? false
-      if (recalled) {
-        perTool.push({ tool: firstTool, recalled: true })
-      } else {
-        perTool.push({
-          tool: firstTool,
-          recalled: false,
-          reason: `saved, but ${TOOL_LABEL[firstTool]}'s environment could not recall it`,
-        })
-      }
-    } catch {
-      perTool.push({
-        tool: firstTool,
-        recalled: false,
-        reason: `saved, but ${TOOL_LABEL[firstTool]}'s environment could not recall it`,
-      })
-    } finally {
-      await session.close()
-    }
-
-    // Recall from remaining launches
-    for (let i = 1; i < opts.launches.length; i++) {
-      const { tool, launch } = opts.launches[i]
+    // Every launch — the saving one included — recalls from a fresh process.
+    for (const { tool, launch } of opts.launches) {
+      const label = TOOL_LABEL[tool]
       let s
       try {
         s = await openMcpSession(launch, { cwd: neutralCwd, timeoutMs: timeout })
       } catch {
-        perTool.push({
-          tool,
-          recalled: false,
-          reason: `saved, but ${TOOL_LABEL[tool]}'s environment could not recall it`,
-        })
+        perTool.push({ tool, recalled: false, reason: `saved, but ${label}'s environment could not recall it` })
         continue
       }
       try {
         const recallResult = (await s.callTool('plur_recall', recallArgs)) as RecallResult
-        await s.close()
-        const recalled = recallResult?.results?.some((r) => r.id === savedId) ?? false
-        if (recalled) {
-          perTool.push({ tool, recalled: true })
-        } else {
-          perTool.push({
-            tool,
-            recalled: false,
-            reason: `saved, but ${TOOL_LABEL[tool]}'s environment could not recall it`,
-          })
-        }
+        const reason = recallShortfall(recallResult, savedId, serverKey, label)
+        perTool.push(reason === null ? { tool, recalled: true } : { tool, recalled: false, reason })
       } catch {
+        perTool.push({ tool, recalled: false, reason: `saved, but ${label}'s environment could not recall it` })
+      } finally {
         await s.close().catch(() => undefined)
-        perTool.push({
-          tool,
-          recalled: false,
-          reason: `saved, but ${TOOL_LABEL[tool]}'s environment could not recall it`,
-        })
       }
     }
 
