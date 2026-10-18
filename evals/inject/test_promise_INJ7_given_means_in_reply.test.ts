@@ -13,8 +13,16 @@
 // replies drop (packages/mcp/src/tools.ts, both inject handlers).
 //
 // Entry boundaries follow the renderer's documented contract: one entry per
-// line starting "[ID]", continuation lines indented. Statements are kept under
-// 60 characters so the short "also consider" form cannot cut them.
+// line starting "[ID]", continuation lines indented.
+//
+// Extended after the independent re-audit (2026-10-18, B-01 partly closed):
+//  * a memory longer than 60 characters that lands in the "also consider"
+//    section (a terminological memory is routed there) must arrive with its
+//    FULL text, on every surface — the short form may not stand in for it;
+//  * the session-start tool reply (plur_session_start) is a delivery surface
+//    too: every memory it reports as given must be in its reply text, with its
+//    full text and origin.
+// The original cases keep their short statements and are unchanged.
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Plur } from '../../packages/core/src/index.js'
@@ -28,6 +36,8 @@ const MATCHING = [
   'Deploy billing with blue-green rollouts and a smoke test',
   'Deploy billing only after the staging migration ran',
 ]
+/** Over 60 characters, and terminological, so it is routed to "also consider". */
+const LONG_CONSIDER = 'Billing deploy glossary: a cutover is the moment billing service traffic moves from the old deployment to the new one'
 
 /** Every string the reply carries, except the bare id lists (they prove nothing). */
 function deliveredText(reply: unknown): string {
@@ -131,5 +141,69 @@ describe('INJ-7 what PLUR reports as given is in the reply, with its text and or
     expect(reported, `precondition: the hook gave the pinned rule ${ruleId}; it gave ${JSON.stringify(reported)}`).toContain(ruleId)
 
     checkDelivered('hook-inject', first.context, reported, memories)
+  }, 120_000)
+  for (const tool of ['plur_inject', 'plur_inject_hybrid'] as const) {
+    it(`MCP tool ${tool}, with a memory over 60 characters in "also consider"`, async () => {
+      useEmbedder('bag-of-words')
+      s = await mcpSession({ profile: 'full' })
+      const scope = 'project:inj7'
+      const memories = new Map<string, { statement: string; scope: string }>()
+      for (const m of MATCHING) memories.set((await s.plur.learn(m, { scope })).id, { statement: m, scope })
+      const long = await s.plur.learn(LONG_CONSIDER, { scope, type: 'terminological' })
+      memories.set(long.id, { statement: LONG_CONSIDER, scope })
+      expect(LONG_CONSIDER.length, 'precondition: the statement is longer than the 60-character short form').toBeGreaterThan(60)
+
+      const res = await s.call(tool, { task: TASK, scope, budget: 2000 })
+      expect(res.isError, `${tool} failed: ${res.text}`).toBe(false)
+      const reported: string[] = res.json?.injected_ids ?? []
+      expect(reported, `precondition: ${tool} reports the long memory ${long.id} as given (reported ${JSON.stringify(reported)})`).toContain(long.id)
+      expect(String(res.json?.consider ?? ''), `precondition: the long memory landed in the "also consider" section; consider is ${JSON.stringify(res.json?.consider)}`)
+        .toContain(`[${long.id}]`)
+
+      checkDelivered(tool, deliveredText(res.json), reported, memories)
+    })
+  }
+
+  it('MCP tool plur_session_start: every memory its reply reports as given is in the reply, incl. a pinned "never" rule and a long "also consider" memory', async () => {
+    useEmbedder('bag-of-words')
+    s = await mcpSession({ profile: 'lean' })
+    const scope = 'global'
+    const memories = new Map<string, { statement: string; scope: string }>()
+    const rule = await s.plur.learn(RULE, { scope, pinned: true })
+    memories.set(rule.id, { statement: RULE, scope })
+    for (const m of MATCHING) memories.set((await s.plur.learn(m, { scope })).id, { statement: m, scope })
+    const long = await s.plur.learn(LONG_CONSIDER, { scope, type: 'terminological' })
+    memories.set(long.id, { statement: LONG_CONSIDER, scope })
+
+    const res = await s.call('plur_session_start', { task: TASK })
+    expect(res.isError, `plur_session_start failed: ${res.text}`).toBe(false)
+    const given = res.json?.engrams
+    const reported: string[] = given?.injected_ids ?? []
+    expect(given?.count, `precondition: plur_session_start reports memories as given; its engrams field is ${JSON.stringify(given)?.slice(0, 300)}`).toBeGreaterThan(0)
+    expect(reported.length, `plur_session_start: the reported count ${given?.count} does not match the ${reported.length} ids it lists`).toBe(given?.count)
+    expect(reported, `precondition: plur_session_start reports the pinned rule ${rule.id} as given (reported ${JSON.stringify(reported)})`).toContain(rule.id)
+    expect(reported, `precondition: plur_session_start reports the long memory ${long.id} as given (reported ${JSON.stringify(reported)})`).toContain(long.id)
+
+    checkDelivered('plur_session_start', deliveredText(res.json), reported, memories)
+  })
+
+  it('installed session-start hook (hook-inject), with a memory over 60 characters in "also consider"', async () => {
+    h = hookHome()
+    const memories = new Map<string, { statement: string; scope: string }>()
+    for (const [m, type] of [...MATCHING.map(x => [x, 'behavioral'] as const), [LONG_CONSIDER, 'terminological'] as const]) {
+      const r = runSource('cli', ['learn', m, '--scope', 'global', '--type', type, '--json'], { env: h.env, cwd: h.home })
+      expect(r.status, `could not save a memory through the CLI: ${r.stderr}`).toBe(0)
+      const id = JSON.parse(r.stdout).id as string
+      expect(id, `precondition: the CLI returned an id for "${m}" (it printed ${r.stdout})`).toMatch(/^ENG-/)
+      memories.set(id, { statement: m, scope: 'global' })
+    }
+    const longId = [...memories].find(([, m]) => m.statement === LONG_CONSIDER)![0]
+
+    const first = prompt(h, 'inj7-hook-long', 'How do I deploy the billing service?')
+    expect(first.status, `the hook failed: ${first.stderr}`).toBe(0)
+    const reported = [...first.context.matchAll(/\[(ENG-[^\]]+)\]/g)].map(m => m[1])
+    expect(reported, `precondition: the hook gave the long memory ${longId}; it gave ${JSON.stringify(reported)}: "${first.context}"`).toContain(longId)
+
+    checkDelivered('hook-inject (long)', first.context, reported, memories)
   }, 120_000)
 })
