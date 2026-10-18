@@ -20,13 +20,16 @@ import { checkOwnerOnly, protectOwnerOnly, type OwnerOnlyResult } from './owner-
  *    the result is returned. The write itself stands — losing the key would
  *    be worse — and `plur doctor` re-checks it.
  *
+ * `content` may be bytes (2026-10-18, #1638): the installer's rollback puts a
+ * backup's exact bytes back, through this same protected write.
+ *
  * A static test keeps every config writer on this path
  * (test/config-owner-only.test.ts). It lives apart from sync.ts so that it
  * calls `atomicWrite` through the module's export — the seam tests use to
  * simulate a crash mid-write — and apart from owner-only.ts so no import
  * cycle forms.
  */
-export function writeConfigFile(path: string, content: string): OwnerOnlyResult {
+export function writeConfigFile(path: string, content: string | Buffer): OwnerOnlyResult {
   if (_atomicWriteAcl.platform !== 'win32' && existsSync(path)) {
     try { chmodSync(path, CONFIG_FILE_MODE) } catch { /* reported by the check below */ }
   }

@@ -130,6 +130,7 @@ models:
       - packages/cli/src/enterprise/mcp-stdio.ts
       - packages/cli/src/enterprise/args.ts
       - packages/cli/src/enterprise/summary.ts
+      - packages/cli/src/enterprise/key-file.ts
   - model: PlurSpec/RoutingDiscovery.lean
     covers:
       - packages/core/src/store-resolver.ts
@@ -150,3 +151,4 @@ models:
       - packages/cli/src/enterprise/legacy-login.ts
       - packages/cli/src/enterprise/device-name.ts
       - packages/cli/src/enterprise/sign-in-shared.ts
+      - packages/cli/src/enterprise/server-store.ts

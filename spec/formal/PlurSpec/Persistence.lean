@@ -1152,6 +1152,13 @@ fails when a writer calls atomicWrite with the config mode directly. An
 unprotected writer (`viaHelper w = false`) is the counterexample
 `unprotected_writer_leaks`.
 
+2026-10-18 (#1638, plan C task 4): `writeConfigFile` also takes bytes, so the
+installer's rollback (`rollbackServerStore`, cli `enterprise/server-store.ts`) can
+put a backup's exact bytes back. It writes through `writeConfigFile`, under the
+config lock, so that write is `secret` and owner-only exactly like the six core
+writers above; the rule modelled is unchanged and every theorem here holds as
+stated. `Writer` stays the list of core's writers (the static test scans core).
+
 Mutation check (2026-10-18, each reverted): (a) `winSecret` skipping the protection
 over a `shared` destination → `secret_write_owner_only` fails; (b) `viaHelper
 .dismissedScopes := false` → `every_config_writer_protected` fails; (c) `traceNew`
