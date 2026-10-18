@@ -6,7 +6,7 @@ import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
-import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys } from './background-discovery.js'
+import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
 import { z } from 'zod'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
@@ -3939,10 +3939,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // #1631: an endpoint served by a company server entry is not
             // probed here — its /me runs in the background (never awaited).
             // With none, the legacy call is exactly as before.
+            // `discovery: false` (createServer) sends no /me at all.
             const background = serverEndpointKeys(plur)
             const endpoints = plur._distinctRemoteEndpoints()
-            const legacy = endpoints.filter(e => !background.has(normalizeEndpointUrl(e.url)))
-            const discoveries = legacy.length === endpoints.length
+            const legacy = isDiscoveryEnabled(plur) ? endpoints.filter(e => !background.has(normalizeEndpointUrl(e.url))) : []
+            const discoveries = legacy.length === 0 ? []
+              : legacy.length === endpoints.length
               ? await plur.discoverRemoteScopes({ timeoutMs: 3000 })
               : (await Promise.all(legacy.map(e => plur.discoverRemoteScopes({ url: e.url, timeoutMs: 3000 })))).flat()
             // Persist covers/description/sensitivity so suggestScope activates (#668).

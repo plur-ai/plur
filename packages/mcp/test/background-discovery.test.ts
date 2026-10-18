@@ -157,6 +157,38 @@ describe('MCP scope discovery runs in the background (#1631)', () => {
     expect(stub.meCalls).toBe(0)
   })
 
+  it('discovery: false sends no /me for legacy per-scope entries either', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-mcp-bg-discovery-'))
+    dirs.push(dir)
+    writeFileSync(join(dir, 'config.yaml'), JSON.stringify({
+      embeddings: { enabled: false },
+      stores: [{ url: baseUrl, token: TOKEN, scope: BACKEND }],
+    }))
+    const plur = new Plur({ path: dir })
+    const client = await connect(plur, { discovery: false })
+    const r = await call(client, 'plur_session_start', { task: 'x' })
+    expect(r.guide).toContain(`"${BACKEND}"`)
+    expect(stub.meCalls).toBe(0)
+  })
+
+  it('a newer status written by another process wins over this process\'s older one', async () => {
+    const dir = seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL })
+    const plur = new Plur({ path: dir })
+    const client = await connect(plur)
+    await whenDiscoverySettled(plur)
+    expect(discoverySummary(plur)[0].status).toBe('ok')
+    // Another process checks the same server afterwards and records a refused key.
+    writeFileSync(join(dir, 'config.yaml'), JSON.stringify({ embeddings: { enabled: false }, stores: [{
+      url: baseUrl, token: TOKEN, scopes: [PERSONAL, BACKEND], scope: PERSONAL, enterprise: {},
+      discovery: { status: 'auth_failed', checked_at: new Date().toISOString() },
+    }] }))
+    expect(discoverySummary(plur)[0].status).toBe('auth_failed')
+    holdMe()
+    const r = await call(client, 'plur_session_start', { task: 'x' })
+    expect(r.discovery[0]).toMatchObject({ status: 'pending', last_status: 'auth_failed' })
+    expect(r.guide).toMatch(/refused .*key/i)
+  })
+
   it('each session_start runs at most one discovery', async () => {
     const plur = new Plur({ path: seed({ scopes: [PERSONAL, BACKEND], scope: PERSONAL }) })
     const client = await connect(plur)

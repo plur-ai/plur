@@ -35,8 +35,8 @@ export function _setBackgroundDiscoveryTimeoutForTests(ms: number | undefined): 
 interface DiscoveryState {
   enabled: boolean
   inFlight: Promise<void> | null
-  /** normalized endpoint url → the last settled outcome's status. */
-  last: Map<string, DiscoveryStatus>
+  /** normalized endpoint url → this process's last settled outcome and when it settled (ISO). */
+  last: Map<string, { status: DiscoveryStatus; at: string }>
 }
 
 const states = new WeakMap<Plur, DiscoveryState>()
@@ -71,9 +71,17 @@ export function setBackgroundDiscovery(plur: Plur, enabled: boolean): void {
   stateOf(plur).enabled = enabled
 }
 
+/** False when createServer was given `discovery: false`: no /me at all, the legacy probe included. */
+export function isDiscoveryEnabled(plur: Plur): boolean {
+  return states.get(plur)?.enabled ?? true
+}
+
 /** Record `failed` for every server endpoint: a refresh that could not run or answered nonsense. */
 function markAllFailed(plur: Plur, st: DiscoveryState): void {
-  try { for (const key of plur._serverDiscoveryEndpoints().keys()) st.last.set(key, 'failed') } catch { /* status only */ }
+  try {
+    const at = new Date().toISOString()
+    for (const key of plur._serverDiscoveryEndpoints().keys()) st.last.set(key, { status: 'failed', at })
+  } catch { /* status only */ }
 }
 
 /**
@@ -95,7 +103,7 @@ export function startBackgroundDiscovery(plur: Plur): boolean {
   const settled: Promise<void> = run.then(outcomes => {
     if (!Array.isArray(outcomes)) throw new TypeError('refreshServerScopes answered without a list')
     for (const o of outcomes) {
-      st.last.set(normalizeEndpointUrl(o.url), o.status)
+      st.last.set(normalizeEndpointUrl(o.url), { status: o.status, at: new Date().toISOString() })
       if (o.status !== 'ok') log(`${safeOrigin(o.url)}: scope discovery ${o.status}; the cached scopes stay in use`)
     }
   }).catch(err => {
@@ -124,10 +132,10 @@ export async function whenDiscoverySettled(plur: Plur): Promise<void> {
  * list but no `enterprise` block on disk is not refreshed, so it is not here:
  * it keeps the legacy session-start probe.
  */
-function serverEndpoints(plur: Plur): Map<string, { url: string; scopes: Set<string>; status?: unknown }> {
-  const out = new Map<string, { url: string; scopes: Set<string>; status?: unknown }>()
+function serverEndpoints(plur: Plur): Map<string, { url: string; scopes: Set<string>; status?: unknown; checkedAt?: string }> {
+  const out = new Map<string, { url: string; scopes: Set<string>; status?: unknown; checkedAt?: string }>()
   for (const [key, e] of plur._serverDiscoveryEndpoints()) {
-    const g = { url: e.url, scopes: new Set<string>(), status: e.status as unknown }
+    const g = { url: e.url, scopes: new Set<string>(), status: e.status as unknown, checkedAt: e.checked_at }
     for (const s of plur._storesForEndpoint(key)) {
       // Expanded server entries carry the enterprise block; a separate
       // per-scope entry on the same url (another key) is not counted.
@@ -161,14 +169,19 @@ export interface DiscoveryRow {
  * One row per server entry for the session_start result: the cached scope
  * count and the discovery status — `pending` while a refresh is in flight
  * (with the previous check's status as `last_status`, so a refused key is not
- * hidden behind it), else the last settled outcome, else the status cached in
- * config.yaml.
+ * hidden behind it), else the newer of this process's last settled outcome
+ * and the status cached in config.yaml.
  */
 export function discoverySummary(plur: Plur): DiscoveryRow[] {
   const st = states.get(plur)
   return [...serverEndpoints(plur)].map(([key, g]) => {
     const cached = typeof g.status === 'string' && STATUSES.has(g.status) ? g.status as DiscoveryStatus : undefined
-    const known = st?.last.get(key) ?? cached
+    // The newer of this process's last outcome and the status on disk, which
+    // another process may have written since. A disk status with no time is
+    // older than any outcome seen here; on a tie the disk wins.
+    const mine = st?.last.get(key)
+    const diskNewer = cached !== undefined && (!mine || (g.checkedAt !== undefined && g.checkedAt >= mine.at))
+    const known = diskNewer ? cached : mine?.status
     const row: DiscoveryRow = { url: displayUrl(g.url), status: st?.inFlight ? 'pending' : (known ?? 'pending'), scopes: g.scopes.size }
     if (row.status === 'pending' && known) row.last_status = known
     return row
