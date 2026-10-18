@@ -418,8 +418,9 @@ export interface ServerRegistration {
    *  {@link PersonalScopeTakenError} names) and register, in one result
    *  (#1638). Refused as before when one of them cannot be removed. */
   removeStale?: boolean
-  /** Refuse with {@link SignInHeldError} when any entry already holds a
-   *  sign-in for this server's url; judged on the file under the lock. */
+  /** Refuse with {@link SignInHeldError} when any entry for this server's
+   *  url already holds a key (token or token_env); judged on the file under
+   *  the lock. */
   keepSignIn?: boolean
 }
 
@@ -448,7 +449,10 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   // (#1665 gate). A shallow copy changes no content.
   rawStores = rawStores.map(r => (isPlainObj(r) ? { ...r } : r))
   const key = normalizeEndpointUrl(reg.url)
-  if (reg.keepSignIn && rawStores.some(r => isPlainObj(r) && typeof r.url === 'string' && normalizeEndpointUrl(r.url) === key)) {
+  // A sign-in: an entry for the url with a key or a key reference (token or
+  // token_env, set or not); an entry with neither signs nothing in.
+  if (reg.keepSignIn && rawStores.some(r => isPlainObj(r) && typeof r.url === 'string' && normalizeEndpointUrl(r.url) === key &&
+    ((typeof r.token === 'string' && r.token !== '') || (typeof r.token_env === 'string' && r.token_env !== '')))) {
     throw new SignInHeldError(`config.yaml already holds a sign-in for ${safeOrigin(reg.url)}; it is kept. Nothing was changed.`)
   }
   const at = serverEntriesAt(rawStores, key)

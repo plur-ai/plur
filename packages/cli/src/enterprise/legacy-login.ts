@@ -92,7 +92,8 @@ async function migrate(opts: {
   let held: { token?: string }[] = []
   try {
     const key = normalizeEndpointUrl(origin)
-    held = plur.remoteEndpointTokenGroups().filter(g => normalizeEndpointUrl(g.url) === key)
+    // A sign-in holds a key or a key reference; an entry with neither is none.
+    held = plur.remoteEndpointTokenGroups().filter(g => normalizeEndpointUrl(g.url) === key && (g.token || g.tokenEnv))
   } catch { held = [] }
   if (held.length) {
     const same = held.some(g => g.token === token)
