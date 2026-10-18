@@ -1781,6 +1781,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // more specific `warning` below (outbox, demotion, refusal) still
             // wins that key; `delivery_warning` keeps this one either way.
             delivery: delivered.delivery,
+            // Which server holds it (normalized endpoint, no userinfo), when
+            // delivery is remote and this process can tell (Codex round 5).
+            ...(delivered.host ? { delivered_to: delivered.host } : {}),
             // 0.21.1: why it was queued (rejected token vs unreachable server).
             ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning, warning: delivered.warning } : {}),
@@ -1821,6 +1824,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, ...learnDecision(engram),
             delivery: delivered.delivery,
+            ...(delivered.host ? { delivered_to: delivered.host } : {}),
             ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             ...temporalEcho(engram),

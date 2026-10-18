@@ -1303,6 +1303,13 @@ export class Plur {
    * persisted.
    */
   private _remoteDelivered = new WeakSet<object>()
+  /**
+   * Which server holds a returned engram, per returned object, never on the
+   * row (a loaded row's fields are content-scanned, and a url is not content):
+   * the endpoint a write was POSTed to, or the url store a loaded row came
+   * from. Read by `deliveryOf` (Codex round 5, finding 2).
+   */
+  private _heldBy = new WeakMap<object, string>()
   private paths: PlurPaths
   private config: PlurConfig
   private indexedStorage: IndexedStorage | null = null
@@ -1820,7 +1827,10 @@ export class Plur {
         // boolean, not the url: every field of a loaded row is content-scanned
         // on the explicit-update path, and a url is not content. Set AFTER the
         // stamp, which drops `_`-prefixed keys a row ships.
-        if (store.url) cloned._fromRemoteStore = true
+        if (store.url) {
+          cloned._fromRemoteStore = true
+          this._heldBy.set(cloned, store.url)
+        }
         all.push(cloned)
       }
     }
@@ -5226,6 +5236,7 @@ export class Plur {
       )
     }
     this._remoteDelivered.add(serverEngram)
+    this._heldBy.set(serverEngram, remoteDriver.endpointUrl)
     return serverEngram
   }
 
@@ -5256,6 +5267,10 @@ export class Plur {
     /** Only for `outbox`: why it was queued, in plain words, with what to do. */
     reason?: string
     reason_code?: OutboxReasonCode
+    /** Only for `remote`: the server that holds it — the normalized endpoint
+     *  (no userinfo), as recall's `remote.hosts[].host` names it. Absent when
+     *  this process cannot tell (Codex round 5, finding 2). */
+    host?: string
   } {
     const e = engram as any
     const stores = this.config.stores ?? []
@@ -5279,7 +5294,11 @@ export class Plur {
       delivery = e._fromRemoteStore === true ? 'remote' : 'local'
     } else delivery = 'local'
     if (delivery === 'outbox') return { delivery, ...this._outboxReason(engram) }
-    if (delivery !== 'local' || !isSharedScope(engram.scope)) return { delivery }
+    if (delivery === 'remote') {
+      const held = this._heldBy.get(engram)
+      return held ? { delivery, host: normalizeEndpointUrl(held) } : { delivery }
+    }
+    if (!isSharedScope(engram.scope)) return { delivery }
 
     const scope = engram.scope
     const target = resolveScopeTarget(scope, stores)
@@ -7105,7 +7124,7 @@ export class Plur {
       : { done: true as const, value: await remotePromise }
     if (!waited.done || !waited.value) {
       const hosts = (remotePromise.hostUrls ?? []).map(u => ({
-        host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, detail: 'recall_deadline',
+        host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, ids: [] as string[], detail: 'recall_deadline',
       }))
       return { report: { state: hosts.length > 0 ? 'timeout' : 'not_dialed', hosts } }
     }

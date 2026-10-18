@@ -377,6 +377,11 @@ export interface RecallRemoteHostReport {
   state: RemoteHostState
   ms: number
   count: number
+  /** The ids (namespaced, as in the results) of the rows THIS host returned,
+   *  listed before rows from several hosts are merged: one server's ids can
+   *  equal another's, and the merged results keep the first host's row. The
+   *  only per-host attribution a caller gets (Codex round 5, finding 2). */
+  ids: string[]
   detail?: string
 }
 
@@ -400,6 +405,7 @@ export function buildRecallRemoteReport(outcomes: HostRecallOutcome[]): RecallRe
     state: o.state,
     ms: o.ms,
     count: o.count,
+    ids: o.ids ?? [],
     ...(o.detail ? { detail: o.detail } : {}),
   }))
   if (hosts.length === 0) return { state: 'not_dialed', hosts }
@@ -413,6 +419,8 @@ export interface HostRecallOutcome {
   ms: number
   /** Rows accepted from this host after validation + scope guard. */
   count: number
+  /** Their namespaced ids, in this host's order (absent: none accepted). */
+  ids?: string[]
   /** Server-reported mode that ACTUALLY ran (envelope `mode`). */
   mode?: string
   /** Server-reported: the semantic (vector) leg actually ran. */
@@ -1124,7 +1132,7 @@ export async function remoteRecall(
       h.last_state = state
       h.updated_at = now()
       return {
-        outcome: { url: host.url, state, ms: now() - t0, count: rows.engrams.length, ...extra },
+        outcome: { url: host.url, state, ms: now() - t0, count: rows.engrams.length, ids: rows.engrams.map(e => e.id), ...extra },
         engrams: rows.engrams,
         scores: rows.scores,
       }
