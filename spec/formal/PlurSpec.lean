@@ -12,5 +12,6 @@ import PlurSpec.R2Integrations
 import PlurSpec.PacksV2
 import PlurSpec.StoreEntry
 import PlurSpec.Installer
+import PlurSpec.RoutingDiscovery
 
 /-! Root of the PlurSpec models. One file per component; R2* = second verification round. -/

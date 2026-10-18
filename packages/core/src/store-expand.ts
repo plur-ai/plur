@@ -40,10 +40,10 @@ export function serverEntryIdentityBase(raw: unknown): string {
  * among entries with the same base. Computed the same way at load and on the
  * fresh read under the config lock, so an expanded entry finds its server
  * entry wherever it now sits, and an inserted entry with a different base
- * never matches. Limit: the token is not part of the base, so an entry that
- * differs only in its token and is inserted BEFORE this one takes `#0` and
- * receives this entry's metadata (spec/formal/findings/store-entry.md, C3).
- * Rotation is not affected: it refuses a base that occurs more than once.
+ * never matches. The token is not part of the base, so two entries that
+ * differ only in their token share it; the collapse writes nothing for such a
+ * base and rotation refuses it (owner decision 17;
+ * spec/formal/findings/store-entry.md C3, routing-discovery.md D5).
  */
 export function serverEntryIdentities(rawStores: unknown[]): (string | undefined)[] {
   const seen = new Map<string, number>()
@@ -160,7 +160,8 @@ export function safeOrigin(url: string): string {
  * Typed entries are grouped by their `EXPANDED_FROM` identity and matched to
  * the raw entry with the same identity in the freshly read `rawStores`; an
  * identity with no raw match (the entry was changed or removed since load)
- * writes nothing. For each matched server entry the per-scope metadata
+ * writes nothing, and neither does an identity base two server entries share
+ * (on disk now, or at load). For each matched server entry the per-scope metadata
  * fields (dial, description, covers, sensitivity) from its typed entries are
  * written back; every other field (scope, scopes, pinned_scopes, discovery,
  * enterprise, url, token, token_env, readonly) is left byte-identical.
@@ -199,9 +200,27 @@ export function collapseExpandedStores(
   if (!expandedById.size) return rawStores
   const ids = serverEntryIdentities(rawStores)
 
+  // Owner decision 17: a base shared by two server entries (they differ only
+  // in their token) cannot say which of them a typed entry came from, so
+  // nothing is written for it — the same refusal as key rotation. Ambiguous
+  // in the fresh read (two on disk now) or at load (a typed entry from `#1`
+  // or later). Model: spec/formal/PlurSpec/StoreEntry.lean §3.
+  const ambiguous = new Set<string>()
+  const rawBases = new Set<string>()
+  for (const id of ids) {
+    if (id === undefined) continue
+    const base = identityBaseOf(id)
+    if (rawBases.has(base)) ambiguous.add(base)
+    rawBases.add(base)
+  }
+  for (const id of expandedById.keys()) {
+    if (!id.endsWith('#0')) ambiguous.add(identityBaseOf(id))
+  }
+
   return rawStores.map((raw, i) => {
     const id = ids[i]
     if (id === undefined) return raw
+    if (ambiguous.has(identityBaseOf(id))) return raw
     const entries = expandedById.get(id)
     if (!entries?.length) return raw  // server entry with scopes: [] — no typed entries to process
 

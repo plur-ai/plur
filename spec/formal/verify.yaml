@@ -127,3 +127,8 @@ models:
       - packages/cli/src/enterprise/mcp-stdio.ts
       - packages/cli/src/enterprise/args.ts
       - packages/cli/src/enterprise/summary.ts
+  - model: PlurSpec/RoutingDiscovery.lean
+    covers:
+      - packages/core/src/store-resolver.ts
+      - packages/core/src/server-discovery.ts
+      - packages/core/src/index.ts

@@ -35,6 +35,12 @@ Checked against #1277, #1400, #1414 and #1422 (2026-09-30): still holds.
   unchanged.
 - hook-inject.ts: exit and warm-up changes only (R2CLI note). The §9 trust
   gate is untouched.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+tools.ts's only change is in plur_stores_add's reply: on `token_rotated` for a
+scope of a server entry it adds `token_scopes` and a note. That is not in any
+section here (learn entry points, session lifecycle, hook merges, exit codes,
+dsh, hermes, array coercion, `.plur.yaml` trust).
 -/
 
 namespace PlurSpec.Adapters
