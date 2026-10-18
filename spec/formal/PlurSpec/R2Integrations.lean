@@ -26,6 +26,16 @@ Checked against #1521 (remote-only folders, merged onto development 2026-10-18):
 tools.ts adds the remote-only block and guide line to plur_session_start and the refusal
 pass-through in plur_learn; annotations, plur_admin dispatch, the recall session rule and the
 outbox count (§1, §3) are unchanged.
+
+Checked against #1631 background discovery (2026-10-18): still holds.
+plur_session_start now starts a background `refreshServerScopes` (never
+awaited), skips the awaited legacy `/me` probe for endpoints served by a
+company server entry, caps the guide's scope list at 20 and adds a
+`discovery` reply field. The refresh writes only config.yaml's discovery
+cache and never retires an engram, so `sessStart`'s effects row (writes, no
+retirement, repeat adds, copy remains) and its annotations (not read-only,
+not destructive, not idempotent) are unchanged; §1's theorems about it stand.
+No other tool's annotations or plur_admin dispatch changed.
 -/
 
 namespace PlurSpec.R2Integrations

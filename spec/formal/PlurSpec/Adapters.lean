@@ -50,6 +50,16 @@ be read, as on development); tools.ts adds the remote-only block to plur_session
 plur_learn rethrow `RemoteOnlyWriteError` instead of its local fallback. In a folder that is not
 remote-only the binding is cleared and every modelled path is unchanged; in a remote-only folder
 the write gate is WritePath §3d.
+
+Checked against #1631 background discovery (2026-10-18): still holds.
+plur_session_start starts a background scope refresh for company server
+entries, skips the awaited `/me` probe for their endpoints (exactly those
+refreshServerScopes probes: a scopes list and an enterprise block), reports a
+failed check in the guide, caps the guide's
+scope list and adds a `discovery` reply field. It does not touch the
+session-scope registry or its default-scope slot (§1), `_cleanExpiredSessions`
+or session_end (§2), or the `.plur.yaml` trust gate (§9): `default_scope` and
+`scope_source` are computed exactly as before.
 -/
 
 namespace PlurSpec.Adapters

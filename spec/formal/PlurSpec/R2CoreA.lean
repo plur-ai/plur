@@ -7,6 +7,14 @@ theorems hold for every oracle.
 
 Findings and replays: spec/formal/findings/r2-corea.md.
 
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox`; no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+
 Checked against the outbox lease (decision D2, PR #1231): index.ts gained a lease on outbox
 rows (`_outboxLease` bookkeeping, taken and released around each push) and `listOutbox` reports
 `leased_until`. Decision C3 (2026-09-30 merge of main) removed the lease again: #1277's per-entry
@@ -38,6 +46,16 @@ feedback, setPinned and update skip url stores whose scope is not a deliverable 
 and a bare id only on a team-scope row; the local row they would act on is refused first
 (`_remoteOnlyRefuseLocalRow`) unless it is this folder's queued save. Unbound, every walk is
 as modelled in §2–§4. `peek_absent_sound` reads the same cache. The write gate is WritePath §3d.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; no section here reads it.
 -/
 
 namespace PlurSpec.R2CoreA

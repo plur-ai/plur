@@ -23,6 +23,27 @@ The resolver (§1) is unchanged and is now also what a remote-only folder calls 
 (`_isDeliverableTeamScope` = shared, not local-only, not `user:`, resolver `remote` and
 writable). The remote-only gate runs before the leak guard and the write paths of §2 and only
 refuses (WritePath §3d); discovery and the cache write (§3, §4) are not touched.
+
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox`; no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+server-discovery.ts gains `foldStoresIntoServerEntry` and `registerServerEntry` beside
+`acceptDiscoveredScopes`, which is unchanged. A registration refuses two server entries on one
+url, like the cache write (D4), and never writes `scopes` or `discovery`.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; routing and the refresh's cache write are untouched.
 -/
 
 set_option linter.unusedSimpArgs false

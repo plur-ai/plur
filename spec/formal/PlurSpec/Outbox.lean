@@ -22,6 +22,15 @@ Keys are opaque naturals. The server is one of two kinds
 does not. What the network does to each attempt is an adversarial outcome
 chosen per event, so every theorem holds for every schedule of outcomes.
 
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox` (read only: the
+queued count per scope it reports); no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+
 Checked against #1631 (epic/1797 first install, 2026-10-18): updated.
 `routeFor` in `_flushOutboxClaimed` now holds an entry whose target scope two
 servers claim, before `heldBack` and before the push, so even `force` does not
@@ -37,9 +46,19 @@ the entry is held exactly like the #1631 conflict hold of §8b — no push, no d
 row, only `last_attempt` / `last_error` bookkeeping and a `failed` count. Keys, retry, claims,
 the listing and the breaker (§1–§7) are unchanged.
 
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
+
 Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
 exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
 this model covers changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; the outbox and the push path are untouched.
 -/
 
 namespace PlurSpec.Outbox
