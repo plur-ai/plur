@@ -47,7 +47,6 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           python3 scripts/test_check_eval_separation.py
-          python3 scripts/test_evals_harness.py
           python3 scripts/check-eval-separation.py "origin/${{ github.base_ref }}"
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
@@ -62,20 +61,32 @@ jobs:
           key: plur-models-bge-small-en-v1.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+      # The harness's own tests run real vitest (second audit R-04, R-06), so after install.
+      - name: The harness's own tests
+        run: python3 scripts/test_evals_harness.py
+      # Install and build ran this change's package scripts; none of them may have
+      # rewritten the judge on the way to the gate.
+      - name: The judge is as committed
+        run: git diff --exit-code -- .evals evals scripts/check-eval-separation.py package.json
       # Fails when a promise recorded green in evals/baseline.json is red now, when the
-      # baseline is missing or unreadable, and (on a pull request) when a promise green
-      # in the target branch's baseline was dropped without being retired.
+      # baseline is missing or unreadable, when a retirement is invalid, and (on a pull
+      # request) when a promise green in the target branch's baseline was dropped without
+      # being retired. Called directly, never through a package.json script, which this
+      # pull request could have rewritten (second audit R-02). EVALS_BOOTSTRAP is a
+      # repository variable only the owner can set, for the one pull request that brings
+      # the evals to a base without them (evals/README.md, "First baseline"); the gate
+      # ignores it once the base has an evals config.
       - name: Gate
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            pnpm evals:gate --base "origin/${{ github.base_ref }}"
+            python3 .evals/gate.py --config evals/evals.yaml --base "origin/${{ github.base_ref }}" ${{ vars.EVALS_BOOTSTRAP == 'true' && '--bootstrap' || '' }}
           else
-            pnpm evals:gate
+            python3 .evals/gate.py --config evals/evals.yaml
           fi
       # The full board, for reading; not-yet-green promises do not fail the run.
       - name: Scoreboard (informational)
         if: always()
-        run: pnpm -s evals --json > scoreboard.json || true
+        run: python3 .evals/run.py --config evals/evals.yaml --json > scoreboard.json || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -132,6 +143,12 @@ jobs:
           key: plur-models-bge-small-en-v1.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+      # The evals block the network, so the model must be in the cache before they run;
+      # verify loads it with downloads off (second audit R-07).
+      - name: The embedding model is in the cache and loads offline
+        run: |
+          node evals/helpers/provision-model.mjs fetch
+          node evals/helpers/provision-model.mjs verify
       # The private holdout set (owner decision 2026-10-14). Without the token
       # this step fails: an unmeasured holdout is red, never skipped.
       - name: Fetch the private holdout set
@@ -145,17 +162,21 @@ jobs:
       # The holdout is pinned by content hash: a changed private set is caught, not
       # silently scored. Then both label sets are validated by the independent checker.
       - name: Holdout is the pinned version, and the labels are valid
+        id: holdout
         run: |
           python3 evals/gold/hash_set.py "$PLUR_EVAL_HOLDOUT_DIR" --expect "$(cat evals/gold/holdout-recall-v1.sha256)"
           python3 evals/gold/check.py evals/gold/recall-v1 --other "$PLUR_EVAL_HOLDOUT_DIR"
       # The paid agent evals run weekly, not here: they are listed as not-run, so a
-      # healthy night can be green (audit E-05).
+      # healthy night can be green (audit E-05). Nothing is scored unless the holdout
+      # check passed: a changed or missing holdout is never measured (second audit).
       - name: Scoreboard, including the holdout
-        if: always()
-        run: pnpm -s evals --exclude-kind agent --json > scoreboard.json
+        if: steps.holdout.outcome == 'success'
+        run: python3 .evals/run.py --config evals/evals.yaml --exclude-kind agent --json > scoreboard.json
+      # Runs after a red scoreboard too (red promises are expected), but never after a
+      # failed holdout check.
       - name: Every planted bug turns its promise red
-        if: always()
-        run: pnpm -s evals:bite --json > bite.json
+        if: ${{ !cancelled() && steps.holdout.outcome == 'success' }}
+        run: python3 .evals/bite.py --config evals/evals.yaml --json > bite.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -178,8 +199,17 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ env.PLUR_MODEL_CACHE_DIR }}
+          key: plur-models-bge-small-en-v1.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+      # As nightly: the duplicate-handling eval embeds with the real model (R-07).
+      - name: The embedding model is in the cache and loads offline
+        run: |
+          node evals/helpers/provision-model.mjs fetch
+          node evals/helpers/provision-model.mjs verify
       - run: npm install -g @anthropic-ai/claude-code@2.1.300
       - name: Agent behaviour (pass^3 each)
         timeout-minutes: 45
