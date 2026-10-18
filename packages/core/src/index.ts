@@ -1401,11 +1401,15 @@ export class Plur {
    * out, so a new free-text field is never recorded by default.
    */
   private static _metadataOnly(data: Record<string, unknown>): Record<string, unknown> {
-    const SAFE = /^(id|ids|engram_id|engram_ids|.*_id|.*_ids|scope|scopes|.*_scope|.*_scopes|store|stores|signal|status|.*_status|state|kind|type|mode|event|operation|op)$/
+    const SAFE = /^(id|ids|engram_id|engram_ids|.*_id|.*_ids|scope|scopes|.*_scope|.*_scopes|store|stores|signal|status|.*_status|state|kind|type|mode|event|operation|op|hash|.*_hash)$/
+    // `source` is an enum-like tag on most events ('inject', 'session_start'),
+    // but free text on some: kept only when it is one token.
+    const TOKEN = /^[A-Za-z0-9_.:-]{1,64}$/
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(data ?? {})) {
       if (v === null || typeof v === 'number' || typeof v === 'boolean') out[k] = v
       else if (SAFE.test(k) && typeof v === 'string' && v.length <= 200 && !/[\r\n]/.test(v)) out[k] = v
+      else if (k === 'source' && typeof v === 'string' && TOKEN.test(v)) out[k] = v
       else if (SAFE.test(k) && Array.isArray(v) && v.every(x => typeof x === 'string' && x.length <= 200 && !/[\r\n]/.test(x))) out[k] = v
     }
     return out
@@ -1432,6 +1436,23 @@ export class Plur {
     } catch {
       return false
     }
+  }
+
+  /**
+   * remote-only: whether a walk over url stores for a BARE id may contact
+   * the store serving `scope` — only the folder's own team store (gate review
+   * of #1663). An explicit team scope is checked by its caller instead.
+   */
+  private _remoteOnlyWalkAllows(scope: string, requested?: string): boolean {
+    const ro = this._remoteOnly
+    if (!ro || ro.blocked) return false
+    // The scope the caller named, when it is a deliverable team scope (its
+    // rows are checked by _remoteOnlyRefuseLocalRow); else the folder's own.
+    const allowed = requested && this._isDeliverableTeamScope(requested) ? requested : ro.scope
+    if (!allowed || !this._isDeliverableTeamScope(scope)) return false
+    if (scope === allowed) return true
+    const target = resolveScopeTarget(allowed, this.config.stores ?? [])
+    return target.kind === 'remote' && target.entry?.scope === scope
   }
 
   private _isDeliverableTeamScope(scope: string): boolean {
@@ -1909,7 +1930,10 @@ export class Plur {
   private async _readCorpus(): Promise<Engram[]> {
     if (!this._remoteOnly) return await this._loadAllEngrams()
     if (this._remoteOnly.blocked) return []
-    return await this._loadSecondaryAndPacks({ remoteOnlyScope: this._remoteOnly.scope })
+    // A scope that is not a deliverable team scope (a hand-written `user:`
+    // one) reads packs only (gate review of #1663).
+    const ro = this._remoteOnly.scope
+    return await this._loadSecondaryAndPacks({ remoteOnlyScope: ro && this._isDeliverableTeamScope(ro) ? ro : null })
   }
 
   /**
@@ -2105,7 +2129,7 @@ export class Plur {
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       // remote-only: a personal or non-team url store is out of reach (re-audit 3 of #1521, R3-4).
-      if (this._remoteOnly && !this._isDeliverableTeamScope(entry.scope)) continue
+      if (this._remoteOnly && !this._remoteOnlyWalkAllows(entry.scope)) continue
       const scope = entry.scope ?? entry.url
       const serverId = this._stripRemotePrefix(id, entry.scope)
       const peek = this._remoteCacheAnswer(entry, serverId)
@@ -3095,6 +3119,9 @@ export class Plur {
     engramId: string,
     options: ProvenanceOptions & { store?: ProvenanceStore } = {},
   ): Promise<string | undefined> {
+    // remote-only (gate review of #1663): a provenance record can carry the
+    // statement, and the default store is this machine's disk.
+    if (this._activeBinding()) throw this._remoteOnlyError('local-store', undefined, 'Writing a provenance record')
     const record = await this.provenanceFor(engramId, options)
     if (!record) return undefined
     const store = options.store ?? this._provenanceStore()
@@ -3262,6 +3289,8 @@ export class Plur {
 
   private _maybeWriteProvenance(engramId: string): void {
     if (provenanceMode(this.config) !== 'always') return
+    // remote-only: no provenance kept on this machine (gate review of #1663).
+    if (this._activeBinding()) return
     this._afterStoreCommit(() => {
       void this.writeProvenance(engramId).catch(err => {
         logger.warning(`[plur:provenance] could not write a record for ${engramId}: ${(err as Error).message}`)
@@ -6728,7 +6757,7 @@ export class Plur {
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       // remote-only: only the folder's own team store (re-audit of #1521, C-3).
-      if (this._remoteOnly && entry.scope !== this._remoteOnly.scope) continue
+      if (this._remoteOnly && (entry.scope !== this._remoteOnly.scope || !this._isDeliverableTeamScope(entry.scope))) continue
       const prefixRe = new RegExp(`^(ENG|ABS|META)-${storePrefix(entry.scope)}-`)
       // An old-form (0.21.0) id names this store only when no other url
       // store shares its old prefix; then its bare form is asked for.
@@ -7196,7 +7225,9 @@ export class Plur {
       // serving the folder's team scope, for that scope only — with or
       // without a session scope, and never a `.plur.yaml` remote.
       const scope = this._remoteOnly.scope
-      if (!scope) return []
+      // Only a deliverable team scope is dialled: a hand-written personal
+      // scope reads nothing (gate review of #1663).
+      if (!scope || this._remoteOnly.blocked || !this._isDeliverableTeamScope(scope)) return []
       // The caller's authorization allow-list bounds what is dialed (audit F2
       // of #1515), here as everywhere.
       if (options?.scopes !== undefined && !options.scopes.some(a => isScopeWithin(a, scope))) return []
@@ -8854,7 +8885,7 @@ export class Plur {
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       // remote-only: a personal or non-team url store is out of reach (re-audit 3, R3-4).
-      if (this._remoteOnly && !this._isDeliverableTeamScope(entry.scope)) continue
+      if (this._remoteOnly && !this._remoteOnlyWalkAllows(entry.scope, scope)) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
       // Automatic feedback (#1310): a server that does not advertise
       // `feedback.source` is skipped before any engram lookup is spent on it.
@@ -9365,7 +9396,7 @@ export class Plur {
    */
   async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
     this._assertWritable()
-    await this._remoteOnlyRefuseLocalRow(id, 'Pinning')
+    await this._remoteOnlyRefuseLocalRow(id, 'Pinning', options?.scope)
     // Which store holds it (0.21.1). Ids are minted per store, so a bare id
     // can name a local engram AND an unrelated remote one; pinning went
     // local-first with no check and changed the wrong engram silently.
@@ -9454,7 +9485,7 @@ export class Plur {
     for (const entry of (scopedEntry ? [scopedEntry] : (this.config.stores ?? []))) {
       if (!entry.url || entry.readonly === true) continue
       // remote-only: a personal or non-team url store is out of reach (re-audit 3, R3-4).
-      if (this._remoteOnly && !this._isDeliverableTeamScope(entry.scope)) continue
+      if (this._remoteOnly && !(scopedEntry ? this._isDeliverableTeamScope(entry.scope) : this._remoteOnlyWalkAllows(entry.scope))) continue
       const serverId = scopedEntry ? this._stripForScope(id, entry.scope) : this._stripRemotePrefix(id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       // The team store's host may also hold personal rows under the same token:
@@ -10158,7 +10189,7 @@ export class Plur {
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       // remote-only: a personal or non-team url store is out of reach (re-audit 3, R3-4).
-      if (this._remoteOnly && !this._isDeliverableTeamScope(entry.scope)) continue
+      if (this._remoteOnly && !this._remoteOnlyWalkAllows(entry.scope, options?.scope)) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
       if (entry.readonly === true) {
         // Check if the engram exists here before throwing, so readonly
@@ -12459,7 +12490,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           for (const entry of (this.config.stores ?? [])) {
             if (!entry.url || entry.readonly === true) continue
             // remote-only: a personal or non-team url store is out of reach (re-audit 3, R3-4).
-            if (this._remoteOnly && !this._isDeliverableTeamScope(entry.scope)) continue
+            if (this._remoteOnly && !this._remoteOnlyWalkAllows(entry.scope)) continue
             // Leak guard (#353): this is an AUTONOMOUS push to a shared/remote
             // store — there is no coherent demotion (we can't silently re-scope
             // someone else's remote engram). If the improved statement carries
@@ -13962,8 +13993,26 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (scope && this._isRemoteBackedScope(scope)) {
       // Only the folder's team scope or another TEAM scope; a personal url
       // store (`user:`…) is out of reach here (re-audit 2 of #1521, R2-S2).
-      if (this._isDeliverableTeamScope(scope)) return
-      throw this._remoteOnlyError(isSharedScope(scope) ? 'local-only-scope' : 'personal-scope', scope)
+      if (!this._isDeliverableTeamScope(scope)) {
+        throw this._remoteOnlyError(isSharedScope(scope) ? 'local-only-scope' : 'personal-scope', scope)
+      }
+      // The team store's host can also hold personal rows under the same
+      // token (gate review of #1663): the row the id names there must be in
+      // that team scope. A lookup that fails refuses; an absent row is left
+      // to the operation, which then finds nothing.
+      const target = resolveScopeTarget(scope, this.config.stores ?? [])
+      const entry = target.kind === 'remote' ? target.entry : undefined
+      if (entry?.url) {
+        const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+        let row: Engram | null = null
+        try { row = await driver.getById(this._stripForScope(id, entry.scope)) } catch {
+          throw this._remoteOnlyError('local-row', undefined, op)
+        }
+        if (row && !(this._isDeliverableTeamScope(row.scope) && isScopeWithin(row.scope, scope))) {
+          throw this._remoteOnlyError('local-row', undefined, op)
+        }
+      }
+      return
     }
     const folder = this._remoteOnly.folder
     const primary = await this._basePrimaryStore.loadCached()
@@ -14055,7 +14104,8 @@ Generate an improved version of the procedure that prevents this failure. Return
     this.reloadConfigIfChanged()
     const configuredScopes = (this.config.stores ?? []).map(s => s.scope)
     // A remote-only entry's scope must be served by a writable url store.
-    const remoteScopes = (this.config.stores ?? []).filter(s => !!s.url && s.readonly !== true).map(s => s.scope)
+    // A personal url store (`user:`) never qualifies (gate review of #1663).
+    const remoteScopes = (this.config.stores ?? []).filter(s => !!s.url && s.readonly !== true && this._isDeliverableTeamScope(s.scope)).map(s => s.scope)
     return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, remoteScopes, ...options })
   }
 

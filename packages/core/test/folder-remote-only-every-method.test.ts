@@ -189,6 +189,8 @@ describe('every public Plur method in a remote-only folder', () => {
       'capture', 'episodeToEngram', 'saveMetaEngrams', 'exportPack', 'recordTensions', 'confirmTension',
       'dismissTension', 'resolveTension', 'purgeTensions', 'compact', 'reindex', 'reindexAsync', 'sync',
       'feedback', 'setPinned', 'setPinnedAsync', 'updateEngram', 'updateEngramAsync', 'forget', 'rescope',
+      // A provenance record can carry the statement, kept on this machine (gate review of #1663).
+      'writeProvenance',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []
