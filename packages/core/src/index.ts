@@ -1431,22 +1431,6 @@ export class Plur {
   }
 
   /**
-   * The ONE rule for "a deliverable team scope" (re-audit 3 of #1521): a
-   * shared, non-personal, non-local-family scope with a writable url store in
-   * the config. Used by the store guard, the queue hold, learn routing in a
-   * remote-only folder, the flush, and the remote walks while bound.
-   */
-  /** remote-only: whether a row a team store's host returns for `serverId` is in a team scope (absent counts as yes). */
-  private async _remoteRowInTeamScope(driver: RemoteStore, serverId: string): Promise<boolean> {
-    try {
-      const row = await driver.getById(serverId)
-      return !row || this._isDeliverableTeamScope(row.scope)
-    } catch {
-      return false
-    }
-  }
-
-  /**
    * remote-only: whether a walk over url stores for a BARE id may contact
    * the store serving `scope` — only the folder's own team store (gate review
    * of #1663). An explicit team scope is checked by its caller instead.
@@ -1482,6 +1466,12 @@ export class Plur {
     }
   }
 
+  /**
+   * The ONE rule for "a deliverable team scope" (re-audit 3 of #1521): a
+   * shared, non-personal, non-local-family scope with a writable url store in
+   * the config. Used by the store guard, the queue hold, learn routing in a
+   * remote-only folder, the flush, and the remote walks while bound.
+   */
   private _isDeliverableTeamScope(scope: string): boolean {
     if (!scope || !isSharedScope(scope)) return false
     const stores = this.config.stores ?? []
@@ -2171,7 +2161,7 @@ export class Plur {
         const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
         // The team store's host may also hold personal rows under the same token:
         // act on a bare id only when its row there is in a team scope (R3-4).
-        if (this._remoteOnly && !(await this._remoteRowInTeamScope(driver, serverId))) continue
+        if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, serverId))) continue
         // existsById, NOT getById: getById returns null for a dead network
         // exactly as for a genuine 404 — the silent "no" this must refuse.
         const exists = await driver.existsById(serverId, { signal: AbortSignal.timeout(Math.min(REMOTE_PROBE_TIMEOUT_MS, left)) })
@@ -6116,6 +6106,8 @@ export class Plur {
 
   /** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
   async recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
+    // remote-only: no model sees the query or the team's text (Codex round 5 on #1663).
+    if (this._activeBinding()) return await this.recall(query, options)
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const results = await agenticSearch(filtered, query, limit, options.llm)
@@ -6372,6 +6364,8 @@ export class Plur {
     /** Re-run even when a fresh cached verdict exists. */
     force?: boolean
   }): Promise<{ result: RerankerEvalResult; cached: boolean }> {
+    // remote-only: the evaluation runs the models over the corpus (Codex round 5 on #1663).
+    if (this._activeBinding()) throw this._remoteOnlyError('local-store', undefined, 'Evaluating the reranker')
     const name = options?.reranker ?? resolveRerankerName()
     if (name === 'off') {
       throw new Error(
@@ -6696,6 +6690,8 @@ export class Plur {
 
   /** Expanded search: LLM query expansion + hybrid search + RRF merge. Opt-in, requires LLM function. */
   async recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
+    // remote-only: no model and no embedder (Codex round 5 on #1663).
+    if (this._activeBinding()) return await this.recall(query, options)
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const results = await expandedSearch(filtered, query, limit, options.llm, this.paths.root)
@@ -6704,6 +6700,8 @@ export class Plur {
   }
 
   async recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSearchResult> {
+    // remote-only: keyword search only, no model and no embedder (Codex round 5 on #1663).
+    if (this._activeBinding()) return { results: await this.recall(query, options), strategy_used: 'bm25' }
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const result = await recallAuto(filtered, query, limit, this.paths.root, options?.llm)
@@ -7273,7 +7271,8 @@ export class Plur {
       if (!scope || this._remoteOnly.blocked || !this._isDeliverableTeamScope(scope)) return []
       // The caller's authorization allow-list bounds what is dialed (audit F2
       // of #1515), here as everywhere.
-      if (options?.scopes !== undefined && !options.scopes.some(a => isScopeWithin(a, scope))) return []
+      // Exact membership, as RecallOptions.scopes documents (Codex round 5 on #1663).
+      if (options?.scopes !== undefined && !options.scopes.includes(scope)) return []
       const seen = new Set<string>()
       const hosts: RemoteRecallHost[] = []
       for (const s of stores) {
@@ -8944,7 +8943,7 @@ export class Plur {
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       // The team store's host may also hold personal rows under the same token:
       // act on a bare id only when its row there is in a team scope (R3-4).
-      if (this._remoteOnly && !(await this._remoteRowInTeamScope(driver, this._stripRemotePrefix(id, entry.scope)))) continue
+      if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(id, entry.scope)))) continue
       // OWNERSHIP is decided by `existsById`, not `getById` (#907).
       //
       // `getById` catches everything and returns null, so a timeout, a 5xx or
@@ -9544,7 +9543,7 @@ export class Plur {
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       // The team store's host may also hold personal rows under the same token:
       // act on a bare id only when its row there is in a team scope (R3-4).
-      if (this._remoteOnly && !(await this._remoteRowInTeamScope(driver, this._stripRemotePrefix(id, entry.scope)))) continue
+      if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(id, entry.scope)))) continue
       try {
         // Awaited, and the SERVER's engram is returned.
         //
@@ -10256,7 +10255,7 @@ export class Plur {
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       // The team store's host may also hold personal rows under the same token:
       // act on a bare id only when its row there is in a team scope (R3-4).
-      if (this._remoteOnly && !(await this._remoteRowInTeamScope(driver, this._stripRemotePrefix(id, entry.scope)))) continue
+      if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(id, entry.scope)))) continue
       // Tri-state (#907). `getById` alone cannot distinguish "this store does
       // not have it" from "this store did not answer", so an unreachable
       // remote was walked past and the engram reported as simply not found —
@@ -12567,7 +12566,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
             // The team store's host may also hold personal rows under the same token:
             // act on a bare id only when its row there is in a team scope (R3-4).
-            if (this._remoteOnly && !(await this._remoteRowInTeamScope(driver, this._stripRemotePrefix(engramId, entry.scope)))) continue
+            if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(engramId, entry.scope)))) continue
             const patched = await driver.patch(serverId, { statement: improved.trim() })
             if (patched) {
               this._appendHistory({

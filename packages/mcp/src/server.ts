@@ -409,7 +409,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       // defines (no engram text in its answers).
       const dirs = await workspace.dirs()
       const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
-      if (off) instance.bindFolderPolicy(folder, { mode: 'ask', remoteAllowed: false, source: 'default' })
+      // An unknown workspace or an unreadable map may hide a remote-only
+      // folder: those bind blocked, so a diagnostic contacts no store (Codex
+      // round 5 on #1663). A folder that is off runs unbound, as #1519 defines.
+      if (off && (off.reason === 'workspace-unknown' || off.reason === 'folder-map-unreadable')) {
+        instance.bindFolderUnresolved(folder, off.reason)
+      } else if (off) instance.bindFolderPolicy(folder, { mode: 'ask', remoteAllowed: false, source: 'default' })
       else bindWorkspace(dirs!)
     }
     // #192: one tick per tool call = one "turn" for capability health.

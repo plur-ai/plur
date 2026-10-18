@@ -192,6 +192,8 @@ describe('every public Plur method in a remote-only folder', () => {
       'feedback', 'setPinned', 'setPinnedAsync', 'updateEngram', 'updateEngramAsync', 'forget', 'rescope',
       // A provenance record can carry the statement, kept on this machine (gate review of #1663).
       'writeProvenance',
+      // It runs the embedder and reranker models over the corpus (Codex round 5 on #1663).
+      'rerankerSelfEval',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []
