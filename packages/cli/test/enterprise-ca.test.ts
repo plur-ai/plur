@@ -26,13 +26,20 @@ const otherSha = createHash('sha256').update(new X509Certificate(otherPem).raw).
 
 const noExec: ExecFn = () => ({ status: 1, stdout: '' })
 
-// A fake icacls: `set` succeeds, and the read-back names `principals`.
-const fakeIcacls = (principals: string[], calls: string[][] = []) => (cmd: string, args: string[]) => {
+// The account's SID: core's owner-only rule identifies the owner by SID (#1631).
+const SID = 'S-1-5-21-1111-2222-3333-1001'
+// A fake whoami + icacls: whoami names SID; `set` succeeds; `/save` writes the
+// list (UTF-16 SDDL) with these trustees (SIDs or SDDL abbreviations, e.g. BU).
+const fakeIcacls = (trustees: string[], calls: string[][] = []) => (cmd: string, args: string[]) => {
   calls.push([cmd, ...args])
-  if (args.length > 1) return { status: 0, stdout: 'processed file: x\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n' }
-  return { status: 0, stdout: `${args[0]} ${principals.map(p => `${p}:(F)`).join('\r\n ')}\r\n\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n` }
+  if (cmd === 'whoami') return { status: 0, stdout: `"ACME\\alice","${SID}"\r\n` }
+  if (args[1] === '/save') {
+    writeFileSync(args[2], Buffer.from(`x\r\nD:PAI${trustees.map(t => `(A;;FA;;;${t})`).join('')}\r\n`, 'utf16le'))
+    return { status: 0, stdout: 'Successfully processed 1 files; Failed processing 0 files\r\n' }
+  }
+  return { status: 0, stdout: 'processed file: x\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n' }
 }
-const winOk = { env: { SystemRoot: 'C:\\Windows' }, account: 'ACME\\alice', aclExec: fakeIcacls(['ACME\\alice']) }
+const winOk = { env: { SystemRoot: 'C:\\Windows' }, account: 'ACME\\alice', aclExec: fakeIcacls([SID]) }
 
 describe('caSha256', () => {
   it('is the lower-case hex SHA-256 of the DER, the format the served installer bakes (64 hex, no colons)', () => {
@@ -276,25 +283,29 @@ describe('installCompanyCa', () => {
     const calls: string[][] = []
     let contentAtProtect: string | null = null
     const aclExec = (cmd: string, args: string[]) => {
-      if (args.length > 1) {
+      if (args[1] === '/inheritance:r') {
         contentAtProtect = readFileSync(args[0], 'utf8')
         expect(existsSync(join(plurDir, COMPANY_CA_FILE))).toBe(false)
       }
-      return fakeIcacls(['ACME\\alice'], calls)(cmd, args)
+      return fakeIcacls([SID], calls)(cmd, args)
     }
     const r = installCompanyCa({ sha256: sha, plurDir, platform: 'win32', exec: () => ({ status: 0, stdout: pem }), systemCertificates: () => [], env: { SystemRoot: 'C:\\Windows' }, account: 'ACME\\alice', aclExec })
     expect(r.ok).toBe(true)
     expect(contentAtProtect).toBe('')
-    expect(calls[0]).toEqual(['icacls', expect.stringContaining(COMPANY_CA_FILE), '/inheritance:r', '/grant:r', 'ACME\\alice:F'])
+    expect(calls.find(c => c[0] === 'icacls')).toEqual(['icacls', expect.stringContaining(COMPANY_CA_FILE), '/inheritance:r', '/grant:r', `*${SID}:F`])
     expect(readdirSync(plurDir)).toEqual([COMPANY_CA_FILE])
   })
 
-  it('win32: icacls runs from System32 by absolute path, never by bare name', () => {
+  it('win32: icacls and whoami run from System32 by absolute path, never by bare name', () => {
     const runs: string[][] = []
     const run = (cmd: string, args: string[]) => { runs.push([cmd, ...args]); return { status: 0, stdout: '' } }
     const icacls = win32IcaclsExec({ SystemRoot: 'D:\\Windows' }, run)!
     icacls('icacls', ['x', '/inheritance:r'])
-    expect(runs).toEqual([['D:\\Windows\\System32\\icacls.exe', 'x', '/inheritance:r']])
+    icacls('whoami', ['/user'])
+    expect(runs).toEqual([['D:\\Windows\\System32\\icacls.exe', 'x', '/inheritance:r'], ['D:\\Windows\\System32\\whoami.exe', '/user']])
+    // Nothing else is run through it.
+    expect(icacls('powershell', ['-Command', 'x']).status).toBeNull()
+    expect(runs).toHaveLength(2)
     expect(win32IcaclsExec({ SystemRoot: 'C:\\Users\\Public\\evil' }, run)).toBeNull()
     expect(win32IcaclsExec({}, run)).toBeNull()
   })
@@ -307,8 +318,8 @@ describe('installCompanyCa', () => {
 
   it('win32: when owner-only cannot be established, nothing is written (refused)', () => {
     for (const opts of [
-      { account: 'ACME\\alice', aclExec: fakeIcacls(['ACME\\alice', 'BUILTIN\\Users']) },
-      { account: null, aclExec: fakeIcacls(['ACME\\alice']) },
+      { account: 'ACME\\alice', aclExec: (c: string, a: string[]) => a[1] === '/remove' ? { status: 5, stdout: '' } : fakeIcacls([SID, 'BU'])(c, a) },
+      { account: null, aclExec: fakeIcacls([SID]) },
       { account: 'ACME\\alice', aclExec: () => ({ status: 5, stdout: '' }) },
     ]) {
       const r = installCompanyCa({ sha256: sha, plurDir, platform: 'win32', exec: () => ({ status: 0, stdout: pem }), systemCertificates: () => [], env: { SystemRoot: 'C:\\Windows' }, ...opts })

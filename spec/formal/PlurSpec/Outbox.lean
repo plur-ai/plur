@@ -1,6 +1,10 @@
 /-!
 # PlurSpec.Outbox — delivery of queued team writes (decisions C3, C4, C5)
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
+change swaps the config.yaml writes for `writeConfigFile` (same content, same lock); no
+outbox, claim or breaker code changed.
+
 Models the outbox as merged on main by #1277 and carried into #1228 under
 owner decision C3 (2026-09-29): `flushOutbox` / `_flushOutboxClaimed`,
 learn()'s immediate push, the per-entry claims (`_claimOutboxEntry`,
