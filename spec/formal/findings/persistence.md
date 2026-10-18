@@ -568,12 +568,16 @@ Gate review (2026-10-18), two changes:
    with no fixed SID (domain-relative) refuses. Inside `aclOk`; no theorem changed. icacls
    and whoami run from `%SystemRoot%\System32` by full path.
 2. **Opt-out for drives without access lists** (`PLUR_ALLOW_UNPROTECTED_CONFIG`): set, a
-   write the default refuses is written unprotected and reported on stderr; unset, the
-   behaviour is `traceNew`. Modelled as `traceAllow`/`relax`: `allow_off_is_default`,
-   `allow_keeps_working_protection` (it never skips a protection that can be established),
-   `allow_secret_owner_only_when_protectable`, `allow_wide_is_reported`, `allow_reachable`.
-   Mutation check: `relax` also widening a protected write ⇒ the two protection theorems
-   fail.
+   `secret` write whose destination cannot be inspected still tries to protect its temp
+   file, and a write the default refuses is written unprotected and reported on stderr;
+   unset, the behaviour is `traceNew`. Modelled as `traceAllow` (`allowCall`, `relax`):
+   `allow_off_is_default`, `allow_keeps_working_protection` (it never skips a protection
+   that can be established), `allow_secret_owner_only_when_protectable` (also over an
+   uninspectable destination), `allow_wide_is_reported`, `allow_reachable`. Mutation checks:
+   `relax` also widening a protected write ⇒ `allow_keeps_working_protection` and
+   `allow_secret_owner_only_when_protectable` fail; `allowCall` the identity (skip the
+   attempt when the destination is uninspectable) ⇒ `allow_secret_owner_only_when_protectable`
+   and `allow_reachable` fail.
 
 Tests: `config-owner-only.test.ts` (21 of the new or changed cases failed against the
 builder's code; the real-Windows case under a folder named `Müller Črt` failed on the

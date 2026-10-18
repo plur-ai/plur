@@ -1365,11 +1365,15 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
     if (credential && destExists) {
       const inspection: AclInspection = winAccount === null ? 'unknown' : inspectAcl(filePath, winAccount)
       if (inspection === 'unknown' && secret) {
-        // Refused (throws) unless the owner opted out; then written unprotected.
-        refuseUnprotected(filePath, winAccount === null
-          ? 'cannot tell whether the destination is owner-only (the Windows account is not known: USERNAME is not set)'
-          : 'cannot inspect the destination\'s access list (icacls failed or named no account)')
-        winProtect = false
+        // Refused (throws) unless the owner opted out. Opted out, the temp file
+        // is still protected when it can be; only a failure there (or no known
+        // account to protect it for) writes it unprotected, reported.
+        if (winAccount === null || !allowUnprotected(_atomicWriteAcl.env)) {
+          refuseUnprotected(filePath, winAccount === null
+            ? 'cannot tell whether the destination is owner-only (the Windows account is not known: USERNAME is not set)'
+            : 'cannot inspect the destination\'s access list (icacls failed or named no account)')
+        }
+        winProtect = winAccount !== null
       } else {
         winProtect = inspection === 'owner-only' || secret
       }

@@ -37,7 +37,7 @@ vi.mock('fs', async importOriginal => {
 
 const { Plur, protectOwnerOnly, checkOwnerOnly, writeConfigFile, currentWindowsAccount } = await import('../src/index.js')
 const { currentWindowsSid, _systemTool } = await import('../src/owner-only.js')
-const { _atomicWriteAcl } = await import('../src/sync.js')
+const { _atomicWriteAcl, atomicWrite } = await import('../src/sync.js')
 const { setSchemaVersion } = await import('../src/migrations/runner.js')
 const { removePrimaryStoreEntries } = await import('../src/store-duplicates.js')
 const { SELF, fakeAclExec, icaclsCalls } = await import('./helpers/fake-acl.js')
@@ -226,6 +226,13 @@ describe('Windows (fake exec): protectOwnerOnly / checkOwnerOnly', () => {
       return { status: 0, stdout: '' }
     }
     expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: utf8, account: ACCT })).toEqual({ ok: true })
+    // UTF-16 whose name line starts with a character above U+00FF (no zero second byte).
+    const wide = (c: string, a: string[]) => {
+      if (c === 'whoami') return { status: 0, stdout: `"ACME\\alice","${SELF}"` }
+      realFs.writeFileSync(a[2], Buffer.from(`\u010crt.yaml\r\nD:PAI(A;;FA;;;${SELF})(A;;FA;;;BU)\r\n`, 'utf16le'))
+      return { status: 0, stdout: '' }
+    }
+    expect(checkOwnerOnly('C:\\c.yaml', { platform: 'win32', exec: wide, account: ACCT })).toEqual({ ok: false, detail: 'also readable by BUILTIN\\Users' })
   })
 
   it('a removal that fails → ok:false with its exit code', () => {
@@ -377,7 +384,8 @@ describe('Windows (simulated host): every config write is a protected write', ()
         expect(r.ok).toBe(false)
         expect(realFs.readFileSync(cfg, 'utf8')).toBe('token: x\n')
         const lines = err.mock.calls.map(c => String(c[0]))
-        expect(lines[0]).toMatch(/^\[plur:config\] writing config\.yaml WITHOUT owner-only protection \(PLUR_ALLOW_UNPROTECTED_CONFIG is set\): cannot inspect/)
+        // The temp file is still tried (and fails: no access lists on this drive).
+        expect(lines[0]).toMatch(/^\[plur:config\] writing config\.yaml WITHOUT owner-only protection \(PLUR_ALLOW_UNPROTECTED_CONFIG is set\): cannot make the temporary file owner-only/)
         expect(lines[1]).toMatch(/^\[plur:config\] could not restrict config\.yaml to your account: /)
         expect(lines).toHaveLength(2)
       })
@@ -390,6 +398,21 @@ describe('Windows (simulated host): every config write is a protected write', ()
       writeConfigFile(cfg, 'token: x\n')
       expect(realFs.readFileSync(cfg, 'utf8')).toBe('token: x\n')
       expect(realFs.readdirSync(root).filter(n => n.endsWith('.tmp'))).toEqual([])
+    })
+
+    it('set, the destination\'s list cannot be read but the temp file can be protected: it is protected, nothing reported', () => {
+      realFs.writeFileSync(cfg, 'stores: []\n')
+      const fake = fakeAclExec({
+        acl: p => p === cfg ? null : realFs.existsSync(p) ? (protectedPaths.has(p) ? [SELF] : [SELF, 'BU']) : null,
+        grant: p => { protectedPaths.add(p); return 0 },
+      })
+      _atomicWriteAcl.exec = fake.exec
+      _atomicWriteAcl.env = { USERNAME: 'alice', PLUR_ALLOW_UNPROTECTED_CONFIG: '1' }
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+      atomicWrite(cfg, 'token: x\n', { mode: 0o600, secret: true })
+      expect(realFs.readFileSync(cfg, 'utf8')).toBe('token: x\n')
+      expect(fake.calls.some(c => c[2] === '/inheritance:r' && /\.tmp$/.test(c[1]))).toBe(true)
+      expect(err).not.toHaveBeenCalled()
     })
 
     it('set: protection that works is still applied (the opt-out only covers a failure)', () => {

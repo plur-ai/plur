@@ -150,9 +150,15 @@ type AclRead =
   | { kind: 'shared'; others: string[] }
   | { kind: 'unknown'; detail: string }
 
-/** UTF-16LE (what icacls writes) or UTF-8, BOM stripped. */
+/**
+ * UTF-16LE (what icacls writes) or UTF-8, BOM stripped. The SDDL line is
+ * ASCII, so in UTF-16 at least a quarter of the bytes are zero whatever the
+ * file's name; UTF-8 text has none.
+ */
 function decodeSaved(buf: Buffer): string {
-  const utf16 = buf.length >= 2 && (buf[1] === 0 || (buf[0] === 0xff && buf[1] === 0xfe))
+  let zeros = 0
+  for (const b of buf) if (b === 0) zeros++
+  const utf16 = (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) || (zeros > 0 && zeros * 4 >= buf.length)
   return (utf16 ? buf.toString('utf16le') : buf.toString('utf8')).replace(/^﻿/, '')
 }
 
