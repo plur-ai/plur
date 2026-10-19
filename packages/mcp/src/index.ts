@@ -107,10 +107,11 @@ const _shimCandidate = join(homedir(), '.plur', 'bin', _shimName)
 const CLI = existsSync(_shimCandidate) ? _shimCandidate : 'npx @plur-ai/cli'
 
 /**
- * Hook set for `plur-mcp init`. Mirrors `buildInjectionHooks` in
- * @plur-ai/cli's init.ts, which this package cannot import. The rehydrate
- * entry must stay identical to the cli's; test/init-hooks.test.ts fails if
- * the two diverge (#1279).
+ * Hook set for `plur-mcp init`: the same hooks `plur init` writes to user
+ * settings, i.e. @plur-ai/cli's `buildEnforcementHooks` plus
+ * `buildInjectionHooks` (this package cannot import the CLI). Both installers
+ * must give the agent the same memory behaviour; test/init-hooks.test.ts
+ * compares the full sets and fails when they diverge (#1279).
  */
 export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
   return {
@@ -127,6 +128,10 @@ export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
     // right after compaction and can carry context; PostCompact cannot
     // (#1274, #1279). Re-running init moves an old PostCompact entry here.
     SessionStart: [{
+      // Reminds the agent to start the PLUR session first (hook-session-guard
+      // below nudges once if it does not).
+      hooks: [{ type: 'command', command: `${cli} hook-session-remind`, timeout: 3 }],
+    }, {
       matcher: 'compact',
       hooks: [{ type: 'command', command: `${cli} hook-inject --rehydrate`, timeout: 20 }],
     }, {
@@ -144,12 +149,16 @@ export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
     }],
     // --- Contextual injection ---
     PreToolUse: [
+      // Session guard first, so it runs before any other PreToolUse hook.
+      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-session-guard`, timeout: 3 }] },
       { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${cli} hook-inject --event plan_mode`, timeout: 10 }] },
       { matcher: 'Skill', hooks: [{ type: 'command', command: `${cli} hook-inject --event skill`, timeout: 10 }] },
       { matcher: 'Agent', hooks: [{ type: 'command', command: `${cli} hook-inject --event agent`, timeout: 10 }] },
       { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe`, timeout: 3 }] },
     ],
     PostToolUse: [
+      // Marks the session started for the guard (any `mcp__<server>__plur_session_start`).
+      { matcher: 'mcp__.*__plur_session_start', hooks: [{ type: 'command', command: `${cli} hook-session-mark`, timeout: 3 }] },
       { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe --post`, timeout: 3 }] },
     ],
     SubagentStart: [
@@ -157,6 +166,8 @@ export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
     ],
     Stop: [
       { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-learn-check`, timeout: 2 }] },
+      // Rates the engrams injected this turn from the reply (#1310); synchronous, as in `plur init`.
+      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-auto-rate claude`, timeout: 10 }] },
     ],
   }
 }
@@ -477,7 +488,7 @@ export function applyPlurHooks(
   // enforcement hooks and puts rehydrate in the project file; adding one to
   // the global file would run rehydrate twice per compaction there.
   if (movedRehydrate && !(hooks.SessionStart ?? []).some(isPlurRehydrate)) {
-    hooks.SessionStart = [...(hooks.SessionStart ?? []), ...(hooksMap.SessionStart ?? []).filter(e => !isResumeEntry(e))]
+    hooks.SessionStart = [...(hooks.SessionStart ?? []), ...(hooksMap.SessionStart ?? []).filter(isPlurRehydrate)]
     changed = true
   }
   // SessionEnd deletes a session's folder-question nonces, so a file that
