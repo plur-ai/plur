@@ -1,8 +1,16 @@
 diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index 7611980b..56147131 100644
+index 7611980b..e05afa25 100644
 --- a/packages/core/src/index.ts
 +++ b/packages/core/src/index.ts
-@@ -7239,9 +7239,7 @@ export class Plur {
+@@ -7189,7 +7189,6 @@ export class Plur {
+       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
+       limit: options?.limit,
+       statePath: this.remoteHealthStatePath(),
+-      ...(deadlineAt !== undefined && Number.isFinite(deadlineAt) ? { deadlineAt } : {}),
+     }).then(result => {
+       const observed_at = Date.now()
+       for (const o of result.outcomes) {
+@@ -7239,9 +7238,7 @@ export class Plur {
      deadlineAt: number,
    ): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
      if (!remotePromise) return { report: { state: 'not_dialed', hosts: [] } }
