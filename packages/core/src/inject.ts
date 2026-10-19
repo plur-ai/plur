@@ -84,6 +84,15 @@ export interface InternalInjectionResult {
 
 const DEFAULT_MAX_TOKENS = 8000
 const DEFAULT_MIN_RELEVANCE = 0.3
+/**
+ * With the meaning model available, an unpinned candidate must be at least this
+ * share as relevant as the best match to be given (INJ-1). Relevance here is the
+ * keyword score plus the meaning similarity — no recency or anchor bonus, and a
+ * meaning-only match counts its similarity once. Measured on a labelled task
+ * set: below about 0.75 nearby rules for other situations come back in; above
+ * about 0.85 needed memories start to drop out.
+ */
+const RELATIVE_RELEVANCE_RATIO = 0.8
 const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
 // Pinned engrams bypass per-pack/per-domain caps but must not eat the entire
@@ -912,6 +921,8 @@ export function selectAndSpread(
 
   // Step 1-2: Score all active engrams
   const scored: ScoredEngram[] = []
+  // Keyword score + meaning similarity per candidate, for the relative cut in step 5.
+  const relevance = new Map<string, number>()
 
   for (const engram of personalEngrams) {
     if (engram.relations?.superseded_by?.length) supersededBy.set(engram.id, engram.relations.superseded_by)
@@ -928,6 +939,7 @@ export function selectAndSpread(
     if (!deliverable) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
+    relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
     // Embedding boost: semantically similar engrams with zero keyword hits still get scored.
     // Threshold raised from 0.3 -> 0.5 in 0.9.4 — with embeddings now actually running
     // (post-build-config fix), 0.3 was too generous and surfaced spurious matches between
@@ -972,6 +984,7 @@ export function selectAndSpread(
       if (!deliverable) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
+      relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
       if (raw === 0 && embBoost > 0.5) {
         raw = embBoost * 2
@@ -1014,9 +1027,27 @@ export function selectAndSpread(
   // A superseded engram whose replacement is deliverable is not current, so it is
   // not a candidate at all — not in directives, constraints or consider.
   // A historical prompt ("previously", "used to") still reaches it.
-  const filtered = scored.filter(s =>
+  const current = scored.filter(s =>
     ((s as any).pinned === true || s.score >= minRelevance)
     && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy)))
+  // Relative relevance cut (INJ-1). The floor above is a share of a score
+  // normalised to the best match and padded by recency and anchor bonuses, so
+  // nearly anything sharing one word with the task cleared it and the budget
+  // filled with nearby rules for other situations. When the meaning model ran,
+  // keep only unpinned candidates at least RELATIVE_RELEVANCE_RATIO as relevant
+  // as the best one. Without it, keyword overlap alone cannot tell a rule from
+  // its neighbour, so the keyword-only path keeps the old behaviour — and so
+  // does a candidate the meaning model gave no score (absent from the boosts),
+  // since it cannot be compared on the same footing.
+  let filtered = current
+  if (embeddingBoosts && embeddingBoosts.size > 0) {
+    const judged = (e: ScoredEngram) => (e as any).pinned !== true && embeddingBoosts.has(e.id)
+    const rel = (e: ScoredEngram) => relevance.get(e.id) ?? 0
+    const best = current.reduce((m, e) => judged(e) ? Math.max(m, rel(e)) : m, 0)
+    if (best > 0) {
+      filtered = current.filter(e => !judged(e) || rel(e) >= RELATIVE_RELEVANCE_RATIO * best)
+    }
+  }
 
   // Sort by score descending
   filtered.sort((a, b) => b.score - a.score)
