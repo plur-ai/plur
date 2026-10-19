@@ -835,3 +835,7 @@ theorem old_infile_diverges :
     runF (dryStepOld false) [] [(5, 1), (5, 2)] ≠ runF (realStepF false) [] [(5, 1), (5, 2)] := by decide
 
 end PlurSpec.R2CoreA
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/

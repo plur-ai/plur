@@ -157,3 +157,10 @@ models:
       - packages/cli/src/enterprise/device-name.ts
       - packages/cli/src/enterprise/sign-in-shared.ts
       - packages/cli/src/enterprise/server-store.ts
+
+  - model: PlurSpec/SaveDestination.lean
+    covers:
+      - packages/core/src/save-destination.ts
+      - packages/core/src/index.ts
+      - packages/cli/src/commands/learn.ts
+      - packages/mcp/src/tools.ts

@@ -1165,3 +1165,7 @@ theorem exact_reachable :
     lookup (fun _ => false) (fun _ => none) 1 [a] = some (some a) := by decide
 
 end PlurSpec.RoutingDiscovery
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/

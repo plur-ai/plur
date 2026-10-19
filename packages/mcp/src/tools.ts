@@ -1807,6 +1807,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // more specific `warning` below (outbox, demotion, refusal) still
             // wins that key; `delivery_warning` keeps this one either way.
             delivery: delivered.delivery,
+            destination: delivered.destination,
             // Which server holds it (normalized endpoint, no userinfo), when
             // delivery is remote and this process can tell (Codex round 5).
             ...(delivered.host ? { delivered_to: delivered.host } : {}),
@@ -1853,6 +1854,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, ...learnDecision(engram),
             delivery: delivered.delivery,
+            destination: delivered.destination,
             ...(delivered.host ? { delivered_to: delivered.host } : {}),
             ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
@@ -2113,6 +2115,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             input_index: r.input_index,
             id: isOutbox ? r.engram.id : plur.readIdFor(r.engram),
             delivery: delivered.delivery,
+            destination: delivered.destination,
             ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             statement: r.engram.statement,
@@ -4382,6 +4385,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
 
         let engrams_created = 0
+        const engram_results: Array<{ index: number; id: string; scope: string; delivery: string; destination: string }> = []
         const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
         for (let i = 0; i < items.length; i++) {
           const { statement, type } = items[i]
@@ -4392,7 +4396,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             // at the tool-call markers (`</statement>`, `<parameter name=`),
             // and session_end is the write path where an agent transcribing its
             // own session is most likely to carry them in.
-            await plur.learnRouted(sanitizeStatement(statement), {
+            const saved = await plur.learnRouted(sanitizeStatement(statement), {
               type: type as any,
               // E7: no resolvable session → no session default; through the
               // server, the workspace's answer (#1563 review round 2).
@@ -4404,6 +4408,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               // happened, not something the user stated outright (#963).
               claim_class: 'inferred',
             })
+            const delivered = plur.deliveryOf(saved)
+            engram_results.push({ index: i, id: delivered.delivery === "outbox" ? saved.id : plur.readIdFor(saved), scope: saved.scope, delivery: delivered.delivery, destination: delivered.destination })
             engrams_created++
           } catch (err) {
             engrams_failed.push({ index: i, statement: statement.slice(0, 80), error: (err as Error).message })
@@ -4459,6 +4465,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         return {
           engrams_created,
+          engram_results,
           ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode?.id ?? null,
           total_engrams: status.engram_count,

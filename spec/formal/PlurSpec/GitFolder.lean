@@ -71,3 +71,7 @@ example : mayDial none none .absent ≠ mayDial none none .local := by decide
 example : capturedWrite (.project 7) .local 0 ≠ writeScope none none .local 0 := by decide
 
 end PlurSpec.GitFolder
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
