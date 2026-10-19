@@ -27,7 +27,7 @@
  */
 import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
 import { homedir, release } from 'os'
-import { dirname, join } from 'path'
+import { dirname, isAbsolute, join, resolve } from 'path'
 import { isDeepStrictEqual } from 'util'
 import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree } from 'jsonc-parser'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
@@ -380,6 +380,9 @@ function planJsonEntry(
   for (const k of entryPath) entry = (entry as Record<string, unknown>)[k]
   if (!isRecord(entry)) return { status: 'refused', detail: 'the plur entry is not an object' }
   if (!isLocal(entry)) return { status: 'refused', detail: 'the plur entry is a remote entry with no command; a launch env does not apply to it' }
+  if (entry.args !== undefined && !(Array.isArray(entry.args) && entry.args.every(a => typeof a === 'string'))) {
+    return { status: 'refused', detail: 'the plur entry\'s args are not a list of text values' }
+  }
   const raw = entry[envKey]
   const current = raw === undefined ? undefined : stringRecord(raw)
   if (raw !== undefined && current === null) return { status: 'refused', detail: `the plur entry's ${envKey} is not a set of text values` }
@@ -624,7 +627,16 @@ export function toolLaunch(
     if (tool === 'codex') {
       const entry = readCodexEntry(text)
       if (!entry || typeof entry.command !== 'string' || entry.url !== undefined) return null
-      return { command: entry.command, args: entry.args ?? [], env: codexMcpEnvironment(entry, parentEnv, (loc.platform ?? process.platform) === 'win32') }
+      // Codex starts the server in the entry's cwd: a relative command path or
+      // script resolves there, not where the proof happens to run.
+      const cwd = entry.cwd
+      const at = (p: string) => (cwd && !isAbsolute(p) && /[\\/]/.test(p) ? resolve(cwd, p) : p)
+      const args = entry.args ?? []
+      return {
+        command: at(entry.command),
+        args: args.length > 0 && !args[0].startsWith('-') ? [at(args[0]), ...args.slice(1)] : args,
+        env: codexMcpEnvironment(entry, parentEnv, (loc.platform ?? process.platform) === 'win32'),
+      }
     }
     if (tool === 'opencode') {
       const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
@@ -642,6 +654,7 @@ export function toolLaunch(
     const servers = isRecord(data) && isRecord(data.mcpServers) ? data.mcpServers : undefined
     const entry = servers?.plur
     if (!isRecord(entry) || isRemoteEntry(entry) || typeof entry.command !== 'string' || entry.command.length === 0) return null
+    if (entry.args !== undefined && !Array.isArray(entry.args)) return null
     const args = Array.isArray(entry.args) ? entry.args : []
     if (!args.every((a): a is string => typeof a === 'string')) return null
     const env = entry.env === undefined ? {} : stringRecord(entry.env)
