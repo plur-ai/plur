@@ -10,10 +10,10 @@
 // waiting for me is a record linking the two memories that is neither
 // dismissed nor resolved.
 //
-// Not graded here, because the owner has not decided them (promises.yaml
-// `decide:`): whether the new statement is given to the agent while the review
-// waits, and the setting by which a user "specifies differently". LRN-6 already
-// pins that the locked text is never rewritten.
+// Owner decisions 2026-10-19: while the review waits only the locked memory is
+// given (decision board B1); choosing the new statement in review makes it the one
+// given. There is no setting to skip the review (B2). LRN-6 pins that the locked
+// text is never rewritten.
 import { randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { Plur } from '../../packages/core/src/index.js'
@@ -65,6 +65,15 @@ describe('LRN-9 an update onto a locked memory goes to my review queue', () => {
         const r = await fresh.inject(task, { budget: 4000 })
         expect(given(r), 'the locked memory is no longer given to the agent while my review waits').toContain(locked.id)
         expect(deliversText(r, LOCKED), 'the locked memory is not given whole while my review waits (fourth audit A4-03)').toBe(true)
+        // Owner decision 2026-10-19 (decision board B1): while the review waits the
+        // agent gets only the locked memory; the proposed statement waits unseen.
+        expect(deliversText(r, SAID), 'the proposed statement is given to the agent while my review waits').toBe(false)
+
+        // When I resolve the review in favour of the new statement, it is what the agent gets.
+        await fresh.resolveTension(waiting[0].id, neu!.id)
+        const after = await fresh.inject(task, { budget: 4000 })
+        expect(deliversText(after, SAID), 'after I chose the new statement in review, it is not given to the agent').toBe(true)
+        expect(deliversText(after, LOCKED), 'after I chose the new statement in review, the locked one is still given').toBe(false)
       } finally {
         s.cleanup()
       }

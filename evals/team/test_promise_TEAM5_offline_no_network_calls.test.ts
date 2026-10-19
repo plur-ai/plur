@@ -1,4 +1,6 @@
-// TEAM-5: With no internet at all, I can still save and find memories, and PLUR makes no network calls.
+// TEAM-5: With no internet at all, I can still save and find memories; the core
+// makes no network call, and the MCP server tries at most once (the update check)
+// and, when that cannot connect, assumes it is offline and makes no further call.
 //
 // The network is blocked for the whole run: `fetch`, raw sockets and DNS
 // lookups all record the attempt and fail. No offline switch is set (the hub's
@@ -99,7 +101,17 @@ describe('TEAM-5 with no internet, saving and finding memories works and makes n
       const injected = await callTool(conn.client, 'plur_inject_hybrid', { task: 'backup job runs at two in the morning' })
       expect(injected.json?.count, `plur_inject_hybrid should give the saved memory with no internet; got ${injected.text.slice(0, 300)}`).toBeGreaterThan(0)
       await new Promise(r => setTimeout(r, 200))
+      // After its one failed attempt PLUR is offline: more work, and even an
+      // explicit update request, make no further call.
+      const before = attempts.length
+      await callTool(conn.client, 'plur_learn', { statement: 'the restore drill runs every quarter', scope: 'global' })
+      await callTool(conn.client, 'plur_recall_hybrid', { query: 'restore drill' })
+      await callTool(conn.client, 'plur_status', { check_updates: true })
+      await new Promise(r => setTimeout(r, 200))
+      expect(attempts.slice(before), `PLUR kept trying the network after a failed attempt; it tried: ${JSON.stringify(attempts)}`).toEqual([])
     } finally { await conn.close(); rmSync(work, { recursive: true, force: true }) }
-    expect(attempts, `expected PLUR to make no network calls; it tried: ${JSON.stringify(attempts)}`).toEqual([])
+    // Owner decision 2026-10-19 (decision board A1): PLUR may try the network once
+    // (the update check at start); when that cannot connect it assumes it is offline.
+    expect(attempts.length, `expected at most one network attempt with no internet; it tried: ${JSON.stringify(attempts)}`).toBeLessThanOrEqual(1)
   })
 })

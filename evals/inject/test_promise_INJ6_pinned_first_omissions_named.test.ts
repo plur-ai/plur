@@ -1,4 +1,4 @@
-// INJ-6: Pinned memories are given before anything else within the space I
+// INJ-6: Pinned memories are given first, up to their share of the space I
 // set, and PLUR names any pinned memory it could not fit.
 //
 // Replaces INJ-3 ("a rule I pinned is always given"), which an unconditional
@@ -10,8 +10,8 @@
 //     one token per 4 characters, rounded up — the INJ-2 rule),
 //   * every pinned rule that was left out is named, in the core result and in
 //     both MCP tool replies,
-//   * no unpinned memory is given while a pinned memory in the same scope is
-//     left out ("before anything else").
+//   * pinned rules come first, up to their share of the budget (owner decision
+//     2026-10-19), and the memories matching the task get the rest.
 import { afterEach, describe, expect, it } from 'vitest'
 import { tempStore, useEmbedder, type TempStore } from '../helpers/store.js'
 import { given, renderedText } from '../helpers/corrections-inject-feedback-util.js'
@@ -110,16 +110,23 @@ describe('INJ-6 ten pinned rules under a 150-token budget', () => {
         .toEqual([])
     })
 
-    it(`gives no unpinned memory while a pinned rule is left out (${path})`, async () => {
+    it(`pinned rules come first, up to their share, and the task still gets room (${path})`, async () => {
+      // Owner decision 2026-10-19: pinned memories are capped at their share of the
+      // budget (injection.pinned_ratio, default half), so a large pinned set cannot
+      // crowd out the memories that match the task.
       s = await tempStore({ embedder: 'bag-of-words' })
       const { pinned, unpinned } = await seedCapacity(s)
       const r = await s.plur[path](TASK, { scope: 'project:alpha', budget: BUDGET })
       const ids = given(r)
       const left = pinned.filter(id => !ids.includes(id))
       expect(left.length, 'precondition: capacity binds, so some pinned rule is left out').toBeGreaterThan(0)
+      const pinnedGiven = pinned.filter(id => ids.includes(id))
       const unpinnedGiven = unpinned.filter(id => ids.includes(id))
-      expect(unpinnedGiven, `pinned rules were left out (${left.length} of ${pinned.length}: ${JSON.stringify(left)}) while ${unpinnedGiven.length} unpinned memories were given, taking space in the same budget (${JSON.stringify(unpinnedGiven)}); pinned memories are meant to come before anything else`)
-        .toEqual([])
+      expect(pinnedGiven.length, 'no pinned rule was given at all').toBeGreaterThan(0)
+      expect(unpinnedGiven.length, `the pinned rules took the whole budget (${pinnedGiven.length} given); no memory matching the task was given`).toBeGreaterThan(0)
+      const lastPinned = Math.max(...pinnedGiven.map(id => ids.indexOf(id)))
+      const firstUnpinned = Math.min(...unpinnedGiven.map(id => ids.indexOf(id)))
+      expect(lastPinned, `a task memory was given before a pinned rule (order: ${JSON.stringify(ids)})`).toBeLessThan(firstUnpinned)
     })
   }
 

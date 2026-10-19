@@ -99,11 +99,11 @@ capabilities:
     today: broken
     evidence: 'Eval 2026-10-18 (owner decision: a changed value is a separate memory that supersedes the previous one). Scripted checker answers UPDATE on three dev supersede pairs, through learnAsync and learnBatch; graded from disk by helpers/dedup-outcome.ts; a distinct control pair with ADD must stay two live memories with no link; then injection must give the new memory and not the old. Broken on the judge branch: every UPDATE rewrites the existing text (''1 stored, 1 live; the existing memory''s text was changed''), single and batch.'
   - id: LRN-9
-    promise: When the duplicate check says a new statement updates a memory I locked, the locked memory stays unchanged and still given to my agent, and the new statement waits in my review queue for me to decide, through a single save and a batch save.
+    promise: When the duplicate check says a new statement updates a memory I locked, the locked memory stays unchanged and is the one given to my agent; the new statement waits unseen in my review queue until I decide, through a single save and a batch save.
     kind: deterministic
     today: broken
     evidence: 'Eval 2026-10-18 (owner decision: "there should be a review queue unless the user specifies differently"). The review queue is the tension records PLUR already shows for memories that disagree (listTensions, plur_tensions; my decision through confirm, dismiss or resolve, COR-5). Scripted checker answers UPDATE onto a locked memory, through learnAsync and learnBatch; graded from disk. Broken on the judge branch: the locked memory stays unchanged, active and given to the agent, and the new statement is saved, but no review item is created (review queue: []), single and batch.'
-    decide: 'Two things the owner has not said. While the review waits, is the new statement given to the agent too (both, with the locked one first), or only the locked one? And how does a user specify differently: a setting that lets an automatic supersede apply to locked memories, or one that always keeps them separate with no review?'
+    decide: 'Decided 2026-10-19: while the review waits only the locked memory is given (decision board B1); no setting to skip the review (B2).'
 
 - key: corrections
   name: Corrections and contradictions
@@ -185,11 +185,11 @@ capabilities:
     today: holds
     evidence: "Eval 2026-10-15 with 1 and 3 ratings each. With one rating, a helpful rating can LOWER a new memory's score: it promotes the memory out of 'leaning' and so removes the recently-learned bonus (fresh-tail.ts). Worth a product look."
   - id: INJ-6
-    promise: Pinned memories are given before anything else within the space I set, and PLUR names any pinned memory it could not fit.
+    promise: Pinned memories are given first, up to their share of the space I set (half by default), so the memories matching my task still get room; PLUR names any pinned memory it could not fit.
     kind: deterministic
     today: broken
     evidence: 'Eval 2026-10-17 (evals/inject INJ-6, replaces INJ-3; INJ-3 cases kept and green). Ten pinned rules under a 150-token budget: the agent stays within budget and every pinned rule left out is named (core omitted_pinned and both MCP inject replies). Fails ''before anything else'': ''pinned rules were left out (8 of 10 …) while 1 unpinned memories were given, taking space in the same budget''. Pins are capped at half the budget (PINNED_TOKEN_BUDGET_RATIO 0.5, inject.ts), so unpinned memories get the other half while pins are dropped.'
-    decide: Should pins be able to use the whole budget before any unpinned memory (the promise as written), or keep the 50% pinned share so task-relevant memories always get room? If the share stays, reword to e.g. 'Pinned memories get first claim on up to half the space I set …' under a new id.
+    decide: 'Decided 2026-10-19 (decision board A2): keep the pinned share, so task-relevant memories always get room.'
   - id: INJ-7
     promise: A memory reported as given to my agent is in the actual tool or hook reply, with its text and where it came from.
     kind: deterministic
@@ -316,11 +316,11 @@ capabilities:
     evidence: 'Eval 2026-10-17: with a team server mounted and live recall on, keyword search, hybrid search and hybrid inject limited to user:me, to a local project scope (project:hobby, no team store), to an allow-list of both, to an allow-list of global + user:me, or to global, send zero requests to the team server and still find my memory. Controls: a search in the team scope and in project:acme/payments (a team''s org) do reach it. A project inside a team''s org is not personal under this definition. Mutants TEAM-4-1..3 killed.'
 
   - id: TEAM-5
-    promise: With no internet at all, I can still save and find memories, and PLUR makes no network calls.
+    promise: With no internet at all, I can still save and find memories; PLUR tries the network at most once (the update check), and when that cannot connect it assumes it is offline and makes no further call.
     kind: deterministic
     today: broken
     evidence: "Eval 2026-10-15 red: the MCP server checks npm for updates on every start, with no way to turn it off (packages/mcp/src/server.ts ~224). The engine itself, with fetch, sockets and DNS blocked, saves, finds and injects with zero network calls. First-run model download not covered."
-    decide: "Is the update check exempt from this promise, or does it need an offline switch?"
+    decide: 'Decided 2026-10-19 (decision board A1): the update check runs at start again; when it cannot connect, PLUR assumes offline mode.'
 
 
 - key: sync
@@ -343,16 +343,18 @@ capabilities:
     today: holds
     evidence: evals/sync SYN-3; 2 planted bugs caught. sync-push-failure.test.ts, sync-corrupt-push-guard.test.ts.
   - id: SYN-4
-    promise: Private memories never leave my machine through sync, even to my own personal repository.
+    promise: Private memories never leave my machine through sync to a shared repository; my own personal repository mirrors them.
     kind: deterministic
     today: broken
-    decide: A personal repository receives private memories by design today, with a warning (sync.ts). Keep the promise and change the default, or narrow it to shared repositories (then SYN-1 covers it and SYN-4 is retired).
+    decide: 'Decided 2026-10-19 (decision board A4): mirror private memories to my own repository. Machine-local memories and side records stay home either way (SYN-6).'
     evidence: "evals/sync SYN-4 is red: a private personal memory left the machine through sync to a personal repository. The shared-repository case is green. sync.ts header comment; sync.test.ts warning case."
   - id: SYN-5
     promise: After two devices save, correct or forget memories offline, syncing keeps both devices' changes and never brings back a forgotten memory.
     kind: deterministic
     today: broken
     evidence: 'evals/sync SYN-5 is red in both orders: device A saves X and forgets Y, device B (joined by cloning the personal repository) saves Z and corrects W, then both sync. The second device''s sync throws: ''a sync failed: device B: Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.'' (A first; ''device A: ...'' when B syncs first). sync.ts merges engrams.yaml line by line through git (pullRebaseClean), so two devices appending memories offline always conflict. The same assertions pass when the devices sync one after the other (checked by hand, not committed).'
+    decide: 'Decided 2026-10-19 (decision board A5): when both devices changed the same memory text, the device doing the merge wins.'
+
   - id: SYN-6
     promise: A shared sync never reveals a private memory through a side record (an episode, candidate, contradiction record or history entry), and memories kept to this machine are never synced anywhere.
     kind: deterministic
