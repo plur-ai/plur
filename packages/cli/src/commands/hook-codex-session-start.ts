@@ -31,7 +31,6 @@ import { cachedServerLines } from '../lib/server-session.js'
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex session-start', async () => {
     const input = readStdinJson()
-    if (input.source !== 'compact') recordHookRun('codex', flags.path)
     // #1347 option C: a resumed session keeps its id, but SessionEnd deleted
     // its nonces. Forget that it was asked, so its first prompt asks again
     // with a fresh nonce. Only on resume: startup, clear and compact keep it.
@@ -40,6 +39,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // asked by hook-codex-inject on the first prompt; `off` is silent.
     const dir = payloadDir(input)
     const policy = hookFolderPolicy(dir, flags)
+    if (policy.mode !== 'off' && policy.reason !== 'malformed-map' && policy.reason !== 'resolver-error' && input.source !== 'compact') recordHookRun('codex', flags.path)
     if (policy.mode !== 'on' && policy.mode !== 'remote-only') return
     const sessionId = codexSessionId(input)
     if (!sessionId) return
