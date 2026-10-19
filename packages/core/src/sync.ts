@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkS
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
-import { engramStoreEntries, sameEngramContent, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
+import { engramStoreEntries, sameEngramContent, freshDuplicateId, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
 import { recordLastWritten } from './backup.js'
 import {
   DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken, startHeartbeat, heartbeatHeldLocks, GIT_COMMAND_TIMEOUT_MS,
@@ -853,7 +853,37 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType): boolean {
   // `--no-rebase` is explicit: git 2.27+ refuses a pull of divergent branches
   // unless a reconcile mode is configured, so the bare form failed in exactly
   // the case this fallback exists for and sync reported "NOT pulled".
-  const mergeResult = gitSafe(['pull', '--no-rebase', 'origin', branch, '--no-edit'], root)
+  //
+  // `--no-commit`: the merge stops before committing, clean or conflicted, so
+  // the store files can be merged as records (SYN-5) before anything is
+  // committed. Git merges YAML line by line, so two devices that each saved a
+  // memory offline both append to the end of engrams.yaml and always conflict;
+  // and a "clean" line merge can still put two different engrams under one id.
+  const mergeResult = gitSafe(['pull', '--no-rebase', '--no-commit', 'origin', branch], root)
+  if (gitSafe(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], root) !== null) {
+    let renames: IdRename[]
+    try {
+      renames = mergeStoreRecords(root)
+    } catch (err) {
+      gitSafe(['merge', '--abort'], root)
+      throw err
+    }
+    if (hasConflictMarkers(root)) {
+      gitSafe(['merge', '--abort'], root)
+      throw new Error('Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.')
+    }
+    stageStoreFiles(root)
+    stageStripped(root, remoteType)
+    const merged = gitSafe(['commit', '--no-edit', '-m', 'plur sync: merged both devices\' changes'], root)
+    if (merged === null) {
+      gitSafe(['merge', '--abort'], root)
+      return false
+    }
+    if (renames.length > 0) {
+      recordIdRenames(root, renames, SYNC_MERGE_RENAME_REASON, { store: join(root, 'engrams.yaml'), cause: 'sync-merge' })
+    }
+    return countDiff(root, 'behind') === 0
+  }
   if (mergeResult !== null) return true
   // Merge conflict — check for conflict markers before staging
   if (hasConflictMarkers(root)) {
@@ -877,6 +907,196 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType): boolean {
   // are still behind the upstream, the pull did not happen.
   if (committed === null) return false
   return countDiff(root, 'behind') === 0
+}
+
+const SYNC_MERGE_RENAME_REASON =
+  'sync: both devices saved a different engram under the same id while offline; the one not yet pushed was given a fresh id (P1b)'
+
+const UNMERGEABLE = 'Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.'
+
+/** Equality on parsed YAML values, key order ignored. */
+function same(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === undefined || b === undefined) return false
+  return sameEngramContent(a, b)
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * Three-way merge of one value both devices changed. Unchanged on one side →
+ * the other side's change. Changed on both:
+ * - `status`: a retirement wins (a forgotten or superseded memory stays so);
+ * - lists: union, minus what either side removed (a link added on either
+ *   device survives);
+ * - objects: merged key by key;
+ * - numbers: the larger (counters only grow);
+ * - anything else: this device's value.
+ * `undefined` means the key is absent.
+ */
+function mergeValue(base: unknown, ours: unknown, theirs: unknown, key?: string): unknown {
+  if (same(ours, theirs)) return ours
+  if (same(ours, base)) return theirs
+  if (same(theirs, base)) return ours
+  if (key === 'status' && (ours === 'retired' || theirs === 'retired')) return 'retired'
+  if (Array.isArray(ours) && Array.isArray(theirs)) {
+    const b = Array.isArray(base) ? base : []
+    const has = (list: unknown[], v: unknown) => list.some(x => same(x, v))
+    const removed = (v: unknown) => has(b, v) && (!has(ours, v) || !has(theirs, v))
+    const out = ours.filter(v => !removed(v))
+    for (const v of theirs) if (!removed(v) && !has(out, v)) out.push(v)
+    return out
+  }
+  if (isPlainObject(ours) && isPlainObject(theirs)) {
+    const b = isPlainObject(base) ? base : {}
+    const out: Record<string, unknown> = {}
+    for (const k of new Set([...Object.keys(ours), ...Object.keys(theirs)])) {
+      const v = mergeValue(b[k], ours[k], theirs[k], k)
+      if (v !== undefined) out[k] = v
+    }
+    return out
+  }
+  if (typeof ours === 'number' && typeof theirs === 'number') return Math.max(ours, theirs)
+  // Removed on one side, changed on the other: the removal was deliberate.
+  if (ours === undefined || theirs === undefined) return undefined
+  return ours
+}
+
+/**
+ * Three-way merge of two record lists, matched by `id` (or, for a record
+ * without one, by its content). The result follows the remote's order, then
+ * this device's additions. A record deleted on either side stays deleted.
+ * Records both sides added under one id are merged field by field — for
+ * engrams, {@link renameLocalClashes} has already split genuine clashes apart.
+ */
+function mergeRecordLists(base: unknown[], ours: unknown[], theirs: unknown[]): unknown[] {
+  const keyOf = (r: unknown): string => {
+    const id = (r as { id?: unknown } | null)?.id
+    return typeof id === 'string' ? `id:${id}` : `content:${JSON.stringify(r) ?? ''}`
+  }
+  const index = (list: unknown[]) => new Map(list.map(r => [keyOf(r), r] as const))
+  const b = index(base), o = index(ours), t = index(theirs)
+  const out: unknown[] = []
+  const seen = new Set<string>()
+  for (const [k, rt] of t) {
+    seen.add(k)
+    const inBase = b.has(k), inOurs = o.has(k)
+    if (inBase && !inOurs) continue // this device deleted it
+    if (!inOurs) { out.push(rt); continue }
+    const merged = mergeValue(inBase ? b.get(k) : undefined, o.get(k), rt)
+    if (merged !== undefined) out.push(merged)
+  }
+  for (const [k, ro] of o) {
+    if (seen.has(k)) continue
+    if (b.has(k)) continue // the other device deleted it
+    out.push(ro)
+  }
+  return out
+}
+
+/**
+ * Engrams both sides added under one id with different content (each device
+ * mints `max(same-day suffix)+1`). The local one was never pushed — the merge
+ * base predates it — so it takes a fresh id, and every reference to it on
+ * this side follows (owner decision P1b: keep both, rename one).
+ */
+function renameLocalClashes(base: unknown[], ours: unknown[], theirs: unknown[]): { ours: unknown[]; renames: IdRename[] } {
+  const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
+  const baseIds = new Set(base.map(idOf).filter((x): x is string => typeof x === 'string'))
+  const theirsById = new Map<string, unknown>()
+  for (const r of theirs) { const id = idOf(r); if (typeof id === 'string') theirsById.set(id, r) }
+  const taken = new Set<string>([...baseIds, ...theirsById.keys()])
+  for (const r of ours) { const id = idOf(r); if (typeof id === 'string') taken.add(id) }
+  const map = new Map<string, string>()
+  const renames: IdRename[] = []
+  for (const r of ours) {
+    const id = idOf(r)
+    if (typeof id !== 'string' || baseIds.has(id) || !theirsById.has(id)) continue
+    if (sameEngramContent(theirsById.get(id), r)) continue
+    const to = freshDuplicateId(id, r, taken)
+    taken.add(to)
+    map.set(id, to)
+    renames.push({ from: id, to })
+  }
+  if (map.size === 0) return { ours, renames }
+  return { ours: ours.map(r => renameIdRefs(r, map)), renames }
+}
+
+/**
+ * Merge the store files of an in-progress `git merge` as records (SYN-5), so
+ * both devices' offline saves, corrections and forgets survive. Writes and
+ * stages each merged file. Throws when a conflicted file cannot be merged this
+ * way (not a store file, or not a shape PLUR writes); the caller aborts the
+ * merge, leaving the local store as it was.
+ *
+ * Every side read here is a COMMITTED blob, i.e. already stripped of records
+ * this remote never receives; those held records are put back afterwards by
+ * the caller's restore step, exactly as after any pull.
+ */
+function mergeStoreRecords(root: string): IdRename[] {
+  const unmerged = (gitSafe(['diff', '--name-only', '--diff-filter=U'], root) ?? '').split('\n').filter(Boolean)
+  const mergeable = new Set<string>(['engrams.yaml', ...SIBLING_STRIP_FILES])
+  if (unmerged.some(f => !mergeable.has(f))) throw new Error(UNMERGEABLE)
+  const baseRev = gitSafe(['merge-base', 'HEAD', 'MERGE_HEAD'], root)
+  if (!baseRev) throw new Error(UNMERGEABLE)
+
+  const load = (rev: string, file: string): { text: string | null; raw: unknown } => {
+    const text = gitSafe(['show', `${rev}:${file}`], root)
+    if (text === null) return { text, raw: undefined }
+    try { return { text, raw: yaml.load(text) } } catch { return { text, raw: null } }
+  }
+  const sides = (file: string) => ({ base: load(baseRev, file), ours: load('HEAD', file), theirs: load('MERGE_HEAD', file) })
+  const write = (file: string, content: string) => {
+    atomicWrite(join(root, file), content)
+    git(['add', '-f', '--', file], root)
+  }
+
+  // engrams.yaml first: its id renames apply to the sibling records too.
+  let renames: IdRename[] = []
+  const map = new Map<string, string>()
+  {
+    const file = 'engrams.yaml'
+    const s = sides(file)
+    const conflicted = unmerged.includes(file)
+    const changedBoth = s.base.text !== s.ours.text && s.base.text !== s.theirs.text
+    if (conflicted || changedBoth) {
+      const list = (text: string | null): unknown[] | null => {
+        if (text === null) return []
+        try { return engramStoreEntries(join(root, file), text, Buffer.byteLength(text)) } catch { return null }
+      }
+      const b = list(s.base.text), o = list(s.ours.text), t = list(s.theirs.text)
+      if (!b || !o || !t) {
+        if (conflicted) throw new Error(UNMERGEABLE)
+      } else {
+        const clash = renameLocalClashes(b, o, t)
+        renames = clash.renames
+        for (const r of renames) map.set(r.from, r.to)
+        const engrams = mergeRecordLists(b, clash.ours, t)
+        const top = (v: unknown) => (isPlainObject(v) ? v : {})
+        const merged = mergeValue(top(s.base.raw), top(s.ours.raw), top(s.theirs.raw)) as Record<string, unknown>
+        write(file, yaml.dump({ ...merged, engrams }, YAML_DUMP_OPTS))
+      }
+    }
+  }
+
+  for (const file of SIBLING_STRIP_FILES) {
+    const s = sides(file)
+    const conflicted = unmerged.includes(file)
+    const oursChanged = s.base.text !== s.ours.text
+    const changedBoth = oursChanged && s.base.text !== s.theirs.text
+    if (!conflicted && !changedBoth && !(oursChanged && map.size > 0)) continue
+    const list = (side: { text: string | null; raw: unknown }): unknown[] | null =>
+      side.text === null ? [] : Array.isArray(side.raw) ? side.raw : null
+    const b = list(s.base), o = list(s.ours), t = list(s.theirs)
+    if (!b || !o || !t) {
+      if (conflicted) throw new Error(UNMERGEABLE)
+      continue
+    }
+    const oursNow = map.size > 0 ? o.map(r => renameIdRefs(r, map)) : o
+    write(file, yaml.dump(mergeRecordLists(b, oursNow, t), SIBLING_DUMP_OPTS))
+  }
+  return renames
 }
 
 /**
