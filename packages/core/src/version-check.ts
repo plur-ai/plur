@@ -21,6 +21,8 @@
  * window, always off the hot path.
  */
 
+import { updateCheckDisabledByEnv } from './offline.js'
+
 export interface VersionCheckResult {
   current: string
   latest: string | null
@@ -111,6 +113,14 @@ async function runCheck(
   currentVersion: string,
   onResult?: (result: VersionCheckResult) => void,
 ): Promise<VersionCheckResult> {
+  // Offline, or the check turned off (offline.ts): no request of any kind,
+  // and nothing cached, so a later read cannot start a refresh either (TEAM-5).
+  if (updateCheckDisabledByEnv()) {
+    const skipped: VersionCheckResult = { current: currentVersion, latest: null, updateAvailable: false, checkedAt: null }
+    if (onResult) onResult(skipped)
+    return skipped
+  }
+
   // Return cached result while fresh (#760: expired entries are re-fetched,
   // not returned forever)
   const entry = cache.get(packageName)

@@ -13,6 +13,7 @@
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import type { EmbedderAdapter } from './types.js'
+import { offlineByEnv } from '../offline.js'
 
 /** Pooling strategies supported by @huggingface/transformers feature-extraction. */
 export type Pooling = 'cls' | 'mean' | 'none'
@@ -73,12 +74,12 @@ async function defaultCacheDir(): Promise<string | null> {
   return libraryDefaultCacheDir ?? null
 }
 
-/** Downloads are off by environment (#1586 rounds 4-6). `allowRemoteModels =
+/** Downloads are off by environment (#1586 rounds 4-6): the offline switch
+ *  (PLUR_OFFLINE, HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE; see offline.ts) or
+ *  PLUR_MODEL_DOWNLOAD=off. `allowRemoteModels =
  *  false` is enforced by transformers.js itself. */
 export function downloadsOffByEnv(): boolean {
-  const truthy = (v: string | undefined) => !!v && ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
-  return truthy(process.env.HF_HUB_OFFLINE) || truthy(process.env.TRANSFORMERS_OFFLINE)
-    || (process.env.PLUR_MODEL_DOWNLOAD ?? '').trim().toLowerCase() === 'off'
+  return offlineByEnv() || (process.env.PLUR_MODEL_DOWNLOAD ?? '').trim().toLowerCase() === 'off'
 }
 
 /**

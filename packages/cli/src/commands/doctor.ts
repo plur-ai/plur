@@ -28,7 +28,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { repairAdvice, repairCommandFor } from './folders.js'
 import { codexInstalled } from '../lib/codex-binary.js'
@@ -1061,6 +1061,9 @@ export async function checkOpencodePluginPublished(
   pkg: string = PLUR_OPENCODE_PLUGIN,
   timeoutMs = 3000,
 ): Promise<'published' | 'not-published' | 'unknown'> {
+  // Declared offline (PLUR_OFFLINE, HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE):
+  // no request at all, and the honest answer is that we cannot tell.
+  if (offlineByEnv()) return 'unknown'
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
