@@ -1,20 +1,13 @@
 diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
-index 0d7f2901..35fa0b9d 100644
+index 250aad13..496d7207 100644
 --- a/packages/core/src/learn-async.ts
 +++ b/packages/core/src/learn-async.ts
-@@ -246,7 +246,6 @@ async function executeDedupDecision(
-             // Re-check under the lock (formal-verification finding, persistence.md
-             // candidate 7): `existing` is a pre-lock snapshot, and an engram locked
-             // since then must not be rewritten — same outcome as locked-before: ADD.
--            if ((engrams[idx] as any).commitment === 'locked') return null
-             const previousStatement = engrams[idx].statement
-             const updated = { ...engrams[idx] } as any
-             updated.statement = statement
-@@ -288,7 +287,6 @@ async function executeDedupDecision(
-             // Target gone — fall out of the lock and ADD; see the doc comment.
-             if (idx === -1) return null
-             // Locked since the pre-lock check: do not merge into it (see UPDATE).
--            if ((engrams[idx] as any).commitment === 'locked') return null
-             const merged = { ...engrams[idx] } as any
-             merged.statement = `${merged.statement} ${statement}`
-             merged.content_hash = computeContentHash(merged.statement)
+@@ -235,6 +235,8 @@ async function executeDedupDecision(
+         return { engram: await deps.learn(statement, context), decision: 'ADD' }
+       }
+       if ((existing as any).commitment === 'locked') {
++        // MUTANT: an automatic update rewrites the locked memory's text
++        { const all = await deps.store.load(); const i = all.findIndex(e => e.id === existing.id); all[i] = { ...all[i], statement } as Engram; await deps.store.save(all); return { engram: all[i], decision: 'UPDATE', existing_id: existing.id } }
+         return await saveBesideLocked(deps, statement, context, existing)
+       }
+       const supersedes = [...new Set([...(context?.supersedes ?? []), existing.id])]

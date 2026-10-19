@@ -1,21 +1,26 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index 7611980b..d9b4d568 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -4684,7 +4684,7 @@ export class Plur {
+       // taken after the checker read the target still wins. The caller sees
+       // the dropped target missing from `relations.supersedes` and sends the
+       // pair to review instead.
+-      if (context?.supersedes_unless_locked && context.supersedes?.length) {
++      if (false && context?.supersedes_unless_locked && context.supersedes?.length) { // MUTANT: no lock re-check at write time
+         const wanted = context.supersedes
+         const rows = canDelegate ? await ps.loadByIds!(wanted) : engrams
+         const locked = new Set(rows.filter(e => wanted.includes(e.id) && e.commitment === 'locked').map(e => e.id))
 diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
-index 0d7f2901..c114e14c 100644
+index 250aad13..ee3ad0c4 100644
 --- a/packages/core/src/learn-async.ts
 +++ b/packages/core/src/learn-async.ts
-@@ -237,7 +237,7 @@ async function executeDedupDecision(
-     case 'UPDATE': {
-       if (targetId) {
-         const existing = await deps.getById(targetId)
--        if (existing && (existing as any).commitment !== 'locked') {
-+        if (existing) {
-           const result = await withStoreLock(deps, async () => {
-             const engrams = await deps.store.load()
-             const idx = engrams.findIndex(e => e.id === targetId)
-@@ -246,7 +246,6 @@ async function executeDedupDecision(
-             // Re-check under the lock (formal-verification finding, persistence.md
-             // candidate 7): `existing` is a pre-lock snapshot, and an engram locked
-             // since then must not be rewritten — same outcome as locked-before: ADD.
--            if ((engrams[idx] as any).commitment === 'locked') return null
-             const previousStatement = engrams[idx].statement
-             const updated = { ...engrams[idx] } as any
-             updated.statement = statement
+@@ -234,7 +234,7 @@ async function executeDedupDecision(
+       if (!existing || existing.status !== 'active') {
+         return { engram: await deps.learn(statement, context), decision: 'ADD' }
+       }
+-      if ((existing as any).commitment === 'locked') {
++      if (false && (existing as any).commitment === 'locked') { // MUTANT: no lock check before an automatic update
+         return await saveBesideLocked(deps, statement, context, existing)
+       }
+       const supersedes = [...new Set([...(context?.supersedes ?? []), existing.id])]

@@ -1,23 +1,15 @@
 diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..fdb82a9d 100644
+index 7611980b..56147131 100644
 --- a/packages/core/src/index.ts
 +++ b/packages/core/src/index.ts
-@@ -6922,7 +6922,6 @@ export class Plur {
-       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
-       limit: options?.limit,
-       statePath: this.remoteHealthStatePath(),
--      ...(deadlineAt !== undefined && Number.isFinite(deadlineAt) ? { deadlineAt } : {}),
-     }).then(result => {
-       const observed_at = Date.now()
-       for (const o of result.outcomes) {
-@@ -6972,9 +6971,7 @@ export class Plur {
+@@ -7239,9 +7239,7 @@ export class Plur {
      deadlineAt: number,
    ): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
      if (!remotePromise) return { report: { state: 'not_dialed', hosts: [] } }
 -    const waited = Number.isFinite(deadlineAt)
 -      ? await settleBy(remotePromise, deadlineAt + Plur.REMOTE_SETTLE_GRACE_MS)
 -      : { done: true as const, value: await remotePromise }
-+    const waited = { done: true as const, value: await remotePromise }
++    const waited = { done: true as const, value: await remotePromise } // MUTANT: no deadline, wait for the remote however long it takes
      if (!waited.done || !waited.value) {
        const hosts = (remotePromise.hostUrls ?? []).map(u => ({
-         host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, detail: 'recall_deadline',
+         host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, ids: [] as string[], detail: 'recall_deadline',

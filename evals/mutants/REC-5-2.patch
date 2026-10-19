@@ -1,24 +1,23 @@
 diff --git a/packages/core/src/hybrid-search.ts b/packages/core/src/hybrid-search.ts
-index a1f056d9..274fde9f 100644
+index 13fdcd4c..1c121d02 100644
 --- a/packages/core/src/hybrid-search.ts
 +++ b/packages/core/src/hybrid-search.ts
-@@ -158,10 +158,6 @@ export async function hybridSearchWithMeta(
+@@ -196,9 +196,6 @@ export async function hybridSearchWithMeta(
      onFused?: (r: HybridSearchResult) => void
    },
  ): Promise<HybridSearchResult> {
 -  if (engrams.length === 0) {
 -    return { engrams: [], mode: 'hybrid', embedderError: null, topScore: null, reranked: 0 }
 -  }
--
+ 
    const exhaustive = isAggregationQuery(query)
    const effectiveLimit = exhaustive ? Math.max(limit, 50) : limit
-   const bm25Limit = Math.min(engrams.length, exhaustive ? effectiveLimit * 5 : effectiveLimit * 3)
-@@ -201,7 +197,7 @@ export async function hybridSearchWithMeta(
-   // topScore is the RRF fusion score of the top candidate, captured BEFORE the
-   // optional rerank stage — the miss-signal reasons about fusion strength, not
-   // the cross-encoder's reordering.
--  const topScore = ranked.length > 0 ? ranked[0].score : null
-+  const topScore = ranked[0].score
+@@ -241,7 +238,7 @@ export async function hybridSearchWithMeta(
+   // counted in full, the scale the miss-signal threshold is set on), captured
+   // BEFORE the optional rerank stage — the miss-signal reasons about fusion
+   // strength, not the cross-encoder's reordering.
+-  const topScore = ranked.length > 0 ? rrfScoreOf(ranked[0].engram.id, [bm25Results, embResults]) : null
++  const topScore = rrfScoreOf(ranked[0].engram.id, [bm25Results, embResults]) // MUTANT: empty store not guarded
    opts?.onFused?.({ engrams: ranked.slice(0, limit).map(s => s.engram), mode, embedderError, topScore, reranked: 0 })
    // Optional cross-encoder rerank (#220): reorders the top-K by joint relevance.
    // Off by default; on failure applyReranker logs + falls back to RRF order, so
