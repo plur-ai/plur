@@ -12,10 +12,13 @@ import { describe, it, expect } from 'vitest'
 import { selectAndSpread } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 
+// Used today: a fixed date here aged past the recency fade and turned the good
+// case red a month after it was written (the visibility rule never changed).
+const TODAY = new Date().toISOString().slice(0, 10)
 const mk = (id: string, scope: string, statement: string, extra: Record<string, unknown> = {}) => ({
   ...EngramSchema.parse({
     id, statement, type: 'behavioral', scope, status: 'active', version: 2, tags: [],
-    activation: { retrieval_strength: 0.9, storage_strength: 1, frequency: 0, last_accessed: '2026-09-20' },
+    activation: { retrieval_strength: 0.9, storage_strength: 1, frequency: 0, last_accessed: TODAY },
   }),
   ...extra,
 })
