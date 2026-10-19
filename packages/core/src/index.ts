@@ -1581,7 +1581,8 @@ export class Plur {
     // sentinel file (#156). It must never take the constructor down — but with
     // an async write path, "started in the constructor" and "finished" are no
     // longer the same moment, so callers that need the result get `ready()`.
-    this._readyPromise = this._autoPurgeLegacyTensions().catch((err: unknown) => {
+    const startDir = options?.cwd || process.cwd()
+    this._readyPromise = this._autoPurgeLegacyTensions(startDir).catch((err: unknown) => {
       logger.warning(`[plur] legacy tension auto-purge failed: ${(err as Error).message}`)
     })
   }
@@ -1638,13 +1639,17 @@ export class Plur {
     return this._backendSelection
   }
 
-  private async _autoPurgeLegacyTensions(): Promise<void> {
+  private async _autoPurgeLegacyTensions(startDir: string): Promise<void> {
     // A read-only instance must not run a write migration — and must not stamp
     // the sentinel either, or the purge would be recorded as done without ever
     // having happened. Left for the next writable instance to perform (#731).
     if (this._readonly) return
     const sentinel = join(this.paths.root, '.tensions-purged')
     if (fs.existsSync(sentinel)) return
+    // Starting in a folder where memory is off touches no memory (#1523): the
+    // migration reads every store and stamps the sentinel, so it is left,
+    // unstamped, for the next start outside that folder.
+    if (this._startFolderOff(startDir)) return
     try {
       const result = await this.purgeTensions()
       if (result.purged_count > 0) {
