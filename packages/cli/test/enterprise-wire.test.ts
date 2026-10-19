@@ -458,6 +458,19 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
     expect(opencode.detail).not.toContain('CORP_TOKEN')
   })
 
+  it('a Claude Code or Cursor ${…} expansion, or a Cursor envFile, is not reproduced here: withheld', async () => {
+    put('.claude.json', JSON.stringify({ mcpServers: { plur: { command: '/h/.plur/bin/plur-mcp', env: { TEAM_TOKEN: '${CORP_TOKEN}' } } } }))
+    put('.cursor/mcp.json', JSON.stringify({ mcpServers: { plur: { command: '/h/.plur/bin/plur-mcp', envFile: '/home/alice/.plur/cursor.env' } } }))
+    const results = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
+    const claude = results.find(r => r.tool === 'claude-code')!
+    const cursor = results.find(r => r.tool === 'cursor')!
+    expect(launchOf(claude)).toBeUndefined()
+    expect(claude.detail).toMatch(/substitution/)
+    expect(claude.detail).not.toContain('CORP_TOKEN')
+    expect(launchOf(cursor)).toBeUndefined()
+    expect(cursor.detail).toMatch(/envFile/)
+  })
+
   it('an unknown launcher is described without echoing the command', () => {
     const d = launchProblem('Codex', { command: 'https://alice:secret@proxy.example.com', args: [], env }, 'linux')
     expect(d).not.toBeNull()
