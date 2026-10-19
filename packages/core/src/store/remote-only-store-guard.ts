@@ -99,8 +99,10 @@ export function queueHoldViolation(
 ): string | null {
   const was = marker(stored)
   const now = marker(next)
-  if (was?.remote_only === true) {
-    if (now?.remote_only !== true) return 'its queue entry would be removed'
+  // The shared predicate (either marker field), so a half-stripped marker is
+  // held too (Codex round 11 on #1663).
+  if (isRemoteOnlyQueued(stored)) {
+    if (!isRemoteOnlyQueued(next) || !now || !was) return 'its queue entry would be removed'
     for (const k of ['remote_only_folder', 'target_scope', 'target_url']) {
       if (now[k] !== was[k]) return `its queue entry's ${k} would change`
     }
@@ -108,7 +110,7 @@ export function queueHoldViolation(
     if (next.status !== 'active') return `it would be ${next.status}`
     return null
   }
-  if (now?.remote_only === true && !isWellFormedQueuedSave(next, isDeliverableScope)) {
+  if (isRemoteOnlyQueued(next) && !isWellFormedQueuedSave(next, isDeliverableScope)) {
     return 'it is not a well-formed queued save (active, in a team scope served by a writable team store)'
   }
   return null

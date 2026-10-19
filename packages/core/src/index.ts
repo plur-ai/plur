@@ -6839,7 +6839,8 @@ export class Plur {
         : []
       return [...visible, ...remote]
     }
-    const primary = (await this._loadTargeted(wanted)).filter(e => wanted.includes(e.id))
+    // Unbound, a queued remote-only save is not returned (Codex round 11 on #1663).
+    const primary = withoutRemoteOnlyQueued((await this._loadTargeted(wanted)).filter(e => wanted.includes(e.id)))
     const found = new Set(primary.map(e => e.id))
     let missing = wanted.filter(id => !found.has(id))
     if (missing.length === 0) return primary
@@ -6935,7 +6936,8 @@ export class Plur {
    * pushdown branch came to silently disagree with `list()` in the first place.
    */
   private _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
-    let out = engrams
+    // A query adapter's rows never include a queued remote-only save (Codex round 11 on #1663).
+    let out = withoutRemoteOnlyQueued(engrams)
     if (!options?.include_expired) {
       // #1150: instants compared as instants. The lexical form this replaces
       // read `valid_until: 2026-09-07T01:00:00Z` as still valid at noon that
@@ -7809,7 +7811,7 @@ export class Plur {
           ...(options?.domain !== undefined ? { domain: options.domain } : {}),
           visibilityGrants: this._grantedScopes(),
         })
-        if (narrowed.exhausted) return narrowed.rows
+        if (narrowed.exhausted) return withoutRemoteOnlyQueued(narrowed.rows)
       } catch {
         // A pushdown failure must never fail a recall — fall back to the read
         // that has always worked.
@@ -10036,7 +10038,8 @@ export class Plur {
         })
         this._appendHistory({
           event: 'engram_retired', engram_id: id, timestamp: new Date().toISOString(),
-          data: { reason: reason ?? 'forgotten', deleted_queued_remote_only: true },
+          // No reason text: it can quote the save (Codex round 11 on #1663).
+          data: { deleted_queued_remote_only: true },
         })
         return { warnings: [] }
       }
@@ -11341,6 +11344,10 @@ export class Plur {
     manifest: ExportOptions,
   ): ReturnType<typeof exportPack> {
     this._remoteOnlyRefuseLocalStore('Exporting a pack')
+    // A pack is a permanent copy: never of a queued remote-only save, bound or
+    // not (Codex round 11 on #1663).
+    const queuedRow = engrams.find(isRemoteOnlyQueued)
+    if (queuedRow) throw this._queuedStaysRemote(queuedRow)
     const configured = (this.config as any)?.provenance?.default_license as string | undefined
     return exportPack(engrams, outputDir, manifest, configured)
   }
@@ -12107,7 +12114,7 @@ export class Plur {
         return fields ? `${cleanEngram.statement}\n${JSON.stringify(fields)}` : cleanEngram.statement
       })()
       const offending = this._offendingHitsForScope(scanText, outbox.target_scope)
-      if ((outbox as any).remote_only && !this._isDeliverableTeamScope(outbox.target_scope)) {
+      if (isRemoteOnlyQueued(engram) && !this._isDeliverableTeamScope(outbox.target_scope)) {
         // A remote-only save goes only to a deliverable team scope (re-audit 3
         // of #1521): held, never sent elsewhere and never demoted.
         outbox.last_attempt = now.toISOString()
@@ -12118,7 +12125,7 @@ export class Plur {
         failed++
         continue
       }
-      if (offending.length > 0 && (outbox as any).remote_only) {
+      if (offending.length > 0 && isRemoteOnlyQueued(engram)) {
         // A save from a remote-only folder is never demoted to a local row
         // (audit of #1521, B2): it stays queued, not pushed, and says why.
         const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
