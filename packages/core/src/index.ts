@@ -15628,8 +15628,13 @@ for (const name of Object.getOwnPropertyNames(Plur.prototype)) {
   const d = Object.getOwnPropertyDescriptor(Plur.prototype, name)
   if (!d || typeof d.value !== 'function') continue
   const original = d.value as (...args: unknown[]) => unknown
+  // The capture itself is inline (no method of the instance is called), so a
+  // call is exactly one call on the instance: the folder-off test counts them.
+  const als = (Plur as unknown as { _lockBinding: AsyncLocalStorage<{ plur: Plur; binding: RemoteOnlyBinding | null }> })._lockBinding
   const wrapped = function (this: Plur, ...args: unknown[]) {
-    return (this as unknown as { _captured<T>(fn: () => T): T })._captured(() => original.apply(this, args))
+    const ctx = als.getStore()
+    if (ctx?.plur === this) return original.apply(this, args)
+    return als.run({ plur: this, binding: (this as unknown as { _boundFolder: RemoteOnlyBinding | null })._boundFolder }, () => original.apply(this, args))
   }
   Object.defineProperty(wrapped, BINDING_CAPTURED, { value: true })
   Object.defineProperty(Plur.prototype, name, { ...d, value: wrapped })
