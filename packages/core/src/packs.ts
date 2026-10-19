@@ -1450,9 +1450,16 @@ function _installPackDir(
   // pack keeps the basename it has always had.
   const rawName = path.basename(source)
   const manifestName = preview.manifest.name?.trim()
-  const sourceName = rawName === FLAT_ARCHIVE_DIRNAME && manifestName && /^[A-Za-z0-9._-]+$/.test(manifestName)
-    ? manifestName
-    : rawName
+  const safeManifestName = manifestName && /^[A-Za-z0-9._-]+$/.test(manifestName) && !/^\.+$/.test(manifestName) ? manifestName : undefined
+  const preferredName = rawName === FLAT_ARCHIVE_DIRNAME && safeManifestName ? safeManifestName : rawName
+  // Refuse a traversal name before any directory is inspected (#811).
+  resolveInside(packsDir, preferredName, 'install')
+  // Two DIFFERENT packs downloaded into same-named folders (`a/pack`, `b/pack`)
+  // used to share `packs/pack`, so installing the second deleted the first
+  // (#1188). The basename is kept while the directory is free or holds the
+  // same pack (same manifest name: a reinstall or upgrade). When it holds a
+  // different pack, the manifest name is tried, then `<name>-2`, `-3`, ...
+  const sourceName = pickInstallDirName(packsDir, preferredName, safeManifestName, manifestName)
   // The name the directory already has, if a case-variant of it is installed
   // on a case-insensitive filesystem: the swap below then keeps that name and
   // the registry row follows the directory (audit of #1230, finding 2).
@@ -1669,6 +1676,33 @@ export async function installPack(
  * Resolution answers the only question that matters — does this end up inside
  * the packs directory.
  */
+function pickInstallDirName(
+  packsDir: string,
+  preferred: string,
+  safeManifestName: string | undefined,
+  manifestName: string | undefined,
+): string {
+  // A directory may receive this pack when it is free, or when it already
+  // holds a pack with the same manifest name. A directory whose manifest cannot
+  // be read keeps the old behaviour (it is replaced): reinstalling over a
+  // damaged copy is how it gets repaired.
+  const accepts = (name: string): boolean => {
+    const dir = path.join(packsDir, onDiskEntryName(packsDir, name))
+    if (!fs.existsSync(dir)) return true
+    if (!manifestName) return true
+    let installed: string | undefined
+    try { installed = loadPack(dir).manifest.name?.trim() } catch { return true }
+    return !installed || installed === manifestName
+  }
+  if (accepts(preferred)) return preferred
+  if (safeManifestName && safeManifestName !== preferred && accepts(safeManifestName)) return safeManifestName
+  const base = safeManifestName ?? preferred
+  for (let n = 2; ; n++) {
+    const candidate = `${base}-${n}`
+    if (accepts(candidate)) return candidate
+  }
+}
+
 function resolveInside(packsDir: string, name: string, op: string): string {
   const base = path.resolve(packsDir)
   const candidate = path.resolve(base, name)
