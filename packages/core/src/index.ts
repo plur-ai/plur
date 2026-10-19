@@ -14327,7 +14327,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       const action = waiting.find(e => e.state === 'needs_action')
       const dates = waiting.map(e => e.queued_at).filter(d => Number.isFinite(Date.parse(d))).sort()
       const status = (['ok', 'not_synced', 'failed', 'auth_failed', 'degraded'] as const).find(s => s === cache.status) ?? 'never'
-      const target: ServerSessionState['target'] = policy.git ?? (policy.scope ? { kind: 'map', scope: policy.scope } : null)
+      // An agreed explicit/effective scope outranks how individual roots
+      // obtained it. Remote-only also keeps its scope above Git defaults.
+      const target: ServerSessionState['target'] = policy.scope ? { kind: 'map', scope: policy.scope } : policy.git ?? null
       const targetScope = target?.kind === 'scope' || target?.kind === 'map' ? target.scope : undefined
       const route = targetScope ? resolveScopeTarget(targetScope, this.config.stores ?? []) : undefined
       const writeWarning = route?.kind === 'remote' && route.entry.readonly

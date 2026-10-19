@@ -84,3 +84,22 @@ it('different explicit folder scopes never advertise the first root as a shared 
   expect(result.server_status).toHaveLength(1)
   expect(result.server_status[0]).not.toContain(`saving to ${scope}`)
 })
+it('the same scope from a folder map and an origin is still a remote session default', async () => {
+  writeFileSync(join(home, '.plur', 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(local)}\n    plur: on\n    scope: ${scope}\n`)
+  const result = await start(home, [local, mapped])
+  expect(result.default_scope).toBe(scope)
+  expect(result.server_status).toEqual([`PLUR → server as fixture-user · saving to ${scope}`])
+})
+it('a remote-only policy outranks a local root in status as it does in routing', async () => {
+  writeFileSync(join(home, '.plur', 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(mapped)}\n    plur: remote-only\n    scope: ${scope}\n`)
+  const result = await start(home, [mapped, local])
+  expect(result.remote_only.scope).toBe(scope)
+  expect(result.server_status).toEqual([`PLUR → server as fixture-user · saving to ${scope}`])
+})
+it('a caller cannot advertise a personal destination in a remote-only workspace', async () => {
+  writeFileSync(join(home, '.plur', 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(mapped)}\n    plur: remote-only\n    scope: ${scope}\n`)
+  const result = await start(home, [mapped], { default_scope: 'personal' })
+  expect(result.remote_only.scope).toBe(scope)
+  expect(result.server_status[0]).not.toContain('personal')
+  expect(result.server_status[0]).toContain(`saving to ${scope}`)
+})

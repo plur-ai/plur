@@ -485,7 +485,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         serverStatus: async (explicitScope) => {
           const admitted = boundStatusPolicy
           if (!admitted) return []
-          return instance.serverSessionLines(admitted.dir, explicitScope
+          return instance.serverSessionLines(admitted.dir, explicitScope && admitted.policy.mode !== 'remote-only'
             ? { ...admitted.policy, scope: explicitScope, git: undefined } : admitted.policy)
         },
         resolve: async () => {

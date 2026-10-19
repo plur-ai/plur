@@ -78,6 +78,12 @@ def memoryAfterStatus (memory : List Nat) (_statusAvailable : Bool) : List Nat :
 
 theorem status_failure_keeps_memory (memory : List Nat) : memoryAfterStatus memory false = memory := rfl
 
+def statusScope (restricted : Option Nat) (explicit : Option Nat) (admitted : Nat) : Nat :=
+  restricted.getD (target admitted explicit)
+
+theorem restriction_wins (scope admitted : Nat) (explicit : Option Nat) :
+    statusScope (some scope) explicit admitted = scope := rfl
+
 end PlurSpec.SessionStatusAdapter
 
 /-! Cached session status (2026-10-19): presentation never probes the server.
