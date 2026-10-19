@@ -27,7 +27,7 @@
  */
 import { accessSync, constants, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
 import { homedir, release } from 'os'
-import { dirname, join } from 'path'
+import { dirname, join, posix, win32 } from 'path'
 import { isDeepStrictEqual } from 'util'
 import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree } from 'jsonc-parser'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
@@ -702,7 +702,15 @@ export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJ
   // pass as saved), so a launch that depends on its working folder — a
   // relative script, a relative PLUR_PATH or CA path — would prove a
   // different setup.
-  if (launch.cwd !== undefined) return `${label} starts PLUR in its own working folder, which the proof cannot reproduce — remove \`cwd\` from the plur entry, or ${fix}`
+  const absolute = platform === 'win32' ? win32.isAbsolute : posix.isAbsolute
+  const relativePath = (p: string | undefined) => p !== undefined && p !== '' && /[\\/]/.test(p) && !absolute(p)
+  const relativeFile = (p: string | undefined) => p !== undefined && p !== '' && !absolute(p)
+  const folderBound = launch.cwd !== undefined
+    || relativePath(launch.command)
+    || (baseName(launch.command) === 'node' && relativeFile(launch.args[0]))
+    || relativeFile(launch.env.PLUR_PATH)
+    || relativeFile(launch.env.NODE_EXTRA_CA_CERTS)
+  if (folderBound) return `${label} starts PLUR with a working folder or a relative path (script, PLUR_PATH or CA file), which the proof cannot reproduce from its own folder — use absolute paths and no \`cwd\` in the plur entry, or ${fix}`
   if (isNpxLaunch(launch)) return `${label} starts PLUR through npx — ${fix}`
   let base = baseName(launch.command)
   // `env [-opts] [NAME=value…] program …` runs `program`: judge that one.
@@ -782,7 +790,8 @@ export function probeWsl(opts: {
     const root = windowsSystemRoot(opts.env)
     if (!root) return probes
     const r = opts.exec(`${root}\\System32\\wsl.exe`, ['-e', 'sh', '-lc', 'command -v codex'], { timeoutMs: 15_000 })
-    probes.codexInWsl = r.status === 0 && /^\/\S*codex\s*$/.test(r.stdout.trim() + '\n')
+    // One absolute path ending in /codex (spaces allowed), nothing else.
+    probes.codexInWsl = r.status === 0 && /^\/[^\r\n]*\/codex$/.test(r.stdout.trim())
     return probes
   }
   probes.isWsl = opts.platform === 'linux' && isWslKernel(opts.osRelease)
