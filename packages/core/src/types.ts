@@ -146,12 +146,13 @@ export interface LearnAsyncResult {
   existing_id?: string
   tensions?: string[]
   /**
-   * Batch learning only (owner decision 2026-10-18: batch learning never
-   * overwrites). Present when the duplicate checker answered UPDATE or MERGE
-   * for this item: instead of rewriting the existing memory, the item was
-   * saved as its own memory (decision 'ADD') and linked to the existing one
-   * through `relations.related`. `checker_decision` is what the checker
-   * suggested; nothing was changed on the existing memory.
+   * Present when the duplicate checker answered MERGE (owner decision
+   * 2026-10-18: learning never overwrites; single and batch saves alike since
+   * LRN-7): instead of rewriting the existing memory, the item was saved as
+   * its own memory (decision 'ADD') and linked to the existing one through
+   * `relations.related`. `checker_decision` is what the checker suggested;
+   * nothing was changed on the existing memory. (An UPDATE answer supersedes
+   * instead and is reported as decision 'UPDATE', LRN-8.)
    */
   likely_duplicate_of?: {
     id: string

@@ -2,14 +2,10 @@
  * Async learning with LLM-driven deduplication (Ideas 1+2+19).
  * Separated from index.ts to avoid merge conflicts with parallel SPs.
  */
-import { computeContentHash } from './content-hash.js'
 import { buildDedupPrompt, parseDedupResponse } from './dedup.js'
 import { appendHistory } from './history.js'
 import { logger } from './logger.js'
-import { withAsyncLock } from './store/async-lock.js'
-import { maybeDailyBackup } from './backup.js'
 import { searchTextFrom } from './fts.js'
-import { engramContentFields } from './content-fields.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
@@ -100,112 +96,6 @@ export interface LearnAsyncDeps {
 
 
 /**
- * Run `fn` under exclusive access to the store — the store's own mechanism when
- * it has one, the path-based file lock otherwise.
- *
- * Mirrors `Plur._withStoreLock`, and exists for the same reason. These writes
- * are load -> mutate -> `store.save(all)`, which REPLACES the whole corpus, so
- * two concurrent writers do not merely lose an update: the loser deletes rows
- * the winner committed.
- *
- * This module locked on `deps.engramsPath` unconditionally — an `O_EXCL` file on
- * the LOCAL disk. That is correct for a YAML store, where the path being locked
- * IS the data, and worthless for a shared database: two processes share neither
- * the mutex nor the file. So `learnAsync` and `learnBatch` bypassed the Postgres
- * advisory lock that every other write path takes.
- */
-/**
- * Persist exactly one changed engram (audit #794 F3 remainder, issue #802).
- *
- * The dedup UPDATE and MERGE branches used to call `deps.store.save(engrams)`
- * directly, which bypasses the incremental write seam and is a WHOLE-CORPUS
- * REPLACE on every backend. That is a correctness bug, not just a slow path:
- * `PostgresAdapter.save()` finishes with
- *
- *   DELETE FROM engrams WHERE id NOT IN (<the ids being saved>)
- *
- * so every row absent from the array this call happened to load is deleted —
- * and an empty array deletes the table outright. It fires on ordinary
- * `plur_learn` calls, since UPDATE/MERGE is what LLM dedup returns whenever the
- * statement resembles something already stored.
- *
- * `updateMany` is the seam's "these rows changed, leave the rest alone"
- * primitive; a store that implements it gets a single-row UPDATE. A store
- * without it falls back to the whole-corpus save it always had — no worse than
- * before, and on YAML that save is itself guarded against an unexpected shrink.
- */
-async function persistOne(deps: LearnAsyncDeps, corpus: Engram[], changed: Engram): Promise<void> {
-  if (deps.store.updateMany) {
-    await deps.store.updateMany([changed])
-    deps.store.invalidate()
-    return
-  }
-  await deps.store.save(corpus)
-}
-
-async function withStoreLock<T>(deps: LearnAsyncDeps, fn: () => Promise<T>): Promise<T> {
-  // Take the daily snapshot here too (#813, audit finding 15). Plur's own
-  // `_withStoreLock` does this, but the dedup paths lock through this helper
-  // instead — so when the first mutation of the day was an UPDATE or a MERGE,
-  // the pre-mutation corpus was never snapshotted and the statement being
-  // overwritten had no copy anywhere.
-  //
-  // Same ordering as the engine's hook and for the same reasons: inside the
-  // lock, before `fn` reads or writes, so the copy is of the on-disk bytes as
-  // they were. Never throws — a backup is a safety net for the write, not a
-  // precondition of it.
-  const guarded = async (): Promise<T> => {
-    try { maybeDailyBackup(deps.rootPath, deps.engramsPath) } catch { /* backup logs its own failures */ }
-    return await fn()
-  }
-  if (deps.store.withExclusiveAccess) return await deps.store.withExclusiveAccess(guarded)
-  return await withAsyncLock(deps.engramsPath, guarded)
-}
-
-/**
- * Demote an engram in place when its (post-mutation) statement carries content
- * the engram's shared scope forbids. Local write, so demotion is coherent:
- * scope→'local', visibility→'private'. Warns naming the offending patterns,
- * mirroring `_guardSensitiveScope`'s warning style. No-op (returns the engram
- * unchanged) when there are no offending hits. (#353)
- *
- * Stamps `structured_data._demoted = { from, to, patterns }` (LOW-9, #353)
- * mirroring the sync learnRouted demotion (index.ts `guarded.demotion`) and the
- * explicit-update / saveMetaEngrams demotion sites, so the MCP plur_learn
- * response (tools.ts) and the CLI can surface that the requested shared scope
- * was demoted. Captures `from` BEFORE the scope reassignment.
- */
-function demoteIfSensitive(
-  deps: LearnAsyncDeps,
-  engram: any,
-  newStatement: string,
-): void {
-  // Scan the post-mutation statement AND the rest of the engram. A dedup
-  // UPDATE/MERGE unions `context.tags` into the engram before this runs, so a
-  // secret/infra value in a merged tag would otherwise ride to a shared store
-  // unguarded — the statement-only scan missed it (#409). The field set is the
-  // same serialised surface every other engram-side guard reads
-  // (`engramContentFields`), not a list kept here that could drift from it.
-  const fields = engramContentFields({ ...engram, statement: newStatement } as Engram)
-  const scanText = fields ? `${newStatement}\n${JSON.stringify(fields)}` : newStatement
-  const offending = deps.offendingHitsForScope(scanText, engram.scope ?? 'global')
-  if (offending.length === 0) return
-  const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
-  logger.warning(
-    `[plur] sensitive content (${patterns}) held back from shared scope "${engram.scope}" — ` +
-    `demoted to local/private so it is not written to a shared store. ` +
-    `Re-scope deliberately if this is a false positive.`,
-  )
-  const from = engram.scope ?? 'global'
-  engram.scope = 'local'
-  engram.visibility = 'private'
-  engram.structured_data = {
-    ...(engram.structured_data ?? {}),
-    _demoted: { from, to: 'local', patterns },
-  }
-}
-
-/**
  * The duplicate checker said UPDATE onto a locked memory (LRN-9, owner
  * decision 2026-10-18: "there should be a review queue unless the user
  * specifies differently"). The locked memory is left exactly as it is, the
@@ -247,16 +137,12 @@ async function saveBesideLocked(
 /**
  * Execute LLM-driven dedup decision.
  *
- * Async since convergence Phase 2: the UPDATE/MERGE writes take
- * `withAsyncLock`, which queues concurrent in-process writers instead of making
- * all but one of them retry an `EEXIST` and eventually throw.
+ * No branch rewrites an existing memory: NOOP saves nothing, UPDATE saves a
+ * new memory that supersedes the target, MERGE and ADD save a new memory (MERGE
+ * linked to the target). Every write goes through `deps.learn`, which takes the
+ * store lock itself, so nothing here locks.
  *
- * The "target vanished" fallback (`idx === -1`) now runs OUTSIDE the lock. It
- * used to call `await deps.learn()` from inside it, and `Plur.learn()` takes the same
- * lock on the same path — a self-deadlock that resolved only by the inner
- * acquire exhausting its retries and throwing. Reachable whenever the target
- * engram disappears between `getById` and the lock, which is exactly the
- * concurrent case this phase is about.
+ * `opts` is accepted for callers that still pass it; see LearnAsyncOptions.
  */
 async function executeDedupDecision(
   deps: LearnAsyncDeps,
@@ -266,17 +152,17 @@ async function executeDedupDecision(
   targetId: string | null,
   opts: LearnAsyncOptions = {},
 ): Promise<LearnAsyncResult> {
-  // Batch learning never overwrites an existing memory (owner decision
-  // 2026-10-18). An UPDATE or MERGE answer from the duplicate checker becomes
-  // an ADD of the incoming statement, linked to the memory the checker named
-  // (`relations.related`, forward edge only), and the result says so. The
-  // existing memory is not touched: not its text, not its tags, not its
-  // version. NOOP (nothing written) is unaffected.
-  //
-  // An UPDATE answer is NOT handled here: it supersedes (below), which never
-  // rewrites the existing memory either, in a single save and a batch save
-  // alike (owner decision 2026-10-18, LRN-8).
-  if (opts.neverOverwrite && decision === 'MERGE') {
+  // No save overwrites an existing memory (owner decision 2026-10-18). A MERGE
+  // answer from the duplicate checker means "related, both worth keeping", so
+  // the incoming statement is saved as its own memory, linked to the one the
+  // checker named (`relations.related`, forward edge only), and the result
+  // says so. The existing memory is not touched: not its text, not its tags,
+  // not its version. This holds for a single save and a batch save alike
+  // (LRN-7): the single path used to concatenate the two statements into the
+  // existing memory, which turned two different rules into one memory and
+  // rewrote the old text. A real duplicate is the checker's NOOP; a changed
+  // value is its UPDATE, which supersedes (below) and never rewrites either.
+  if (decision === 'MERGE') {
     const existing = targetId ? await deps.getById(targetId) : null
     if (!existing || existing.status !== 'active') {
       return { engram: await deps.learn(statement, context), decision: 'ADD' }
@@ -291,7 +177,7 @@ async function executeDedupDecision(
         checker_decision: decision,
         note:
           `The duplicate checker suggested merging this into ${existing.id}. ` +
-          `Batch learning never overwrites an existing memory, so this was saved as its own memory and linked to ` +
+          `Learning never overwrites an existing memory, so this was saved as its own memory and linked to ` +
           `${existing.id} as a likely duplicate; ${existing.id} is unchanged.`,
       },
     }
@@ -353,46 +239,6 @@ async function executeDedupDecision(
       return { engram, decision: 'UPDATE', existing_id: existing.id }
     }
 
-    case 'MERGE': {
-      if (targetId) {
-        const existing = await deps.getById(targetId)
-        if (existing && (existing as any).commitment !== 'locked') {
-          const result = await withStoreLock(deps, async () => {
-            const engrams = await deps.store.load()
-            const idx = engrams.findIndex(e => e.id === targetId)
-            // Target gone — fall out of the lock and ADD; see the doc comment.
-            if (idx === -1) return null
-            // Locked since the pre-lock check: do not merge into it (see UPDATE).
-            if ((engrams[idx] as any).commitment === 'locked') return null
-            const merged = { ...engrams[idx] } as any
-            merged.statement = `${merged.statement} ${statement}`
-            merged.content_hash = computeContentHash(merged.statement)
-            merged.engram_version = (merged.engram_version ?? 1) + 1
-            merged.activation.last_accessed = new Date().toISOString().slice(0, 10)
-            if (context?.tags) merged.tags = [...new Set([...merged.tags, ...context.tags])]
-            if (0.7 > merged.activation.retrieval_strength) merged.activation.retrieval_strength = 0.7
-            // Leak guard (#353): a dedup MERGE concatenates the incoming
-            // statement, which can introduce sensitive content into an engram at
-            // a shared scope. Demote before persisting.
-            demoteIfSensitive(deps, merged, merged.statement)
-            engrams[idx] = merged
-            await persistOne(deps, engrams, merged)
-            await deps.syncIndex()
-            appendHistory(deps.rootPath, {
-              event: 'engram_merged',
-              engram_id: targetId,
-              timestamp: new Date().toISOString(),
-              data: { merged_statement: statement, reason: 'LLM dedup MERGE' },
-              ...(dedupActor ? { actor: dedupActor } : {}),
-            })
-            return { engram: merged as Engram, decision: 'MERGE' as DedupDecision, existing_id: targetId }
-          })
-          if (result) return result
-        }
-      }
-      return { engram: await deps.learn(statement, context), decision: 'ADD' }
-    }
-
     case 'ADD':
     default:
       return { engram: await deps.learn(statement, context), decision: 'ADD' }
@@ -406,11 +252,11 @@ async function executeDedupDecision(
 /** Options for learnAsync that callers other than learnBatch do not set. */
 export interface LearnAsyncOptions {
   /**
-   * Never rewrite an existing memory (owner decision 2026-10-18, batch only).
-   * A MERGE answer from the duplicate checker saves the statement as its own
-   * memory, linked to the one the checker named, and reports it in
-   * `likely_duplicate_of`. Default false: a single learnAsync keeps its MERGE
-   * behaviour. UPDATE supersedes in both (LRN-8), so this does not touch it.
+   * Kept for callers that still pass it; it no longer changes anything. No
+   * save rewrites an existing memory any more (owner decision 2026-10-18,
+   * LRN-7): a MERGE answer is saved as its own memory linked to the one the
+   * checker named, in a single save and a batch save alike, and UPDATE
+   * supersedes in both (LRN-8).
    */
   neverOverwrite?: boolean
 }

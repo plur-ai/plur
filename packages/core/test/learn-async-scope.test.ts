@@ -120,7 +120,7 @@ describe('learnAsync scope-aware LLM dedup (issue #359)', () => {
 
 // #484: async UPDATE/MERGE must increment `engram_version` (content-evolution
 // counter used by previous_version chains), not `version` (schema-shape field).
-describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', () => {
+describe('learnAsync UPDATE/MERGE never move the existing engram_version or version (#484, LRN-7, LRN-8)', () => {
   let dir: string
   let engramsPath: string
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
@@ -151,17 +151,30 @@ describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', 
     expect(persisted.version).toBe(2)
   })
 
-  it('MERGE increments engram_version and leaves version untouched', async () => {
+  // LRN-7 (owner decision 2026-10-18): a MERGE answer never rewrites the
+  // target in a single save either; the statement is saved as its own memory,
+  // linked to the target. Neither version field of the target moves.
+  // (Previously: the statements were concatenated and engram_version incremented.)
+  it('MERGE leaves the existing engram untouched and saves a linked memory', async () => {
     const seed = { ...globalCandidate, id: 'ENG-2026-0101-484b', scope: 'global', engram_version: 2, version: 2 } as unknown as Engram
     const deps = depsWithFile([seed])
+    const learned: any[] = []
+    const baseLearn = deps.learn
+    deps.learn = async (statement: string, context?: any) => { learned.push({ statement, context }); return baseLearn(statement, context) }
     const llm = vi.fn().mockResolvedValue('DECISION: MERGE\nTARGET: ENG-2026-0101-484b\nREASON: complementary')
 
     const result = await learnAsync(deps, 'extra clause', { llm })
 
-    expect(result.decision).toBe('MERGE')
+    expect(result.decision).toBe('ADD')
+    expect(result.likely_duplicate_of?.id).toBe('ENG-2026-0101-484b')
+    expect(result.likely_duplicate_of?.checker_decision).toBe('MERGE')
+    expect(learned).toHaveLength(1)
+    expect(learned[0].statement).toBe('extra clause')
+    expect(learned[0].context.related).toEqual(['ENG-2026-0101-484b'])
     const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-484b') as any
-    expect(persisted.engram_version).toBe(3)   // incremented
-    expect(persisted.version).toBe(2)           // schema-shape, untouched
+    expect(persisted.statement).toBe(seed.statement)
+    expect(persisted.engram_version).toBe(2)
+    expect(persisted.version).toBe(2)
   })
 })
 
