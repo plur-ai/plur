@@ -75,7 +75,7 @@ import {
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome, stampStoreRow} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { RemoteOnlyStoreGuard, QueueHoldStore, isQueuedForFolder } from './store/remote-only-store-guard.js'
-import { isRemoteOnlyQueued } from './remote-only-rows.js'
+import { isRemoteOnlyQueued, withoutRemoteOnlyQueued } from './remote-only-rows.js'
 import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
@@ -1910,6 +1910,11 @@ export class Plur {
     if (this._readonly) return
     const sentinel = join(this.paths.root, '.tensions-purged')
     if (fs.existsSync(sentinel)) return
+    // After the constructor's caller had its turn to bind the instance (Codex
+    // round 10 on #1663): a remote-only binding then refuses the purge, and it
+    // is left for the next unbound instance.
+    await Promise.resolve()
+    if (this._boundFolder) return
     try {
       const result = await this.purgeTensions()
       if (result.purged_count > 0) {
@@ -1931,7 +1936,11 @@ export class Plur {
     // only those) plus its read corpus — never a personal url store's cache.
     if (this._remoteOnly) return [...(await this._loadCached(this.paths.engrams)), ...(await this._readCorpus())]
     const primary = await this._loadCached(this.paths.engrams)
-    return [...primary, ...(await this._loadSecondaryAndPacks())]
+    // Unbound, a queued remote-only save is not read at all (gate review of
+    // #1663): it is another folder's team memory, waiting to be delivered, and
+    // reading it would hand it to recall, dedup, tensions or a model here.
+    // The outbox, flush, forget and update reach it through the primary store.
+    return withoutRemoteOnlyQueued([...primary, ...(await this._loadSecondaryAndPacks())])
   }
 
   /**
@@ -4630,7 +4639,8 @@ export class Plur {
     const primaryHashMatch = canDelegate && isHashable(statement)
       ? await this._primaryStore.findActiveByContentHash!(computeContentHash(statement), scope)
       : null
-    if (primaryHashMatch) return { primaryHashMatch, hashMatch: primaryHashMatch, foreign: null }
+    // A queued remote-only save never absorbs a write (gate review of #1663).
+    if (primaryHashMatch && !isRemoteOnlyQueued(primaryHashMatch)) return { primaryHashMatch, hashMatch: primaryHashMatch, foreign: null }
     const { hit, foreign } = await this._firstPersistableHit(
       allEngrams, this._hashDedupPredicate(statement, scope), scope,
     )
@@ -4912,7 +4922,7 @@ export class Plur {
         ? await ps.nextEngramId!(engramIdDatePrefix())
         // remote-only: `allEngrams` leaves out most of the primary store, whose
         // ids a queued (outbox) row must still not collide with.
-        : generateEngramId(this._remoteOnly ? [...engrams, ...allEngrams] : allEngrams, await this._idsInUse())
+        : generateEngramId([...engrams, ...allEngrams], await this._idsInUse())
       // Claim it in-process immediately (#816). The history record is written
       // later and best-effort; without this, two writes in the same tick — or
       // one whose history append fails — could both take the same suffix.
@@ -7909,7 +7919,8 @@ export class Plur {
     if (options?.min_strength !== undefined) {
       engrams = engrams.filter(e => e.activation.retrieval_strength >= options.min_strength!)
     }
-    return engrams
+    // Unbound, a queued remote-only save is never a result (gate review of #1663).
+    return withoutRemoteOnlyQueued(engrams)
   }
 
   /**
@@ -11057,11 +11068,17 @@ export class Plur {
       // stays "missing", so it is set aside, and a batch of only those ends the pass.
       const skippedRemoteOnly = new Set<string>()
       for (;;) {
-        const batch = await adapter.listEngramsMissingEmbeddings(PRIMARY_AUTO_EMBED_BATCH, { includeStale: true })
+        // Asked for the set-aside rows on top of a batch, so a run of queued
+        // saves never hides the rows behind them (Codex round 10 on #1663).
+        const want = PRIMARY_AUTO_EMBED_BATCH + skippedRemoteOnly.size
+        const batch = await adapter.listEngramsMissingEmbeddings(want, { includeStale: true })
         if (batch.length === 0) return
         for (const e of batch) if (isRemoteOnlyQueued(e)) skippedRemoteOnly.add(e.id)
         const fresh = batch.filter(e => !embeddedThisPass.has(e.id) && !skippedRemoteOnly.has(e.id))
-        if (fresh.length === 0 && batch.every(e => skippedRemoteOnly.has(e.id))) return
+        if (fresh.length === 0 && batch.every(e => skippedRemoteOnly.has(e.id))) {
+          if (batch.length < want) return
+          continue
+        }
         if (fresh.length === 0) {
           logger.warning(
             `[plur] primary-store auto-embed stopped: ${batch.length} engram(s) still report a stale `
@@ -11086,7 +11103,7 @@ export class Plur {
         // A full batch means the anti-join may hold more; a short one is the
         // tail. Progress is guaranteed: every upsert removes a row from the
         // next batch's answer, so this cannot loop on the same gap.
-        if (batch.length < PRIMARY_AUTO_EMBED_BATCH) return
+        if (batch.length < want) return
       }
     } catch (err) {
       // A store torn down mid-pass (close()/dropSchema() in a short-lived
@@ -12927,6 +12944,13 @@ Generate an improved version of the procedure that prevents this failure. Return
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Recording tensions')
     if (pairs.length === 0) return { records: [], new_count: 0, existing_count: 0 }
+    // A pair with a queued remote-only save is never recorded: the record would
+    // keep its statement here (gate review of #1663).
+    {
+      const queuedIds = new Set((await this._basePrimaryStore.loadCached()).filter(isRemoteOnlyQueued).map(e => e.id))
+      if (queuedIds.size > 0) pairs = pairs.filter(p => !queuedIds.has(p.id_a) && !queuedIds.has(p.id_b))
+      if (pairs.length === 0) return { records: [], new_count: 0, existing_count: 0 }
+    }
     const engramById = new Map((await this._loadAllEngrams()).map(e => [e.id, e]))
     return withLock(this.paths.tensions, () => {
       // Quarantined records ride along (audit 2026-08-03, finding 4).

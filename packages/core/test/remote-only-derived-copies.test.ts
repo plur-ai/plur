@@ -227,7 +227,7 @@ describe('construction-time maintenance waits for the binding (Codex round 10 on
   it('the legacy tension purge does not rewrite personal rows of an instance bound right after construction', async () => {
     const home = join(dir, 'home4'); const root = join(home, '.plur'); const work = join(home, 'client')
     mkdirSync(root, { recursive: true }); mkdirSync(work, { recursive: true })
-    writeFileSync(join(root, 'engrams.yaml'), yaml.dump({ engrams: [ordinary('ENG-2026-10-18-119', 'personal with a legacy conflict', { relations: { conflicts: ['ENG-2026-10-18-120'] } })] }))
+    writeFileSync(join(root, 'engrams.yaml'), yaml.dump({ engrams: [row('ENG-2026-10-18-119', 'personal with a legacy conflict', { scope: 'global', relations: { conflicts: ['ENG-2026-10-18-120'] } })] }))
     writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false }, stores: [{ url: 'http://127.0.0.1:9', token: 't', scope: TEAM, shared: true }] }))
     writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: work, plur: 'remote-only', scope: TEAM }] }))
     const before = readFileSync(join(root, 'engrams.yaml'), 'utf8')

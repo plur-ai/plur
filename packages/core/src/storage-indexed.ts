@@ -266,7 +266,8 @@ export class IndexedStorage {
       for (const store of this.stores) {
         if (!store.path) continue
         validSources.add(store.path)
-        const storeEngrams = loadEngrams(store.path)
+        // A queued remote-only save is never mirrored here (gate review of #1663).
+        const storeEngrams = withoutRemoteOnlyQueued(loadEngrams(store.path))
         for (const e of storeEngrams) {
           // Scope validation: skip mismatched scopes. Segment-aware (#383) so a
           // sibling string-prefix scope can't be indexed under this store.

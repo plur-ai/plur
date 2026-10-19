@@ -22,6 +22,7 @@ import { tmpdir } from 'os'
 import { spawn } from 'child_process'
 import { pathToFileURL } from 'url'
 import yaml from 'js-yaml'
+import { loadTensions, saveTensions } from '../src/tension-store.js'
 import { Plur, RemoteOnlyWriteError } from '../src/index.js'
 import { StubServer } from './helpers/stub-server.js'
 import { backgroundPushesSettled } from './helpers/background-pushes.js'
@@ -119,7 +120,15 @@ describe('R2-B2: a queued remote-only save is never retired', () => {
     const outside = new Plur({ path: root })
     const personal = await outside.learn('personal winner statement')
     const q = await queue('queued client loser statement')
-    const rec = await outside.recordTensions([{ id_a: personal.id, id_b: q.id, statement_a: 'a', statement_b: 'b', confidence: 0.9, reason: 'x' }])
+    // A tension with a queued save is no longer recorded (gate review of #1663):
+    // its record would keep the statement here.
+    const none = await outside.recordTensions([{ id_a: personal.id, id_b: q.id, statement_a: 'a', statement_b: 'b', confidence: 0.9, reason: 'x' }])
+    expect(none.records).toEqual([])
+    // One written by an older client is still refused on resolve.
+    const other = await outside.learn('another personal statement')
+    const rec = await outside.recordTensions([{ id_a: personal.id, id_b: other.id, statement_a: 'a', statement_b: 'b', confidence: 0.9, reason: 'x' }])
+    const tPath = join(root, 'tensions.yaml')
+    saveTensions(tPath, loadTensions(tPath).map(t => t.id === rec.records[0].id ? { ...t, engram_b: q.id } : t))
     expect(await refused(() => outside.resolveTension(rec.records[0].id, personal.id))).toBeInstanceOf(RemoteOnlyWriteError)
     expect(row(q.id)?.status).toBe('active')
     const r = await new Plur({ path: root }).flushOutbox({ force: true })
