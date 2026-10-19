@@ -412,6 +412,15 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
     const [claude] = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
     expect(launchOf(claude)).toBeUndefined()
   })
+  it('a launch that depends on the folder it starts in is withheld', () => {
+    expect(launchProblem('Codex', { command: 'node', args: ['./node_modules/@plur-ai/mcp/dist/index.js'], env }, 'linux')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: './bin/plur-mcp', args: [], env }, 'linux')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: '/h/.plur/bin/plur-mcp', args: [], env: { PLUR_PATH: './memory' } }, 'linux')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: '/h/.plur/bin/plur-mcp', args: [], env: { NODE_EXTRA_CA_CERTS: 'ca.pem' } }, 'linux')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: 'C:\\h\\.plur\\bin\\plur-mcp.exe', args: [], env: { PLUR_PATH: 'C:\\data\\plur' } }, 'win32')).toBeNull()
+    expect(launchProblem('Codex', { command: 'plur-mcp', args: [], env: { PLUR_PATH: '/data/plur' } }, 'linux')).toBeNull()
+  })
+
   it('an unknown launcher is described without echoing the command', () => {
     const d = launchProblem('Codex', { command: 'https://alice:secret@proxy.example.com', args: [], env }, 'linux')
     expect(d).not.toBeNull()
@@ -467,6 +476,13 @@ describe('probeWsl', () => {
       expect(p.codexInWsl).toBe(false)
       expect(calls).toHaveLength(0)
     }
+  })
+
+  it('Windows: a WSL Codex path with a space is still Codex in WSL; two lines are not', () => {
+    const ok = probeWsl({ platform: 'win32', env: { SystemRoot: 'C:\\Windows', PATH: '' }, osRelease: '', exec: recordingExec('/opt/Node Tools/bin/codex\n').exec })
+    expect(ok.codexInWsl).toBe(true)
+    const two = probeWsl({ platform: 'win32', env: { SystemRoot: 'C:\\Windows', PATH: '' }, osRelease: '', exec: recordingExec('/usr/bin/codex\n/usr/local/bin/codex\n').exec })
+    expect(two.codexInWsl).toBe(false)
   })
 
   it('Windows: an answer that is not a path, or a failed wsl.exe, is not Codex in WSL', () => {
