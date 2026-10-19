@@ -1541,7 +1541,7 @@ export class Plur {
   private get _remoteOnly(): RemoteOnlyBinding | null { return this._activeBinding() }
 
   /** Run `fn` with the binding captured now, unless an outer operation of this instance already captured one. */
-  private _captured<T>(fn: () => Promise<T>): Promise<T> {
+  private _captured<T>(fn: () => T): T {
     const ctx = Plur._lockBinding.getStore()
     if (ctx?.plur === this) return fn()
     return Plur._lockBinding.run({ plur: this, binding: this._boundFolder }, fn)
@@ -15613,21 +15613,24 @@ function isUnder(child: string, parent: string): boolean {
 }
 
 // One folder binding per public call (gate review of #1663, structural
-// change 2). Every public async method of Plur captures the remote-only
-// binding in effect when it is called and keeps it until it settles, so a
-// rebind of the same instance while the call waits cannot change what it
-// reads, refuses or queues. The wrapper runs the ORIGINAL body, never the
-// public name again, so a spy on a method counts each call once. A call made
-// inside another one of the same instance keeps the outer call's binding.
+// change 2; GLM round 14). Every public method of Plur, sync or async, runs
+// its ORIGINAL body inside _captured, which records the remote-only binding
+// in effect when the call starts and keeps it until the call settles. A sync
+// method gets it for its whole body, and so does any promise it returns; a
+// rebind of the same instance while a call waits cannot change what it reads,
+// refuses or queues. The wrapper never calls the public name again, so a spy
+// on a method counts each call once. A call made inside another one of the
+// same instance keeps the outer call's binding. Each wrapper carries
+// BINDING_CAPTURED, which a test checks on every public method.
+export const BINDING_CAPTURED: unique symbol = Symbol('plur.bindingCaptured')
 for (const name of Object.getOwnPropertyNames(Plur.prototype)) {
   if (name === 'constructor' || name.startsWith('_')) continue
   const d = Object.getOwnPropertyDescriptor(Plur.prototype, name)
-  if (!d || typeof d.value !== 'function' || d.value.constructor?.name !== 'AsyncFunction') continue
-  const original = d.value as (...args: unknown[]) => Promise<unknown>
-  Object.defineProperty(Plur.prototype, name, {
-    ...d,
-    value: function (this: Plur, ...args: unknown[]) {
-      return (this as unknown as { _captured<T>(fn: () => Promise<T>): Promise<T> })._captured(() => original.apply(this, args))
-    },
-  })
+  if (!d || typeof d.value !== 'function') continue
+  const original = d.value as (...args: unknown[]) => unknown
+  const wrapped = function (this: Plur, ...args: unknown[]) {
+    return (this as unknown as { _captured<T>(fn: () => T): T })._captured(() => original.apply(this, args))
+  }
+  Object.defineProperty(wrapped, BINDING_CAPTURED, { value: true })
+  Object.defineProperty(Plur.prototype, name, { ...d, value: wrapped })
 }

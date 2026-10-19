@@ -511,7 +511,7 @@ export function checkFolderMapText(text: string): FolderMapCheck {
           const span = at && at.key === 'plur' ? valueSpan(at) : null
           const suggestion = span && typeof value === 'string' ? suggestMode(span.value) : null
           fixable = suggestion !== null
-          message = `\`plur:\` in entry ${idx + 1} must be on, off or ask` +
+          message = `\`plur:\` in entry ${idx + 1} must be on, off or ask, or remote-only with a team scope` +
             (suggestion ? ` — it looks like \`${suggestion}\` with the wrong case or a typo` : '')
         } else if (key === 'trusted' || key === 'literal') {
           message = `\`${key}:\` in entry ${idx + 1} must be true or false`

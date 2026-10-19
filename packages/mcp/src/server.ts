@@ -330,6 +330,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     const pick = resolved.find(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')
       ?? resolved.find(r => r.policy.mode === 'remote-only')
       ?? resolved[resolved.length - 1]
+    // The last-element fallback is no tiebreak (GLM round 14 on #1663): with no
+    // unreadable map and no remote-only folder, every pick is a policy that
+    // clears the binding, so which folder is named does not change the call.
     instance.bindFolderPolicy(pick.dir, pick.policy)
   }
 
