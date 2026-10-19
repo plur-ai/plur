@@ -22,5 +22,6 @@ import PlurSpec.ServerDiagnostics
 import PlurSpec.WorkspaceChoice
 import PlurSpec.LegacyProjectCleanup
 import PlurSpec.UploadLocal
+import PlurSpec.UploadCommand
 
 /-! Root of the PlurSpec models. One file per component; R2* = second verification round. -/
