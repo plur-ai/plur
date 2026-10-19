@@ -415,3 +415,8 @@ requests, strict permission evidence, and explicit missing-evidence failures.
 They do not change grants, memory, queue delivery or file permissions. Existing
 write/routing invariants hold; ServerDiagnostics models report aggregation.
 The discovery clock-skew constant is exported without changing its value. -/
+
+/-! 2026-10-19: Explicit primary upload reuses the locked queue and guarded
+flush with a selected-id filter. Existing route, sensitivity, binding and
+retirement invariants remain in force. UploadLocal models the new admission,
+selection, dry-run and receipt rules. Held receipts are never cached as live. -/

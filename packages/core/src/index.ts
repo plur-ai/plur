@@ -34,7 +34,7 @@ import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisab
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, semanticModelState, backgroundModelLoadAllowed, fillEmbeddingCache, activeEmbedderIsRemote, type EmbedderStatus } from './embeddings.js'
-import type { DegradedReason } from './types.js'
+import type { DegradedReason, UploadLocalResult } from './types.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
@@ -1753,7 +1753,9 @@ export class Plur {
       }
     }
     this.config = this._loadConfig()
-    this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
+    this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover, this._readRawStores().some(
+      entry => isPlainObject(entry) && isPlainObject(entry.enterprise) && ServerStoreEntrySchema.safeParse(entry).success,
+    ))
     // Auto-discover project stores from CWD (skips temp dirs for test safety).
     //
     // Opt-out exists because this is a constructor with a DISK SIDE EFFECT
@@ -10526,6 +10528,84 @@ export class Plur {
     )
   }
 
+  /** Active primary-store rows eligible for an explicit upload proposal. */
+  async listUploadCandidates(authorizedScopes: string[]): Promise<Array<{ id: string; scope: string; statement: string; proposed: string | null }>> {
+    this._remoteOnlyRefuseLocalStore('Listing local upload candidates')
+    const authorized = new Set(authorizedScopes)
+    return (await this._loadCached(this.paths.engrams))
+      .filter(row => row.status === 'active' && !(row as any).server_id && !(row as any)._fromRemoteStore && !Plur._isRemoteOnlyQueued(row))
+      .map(row => ({ id: row.id, scope: row.scope, statement: row.statement, proposed: authorized.has(row.scope) ? row.scope : null }))
+  }
+
+  /** Queue selected primary rows through the existing guarded outbox path. */
+  async uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results: UploadLocalResult[] }> {
+    this._assertWritable()
+    this._remoteOnlyRefuseLocalStore('Uploading local memories')
+    const results = new Map<string, UploadLocalResult>(), selected = new Set<string>()
+    for (const id of new Set(ids)) {
+      try {
+        await this._withStoreLock(this.paths.engrams, async () => {
+          this.reloadConfigIfChanged()
+          const corpus = await this._primaryStore.load(), row = corpus.find(e => e.id === id)
+          if (!row || row.status !== 'active' || Plur._isRemoteOnlyQueued(row)) throw new Error('No active local upload candidate with this id')
+          if ((row as any).server_id) {
+            results.set(id, { id, outcome: 'already_on_server', new_id: (row as any).server_id }); return
+          }
+          const entry = this._remoteWriteEntry(row.scope)
+          if (!entry) throw new Error('This memory has no unambiguous writable server destination')
+          const sd = { ...((row as any).structured_data ?? {}) }, pending = sd._outbox
+          if (pending && (pending.target_scope !== row.scope || normalizeEndpointUrl(pending.target_url) !== normalizeEndpointUrl(entry.url!))) {
+            throw new Error('This memory is queued for a different destination; resolve its queue first')
+          }
+          const fields = this._engramContextFields(row)
+          const hits = this._offendingHitsForScope(fields ? `${row.statement}\n${JSON.stringify(fields)}` : row.statement, row.scope)
+          if (hits.length) {
+            results.set(id, { id, outcome: 'demoted_secret', ...(opts?.dryRun ? { dry_run: true as const } : {}) })
+            if (!opts?.dryRun) {
+              sd._demoted = { from: row.scope, to: 'local', patterns: [...new Set(hits.map(h => h.pattern))] }
+              delete sd._outbox; row.scope = 'local'; row.visibility = 'private'; (row as any).structured_data = sd
+              await this._updateEngrams(corpus, [row]); await this._syncIndex()
+            }
+            return
+          }
+          if (opts?.dryRun) { results.set(id, { id, outcome: 'sent', dry_run: true }); return }
+          sd._outbox = pending ?? { target_url: entry.url!, target_scope: row.scope, queued_at: new Date().toISOString(),
+            last_attempt: '', attempt_count: 0, last_error: '', idempotency_key: randomUUID() }
+          ;(row as any).structured_data = sd
+          await this._updateEngrams(corpus, [row]); selected.add(id)
+        })
+      } catch {
+        results.set(id, { id, outcome: 'failed', error: 'Could not prepare this memory; check the local store and its writable server destination' })
+      }
+    }
+    if (selected.size) {
+      let remaining: Engram[]
+      try {
+        await this._runOutboxFlush({ force: true }, { ids: selected, results })
+        remaining = await this._primaryStore.load()
+      }
+      catch {
+        // A server may have accepted a row before local merge-back failed.
+        // Retain its receipt id and report the incomplete operation honestly.
+        for (const id of selected) results.set(id, { ...results.get(id), id, outcome: 'failed',
+          error: 'Upload could not finish local bookkeeping; inspect the outbox before retrying' })
+        return { results: [...new Set(ids)].map(id => results.get(id)!) }
+      }
+      for (const id of selected) {
+        const row = remaining.find(e => e.id === id), sd = (row as any)?.structured_data
+        if (results.has(id)) {
+          if (row) results.set(id, { ...results.get(id)!, outcome: 'failed',
+            error: 'The local memory changed during delivery; its accepted server copy is being reconciled through the outbox' })
+          continue
+        }
+        if (sd?._demoted && !sd._outbox) results.set(id, { id, outcome: 'demoted_secret' })
+        else if (sd?._outbox) results.set(id, { id, outcome: NEEDS_ACTION_STATUSES.has(sd._outbox.last_status) ? 'failed' : 'queued' })
+        else results.set(id, { id, outcome: 'failed', error: 'Delivery was not confirmed; the local row changed during upload' })
+      }
+    }
+    return { results: [...new Set(ids)].map(id => results.get(id)!) }
+  }
+
   /**
    * Move existing engram(s) to `targetScope` (#676) — the missing primitive
    * between `learn()` (whose content-hash dedup silently no-ops a re-emit
@@ -11699,6 +11779,10 @@ export class Plur {
    * dropped or rescoped for being `needs_action`.
    */
   async flushOutbox(options: { timeoutMs?: number; force?: boolean } = {}): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
+    return this._runOutboxFlush(options)
+  }
+
+  private async _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     this._assertWritable()
     // #1269: the network budget. Started by the flush itself once the local
     // load is done (review of #1277), so a large store does not spend it on disk.
@@ -11714,7 +11798,7 @@ export class Plur {
     // #1277 per-entry claims this flush takes; released however it ends (C4).
     const entryClaims = new Set<string>()
     try {
-      return await this._flushOutboxClaimed(claimed, budget.signal, options.force === true, startBudget, entryClaims)
+      return await this._flushOutboxClaimed(claimed, budget.signal, options.force === true, startBudget, entryClaims, upload)
     } finally {
       if (budgetTimer) clearTimeout(budgetTimer)
       // Decision C4: the per-entry claims are released however the flush
@@ -11782,6 +11866,7 @@ export class Plur {
     force: boolean,
     startBudget: () => void,
     entryClaims: Set<string>,
+    upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> },
   ): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     // The re-guard below promises the target scope's CURRENT policy (R2-D #12);
     // without this a long-running process flushed against the config it
@@ -11948,6 +12033,7 @@ export class Plur {
     // on retirement; this guard is belt-and-suspenders for any path that retires
     // without explicitly cancelling (e.g. direct YAML edits, older client versions).
     const pending: Engram[] = engrams.filter(e => {
+      if (upload && !upload.ids.has(e.id)) return false
       if (!Plur._stillQueued(e) || !free(e)) return false
       // A row owing a retire is decided in the push loop (after its retire).
       if ((e as any).structured_data._retireRemote) return true
@@ -11973,6 +12059,7 @@ export class Plur {
     // concurrent retirers are harmless: `removeIdempotent` treats 404/410 as done.
     const pendingClaimed = new Set(pending.map(e => e.id))
     const retiring: Engram[] = engrams.filter(e => {
+      if (upload && !upload.ids.has(e.id)) return false
       const entry = (e as any).structured_data?._retireRemote as RetireEntry | undefined
       if (!entry || !(pendingClaimed.has(e.id) || free(e))) return false
       if (retireStoreFor(entry)) return true
@@ -12255,6 +12342,10 @@ export class Plur {
             ?? (persistedIdMap[t]?.url !== undefined && normalizeEndpointUrl(persistedIdMap[t].url) === normalizeEndpointUrl(storeEntry.url!) ? persistedIdMap[t].server_id : undefined)
           if (server) { remapped.push(server); continue }
           const localTarget = engrams.find(e => e.id === t)
+          if (localTarget && Plur._stillQueued(localTarget) && !pendingIds.has(t)) {
+            refuse = t
+            break
+          }
           if (localTarget && !pendingIds.has(t)) {
             expired_warnings.push(
               `${engram.id}: supersedes ${t}, which lives only in the local store — that edge cannot be `
@@ -12282,6 +12373,7 @@ export class Plur {
       try {
         // C4: the same key on every retry of this write.
         const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget, idempotencyKey: outbox.idempotency_key })
+        upload?.results.set(engram.id, { id: engram.id, outcome: pushed.review_required ? 'held_for_review' : pushed.deduplicated ? 'already_on_server' : 'sent', new_id: pushed.id })
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
         pushedTo.set(engram.id, { url: storeEntry.url!, scope: outbox.target_scope })
@@ -14242,11 +14334,12 @@ Generate an improved version of the procedure that prevents this failure. Return
    * call site (an embedded consumer, a wrapper binary) can still turn off a
    * cwd-derived disk side effect it never asked for.
    */
-  static resolveAutoDiscover(explicit?: boolean): boolean {
+  static resolveAutoDiscover(explicit?: boolean, enterprise = false): boolean {
     if (explicit !== undefined) return explicit
     const env = process.env.PLUR_AUTO_DISCOVER
     if (env === '0' || env === 'false') return false
-    return true
+    if (env === '1' || env === 'true') return true
+    return !enterprise
   }
 
   /** Whether this instance ran (and would re-run) cwd store discovery. */

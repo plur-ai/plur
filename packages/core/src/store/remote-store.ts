@@ -998,7 +998,7 @@ export class RemoteStore {
   async appendAndGetServerId(
     engram: Engram,
     opts?: { signal?: AbortSignal; idempotencyKey?: string },
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; review_required?: true; deduplicated?: true }> {
     // #768: transmit the full engram, not just the core four — pinned,
     // rationale, tags, commitment, validity windows and supersedes were
     // silently dropped, so team-scope pins never round-tripped. Optional
@@ -1100,7 +1100,7 @@ export class RemoteStore {
       body,
     }, RemoteStore.readBounded, opts?.signal)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
-    const data = (r.json ?? {}) as { id?: unknown }
+    const data = (r.json ?? {}) as { id?: unknown; review_required?: unknown; deduplicated?: unknown }
     // #404: validate the server-assigned id's SHAPE, not just truthiness. It
     // becomes this engram's id (cached, rendered, used as a key), so a non-string,
     // empty, over-long, or control-char-bearing id from a buggy/hostile endpoint
@@ -1114,6 +1114,10 @@ export class RemoteStore {
     // has the engram. Insert with the server-assigned id so the very next
     // recall sees it without waiting for a background refresh. If the server
     // transformed other fields, the next refresh corrects them.
+    if (data.review_required === true) {
+      this.cache = null
+      return { id, review_required: true, ...(data.deduplicated === true ? { deduplicated: true as const } : {}) }
+    }
     const stored = { ...(engram as any), id } as Engram
     if (this.cache) {
       this.cache.engrams.push(stored)
@@ -1123,7 +1127,7 @@ export class RemoteStore {
       // from the server instead of treating the partial view as fresh.
       this.cache = { ts: 0, engrams: [stored] }
     }
-    return { id }
+    return { id, ...(data.deduplicated === true ? { deduplicated: true as const } : {}) }
   }
 
   /**

@@ -125,3 +125,8 @@ binding. WorkspaceChoice models this adapter admission and context selection. -/
 /-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
 project cleanup can validate a raw explicit enterprise registration without
 inventing authorization through normalization. No engine behavior changes. -/
+
+/-! 2026-10-19: Explicit primary upload reuses the locked queue and guarded
+flush with a selected-id filter. Existing route, sensitivity, binding and
+retirement invariants remain in force. UploadLocal models the new admission,
+selection, dry-run and receipt rules. Held receipts are never cached as live. -/
