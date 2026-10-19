@@ -105,3 +105,22 @@ describe('the capture never re-enters the public method', () => {
     expect(calls).toBe(1)
   })
 })
+
+describe('GLM round 14 on #1663: every public method, sync or async, is behind the capture', () => {
+  it('each public prototype method carries the capture wrapper', async () => {
+    const { BINDING_CAPTURED } = await import('../src/index.js') as any
+    expect(typeof BINDING_CAPTURED).toBe('symbol')
+    const missing = Object.getOwnPropertyNames(Plur.prototype).filter(n => {
+      if (n === 'constructor' || n.startsWith('_')) return false
+      const d = Object.getOwnPropertyDescriptor(Plur.prototype, n)
+      return !!d && typeof d.value === 'function' && !(d.value as any)[BINDING_CAPTURED]
+    })
+    expect(missing).toEqual([])
+  })
+
+  it('the folder-map check names remote-only among the valid modes', async () => {
+    const { checkFolderMapText } = await import('../src/folder-map-check.js')
+    const report = JSON.stringify(checkFolderMapText('version: 1\nfolders:\n  - path: /work/client\n    plur: remote-on1\n'))
+    expect(report).toContain('remote-only')
+  })
+})
