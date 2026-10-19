@@ -1252,3 +1252,8 @@ core admission; the legacy workspaceFolderScope result is unchanged. Explicit
 choices retain routing and authorization. Recall adds the admitted root orgs
 to dialing context, without widening the authorization filter or remote-only
 binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Legacy project token cleanup runs only in working session-start
+paths, requires an enterprise registration and preserves hook failure behavior.
+Private backup, tracking and snapshot guards are modeled in LegacyProjectCleanup;
+existing injection, routing and status invariants remain unchanged. -/

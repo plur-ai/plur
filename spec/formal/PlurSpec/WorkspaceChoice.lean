@@ -58,3 +58,7 @@ example : dial true none [1, 2] 1 = true ∧ dial true none [1, 2] 2 = true ∧ 
 example : admitWrite .none none = true ∧ admitWrite .disagree none = false := by decide
 
 end PlurSpec.WorkspaceChoice
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/

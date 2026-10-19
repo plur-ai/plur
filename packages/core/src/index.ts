@@ -453,6 +453,7 @@ export type { PackManifest } from './schemas/pack.js'
 export { shortPackIntegrity, isTransientPackDir } from './packs.js'
 export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView, InstallResult, NeutralizedCounts, PackIntegrityMigrationReport } from './packs.js'
 export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
+export { ServerStoreEntrySchema } from './schemas/config.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
   CAPSULE_MAGIC,
