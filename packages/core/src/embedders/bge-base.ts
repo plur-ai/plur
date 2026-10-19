@@ -9,6 +9,7 @@
  */
 import { makeTransformersAdapter } from './transformers-base.js'
 import type { EmbedderAdapter } from './types.js'
+import { BGE_SEARCH_INSTRUCTION } from './bge-small.js'
 
 export const BGE_BASE_MODEL_ID = 'Xenova/bge-base-en-v1.5'
 
@@ -20,5 +21,6 @@ export function makeBgeBaseAdapter(): EmbedderAdapter {
     pooling: 'cls',
     normalize: true,
     dtype: 'fp32',
+    searchInstruction: BGE_SEARCH_INSTRUCTION,
   })
 }

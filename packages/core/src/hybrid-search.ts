@@ -1,6 +1,6 @@
 import type { RecallRemoteReport } from './remote-recall.js'
 import type { Engram } from './schemas/engram.js'
-import { searchEngrams } from './fts.js'
+import { searchEngramsScored, type ScoredKeywordHit } from './fts.js'
 import { embeddingSearch, embedderStatus, type EmbeddingSearchOptions } from './embeddings.js'
 import { rewriteLexicalQuery, isQueryRewriteDisabled } from './intent/rewrite.js'
 import { logger } from './logger.js'
@@ -92,6 +92,44 @@ function rrfMerge(resultSets: Engram[][], k = 60): Array<{ engram: Engram; score
 }
 
 /**
+ * Fuse the keyword and meaning legs of hybrid search.
+ *
+ * Reciprocal Rank Fusion, with each keyword hit's contribution scaled by its
+ * query coverage (the IDF-weighted share of the query's words it contains,
+ * see `ftsScoreDetail`). Plain RRF counts the first keyword hit exactly as
+ * much as the first meaning hit whatever it matched, so a memory that shares
+ * one incidental word with a reworded question ties with the memory that
+ * answers it, and a handful of such hits push the answer out of the top five.
+ * Scaled, a hit that matches the whole query counts in full and one that
+ * matches a quarter of it counts a quarter.
+ *
+ * With only one leg there is nothing to arbitrate: the keyword order is
+ * returned as BM25 ranked it.
+ */
+function fuseLegs(keyword: ScoredKeywordHit[], meaning: Engram[], k = 60): Array<{ engram: Engram; score: number }> {
+  if (meaning.length === 0) return rrfMerge([keyword.map(h => h.engram)], k)
+  const scores = new Map<string, { engram: Engram; score: number }>()
+  const add = (engram: Engram, s: number) => {
+    const existing = scores.get(engram.id)
+    if (existing) existing.score += s
+    else scores.set(engram.id, { engram, score: s })
+  }
+  keyword.forEach((h, rank) => add(h.engram, h.coverage / (k + rank + 1)))
+  meaning.forEach((e, rank) => add(e, 1 / (k + rank + 1)))
+  return Array.from(scores.values()).sort((a, b) => b.score - a.score)
+}
+
+/** Plain RRF score of one id across ranked lists (what `topScore` reports). */
+function rrfScoreOf(id: string, resultSets: Engram[][], k = 60): number {
+  let score = 0
+  for (const results of resultSets) {
+    const rank = results.findIndex(e => e.id === id)
+    if (rank >= 0) score += 1 / (k + rank + 1)
+  }
+  return score
+}
+
+/**
  * RRF-merge result sets and return just the engrams (no scores). For callers
  * that fuse externally-ranked lists and don't need topScore — e.g. the PGLite
  * recall path fusing pgvector hits with BM25 before the rerank stage.
@@ -173,10 +211,11 @@ export async function hybridSearchWithMeta(
   // query — those models are trained on questions; BM25 is not.
   const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
 
-  const [bm25Results, embResults] = await Promise.all([
-    Promise.resolve(searchEngrams(engrams, lexicalQuery, bm25Limit)),
+  const [bm25Hits, embResults] = await Promise.all([
+    Promise.resolve(searchEngramsScored(engrams, lexicalQuery, bm25Limit)),
     embeddingSearch(engrams, query, embLimit, storagePath, opts),
   ])
+  const bm25Results = bm25Hits.map(h => h.engram)
 
   const status = embedderStatus()
   // Three-way mode:
@@ -196,12 +235,13 @@ export async function hybridSearchWithMeta(
     mode = 'hybrid'
   }
 
-  const merged = rrfMerge([bm25Results, embResults])
+  const merged = fuseLegs(bm25Hits, embResults)
   const ranked = merged.slice(0, effectiveLimit)
-  // topScore is the RRF fusion score of the top candidate, captured BEFORE the
-  // optional rerank stage — the miss-signal reasons about fusion strength, not
-  // the cross-encoder's reordering.
-  const topScore = ranked.length > 0 ? ranked[0].score : null
+  // topScore is the plain RRF fusion score of the top candidate (both legs
+  // counted in full, the scale the miss-signal threshold is set on), captured
+  // BEFORE the optional rerank stage — the miss-signal reasons about fusion
+  // strength, not the cross-encoder's reordering.
+  const topScore = ranked.length > 0 ? rrfScoreOf(ranked[0].engram.id, [bm25Results, embResults]) : null
   opts?.onFused?.({ engrams: ranked.slice(0, limit).map(s => s.engram), mode, embedderError, topScore, reranked: 0 })
   // Optional cross-encoder rerank (#220): reorders the top-K by joint relevance.
   // Off by default; on failure applyReranker logs + falls back to RRF order, so
