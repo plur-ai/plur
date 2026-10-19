@@ -207,7 +207,7 @@ export function applyMcpEnv(tool: ToolId, env: Env, loc: WireLocation = {}): App
   }
   // JS objects drop a `__proto__` key on the way in, so the edit could not be
   // checked against it, and could lose it.
-  if (snapshot.includes('__proto__')) return { status: 'refused', path, detail: 'the file has a key named __proto__, which PLUR cannot edit safely; left unchanged' }
+  if (snapshot.includes('__proto__') || hasProtoKey(tool, snapshot)) return { status: 'refused', path, detail: 'the file has a key named __proto__, which PLUR cannot edit safely; left unchanged' }
   let plan: Plan
   try {
     plan = tool === 'codex' ? planCodex(snapshot, env) : tool === 'opencode' ? planOpencode(snapshot, env) : planMcpServersJson(snapshot, env)
@@ -227,6 +227,40 @@ export function applyMcpEnv(tool: ToolId, env: Env, loc: WireLocation = {}): App
     return { status: 'refused', path, detail: `could not write the file (${e instanceof Error ? e.message : String(e)})` }
   }
   return { status: 'updated', path }
+}
+
+/**
+ * A key that decodes to `__proto__` (also when spelled with escapes such as
+ * `"__pr\u006fto__"`), read from the syntax tree, before any JS object is
+ * built from the document. A document that does not parse has none here; its
+ * plan refuses it.
+ */
+function hasProtoKey(tool: ToolId, text: string): boolean {
+  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  if (tool === 'codex') {
+    let ast: unknown
+    try {
+      ast = parseTOML(source, { tomlVersion: '1.0' })
+    } catch {
+      return false
+    }
+    const seen = new Set<unknown>()
+    const walk = (n: unknown): boolean => {
+      if (!isRecord(n) || seen.has(n)) return false
+      seen.add(n)
+      if ((n.type === 'TOMLBare' && n.name === '__proto__') || (n.type === 'TOMLQuoted' && n.kind !== undefined && n.value === '__proto__' && isRecord(n.parent) && n.parent.type === 'TOMLKey')) return true
+      for (const [k, v] of Object.entries(n)) {
+        if (k === 'parent' || k === 'loc' || k === 'range' || k === 'tokens' || k === 'comments') continue
+        if (Array.isArray(v) ? v.some(walk) : walk(v)) return true
+      }
+      return false
+    }
+    return walk(ast)
+  }
+  const tree = parseTree(source, [], { allowTrailingComma: true })
+  const walk = (n: ReturnType<typeof parseTree>): boolean =>
+    !!n && ((n.type === 'property' && n.children?.[0]?.value === '__proto__') || (n.children ?? []).some(walk))
+  return walk(tree)
 }
 
 /**
@@ -638,7 +672,7 @@ function isDirectLaunch(launch: ToolLaunch): boolean {
   if (base === 'plur-mcp') return true
   if (base !== 'node') return false
   const script = launch.args[0]
-  return script !== undefined && PLUR_MCP_SCRIPT.test(script)
+  return script !== undefined && !script.startsWith('-') && PLUR_MCP_SCRIPT.test(script)
 }
 
 /**
