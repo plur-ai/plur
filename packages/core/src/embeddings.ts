@@ -136,6 +136,7 @@ export function _setCachedEmbedder(adapter: {
   modelId: string
   embed(text: string): Promise<Float32Array>
   embedBatch(texts: string[]): Promise<Float32Array[]>
+  searchInstruction?: string
 }): void {
   embedPipeline = adapter
   transformersUnavailable = false
@@ -792,15 +793,17 @@ export async function embeddingSearch(
     : '.embeddings-cache.json'
   const cache = loadCache(cachePath, activeMeta)
 
-  // Embed the query
-  const queryEmbedding = await embed(query, 'query')
+  // Embed the query, with the model's retrieval instruction when it has one
+  // (BGE v1.5). Ranking only: the scored variant below feeds similarity
+  // thresholds and keeps comparing texts as written.
+  const queryEmbedding = await embed(await searchQueryText(query), 'query')
   if (!queryEmbedding) {
     // Embeddings unavailable — return empty (caller should fall back to BM25)
     return []
   }
 
   // Embed engrams (with caching)
-  const similarities: Array<{ engram: Engram; score: number }> = []
+  const vectors: Array<{ engram: Engram; v: Float32Array }> = []
   const progress = cacheProgress(cachePath, cache, opts?.signal, opts?.deadlineAt)
 
   for (const engram of engrams) {
@@ -825,16 +828,67 @@ export async function embeddingSearch(
       progress.added(engram.id)
     }
 
-    const score = cosineSimilarity(queryEmbedding, engramEmbedding)
-    similarities.push({ engram, score })
+    vectors.push({ engram, v: engramEmbedding })
   }
 
   progress.done()
   if (opts?.signal?.aborted) return []
 
-  // Sort by similarity (descending) and return top N
+  // Rank by cosine after centring on the candidates' mean (see centredCosines).
+  const scores = centredCosines(queryEmbedding, vectors.map(x => x.v))
+  const similarities = vectors.map((x, i) => ({ engram: x.engram, score: scores[i] }))
   similarities.sort((a, b) => b.score - a.score)
   return similarities.slice(0, limit).map(s => s.engram)
+}
+
+/**
+ * The query text the ranking leg embeds: the active adapter's retrieval
+ * instruction (if any) followed by the query. BGE v1.5 is trained to embed a
+ * short search query with "Represent this sentence for searching relevant
+ * passages: " in front and stored passages without it; skipping it leaves the
+ * query in the passage space, where a question is matched to statements that
+ * look like it rather than to ones that answer it.
+ */
+async function searchQueryText(query: string): Promise<string> {
+  const embedder = await getEmbedder()
+  const instruction = embedder && typeof embedder.searchInstruction === 'string' ? embedder.searchInstruction : ''
+  return instruction + query
+}
+
+/**
+ * Cosine of the query with each vector after both are centred on the
+ * candidates' mean.
+ *
+ * Sentence embeddings are anisotropic: every vector shares a large common
+ * component, so raw cosine is partly "how typical a memory does this look",
+ * and a statement can outrank the answer just by being more typical. Removing
+ * the mean (the standard correction, e.g. Mu & Viswanath 2018, "All-but-the-
+ * Top") leaves the directions that tell memories apart: what distinguishes
+ * this memory from the others in the same store. It changes the order only;
+ * the scored search used for similarity thresholds keeps raw cosine. With one
+ * or two candidates it cannot change the order at all (for two unit vectors,
+ * centring compares q.(a-b) with q.(b-a), the raw comparison).
+ */
+function centredCosines(query: Float32Array, vectors: Float32Array[]): number[] {
+  const n = vectors.length
+  if (n === 0) return []
+  const dim = query.length
+  const mean = new Float64Array(dim)
+  for (const v of vectors) for (let i = 0; i < dim; i++) mean[i] += v[i]
+  for (let i = 0; i < dim; i++) mean[i] /= n
+  // Centred vectors are no longer unit length, so this is a true cosine,
+  // expanded so no centred copy is allocated per candidate:
+  //   (q-m).(d-m) = q.d - q.m - d.m + m.m,   |x-m|^2 = x.x - 2 x.m + m.m
+  const dot = (a: ArrayLike<number>, b: ArrayLike<number>) => { let s = 0; for (let i = 0; i < dim; i++) s += a[i] * b[i]; return s }
+  const mm = dot(mean, mean)
+  const qm = dot(query, mean)
+  const qNorm = Math.sqrt(Math.max(0, dot(query, query) - 2 * qm + mm))
+  return vectors.map(v => {
+    const dm = dot(v, mean)
+    const dNorm = Math.sqrt(Math.max(0, dot(v, v) - 2 * dm + mm))
+    const denom = qNorm * dNorm
+    return denom > 0 ? (dot(query, v) - qm - dm + mm) / denom : 0
+  })
 }
 
 /** Result with cosine similarity score attached. */

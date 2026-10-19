@@ -27,6 +27,8 @@ export interface TransformersAdapterConfig {
   dtype?: 'fp32' | 'fp16' | 'q8' | 'int8' | 'uint8' | 'q4'
   /** Whether to L2-normalise the output. BGE and MiniLM use this. */
   normalize?: boolean
+  /** Retrieval-query instruction from the model card (see EmbedderAdapter.searchInstruction). */
+  searchInstruction?: string
 }
 
 const pipelineCache = new Map<string, Promise<unknown>>()
@@ -258,6 +260,7 @@ export function makeTransformersAdapter(config: TransformersAdapterConfig): Embe
     name: config.name,
     dim: config.dim,
     modelId: config.modelId,
+    ...(config.searchInstruction ? { searchInstruction: config.searchInstruction } : {}),
     embed: embedOne,
     isLoaded: () => loadedKeys.has(keyOf(config.modelId, config.dtype)),
     modelPresent: () => modelPresence(config.modelId, `model${DTYPE_SUFFIX[config.dtype ?? 'fp32'] ?? ''}.onnx`),
