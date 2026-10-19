@@ -127,3 +127,7 @@ end PlurSpec.ServerSession
 across all editor roots before status can advertise a shared destination.
 The adapter preserves remote-only precedence and caller-explicit defaults.
 The conflicting-map-roots stdio regression exercises this boundary. -/
+
+/- 2026-10-19: Hook-run timestamps now respect off and unreadable-map refusal.
+The cached server line and admitted workspace scope selection are unchanged;
+the timestamp is diagnostic only and is never written on those refused paths. -/
