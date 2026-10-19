@@ -76,6 +76,19 @@ assert.equal(connected.codex.status,'updated');
 assert(getConfig().includes('SYNTHETIC_PLUR_TOKEN'));assert(!getConfig().includes(env.SYNTHETIC_PLUR_TOKEN));
 const registered=getEntry();assert(registered.env_vars.includes('SYNTHETIC_PLUR_TOKEN'));
 assert.equal(registered.env.FIXTURE_KEEP,'synthetic');assert.equal(registered.cwd,project);
+// Exercise the installed hooks before asking doctor to attest their execution.
+for (const [tool, file, event, sub] of [
+ ["claude", join(home, ".claude", "settings.json"), "UserPromptSubmit", "hook-inject"],
+ ["codex", join(env.CODEX_HOME, "hooks.json"), "SessionStart", "hook-codex-session-start"],
+]) {
+ const hooks=JSON.parse(readFileSync(file,"utf8")).hooks[event].flatMap(entry=>entry.hooks);
+ const hook=hooks.find(h=>[h.command,...(h.args||[])].join(" ").includes(sub));
+ assert(hook, `missing installed ${tool} hook`);
+ const opts={env,cwd:project,input:JSON.stringify({session_id:`ci-start-${tool}`,cwd:project,source:"startup",prompt:"Synthetic hook startup check"}),encoding:"utf8",timeout:60000};
+ const bash=["C:\\Program Files\\Git\\bin\\bash.exe","C:\\Program Files\\Git\\usr\\bin\\bash.exe"].find(existsSync);
+ const r=Array.isArray(hook.args)?spawnSync(hook.command,hook.args,opts):!win?spawnSync("/bin/sh",["-c",hook.command],opts):tool==="claude"?spawnSync(bash||"bash",["-c",hook.command],opts):spawnSync("pwsh",["-NoProfile","-Command",hook.command],opts);
+ assert.equal(r.status,0,`${tool} installed hook: ${r.stderr}`);
+}
 const doctor=await cli(['doctor','--codex','--json']);assert.equal(doctor.handshake.serverVersion,expected);assert.equal(doctor.overall,'ok');
 console.log('PASS real remote command forwards token; exact Codex runtime doctor passes');
 writeFileSync(join(store,'folders.yaml'),`version: 1\nfolders:\n  - path: ${JSON.stringify(project)}\n    plur: 'on'\n    scope: ${scope}\n`);

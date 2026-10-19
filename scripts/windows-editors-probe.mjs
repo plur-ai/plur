@@ -637,7 +637,7 @@ function runHook(editor, h, payload, replaceSub = null) {
 }
 
 for (const key of ['claude', 'codex', 'cursor', 'agy']) {
-  if (!editors.includes(key)) continue
+  if (!editors.includes(key) && key !== 'claude') continue
   const name = NAMES[key]
   let all = []
   try { all = registered(key) } catch (e) { console.log(`${name}: hooks file unreadable: ${e.message}`) }
