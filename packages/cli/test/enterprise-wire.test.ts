@@ -471,6 +471,18 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
     expect(cursor.detail).toMatch(/envFile/)
   })
 
+  it('an OpenCode plur entry also in opencode.jsonc (which OpenCode merges over .json) is withheld', async () => {
+    put('.config/opencode/opencode.json', JSON.stringify({ mcp: { plur: { type: 'local', command: ['/h/.plur/bin/plur-mcp'] } } }))
+    put('.config/opencode/opencode.jsonc', '{ "mcp": { "plur": { "enabled": false } } }')
+    const [opencode] = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
+    expect(opencode.status).toBe('wired')
+    expect(launchOf(opencode)).toBeUndefined()
+    expect(opencode.detail).toMatch(/opencode\.jsonc/)
+    put('.config/opencode/opencode.jsonc', '{ "theme": "dark" }')
+    const [again] = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
+    expect(launchOf(again)).toBeDefined()
+  })
+
   it('an unknown launcher is described without echoing the command', () => {
     const d = launchProblem('Codex', { command: 'https://alice:secret@proxy.example.com', args: [], env }, 'linux')
     expect(d).not.toBeNull()
