@@ -150,6 +150,13 @@ describe('applyMcpEnv: codex', () => {
     expect(data.mcp_servers.other).toEqual({ command: 'other' })
   })
 
+  it('a __proto__ key cannot be represented faithfully: refused, nothing written', () => {
+    const text = '[mcp_servers.plur]\ncommand = "plur-mcp"\nenv = { __proto__ = "preserve", USER = "x" }\n'
+    const path = put('.codex/config.toml', text)
+    expect(applyMcpEnv('codex', { NODE_EXTRA_CA_CERTS: CA }, loc).status).toBe('refused')
+    expect(readFileSync(path, 'utf8')).toBe(text)
+  })
+
   it('an entry with a url is remote even when a command is left in it: refused, no launch', () => {
     const text = '[mcp_servers.plur]\ncommand = "plur-mcp"\nurl = "https://plur.example.com/mcp"\n'
     const path = put('.codex/config.toml', text)
@@ -193,6 +200,10 @@ describe('applyMcpEnv: opencode', () => {
     const inner = put('.config/opencode/opencode.jsonc', '{ "mcp": { "plur": { "command": ["plur-mcp"], "environment": {\n  "HTTPS_PROXY" /* keep proxy explanation */ : "http://old",\n  "PLUR_PATH": "/data"\n} } } }\n')
     expect(applyMcpEnv('opencode', {}, loc).status).toBe('updated')
     expect(readFileSync(inner, 'utf8')).toContain('/* keep proxy explanation */')
+    const line = put('.config/opencode/opencode.jsonc', '{ "mcp": { "plur": { "command": ["plur-mcp"], "environment": {\n  "HTTPS_PROXY" // proxy explanation\n  : "http://old", "PLUR_PATH": "/data"\n} } } }\n')
+    expect(applyMcpEnv('opencode', {}, loc).status).toBe('updated')
+    expect(readFileSync(line, 'utf8')).toContain('// proxy explanation')
+    expect((parseJsonc(readFileSync(line, 'utf8')) as any).mcp.plur.environment).toEqual({ PLUR_PATH: '/data' })
     expect((parseJsonc(readFileSync(inner, 'utf8')) as any).mcp.plur.environment).toEqual({ PLUR_PATH: '/data' })
     expect((parseJsonc(after) as any).mcp.plur.environment).toEqual({ PLUR_PATH: '/data' })
   })
@@ -315,7 +326,7 @@ describe('launchProblem', () => {
   const env = {}
   it('a direct launch has no problem', () => {
     expect(launchProblem('Codex', { command: '/usr/bin/node', args: ['/x/@plur-ai/mcp/dist/index.js'], env }, 'linux')).toBeNull()
-    expect(launchProblem('Codex', { command: 'C:\\nodejs\\node.exe', args: ['C:\\x\\index.js'], env }, 'win32')).toBeNull()
+    expect(launchProblem('Codex', { command: 'C:\\nodejs\\node.exe', args: ['C:\\x\\node_modules\\@plur-ai\\mcp\\dist\\index.js'], env }, 'win32')).toBeNull()
     expect(launchProblem('Claude Code', { command: '/h/.plur/bin/plur-mcp', args: [], env }, 'darwin')).toBeNull()
   })
   it('npx, cmd.exe, a shell or a .cmd launcher is named, never handed to the proof', () => {
@@ -330,7 +341,7 @@ describe('launchProblem', () => {
       expect(launchProblem('Codex', { command, args: ['@plur-ai/mcp'], env }, 'win32')).toMatch(/starts PLUR through/)
     }
     // Only PLUR itself is direct; an `env` prefix is not looked behind for that.
-    expect(launchProblem('Codex', { command: '/usr/bin/env', args: ['/usr/bin/node', '/x/index.js'], env }, 'linux')).toMatch(/through env/)
+    expect(launchProblem('Codex', { command: '/usr/bin/env', args: ['/usr/bin/node', '/x/index.js'], env }, 'linux')).toMatch(/not PLUR itself/)
   })
 })
 
@@ -347,6 +358,8 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
       ['node', ['--require=/tmp/setup.js', '/usr/lib/node_modules/npm/bin/npx-cli.js', '-y', '@plur-ai/mcp']],
       ['node', ['/home/a/project/.yarn/releases/yarn-4.9.2.cjs', 'dlx', '@plur-ai/mcp']],
       ['node', ['/opt/pnpm/pnpm-9.1.0.cjs', 'dlx', '@plur-ai/mcp']],
+      ['node', ['/opt/node_modules/tsx/dist/cli.mjs', '/opt/plur/mcp/dist/index.js']],
+      ['node', ['/opt/some/other-server.js']],
     ] as Array<[string, string[]]>) {
       expect(launchProblem('Codex', { command, args, env }, 'linux'), `${command} ${args.join(' ')}`).not.toBeNull()
     }
@@ -361,12 +374,17 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
     const [claude] = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
     expect(launchOf(claude)).toBeUndefined()
   })
+  it('an unknown launcher is described without echoing the command', () => {
+    const d = launchProblem('Codex', { command: 'https://alice:secret@proxy.example.com', args: [], env }, 'linux')
+    expect(d).not.toBeNull()
+    expect(d).not.toContain('secret')
+  })
   it('wireTools hands no launch out for such an entry', async () => {
     put('.claude.json', JSON.stringify({ mcpServers: { plur: { command: 'bun', args: ['x', '@plur-ai/mcp'] } } }))
     const [claude] = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
     expect(claude.status).toBe('wired')
     expect(launchOf(claude)).toBeUndefined()
-    expect(claude.detail).toMatch(/bun/)
+    expect(claude.detail).toMatch(/not PLUR itself/)
   })
 })
 
@@ -428,6 +446,18 @@ describe('probeWsl', () => {
     const p = probeWsl({ platform: 'linux', env: { PATH: `/usr/bin:${winBin}` }, osRelease: '5.15.167.4-microsoft-standard-WSL2', exec, readMounts: () => mounts })
     expect(p).toEqual({ codexOnPath: false, codexInWsl: false, isWsl: true, codexOnWindows: true })
     expect(calls).toHaveLength(0)
+  })
+
+  it('WSL: a codex on a Linux PATH that links to the Windows drive is the Windows side', () => {
+    const mnt = join(home, 'mnt', 'c')
+    mkdirSync(join(mnt, 'Tools'), { recursive: true })
+    writeFileSync(join(mnt, 'Tools', 'codex.exe'), 'MZ', { mode: 0o755 })
+    const bin = join(home, 'bin')
+    mkdirSync(bin)
+    symlinkSync(join(mnt, 'Tools', 'codex.exe'), join(bin, 'codex'))
+    const mounts = `C:\\134 ${mnt} 9p rw,aname=drvfs;path=C:\\ 0 0\n`
+    const p = probeWsl({ platform: 'linux', env: { PATH: bin }, osRelease: '5.15.167.4-microsoft-standard-WSL2', exec: recordingExec('').exec, readMounts: () => mounts })
+    expect(p).toMatchObject({ isWsl: true, codexOnPath: false, codexOnWindows: true })
   })
 
   it('WSL is read from the kernel release only: an env variable cannot fake it', () => {
