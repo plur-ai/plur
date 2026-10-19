@@ -161,6 +161,7 @@ models:
   - model: PlurSpec/SaveDestination.lean
     covers:
       - packages/core/src/save-destination.ts
+      - packages/core/src/enterprise.ts
       - packages/core/src/index.ts
       - packages/cli/src/commands/learn.ts
       - packages/mcp/src/tools.ts

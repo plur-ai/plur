@@ -81,8 +81,9 @@ import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-g
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import { loadGitScopeSources, readGitOrigin, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
-import { formatSaveDestination } from './save-destination.js'
-export { formatSaveDestination, type SaveDestinationInput } from './save-destination.js'
+import { formatSaveDestination, formatServerSessionLine, type ServerSessionState } from './save-destination.js'
+export { formatSaveDestination, formatServerSessionLine, type SaveDestinationInput, type ServerSessionState } from './save-destination.js'
+export { ENTERPRISE_SETUP_COMMAND } from './enterprise.js'
 export { loadGitScopeSources, gitDefaultScope, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
@@ -14300,6 +14301,54 @@ Generate an improved version of the procedure that prevents this failure. Return
   folderDefaultScope(dir: string): { mode: FolderPolicy['mode']; scope: string | null; git: GitScopeOutcome | null } {
     const policy = this.resolveFolderPolicy(dir, { readOnly: true })
     return { mode: policy.mode, scope: policy.scope ?? null, git: policy.git ?? null }
+  }
+
+  /** Cached server status; async only because primary outbox storage is async. */
+  async serverSessionLines(dir: string): Promise<string[]> {
+    this.reloadConfigIfChanged()
+    const entries = this._readRawStores().filter(isEnterpriseServerEntry)
+    if (!entries.length) return []
+    const policy = this.resolveFolderPolicy(dir, { readOnly: true })
+    const queued = (await this.listOutbox()).filter(e => e.kind === 'push')
+    // A grant may disappear while its save is still queued. Match durable
+    // endpoint evidence, not a mutable scopes list. Keep endpoints private.
+    const originalTargets = new Map<string, string>()
+    if (queued.length) for (const row of await this._loadCached(this.paths.engrams)) {
+      const url = (row as any).structured_data?._outbox?.target_url
+      if (typeof url === 'string') originalTargets.set(row.id, normalizeEndpointUrl(url))
+    }
+    return entries.map(entry => {
+      const cache = isPlainObject(entry.discovery) ? entry.discovery : {}
+      const waiting = queued.filter(e => {
+        const current = this._remoteWriteEntry(e.target_scope)?.url
+        const target = current ? normalizeEndpointUrl(current) : originalTargets.get(e.id)
+        return target === normalizeEndpointUrl(entry.url)
+      })
+      const action = waiting.find(e => e.state === 'needs_action')
+      const dates = waiting.map(e => e.queued_at).filter(d => Number.isFinite(Date.parse(d))).sort()
+      const status = (['ok', 'not_synced', 'failed', 'auth_failed', 'degraded'] as const).find(s => s === cache.status) ?? 'never'
+      const target: ServerSessionState['target'] = policy.git ?? (policy.scope ? { kind: 'map', scope: policy.scope } : null)
+      const targetScope = target?.kind === 'scope' || target?.kind === 'map' ? target.scope : undefined
+      const route = targetScope ? resolveScopeTarget(targetScope, this.config.stores ?? []) : undefined
+      const writeWarning = route?.kind === 'remote' && route.entry.readonly
+        ? `the store for ${targetScope} is read-only`
+        : route?.kind === 'conflict' ? `more than one server claims ${targetScope}; choose a single store`
+        : route?.kind === 'unauthorized' ? `${targetScope} is not granted to you on this server`
+        : route?.kind === 'local' ? `saves for ${targetScope} stay on this laptop; no writable server store is registered`
+        : route?.kind === 'remote' && normalizeEndpointUrl(route.entry.url!) !== normalizeEndpointUrl(entry.url)
+          ? 'this repository saves to another server' : undefined
+      return formatServerSessionLine({
+        host: normalizeEndpointUrl(entry.url),
+        username: typeof cache.username === 'string' ? cache.username : undefined,
+        status,
+        target, writeWarning,
+        keyExpiresAt: cache.key_expires_at === null || typeof cache.key_expires_at === 'string' ? cache.key_expires_at : undefined,
+        ...(waiting.length ? { queued: {
+          count: waiting.length, since: dates[0]?.slice(0, 10) ?? 'an unknown date', needsAction: !!action,
+          ...(action && action.last_status !== 401 && action.last_status !== 403 ? { reason: 'the queued save needs attention' } : {}),
+        } } : {}),
+      })
+    })
   }
 
   /**
