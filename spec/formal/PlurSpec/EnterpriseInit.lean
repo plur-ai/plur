@@ -82,3 +82,7 @@ checks, trust admission, and the previous hello's active state are unchanged. -/
 /-! 2026-10-20: Public help lists the bare init subcommand under Commands,
 with the complete invocation in Usage. This makes the unchanged documentation
 command-surface check recognize init; runtime admission remains unchanged. -/
+
+/-! 2026-10-20: A local hello explicitly marked demoted reports that the
+privacy check retained sensitive content. It remains a failed server proof;
+no privacy rule, routing decision, or success condition changes. -/

@@ -33,6 +33,7 @@ export function helloStatement(p: {
 interface LearnResult {
   id?: string
   delivery?: string
+  demoted?: boolean
   /** The server that holds the saved memory, as a normalized endpoint (Codex round 5). */
   delivered_to?: string
   destination?: string
@@ -98,6 +99,7 @@ function failReason(result: LearnResult, serverKey: string, serverUrl: string): 
     return 'queued on this device, not delivered to the server'
   }
   if (result.delivery === 'local') {
+    if (result.demoted === true) return 'the privacy check kept sensitive content on this device; nothing was delivered to the server'
     return 'saved locally, not delivered to the server'
   }
   if (result.destination) {
