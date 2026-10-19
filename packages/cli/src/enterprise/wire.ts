@@ -27,7 +27,7 @@
  */
 import { accessSync, constants, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
 import { homedir, release } from 'os'
-import { dirname, join, posix, win32 } from 'path'
+import { dirname, join, posix } from 'path'
 import { isDeepStrictEqual } from 'util'
 import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree } from 'jsonc-parser'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
@@ -50,7 +50,7 @@ export const PLUR_ENV_KEYS: readonly string[] = TOOL_ENV_KEYS
 export const TOOLS: readonly ToolId[] = ['claude-code', 'codex', 'opencode', 'cursor']
 
 /** A launch: what the tool runs, with the env it runs it with. */
-export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string }
+export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string; disabled?: true }
 
 /** Where tool configs are looked up. Defaults: os.homedir() and process.env. */
 export type WireLocation = { home?: string; env?: NodeJS.ProcessEnv }
@@ -637,6 +637,7 @@ export function toolLaunch(
         args: entry.args ?? [],
         env: codexMcpEnvironment(entry, parentEnv, (loc.platform ?? process.platform) === 'win32'),
         ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}),
+        ...(entry.enabled === false ? { disabled: true as const } : {}),
       }
     }
     if (tool === 'opencode') {
@@ -649,7 +650,8 @@ export function toolLaunch(
       if (!entry.command.every((c): c is string => typeof c === 'string')) return null
       const environment = entry.environment === undefined ? {} : stringRecord(entry.environment)
       if (environment === null) return null
-      return { command: entry.command[0], args: entry.command.slice(1), env: { ...parentEnv, ...environment } }
+      const off = entry.enabled === false || entry.disabled === true
+      return { command: entry.command[0], args: entry.command.slice(1), env: { ...parentEnv, ...environment }, ...(off ? { disabled: true as const } : {}) }
     }
     const data: unknown = JSON.parse(text)
     const servers = isRecord(data) && isRecord(data.mcpServers) ? data.mcpServers : undefined
@@ -660,7 +662,8 @@ export function toolLaunch(
     if (!args.every((a): a is string => typeof a === 'string')) return null
     const env = entry.env === undefined ? {} : stringRecord(entry.env)
     if (env === null) return null
-    return { command: entry.command, args, env: { ...parentEnv, ...env } }
+    const off = entry.disabled === true || entry.enabled === false
+    return { command: entry.command, args, env: { ...parentEnv, ...env }, ...(off ? { disabled: true as const } : {}) }
   } catch {
     return null
   }
@@ -698,19 +701,7 @@ function isDirectLaunch(launch: ToolLaunch): boolean {
  */
 export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJS.Platform): string | null {
   const fix = 're-run `plur init` after installing @plur-ai/mcp so it starts PLUR directly'
-  // The proof runs from its own neutral folder (a folder turned off must not
-  // pass as saved), so a launch that depends on its working folder — a
-  // relative script, a relative PLUR_PATH or CA path — would prove a
-  // different setup.
-  const absolute = platform === 'win32' ? win32.isAbsolute : posix.isAbsolute
-  const relativePath = (p: string | undefined) => p !== undefined && p !== '' && /[\\/]/.test(p) && !absolute(p)
-  const relativeFile = (p: string | undefined) => p !== undefined && p !== '' && !absolute(p)
-  const folderBound = launch.cwd !== undefined
-    || relativePath(launch.command)
-    || (baseName(launch.command) === 'node' && relativeFile(launch.args[0]))
-    || relativeFile(launch.env.PLUR_PATH)
-    || relativeFile(launch.env.NODE_EXTRA_CA_CERTS)
-  if (folderBound) return `${label} starts PLUR with a working folder or a relative path (script, PLUR_PATH or CA file), which the proof cannot reproduce from its own folder — use absolute paths and no \`cwd\` in the plur entry, or ${fix}`
+  if (launch.disabled) return `${label} has the plur entry turned off, so it would not start PLUR — turn it on in ${label}, then re-run the installer`
   if (isNpxLaunch(launch)) return `${label} starts PLUR through npx — ${fix}`
   let base = baseName(launch.command)
   // `env [-opts] [NAME=value…] program …` runs `program`: judge that one.
@@ -721,6 +712,25 @@ export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJ
   }
   // The command itself is not echoed: an unknown one can be anything, a credential included.
   if (!isDirectLaunch(launch)) return `${label} starts PLUR through a command that is not PLUR itself — ${fix}`
+  // The proof runs from its own neutral folder (a folder turned off must not
+  // pass as saved), so a launch that depends on its working folder — a
+  // relative script, a relative PLUR_PATH or CA path — would prove a
+  // different setup.
+  // On Windows a path must name its drive or share: `\\x` resolves on the current drive.
+  const absolute = platform === 'win32' ? (p: string) => /^([A-Za-z]:[\\/]|\\\\[^\\/]+[\\/])/.test(p) : posix.isAbsolute
+  const relativePath = (p: string | undefined) => p !== undefined && p !== '' && /[\\/]/.test(p) && !absolute(p)
+  const relativeFile = (p: string | undefined) => p !== undefined && p !== '' && !absolute(p)
+  // A bare command is looked up on PATH; a relative (or empty) PATH entry, or
+  // Windows, which searches the current folder first, ties it to the folder.
+  const bare = !/[\\/]/.test(launch.command)
+  const pathEntries = (launch.env.PATH ?? launch.env.Path)?.split(platform === 'win32' ? ';' : ':') ?? []
+  const folderBound = launch.cwd !== undefined
+    || (bare && (platform === 'win32' || pathEntries.some(d => !posix.isAbsolute(d))))
+    || relativePath(launch.command)
+    || (baseName(launch.command) === 'node' && relativeFile(launch.args[0]))
+    || relativeFile(launch.env.PLUR_PATH)
+    || relativeFile(launch.env.NODE_EXTRA_CA_CERTS)
+  if (folderBound) return `${label} starts PLUR with a working folder or a relative path (script, PLUR_PATH or CA file), which the proof cannot reproduce from its own folder — use absolute paths and no \`cwd\` in the plur entry, or ${fix}`
   return null
 }
 
