@@ -421,6 +421,28 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
     expect(launchProblem('Codex', { command: 'plur-mcp', args: [], env: { PLUR_PATH: '/data/plur' } }, 'linux')).toBeNull()
   })
 
+  it('a bare command found through a relative PATH entry, or any bare command on Windows, is withheld', () => {
+    expect(launchProblem('Codex', { command: 'plur-mcp', args: [], env: { PATH: './tools:/opt/plur/bin' } }, 'linux')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: 'plur-mcp', args: [], env: { PATH: ':/opt/plur/bin' } }, 'linux')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: 'plur-mcp', args: [], env: { PATH: '/usr/bin:/opt/plur/bin' } }, 'linux')).toBeNull()
+    expect(launchProblem('Codex', { command: 'plur-mcp.exe', args: [], env: { PATH: 'C:\\plur' } }, 'win32')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: 'C:\\nodejs\\node.exe', args: ['\\node_modules\\@plur-ai\\mcp\\dist\\index.js'], env }, 'win32')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: '\\\\srv\\share\\plur-mcp.exe', args: [], env }, 'win32')).toBeNull()
+  })
+
+  it('an entry the tool has turned off is wired, but not handed to the proof', async () => {
+    put('.config/opencode/opencode.json', JSON.stringify({ mcp: { plur: { type: 'local', command: ['/h/.plur/bin/plur-mcp'], enabled: false } } }))
+    put('.codex/config.toml', '[mcp_servers.plur]\ncommand = "/h/.plur/bin/plur-mcp"\nenabled = false\n')
+    put('.cursor/mcp.json', JSON.stringify({ mcpServers: { plur: { command: '/h/.plur/bin/plur-mcp', disabled: true } } }))
+    const results = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
+    for (const tool of ['codex', 'opencode', 'cursor']) {
+      const r = results.find(x => x.tool === tool)!
+      expect(r.status, tool).toBe('wired')
+      expect(launchOf(r), tool).toBeUndefined()
+      expect(r.detail, tool).toMatch(/turned off/)
+    }
+  })
+
   it('an unknown launcher is described without echoing the command', () => {
     const d = launchProblem('Codex', { command: 'https://alice:secret@proxy.example.com', args: [], env }, 'linux')
     expect(d).not.toBeNull()
@@ -532,14 +554,15 @@ describe('probeWsl', () => {
 
 describe('wireTools', () => {
   it('lists only tools with a plur entry or on the other side, with a launch only when it is direct', async () => {
-    put('.claude.json', JSON.stringify({ mcpServers: { plur: { command: '/h/.plur/bin/plur-mcp', args: [] } } }))
+    put('.claude.json', JSON.stringify({ mcpServers: { plur: { command: 'C:\\h\\.plur\\bin\\plur-mcp.exe', args: [] } } }))
     put('.config/opencode/opencode.json', JSON.stringify({ mcp: { plur: { type: 'local', command: ['npx', '-y', '@plur-ai/mcp@0.22.0'] } } }))
-    const results = await wireTools({ mcpEnv: THREE, ...loc, platform: 'win32', parentEnv: { PATH: '/bin' },
+    const WIN_CA = 'C:\\h\\.plur\\company-ca.pem'
+    const results = await wireTools({ mcpEnv: { ...THREE, NODE_EXTRA_CA_CERTS: WIN_CA }, ...loc, platform: 'win32', parentEnv: { PATH: 'C:\\Windows' },
       probes: { codexOnPath: false, codexInWsl: true, isWsl: false, codexOnWindows: false } })
     expect(results.map(r => r.tool)).toEqual(['claude-code', 'codex', 'opencode'])
     const [claude, codex, opencode] = results
     expect(claude).toMatchObject({ status: 'wired', configPath: join(home, '.claude.json') })
-    expect(launchOf(claude)?.env.NODE_EXTRA_CA_CERTS).toBe(CA)
+    expect(launchOf(claude)?.env.NODE_EXTRA_CA_CERTS).toBe(WIN_CA)
     expect(codex).toMatchObject({ status: 'other-side', side: 'wsl', detail: OTHER_SIDE_TEXT.wsl })
     expect(opencode.status).toBe('wired')
     expect(launchOf(opencode)).toBeUndefined()
