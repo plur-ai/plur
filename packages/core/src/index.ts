@@ -5496,6 +5496,10 @@ export class Plur {
       // LRN-9: an UPDATE onto a locked memory waits in the review queue the
       // user already resolves (tension records, plur_tensions).
       openReview: async (pair: TensionPair) => (await this.recordTensions([pair])).records[0]?.id,
+      holdAsDraft: async (id: string) => {
+        const e = await this.getById(id)
+        if (e && e.commitment !== 'draft') await this.updateEngram({ ...e, commitment: 'draft' })
+      },
     }
   }
 
@@ -12293,6 +12297,8 @@ Generate an improved version of the procedure that prevents this failure. Return
   /**
    * Dismiss a tension as a false positive (detected|confirmed → dismissed).
    * The pair stays in the scan exclusion set, so it is never re-flagged.
+   * Neither memory changes: a draft in the pair (LRN-9's held-back proposal)
+   * stays a draft — stored and searchable, never injected.
    */
   dismissTension(id: string): TensionRecord {
     this._assertWritable()
@@ -12306,7 +12312,9 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Resolve a tension by picking the winning engram: the loser is retired
    * outright (decisive — NOT reference-count-decremented like forget(), see
    * audit #213 §2), the record becomes status 'resolved' with resolved_by /
-   * resolved_at set.
+   * resolved_at set. A winner that is a draft (LRN-9: a statement proposed
+   * onto a locked memory waits as a draft) becomes a normal memory with
+   * commitment 'decided', so it is given to the agent from then on.
    */
   async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }> {
     // Readonly (#731): refuse BEFORE the claim below writes tensions.yaml.
@@ -12350,15 +12358,35 @@ Generate an improved version of the procedure that prevents this failure. Return
       return { ...r }
     })
 
+    // A winner still waiting as a draft (LRN-9: a statement proposed onto a
+    // locked memory is held back as a draft until the user decides) is what
+    // the user just chose, so it becomes a normal memory that is given to the
+    // agent. Promoted before the loser is retired so the user is never left
+    // with neither memory given; undone below if the retirement fails.
+    let promoted: Engram | null = null
     // Retire the loser. If that fails, release the claim so the operation can
     // be retried rather than leaving a resolved tension whose loser is alive.
     try {
+      const winner = await this.getById(winnerId)
+      if (winner && winner.commitment === 'draft' && winner.status === 'active') {
+        if (!(await this.updateEngram({ ...winner, commitment: 'decided' }))) {
+          throw new Error(`Cannot make the chosen memory ${winnerId} a normal memory (not found in a writable store)`)
+        }
+        promoted = winner
+      }
       const retired = await this._retireEngramForResolution(loserId, `tension ${id} resolved in favor of ${winnerId}`)
       if (!retired) throw new Error(`Cannot retire losing engram ${loserId} (not found in a writable local store)`)
     } catch (err) {
       // Cast: TS cannot see that the closure above ran before this catch, so
       // it narrows `previous` to never.
       const prev = previous as Pick<TensionRecord, 'status' | 'resolved_by' | 'resolved_at'> | null
+      if (promoted) {
+        const p = promoted as Engram
+        try {
+          const now = await this.getById(p.id)
+          if (now) await this.updateEngram({ ...now, commitment: 'draft' })
+        } catch { /* best-effort, as the claim rollback below */ }
+      }
       if (prev) {
         try {
           this._mutateTension(id, r => {
