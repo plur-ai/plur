@@ -435,9 +435,8 @@ export const PlurConfigSchema = z.object({
   scope_routing: ScopeRoutingConfigSchema.default({}),
   /**
    * Git-sync remote semantics (#640). `personal` (default) mirrors every
-   * engram to the remote except `scope:local` ones and ones the user explicitly
-   * marked `visibility: private` (default-visibility engrams still mirror) —
-   * the user's own backup across their machines. `shared` pushes ONLY
+   * non-`scope:local` engram to the remote — private included — which is
+   * correct for a solo user syncing their own machines. `shared` pushes ONLY
    * engrams with a shared-family scope (`isSharedScope`) AND a non-private
    * visibility: personal-family (`local`/`global`/`user:*`/`agent:*`) and
    * private-visibility engrams never reach a shared/team remote, by

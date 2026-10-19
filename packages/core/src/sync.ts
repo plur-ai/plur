@@ -21,9 +21,8 @@ export interface SyncStatus {
 
 /**
  * What the sync remote is for (#640). `personal` (default): the user's own
- * backup/mirror across their machines — every engram is pushed EXCEPT
- * `scope:local` ones and ones the user explicitly marked private (a
- * default-visibility engram still mirrors). `shared`: a team-visible remote —
+ * backup/mirror across their machines — every non-`scope:local` engram is
+ * pushed, private included. `shared`: a team-visible remote —
  * ONLY shared-family-scope, non-private engrams are pushed; personal-family and
  * private engrams never leave the machine. On both, a side record (episode,
  * candidate, tension) that names an engram outside the push set stays home too.
@@ -340,26 +339,9 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | 
 }
 
 /**
- * True when the user CHOSE `visibility: private` for this engram. The #401
- * default is also stored as `private`, so the write path stamps
- * `structured_data._visibilitySource` ('explicit' | 'default') to tell them
- * apart. An engram with no stamp was written before it existed; it is treated
- * as default-visibility, because such engrams were already mirrored to the
- * personal remote by every earlier sync — withholding them now would only drop
- * them from the backup, not take them back.
- */
-function isChosenPrivate(e: EngramRecord): boolean {
-  if ((e?.visibility ?? 'private') !== 'private') return false
-  const sd = e?.structured_data as { _visibilitySource?: unknown } | undefined
-  return sd?._visibilitySource === 'explicit'
-}
-
-/**
  * Push-set predicate per remote type (#640). `personal`: everything except
- * `scope:local` and explicitly-private engrams ({@link isChosenPrivate}) —
- * private memories never leave the machine, even to the user's own mirror;
- * default-visibility engrams follow the user across their own machines.
- * `shared`: ONLY shared-family scopes (`isSharedScope`)
+ * `scope:local` (private engrams follow the user across their own machines —
+ * it is their backup). `shared`: ONLY shared-family scopes (`isSharedScope`)
  * with a non-private visibility — personal-family (`local`/`global`/`user:*`/
  * `agent:*`) and private-visibility engrams are excluded by construction.
  * NOTE the default visibility is 'private' (#401), so a shared remote receives
@@ -370,7 +352,7 @@ function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
   if (remoteType === 'shared') {
     return e => isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
   }
-  return e => e?.scope !== 'local' && !isChosenPrivate(e)
+  return e => e?.scope !== 'local'
 }
 
 /**
@@ -477,25 +459,23 @@ function stripWarning(root: string, remoteType: SyncRemoteType): string | undefi
   //
   // A backup warning that overstates coverage is worse than none: it is read
   // exactly once, when deciding whether other backups are needed.
-  const chosenPrivateCount = parsed.list.filter(e => e?.scope !== 'local' && isChosenPrivate(e)).length
-  const defaultPrivateCount = parsed.list.filter(
-    e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private' && !isChosenPrivate(e),
+  const privateCount = parsed.list.filter(
+    e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private',
   ).length
   const localCount = parsed.list.filter(e => e?.scope === 'local').length
   const strippedSiblings = droppedSiblingCount(root, 'personal')
   const parts: string[] = []
   if (localCount > 0) {
-    parts.push(`${localCount} scope:local engram(s) are NOT pushed and are NOT backed up by sync`)
+    parts.push(
+      `${localCount} scope:local engram(s) are NOT pushed and are NOT backed up by sync` +
+      (localCount === parsed.list.length ? ' — this remote backs up nothing' : ''),
+    )
   }
-  if (chosenPrivateCount > 0) {
-    parts.push(`${chosenPrivateCount} engram(s) you marked private are NOT pushed and are NOT backed up by sync`)
-  }
-  if (parts.length > 0 && !parsed.list.some(pushKeep('personal'))) parts[parts.length - 1] += ' — this remote backs up nothing'
   if (strippedSiblings > 0) {
     parts.push(`${strippedSiblings} episode/candidate/tension record(s) naming a non-pushed engram stayed local`)
   }
-  if (defaultPrivateCount > 0) {
-    parts.push(`${defaultPrivateCount} private-visibility engram(s) ARE pushed (the default visibility, not marked private by you) — use a private git remote`)
+  if (privateCount > 0) {
+    parts.push(`${privateCount} private-visibility engram(s) ARE pushed — use a private git remote`)
   }
   if (parts.length === 0) return undefined
   return `Note: ${parts.join('. ')}. For a team remote, set sync.remote_type: shared to exclude private engrams too.`
@@ -550,8 +530,8 @@ function stageStrippedEngrams(root: string, remoteType: SyncRemoteType): void {
  * only records derived from this remote's push set (#686 — completes the #640
  * guarantee: an engram withheld from the remote must also be withheld in its
  * derived text in the sibling store files). Applies to `personal` remotes too:
- * a scope:local or explicitly-private engram never leaves the machine, so a
- * side record naming one does not either.
+ * a scope:local engram never leaves the machine, so a side record naming one
+ * does not either.
  */
 function stageStrippedSiblings(root: string, remoteType: SyncRemoteType): void {
   const keep = siblingKeep(pushIds(root, remoteType))
