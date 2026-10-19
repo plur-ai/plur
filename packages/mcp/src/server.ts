@@ -317,7 +317,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   // Bind the instance to the workspace's folder decision (remote-only), or
   // block it (off, unknown workspace, unreadable map), for this call.
   // Precedence: off > remote-only > on (#1521 with #1519).
-  const bindWorkspace = (dirs: string[]): void => {
+  const bindWorkspace = (dirs: string[], defaultDirs: string[] = dirs): void => {
     const resolved: Array<{ dir: string; policy: FolderPolicy }> = []
     for (const dir of dirs) {
       try {
@@ -330,10 +330,14 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     const pick = resolved.find(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')
       ?? resolved.find(r => r.policy.mode === 'remote-only')
       ?? resolved[resolved.length - 1]
-    // The last-element fallback is no tiebreak (GLM round 14 on #1663): with no
-    // unreadable map and no remote-only folder, every pick is a policy that
-    // clears the binding, so which folder is named does not change the call.
-    instance.bindFolderPolicy(pick.dir, pick.policy)
+    // Restrictive decisions still cover both roots and startup cwd. Origin
+    // defaults belong to the editor roots, not the server process directory.
+    const defaults = resolved.filter(r => defaultDirs.includes(r.dir)).map(r => r.policy.git)
+    const key = (git: FolderPolicy['git']) => git?.kind === 'scope' ? `scope:${git.scope}`
+      : git?.kind === 'local' || git?.kind === 'unknown' ? 'local' : 'absent'
+    const git = defaults.every(d => key(d) === key(defaults[0])) ? defaults[0]
+      : defaults.some(Boolean) ? { kind: 'unknown' as const, reason: 'ambiguous-mapping' as const } : undefined
+    instance.bindFolderPolicy(pick.dir, { ...pick.policy, git })
   }
 
   // Tool calls run one at a time: the folder gate and the binding live on the
@@ -405,7 +409,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       admittedWs = ws
       // The instance follows the admitted workspace's folder decision
       // (remote-only, #1521): bound on every call, in this serialized step.
-      bindWorkspace([...new Set([...ws!.roots, ws!.cwd])])
+      bindWorkspace([...new Set([...ws!.roots, ws!.cwd])], ws!.roots.length ? ws!.roots : [ws!.cwd])
     } else {
       // Not a gated tool: bound to the workspace too, unless memory is off
       // there or the workspace is unknown, where it runs unbound, as #1519

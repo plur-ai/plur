@@ -73,6 +73,13 @@ scope list and adds a `discovery` reply field. It does not touch the
 session-scope registry or its default-scope slot (§1), `_cleanExpiredSessions`
 or session_end (§2), or the `.plur.yaml` trust gate (§9): `default_scope` and
 `scope_source` are computed exactly as before.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.Adapters

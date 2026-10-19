@@ -14,6 +14,7 @@ import { renderFolderMapText, surgicalFolderMapText } from './folder-map-text.js
 import { escapedPath, folderCommandOfferable, quoted } from './folder-ask.js'
 import { resolveScopeTarget } from './store-resolver.js'
 import type { StoreEntry } from './schemas/config.js'
+import { gitDefaultScope, type GitScopeSource, type GitScopeOutcome, type OriginRead } from './git-origin.js'
 
 /**
  * The folder map (#1347): `<PLUR home>/folders.yaml` holds the user's own
@@ -86,10 +87,11 @@ export interface FolderMapFault {
   repair_summary?: string
 }
 
-export type FolderPolicySource = 'map' | 'plur-yaml' | 'mcp-config' | 'default'
+export type FolderPolicySource = 'map' | 'plur-yaml' | 'mcp-config' | 'default' | 'git'
 
 export interface FolderPolicy {
   mode: FolderMode
+  git?: GitScopeOutcome
   /**
    * Default write scope: a map entry's `scope`, else a TRUSTED `.plur.yaml`'s
    * hint. For `remote-only`, the team scope all of the folder's memory uses.
@@ -784,6 +786,8 @@ export interface FolderPolicyOptions {
    * into `folders.yaml` (#1589 audit round 2). For callers that only look.
    */
   readOnly?: boolean
+  gitScopes?: readonly GitScopeSource[]
+  readOrigin?: (dir: string) => OriginRead
 }
 
 /** True when a `trusted: true` entry covers `dir` (canonical target, #1334 entry forms). */
@@ -829,6 +833,17 @@ export function folderOffEntries(dir: string, opts: FolderPolicyOptions): Folder
  *  5. otherwise ask (including `$HOME`).
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
+  const policy = resolveExplicitFolderPolicy(dir, opts)
+  // Only fill an absent default. Never bypass a refusal, a user's explicit
+  // ask, or a remote-only choice; legacy trusted settings keep precedence.
+  if (!opts.gitScopes?.length || policy.scope || policy.reason ||
+    !(policy.mode === 'on' || (policy.mode === 'ask' && policy.source === 'default'))) return policy
+  const git = gitDefaultScope(dir, opts.gitScopes, { read: opts.readOrigin })
+  if (git.kind === 'not-git') return policy
+  return { ...policy, mode: 'on', source: 'git', git, ...(git.kind === 'scope' ? { scope: git.scope } : {}) }
+}
+
+function resolveExplicitFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const home = opts.home ?? homedir()
   const loaded = load(opts.root, opts.readOnly === true)
   if (loaded.malformed) {

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import {
   resolveFolderPolicy,
+  loadGitScopeSources,
   workspaceFolderScope,
   folderMapProblem,
   coversHomeOrRoot,
@@ -89,7 +90,8 @@ export function payloadDir(input: Record<string, unknown> | null | undefined): s
  */
 export function hookFolderPolicy(dir: string, flags?: { path?: string }): FolderPolicy {
   try {
-    return resolveFolderPolicy(dir, { root: plurRoot(flags) })
+    const root = plurRoot(flags)
+    return resolveFolderPolicy(dir, { root, gitScopes: loadGitScopeSources(root) })
   } catch (err) {
     // Fail SAFE (audit F4 of #1517, owner decision): an unreadable decision
     // could be `off`, so no project marker turns memory on here.

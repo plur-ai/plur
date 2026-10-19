@@ -144,6 +144,12 @@ models:
   - model: PlurSpec/GitScope.lean
     covers:
       - packages/core/src/git-origin.ts
+  - model: PlurSpec/GitFolder.lean
+    covers:
+      - packages/core/src/folders.ts
+      - packages/core/src/index.ts
+      - packages/cli/src/lib/folder-gate.ts
+      - packages/mcp/src/server.ts
   - model: PlurSpec/Login.lean
     covers:
       - packages/cli/src/commands/login.ts

@@ -15,6 +15,7 @@ import PlurSpec.Installer
 import PlurSpec.RoutingDiscovery
 import PlurSpec.Trust
 import PlurSpec.GitScope
+import PlurSpec.GitFolder
 import PlurSpec.Login
 
 /-! Root of the PlurSpec models. One file per component; R2* = second verification round. -/
