@@ -879,3 +879,6 @@ models the added orchestration and rollback conditions. -/
 current or legacy display namespace before sending the previous id. The
 configuration/recall id remains unchanged; delivery and recall provenance
 checks, trust admission, and the previous hello's active state are unchanged. -/
+
+/-! 2026-10-20: A local hello marked demoted now names the privacy refusal.
+It still fails the server proof; routing, admission and recall are unchanged. -/

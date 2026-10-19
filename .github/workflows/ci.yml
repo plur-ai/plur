@@ -97,6 +97,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Hook-health and legacy migration exercise real MCP registration.
+      # Keep the same Codex version as the native Windows/WSL checks; these
+      # tests use configuration commands only, with isolated editor homes.
+      - name: Install Codex for real registration tests
+        run: npm install -g --no-audit --no-fund @openai/codex@0.160.1
       - run: git config --global user.email "ci@plur.ai"
       - run: git config --global user.name "PLUR CI"
       - run: pnpm build

@@ -86,3 +86,8 @@ command-surface check recognize init; runtime admission remains unchanged. -/
 /-! 2026-10-20: A local hello explicitly marked demoted reports that the
 privacy check retained sensitive content. It remains a failed server proof;
 no privacy rule, routing decision, or success condition changes. -/
+
+/-! 2026-10-20: A refused legacy cleanup now reports a fixed actionable
+diagnostic rather than a connection failure. Refusal still leaves setup
+incomplete, retains the accepted hello/key and pending write checks, and never
+includes raw cleanup/parser details. Rollback and proof predicates are unchanged. -/
