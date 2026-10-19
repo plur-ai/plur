@@ -25,9 +25,9 @@
  *
  * Modelled in spec/formal/PlurSpec/Trust.lean, section 4.
  */
-import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
+import { accessSync, constants, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
 import { homedir, release } from 'os'
-import { dirname, isAbsolute, join, resolve } from 'path'
+import { dirname, join } from 'path'
 import { isDeepStrictEqual } from 'util'
 import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree } from 'jsonc-parser'
 import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
@@ -50,7 +50,7 @@ export const PLUR_ENV_KEYS: readonly string[] = TOOL_ENV_KEYS
 export const TOOLS: readonly ToolId[] = ['claude-code', 'codex', 'opencode', 'cursor']
 
 /** A launch: what the tool runs, with the env it runs it with. */
-export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv }
+export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string }
 
 /** Where tool configs are looked up. Defaults: os.homedir() and process.env. */
 export type WireLocation = { home?: string; env?: NodeJS.ProcessEnv }
@@ -281,14 +281,17 @@ function valueProblem(env: Env): string | null {
   return null
 }
 
-/** The file a write lands in: a symlink's final target, else the path itself. Writes are atomic (temp file, rename, mode kept). */
+/**
+ * The file a write lands in: the path with every link resolved (the file
+ * itself, or a folder above it), else the path as given. Writes are atomic
+ * (temp file, rename, mode kept), so a link is kept by writing its target.
+ */
 function linkTarget(path: string): string {
   try {
-    if (lstatSync(path).isSymbolicLink()) return realpathSync(path)
+    return realpathSync(path)
   } catch {
-    // Not a link, or it vanished: the path as given.
+    return path
   }
-  return path
 }
 
 const JSON_FORMAT = { formattingOptions: { insertSpaces: true, tabSize: 2 } }
@@ -627,15 +630,13 @@ export function toolLaunch(
     if (tool === 'codex') {
       const entry = readCodexEntry(text)
       if (!entry || typeof entry.command !== 'string' || entry.url !== undefined) return null
-      // Codex starts the server in the entry's cwd: a relative command path or
-      // script resolves there, not where the proof happens to run.
-      const cwd = entry.cwd
-      const at = (p: string) => (cwd && !isAbsolute(p) && /[\\/]/.test(p) ? resolve(cwd, p) : p)
-      const args = entry.args ?? []
+      // Codex starts the server in the entry's cwd; that is carried, and
+      // launchProblem keeps such a launch from the proof (see there).
       return {
-        command: at(entry.command),
-        args: args.length > 0 && !args[0].startsWith('-') ? [at(args[0]), ...args.slice(1)] : args,
+        command: entry.command,
+        args: entry.args ?? [],
         env: codexMcpEnvironment(entry, parentEnv, (loc.platform ?? process.platform) === 'win32'),
+        ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}),
       }
     }
     if (tool === 'opencode') {
@@ -697,6 +698,11 @@ function isDirectLaunch(launch: ToolLaunch): boolean {
  */
 export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJS.Platform): string | null {
   const fix = 're-run `plur init` after installing @plur-ai/mcp so it starts PLUR directly'
+  // The proof runs from its own neutral folder (a folder turned off must not
+  // pass as saved), so a launch that depends on its working folder — a
+  // relative script, a relative PLUR_PATH or CA path — would prove a
+  // different setup.
+  if (launch.cwd !== undefined) return `${label} starts PLUR in its own working folder, which the proof cannot reproduce — remove \`cwd\` from the plur entry, or ${fix}`
   if (isNpxLaunch(launch)) return `${label} starts PLUR through npx — ${fix}`
   let base = baseName(launch.command)
   // `env [-opts] [NAME=value…] program …` runs `program`: judge that one.
