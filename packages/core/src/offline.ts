@@ -1,14 +1,13 @@
 /**
  * The offline switch: when the machine is declared offline, PLUR starts no
- * network call of its own, not even one the user asked for in passing: the
- * npm update check (which otherwise runs only on explicit request, see
- * version-check.ts) and the model download. A service the user configured by
- * hand (a team server, an OpenAI embedder, a pack URL) is still contacted
- * when the user uses it.
+ * network call of its own: the npm update check (which otherwise runs once at
+ * start and stops for good when it cannot connect, see version-check.ts) and
+ * the model download. A service the user configured by hand (a team server, an
+ * OpenAI embedder, a pack URL) is still contacted when the user uses it.
  *
- * A process cannot find out that there is no internet without trying, and
- * trying is itself the network call this promise rules out. So "offline" is
- * something the environment says, never something PLUR probes for:
+ * Apart from that one update check, PLUR never probes for whether it is
+ * online. The environment can say "offline" up front, so not even that one
+ * attempt is made:
  *
  *   - PLUR_OFFLINE=1 — PLUR's own switch.
  *   - HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1 — the offline conventions PLUR

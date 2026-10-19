@@ -34,8 +34,8 @@ export function assembleContext(params: {
     renderMemoryBlock({ injection, tokenBudget: params.tokenBudget, usedTokens: messageTokens }),
   ]
 
-  // Append update notice if an explicit check cached a newer version. A read
-  // never fetches (TEAM-5).
+  // Append update notice if a newer version is cached (zero-cost read; it
+  // starts no refresh once the process is offline, TEAM-5)
   const updateCheck = getCachedUpdateCheck('@plur-ai/claw')
   if (updateCheck?.updateAvailable) {
     sections.push(`\n[PLUR update available: ${updateCheck.current} → ${updateCheck.latest}. Ask your user to run: npm update @plur-ai/claw]`)
