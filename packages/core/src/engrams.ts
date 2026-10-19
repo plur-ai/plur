@@ -1128,6 +1128,27 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
 }
 
 /**
+ * The id a pack row is loaded under: its own id with the pack named after it
+ * (`ENG-2026-10-18-001` in pack `deploy-tips` → `ENG-2026-10-18-001-pack-deploy-tips`).
+ *
+ * Pack rows keep the ids their author's store minted, and ids are minted per
+ * store from the date and a daily sequence — so an ordinary pack made the same
+ * day carries the very ids my own memories have, and a hostile author can pick
+ * them on purpose. Unnamespaced, such a row was shown to the agent under one of
+ * my memory ids. Every read path that hands out a pack row uses this id, so a
+ * pack row can never answer to an id my store mints, and two packs that ship
+ * the same id stay apart. The original id stays readable inside it.
+ *
+ * Idempotent, and the result always fits the engram id alphabet.
+ */
+export function packEngramId(id: string, packName: string): string {
+  const slug = packName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pack'
+  const suffix = `-pack-${slug}`
+  if (id.endsWith(suffix)) return id
+  return `${id}${suffix}`
+}
+
+/**
  * Namespace a store-local id the way the read paths hand it back.
  *
  * A store's ids are prefixed with `ENG-{storePrefix(scope)}-` on load so ids

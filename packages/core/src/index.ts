@@ -10,7 +10,7 @@ import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk } from './config.js'
 import { canonicalize } from './project-config.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore, type LoadedPack } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -1690,6 +1690,21 @@ export class Plur {
    *
    * One implementation, two callers. Duplicating it is what caused all three.
    */
+  /**
+   * Installed packs as every read path hands them out: each row under its
+   * pack id ({@link packEngramId}), never under the id its author's store
+   * minted. That id can be one of MY memory ids (same day, same sequence, or
+   * picked on purpose), and a pack row shown under it reads to the agent as my
+   * own memory (PCK-4). Injection, search/list and the receipt all load packs
+   * through here, so the id a pack row carries is the same on every path.
+   */
+  private _loadInstalledPacks(): LoadedPack[] {
+    return loadAllPacks(this.paths.packs).map(pack => ({
+      ...pack,
+      engrams: pack.engrams.map(e => ({ ...e, id: packEngramId(e.id, pack.manifest.name) })),
+    }))
+  }
+
   private async _loadSecondaryAndPacks(): Promise<Engram[]> {
     const stores = this.config.stores ?? []
     const all: Engram[] = []
@@ -1726,7 +1741,7 @@ export class Plur {
     }
 
     // Include pack engrams so they're searchable via recall
-    const packs = loadAllPacks(this.paths.packs)
+    const packs = this._loadInstalledPacks()
     for (const pack of packs) {
       for (const e of pack.engrams) {
         if (e.status !== 'active') continue
@@ -6305,7 +6320,24 @@ export class Plur {
     const engrams = await this._loadAllEngrams()
     const exact = engrams.find(e => e.id === id)
     if (exact) return exact
+    const byPackOriginal = this._matchPackOriginalId(engrams, id)
+    if (byPackOriginal) return byPackOriginal
     return this._matchOldFormId(engrams, id)
+  }
+
+  /**
+   * The pack row a pack's OWN id names, for ids handed out before pack rows
+   * got their pack ids (e.g. `ENG-PFR-001`). Reached only when no loaded row
+   * carries `id` exactly, so an id one of my memories holds — active or
+   * forgotten — never leads to a pack row (PCK-4). Only when exactly one pack
+   * row carries it.
+   */
+  private _matchPackOriginalId(engrams: Engram[], id: string): Engram | null {
+    const matches = engrams.filter(e => {
+      const pack = (e as { _pack?: unknown })._pack
+      return typeof pack === 'string' && e.id === packEngramId(id, pack)
+    })
+    return matches.length === 1 ? matches[0] : null
   }
 
   /**
@@ -7840,7 +7872,7 @@ export class Plur {
     deadlineAt?: number,
   ): Promise<InjectionResult> {
     let allEngrams = await this._loadAllEngrams()
-    const allPacks = loadAllPacks(this.paths.packs)
+    const allPacks = this._loadInstalledPacks()
 
     if (remote && remote.engrams.length > 0) {
       // Candidate-pool dedup by namespaced id — the SERVER copy wins (fresher
@@ -10497,7 +10529,13 @@ export class Plur {
       const packStore = this._storeAt(engramsPath)
       const handled = await this._withStoreLock(engramsPath, async () => {
         const engrams = await packStore.load()
-        const engram = engrams.find(e => e.id === id)
+        // A pack row answers to its pack id ({@link packEngramId}), the id
+        // every read path hands out. Its bare id still finds it: the caller
+        // reaches here only after no store of mine held `id` (PCK-4).
+        let packName: string | undefined
+        try { packName = loadPack(packDir).manifest.name } catch { packName = undefined }
+        const engram = engrams.find(e => packName !== undefined && packEngramId(e.id, packName) === id)
+          ?? engrams.find(e => e.id === id)
         if (!engram) return false
 
         applyFeedbackSignal(engram, signal, undefined, applyOpts)
@@ -12101,7 +12139,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
 
     const packIds: string[] = []
-    for (const pack of loadAllPacks(this.paths.packs)) {
+    for (const pack of this._loadInstalledPacks()) {
       for (const e of pack.engrams) {
         if (e.status === 'active') {
           packIds.push(e.id)
