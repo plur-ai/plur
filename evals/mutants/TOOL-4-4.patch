@@ -1,12 +1,13 @@
 diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index d5992eb3..ab046ee1 100644
 --- a/packages/core/src/learn-async.ts
 +++ b/packages/core/src/learn-async.ts
-@@ -707,7 +707,7 @@
-     try {
-       // Batch learning never overwrites an existing memory (owner decision
-       // 2026-10-18): UPDATE/MERGE answers become a linked ADD.
--      const result = await learnAsync(batchDeps, statement, ctx, { neverOverwrite: true })
-+      const result = await learnAsync(batchDeps, statement, ctx, { neverOverwrite: false }) // MUTANT: batch lets an UPDATE or MERGE verdict overwrite again
-       // Tag with the input position so a caller can map this result back to its
-       // input even though `results` is compacted (failed statements absent). #281
-       results.push({ ...result, input_index: i })
+@@ -219,6 +219,8 @@ async function executeDedupDecision(
+       const scope = context?.scope ?? existing.scope
+       // `supersedes_unless_locked`: learn() re-checks the lock under the store
+       // lock, so a memory locked after the read above is not superseded either.
++      // MUTANT: an UPDATE verdict overwrites the existing memory's text again
++      { const all = await deps.store.load(); const i = all.findIndex(e => e.id === existing.id); all[i] = { ...all[i], statement } as Engram; await deps.store.save(all); return { engram: all[i], decision: 'UPDATE', existing_id: existing.id } }
+       const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), supersedes, supersedes_unless_locked: true })
+       // Judged by effect: UPDATE is reported only when the supersede landed.
+       const landed = engram.id !== existing.id && ((engram as any).relations?.supersedes ?? []).includes(existing.id)

@@ -1,14 +1,14 @@
 diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
-index ee45ea4a..8d115d87 100644
+index 29a9402d..0dd3a8d8 100644
 --- a/packages/core/src/inject.ts
 +++ b/packages/core/src/inject.ts
-@@ -1015,8 +1015,7 @@ export function selectAndSpread(
+@@ -1061,8 +1061,7 @@ export function selectAndSpread(
    // not a candidate at all — not in directives, constraints or consider.
    // A historical prompt ("previously", "used to") still reaches it.
-   const filtered = scored.filter(s =>
+   const current = scored.filter(s =>
 -    ((s as any).pinned === true || s.score >= minRelevance)
 -    && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy)))
 +    ((s as any).pinned === true || s.score >= minRelevance)) // MUTANT: replaced memories stay candidates
- 
-   // Sort by score descending
-   filtered.sort((a, b) => b.score - a.score)
+   // Nearby-variant suppression (INJ-1). The floor above is a share of a score
+   // normalised to the best match and padded by recency and anchor bonuses, so
+   // nearly anything sharing a word with the task clears it — including the
