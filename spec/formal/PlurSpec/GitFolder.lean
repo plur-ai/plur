@@ -65,6 +65,25 @@ def capturedWrite (captured _current : Default) (automatic : Nat) : Nat :=
 theorem rebind_does_not_retarget (captured before after : Default) (automatic : Nat) :
     capturedWrite captured before automatic = capturedWrite captured after automatic := rfl
 
+-- Adapter composition: restrictive decisions apply across all paths, but
+-- ordinary defaults come from editor roots, not an unrelated startup cwd.
+def workspaceDefault (restricted : Option Default) (editor startup : Default) : Default :=
+  restricted.getD editor
+
+theorem editor_local_survives_startup (startup : Default) :
+    workspaceDefault none .local startup = .local := rfl
+
+-- A refreshed workspace replaces the earlier snapshot before core admission.
+-- None is a blocked lookup, not permission to reuse the previous default.
+def refreshWrite (_previous : Default) (current : Option Default) (automatic : Nat) : Option Nat :=
+  current.map (fun git => writeScope none none git automatic)
+
+theorem refreshed_local_stays_local (previous : Default) (automatic : Nat) :
+    refreshWrite previous (some .local) automatic = some 0 := rfl
+
+theorem failed_refresh_blocks (previous : Default) (automatic : Nat) :
+    refreshWrite previous none automatic = none := rfl
+
 -- Replayed counterexamples for the pre-integration behavior.
 example : writeScope none none .absent 7 ≠ writeScope none none .local 7 := by decide
 example : mayDial none none .absent ≠ mayDial none none .local := by decide

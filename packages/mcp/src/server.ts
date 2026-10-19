@@ -329,6 +329,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     }
     const pick = resolved.find(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')
       ?? resolved.find(r => r.policy.mode === 'remote-only')
+      ?? resolved.find(r => defaultDirs.includes(r.dir))
       ?? resolved[resolved.length - 1]
     // Restrictive decisions still cover both roots and startup cwd. Origin
     // defaults belong to the editor roots, not the server process directory.
@@ -475,7 +476,18 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       const folderContext: FolderScopeContext = {
         resolve: async () => {
           const ws = await workspace.workspace()
-          return ws === null ? null : { scope: workspaceWriteScope(instance, ws), key: workspaceKey(ws) }
+          // The scope and binding must describe the same workspace. A newer
+          // local/unknown answer must never fall back to an earlier Git scope.
+          if (ws === null) {
+            instance.bindFolderUnresolved(folder, 'the current workspace could not be read')
+            return null
+          }
+          if (folderGate.check(ws).plur !== 'on') {
+            instance.bindFolderUnresolved(folder, 'memory is not enabled in the current workspace')
+            return null
+          }
+          bindWorkspace([...new Set([...ws.roots, ws.cwd])], ws.roots.length ? ws.roots : [ws.cwd])
+          return { scope: workspaceWriteScope(instance, ws), key: workspaceKey(ws) }
         },
         ...(admittedWs !== null
           ? { admitted: () => ({ scope: workspaceWriteScope(instance, admittedWs!), key: workspaceKey(admittedWs!) }) }

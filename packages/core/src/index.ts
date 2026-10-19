@@ -14276,7 +14276,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   resolveFolderPolicy(dir: string, options?: { home?: string; readOnly?: boolean }): FolderPolicy {
     return _resolveFolderPolicy(dir, {
       root: this.paths.root,
-      gitScopes: this.gitScopeSources(),
+      gitScopes: loadGitScopeSources(this.paths.root),
       readOrigin: d => {
         const path = canonicalize(d)
         const now = Date.now()
