@@ -22,6 +22,7 @@ import { fillEmbeddingCache, embeddingSearch, _setCachedEmbedder, resetEmbedder,
 import { sync } from '../src/sync.js'
 import { execSync } from 'child_process'
 import { isRemoteOnlyQueued } from '../src/remote-only-rows.js'
+import { queueHoldViolation } from '../src/store/remote-only-store-guard.js'
 import { StubServer } from './helpers/stub-server.js'
 import { backgroundPushesSettled } from './helpers/background-pushes.js'
 
@@ -235,6 +236,53 @@ describe('construction-time maintenance waits for the binding (Codex round 10 on
     plur.bindFolder(work)
     await plur.ready().catch(() => {})
     expect(readFileSync(join(root, 'engrams.yaml'), 'utf8')).toBe(before)
+  })
+})
+
+describe('Codex round 11 on #1663', () => {
+  const homeRoot = () => { const root = join(dir, 'h11', '.plur'); mkdirSync(root, { recursive: true }); return root }
+  const walk = (d: string): string => !existsSync(d) ? '' : readdirSync(d, { withFileTypes: true })
+    .map(e => e.isDirectory() ? walk(join(d, e.name)) : readFileSync(join(d, e.name), 'utf8')).join('')
+
+  it('a pack export refuses a queued remote-only save, unbound too', async () => {
+    const root = homeRoot()
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false } }))
+    const plur = new Plur({ path: root })
+    const manifest = { name: 'p', version: '1.0.0', license: 'MIT' } as any
+    // Control: an ordinary public row exports.
+    await plur.exportPack([row('ENG-2026-10-18-120', 'plain exported fact', { visibility: 'public' })], join(dir, 'pack-ok'), manifest)
+    expect(walk(join(dir, 'pack-ok'))).toContain('plain exported fact')
+    const out = join(dir, 'pack-out')
+    let threw = false
+    try { await plur.exportPack([queued('ENG-2026-10-18-121', 'QUEUEDEXPORT fact', ) && { ...queued('ENG-2026-10-18-121', 'QUEUEDEXPORT fact'), visibility: 'public' }], out, manifest) } catch { threw = true }
+    expect(threw).toBe(true)
+    expect(walk(out)).not.toContain('QUEUEDEXPORT')
+  })
+
+  it('forgetting a queued save keeps no reason text in history', async () => {
+    const root = homeRoot()
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false } }))
+    writeFileSync(join(root, 'engrams.yaml'), yaml.dump({ engrams: [queued('ENG-2026-10-18-122', 'QUEUEDFORGET fact')] }))
+    await new Plur({ path: root }).forget('ENG-2026-10-18-122', 'Obsolete: QUEUEDFORGET fact')
+    expect(walk(join(root, 'history'))).not.toContain('QUEUEDFORGET')
+  })
+
+  it('getByIds and the residual filter of the query-adapter path never return a queued save unbound', async () => {
+    const root = homeRoot()
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false } }))
+    writeFileSync(join(root, 'engrams.yaml'), yaml.dump({ engrams: [queued('ENG-2026-10-18-123', 'QUEUEDBYIDS fact')] }))
+    const plur = new Plur({ path: root })
+    expect(JSON.stringify(await plur.getByIds(['ENG-2026-10-18-123']))).not.toContain('QUEUEDBYIDS')
+    const residual = (plur as any)._applyResidualFilters([queued('ENG-2026-10-18-124', 'QUEUEDRESIDUAL fact')], {})
+    expect(JSON.stringify(residual)).not.toContain('QUEUEDRESIDUAL')
+  })
+
+  it('a half-stripped marker still holds the save: no demotion, and the hold refuses it', () => {
+    const half = queued('ENG-2026-10-18-125', 'QUEUEDHALF fact')
+    delete half.structured_data._outbox.remote_only
+    expect(isRemoteOnlyQueued(half)).toBe(true)
+    const demoted = { ...half, scope: 'local', visibility: 'private', structured_data: {} }
+    expect(queueHoldViolation(half, demoted as any, () => true)).not.toBeNull()
   })
 })
 
