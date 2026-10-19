@@ -378,8 +378,25 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
     if (!this._visible(e)) this._refuse(what)
   }
 
-  async load(): Promise<Engram[]> { return (await this._inner.load()).filter(e => this._visible(e)) }
-  async loadCached(): Promise<Engram[]> { return (await this._inner.loadCached()).filter(e => this._visible(e)) }
+  async load(): Promise<Engram[]> { return (await this._read(() => this._inner.load())).filter(e => this._visible(e)) }
+  async loadCached(): Promise<Engram[]> { return (await this._read(() => this._inner.loadCached())).filter(e => this._visible(e)) }
+
+  /**
+   * A read whose failure crosses the remote-only boundary carries no excerpt of
+   * the personal store (Codex round 12 on #1663): a parser error can quote its
+   * text. The error's name and code are kept; the message names the file only.
+   */
+  private async _read(fn: () => Promise<Engram[]>): Promise<Engram[]> {
+    try {
+      return await fn()
+    } catch (err) {
+      const e = err as { name?: string; code?: string }
+      const safe = new Error(`this machine's store${this._inner.location ? ` (${escapedPath(this._inner.location)})` : ''} could not be read` +
+        ` (${e?.name ?? 'Error'}${e?.code ? `, ${e.code}` : ''}); its content is not shown in a remote-only folder`)
+      ;(safe as { code?: string }).code = e?.code
+      throw safe
+    }
+  }
   invalidate(): void { this._inner.invalidate() }
 
   /** Every id the store holds — ids only, never content — for collision-free id minting. */

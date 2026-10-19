@@ -2068,7 +2068,9 @@ export class Plur {
       }
     }
 
-    return all
+    // A queued remote-only save held in a secondary file store is never a
+    // candidate either (Codex round 12 on #1663): same rule as the primary.
+    return withoutRemoteOnlyQueued(all)
   }
 
   /**
