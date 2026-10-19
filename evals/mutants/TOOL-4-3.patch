@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..ad3f697f 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -4663,7 +4663,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
+       // plur_forget's effect. A removal needs an explicit, gated act, so
+       // plur_admin refuses this tool and it is a direct tool in every profile
+       // (CURSOR_CORE_TOOL_NAMES), where the client sees this annotation.
+-      annotations: { title: 'Tensions', readOnlyHint: false, destructiveHint: true, idempotentHint: false },
++      annotations: { title: 'Tensions', readOnlyHint: false, destructiveHint: false, idempotentHint: false }, // MUTANT: listing tensions is mostly a read, so the tool lost its destructive marker
+       inputSchema: {
+         type: 'object',
+         properties: {

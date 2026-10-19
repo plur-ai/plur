@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/forget.ts b/packages/cli/src/commands/forget.ts
+index 7d149812..28ec86cd 100644
+--- a/packages/cli/src/commands/forget.ts
++++ b/packages/cli/src/commands/forget.ts
+@@ -69,7 +69,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+       // surface as MCP plur_forget. Without force, a multiply-learned engram
+       // (reference_count > 1) only decrements and stays active, and a later
+       // learn() at a different scope re-matches it and inherits the old scope.
+-      const { warnings } = await plur.forget(target, reason, { force: true })
++      const { warnings } = await plur.forget(target, reason) // MUTANT: force dropped, a repeated memory only loses one count
+       if (shouldOutputJson(flags)) {
+         outputJson({ success: true, retired: { id: target, statement: engram.statement }, ...withWarnings(warnings) })
+       } else {

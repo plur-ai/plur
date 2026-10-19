@@ -1,0 +1,14 @@
+diff --git a/packages/core/src/scope-util.ts b/packages/core/src/scope-util.ts
+index 7dccc118..f0cea87f 100644
+--- a/packages/core/src/scope-util.ts
++++ b/packages/core/src/scope-util.ts
+@@ -69,8 +69,7 @@ export function isPersonalScope(scope: string): boolean {
+  */
+ export function isScopeWithin(scope: string, queryScope: string): boolean {
+   return scope === queryScope
+-    || scope.startsWith(queryScope + ':')
+-    || scope.startsWith(queryScope + '/')
++    || scope.startsWith(queryScope)
+ }
+ 
+ /**

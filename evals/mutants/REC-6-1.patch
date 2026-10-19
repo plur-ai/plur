@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..8d8a7614 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -4506,7 +4506,7 @@ export class Plur {
+       // `supersedes` would still be recorded on the new engram and the reverse
+       // edge would simply never appear, which reads as data corruption rather
+       // than as a disabled feature.
+-      const supersededTargets = context?.supersedes?.length
++      const supersededTargets = false && context?.supersedes?.length
+         ? this._writeSupersededByEdges(
+             canDelegate ? await ps.loadByIds!(context.supersedes) : engrams,
+             context.supersedes,

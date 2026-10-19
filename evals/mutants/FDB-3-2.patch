@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/decay.ts b/packages/core/src/decay.ts
+index 105c07ba..1cde0bc6 100644
+--- a/packages/core/src/decay.ts
++++ b/packages/core/src/decay.ts
+@@ -1,7 +1,7 @@
+ import type { Engram } from './schemas/engram.js'
+ 
+ const DECAY_RATE = 0.05
+-const FLOOR = 0.05
++const FLOOR = 0.05 * 0 // MUTANT: no floor
+ const MS_PER_DAY = 86_400_000
+ 
+ /**

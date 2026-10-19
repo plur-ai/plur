@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/plur.ts b/packages/cli/src/plur.ts
+index db68434e..ccb1f42e 100644
+--- a/packages/cli/src/plur.ts
++++ b/packages/cli/src/plur.ts
+@@ -141,7 +141,7 @@ export function getLastPlurInstance(): Plur | null {
+  * question passes it: asking about a folder must change nothing (#1418 review).
+  */
+ export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; autoDiscover?: boolean }): Plur {
+-  const path = flags.path || process.env.PLUR_PATH || undefined
++  const path = flags.path || (process.env.PLUR_PATH ? join(process.env.PLUR_PATH, 'cli') : undefined)
+   lastInstance = new Plur({
+     path,
+     readonly: options?.readonly,

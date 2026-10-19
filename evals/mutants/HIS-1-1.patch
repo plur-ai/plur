@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..a063b8b5 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -9505,7 +9505,7 @@ export class Plur {
+       await this._updateEngrams(engrams, [engram])
+       await this._syncIndex()
+       this._appendHistory({
+-        event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
++        event: 'engram_decremented', // MUTANT: a forget is never recorded as a retirement
+         engram_id: id,
+         timestamp: new Date().toISOString(),
+         data: {

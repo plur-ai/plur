@@ -1,0 +1,12 @@
+diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index 0d7f2901..07f79945 100644
+--- a/packages/core/src/learn-async.ts
++++ b/packages/core/src/learn-async.ts
+@@ -482,6 +482,7 @@ export async function learnAsync(
+         // unscoped write that auto-routes to a team scope can no longer NOOP
+         // against a `global` near-duplicate, because nothing NOOPs.
+         const top = scores[0]
++        if (top.score >= threshold) { decision = 'NOOP'; targetId = top.id }
+         if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
+           // History is what makes the distribution measurable after the fact.
+           // Without it, "measure over the real store" means re-embedding the

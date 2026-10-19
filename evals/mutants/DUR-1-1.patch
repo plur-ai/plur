@@ -1,0 +1,15 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..d3794d39 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -2225,8 +2225,8 @@ export class Plur {
+       this._maybeDailyBackup(path)
+       return await fn()
+     }
+-    if (store.withExclusiveAccess) return await store.withExclusiveAccess(guarded)
+-    return await withAsyncLock(lockKey, guarded, lockOptions)
++    void lockKey; void lockOptions
++    return await guarded() // MUTANT: no lock around the read-modify-write
+   }
+ 
+   /**

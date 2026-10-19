@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..5a88be94 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -7879,7 +7879,7 @@ export class Plur {
+         // personal family. Deliberately independent of the `permitted`
+         // authorization filter above — grants never widen `options.scopes`.
+         grantedScopes: this._grantedScopes(),
+-        maxTokens: budget,
++        maxTokens: budget * 2, // MUTANT
+       },
+       engrams,
+       packs,

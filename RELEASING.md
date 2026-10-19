@@ -99,6 +99,11 @@ one-release lesson:
    (#1066) — a dev scratch script with a hardcoded maintainer path — rode into
    a public repo inside an otherwise-reviewed PR.
 
+5. **The paid agent evals pass on the release commit.** Run
+   `gh workflow run evals.yml -f agents=true --ref <release branch>` and wait for
+   the `agents` job to finish green (each agent promise must pass all three runs,
+   `evals/README.md`). Nothing triggers this automatically; it is this step.
+
 Step 3.55 of `release.sh` additionally refuses to ship a version whose own
 CHANGELOG heading still says `(unreleased)` (#1065).
 

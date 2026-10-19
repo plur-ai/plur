@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/tensions.ts b/packages/core/src/tensions.ts
+index 86aff17b..a15c19c6 100644
+--- a/packages/core/src/tensions.ts
++++ b/packages/core/src/tensions.ts
+@@ -559,7 +559,7 @@ export function getCandidatePairsDetailed(
+       if (excludePairs && excludePairs.has([a.id, b.id].sort().join(':'))) continue
+ 
+       // #240: intentional updates are not tensions
+-      if (supersedesLinked(a, b)) continue
++      // MUTANT: correction pairs are judged like any other
+ 
+       // #240: an engram whose validity window has closed is not a peer
+       // claim about current truth — don't line it up against anything.

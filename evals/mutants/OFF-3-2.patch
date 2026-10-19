@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/folder-map-advice.ts b/packages/mcp/src/folder-map-advice.ts
+index e3bd4135..b285cb66 100644
+--- a/packages/mcp/src/folder-map-advice.ts
++++ b/packages/mcp/src/folder-map-advice.ts
+@@ -15,7 +15,7 @@ export function folderMapAdvice(problem: Pick<FolderMapProblem, 'fixable' | 'lin
+       text:
+         `PLUR can repair this${summary ? `; the repair changes ${summary}` : ''}. Show the user what is wrong and what the repair ` +
+         `changes, and ask whether to repair the file (a backup is saved first; they can see the full change by running ` +
+-        `plur folders repair in a terminal). Only after the user agrees, run: ${command}`,
++        `plur folders repair in a terminal). Only after the user agrees, run the repair.`,
+     }
+   }
+   if (problem.fixable) return { text: 'The user can repair it by running plur folders repair in a terminal (it shows the change and asks first).' }

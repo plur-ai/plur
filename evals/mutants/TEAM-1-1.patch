@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/remote-recall.ts b/packages/core/src/remote-recall.ts
+index 4b491337..ee606eb9 100644
+--- a/packages/core/src/remote-recall.ts
++++ b/packages/core/src/remote-recall.ts
+@@ -113,7 +113,7 @@ export const BREAKER_HALF_OPEN_AFTER_MS = 60 * 1000
+  * within this deadline with whatever is ready and says what is missing.
+  * `PLUR_RECALL_DEADLINE_MS` overrides it.
+  */
+-export const DEFAULT_RECALL_DEADLINE_MS = 10_000
++export const DEFAULT_RECALL_DEADLINE_MS = 60_000
+ 
+ /**
+  * How long a recall waits for the store lock before it skips its freshness
