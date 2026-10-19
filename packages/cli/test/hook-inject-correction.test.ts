@@ -100,6 +100,37 @@ describe('hook-inject folds in correction detection (#1312)', () => {
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain(SIGNAL)
   }, 60_000)
 
+  // HK-2 (#1385): the two paths that returned before the correction was read.
+  it('first prompt while another run of the session holds the inject lock: the reminder alone', () => {
+    mkdirSync(sessions, { recursive: true })
+    writeFileSync(join(sessions, 'c-busy.injecting'), `${process.pid}-test`)
+    const ctx = context(hook({ session_id: 'c-busy', prompt: 'No, from now on always run the tests first.' }))
+    expect(ctx).toContain(SIGNAL)
+    expect(ctx).not.toContain('session started')
+  }, 60_000)
+
+  it('first prompt without a correction while the inject lock is held: nothing at all', () => {
+    mkdirSync(sessions, { recursive: true })
+    writeFileSync(join(sessions, 'c-busy2.injecting'), `${process.pid}-test`)
+    expect(hook({ session_id: 'c-busy2', prompt: 'show me the diff' })).toBe('')
+  }, 60_000)
+
+  it('the session hit its injection attempt cap: the skip notice and the reminder share one output', () => {
+    mkdirSync(sessions, { recursive: true })
+    writeFileSync(join(sessions, 'c-cap.attempts'), '2')
+    const ctx = context(hook({ session_id: 'c-cap', prompt: 'No, from now on always run the tests first.' }))
+    expect(ctx).toContain('automatic injection skipped')
+    expect(ctx).toContain(SIGNAL)
+  }, 60_000)
+
+  it('attempt cap without a correction: the skip notice only', () => {
+    mkdirSync(sessions, { recursive: true })
+    writeFileSync(join(sessions, 'c-cap2.attempts'), '2')
+    const ctx = context(hook({ session_id: 'c-cap2', prompt: 'show me the diff' }))
+    expect(ctx).toContain('automatic injection skipped')
+    expect(ctx).not.toContain(SIGNAL)
+  }, 60_000)
+
   it('the standalone hook-correction-detect command keeps working', () => {
     const r = runCli('node', [CLI, 'hook-correction-detect'], {
       input: JSON.stringify({ prompt: 'No, that is wrong' }), encoding: 'utf-8', timeout: 30_000, env, cwd: dir,
