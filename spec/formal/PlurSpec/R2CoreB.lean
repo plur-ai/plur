@@ -409,3 +409,9 @@ known-key backoff bypass and the local-path takeover hold. Other write guards,
 claims, idempotency and merge-back remain unchanged; the extra queue field is
 an attempted credential fingerprint only. Enterprise recovery text changes no
 recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/

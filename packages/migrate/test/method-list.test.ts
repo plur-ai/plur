@@ -107,6 +107,8 @@ const ALWAYS_ASYNC = new Set([
   // reads the outbox (listOutbox is async) for the queued-save counts; new in
   // this release, so there is no pre-0.16 call site to rewrite.
   'registerEnterpriseServer',
+  // Born async: read-only server diagnostics perform bounded HTTP probes.
+  'checkServerStores',
 ])
 
 /** Public methods of `Plur`, mapped to whether they are declared `async`. */

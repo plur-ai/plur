@@ -9,6 +9,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
+import { ServerStoreEntrySchema } from './schemas/config.js'
 import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope, isSafeScopeName } from './store-expand.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
@@ -80,7 +81,8 @@ import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
-import { loadGitScopeSources, readGitOrigin, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
+import { loadGitScopeSources, readGitOrigin, DISCOVERY_MAX_AGE_MS, DISCOVERY_FUTURE_SKEW_MS, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
+import { checkOwnerOnly } from './owner-only.js'
 import { formatSaveDestination, formatServerSessionLine, type ServerSessionState } from './save-destination.js'
 export { formatSaveDestination, formatServerSessionLine, type SaveDestinationInput, type ServerSessionState } from './save-destination.js'
 export { ENTERPRISE_SETUP_COMMAND, enterpriseRecoveryHint } from './enterprise.js'
@@ -727,6 +729,14 @@ export interface RemoteHealth {
   /** Number of scopes the server reports granted to this token (status 'ok' only). */
   grantedScopes?: number
 }
+
+export type CheckResult = 'ok' | 'fail' | 'could-not-check'
+export interface ServerStoreCheck {
+  url: string
+  checks: Array<{ name: 'reachable' | 'key' | 'key-file' | 'scopes-fresh' | 'write-path' | 'queue'; result: CheckResult; detail: string }>
+  ok: boolean
+}
+export type { WriteCheckResult } from './store/remote-store.js'
 
 /** Outcome of registering discovered scopes for one URL (#292). */
 export interface RegisterDiscoveredResult {
@@ -15215,11 +15225,13 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** The raw `stores` array of config.yaml as on disk ([] when absent or unreadable). */
-  private _readRawStores(): unknown[] {
+  private _readRawStores(strict = false): unknown[] {
     try {
       const data = yaml.load(fs.readFileSync(this.paths.config, 'utf8')) as Record<string, unknown> | null
+      if (strict && data != null && (!isPlainObject(data) || (data.stores !== undefined && !Array.isArray(data.stores)))) throw new Error('invalid configuration structure')
       return Array.isArray(data?.stores) ? data!.stores as unknown[] : []
-    } catch {
+    } catch (err) {
+      if (strict && (err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('configuration could not be read')
       return []
     }
   }
@@ -15249,6 +15261,101 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (!wrote) return
     this.config = this._loadConfig()
     this.configMtimeMs = this.statConfigMtime()
+  }
+
+  /** Observational diagnostics: never refresh grants, change permissions or flush saves. */
+  async checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck[]> {
+    let entries: Array<Record<string, unknown> & { url: string }>
+    try {
+      const raw = this._readRawStores(true)
+      for (const entry of raw) {
+        if (!isPlainObject(entry) || !('enterprise' in entry)) continue
+        // Loading is deliberately shape-tolerant; a diagnostic must not turn
+        // discarded scope data into evidence that there is nothing to check.
+        if (!isEnterpriseServerEntry(entry) || !ServerStoreEntrySchema.safeParse(entry).success ||
+          !stringList(entry.scopes).every(isSafeScopeName) || stringList(entry.scopes).length !== (entry.scopes as unknown[]).length ||
+          (entry.pinned_scopes !== undefined && (!Array.isArray(entry.pinned_scopes) || !entry.pinned_scopes.every(s => typeof s === 'string' && isSafeScopeName(s))))) {
+          throw new Error('invalid enterprise entry')
+        }
+      }
+      entries = raw.filter(isEnterpriseServerEntry)
+    }
+    catch {
+      return [{ url: 'configuration', ok: false, checks: [{ name: 'key-file', result: 'could-not-check', detail: 'configuration could not be read; server checks were not run' }] }]
+    }
+    this.reloadConfigIfChanged()
+    if (!entries.length) return []
+    const timeoutMs = Math.max(1, Math.min(30_000, Math.floor(opts?.timeoutMs ?? 5000)))
+    const file = checkOwnerOnly(this.paths.config)
+    let queued: Awaited<ReturnType<Plur['listOutbox']>> = []
+    const targets = new Map<string, string>()
+    let queueFailed = !!this.remoteOnlyFolder()
+    if (!queueFailed) try {
+      queued = await this.listOutbox()
+      if (queued.length) for (const e of await this._loadCached(this.paths.engrams)) {
+        for (const [kind, field] of [['push', '_outbox'], ['retire', '_retireRemote']] as const) {
+          const url = (e as any).structured_data?.[field]?.target_url
+          if (typeof url === 'string') targets.set(`${kind}:${e.id}`, normalizeEndpointUrl(url))
+        }
+      }
+    } catch { queueFailed = true }
+    return Promise.all(entries.map(async entry => {
+      const checks: ServerStoreCheck['checks'] = []
+      const { token, tokenEnv } = serverCredential(entry)
+      const endpoint = new URL(entry.url)
+      const secrets = [token ?? '', entry.url, normalizeEndpointUrl(entry.url), endpoint.username, endpoint.password, ...endpoint.searchParams.values(), endpoint.hash.slice(1)]
+      const scrub = (text: string) => secrets.reduce((s, secret) => secret ? redactToken(s, secret) : s, text)
+      const add = (name: ServerStoreCheck['checks'][number]['name'], result: CheckResult, detail: string) => checks.push({ name, result, detail: scrub(detail) })
+      const driver = new RemoteStore(entry.url, token ?? '', typeof entry.scope === 'string' ? entry.scope : '', { tokenEnv })
+      const signal = AbortSignal.timeout(timeoutMs)
+      let me: MeResponse | undefined
+      if (!token) {
+        add('reachable', 'could-not-check', 'no request sent without a key')
+        add('key', 'fail', tokenEnv ? `key environment variable ${tokenEnv} is unset` : 'no key is configured')
+      } else try {
+        me = await driver.me(signal)
+        add('reachable', 'ok', 'server answered')
+        add('key', me.username && me.org_id ? 'ok' : 'could-not-check', me.username && me.org_id ? 'key accepted' : 'identity response is incomplete')
+      } catch (err) {
+        const http = err instanceof RemoteHttpError
+        const detail = redactToken(err instanceof Error ? err.message : String(err), token)
+        add('reachable', http ? 'ok' : 'fail', http ? `server answered HTTP ${err.status}` : detail)
+        add('key', http && [401, 403].includes(err.status) ? 'fail' : http && err.code === 'scope_lookup_failed' ? 'ok' : 'could-not-check',
+          http && err.code === 'scope_lookup_failed' ? 'key accepted; the server could not read your scopes' : detail)
+      }
+      add('key-file', file.ok === true ? 'ok' : file.ok === false ? 'fail' : 'could-not-check', file.ok === true ? 'credential file is owner-only' : file.detail)
+      const cache = isPlainObject(entry.discovery) ? entry.discovery : {}
+      const at = typeof cache.discovered_at === 'string' ? Date.parse(cache.discovered_at) : NaN
+      const fresh = cache.status === 'ok' && Number.isFinite(at) && Date.now() - at <= DISCOVERY_MAX_AGE_MS && at - Date.now() <= DISCOVERY_FUTURE_SKEW_MS
+      const knownScopes = me && !me.scopes_malformed && me.scopes_status === 'ok'
+      add('scopes-fresh', fresh && knownScopes ? 'ok' : 'fail',
+        !knownScopes ? 'the server could not confirm your scopes (missing, not synced, or unavailable)' : fresh ? 'cached scope list is current' : 'cached scope list is missing, stale, or not usable')
+      const scopes = [...new Set([...stringList(entry.scopes), ...stringList(entry.pinned_scopes), ...(typeof entry.scope === 'string' ? [entry.scope] : [])])].filter(isSharedScope)
+      const blocked = scopes.filter(scope => {
+        const target = this._remoteWriteEntry(scope)
+        return !target?.url || normalizeEndpointUrl(target.url) !== normalizeEndpointUrl(entry.url)
+      })
+      if (!scopes.length) add('write-path', 'ok', 'nothing to check (no team or project scopes)')
+      else if (blocked.length) add('write-path', 'fail', `client routing does not select a writable path to this server for: ${blocked.join(', ')}`)
+      else if (!knownScopes) add('write-path', 'could-not-check', 'scope lookup did not succeed')
+      else try {
+        const results = []
+        for (let i = 0; i < scopes.length; i += 50) results.push(...await driver.writeCheck(scopes.slice(i, i + 50), signal))
+        const refused = results.filter(r => !r.writable)
+        add('write-path', refused.length ? 'fail' : 'ok', refused.length
+          ? refused.map(r => `${r.scope}: ${r.reason ?? 'not writable'}`).join('; ')
+          : results.some(r => r.review_held) ? 'writable; held for review where required' : 'all configured shared scopes are writable')
+      } catch (err) { add('write-path', 'could-not-check', redactToken(err instanceof Error ? err.message : String(err), token ?? '')) }
+      const waiting = queued.filter(e => {
+        const current = e.kind === 'push' ? this._remoteWriteEntry(e.target_scope)?.url : undefined
+        const target = current ? normalizeEndpointUrl(current) : targets.get(`${e.kind}:${e.id}`)
+        return target === normalizeEndpointUrl(entry.url)
+      })
+      const dates = waiting.map(e => e.queued_at).filter(d => Number.isFinite(Date.parse(d))).sort()
+      add('queue', queueFailed ? 'could-not-check' : waiting.length ? 'fail' : 'ok', queueFailed ? 'could not read the queued saves'
+        : waiting.length ? `${waiting.length} queued operation(s), oldest ${dates[0]?.slice(0, 10) ?? 'unknown date'}` : 'no queued saves')
+      return { url: redactToken(safeOrigin(entry.url), token ?? ''), checks, ok: checks.every(c => c.result === 'ok') }
+    }))
   }
 
   private _enterpriseRecoveryEndpoint(url: string): boolean {

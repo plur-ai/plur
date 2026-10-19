@@ -194,7 +194,7 @@ export type GitScopeOutcome =
 /** A discovery cache older than this is stale (the same limit `plur doctor` uses). */
 export const DISCOVERY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 /** Clock skew tolerated for a `discovered_at` in the future. */
-const DISCOVERY_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000
+export const DISCOVERY_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000
 
 const DEFAULT_PORT: Record<ParsedRemote['protocol'], number | undefined> = { https: 443, http: 80, ssh: undefined, scp: undefined }
 

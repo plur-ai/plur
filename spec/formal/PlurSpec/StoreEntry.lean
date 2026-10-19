@@ -1147,3 +1147,9 @@ the model remains valid. Presentation invariants live in SaveDestination.lean. -
 /- 2026-10-19: serverSessionLines reads cached configuration and the existing
 primary outbox projection. It does not probe, route, deliver or mutate memory.
 These transition invariants still hold; status precedence is in SaveDestination. -/
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/

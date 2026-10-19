@@ -4,6 +4,9 @@ import { logger } from '../logger.js'
 import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
 import type { ScopeSource } from '../scope-routing.js'
+import { redactToken } from '../redact-token.js'
+
+export interface WriteCheckResult { scope: string; writable: boolean; review_held: boolean; reason?: string }
 
 /** The values `scope_source` may carry on the wire (#1221); anything else is omitted. */
 const SCOPE_SOURCES: ReadonlySet<string> = new Set<ScopeSource>(['explicit', 'session', 'default', 'routed'])
@@ -255,7 +258,7 @@ export class RemoteAbortedError extends Error {
  */
 export class RemoteHttpError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, readonly code?: 'scope_lookup_failed') {
     super(message)
     this.name = 'RemoteHttpError'
     this.status = status
@@ -669,6 +672,27 @@ export class RemoteStore {
     }
   }
 
+  /** Read-only permission prediction, with complete request-ordered evidence. */
+  async writeCheck(scopes: string[], signal?: AbortSignal): Promise<WriteCheckResult[]> {
+    if (!Array.isArray(scopes) || scopes.length < 1 || scopes.length > 50 || !scopes.every(s => typeof s === 'string')) {
+      throw new Error('write-check requires one to fifty scope strings')
+    }
+    const r = await this.fetchBounded(`${this.apiBase}/write-check`, {
+      method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ scopes }),
+    }, RemoteStore.readBounded, signal)
+    if (!r.ok) throw new RemoteHttpError(r.status, `Remote write-check failed: ${r.status} ${redactToken(r.text ?? '', this.token)}`)
+    const results = (r.json as { results?: unknown } | undefined)?.results
+    if (!Array.isArray(results) || results.length !== scopes.length) throw new Error('write-check returned an incomplete result list')
+    return results.map((item: unknown, i): WriteCheckResult => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('write-check returned an invalid result')
+      const row = item as Record<string, unknown>
+      if (row.scope !== scopes[i] || typeof row.writable !== 'boolean' || typeof row.review_held !== 'boolean' ||
+        (row.reason !== undefined && typeof row.reason !== 'string')) throw new Error('write-check returned invalid scope or permission evidence')
+      return { scope: scopes[i], writable: row.writable, review_held: row.review_held,
+        ...(typeof row.reason === 'string' ? { reason: sanitiseResponseBody(redactToken(row.reason, this.token)) } : {}) }
+    })
+  }
+
   /**
    * Resolve the identity behind this token — `GET /api/v1/me`. Returns the
    * full authorized scope set the server resolved from group memberships, so
@@ -684,9 +708,13 @@ export class RemoteStore {
    * to swallow per URL). The message keeps the `Remote /me failed: <status>`
    * pattern so the `/\b40[13]\b/` auth-expired checks in callers still match.
    */
-  async me(): Promise<MeResponse> {
-    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded)
-    if (!r.ok) throw new RemoteHttpError(r.status, `Remote /me failed: ${r.status} ${r.text}`)
+  async me(signal?: AbortSignal): Promise<MeResponse> {
+    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded, signal)
+    if (!r.ok) {
+      let code: 'scope_lookup_failed' | undefined
+      try { if (r.status === 503 && JSON.parse(r.text ?? '').error === 'scope_lookup_failed') code = 'scope_lookup_failed' } catch { /* generic errors are not authentication evidence */ }
+      throw new RemoteHttpError(r.status, `Remote /me failed: ${r.status} ${r.text}`, code)
+    }
     // A 200 whose JSON body is not an object (a string, number, array or null) is
     // read as an older server that sent no fields — never a TypeError from `in`.
     const body = (r.json !== null && typeof r.json === 'object' && !Array.isArray(r.json)

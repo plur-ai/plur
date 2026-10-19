@@ -370,3 +370,9 @@ theorem future_counterexample :
     gds E0 (.url (some 5)) [{ good with disc := some (some 150) }] = .unknown .cacheStale := by decide
 
 end PlurSpec.GitScope
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/
