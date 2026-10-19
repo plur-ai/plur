@@ -50,7 +50,7 @@ export const PLUR_ENV_KEYS: readonly string[] = TOOL_ENV_KEYS
 export const TOOLS: readonly ToolId[] = ['claude-code', 'codex', 'opencode', 'cursor']
 
 /** A launch: what the tool runs, with the env it runs it with. */
-export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string; disabled?: true; substitutions?: true; envFile?: true }
+export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string; disabled?: true; substitutions?: true; envFile?: true; overridden?: string }
 
 /** Where tool configs are looked up. Defaults: os.homedir() and process.env. */
 export type WireLocation = { home?: string; env?: NodeJS.ProcessEnv }
@@ -651,6 +651,20 @@ export function toolLaunch(
       const environment = entry.environment === undefined ? {} : stringRecord(entry.environment)
       if (environment === null) return null
       const off = entry.enabled === false || entry.disabled === true
+      // OpenCode merges opencode.jsonc over opencode.json: a plur entry in the
+      // other file changes the launch in ways this one file does not show.
+      const configPath = toolConfigPath('opencode', loc)
+      const other = configPath.endsWith('.jsonc') ? configPath.slice(0, -1) : configPath + 'c'
+      let overridden: string | undefined
+      if (exists(other)) {
+        try {
+          const o = parseJsonc(readFileSync(other, 'utf8').replace(/^\uFEFF/, ''))
+          const m = isRecord(o) && isRecord(o.mcp) ? o.mcp : undefined
+          if (m && (m.plur !== undefined || (isRecord(m.servers) && m.servers.plur !== undefined))) overridden = other
+        } catch {
+          overridden = other
+        }
+      }
       // OpenCode fills `{env:NAME}` and `{file:path}` in itself; this launch would carry them literally.
       const subst = [...entry.command, ...Object.values(environment)].some(v => /\{(env|file):/.test(v))
       return {
@@ -659,6 +673,7 @@ export function toolLaunch(
         env: { ...parentEnv, ...environment },
         ...(off ? { disabled: true as const } : {}),
         ...(subst ? { substitutions: true as const } : {}),
+        ...(overridden ? { overridden: overridden.split(/[\\/]/).pop() } : {}),
       }
     }
     const data: unknown = JSON.parse(text)
@@ -729,6 +744,7 @@ export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJ
     return `${label} starts PLUR through a .cmd launcher, which cannot start without a shell — ${fix}`
   }
   if (launch.substitutions) return `${label} fills in a substitution (\${…}, {env:…} or {file:…}) in the plur entry, which the proof cannot reproduce — it is wired, but cannot be proven`
+  if (launch.overridden) return `${label} also reads a plur entry from ${launch.overridden}, which changes this launch — keep the plur entry in one file, then re-run the installer`
   if (launch.envFile) return `${label} reads an envFile for the plur entry, which the proof cannot reproduce — it is wired, but cannot be proven`
   // The command itself is not echoed: an unknown one can be anything, a credential included.
   if (!isDirectLaunch(launch)) return `${label} starts PLUR through a command that is not PLUR itself — ${fix}`
