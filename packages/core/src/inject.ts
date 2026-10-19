@@ -8,6 +8,7 @@ import { freshTailBoost } from './fresh-tail.js'
 import { makeVisibilityPredicate } from './scope-util.js'
 import { collapseLineTerminators } from './sanitize.js'
 import { isNotYetValid, isExpired, isExpiredBeyondGrace } from './validity.js'
+import { ftsTokenize } from './fts.js'
 
 /**
  * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
@@ -84,6 +85,23 @@ export interface InternalInjectionResult {
 
 const DEFAULT_MAX_TOKENS = 8000
 const DEFAULT_MIN_RELEVANCE = 0.3
+/**
+ * Nearby-variant suppression (INJ-1). With the meaning model available, an
+ * unpinned candidate is left out when a clearly better match is nearly the same
+ * rule: its relevance is below NEIGHBOUR_RELEVANCE_RATIO of that match's, and
+ * the two statements share at least NEIGHBOUR_SIMILARITY of their words
+ * (Jaccard over the search tokens). Such a pair is one rule written for two
+ * situations; the task matches one of them better, so the other does not apply.
+ * Memories on other parts of the task share few words with the best match and
+ * are kept, and so are variants about as relevant (a variant naming a sibling
+ * service while sharing most of the task's words stays above the ratio).
+ * Measured on a labelled task set: the result changes smoothly between 0.1 and
+ * 0.25 similarity and between 0.78 and 0.84 relevance ratio.
+ */
+const NEIGHBOUR_SIMILARITY = 0.2
+const NEIGHBOUR_RELEVANCE_RATIO = 0.8
+/** How many kept candidates each later candidate is compared with (bounds the cost on large stores). */
+const NEIGHBOUR_ANCHORS = 50
 const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
 // Pinned engrams bypass per-pack/per-domain caps but must not eat the entire
@@ -379,6 +397,14 @@ function legacyEstimateChars(engram: ScoredEngram): number {
 
 function tokenize(text: string): Set<string> {
   return new Set(text.toLowerCase().split(/\W+/).filter(w => w.length > 2))
+}
+
+/** Shared words over all words of two token sets; 0 when both are empty. */
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let shared = 0
+  for (const w of a) if (b.has(w)) shared++
+  const union = a.size + b.size - shared
+  return union === 0 ? 0 : shared / union
 }
 
 export function anchorBoost(engram: Engram, taskWords: Set<string>): number {
@@ -919,6 +945,8 @@ export function selectAndSpread(
 
   // Step 1-2: Score all active engrams
   const scored: ScoredEngram[] = []
+  // Keyword score + meaning similarity per candidate, for the relative cut in step 5.
+  const relevance = new Map<string, number>()
 
   for (const engram of personalEngrams) {
     if (engram.relations?.superseded_by?.length) supersededBy.set(engram.id, engram.relations.superseded_by)
@@ -935,6 +963,7 @@ export function selectAndSpread(
     if (!deliverable) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
+    relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
     // Embedding boost: semantically similar engrams with zero keyword hits still get scored.
     // Threshold raised from 0.3 -> 0.5 in 0.9.4 — with embeddings now actually running
     // (post-build-config fix), 0.3 was too generous and surfaced spurious matches between
@@ -979,6 +1008,7 @@ export function selectAndSpread(
       if (!deliverable) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
+      relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
       if (raw === 0 && embBoost > 0.5) {
         raw = embBoost * 2
@@ -1021,9 +1051,35 @@ export function selectAndSpread(
   // A superseded engram whose replacement is deliverable is not current, so it is
   // not a candidate at all — not in directives, constraints or consider.
   // A historical prompt ("previously", "used to") still reaches it.
-  const filtered = scored.filter(s =>
+  const current = scored.filter(s =>
     ((s as any).pinned === true || s.score >= minRelevance)
     && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy)))
+  // Nearby-variant suppression (INJ-1). The floor above is a share of a score
+  // normalised to the best match and padded by recency and anchor bonuses, so
+  // nearly anything sharing a word with the task clears it — including the
+  // variant of the matching rule written for a different situation ("incident
+  // summaries" beside "review summaries"). When the meaning model ran, walk the
+  // candidates from most to least relevant and leave out one that is nearly the
+  // same statement as a clearly more relevant candidate already kept. Pinned
+  // candidates, and candidates the meaning model gave no score, are neither
+  // judged nor used as anchors. Without the meaning model, keyword overlap alone
+  // cannot rank a rule above its variant, so that path keeps the old behaviour.
+  let filtered = current
+  if (embeddingBoosts && embeddingBoosts.size > 0) {
+    const judged = (e: ScoredEngram) => (e as any).pinned !== true && embeddingBoosts.has(e.id)
+    const rel = (e: ScoredEngram) => relevance.get(e.id) ?? 0
+    const byRelevance = current.filter(judged).sort((a, b) => rel(b) - rel(a))
+    const anchors: Array<{ rel: number; words: Set<string> }> = []
+    const dropped = new Set<string>()
+    for (const e of byRelevance) {
+      const words = new Set(ftsTokenize(e.statement))
+      const r = rel(e)
+      const variant = anchors.some(a => r < NEIGHBOUR_RELEVANCE_RATIO * a.rel && jaccard(a.words, words) >= NEIGHBOUR_SIMILARITY)
+      if (variant) { dropped.add(e.id); continue }
+      if (anchors.length < NEIGHBOUR_ANCHORS) anchors.push({ rel: r, words })
+    }
+    if (dropped.size > 0) filtered = current.filter(e => !dropped.has(e.id))
+  }
 
   // Sort by score descending
   filtered.sort((a, b) => b.score - a.score)
