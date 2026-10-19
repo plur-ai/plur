@@ -335,13 +335,18 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       ?? resolved[resolved.length - 1]
     // Restrictive decisions still cover both roots and startup cwd. Origin
     // defaults belong to the editor roots, not the server process directory.
-    const defaults = resolved.filter(r => defaultDirs.includes(r.dir)).map(r => r.policy.git)
+    const defaultPolicies = resolved.filter(r => defaultDirs.includes(r.dir)).map(r => r.policy)
+    const defaults = defaultPolicies.map(p => p.git)
     const key = (git: FolderPolicy['git']) => git?.kind === 'scope' ? `scope:${git.scope}`
       : git?.kind === 'local' || git?.kind === 'unknown' ? 'local' : 'absent'
     const git = defaults.every(d => key(d) === key(defaults[0])) ? defaults[0]
       : defaults.some(Boolean) ? { kind: 'unknown' as const, reason: 'ambiguous-mapping' as const } : undefined
-    boundStatusPolicy = { dir: pick.dir, policy: { ...pick.policy, git } }
-    instance.bindFolderPolicy(pick.dir, boundStatusPolicy.policy)
+    // Explicit map scopes need the same agreement as Git defaults. A mixed
+    // workspace has no session default; the first root is not authoritative.
+    const scope = defaultPolicies.every(p => p.scope === defaultPolicies[0]?.scope) ? defaultPolicies[0]?.scope : undefined
+    boundStatusPolicy = { dir: pick.dir, policy: { ...pick.policy, git,
+      scope: pick.policy.mode === 'remote-only' ? pick.policy.scope : scope } }
+    instance.bindFolderPolicy(pick.dir, { ...pick.policy, git })
   }
 
   // Tool calls run one at a time: the folder gate and the binding live on the

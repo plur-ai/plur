@@ -116,3 +116,8 @@ theorem retirements_not_counted (pushes before after : Nat) :
     waitingSaves pushes before = waitingSaves pushes after := rfl
 
 end PlurSpec.ServerSession
+
+/-! Checked 2026-10-19: explicit map scopes, like Git defaults, must agree
+across all editor roots before status can advertise a shared destination.
+The adapter preserves remote-only precedence and caller-explicit defaults.
+The conflicting-map-roots stdio regression exercises this boundary. -/

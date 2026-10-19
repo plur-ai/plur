@@ -77,3 +77,10 @@ it('a failed workspace refresh does not advertise the previously admitted destin
   const result = await start(home, [mapped], {}, true)
   expect(JSON.stringify(result)).not.toContain(`saving to ${scope}`)
 })
+it('different explicit folder scopes never advertise the first root as a shared default', async () => {
+  writeFileSync(join(home, '.plur', 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(mapped)}\n    plur: on\n    scope: ${scope}\n  - path: ${JSON.stringify(local)}\n    plur: on\n    scope: project:acme/team/other\n`)
+  const result = await start(home, [mapped, local])
+  expect(result.default_scope).toBeUndefined()
+  expect(result.server_status).toHaveLength(1)
+  expect(result.server_status[0]).not.toContain(`saving to ${scope}`)
+})
