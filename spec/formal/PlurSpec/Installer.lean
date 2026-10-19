@@ -868,3 +868,9 @@ theorem old_collapses_failed_save :
 end Summary
 
 end PlurSpec.Installer
+
+/-! 2026-10-19: initialization now distinguishes a learn never attempted from
+unconfirmed delivery, keeps pending write checks distinct from empty scopes,
+and uses the shared hello types and WSL-side labels in summary output. Existing
+save/recall provenance and per-tool proof rules remain unchanged; EnterpriseInit
+models the added orchestration and rollback conditions. -/

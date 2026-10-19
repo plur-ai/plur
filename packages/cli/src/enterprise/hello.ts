@@ -16,7 +16,7 @@ export const TOOL_LABEL: Record<ToolId, string> = {
 }
 
 export interface HelloResult {
-  saved: { ok: true; id: string } | { ok: false; reason: string }
+  saved: { ok: true; id: string } | { ok: false; reason: string; notAttempted?: true }
   perTool: Array<{ tool: ToolId; recalled: boolean; reason?: string }>
 }
 
@@ -120,7 +120,7 @@ export async function runHello(opts: {
   const perTool: HelloResult['perTool'] = []
 
   if (opts.launches.length === 0) {
-    return { saved: { ok: false, reason: 'no tool launches provided' }, perTool: [] }
+    return { saved: { ok: false, reason: 'no tool launches provided', notAttempted: true }, perTool: [] }
   }
 
   // Fresh neutral cwd — not process.cwd() or HOME
@@ -143,7 +143,7 @@ export async function runHello(opts: {
       session = await openMcpSession(firstLaunch, { cwd: neutralCwd, timeoutMs: timeout })
     } catch (e) {
       return {
-        saved: { ok: false, reason: e instanceof Error ? e.message : String(e) },
+        saved: { ok: false, reason: e instanceof Error ? e.message : String(e), notAttempted: true },
         perTool: [],
       }
     }

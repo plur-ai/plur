@@ -1,0 +1,41 @@
+/-! Enterprise initialization (2026-10-19). Orchestration accepts success only
+after current scope discovery, a complete write check, a confirmed server save
+and per-tool proof. Rollback requires a new key, proof no learn was attempted,
+and the exact post-registration configuration bytes still present under lock.
+Unknown delivery retains the key. These are decision rules, not a proof of
+the filesystem, HTTP transport or child process implementation. -/
+namespace PlurSpec.EnterpriseInit
+
+/- A write receipt supplies before/after bytes under the config lock. Once
+another writer interrupted the chain, later owned writes cannot make it safe. -/
+def interruptedAfter (alreadyInterrupted beforeMatches : Bool) : Bool :=
+  alreadyInterrupted || !beforeMatches
+theorem interruption_is_sticky (m : Bool) : interruptedAfter true m = true := by simp [interruptedAfter]
+theorem mismatched_write_interrupts (i : Bool) : interruptedAfter i false = true := by simp [interruptedAfter]
+example : interruptedAfter false false = true := by decide
+
+def rollback (newKey notAttempted snapshotMatches : Bool) : Bool :=
+  newKey && notAttempted && snapshotMatches
+theorem unknown_delivery_keeps_key (n s : Bool) : rollback n false s = false := by simp [rollback]
+theorem reused_key_kept (a s : Bool) : rollback false a s = false := by simp [rollback]
+theorem concurrent_config_preserved (n a : Bool) : rollback n a false = false := by simp [rollback]
+example : rollback true true true = true ∧ rollback true false true = false := by decide
+example : rollback true true false = false := by decide
+
+def proven (version save ownRecall : Bool) : Bool := version && save && ownRecall
+def cleanup (toolProven : Bool) : Bool := toolProven
+theorem no_cleanup_without_proof : cleanup false = false := rfl
+theorem no_recall_no_proof (v s : Bool) : proven v s false = false := by simp [proven]
+theorem wrong_version_not_proven (s r : Bool) : proven false s r = false := by simp [proven]
+
+def success (discoveryKnown writeCheckComplete serverSaved someProven allLocalToolsProven : Bool) : Bool :=
+  discoveryKnown && writeCheckComplete && serverSaved && someProven && allLocalToolsProven
+theorem unknown_discovery_not_success (w s p a : Bool) : success false w s p a = false := by simp [success]
+theorem incomplete_check_not_success (d s p a : Bool) : success d false s p a = false := by simp [success]
+theorem failed_save_not_success (d w p a : Bool) : success d w false p a = false := by simp [success]
+theorem no_vacuous_tool_success (d w s a : Bool) : success d w s false a = false := by simp [success]
+example : success true true true true true = true ∧ success false true true true true = false := by decide
+
+def mayContactServer (startupTrustMatches : Bool) : Bool := startupTrustMatches
+theorem restart_before_network : mayContactServer false = false := rfl
+end PlurSpec.EnterpriseInit

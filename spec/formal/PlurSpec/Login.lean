@@ -622,3 +622,9 @@ theorem throw_as_refusal_keeps_key :
 end Store
 
 end PlurSpec.Login
+
+/-! 2026-10-19: rollbackServerStore accepts an optional expected-current byte
+snapshot for the initializer's subprocess interval. Under the same config lock,
+a mismatch refuses restoration instead of discarding another writer's change.
+The existing immediate-connect rollback contract remains unchanged. The new
+snapshot and uncertain-delivery rules are proved in EnterpriseInit. -/
