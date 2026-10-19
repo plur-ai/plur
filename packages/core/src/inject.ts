@@ -329,7 +329,8 @@ export function estimateTokens(engram: ScoredEngram): number {
   // hand-kept field sum this replaced had already drifted from formatLayer3 —
   // it charged nothing for `Kind: <claim_class>` (#963) or for the soft-expiry
   // `⚠ EXPIRED <date> — verify before use: ` prefix — and it charged layer 1
-  // for the statement although layer 1 renders an UNTRUNCATED `summary`.
+  // for the statement although layer 1 rendered an UNTRUNCATED `summary`
+  // (layer 1 now renders the whole statement and its scope, INJ-7).
   // Replayed: an inferred, soft-expired engram rendered 202 chars (51 tokens)
   // against an estimate of 37; a consider entry with a long summary rendered
   // 34 against 25. Rendering is the only estimate that cannot drift.
@@ -1316,9 +1317,36 @@ const entrySafe = (value: string): string => collapseLineTerminators(String(valu
  */
 const metaSafe = (value: string): string => entrySafe(value).replace(/\s*\|\s*/g, ' ')
 
+/**
+ * Where a delivered memory came from: the scope it was saved in, on its own
+ * indented continuation line of the entry (INJ-7).
+ *
+ * An entry the agent receives must say whose memory it is — a team rule and a
+ * personal note read the same otherwise. Rendered on every layer, as its own
+ * line rather than a field of the layer-3 meta line, so it reads the same in
+ * every section and cannot be shadowed by a forged meta field.
+ */
+function originLines(engram: WireEngram, indent: string): string[] {
+  const scope = (engram as { scope?: unknown }).scope
+  if (typeof scope !== 'string' || scope === '') return []
+  return [`${indent}Scope: ${entrySafe(scope)}`]
+}
+
+/**
+ * Layer 1 (the "also consider" section) renders the WHOLE statement (INJ-7).
+ *
+ * It used to render `summary ?? statement.slice(0, 60)`: a memory routed here
+ * reached the agent cut to its first 60 characters (or to an auto-summary of a
+ * long statement) while the reply listed it as given. A short form is not the
+ * memory; what is reported as given is delivered whole. The budget already
+ * charges for the rendered entry (`estimateTokens` renders it), so a long
+ * statement costs what it delivers.
+ */
 export function formatLayer1(engram: WireEngram): string {
-  const display = (engram as any).summary ?? engram.statement.slice(0, 60)
-  return `[${engram.id}] ${expiredMarker(engram)}${inferredMark(engram)}${entrySafe(display)}`
+  return [
+    `[${engram.id}] ${expiredMarker(engram)}${inferredMark(engram)}${entrySafe(engram.statement)}`,
+    ...originLines(engram, '  '),
+  ].join('\n')
 }
 
 /**
@@ -1345,12 +1373,14 @@ export function formatLayer2(engram: WireEngram): string {
   return [
     `[${engram.id}] ${expiredMarker(engram)}${inferredMark(engram)}${entrySafe(engram.statement)}`,
     ...contraindicationLines(engram, '  '),
+    ...originLines(engram, '  '),
   ].join('\n')
 }
 
 export function formatLayer3(engram: WireEngram): string {
   const lines = [`[${engram.id}] ${expiredMarker(engram)}${entrySafe(engram.statement)}`]
   lines.push(...contraindicationLines(engram, '  '))
+  lines.push(...originLines(engram, '  '))
   if (engram.rationale) lines.push(`  Rationale: ${entrySafe(engram.rationale)}`)
   const meta: string[] = []
   if (engram.domain) meta.push(`Domain: ${engram.domain}`)
