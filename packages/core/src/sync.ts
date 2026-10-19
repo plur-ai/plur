@@ -21,10 +21,12 @@ export interface SyncStatus {
 
 /**
  * What the sync remote is for (#640). `personal` (default): the user's own
- * backup/mirror across their machines — every non-`scope:local` engram is
- * pushed, private included (today's historical behavior). `shared`: a
- * team-visible remote — ONLY shared-family-scope, non-private engrams are
- * pushed; personal-family and private engrams never leave the machine.
+ * backup/mirror across their machines — every engram is pushed EXCEPT
+ * `scope:local` ones and ones the user explicitly marked private (a
+ * default-visibility engram still mirrors). `shared`: a team-visible remote —
+ * ONLY shared-family-scope, non-private engrams are pushed; personal-family and
+ * private engrams never leave the machine. On both, a side record (episode,
+ * candidate, tension) that names an engram outside the push set stays home too.
  */
 export type SyncRemoteType = 'personal' | 'shared'
 
@@ -338,9 +340,26 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | 
 }
 
 /**
+ * True when the user CHOSE `visibility: private` for this engram. The #401
+ * default is also stored as `private`, so the write path stamps
+ * `structured_data._visibilitySource` ('explicit' | 'default') to tell them
+ * apart. An engram with no stamp was written before it existed; it is treated
+ * as default-visibility, because such engrams were already mirrored to the
+ * personal remote by every earlier sync — withholding them now would only drop
+ * them from the backup, not take them back.
+ */
+function isChosenPrivate(e: EngramRecord): boolean {
+  if ((e?.visibility ?? 'private') !== 'private') return false
+  const sd = e?.structured_data as { _visibilitySource?: unknown } | undefined
+  return sd?._visibilitySource === 'explicit'
+}
+
+/**
  * Push-set predicate per remote type (#640). `personal`: everything except
- * `scope:local` (historical behavior — private engrams follow the user across
- * their own machines). `shared`: ONLY shared-family scopes (`isSharedScope`)
+ * `scope:local` and explicitly-private engrams ({@link isChosenPrivate}) —
+ * private memories never leave the machine, even to the user's own mirror;
+ * default-visibility engrams follow the user across their own machines.
+ * `shared`: ONLY shared-family scopes (`isSharedScope`)
  * with a non-private visibility — personal-family (`local`/`global`/`user:*`/
  * `agent:*`) and private-visibility engrams are excluded by construction.
  * NOTE the default visibility is 'private' (#401), so a shared remote receives
@@ -351,19 +370,19 @@ function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
   if (remoteType === 'shared') {
     return e => isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
   }
-  return e => e?.scope !== 'local'
+  return e => e?.scope !== 'local' && !isChosenPrivate(e)
 }
 
 /**
- * Ids of the engrams a `shared` remote actually receives — the membership set
+ * Ids of the engrams this remote type actually receives — the membership set
  * the sibling-file keep-predicate checks references against (#686). Empty when
  * engrams.yaml is absent/unparseable: with no provable push set, every
  * id-referencing sibling record is conservatively outside it.
  */
-function sharedPushIds(root: string): Set<string> {
+function pushIds(root: string, remoteType: SyncRemoteType): Set<string> {
   const parsed = readEngramList(root)
   if (!parsed) return new Set()
-  const keep = pushKeep('shared')
+  const keep = pushKeep(remoteType)
   return new Set(
     parsed.list.filter(keep).map(e => String(e?.id ?? '')).filter(Boolean),
   )
@@ -401,11 +420,11 @@ function readSiblingList(root: string, file: string): unknown[] | null {
 }
 
 /**
- * Keep-predicate for sibling-file records on a `shared` remote (#686): a record
- * is pushed only when EVERY engram id referenced anywhere in it resolves to the
- * shared push set. Shape-agnostic by design — the id scan runs over the whole
- * serialized record, so it covers structured fields (`engram_a`/`engram_b`/
- * `resolved_by`) and ids embedded in free text (episode summaries) alike, and
+ * Keep-predicate for sibling-file records (#686): a record is pushed only when
+ * EVERY engram id referenced anywhere in it resolves to the remote's push set.
+ * Shape-agnostic by design — the id scan runs over the whole serialized
+ * record, so it covers structured fields (`engram_a`/`engram_b`/`resolved_by`)
+ * and ids embedded in free text (episode summaries) alike, and
  * candidates.yaml needs no schema of its own. A referenced id that is personal/
  * private (stripped from the push) OR unknown (deleted, foreign) fails the test
  * — strip-on-doubt, because a false keep is a leak and a false drop is not.
@@ -421,9 +440,9 @@ function siblingKeep(pushedIds: Set<string>): (record: unknown) => boolean {
   }
 }
 
-/** Count of sibling records the `shared` strip withholds — for the sync warning. */
-function droppedSiblingCount(root: string): number {
-  const keep = siblingKeep(sharedPushIds(root))
+/** Count of sibling records the strip withholds for this remote type — for the sync warning. */
+function droppedSiblingCount(root: string, remoteType: SyncRemoteType): number {
+  const keep = siblingKeep(pushIds(root, remoteType))
   let dropped = 0
   for (const file of SIBLING_STRIP_FILES) {
     const records = readSiblingList(root, file)
@@ -442,7 +461,7 @@ function stripWarning(root: string, remoteType: SyncRemoteType): string | undefi
   const parsed = readEngramList(root)
   if (remoteType === 'shared') {
     const strippedEngrams = parsed ? parsed.list.filter(e => !pushKeep('shared')(e)).length : 0
-    const strippedSiblings = droppedSiblingCount(root)
+    const strippedSiblings = droppedSiblingCount(root, 'shared')
     if (strippedEngrams === 0 && strippedSiblings === 0) return undefined
     const parts: string[] = []
     if (strippedEngrams > 0) parts.push(`${strippedEngrams} personal-scope or private-visibility engram(s)`)
@@ -458,19 +477,25 @@ function stripWarning(root: string, remoteType: SyncRemoteType): string | undefi
   //
   // A backup warning that overstates coverage is worse than none: it is read
   // exactly once, when deciding whether other backups are needed.
-  const privateCount = parsed.list.filter(
-    e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private',
+  const chosenPrivateCount = parsed.list.filter(e => e?.scope !== 'local' && isChosenPrivate(e)).length
+  const defaultPrivateCount = parsed.list.filter(
+    e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private' && !isChosenPrivate(e),
   ).length
   const localCount = parsed.list.filter(e => e?.scope === 'local').length
+  const strippedSiblings = droppedSiblingCount(root, 'personal')
   const parts: string[] = []
   if (localCount > 0) {
-    parts.push(
-      `${localCount} scope:local engram(s) are NOT pushed and are NOT backed up by sync` +
-      (localCount === parsed.list.length ? ' — this remote backs up nothing' : ''),
-    )
+    parts.push(`${localCount} scope:local engram(s) are NOT pushed and are NOT backed up by sync`)
   }
-  if (privateCount > 0) {
-    parts.push(`${privateCount} private-visibility engram(s) ARE pushed — use a private git remote`)
+  if (chosenPrivateCount > 0) {
+    parts.push(`${chosenPrivateCount} engram(s) you marked private are NOT pushed and are NOT backed up by sync`)
+  }
+  if (parts.length > 0 && !parsed.list.some(pushKeep('personal'))) parts[parts.length - 1] += ' — this remote backs up nothing'
+  if (strippedSiblings > 0) {
+    parts.push(`${strippedSiblings} episode/candidate/tension record(s) naming a non-pushed engram stayed local`)
+  }
+  if (defaultPrivateCount > 0) {
+    parts.push(`${defaultPrivateCount} private-visibility engram(s) ARE pushed (the default visibility, not marked private by you) — use a private git remote`)
   }
   if (parts.length === 0) return undefined
   return `Note: ${parts.join('. ')}. For a team remote, set sync.remote_type: shared to exclude private engrams too.`
@@ -522,14 +547,14 @@ function stageStrippedEngrams(root: string, remoteType: SyncRemoteType): void {
 
 /**
  * Replace the *staged* episodes/candidates/tensions blobs with ones that keep
- * only records derived from the shared push set (#686 — completes the #640
- * guarantee: "personal-family and private engrams never reach the remote"
- * must also hold for their derived text in the sibling store files).
- * `personal` remotes are untouched — the historical mirror-everything behavior.
+ * only records derived from this remote's push set (#686 — completes the #640
+ * guarantee: an engram withheld from the remote must also be withheld in its
+ * derived text in the sibling store files). Applies to `personal` remotes too:
+ * a scope:local or explicitly-private engram never leaves the machine, so a
+ * side record naming one does not either.
  */
 function stageStrippedSiblings(root: string, remoteType: SyncRemoteType): void {
-  if (remoteType !== 'shared') return
-  const keep = siblingKeep(sharedPushIds(root))
+  const keep = siblingKeep(pushIds(root, remoteType))
   for (const file of SIBLING_STRIP_FILES) {
     const records = readSiblingList(root, file)
     if (!records) continue
@@ -601,12 +626,10 @@ function holdWithheld(root: string, remoteType: SyncRemoteType): WithheldFile[] 
   if (parsed) {
     candidates.push({ file: 'engrams.yaml', held: parsed.list.filter(e => !pushKeep(remoteType)(e)) })
   }
-  if (remoteType === 'shared') {
-    const keep = siblingKeep(sharedPushIds(root))
-    for (const file of SIBLING_STRIP_FILES) {
-      const records = readSiblingList(root, file)
-      if (records) candidates.push({ file, held: records.filter(r => !keep(r)) })
-    }
+  const keepSibling = siblingKeep(pushIds(root, remoteType))
+  for (const file of SIBLING_STRIP_FILES) {
+    const records = readSiblingList(root, file)
+    if (records) candidates.push({ file, held: records.filter(r => !keepSibling(r)) })
   }
   for (const { file, held } of candidates) {
     if (held.length === 0) continue
