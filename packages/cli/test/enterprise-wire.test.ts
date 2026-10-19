@@ -183,6 +183,23 @@ describe('applyMcpEnv: codex', () => {
     expect(readFileSync(path, 'utf8')).toBe(text)
   })
 
+  it('a config.toml that starts with a byte-order mark is refused, bytes unchanged', () => {
+    const text = '\uFEFF[mcp_servers.plur]\ncommand = "/h/.plur/bin/plur-mcp"\n'
+    const path = put('.codex/config.toml', text)
+    expect(applyMcpEnv('codex', THREE, loc).status).toBe('refused')
+    expect(readFileSync(path, 'utf8')).toBe(text)
+  })
+
+  it('a CRLF config gets a new env table in CRLF, also at the end of a file with no final newline', () => {
+    for (const text of ['# c\r\n[mcp_servers.plur]\r\ncommand = "x"\r\n', '[mcp_servers.plur]\r\ncommand = "x"', '[mcp_servers.plur]\r\ncommand = "x"\r\n[mcp_servers.plur.env]\r\nA = "1"']) {
+      const path = put('.codex/config.toml', text)
+      expect(applyMcpEnv('codex', THREE, loc).status, JSON.stringify(text)).toBe('updated')
+      const after = readFileSync(path, 'utf8')
+      expect(after.replace(/\r\n/g, '')).not.toContain('\n')
+      expect(toml(after).mcp_servers.plur.env).toMatchObject(THREE)
+    }
+  })
+
   it('a config.toml that does not parse is refused and left byte-identical', () => {
     const bad = '[mcp_servers.plur\ncommand = "x"\n'
     const path = put('.codex/config.toml', bad)
