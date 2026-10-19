@@ -443,6 +443,21 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
     }
   })
 
+  it('a relative home with no PLUR_PATH ties the store to the folder: withheld', () => {
+    expect(launchProblem('Codex', { command: '/opt/plur/bin/plur-mcp', args: [], env: { HOME: './team-home' } }, 'linux')).toMatch(/working folder/)
+    expect(launchProblem('Codex', { command: '/opt/plur/bin/plur-mcp', args: [], env: { HOME: './team-home', PLUR_PATH: '/data/plur' } }, 'linux')).toBeNull()
+    expect(launchProblem('Codex', { command: 'C:\\plur\\plur-mcp.exe', args: [], env: { USERPROFILE: 'team' } }, 'win32')).toMatch(/working folder/)
+  })
+
+  it('an OpenCode {env:…} or {file:…} substitution is not resolved here: withheld', async () => {
+    put('.config/opencode/opencode.json', JSON.stringify({ mcp: { plur: { type: 'local', command: ['/h/.plur/bin/plur-mcp'], environment: { TEAM_TOKEN: '{env:CORP_TOKEN}' } } } }))
+    const [opencode] = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
+    expect(opencode.status).toBe('wired')
+    expect(launchOf(opencode)).toBeUndefined()
+    expect(opencode.detail).toMatch(/substitution/)
+    expect(opencode.detail).not.toContain('CORP_TOKEN')
+  })
+
   it('an unknown launcher is described without echoing the command', () => {
     const d = launchProblem('Codex', { command: 'https://alice:secret@proxy.example.com', args: [], env }, 'linux')
     expect(d).not.toBeNull()
