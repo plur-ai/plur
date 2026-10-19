@@ -801,3 +801,9 @@ known-key backoff bypass and the local-path takeover hold. Other write guards,
 claims, idempotency and merge-back remain unchanged; the extra queue field is
 an attempted credential fingerprint only. Enterprise recovery text changes no
 recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Doctor surfaces core server evidence and requires post-install
+hook-run timestamps for wired supported editors. Init records installation only
+after successful writes; diagnostics do not grant access or send queued saves.
+Existing adapter routing and config-preservation invariants are unchanged;
+ServerDiagnostics models missing-evidence and hook-time aggregation. -/

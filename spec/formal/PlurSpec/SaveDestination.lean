@@ -142,3 +142,9 @@ The discovery clock-skew constant is exported without changing its value. -/
 /- 2026-10-19: Hook-run timestamps now respect off and unreadable-map refusal.
 The cached server line and admitted workspace scope selection are unchanged;
 the timestamp is diagnostic only and is never written on those refused paths. -/
+
+/- 2026-10-19: Doctor surfaces core server evidence and requires post-install
+hook-run timestamps for wired supported editors. Init records installation only
+after successful writes; diagnostics do not grant access or send queued saves.
+Existing adapter routing and config-preservation invariants are unchanged;
+ServerDiagnostics models missing-evidence and hook-time aggregation. -/
