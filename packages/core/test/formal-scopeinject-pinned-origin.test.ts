@@ -35,14 +35,17 @@ describe('pinned origin priority across section passes', () => {
   it('a pack pinned directive does not displace a primary pinned constraint', () => {
     const P = sized('ENG-2026-0920-101', 450, { pinned: true, polarity: 'dont' }) // primary, constraint
     const Q = sized('ENG-2026-0920-102', 300, { pinned: true, polarity: 'do' })   // pack, directive
-    const r = selectAndSpread({ prompt: 'anything', maxTokens: 1000 }, [P], [pack('pk', [Q])])
+    // 450 + 300 does not fit 700: only one pin can arrive, and it must be the
+    // primary one. (Pins may use the whole budget since INJ-6, so the original
+    // 1000-token case no longer binds.)
+    const r = selectAndSpread({ prompt: 'anything', maxTokens: 700 }, [P], [pack('pk', [Q])])
     const got = [...r.directives, ...r.constraints].map(e => e.id)
     expect(got).toContain(P.id)
     expect(got).not.toContain(Q.id)
     expect(r.omitted_pinned.map(o => o.id)).toEqual([Q.id])
   })
 
-  it('good case: both pins arrive when they fit the pinned sub-budget', () => {
+  it('good case: both pins arrive when they fit the budget', () => {
     const P = sized('ENG-2026-0920-103', 300, { pinned: true, polarity: 'dont' })
     const Q = sized('ENG-2026-0920-104', 150, { pinned: true, polarity: 'do' })
     const r = selectAndSpread({ prompt: 'anything', maxTokens: 1000 }, [P], [pack('pk', [Q])])

@@ -316,7 +316,9 @@ describe('injection engine', () => {
     // failure the sub-budget exists to prevent, arrived at from the other side.
     //
     // Fixed by sharing one spend ledger across the passes. Asserted on the
-    // COMBINED share, because per-pass assertions are what missed it.
+    // COMBINED spend, because per-pass assertions are what missed it. Since
+    // INJ-6 pins may use the whole budget (pinned first); the ledger still
+    // keeps the passes from granting more than that.
     const fat = (n: number, extra: Record<string, unknown>) => EngramSchema.parse({
       id: `ENG-2026-0808-${String(n).padStart(3, '0')}`,
       statement: `Never deploy on a Friday, rule ${n}. ${'deploy '.repeat(40)}`,
@@ -333,25 +335,27 @@ describe('injection engine', () => {
       return selectAndSpread({ prompt: 'deploy the app on friday', maxTokens: 2000 }, engrams, [])
     }
 
-    it('never lets pinned exceed its share of the whole budget', () => {
+    it('never lets pinned exceed the whole budget across passes', () => {
       const r = scenario()
       const all = [...r.directives, ...r.constraints]
       const pinnedCost = all
         .filter(e => (e as { pinned?: boolean }).pinned === true)
         .reduce((acc, e) => acc + estimateTokens(e as never), 0)
 
-      // 50% of 2000. Before the fix this reached 1998.
-      expect(pinnedCost).toBeLessThanOrEqual(2000 * 0.5)
+      // One ledger, one budget: per-pass grants once reached 150%.
+      expect(pinnedCost).toBeLessThanOrEqual(2000)
+      expect(r.tokens_used.directives + r.tokens_used.consider).toBeLessThanOrEqual(2000)
     })
 
-    it('still admits relevance-scored engrams — pinned must not starve recall', () => {
+    it('gives pins first claim: no unpinned engram while a pin is left out, and every omission named (INJ-6)', () => {
       const r = scenario()
-      const all = [...r.directives, ...r.constraints]
+      const all = [...r.directives, ...r.constraints, ...r.consider]
       const unpinned = all.filter(e => (e as { pinned?: boolean }).pinned !== true)
+      const givenPinned = all.filter(e => (e as { pinned?: boolean }).pinned === true).map(e => e.id)
 
-      // This was ZERO. A budget entirely consumed by pins is not an injection,
-      // it is a fixed prompt.
-      expect(unpinned.length).toBeGreaterThan(0)
+      expect(r.omitted_pinned.length, 'precondition: 40 fat pins do not fit 2000 tokens').toBeGreaterThan(0)
+      expect(unpinned).toEqual([])
+      expect(givenPinned.length + r.omitted_pinned.length).toBe(40)
     })
   })
 
@@ -511,16 +515,12 @@ describe('injection engine', () => {
 
   // === Pinned engram budget cap (0.9.4) ===
 
-  it('pinned engrams cannot consume more than 50% of the token budget', () => {
-    // Carefully sized so that the OUTER maxTokens guard cannot be the binding
-    // constraint — the pinned sub-cap (50% of maxTokens) must do the work.
-    // Each engram is short (~50-token JSON serialization). With maxTokens=10000,
-    // the outer guard would let all 30 pinned engrams through (30*50=1500 < 10000).
-    // The pinnedBudget=5000 lets in ~100 engrams worth — but we have 30, so all 30
-    // would fit IF the cap were broken. Instead, we expect the cap to bind under
-    // a tighter budget. So: maxTokens=600 → pinnedBudget=300. 30 short engrams
-    // with cost ~50 each → only 6 fit under the 300-token sub-cap, with the
-    // outer maxTokens (600) leaving headroom that proves the sub-cap is binding.
+  it('pinned engrams may use the whole token budget, and every one left out is named (INJ-6)', () => {
+    // Pinned memories come before anything else within the budget: there is
+    // no longer a 50%-of-budget ceiling on them at injection (the pinned share
+    // is a pin-time quota, see pinned-quota.test.ts). 30 short pins (~40
+    // tokens each) under maxTokens=600: more than half the budget goes to
+    // pins, never more than all of it, and the overflow is reported.
     const shortStatement = 'X'.repeat(80)
     const pinned = Array.from({ length: 30 }, (_, i) => ({
       ...EngramSchema.parse({
@@ -541,16 +541,12 @@ describe('injection engine', () => {
       score: 1.0,
     }))
     const maxTokens = 600
-    const { selected, tokens_used } = fillTokenBudget(pinned, maxTokens)
-    // Sub-cap binds: tokens_used must respect the 50%-of-budget sub-cap.
-    expect(tokens_used).toBeLessThanOrEqual(maxTokens * 0.5)
-    // And there must be headroom under maxTokens — i.e. the outer guard isn't
-    // the reason we stopped. Without this we'd be testing the same thing twice.
-    expect(tokens_used).toBeLessThan(maxTokens)
-    // Some engrams must have been selected (proving the cap is "binding by
-    // sub-budget", not "nothing fit at all").
+    const { selected, tokens_used, omitted_pinned } = fillTokenBudget(pinned, maxTokens)
+    expect(tokens_used).toBeLessThanOrEqual(maxTokens)
+    expect(tokens_used).toBeGreaterThan(maxTokens * 0.5)
     expect(selected.length).toBeGreaterThan(0)
     expect(selected.length).toBeLessThan(30)
+    expect(selected.length + omitted_pinned.length).toBe(30)
   })
 
   // === Pinned engram bypasses minRelevance (0.9.4) ===

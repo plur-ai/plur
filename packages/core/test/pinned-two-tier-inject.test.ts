@@ -2,8 +2,8 @@
  * Injection-side behaviour of the pinned two-tier model.
  *
  * The tiers live INSIDE main's pinned budget: origin stays the outer sort
- * key, the hard tier is a sub-cap of the pinned share, the soft tier gets what
- * the hard tier leaves, and anything dropped is reported in `omitted_pinned`.
+ * key, the hard tier is a sub-cap sized from the pinned share, the soft tier
+ * gets what the hard tier leaves of the whole budget (INJ-6), and anything dropped is reported in `omitted_pinned`.
  * The invariant that matters most: a store that never sets a tier sees exactly
  * the selection it saw before the tiers existed.
  */
@@ -37,7 +37,8 @@ function mk(id: string, opts: {
 
 /**
  * main's pinned selection before the tiers, verbatim in behaviour — the
- * reference the invariant is checked against.
+ * reference the invariant is checked against. Since INJ-6 the pinned budget is
+ * the whole base budget (pinned first), no longer half of it.
  */
 function mainReference(scored: Scored[], maxTokens: number, base: number, ledger: { spent: number }) {
   const selected: string[] = []
@@ -45,7 +46,7 @@ function mainReference(scored: Scored[], maxTokens: number, base: number, ledger
   let used = 0
   const pinned = scored.filter(e => e.pinned === true).sort((a, b) =>
     pinnedOriginRank(a as never) - pinnedOriginRank(b as never) || b.score - a.score)
-  const pinnedBudget = Math.floor(base * 0.5)
+  const pinnedBudget = base
   let skippedRank: number | null = null
   for (const e of pinned) {
     const rank = pinnedOriginRank(e as never)
@@ -141,14 +142,20 @@ describe('budgets and reporting', () => {
   })
 
   it('the soft tier gets what the hard tier leaves; explicit soft overflow says soft-tier-budget', () => {
+    // Pins may use the whole budget (INJ-6): the soft tier gets the budget
+    // minus the hard tier, no longer the 50% pinned share minus the hard tier.
+    // The hard pin comes from a mounted store, so the primary soft pins are
+    // walked first and meet the hard reservation (not the end of the budget):
+    // once the hard pin is in, soft and total budget end at the same point.
     const maxTokens = 2000
-    const hard = mk('ENG-H', { tier: 'hard', statement: 'h'.repeat(1600) }) // ~420 of the 500 hard cap
-    const soft = Array.from({ length: 6 }, (_, i) => mk(`ENG-S-${i}`, { tier: 'soft', statement: 's'.repeat(400) }))
+    const hard = mk('ENG-H', { tier: 'hard', origin: 'store', statement: 'h'.repeat(1600) }) // ~420 of the 500 hard cap
+    const soft = Array.from({ length: 16 }, (_, i) => mk(`ENG-S-${i}`, { tier: 'soft', statement: 's'.repeat(400) }))
     const out = fillTokenBudget([hard, ...soft] as never, maxTokens)
     const hardCost = estimateTokens(hard as never)
     const softUsed = out.selected.filter(e => e.id !== 'ENG-H').reduce((n, e) => n + estimateTokens(e), 0)
     expect(out.selected.map(e => e.id)).toContain('ENG-H')
-    expect(softUsed).toBeLessThanOrEqual(1000 - hardCost)
+    expect(softUsed).toBeLessThanOrEqual(maxTokens - hardCost)
+    expect(softUsed).toBeGreaterThan(1000 - hardCost)
     expect(out.omitted_pinned.every(o => o.reason === 'soft-tier-budget')).toBe(true)
     expect(out.omitted_pinned.length).toBeGreaterThan(0)
   })
@@ -193,12 +200,16 @@ describe('ratio guards', () => {
     expect(pinnedHardCap(2000, 0.5, NaN)).toBe(500)
   })
 
-  it('selectAndSpread honours pinned_ratio', () => {
-    const soft = Array.from({ length: 8 }, (_, i) => mk(`ENG-S-${i}`, { statement: `deploy rule ${i} ${'s'.repeat(300)}` }))
-    const res = selectAndSpread({ prompt: 'deploy', maxTokens: 2000 }, soft as never, [], { pinned_ratio: 0.3 })
+  it('selectAndSpread honours pinned_ratio for the hard-tier cap', () => {
+    // Since INJ-6 the pinned share no longer caps pins at injection (pins come
+    // first within the whole budget); it is the pin-time quota and still sizes
+    // the hard tier: 0.3 × 2000 = 600, hard cap 0.5 × 600 = 300.
+    const hard = Array.from({ length: 8 }, (_, i) => mk(`ENG-H-${i}`, { tier: 'hard', statement: `deploy rule ${i} ${'h'.repeat(300)}` }))
+    const res = selectAndSpread({ prompt: 'deploy', maxTokens: 2000 }, hard as never, [], { pinned_ratio: 0.3 })
     const loaded = [...res.directives, ...res.constraints].map(e => e.id)
-    const used = soft.filter(e => loaded.includes(e.id)).reduce((n, e) => n + estimateTokens(e as never), 0)
-    expect(used).toBeLessThanOrEqual(600)
-    expect(res.omitted_pinned.length).toBeGreaterThan(0)
+    const used = hard.filter(e => loaded.includes(e.id)).reduce((n, e) => n + estimateTokens(e as never), 0)
+    expect(used).toBeGreaterThan(0)
+    expect(used).toBeLessThanOrEqual(300)
+    expect(res.omitted_pinned.some(o => o.reason === 'hard-tier-cap')).toBe(true)
   })
 })

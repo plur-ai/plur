@@ -20,7 +20,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import { EngramSchema } from '../src/schemas/engram.js'
-import { fillTokenBudget, pinnedOriginRank } from '../src/inject.js'
+import { fillTokenBudget, pinnedOriginRank, estimateTokens } from '../src/inject.js'
 
 describe('pinned quota (#1142)', () => {
   const dirs: string[] = []
@@ -136,11 +136,15 @@ describe('pinned origin ranking (#1121, adopted)', () => {
     ...marker,
   })
 
+  // A budget either pin fits alone, but not both together.
+  const fitsOne = (a: unknown, b: unknown) => estimateTokens(a as never) + estimateTokens(b as never) - 1
+
   it('ranks a primary pin ahead of a pack pin under budget pressure', () => {
     const fromPack = mk('ENG-2026-1121-001', { _pack: 'some-installed-pack' })
     const primary = mk('ENG-2026-1121-002')
-    // Budget fits exactly one.
-    const out = fillTokenBudget([fromPack, primary] as never, 170)
+    // Budget fits exactly one. Pins may use the whole budget (INJ-6), so the
+    // budget itself has to be the bind — it used to be the 50% pinned share.
+    const out = fillTokenBudget([fromPack, primary] as never, fitsOne(fromPack, primary))
     expect(out.selected.map(e => e.id)).toEqual(['ENG-2026-1121-002'])
     expect(out.omitted_pinned.map(o => o.id)).toContain('ENG-2026-1121-001')
   })
@@ -148,7 +152,7 @@ describe('pinned origin ranking (#1121, adopted)', () => {
   it('ranks a remote/store pin ahead of a pack pin', () => {
     const fromPack = mk('ENG-2026-1121-003', { _pack: 'p' })
     const fromStore = mk('ENG-2026-1121-004', { _storeScope: 'group:org/team' })
-    const out = fillTokenBudget([fromPack, fromStore] as never, 170)
+    const out = fillTokenBudget([fromPack, fromStore] as never, fitsOne(fromPack, fromStore))
     expect(out.selected.map(e => e.id)).toEqual(['ENG-2026-1121-004'])
   })
 

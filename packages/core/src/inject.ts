@@ -104,16 +104,19 @@ const NEIGHBOUR_RELEVANCE_RATIO = 0.8
 const NEIGHBOUR_ANCHORS = 50
 const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
-// Pinned engrams bypass per-pack/per-domain caps but must not eat the entire
-// budget — left unbounded, a single user with many pinned packs could starve
-// every relevance-scored engram. Cap at 50% of maxTokens so contextual recall
-// still gets at least half the budget. Tuned for default 8000 → 4000 pinned.
+// Default share of the injection budget that may be PINNED, enforced at pin
+// time (`pinnedQuota()`), and the base the hard tier's sub-cap is taken from.
+// It is no longer a ceiling at injection: pinned memories come before anything
+// else within the budget (INJ-6), so a store that keeps its pins within the
+// quota leaves contextual recall the rest, and a caller who asks for a smaller
+// budget gets pins first, with any pin that did not fit named.
 const PINNED_TOKEN_BUDGET_RATIO = 0.5
 /**
  * Default share of the pinned budget the HARD tier may occupy (pinned
- * two-tier model). The hard tier is a sub-cap INSIDE the pinned share, not a
- * budget of its own: soft pins get whatever the hard tier leaves, so a store
- * with no hard-tier engrams sees exactly the pinned share it always had.
+ * two-tier model). The hard tier is a sub-cap sized from the pinned share, not
+ * a budget of its own: soft pins get whatever the hard tier leaves of the
+ * budget, so a store with no hard-tier engrams gives its soft pins the whole
+ * budget (pinned first, INJ-6).
  * Configurable as `injection.pinned_hard_ratio`; bounded to [0, 1], so the
  * hard tier can never exceed the pinned quota.
  */
@@ -138,9 +141,10 @@ export function pinnedHardCap(
 }
 
 /**
- * The share of the injection budget reserved for pinned engrams —
- * `injection.pinned_ratio`, the same ratio `pinnedQuota()` enforces at pin
- * time, so admission and injection agree. Non-finite falls back to the
+ * The pinned share of the injection budget — `injection.pinned_ratio`, the
+ * ratio `pinnedQuota()` enforces at pin time. At injection it sizes the hard
+ * tier's sub-cap (so admission and injection agree on it); it no longer caps
+ * the pins themselves (INJ-6). Non-finite falls back to the
  * default 0.5; out-of-range values are clamped to [0, 1].
  */
 export function pinnedShareRatio(pinnedRatio: number = PINNED_TOKEN_BUDGET_RATIO): number {
@@ -672,12 +676,12 @@ export interface OmittedPinned {
   id: string
   /** Estimated token cost of the engram that was skipped. */
   cost: number
-  /** `pinned-sub-budget`: the pinned share (`injection.pinned_ratio`, default
-   *  50%) was exhausted while overall
-   *  budget remained. `total-budget`: no room left at all.
+  /** `pinned-sub-budget`: the room the soft tier has (the budget minus what
+   *  the hard tier holds back) was exhausted while overall budget remained.
+   *  `total-budget`: no room left at all.
    *  `hard-tier-cap`: a hard-tier engram did not fit the hard tier's sub-cap.
    *  `soft-tier-budget`: an engram with an explicit soft tier or priority did
-   *  not fit what the hard tier left of the pinned share. An engram with no
+   *  not fit what the hard tier left of the budget. An engram with no
    *  tier fields keeps reporting `pinned-sub-budget`, as it always has. */
   reason: 'pinned-sub-budget' | 'total-budget' | 'hard-tier-cap' | 'soft-tier-budget'
 }
@@ -785,9 +789,8 @@ export function fillTokenBudget(
 
   // Two-pass selection: pinned engrams first, then the rest. Pinned items
   // ignore per-pack and per-domain fairness caps because they're meant to be
-  // always-load — but they respect both maxTokens AND a sub-budget so they
-  // can't starve the relevance-scored engrams. With many pinned packs, the
-  // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
+  // always-load; they respect maxTokens (and the hard tier its sub-cap), and
+  // the rest gets what they leave (INJ-6).
   // Primary-store pins first, then `stores:`/remote, then packs; score orders
   // within an origin. Sorted before selection so budget pressure can never let
   // a pack pin in ahead of one of the user's own.
@@ -803,10 +806,16 @@ export function fillTokenBudget(
     || (isHardPinned(a as never) ? 0 : effectivePinnedPriority(b as never) - effectivePinnedPriority(a as never))
     || b.score - a.score)
   const unpinned = scored.filter(e => (e as any).pinned !== true)
-  const pinnedBudget = Math.floor(pinnedBudgetBase * pinnedShareRatio(pinnedRatio))
-  // The hard tier is a sub-cap inside the pinned share; the soft tier gets
-  // what the hard tier holds back. With no hard-tier candidates the reserve is
-  // 0 and the soft tier has the whole pinned share, as before the tiers.
+  // Pinned memories come before anything else within the budget (INJ-6):
+  // pins may use the WHOLE budget, and an unpinned memory only gets what the
+  // pins leave. The pinned share (`injection.pinned_ratio`) used to be a
+  // ceiling here too, so under a small budget pins were dropped while
+  // unpinned memories took the other half. The share still bounds what may be
+  // pinned at pin time (`pinnedQuota()`), and still sizes the hard tier.
+  const pinnedBudget = pinnedBudgetBase
+  // The hard tier is a sub-cap; the soft tier gets what the hard tier holds
+  // back. With no hard-tier candidates the reserve is 0 and the soft tier has
+  // the whole budget.
   const hardCap = pinnedHardCap(pinnedBudgetBase, pinnedHardRatio, pinnedRatio)
   if (pinnedLedger.hardSpent === undefined) pinnedLedger.hardSpent = 0
   if (pinnedLedger.hardReserve === undefined) pinnedLedger.hardReserve = hardPinnedReserve(scored, hardCap)
@@ -1135,7 +1144,12 @@ export function selectAndSpread(
   const pinnedDirectives = pinnedPass.selected.filter(e => !isConstraintCandidate(e))
   const pinnedConstraintTokens = pinnedConstraints.reduce((a, e) => a + estimateTokens(e), 0)
 
-  const unpinned = filtered.filter(e => (e as any).pinned !== true)
+  // No unpinned memory takes space while a pinned one was left out (INJ-6).
+  // Pins already had first claim on the whole budget; if any did not make it,
+  // whatever room is left stays empty rather than going to an unpinned memory
+  // — and the omission is named in `omitted_pinned`.
+  const pinsLeftOut = pinnedPass.omitted_pinned.length > 0
+  const unpinned = pinsLeftOut ? [] : filtered.filter(e => (e as any).pinned !== true)
   const constraintCandidates = unpinned.filter(isConstraintCandidate)
   const otherCandidates = unpinned.filter(e => !isConstraintCandidate(e))
 
@@ -1180,6 +1194,7 @@ export function selectAndSpread(
   }
   const dip19Remainder = filtered.filter(e => {
     if (directiveIds.has(e.id)) return false
+    if (pinsLeftOut && (e as any).pinned !== true) return false
     const pack = e.pack ?? '__personal__'
     if (pack !== '__personal__' && (directivePackCounts.get(pack) ?? 0) >= MAX_PER_PACK) return false
     return true
@@ -1212,7 +1227,7 @@ export function selectAndSpread(
       // everything was dropped reported nothing dropped — re-opening the hole
       // #1142 exists to close, in its worst instance. A single oversized
       // pinned engram at a tiny budget returned silence.
-      omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned),
+      omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned, dip19Pool),
     }
   }
 
@@ -1245,6 +1260,8 @@ export function selectAndSpread(
         continue
       }
       if (target.status !== 'active') { droppedRetired++; continue }
+      // INJ-6: while a pin is left out, spreading adds no unpinned memory.
+      if (pinsLeftOut && (target as any).pinned !== true) continue
       if (!historical && isReplacedByDeliverable(target, deliverableIds, supersededBy)) continue
 
       // Apply decay to co_accessed associations at read time
@@ -1320,7 +1337,7 @@ export function selectAndSpread(
     ...(droppedUnresolvable > 0 || droppedRetired > 0
       ? { spread_drops: { dropped_unresolvable: droppedUnresolvable, dropped_retired: droppedRetired } }
       : {}),
-    omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned, directives),
+    omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned, [...directives, ...allConsider]),
   }
 }
 

@@ -531,7 +531,7 @@ export const EngramSchema = z.object({
    * "hard": a sub-cap inside the pinned quota (`injection.pinned_hard_ratio`
    *         of it, default 0.5). Filled first within each origin. A write that
    *         would grow the hard tier past its cap is rejected.
-   * "soft": gets what the hard tier leaves of the pinned share, ordered by
+   * "soft": gets what the hard tier leaves of the budget, ordered by
    *         pinned_priority, then relevance score.
    * Default when omitted: "soft". Pins never outrank the origin order
    * (primary store, then stores/remote, then packs).

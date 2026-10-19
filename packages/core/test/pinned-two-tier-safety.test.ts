@@ -277,19 +277,22 @@ describe('an over-cap tier does not block writes that cannot grow it', () => {
 })
 
 describe('admission and injection use the same pinned_ratio', () => {
-  it('pinned_ratio 0.3 shrinks the injection pinned share to the quota', async () => {
+  it('pinned_ratio 0.3 sets the quota and the hard cap; soft pins that fit the budget are all given (INJ-6)', async () => {
     writeFileSync(join(dir, 'config.yaml'), 'injection:\n  pinned_ratio: 0.3\n')
     const plur = new Plur({ path: dir })
     const q = await plur.pinnedQuota()
     expect(q.quota).toBe(600)
     expect(plur.hardTierCap()).toBe(300)
-    // ~900 tokens of soft pins: fits a 1000-token share, not a 600-token one.
+    // ~900 tokens of soft pins: over the 600-token quota, within the
+    // 2000-token budget. The share used to cut them at injection too; pinned
+    // memories now come first within the whole budget, so none is left out.
     for (let i = 0; i < 6; i++) await plur.learn(`soft pinned rule ${i} ${'s'.repeat(560)}`, { pinned: true, scope: 'global' })
     const res = await plur.inject('anything at all')
-    expect(res.omitted_pinned?.length ?? 0).toBeGreaterThan(0)
+    expect(res.omitted_pinned ?? []).toEqual([])
     const pinned = await plur.listPinned()
-    const loaded = pinned.filter(e => res.injected_ids.includes(e.id))
-    expect(loaded.reduce((n, e) => n + estimateTokens(e as never), 0)).toBeLessThanOrEqual(600)
+    expect(pinned.length).toBe(6)
+    for (const e of pinned) expect(res.injected_ids).toContain(e.id)
+    expect(pinned.reduce((n, e) => n + estimateTokens(e as never), 0)).toBeGreaterThan(600)
   })
 
   it('with a larger pinned_ratio, every hard engram admitted at write time is injected', async () => {
