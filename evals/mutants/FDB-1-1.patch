@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/feedback.ts b/packages/core/src/feedback.ts
+index 2c0c9fe3..f06fd308 100644
+--- a/packages/core/src/feedback.ts
++++ b/packages/core/src/feedback.ts
+@@ -96,7 +96,7 @@ export function applyFeedbackSignal(
+ 
+   if (signal === 'positive') {
+     engram.activation.retrieval_strength = Math.min(
+-      1.0, engram.activation.retrieval_strength + POSITIVE_STRENGTH_DELTA,
++      1.0, engram.activation.retrieval_strength - POSITIVE_STRENGTH_DELTA, // MUTANT: sign flipped
+     )
+     // Automatic verdicts never promote (#1310): only deliberate feedback may
+     // say "this is more settled than it was".

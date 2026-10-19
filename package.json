@@ -9,7 +9,10 @@
     "test:watch": "vitest",
     "bench:micro": "npx tsx benchmark/micro.ts",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
-    "smoke:release": "bash scripts/smoke-release.sh"
+    "smoke:release": "bash scripts/smoke-release.sh",
+    "evals": "python3 .evals/run.py --config evals/evals.yaml",
+    "evals:gate": "python3 .evals/gate.py --config evals/evals.yaml",
+    "evals:bite": "python3 .evals/bite.py --config evals/evals.yaml"
   },
   "devDependencies": {
     "@types/node": "25.5.0",

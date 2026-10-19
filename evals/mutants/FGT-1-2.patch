@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
+index ee45ea4a..7bc36b3f 100644
+--- a/packages/core/src/inject.ts
++++ b/packages/core/src/inject.ts
+@@ -915,7 +915,7 @@ export function selectAndSpread(
+ 
+   for (const engram of personalEngrams) {
+     if (engram.relations?.superseded_by?.length) supersededBy.set(engram.id, engram.relations.superseded_by)
+-    if (engram.status !== 'active') { nonActiveIds.add(engram.id); continue }
++    if (engram.status === 'candidate') { nonActiveIds.add(engram.id); continue }
+     // NOT added to nonActiveIds: a draft is active, it is simply ungated for
+     // delivery (#1141). That set feeds spread_drops accounting for retired or
+     // unresolvable targets, and a pending-review engram is neither.

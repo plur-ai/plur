@@ -1,0 +1,22 @@
+diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
+index ee45ea4a..f1b13684 100644
+--- a/packages/core/src/inject.ts
++++ b/packages/core/src/inject.ts
+@@ -592,7 +592,7 @@ export function scoreEngram(
+   // pinned flag sparingly — meta-rules, safety conventions, core operating
+   // principles. Per-pack/per-domain caps in fillTokenBudget still apply.
+   const isPinned = (engram as any).pinned === true
+-  if (termHits === 0 && !isPinned) return 0
++  if (termHits === 0) return 0 // MUTANT: a pinned rule needs a keyword hit like anything else
+   if (termHits === 0 && isPinned) {
+     // Synthetic minimal hit so downstream scoring math works
+     termHits = 0.5
+@@ -953,7 +953,7 @@ export function selectAndSpread(
+     // absent from a BM25 injection entirely. Under injectHybrid an embedding
+     // boost usually rescues such an engram, which is precisely why the hole
+     // stayed invisible: the fast path drops it and the hybrid path does not.
+-    if (raw > 0 || (engram as { pinned?: boolean }).pinned === true) {
++    if (raw > 0) { // MUTANT: no always-load exemption at the candidate pool
+       scored.push({ ...engram, keyword_match: raw, raw_score: raw, score: raw })
+     }
+   }

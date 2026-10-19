@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..83be76ff 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -9973,7 +9973,7 @@ export class Plur {
+         // that a copy now exists at the target, so a retry pushed it again
+         // (formal WritePath, candidate 6).
+         try {
+-          await this._retireRescopedSource(id, target, serverId)
++          await this._retireRescopedSource(serverId, target, serverId)
+         } catch (err) {
+           return {
+             id, status: 'error', action, from_scope: source.scope, to_scope: target, new_id: serverId,

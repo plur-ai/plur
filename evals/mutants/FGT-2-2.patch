@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..2a3cab37 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -2433,7 +2433,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
+             // force:true — explicit user forget always fully retires, ignoring
+             // reference_count. The ref-count decrement path is for internal
+             // multi-agent dedup; one plur_forget call = full retirement (#766).
+-            const { warnings } = await plur.forget(args.id as string, args.reason as string | undefined, { force: true })
++            const { warnings } = await plur.forget(args.id as string, args.reason as string | undefined) // MUTANT: force dropped, a repeated memory only loses one count
+             return { success: true, retired: { id: engram.id, statement: engram.statement }, ...(warnings.length > 0 ? { warnings } : {}) }
+           }
+           // Not in local store, or an explicit scope was given — let

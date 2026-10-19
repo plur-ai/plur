@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..7a1b5385 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -7323,7 +7323,7 @@ export class Plur {
+       // sync semantics. _loadAllEngrams reads through a mtime-based cache,
+       // so the cost is comparable.
+       engrams = await this._loadAllEngrams()
+-      engrams = engrams.filter(e => e.status === 'active')
++      engrams = engrams // MUTANT: forgotten memories pass the filter
+       if (options?.scopes !== undefined) {
+         // Permitted-scope allow-list (Phase 3). The in-memory twin of the SQL
+         // `scope = ANY($n)` pushdown, so the YAML path can never be the one

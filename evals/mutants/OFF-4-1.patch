@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/server.ts b/packages/mcp/src/server.ts
+index 9acfdd5d..44ad7d7f 100644
+--- a/packages/mcp/src/server.ts
++++ b/packages/mcp/src/server.ts
+@@ -327,7 +327,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
+     if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
+       const ws = await workspace.workspace()
+       const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
+-      if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
++      if (decision.plur === 'off') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
+       admittedWs = ws
+     }
+     // #192: one tick per tool call = one "turn" for capability health.

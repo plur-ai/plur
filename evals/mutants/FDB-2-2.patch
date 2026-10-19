@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/feedback.ts b/packages/core/src/feedback.ts
+index 2c0c9fe3..722962cf 100644
+--- a/packages/core/src/feedback.ts
++++ b/packages/core/src/feedback.ts
+@@ -100,7 +100,7 @@ export function applyFeedbackSignal(
+     )
+     // Automatic verdicts never promote (#1310): only deliberate feedback may
+     // say "this is more settled than it was".
+-    if (options.source !== 'auto') {
++    if (true) { // MUTANT: automatic ratings promote too
+       const e = engram as Engram & { commitment?: string }
+       const next = nextCommitment(e.commitment)
+       if (next !== undefined) e.commitment = next as typeof e.commitment

@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..67c3b552 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -3622,7 +3622,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
+           // an agent: it sees success, reports success, and the engrams routed
+           // to a remote store stay queued indefinitely. A log line inside
+           // `flushOutbox` is not a report to the caller.
+-          outbox_error = (err as Error).message
++          void err // MUTANT: the failed flush is swallowed
+         }
+         // #1299: queued writes that no retry will deliver (401/403/404/422, a
+         // write refusal, no writable store). Read AFTER the flush, so it

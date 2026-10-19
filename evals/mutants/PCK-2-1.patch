@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/packs.ts b/packages/core/src/packs.ts
+index 221accb3..0fcf538a 100644
+--- a/packages/core/src/packs.ts
++++ b/packages/core/src/packs.ts
+@@ -1362,7 +1362,7 @@ function _installPackDir(
+   // Blocking is the right default. Unlike the injection scan, there is no
+   // legitimate reason for a pack to differ from its own recorded hash — either
+   // it was damaged in transit or somebody changed it, and both deserve a look.
+-  if (preview.integrity.status === 'modified' && !opts.allowModified) {
++  if (preview.integrity.status === 'modified') {
+     throw new Error(
+       `This pack does not match the integrity value it shipped.\n`
+       + `  shipped:  ${preview.integrity.shipped}\n`

@@ -1,0 +1,321 @@
+"queries":
+  - "id": "Q001"
+    "query": "What format should review summaries use?"
+    "relevant": ["M001"]
+    "kind": "lexical"
+  - "id": "Q002"
+    "query": "After an outage, how do I lay out the recap?"
+    "relevant": ["M002"]
+    "kind": "paraphrase"
+  - "id": "Q003"
+    "query": "Which labels should mark reversible changes?"
+    "relevant": ["M003"]
+    "kind": "lexical"
+  - "id": "Q004"
+    "query": "What color marks any operation that cannot be undone?"
+    "relevant": ["M004"]
+    "kind": "paraphrase"
+  - "id": "Q005"
+    "query": "What deadlines apply to unit tests?"
+    "relevant": ["M005"]
+    "kind": "lexical"
+  - "id": "Q006"
+    "query": "How long may a check spanning several components run?"
+    "relevant": ["M006"]
+    "kind": "paraphrase"
+  - "id": "Q007"
+    "query": "Which units belong in customer facing file sizes?"
+    "relevant": ["M007"]
+    "kind": "lexical"
+  - "id": "Q008"
+    "query": "How do I express storage amounts in material for the people running systems?"
+    "relevant": ["M008"]
+    "kind": "paraphrase"
+  - "id": "Q009"
+    "query": "What must precede merging access permissions changes?"
+    "relevant": ["M009"]
+    "kind": "lexical"
+  - "id": "Q010"
+    "query": "What preparation precedes landing edits to how authentication keys get renewed?"
+    "relevant": ["M010"]
+    "kind": "paraphrase"
+  - "id": "Q011"
+    "query": "When should abandoned design proposals be archived?"
+    "relevant": ["M011"]
+    "kind": "lexical"
+  - "id": "Q012"
+    "query": "At what point do approved technical plans move into long term storage?"
+    "relevant": ["M012"]
+    "kind": "paraphrase"
+  - "id": "Q013"
+    "query": "How should error messages be written?"
+    "relevant": ["M013"]
+    "kind": "lexical"
+  - "id": "Q014"
+    "query": "What wording style belongs on menu headings?"
+    "relevant": ["M014"]
+    "kind": "paraphrase"
+  - "id": "Q015"
+    "query": "What evidence belongs in command execution bug reports?"
+    "relevant": ["M015"]
+    "kind": "lexical"
+  - "id": "Q016"
+    "query": "What proof accompanies a defect ticket about crooked interface elements?"
+    "relevant": ["M016"]
+    "kind": "paraphrase"
+  - "id": "Q017"
+    "query": "When are routine dependency reviews scheduled?"
+    "relevant": ["M017"]
+    "kind": "lexical"
+  - "id": "Q018"
+    "query": "How soon must we examine libraries following a trustworthy exploit warning?"
+    "relevant": ["M018"]
+    "kind": "paraphrase"
+  - "id": "Q019"
+    "query": "Where do temporary investigation notes belong?"
+    "relevant": ["M019"]
+    "kind": "lexical"
+  - "id": "Q020"
+    "query": "Where does the finished diagnostic writeup go once the issue is solved?"
+    "relevant": ["M020"]
+    "kind": "paraphrase"
+  - "id": "Q021"
+    "query": "What gate condition permits Brindle preview deployments?"
+    "relevant": ["M021"]
+    "kind": "lexical"
+  - "id": "Q022"
+    "query": "Who must authorize the shell utility going live for customers?"
+    "relevant": ["M022"]
+    "kind": "paraphrase"
+  - "id": "Q023"
+    "query": "When do Brindle interactive sessions expire?"
+    "relevant": ["M023"]
+    "kind": "lexical"
+  - "id": "Q024"
+    "query": "How long can the shell utility run headlessly if its liveness pings stop arriving?"
+    "relevant": ["M024"]
+    "kind": "paraphrase"
+  - "id": "Q025"
+    "query": "Where are Brindle command aliases stored?"
+    "relevant": ["M025"]
+    "kind": "lexical"
+  - "id": "Q026"
+    "query": "Where do I put the shell utility's shortcuts intended only for me?"
+    "relevant": ["M026"]
+    "kind": "paraphrase"
+  - "id": "Q027"
+    "query": "What separates Brindle command groups?"
+    "relevant": ["M027"]
+    "kind": "lexical"
+  - "id": "Q028"
+    "query": "How should the shell utility's multiword flags be punctuated?"
+    "relevant": ["M028"]
+    "kind": "paraphrase"
+  - "id": "Q029"
+    "query": "What do Brindle dry runs emit?"
+    "relevant": ["M029"]
+    "kind": "lexical"
+  - "id": "Q030"
+    "query": "What proof does the shell utility produce once actual work has completed?"
+    "relevant": ["M030"]
+    "kind": "paraphrase"
+  - "id": "Q031"
+    "query": "How long are Brindle local cache entries valid?"
+    "relevant": ["M031"]
+    "kind": "lexical"
+  - "id": "Q032"
+    "query": "When does the shell utility stop trusting a stored answer fetched from another machine?"
+    "relevant": ["M032"]
+    "kind": "paraphrase"
+  - "id": "Q033"
+    "query": "How does Brindle terminal output handle long resource names?"
+    "relevant": ["M033"]
+    "kind": "lexical"
+  - "id": "Q034"
+    "query": "Does a downloadable result from the shell utility shorten verbose object titles?"
+    "relevant": ["M034"]
+    "kind": "paraphrase"
+  - "id": "Q035"
+    "query": "How does Brindle repair mode treat locked workspaces?"
+    "relevant": ["M035"]
+    "kind": "lexical"
+  - "id": "Q036"
+    "query": "Can the shell utility examine a frozen area during a read only assessment?"
+    "relevant": ["M036"]
+    "kind": "paraphrase"
+  - "id": "Q037"
+    "query": "How do Brindle retry delays change after failed reads?"
+    "relevant": ["M037"]
+    "kind": "lexical"
+  - "id": "Q038"
+    "query": "How long does the shell utility pause before repeating an unsuccessful save?"
+    "relevant": ["M038"]
+    "kind": "paraphrase"
+  - "id": "Q039"
+    "query": "When are Brindle completion scripts regenerated?"
+    "relevant": ["M039"]
+    "kind": "lexical"
+  - "id": "Q040"
+    "query": "What event triggers rebuilding the shell utility's usage documentation?"
+    "relevant": ["M040"]
+    "kind": "paraphrase"
+  - "id": "Q041"
+    "query": "Which timestamps determine Sablefin hourly aggregate buckets?"
+    "relevant": ["M041"]
+    "kind": "lexical"
+  - "id": "Q042"
+    "query": "What clock decides where the analytics service puts data for invoicing totals?"
+    "relevant": ["M042"]
+    "kind": "paraphrase"
+  - "id": "Q043"
+    "query": "How long are Sablefin late sensor readings admissible?"
+    "relevant": ["M043"]
+    "kind": "lexical"
+  - "id": "Q044"
+    "query": "How far past the cutoff may the analytics service accept overdue financial observations?"
+    "relevant": ["M044"]
+    "kind": "paraphrase"
+  - "id": "Q045"
+    "query": "How do Sablefin dashboard exports round percentages?"
+    "relevant": ["M045"]
+    "kind": "lexical"
+  - "id": "Q046"
+    "query": "What precision do compliance downloads from the analytics service retain for proportions?"
+    "relevant": ["M046"]
+    "kind": "paraphrase"
+  - "id": "Q047"
+    "query": "What quarantine applies to Sablefin deleted tenant tables?"
+    "relevant": ["M047"]
+    "kind": "lexical"
+  - "id": "Q048"
+    "query": "How long does the analytics service retain discarded trial datasets prior to erasing them?"
+    "relevant": ["M048"]
+    "kind": "paraphrase"
+  - "id": "Q049"
+    "query": "How do Sablefin streaming imports handle missing source identifiers?"
+    "relevant": ["M049"]
+    "kind": "lexical"
+  - "id": "Q050"
+    "query": "Where does the analytics service put unidentified entries from a bulk upload?"
+    "relevant": ["M050"]
+    "kind": "paraphrase"
+  - "id": "Q051"
+    "query": "What baseline do Sablefin weekly reports compare against?"
+    "relevant": ["M051"]
+    "kind": "lexical"
+  - "id": "Q052"
+    "query": "What reference period underlies the analytics service's twelve month performance digest?"
+    "relevant": ["M052"]
+    "kind": "paraphrase"
+  - "id": "Q053"
+    "query": "How many worker slots do Sablefin interactive queries reserve?"
+    "relevant": ["M053"]
+    "kind": "lexical"
+  - "id": "Q054"
+    "query": "How much execution capacity is set aside for the analytics service's timed lookups in each signed in area?"
+    "relevant": ["M054"]
+    "kind": "paraphrase"
+  - "id": "Q055"
+    "query": "Which rate governs Sablefin currency conversion?"
+    "relevant": ["M055"]
+    "kind": "lexical"
+  - "id": "Q056"
+    "query": "Which exchange snapshot underlies the analytics service's hypothetical monetary outcomes?"
+    "relevant": ["M056"]
+    "kind": "paraphrase"
+  - "id": "Q057"
+    "query": "Who approves Sablefin metric formula changes?"
+    "relevant": ["M057"]
+    "kind": "lexical"
+  - "id": "Q058"
+    "query": "Whose signoff does the analytics service need to alter how long collections are kept?"
+    "relevant": ["M058"]
+    "kind": "paraphrase"
+  - "id": "Q059"
+    "query": "How are Sablefin null measurements drawn in line charts?"
+    "relevant": ["M059"]
+    "kind": "lexical"
+  - "id": "Q060"
+    "query": "How does the analytics service plot an observed numerical value of 0?"
+    "relevant": ["M060"]
+    "kind": "paraphrase"
+  - "id": "Q061"
+    "query": "How long do Cairnleaf debug builds retain symbol maps?"
+    "relevant": ["M061"]
+    "kind": "lexical"
+  - "id": "Q062"
+    "query": "For how long is the binary factory's address decoding metadata kept for speed tuned binaries?"
+    "relevant": ["M062"]
+    "kind": "paraphrase"
+  - "id": "Q063"
+    "query": "What resources do Cairnleaf compiler jobs receive?"
+    "relevant": ["M063"]
+    "kind": "lexical"
+  - "id": "Q064"
+    "query": "What compute and RAM allowance goes to the binary factory's archive assembly stage?"
+    "relevant": ["M064"]
+    "kind": "paraphrase"
+  - "id": "Q065"
+    "query": "What ordering do Cairnleaf source archives use?"
+    "relevant": ["M065"]
+    "kind": "lexical"
+  - "id": "Q066"
+    "query": "How should the binary factory sort a compressed collection of troubleshooting evidence?"
+    "relevant": ["M066"]
+    "kind": "paraphrase"
+  - "id": "Q067"
+    "query": "Where may Cairnleaf trusted branches reuse compiled artifacts?"
+    "relevant": ["M067"]
+    "kind": "lexical"
+  - "id": "Q068"
+    "query": "Where can code lines lacking approval obtain finished outputs for the binary factory?"
+    "relevant": ["M068"]
+    "kind": "paraphrase"
+  - "id": "Q069"
+    "query": "Who receives notice of Cairnleaf failed compilation?"
+    "relevant": ["M069"]
+    "kind": "lexical"
+  - "id": "Q070"
+    "query": "Who gets alerted if the binary factory cannot cryptographically attest a binary?"
+    "relevant": ["M070"]
+    "kind": "paraphrase"
+  - "id": "Q071"
+    "query": "When do Cairnleaf nightly builds start?"
+    "relevant": ["M071"]
+    "kind": "lexical"
+  - "id": "Q072"
+    "query": "What event kicks off the binary factory's premerge verification pipeline?"
+    "relevant": ["M072"]
+    "kind": "paraphrase"
+  - "id": "Q073"
+    "query": "What does Cairnleaf disk pressure evict first?"
+    "relevant": ["M073"]
+    "kind": "lexical"
+  - "id": "Q074"
+    "query": "What is the binary factory's first response when RAM runs short?"
+    "relevant": ["M074"]
+    "kind": "paraphrase"
+  - "id": "Q075"
+    "query": "What marker identifies Cairnleaf unsigned bundles?"
+    "relevant": ["M075"]
+    "kind": "lexical"
+  - "id": "Q076"
+    "query": "How does the binary factory label a package bearing a valid cryptographic attestation?"
+    "relevant": ["M076"]
+    "kind": "paraphrase"
+  - "id": "Q077"
+    "query": "How do Cairnleaf incremental rebuilds use file fingerprints?"
+    "relevant": ["M077"]
+    "kind": "lexical"
+  - "id": "Q078"
+    "query": "What happens to the binary factory's stored hashes during a from scratch build?"
+    "relevant": ["M078"]
+    "kind": "paraphrase"
+  - "id": "Q079"
+    "query": "What grant permits Cairnleaf artifact downloads?"
+    "relevant": ["M079"]
+    "kind": "lexical"
+  - "id": "Q080"
+    "query": "What authorization lets an identity send a built package into the binary factory?"
+    "relevant": ["M080"]
+    "kind": "paraphrase"

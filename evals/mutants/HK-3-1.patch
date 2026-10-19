@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/hook-session-guard.ts b/packages/cli/src/commands/hook-session-guard.ts
+index 597d047b..053d064c 100644
+--- a/packages/cli/src/commands/hook-session-guard.ts
++++ b/packages/cli/src/commands/hook-session-guard.ts
+@@ -50,7 +50,7 @@ function isExempt(toolName: string): boolean {
+ // it in a tight loop. Bounding the guard to one nudge makes that impossible:
+ // session-start memory is best-effort (hook-inject already injects on
+ // UserPromptSubmit), never worth trapping or pressuring a session.
+-const MAX_BLOCKS_BEFORE_FALLBACK = 1
++const MAX_BLOCKS_BEFORE_FALLBACK = 99 // MUTANT: the guard keeps refusing
+ 
+ function readStdinRaw(): string {
+   try {

@@ -1,0 +1,17 @@
+# Where PLUR's promises and evals live. Read by .evals/run.py, gate.py and bite.py
+# (vendored from the Datacore dev module). How it all fits: evals/README.md.
+root: ..
+promises: [evals/promises.yaml]
+suites:
+  - name: evals
+    cwd: .
+    tests: evals
+    runner: vitest
+    recursive: true
+    command: [pnpm, exec, vitest, run, --config, evals/vitest.config.ts, --reporter=junit, '--outputFile={junit}']
+baseline: evals/baseline.json
+mutants: evals/mutants
+chunk_files: 15
+timeout_s: 900
+scoreboard_env: {PROMISE_EVALS_ALL: '1'}
+agents: {env: {PLUR_AGENT_EVALS: '1'}, timeout_s: 5400}

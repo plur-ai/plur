@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/normalize-engram.ts b/packages/core/src/normalize-engram.ts
+index b1ca68b9..77a840ce 100644
+--- a/packages/core/src/normalize-engram.ts
++++ b/packages/core/src/normalize-engram.ts
+@@ -50,7 +50,7 @@ export const RULES: readonly NormalizeRule[] = [
+     // Guarded on write_count being ABSENT, so a record already carrying the new
+     // name keeps its value even if a stale reference_count rides alongside it.
+     applies: raw => !('write_count' in raw) && 'reference_count' in raw,
+-    apply: ({ reference_count, ...rest }) => ({ ...rest, write_count: reference_count }),
++    apply: ({ reference_count, ...rest }) => ({ id: rest.id, statement: rest.statement, type: rest.type, scope: rest.scope, status: rest.status, activation: rest.activation, write_count: reference_count }),
+   },
+ ]
+ 

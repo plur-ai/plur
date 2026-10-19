@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..f89930f8 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -12051,7 +12051,7 @@ Generate an improved version of the procedure that prevents this failure. Return
+    * reported separately as `external_retrieved` rather than counted as deleted.
+    */
+   async receipt(options?: { days?: number; now?: Date }): Promise<Receipt> {
+-    const primary = (await this._loadCached(this.paths.engrams)).filter(e => e.status === 'active')
++    const primary = (await this._loadCached(this.paths.engrams)) // MUTANT: forgotten memories counted as stored
+     const ownIds = primary.map(e => e.id)
+ 
+     // Statement snippets for the "most relied on" list, so it reads as memories

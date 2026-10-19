@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..52814efe 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -5821,7 +5821,7 @@ export class Plur {
+     if (!local.done) {
+       localAbort.abort()
+       if (fused) lateFallback = { ...fused, embedderError: fused.embedderError ?? Plur.DEGRADED_MESSAGES.reranker_deadline, degraded_reason: 'reranker_deadline' }
+-      else if (candidates) lateFallback = keywordOnly(candidates, 'semantic_deadline')
++      else if (candidates) lateFallback = { ...keywordOnly(candidates, 'semantic_deadline'), engrams: [] }
+     }
+     if (local.done && local.error !== undefined) throw local.error
+     if (!local.done || semanticSkipped !== null) this._maybeFillEmbeddingCache()
