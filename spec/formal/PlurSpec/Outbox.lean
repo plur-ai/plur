@@ -61,6 +61,8 @@ this model covers changed.
 
 Gate structural change 1 on #1663 (2026-10-18): still holds. A delivery no longer writes automatic
 provenance for a queued remote-only save; keys, retry, claims, holds and the breaker are unchanged.
+Codex round 11 (2026-10-18): still holds. The two remote-only holds in the flush now classify by the
+shared predicate (either marker field), so a half-stripped marker is held like §8b; nothing else changed.
 
 Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
