@@ -363,8 +363,10 @@ export function suggestMode(value: string): string | null {
   if (t.length < 3 || YES_NO.has(lower)) return null
   // One letter off: only ever `off` or `ask`, and only when `on` is not just
   // as close — a guess never switches memory on (`ok`, `in`, `onn` stay put).
+  // Never `remote-only` either (GLM round 13 on #1663): a guess must not put a
+  // folder into a confidentiality mode the user did not finish writing.
   const near = MODES.filter(m => editDistance(lower, m) === 1)
-  return near.length === 1 && near[0] !== 'on' ? near[0] : null
+  return near.length === 1 && near[0] !== 'on' && near[0] !== 'remote-only' ? near[0] : null
 }
 
 /** The value token of a `key: value` line: [start, end) of the text inside any quotes, and the text. */

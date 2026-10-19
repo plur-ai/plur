@@ -112,7 +112,9 @@ one with `plur remote` or `plur stores add` first).
   session's end-of-session suggestions still go to the team scope.
 - **Changing the scope keeps the folder remote-only.** `plur folders set
   <folder> --scope <other>` only changes the scope (it must also be served by a
-  team store). It never switches the folder back to local memory.
+  team store). It never switches the folder back to local memory. Saves already
+  queued keep the scope they were queued for: they are delivered there or held,
+  never moved; `plur forget <id>` removes one that can no longer be delivered.
 - **An entry with no scope** (written by hand) refuses every save, and sessions
   there say no team server serves the folder.
 - **Only an explicit decision of your own overrides it.** A repository's

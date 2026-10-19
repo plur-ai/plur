@@ -113,9 +113,8 @@ describe('GLM round 13 on #1663: the folder-map repair never guesses remote-only
     expect(suggestMode('remote-onl')).toBeNull()
     expect(suggestMode('remote_only')).toBeNull()
     expect(suggestMode('Remote-Only')).toBe('remote-only')
+    // And the check of such a file offers no automatic repair for it.
     const report = checkFolderMapText('version: 1\nfolders:\n  - path: /work/client\n    plur: remote-onl\n') as any
-    const text = JSON.stringify(report)
-    expect(text).toContain('remote-only')
-    expect(text).not.toMatch(/must be on, off or ask[^,]/)
+    expect(JSON.stringify(report)).not.toMatch(/"fixable":true/)
   })
 })
