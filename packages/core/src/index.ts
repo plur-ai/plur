@@ -14089,6 +14089,9 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async registerEnterpriseServer(url: string, opts: {
     token?: string; tokenEnv?: string; personalScope: string; enterprise?: Record<string, string>; removeStale?: boolean
+    migrateLegacyPersonal?: boolean
+    /** Required for a legacy conversion; verifies its backup under this lock. */
+    beforeLegacyMigration?: (configPath: string) => void
     /** Installer rollback evidence, delivered under the write lock. Contains secrets; never log. */
     onConfigWrite?: (before: string | null, after: string) => void
     /** Refuse ({@link SignInHeldError}) when config.yaml already holds a sign-in for the url. */
@@ -14097,7 +14100,7 @@ Generate an improved version of the procedure that prevents this failure. Return
      *  that removes stale entries (the file is still as read); a throw writes
      *  nothing. `plur login --remove-stale` backs config.yaml up here. */
     beforeRemove?: (configPath: string) => void
-  }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[] }> {
+  }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }> {
     let parsed: URL
     try { parsed = new URL(url) } catch {
       throw new Error('registerEnterpriseServer: the server address is not a valid http(s) URL')
@@ -14127,7 +14130,11 @@ Generate an improved version of the procedure that prevents this failure. Return
     try {
       this._updateRawStores(rawStores => {
         try {
-          result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise, removeStale: opts.removeStale === true, keepSignIn: opts.keepSignIn === true })
+          result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise, removeStale: opts.removeStale === true, keepSignIn: opts.keepSignIn === true, migrateLegacyPersonal: opts.migrateLegacyPersonal === true })
+          if (result.migratedLegacy) {
+            if (!opts.beforeLegacyMigration) throw new Error('legacy migration requires a verified configuration backup')
+            opts.beforeLegacyMigration(this.paths.config)
+          }
         } catch (err) {
           if (err instanceof SignInHeldError) throw new SignInHeldError(`registerEnterpriseServer: ${err.message}`)
           // The refusal keeps its type and the entries it names (#1638), so
@@ -14177,7 +14184,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
     const queued_by_scope: Record<string, number> = Object.fromEntries(counts)
     logger.info(`[plur:register] ${r.status} the server entry for ${safeOrigin(url)}: ${r.report.folded.length} folded, ${r.report.kept_separate.length} kept separate${r.removed.length ? `, ${r.removed.length} stale removed` : ''}`)
-    return { status: r.status, fold: { ...r.report, queued_by_scope }, removed: r.removed }
+    return { status: r.status, fold: { ...r.report, queued_by_scope }, removed: r.removed, ...(r.migratedLegacy ? { migratedLegacy: true } : {}) }
   }
 
   /**

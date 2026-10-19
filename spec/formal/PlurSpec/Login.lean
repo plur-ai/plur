@@ -628,3 +628,10 @@ snapshot for the initializer's subprocess interval. Under the same config lock,
 a mismatch refuses restoration instead of discarding another writer's change.
 The existing immediate-connect rollback contract remains unchanged. The new
 snapshot and uncertain-delivery rules are proved in EnterpriseInit. -/
+
+/-! 2026-10-19: Installer legacy personal JWT conversion is explicitly opted in,
+limited to one exact verified personal route on the same endpoint, and guarded
+by a protected backup comparison under the existing config lock. Generic fold,
+route resolution, discovery and outbox rules are unchanged. EnterpriseInit.Legacy
+models its admission and refusal boundaries. Metadata is preserved through the
+existing fold; queued idempotency keys are untouched. -/

@@ -154,7 +154,7 @@ export async function runEnterpriseInit(opts: InitOptions, deps: InitDeps): Prom
     const personalScope = personalScopeOf(me)
     step = 'store'
     plur = new Plur({ path: plurDir, autoDiscover: false })
-    const connected = await connectServerStore({ plur, server: opts.server, token, personalScope, configPath })
+    const connected = await connectServerStore({ plur, server: opts.server, token, personalScope, configPath, migrateLegacyPersonal: true })
     rollback = connected.rollback
     result.backupDir = connected.backupPath ? dirname(connected.backupPath) : join(plurDir, 'backups', String((deps.clock ?? (() => new Date()))().getTime()))
     const protection = protectKeyFile(configPath, platform, undefined, currentWindowsAccount(env))
@@ -184,7 +184,7 @@ export async function runEnterpriseInit(opts: InitOptions, deps: InitDeps): Prom
     await plur.registerEnterpriseServer(opts.server, { token, personalScope, enterprise: { hello_engram_id: result.hello.saved.id, device_name: name, mode: 'full', installed_version: expected } })
     const cleanup = cleanupLegacy({ tools: result.tools.filter(t => t.proven).map(t => t.tool), backupDir: result.backupDir, plurDir, home, env, platform })
     if (cleanup.some(entry => entry.status === 'refused')) throw new Error('A legacy entry could not be backed up or cleaned; inspect the backup directory and rerun.')
-    if (!result.signIn.reused) result.flushed = await plur.flushOutbox({ force: true })
+    if (!result.signIn.reused || connected.migratedLegacy) result.flushed = await plur.flushOutbox({ force: true })
     if (connected.discovery.status !== 'ok') throw new InitFailure('Team scope discovery was not verified. The accepted save and key were kept; run the installer again.')
     const scopes = [...new Set(connected.discovery.scopes)]
     result.writeCheck = await writeChecks(opts.server, token, scopes.filter(s => /^(group|project):/.test(s)), fetcher)

@@ -39,3 +39,34 @@ example : success true true true true true = true ∧ success false true true tr
 def mayContactServer (startupTrustMatches : Bool) : Bool := startupTrustMatches
 theorem restart_before_network : mayContactServer false = false := rfl
 end PlurSpec.EnterpriseInit
+
+/-! 2026-10-19: Legacy personal-store migration is an explicit installer
+transition. JWT syntax is a classifier, never authentication; verified identity
+comes from the new key's /me. Exactly one eligible route and a matching protected
+backup are required. Generic different-key folding remains unchanged. -/
+namespace PlurSpec.EnterpriseInit.Legacy
+structure Evidence where
+  optedIn : Bool
+  sameEndpoint : Bool
+  exactPersonal : Bool
+  inlineJwt : Bool
+  writable : Bool
+  noOverrides : Bool
+  uniqueRoute : Bool
+  backupMatches : Bool
+deriving DecidableEq
+def migrate (e : Evidence) : Bool :=
+  e.optedIn && e.sameEndpoint && e.exactPersonal && e.inlineJwt && e.writable && e.noOverrides && e.uniqueRoute && e.backupMatches
+theorem explicit_only (e : Evidence) (h : e.optedIn = false) : migrate e = false := by simp [migrate, h]
+theorem endpoint_bound (e : Evidence) (h : e.sameEndpoint = false) : migrate e = false := by simp [migrate, h]
+theorem identity_bound (e : Evidence) (h : e.exactPersonal = false) : migrate e = false := by simp [migrate, h]
+theorem ambiguous_preserved (e : Evidence) (h : e.uniqueRoute = false) : migrate e = false := by simp [migrate, h]
+theorem changed_backup_refused (e : Evidence) (h : e.backupMatches = false) : migrate e = false := by simp [migrate, h]
+theorem overrides_preserved (e : Evidence) (h : e.noOverrides = false) : migrate e = false := by simp [migrate, h]
+def rotate (e : Evidence) (oldKey newKey : Nat) : Nat := if migrate e then newKey else oldKey
+theorem refused_keeps_old (e : Evidence) (o n : Nat) (h : migrate e = false) : rotate e o n = o := by simp [rotate, h]
+-- A JWT-shaped record alone does not authorize replacing another route.
+example : migrate ⟨true, true, false, true, true, true, true, true⟩ = false := by decide
+example : migrate ⟨true, true, true, true, true, true, true, false⟩ = false := by decide
+example : migrate ⟨true, true, true, true, true, true, true, true⟩ = true := by decide
+end PlurSpec.EnterpriseInit.Legacy
