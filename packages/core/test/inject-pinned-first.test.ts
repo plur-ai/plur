@@ -1,9 +1,11 @@
 /**
- * Pinned memories come before anything else within the budget (INJ-6).
+ * Pinned memories come first, up to their share of the budget (INJ-6, owner
+ * decision 2026-10-19).
  *
- * Pins may use the whole budget; an unpinned memory only gets what the pins
- * leave, and none is given while a pinned memory was left out. Every pin left
- * out is named in `omitted_pinned`.
+ * Pins are given first, capped at `injection.pinned_ratio` of the budget
+ * (default half), so the memories matching the task still get room. Every pin
+ * left out is named in `omitted_pinned`, and is not given through the consider
+ * pool either.
  */
 import { describe, it, expect } from 'vitest'
 import { selectAndSpread, estimateTokens } from '../src/inject.js'
@@ -21,32 +23,41 @@ const PINS = Array.from({ length: 10 }, (_, i) =>
 const MATCHING = Array.from({ length: 6 }, (_, i) =>
   engram(`ENG-2026-01-02-${String(i + 1).padStart(3, '0')}`, `Deploy the billing service to production in step ${i + 1}`, false))
 
-function run(maxTokens: number, pins = PINS) {
+function run(maxTokens: number, pins = PINS, config?: { pinned_ratio?: number }) {
   return selectAndSpread(
     { prompt: 'deploy the billing service to production', scope: 'project:alpha', maxTokens },
     [...pins, ...MATCHING],
     [],
+    config,
   )
 }
 
 const givenIds = (r: ReturnType<typeof run>) =>
   [...r.directives, ...r.constraints, ...r.consider].map(e => e.id)
 
-describe('pinned first within the budget (INJ-6)', () => {
-  it('gives no unpinned memory while a pinned memory is left out', () => {
+describe('pinned first, up to their share (INJ-6)', () => {
+  it('gives pins first within their share, then the matching memories, and names every pin left out', () => {
     const r = run(150)
     const ids = givenIds(r)
     const left = PINS.filter(p => !ids.includes(p.id)).map(p => p.id)
     expect(left.length, 'precondition: ten pins do not all fit in 150 tokens').toBeGreaterThan(0)
-    expect(MATCHING.filter(m => ids.includes(m.id)).map(m => m.id)).toEqual([])
+    const pinIdx = PINS.filter(p => ids.includes(p.id)).map(p => ids.indexOf(p.id))
+    const matchIdx = MATCHING.filter(m => ids.includes(m.id)).map(m => ids.indexOf(m.id))
+    expect(pinIdx.length).toBeGreaterThan(0)
+    expect(matchIdx.length, 'the task still gets room').toBeGreaterThan(0)
+    expect(Math.max(...pinIdx)).toBeLessThan(Math.min(...matchIdx))
     expect(r.omitted_pinned.map(o => o.id).sort()).toEqual([...left].sort())
   })
 
-  it('lets pins use more than half the budget before any unpinned memory', () => {
-    const r = run(150)
-    const pinTokens = PINS.filter(p => givenIds(r).includes(p.id)).reduce((a, p) => a + estimateTokens(p as never), 0)
-    expect(pinTokens).toBeGreaterThan(75)
-    expect(r.tokens_used.directives + r.tokens_used.consider).toBeLessThanOrEqual(150)
+  it('caps pins at their share of the budget (default half, injection.pinned_ratio)', () => {
+    const pinTokens = (r: ReturnType<typeof run>) =>
+      PINS.filter(p => givenIds(r).includes(p.id)).reduce((a, p) => a + estimateTokens(p as never), 0)
+    const half = run(150)
+    expect(pinTokens(half)).toBeLessThanOrEqual(75)
+    expect(half.tokens_used.directives + half.tokens_used.consider).toBeLessThanOrEqual(150)
+    const more = run(150, PINS, { pinned_ratio: 0.8 })
+    expect(pinTokens(more)).toBeLessThanOrEqual(120)
+    expect(pinTokens(more)).toBeGreaterThan(pinTokens(half))
   })
 
   it('gives unpinned memories the room left once every pin fits', () => {
