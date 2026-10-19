@@ -47,3 +47,7 @@ as the existing binary contract requires. Parsing and execution are unchanged. -
 current or legacy display namespace before sending the previous id. The
 configuration/recall id remains unchanged; delivery and recall provenance
 checks, trust admission, and the previous hello's active state are unchanged. -/
+
+/-! 2026-10-20: Public help lists the bare init subcommand under Commands,
+with the complete invocation in Usage. This makes the unchanged documentation
+command-surface check recognize init; runtime admission remains unchanged. -/
