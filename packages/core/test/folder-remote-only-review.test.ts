@@ -106,3 +106,16 @@ describe('gate review of #1663: setFolder on a remote-only folder names the fold
     expect(msg).toContain(`plur folders set ${plain} --on`)
   })
 })
+
+describe('GLM round 13 on #1663: the folder-map repair never guesses remote-only', () => {
+  it('a near miss of remote-only is not repaired to it; an exact token in another case still is', async () => {
+    const { suggestMode, checkFolderMapText } = await import('../src/folder-map-check.js')
+    expect(suggestMode('remote-onl')).toBeNull()
+    expect(suggestMode('remote_only')).toBeNull()
+    expect(suggestMode('Remote-Only')).toBe('remote-only')
+    const report = checkFolderMapText('version: 1\nfolders:\n  - path: /work/client\n    plur: remote-onl\n') as any
+    const text = JSON.stringify(report)
+    expect(text).toContain('remote-only')
+    expect(text).not.toMatch(/must be on, off or ask[^,]/)
+  })
+})
