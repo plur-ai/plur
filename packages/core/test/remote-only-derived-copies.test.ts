@@ -18,7 +18,9 @@ import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 import { IndexedStorage } from '../src/storage-indexed.js'
 import { PGLiteAdapter } from '../src/storage-pglite.js'
-import { fillEmbeddingCache, embeddingSearch, _setCachedEmbedder, resetEmbedder } from '../src/embeddings.js'
+import { fillEmbeddingCache, embeddingSearch, _setCachedEmbedder, resetEmbedder, setEmbeddingsEnabled } from '../src/embeddings.js'
+import { sync } from '../src/sync.js'
+import { execSync } from 'child_process'
 import { isRemoteOnlyQueued } from '../src/remote-only-rows.js'
 import { StubServer } from './helpers/stub-server.js'
 import { backgroundPushesSettled } from './helpers/background-pushes.js'
@@ -133,3 +135,106 @@ describe('delivery from an unbound instance keeps no local provenance or history
     } finally { process.env.HOME = prevHome }
   })
 })
+
+describe('Codex round 10 on #1663: the remaining sinks', () => {
+  it('git sync never commits a queued remote-only save (personal and shared)', () => {
+    for (const remoteType of ['personal', 'shared'] as const) {
+      const d = join(dir, remoteType)
+      mkdirSync(d, { recursive: true })
+      writeFileSync(join(d, 'engrams.yaml'), yaml.dump({ engrams: [
+        queued('ENG-2026-10-18-111', 'QUEUEDGIT fact'),
+        row('ENG-2026-10-18-112', 'shared plain fact', { visibility: 'public' }),
+      ] }))
+      sync(d, undefined, { remoteType })
+      const history = execSync('git log -p --all', { cwd: d, encoding: 'utf8' })
+      expect(history, remoteType).not.toContain('QUEUEDGIT')
+      expect(history, remoteType).toContain('shared plain fact')
+    }
+  })
+
+  it('the SQLite index leaves a queued save of a secondary store out too', async () => {
+    const yamlPath = join(dir, 'engrams.yaml')
+    const second = join(dir, 'second.yaml')
+    writeFileSync(yamlPath, yaml.dump({ engrams: [] }))
+    writeFileSync(second, yaml.dump({ engrams: [queued('ENG-2026-10-18-113', 'QUEUEDSECOND fact'), row('ENG-2026-10-18-114', 'second plain fact')] }))
+    const store = new IndexedStorage(yamlPath, join(dir, 'plur.db'), [{ path: second, scope: TEAM } as any])
+    store.syncFromYaml()
+    const all = await store.loadFiltered({})
+    store.close()
+    expect(JSON.stringify(all)).not.toContain('QUEUEDSECOND')
+    expect(JSON.stringify(all)).toContain('second plain fact')
+  })
+
+  it('provenance, tensions and dedup history for a queued save held in a secondary store or the primary', async () => {
+    const root = join(dir, 'home', '.plur')
+    mkdirSync(root, { recursive: true })
+    const second = join(dir, 'second.yaml')
+    writeFileSync(second, yaml.dump({ engrams: [queued('ENG-2026-10-18-115', 'QUEUEDPROVSECOND fact')] }))
+    writeFileSync(join(root, 'engrams.yaml'), yaml.dump({ engrams: [queued('ENG-2026-10-18-116', 'QUEUEDDEDUP the client lane is blue'), ordinary('ENG-2026-10-18-117', 'plain personal fact')] }))
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false }, stores: [{ path: second, scope: TEAM }] }))
+    const plur = new Plur({ path: root })
+    const all = await plur.list()
+    const ns = all.find(e => e.statement.includes('QUEUEDPROVSECOND'))?.id ?? 'ENG-2026-10-18-115'
+    await plur.writeProvenance(ns, { include_statement: true } as any).catch(() => null)
+    await plur.recordTensions([{ id_a: 'ENG-2026-10-18-116', id_b: 'ENG-2026-10-18-117', statement_a: 'QUEUEDDEDUP the client lane is blue', statement_b: 'plain personal fact', confidence: 0.9, reason: 'x' } as any]).catch(() => null)
+    await plur.learn('QUEUEDDEDUP the client lane is blue', { scope: TEAM }).catch(() => null)
+    const walk = (d: string): string => !existsSync(d) ? '' : readdirSync(d, { withFileTypes: true })
+      .map(e => e.isDirectory() ? walk(join(d, e.name)) : readFileSync(join(d, e.name), 'utf8')).join('')
+    expect(walk(join(root, 'provenance'))).not.toContain('QUEUEDPROVSECOND')
+    const tensions = existsSync(join(root, 'tensions.yaml')) ? readFileSync(join(root, 'tensions.yaml'), 'utf8') : ''
+    expect(tensions).not.toContain('QUEUEDDEDUP')
+    const history = walk(join(root, 'history')).split('\n').filter(Boolean).map(l => JSON.parse(l))
+    expect(JSON.stringify(history.filter(e => e.engram_id === 'ENG-2026-10-18-116'))).not.toContain('QUEUEDDEDUP')
+  })
+
+  it('an unbound read never sees a queued remote-only save', async () => {
+    const root = join(dir, 'home2', '.plur')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'engrams.yaml'), yaml.dump({ engrams: [queued('ENG-2026-10-18-118', 'QUEUEDREAD the client lane is blue')] }))
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false } }))
+    const plur = new Plur({ path: root })
+    const seen = JSON.stringify([await plur.list(), await plur.recall('client lane blue'), (await plur.inject('client lane blue')).directives])
+    expect(seen).not.toContain('QUEUEDREAD')
+  })
+
+  it('the primary-store embedding pass pages past queued saves instead of stopping', async () => {
+    const seen: string[] = []
+    _setCachedEmbedder({
+      name: 'fake', dim: 3, modelId: 'fake',
+      embed: async (t: string) => { seen.push(t); return new Float32Array([1, 0, 0]) },
+      embedBatch: async (ts: string[]) => ts.map(() => new Float32Array([1, 0, 0])),
+    })
+    setEmbeddingsEnabled(true)
+    try {
+      const rows = [...Array.from({ length: 120 }, (_, i) => queued(`ENG-2026-10-18-${String(200 + i)}`, `QUEUEDPAGE ${i}`)), ordinary('ENG-2026-10-18-400', 'ORDINARYPAGE fact')]
+      const done = new Set<string>()
+      const adapter = {
+        listEngramsMissingEmbeddings: async (limit: number) => rows.filter(r => !done.has(r.id)).slice(0, limit),
+        upsertEmbedding: async (id: string) => { done.add(id) },
+      }
+      const root = join(dir, 'home3', '.plur')
+      mkdirSync(root, { recursive: true })
+      writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false }))
+      const plur = new Plur({ path: root })
+      await (plur as any)._autoEmbedPrimaryStore(adapter)
+      expect(done.has('ENG-2026-10-18-400')).toBe(true)
+      expect(seen.join('\n')).not.toContain('QUEUEDPAGE')
+    } finally { resetEmbedder() }
+  })
+})
+
+describe('construction-time maintenance waits for the binding (Codex round 10 on #1663)', () => {
+  it('the legacy tension purge does not rewrite personal rows of an instance bound right after construction', async () => {
+    const home = join(dir, 'home4'); const root = join(home, '.plur'); const work = join(home, 'client')
+    mkdirSync(root, { recursive: true }); mkdirSync(work, { recursive: true })
+    writeFileSync(join(root, 'engrams.yaml'), yaml.dump({ engrams: [ordinary('ENG-2026-10-18-119', 'personal with a legacy conflict', { relations: { conflicts: ['ENG-2026-10-18-120'] } })] }))
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false }, stores: [{ url: 'http://127.0.0.1:9', token: 't', scope: TEAM, shared: true }] }))
+    writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: work, plur: 'remote-only', scope: TEAM }] }))
+    const before = readFileSync(join(root, 'engrams.yaml'), 'utf8')
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    await plur.ready().catch(() => {})
+    expect(readFileSync(join(root, 'engrams.yaml'), 'utf8')).toBe(before)
+  })
+})
+
