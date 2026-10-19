@@ -1242,3 +1242,7 @@ known-key backoff bypass and the local-path takeover hold. Other write guards,
 claims, idempotency and merge-back remain unchanged; the extra queue field is
 an attempted credential fingerprint only. Enterprise recovery text changes no
 recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Hook execution timestamps are recorded only after the off-folder
+guard. Disabled memory retains its no-store-write boundary; admitted hooks keep
+the existing timestamp and status behavior. No routing or delivery rule changes. -/

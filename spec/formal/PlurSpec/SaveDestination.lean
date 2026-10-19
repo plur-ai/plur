@@ -139,3 +139,6 @@ requests, strict permission evidence, and explicit missing-evidence failures.
 They do not change grants, memory, queue delivery or file permissions. Existing
 write/routing invariants hold; ServerDiagnostics models report aggregation.
 The discovery clock-skew constant is exported without changing its value. -/
+/- 2026-10-19: Hook-run timestamps now respect off and unreadable-map refusal.
+The cached server line and admitted workspace scope selection are unchanged;
+the timestamp is diagnostic only and is never written on those refused paths. -/

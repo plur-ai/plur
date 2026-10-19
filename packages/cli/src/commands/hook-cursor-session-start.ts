@@ -53,7 +53,6 @@ import { cachedServerLines } from '../lib/server-session.js'
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
-  recordHookRun('cursor', flags.path)
 
   // #1347: the folder map decides. off is silent; ask puts the one question
   // where Cursor reads it (the rule file, plus additional_context) instead of
@@ -65,6 +64,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     for (const root of cleanupDirs ?? (dir ? [dir] : [])) removeGeneratedContextRules(root)
     return
   }
+  recordHookRun('cursor', flags.path)
   if (dir && policy.mode === 'ask') removeStaleAsk(cursorContextRulePath(dir))
   // remote-only (also an `ask` workspace with a remote-only root): another
   // root's generated rule may hold personal memory from an earlier session;
