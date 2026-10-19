@@ -601,7 +601,10 @@ export function scoreEngram(
 
   // Base score from term hits * (decayed) retrieval strength
   // Pack engrams use raw RS (read-only, can't track usage)
-  let rs = isPack
+  // A locked engram does not fade with disuse either: it ranks at its stored
+  // strength, the same exemption confidenceDecay gives it below (FDB-4).
+  const isLocked = (engram as any).commitment === 'locked'
+  let rs = isPack || isLocked
     ? engram.activation.retrieval_strength
     : decayedStrength(engram.activation.retrieval_strength, daysSince(engram.activation.last_accessed))
   // Idea 21 (SP1): Additional confidence decay for engrams without recent feedback
