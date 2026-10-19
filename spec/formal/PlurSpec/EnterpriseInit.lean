@@ -39,3 +39,11 @@ example : success true true true true true = true ∧ success false true true tr
 def mayContactServer (startupTrustMatches : Bool) : Bool := startupTrustMatches
 theorem restart_before_network : mayContactServer false = false := rfl
 end PlurSpec.EnterpriseInit
+
+/-! 2026-10-19: Keep the pre-provisioning stdin flag hidden in public help,
+as the existing binary contract requires. Parsing and execution are unchanged. -/
+
+/-! 2026-10-20: The rerun hello relation removes only the personal store's
+current or legacy display namespace before sending the previous id. The
+configuration/recall id remains unchanged; delivery and recall provenance
+checks, trust admission, and the previous hello's active state are unchanged. -/

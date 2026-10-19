@@ -874,3 +874,8 @@ unconfirmed delivery, keeps pending write checks distinct from empty scopes,
 and uses the shared hello types and WSL-side labels in summary output. Existing
 save/recall provenance and per-tool proof rules remain unchanged; EnterpriseInit
 models the added orchestration and rollback conditions. -/
+
+/-! 2026-10-20: The rerun hello relation removes only the personal store's
+current or legacy display namespace before sending the previous id. The
+configuration/recall id remains unchanged; delivery and recall provenance
+checks, trust admission, and the previous hello's active state are unchanged. -/
