@@ -1,0 +1,12 @@
+diff --git a/packages/mcp/src/folder-gate.ts b/packages/mcp/src/folder-gate.ts
+index 46ec4607..1e098cb3 100644
+--- a/packages/mcp/src/folder-gate.ts
++++ b/packages/mcp/src/folder-gate.ts
+@@ -57,7 +57,6 @@ export const FOLDER_GATED_TOOLS: ReadonlySet<string> = new Set([
+   'plur_recall',
+   'plur_recall_hybrid',
+   'plur_inject',
+-  'plur_inject_hybrid',
+   'plur_similarity_search',
+   'plur_meta_engrams',
+   'plur_history',

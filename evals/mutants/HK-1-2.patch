@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/hook-inject.ts b/packages/cli/src/commands/hook-inject.ts
+index 00f11dee..2db9e658 100644
+--- a/packages/cli/src/commands/hook-inject.ts
++++ b/packages/cli/src/commands/hook-inject.ts
+@@ -1172,7 +1172,7 @@ async function injectSession(
+ 
+   if (context) {
+     parts.push('')
+-    parts.push(context)
++    void context // MUTANT: the memories are dropped from the output
+   }
+ 
+   // #1312: correction detection rides this output, after the memory.

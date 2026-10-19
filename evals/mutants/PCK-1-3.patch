@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/packs.ts b/packages/core/src/packs.ts
+index 221accb3..0e0a862f 100644
+--- a/packages/core/src/packs.ts
++++ b/packages/core/src/packs.ts
+@@ -2281,7 +2281,7 @@ export function exportPack(
+   // content that has no place in a shared pack, so ANY issue is disqualifying.
+   // The full scan is still returned in `privacy`, so the caller sees exactly
+   // which engrams were held back and why.
+-  const blockedIds = new Set(allPrivacy.issues.map(i => i.engram_id))
++  const blockedIds = new Set(allPrivacy.issues.filter(i => i.type !== 'secret').map(i => i.engram_id))
+   const safeEngrams = engrams.filter(e => !blockedIds.has(e.id))
+ 
+   // Derive match_terms from engram tags and domains

@@ -1,0 +1,20 @@
+diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index 0d7f2901..35fa0b9d 100644
+--- a/packages/core/src/learn-async.ts
++++ b/packages/core/src/learn-async.ts
+@@ -246,7 +246,6 @@ async function executeDedupDecision(
+             // Re-check under the lock (formal-verification finding, persistence.md
+             // candidate 7): `existing` is a pre-lock snapshot, and an engram locked
+             // since then must not be rewritten — same outcome as locked-before: ADD.
+-            if ((engrams[idx] as any).commitment === 'locked') return null
+             const previousStatement = engrams[idx].statement
+             const updated = { ...engrams[idx] } as any
+             updated.statement = statement
+@@ -288,7 +287,6 @@ async function executeDedupDecision(
+             // Target gone — fall out of the lock and ADD; see the doc comment.
+             if (idx === -1) return null
+             // Locked since the pre-lock check: do not merge into it (see UPDATE).
+-            if ((engrams[idx] as any).commitment === 'locked') return null
+             const merged = { ...engrams[idx] } as any
+             merged.statement = `${merged.statement} ${statement}`
+             merged.content_hash = computeContentHash(merged.statement)

@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/validity.ts b/packages/core/src/validity.ts
+index f66061ad..0d5a29b0 100644
+--- a/packages/core/src/validity.ts
++++ b/packages/core/src/validity.ts
+@@ -122,7 +122,7 @@ export function isExpired(temporal: Temporal, nowMs: number): boolean {
+   const until = temporal?.valid_until
+   if (!until) return false
+   const closes = closesAt(until)
+-  return closes === null ? false : nowMs > closes
++  return closes === null ? true : nowMs > closes // MUTANT: unreadable end date hides
+ }
+ 
+ /**

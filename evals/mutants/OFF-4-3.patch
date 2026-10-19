@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/folders.ts b/packages/core/src/folders.ts
+index 999eed47..a4804227 100644
+--- a/packages/core/src/folders.ts
++++ b/packages/core/src/folders.ts
+@@ -1603,7 +1603,7 @@ export function verifyFolderNonce(
+       writeNonceFile(file, data)
+       throw new FolderMapError('nonce-expired', 'That nonce has expired; nothing was changed.')
+     }
+-    if (rec.folder !== key) {
++    if (dirname(rec.folder) !== dirname(key)) {
+       throw new FolderMapError('nonce-folder', `That nonce was issued for ${rec.folder}, not ${key}; nothing was changed.`)
+     }
+     const bound = answerKey(rec.answer)

@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/hook-inject.ts b/packages/cli/src/commands/hook-inject.ts
+index 00f11dee..3d21b334 100644
+--- a/packages/cli/src/commands/hook-inject.ts
++++ b/packages/cli/src/commands/hook-inject.ts
+@@ -903,7 +903,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+       lines.push(`[PLUR Memory Reminder] If the user corrected you, stated a preference, or you discovered a pattern — call plur_learn now.${scopeHint} Call plur_session_end with engram_suggestions before the conversation ends.`)
+     }
+     const correction = promptCorrection(input)
+-    if (correction) lines.push(correction)
++    void correction // MUTANT: no reminder on later messages
+     // The skipped-store hint is keyed on session AND folder (#1589 audit
+     // round 4): a session that moves to another folder gets that folder's
+     // hint once. Cheap checks run first; the PLUR instance is built only when

@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/sync.ts b/packages/core/src/sync.ts
+index a00c3a56..fd47b58f 100644
+--- a/packages/core/src/sync.ts
++++ b/packages/core/src/sync.ts
+@@ -332,7 +332,7 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } |
+   try {
+     list = engramStoreEntries(path, content, Buffer.byteLength(content))
+   } catch {
+-    throw new SyncStoreUnreadableError(path)
++    return null // unparseable treated as absent
+   }
+   return { raw: yaml.load(content), list: list as EngramRecord[] }
+ }

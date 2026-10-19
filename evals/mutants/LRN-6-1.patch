@@ -1,0 +1,21 @@
+diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index 0d7f2901..c114e14c 100644
+--- a/packages/core/src/learn-async.ts
++++ b/packages/core/src/learn-async.ts
+@@ -237,7 +237,7 @@ async function executeDedupDecision(
+     case 'UPDATE': {
+       if (targetId) {
+         const existing = await deps.getById(targetId)
+-        if (existing && (existing as any).commitment !== 'locked') {
++        if (existing) {
+           const result = await withStoreLock(deps, async () => {
+             const engrams = await deps.store.load()
+             const idx = engrams.findIndex(e => e.id === targetId)
+@@ -246,7 +246,6 @@ async function executeDedupDecision(
+             // Re-check under the lock (formal-verification finding, persistence.md
+             // candidate 7): `existing` is a pre-lock snapshot, and an engram locked
+             // since then must not be rewritten — same outcome as locked-before: ADD.
+-            if ((engrams[idx] as any).commitment === 'locked') return null
+             const previousStatement = engrams[idx].statement
+             const updated = { ...engrams[idx] } as any
+             updated.statement = statement

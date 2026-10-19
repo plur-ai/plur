@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
+index ee45ea4a..73c51052 100644
+--- a/packages/core/src/inject.ts
++++ b/packages/core/src/inject.ts
+@@ -470,7 +470,7 @@ function isReplacedByDeliverable(
+   supersededBy: ReadonlyMap<string, readonly string[]>,
+ ): boolean {
+   return (engram.relations?.superseded_by ?? []).some(id =>
+-    deliverableIds.has(id) && !leadsBackTo(id, engram.id, supersededBy))
++    !leadsBackTo(id, engram.id, supersededBy)) // MUTANT: any replacement suppresses, deliverable or not
+ }
+ 
+ /** Does following superseded_by edges from `start` reach `target`? A self-edge reaches at once. */

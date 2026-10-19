@@ -8,3 +8,20 @@
 /scripts/release.sh    @plur9
 /scripts/check-workflow-pins.py       @plur9
 /scripts/test_check_workflow_pins.py  @plur9
+
+# Promise evals are the judge of the code (evals/README.md). Implementers never
+# edit them; a change needs the owner or the second eval approver (decision
+# 2026-10-14). Eval changes go in their own pull request
+# (scripts/check-eval-separation.py).
+/evals/                               @plur9 @crtahlin
+/.evals/                              @plur9 @crtahlin
+/scripts/check-eval-separation.py     @plur9 @crtahlin
+/scripts/test_check_eval_separation.py @plur9 @crtahlin
+/scripts/test_evals_harness.py        @plur9 @crtahlin
+/scripts/evals-local.sh               @plur9 @crtahlin
+/scripts/judge-intact.sh              @plur9 @crtahlin
+/spec/formal/                         @plur9 @crtahlin
+# Also judge files (second audit R-02): the root manifest's scripts run before the
+# gate, and evals import the shared test fixtures.
+/package.json                         @plur9 @crtahlin
+/packages/*/test/helpers/             @plur9 @crtahlin

@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..9006b234 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -4551,7 +4551,7 @@ export class Plur {
+       // on failure it stays in the outbox for retry at next session start
+       // or plur_sync.
+       const remoteDriver = this._resolveRemoteStoreForScope(scope)
+-      if (remoteDriver && context?.visibility === 'private') {
++      if (remoteDriver && context?.visibility === 'private' && false) {
+         // Private engrams stay local — sending to a shared remote contradicts
+         // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
+         logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)

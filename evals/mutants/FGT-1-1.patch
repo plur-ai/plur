@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..bf8d2dfe 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -9484,7 +9484,7 @@ export class Plur {
+       engram.write_count = newCount
+ 
+       if (newCount === 0) {
+-        engram.status = 'retired'
++        // MUTANT: status left active
+         engram.updated_at = new Date().toISOString()
+         if (reason && !engram.rationale) {
+           engram.rationale = `Retired: ${reason}`
