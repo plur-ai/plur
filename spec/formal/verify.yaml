@@ -37,6 +37,9 @@ models:
       - packages/core/src/outbox-order.ts
       - packages/core/src/learn-async.ts
       - packages/core/src/packs.ts
+      - packages/core/src/owner-only.ts
+      - packages/core/src/config-file.ts
+      - packages/core/src/store-duplicates.ts
   - model: PlurSpec/Adapters.lean
     covers:
       - packages/python/plur_ai/client.py
@@ -113,3 +116,38 @@ models:
   - model: PlurSpec/PacksV2.lean
     covers:
       - packages/core/src/packs.ts
+  - model: PlurSpec/StoreEntry.lean
+    covers:
+      - packages/core/src/store-expand.ts
+      - packages/core/src/sensitivity-writeback.ts
+      - packages/core/src/config.ts
+      - packages/core/src/index.ts
+  - model: PlurSpec/Installer.lean
+    covers:
+      - packages/cli/src/enterprise/cleanup.ts
+      - packages/core/src/owner-only.ts
+      - packages/cli/src/enterprise/hello.ts
+      - packages/cli/src/enterprise/mcp-stdio.ts
+      - packages/cli/src/enterprise/args.ts
+      - packages/cli/src/enterprise/summary.ts
+      - packages/cli/src/enterprise/key-file.ts
+  - model: PlurSpec/RoutingDiscovery.lean
+    covers:
+      - packages/core/src/store-resolver.ts
+      - packages/core/src/server-discovery.ts
+      - packages/core/src/index.ts
+  - model: PlurSpec/Trust.lean
+    covers:
+      - packages/cli/src/enterprise/ca.ts
+      - packages/cli/src/enterprise/launch-env.ts
+      - packages/cli/src/enterprise/exec.ts
+  - model: PlurSpec/GitScope.lean
+    covers:
+      - packages/core/src/git-origin.ts
+  - model: PlurSpec/Login.lean
+    covers:
+      - packages/cli/src/commands/login.ts
+      - packages/cli/src/enterprise/legacy-login.ts
+      - packages/cli/src/enterprise/device-name.ts
+      - packages/cli/src/enterprise/sign-in-shared.ts
+      - packages/cli/src/enterprise/server-store.ts

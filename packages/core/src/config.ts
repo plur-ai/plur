@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from 'fs'
 import yaml from 'js-yaml'
-import { PlurConfigSchema, StoreEntrySchema, type PlurConfig } from './schemas/config.js'
+import { PlurConfigSchema, StoreEntrySchema, ServerStoreEntrySchema, type PlurConfig } from './schemas/config.js'
 import { SENSITIVITY_CATEGORIES } from './schemas/scope-metadata.js'
 import { logger } from './logger.js'
+import { isServerStoreEntry, expandServerEntry, serverEntryIdentities, EXPANDED_FROM, safeOrigin } from './store-expand.js'
 
 /**
  * Load config with per-entry tolerance for the `stores` array.
@@ -32,19 +33,37 @@ export function loadConfig(configPath: string): PlurConfig {
   }
   // Validate each store entry independently before the top-level parse so
   // a single bad entry can't take the whole file down.
+  // Server entries (url + scopes) are expanded into one in-memory entry per
+  // scope before the per-entry StoreEntrySchema check (#1631).
   if (Array.isArray(raw.stores)) {
     const validStores: unknown[] = []
+    // Computed on the raw entries, exactly as persistStores does under the lock.
+    const identities = serverEntryIdentities(raw.stores)
     for (let i = 0; i < raw.stores.length; i++) {
       const entry = raw.stores[i]
-      const parsed = StoreEntrySchema.safeParse(entry)
-      if (parsed.success) {
-        validStores.push(entry)
+      if (isServerStoreEntry(entry)) {
+        const serverParsed = ServerStoreEntrySchema.safeParse(entry)
+        if (!serverParsed.success) {
+          // Paths and codes only: a Zod message can embed the received value (#408).
+          const url = (entry as { url?: unknown })?.url
+          const label = typeof url === 'string' ? safeOrigin(url) : `index ${i}`
+          logger.warning(`[plur:config] dropping invalid server entry stores[${i}] (${label}) from ${configPath}: ${serverParsed.error.issues.map(it => `${it.path.join('.') || '(root)'}: ${it.code}`).join('; ')}`)
+          continue
+        }
+        for (const expanded of expandServerEntry(serverParsed.data, identities[i]!)) {
+          validStores.push(expanded)
+        }
       } else {
-        const label = (entry as { url?: string; path?: string; scope?: string })?.scope
-          ?? (entry as { url?: string; path?: string })?.url
-          ?? (entry as { path?: string })?.path
-          ?? `index ${i}`
-        logger.warning(`[plur:config] dropping invalid stores[${i}] (${label}) from ${configPath}: ${parsed.error.issues.map(it => it.message).join('; ')}`)
+        const parsed = StoreEntrySchema.safeParse(entry)
+        if (parsed.success) {
+          validStores.push(entry)
+        } else {
+          const label = (entry as { url?: string; path?: string; scope?: string })?.scope
+            ?? (typeof (entry as { url?: unknown })?.url === 'string' ? safeOrigin((entry as { url: string }).url) : undefined)
+            ?? (entry as { path?: string })?.path
+            ?? `index ${i}`
+          logger.warning(`[plur:config] dropping invalid stores[${i}] (${label}) from ${configPath}: ${parsed.error.issues.map(it => it.message).join('; ')}`)
+        }
       }
     }
     raw.stores = validStores
@@ -103,7 +122,7 @@ function resolveStoreTokens(config: PlurConfig): PlurConfig {
         const once = `${s.scope}\0${s.token_env}`
         if (warnedUnsetTokenEnv.has(once)) return s
         warnedUnsetTokenEnv.add(once)
-        logger.warning(`[plur:config] store "${s.scope}" (${s.url ?? s.path}): token_env ${s.token_env} is unset or empty — the store has no token`)
+        logger.warning(`[plur:config] store "${s.scope}" (${s.url ? safeOrigin(s.url) : s.path}): token_env ${s.token_env} is unset or empty — the store has no token`)
         return s
       }
       return { ...s, token }
@@ -122,6 +141,8 @@ function resolveStoreTokens(config: PlurConfig): PlurConfig {
 export function storeEntryForDisk<T extends Record<string, unknown>>(entry: T): T {
   const out: Record<string, unknown> = { ...entry }
   for (const k of ['token', 'token_env']) if (out[k] === undefined) delete out[k]
+  // Remove the in-memory expansion marker so it never reaches disk.
+  delete out[EXPANDED_FROM]
   const name = typeof out.token_env === 'string' ? out.token_env : undefined
   if (name && typeof out.token === 'string' && out.token === tokenFromEnv(name)) delete out.token
   return out as T

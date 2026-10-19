@@ -1,13 +1,27 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { join } from 'path'
-import { homedir } from 'os'
-import { doctorRemoteRemediation, normalizeEndpointUrl, type RemoteHealth } from '@plur-ai/core'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { join, dirname } from 'path'
+import { homedir, hostname, release } from 'os'
+import {
+  doctorRemoteRemediation, normalizeEndpointUrl, redactToken, detectPlurStorage, PersonalScopeTakenError,
+  resolveScopeTarget, loadConfig,
+  type RemoteHealth,
+} from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { outputText, outputInfo, outputError, outputJson, shouldOutputJson, isQuiet } from '../output.js'
+import { outputText, outputInfo, outputError, outputJson, shouldOutputJson } from '../output.js'
 import { urlOpener } from '../lib/open-url.js'
+import { deviceName, isHeadless, isWslRelease } from '../enterprise/device-name.js'
+import { migrateLegacyLogin } from '../enterprise/legacy-login.js'
+import {
+  normaliseHost, readJson, fetchMe, personalScopeOf, holderLine, takeoverMessage, backupSecretFile, redactConsoleWith,
+  type FetchFn, type MeAnswer,
+} from '../enterprise/sign-in-shared.js'
+
+// Shared with enterprise/legacy-login.ts through sign-in-shared.ts (no import
+// cycle); re-exported here, where callers and tests have always found them.
+export { normaliseHost, fetchMe, personalScopeOf, takeoverMessage, type MeAnswer }
 
 /**
- * plur login — enterprise token status (#587) and the (gated) OAuth device flow.
+ * plur login — enterprise token status (#587) and device sign-in (#1638).
  *
  * `plur login --status` reports each configured enterprise credential's
  * validity instead of dumping raw config: one row per DISTINCT (url, token)
@@ -18,42 +32,48 @@ import { urlOpener } from '../lib/open-url.js'
  * printed. Exit 0 when every credential is valid; 1 when any is EXPIRED or
  * INVALID (script-friendly).
  *
- * The device flow below is GATED (see #300/#532): enterprise servers do not
- * expose the device-flow endpoints yet, and the token it writes has no
- * consumers on the recall path — so attempting `plur login <host>` prints the
- * supported path (sign in at <host>/auth, add the store via plur_stores_add)
- * and exits 1. The implementation is kept for when B-T9 lands server-side.
- *
- * OAuth device flow:
- *   1. POST /api/v1/auth/device — request a device code
- *   2. Display the user_code + verification_url to the user
- *   3. Open verification_url in the default browser
- *   4. Poll /api/v1/auth/token every `interval` seconds until granted or expired
- *   5. Write the received token to ~/.plur/config.json
- *   6. Signal the running MCP server via SIGUSR1 (or write a reload-marker
- *      file on platforms that don't support POSIX signals)
+ * `plur login <host>` signs this device in with the OAuth device flow
+ * (RFC 8628, contract C3), shared with `plur-enterprise init`:
+ *   1. POST /api/v1/auth/device { client_id: 'plur-cli', device_name }
+ *   2. Print the sign-in page and the code; open the page in a browser unless
+ *      this is a headless session (SSH, no display) or --no-open
+ *   3. Poll POST /api/v1/auth/token at the server's interval (slow_down adds
+ *      5 s for the rest of the run; a 429 waits Retry-After) until the key, a
+ *      refusal, or the code's expiry
+ *   4. GET /api/v1/me with the key: the personal scope user:<org>:<username>
+ *   5. Write the one server entry to ~/.plur/config.yaml through core's
+ *      registration (`Plur.registerEnterpriseServer`, the config write path),
+ *      then fetch its scopes (`Plur.refreshServerScopes`)
+ * The key is never printed or logged and is written only in step 5, only
+ * after an `ok` token answer. Nothing is written before then, so ctrl-C
+ * leaves config.yaml as it was. `~/.plur/config.json` is no longer written;
+ * a remaining one is moved into config.yaml once (enterprise/legacy-login.ts).
  *
  * Usage:
- *   plur login https://plur.datafund.io
- *   plur login https://plur.datafund.io --no-open   # skip browser open
- *   plur login https://plur.datafund.io --timeout 300  # 5-min poll window
- *
- * Config written:
- *   ~/.plur/config.json  — { "enterprise": { "url": "…", "token": "…" } }
- *
- * Hot-reload signal:
- *   Reads ~/.plur/server.pid and sends SIGUSR1. The MCP server listens for
- *   SIGUSR1 and reloads its remote configuration without dropping stdio.
- *   On Windows (no SIGUSR1), writes ~/.plur/.reload to trigger a file-watch
- *   reload instead. If no running server is detected the token is still
- *   written — the server picks it up on next start.
+ *   plur login https://plur.example.com
+ *   plur login https://plur.example.com --no-open        # do not open a browser
+ *   plur login https://plur.example.com --timeout 300    # stop waiting after 5 min
+ *   plur login https://plur.example.com --remove-stale   # remove an entry holding your personal scope
  */
 
-const HELP = `plur login — enterprise token status (device-flow sign-in not yet available)
+const HELP = `plur login — sign this device in to a PLUR server, or check the tokens you have
 
 USAGE
+  plur login <host>              Sign in with the device flow and save the server
+  plur login <host> --no-open    Print the sign-in page and code; do not open a browser
+  plur login <host> --timeout N  Stop waiting for approval after N seconds
+  plur login <host> --remove-stale
+                                 Also remove an entry in config.yaml that holds your
+                                 personal scope (config.yaml is backed up first)
   plur login --status            Show enterprise token validity per host
   plur login --status --json     Machine-readable status report
+
+SIGNING IN
+  Prints a sign-in page on <host> and a code. Open the page (on any device),
+  sign in, and enter the code. The device key the server sends is saved as the
+  server's entry in ~/.plur/config.yaml (never printed), with your personal
+  scope from the server's /me answer. Nothing is written until the key
+  arrives, so ctrl-C changes nothing.
 
 WHAT --status DOES
   For every distinct (url, token) credential in ~/.plur/config.yaml stores:
@@ -64,17 +84,15 @@ WHAT --status DOES
   Token values are never printed. Exit code: 0 when all credentials are
   valid, 1 when any is EXPIRED or INVALID (or none are configured).
 
-SIGNING IN
-  \`plur login <host>\` (OAuth device flow) is not available yet — enterprise
-  servers do not expose the device-flow endpoints. To connect:
-    1. Sign in at <host>/auth in your browser
-    2. Add the store: \`plur stores add --url <host> --token-env <VAR> --scope <scope>\`
-       (or plur_stores_add over MCP). The token is checked before it is saved.
+~/.plur/config.json
+  Older versions of \`plur login\` wrote ~/.plur/config.json. It is no longer
+  written. A remaining one is moved into config.yaml once (when the server
+  still accepts it), with a notice, and set aside under ~/.plur/backups/.
 `
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-interface DeviceCodeResponse {
+export interface DeviceCodeResponse {
   device_code: string
   user_code: string
   verification_uri: string
@@ -82,10 +100,13 @@ interface DeviceCodeResponse {
   interval: number
 }
 
-interface TokenResponse {
+/** The C3 `200` answer of `/api/v1/auth/token`, delivered once. */
+export interface TokenResponse {
   access_token: string
   token_type: string
-  scope?: string
+  username: string
+  key_id: string
+  key_name: string
 }
 
 interface TokenErrorResponse {
@@ -104,8 +125,9 @@ interface PlurConfig {
   [key: string]: unknown
 }
 
-// ── Config helpers ────────────────────────────────────────────────────────────
+// ── Legacy config.json (read only) ───────────────────────────────────────────
 
+/** `~/.plur/config.json`, written by `plur login` before #1638; read only now. */
 export function plurConfigPath(baseDir?: string): string {
   return join(baseDir ?? homedir(), '.plur', 'config.json')
 }
@@ -118,12 +140,6 @@ export function readPlurConfig(baseDir?: string): PlurConfig {
   } catch {
     return {}
   }
-}
-
-export function writePlurConfig(config: PlurConfig, baseDir?: string): void {
-  const path = plurConfigPath(baseDir)
-  mkdirSync(join(path, '..'), { recursive: true })
-  writeFileSync(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
 }
 
 // ── Reload signal ─────────────────────────────────────────────────────────────
@@ -174,64 +190,111 @@ export function signalReload(baseDir?: string): string {
   }
 }
 
-// ── OAuth device flow helpers ─────────────────────────────────────────────────
+// ── OAuth device flow (RFC 8628, contract C3) ────────────────────────────────
 
-/**
- * Normalise the host to an origin URL (strips trailing slashes and paths).
- * Rejects http:// for non-localhost hosts — enterprise tokens must not travel over plaintext.
- */
-function normaliseHost(host: string): string {
-  let origin: string
-  try {
-    origin = new URL(host).origin
-  } catch {
-    // If missing scheme, try prepending https://
-    try {
-      origin = new URL(`https://${host}`).origin
-    } catch {
-      throw new Error(`Invalid host: ${host}. Provide a full URL, e.g. https://plur.datafund.io`)
-    }
-  }
-  const parsed = new URL(origin)
-  const isLocal = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]'
-  if (parsed.protocol !== 'https:' && !isLocal) {
-    throw new Error(`Insecure host: ${host}. Use https:// (http:// is only permitted for localhost).`)
-  }
-  return origin
+/** The client id the server knows this CLI by (C3). */
+export const DEVICE_CLIENT_ID = 'plur-cli'
+const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
+/** C3 user codes: two groups of four consonants (no vowels, no digits). */
+const USER_CODE_RE = /^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/
+/** A PLUR device key: `plur_sk_` and at least 16 base64url characters. */
+const KEY_RE = /^plur_sk_[A-Za-z0-9_-]{16,}$/
+const UNEXPECTED = 'unexpected answer from the server'
+/** RFC 8628 §3.5: each slow_down (and a 429 without Retry-After) adds 5 s. */
+const SLOW_DOWN_MS = 5_000
+/** Longest Retry-After honoured; a longer one is capped so a run cannot hang. */
+const RETRY_AFTER_MAX_S = 120
+/** Network errors and 5xx answers in a row before the poll gives up. */
+const TRANSIENT_MAX = 3
+const REQUEST_TIMEOUT_MS = 10_000
+const DEFAULT_RERUN_HINT = 'Run `plur login` again.'
+
+type SleepFn = (ms: number) => Promise<void>
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function lcFirst(s: string): string {
+  return s ? s[0].toLowerCase() + s.slice(1) : s
+}
+
+/** Retry-After in whole seconds (the form the server sends), capped; else undefined. */
+function retryAfterSeconds(r: Response): number | undefined {
+  const v = r.headers.get('retry-after')
+  if (!v || !/^\d{1,6}$/.test(v.trim())) return undefined
+  return Math.min(Number(v.trim()), RETRY_AFTER_MAX_S)
 }
 
 /**
- * POST /api/v1/auth/device — request device & user codes.
+ * POST a JSON body and read the JSON answer, both under one timeout: the
+ * abort stays armed until the body is read, so a server that sends headers
+ * and then trickles the body cannot hold the run (a body cut off by the
+ * timeout reads as no JSON).
  */
-export async function requestDeviceCode(origin: string): Promise<DeviceCodeResponse> {
-  const url = `${origin}/api/v1/auth/device`
+async function postJson(f: FetchFn, url: string, body: unknown, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<{ r: Response; data: Record<string, unknown> | undefined }> {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 10_000)
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const r = await fetch(url, {
+    const r = await f(url, {
       method: 'POST',
       signal: ctrl.signal,
       headers: { 'content-type': 'application/json', 'accept': 'application/json' },
-      body: JSON.stringify({ client_id: 'plur-cli' }),
+      body: JSON.stringify(body),
     })
-    if (!r.ok) {
-      const body = await r.text()
-      throw new Error(`Device code request failed (HTTP ${r.status}): ${body}`)
-    }
-    const data = await r.json() as DeviceCodeResponse
-    if (!data.device_code || !data.user_code || !data.verification_uri) {
-      throw new Error('Unexpected response from device code endpoint')
-    }
-    return data
+    return { r, data: await readJson(r) }
   } finally {
     clearTimeout(timer)
   }
 }
 
 /**
- * Poll /api/v1/auth/token until granted, expired, or timed out.
- * Returns the access token string on success.
- * Throws with a descriptive message on all failure paths.
+ * POST /api/v1/auth/device — request device & user codes (C3). A `429` is
+ * retried once, after Retry-After (else 5 s); a second one is refused with a
+ * plain message.
+ */
+export async function requestDeviceCode(
+  origin: string,
+  opts: { deviceName?: string; fetch?: FetchFn; sleep?: SleepFn; rerunHint?: string; requestTimeoutMs?: number } = {},
+): Promise<DeviceCodeResponse> {
+  const f = opts.fetch ?? fetch
+  const pause = opts.sleep ?? sleep
+  const url = `${origin}/api/v1/auth/device`
+  const body = { client_id: DEVICE_CLIENT_ID, ...(opts.deviceName ? { device_name: opts.deviceName } : {}) }
+  for (let attempt = 0; ; attempt++) {
+    let r: Response
+    let data: Record<string, unknown> | undefined
+    try {
+      ({ r, data } = await postJson(f, url, body, opts.requestTimeoutMs))
+    } catch (err) {
+      throw new Error(`Could not reach ${origin} (${(err as Error)?.name === 'AbortError' ? 'timed out' : 'network error'}).`)
+    }
+    if (r.status === 429) {
+      if (attempt === 0) {
+        await pause((retryAfterSeconds(r) ?? 5) * 1000)
+        continue
+      }
+      throw new Error(`The PLUR server is busy with sign-ins from your network. Wait a minute, then ${lcFirst(opts.rerunHint ?? DEFAULT_RERUN_HINT)}`)
+    }
+    if (!r.ok) {
+      throw new Error(`Device code request failed (HTTP ${r.status}).`)
+    }
+    if (!data || typeof data.device_code !== 'string' || !data.device_code ||
+      typeof data.user_code !== 'string' || typeof data.verification_uri !== 'string') {
+      throw new Error('Unexpected response from the device code endpoint.')
+    }
+    return data as unknown as DeviceCodeResponse
+  }
+}
+
+/**
+ * Poll /api/v1/auth/token until the key arrives, the server refuses, or
+ * `timeoutSecs` pass (callers pass the code's `expires_in`). Waits `interval`
+ * before each poll; `slow_down` adds 5 s for the rest of the run, a `429`
+ * waits its Retry-After once (else counts as slow_down), and up to three
+ * network errors or 5xx answers in a row are waited out. Returns the `200`
+ * answer as sent; {@link deviceSignIn} checks it. No error message carries
+ * the key or a server-supplied text.
  */
 export async function pollForToken(
   origin: string,
@@ -239,86 +302,140 @@ export async function pollForToken(
   intervalSecs: number,
   timeoutSecs: number,
   onPoll?: () => void,
+  opts: { fetch?: FetchFn; sleep?: SleepFn; rerunHint?: string } = {},
 ): Promise<TokenResponse> {
+  const f = opts.fetch ?? fetch
+  const pause = opts.sleep ?? sleep
+  const rerun = opts.rerunHint ?? DEFAULT_RERUN_HINT
   const url = `${origin}/api/v1/auth/token`
-  const deadline = Date.now() + timeoutSecs * 1_000
-  let pollMs = Math.max(intervalSecs, 1) * 1_000
+  const limitMs = Math.max(0, timeoutSecs) * 1000
+  const started = Date.now()
+  let waited = 0
+  let intervalMs = (Number.isFinite(intervalSecs) && intervalSecs >= 1 ? intervalSecs : 1) * 1000
+  let nextWaitMs: number | undefined
+  let transient = 0
 
-  while (Date.now() < deadline) {
-    await sleep(pollMs)
+  const expired = (): Error => new Error(`Sign-in timed out: the code expired before it was entered. ${rerun}`)
+  // Time used: the waits (as asked of `sleep`), or the wall clock if that is
+  // more. One deadline: no wait and no request runs past it (a request's
+  // timeout is the time left), and no answer that arrives after it counts.
+  const remaining = (): number => limitMs - Math.max(Date.now() - started, waited)
+  const late = (sent: number): boolean => remaining() <= 0 || waited + (Date.now() - sent) >= limitMs
+  for (;;) {
+    if (remaining() <= 0) throw expired()
+    const ms = Math.min(nextWaitMs ?? intervalMs, remaining())
+    nextWaitMs = undefined
+    await pause(ms)
+    waited += ms
+    if (remaining() <= 0) throw expired()
     onPoll?.()
 
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 10_000)
-    let data: TokenResponse | TokenErrorResponse
+    let r: Response
+    let data: Record<string, unknown> | undefined
+    const sent = Date.now()
     try {
-      const r = await fetch(url, {
-        method: 'POST',
-        signal: ctrl.signal,
-        headers: { 'content-type': 'application/json', 'accept': 'application/json' },
-        body: JSON.stringify({
-          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-          device_code: deviceCode,
-          client_id: 'plur-cli',
-        }),
-      })
-      data = await r.json() as TokenResponse | TokenErrorResponse
-    } finally {
-      clearTimeout(timer)
-    }
-
-    if ('access_token' in data && data.access_token) {
-      return data as TokenResponse
-    }
-
-    const err = (data as TokenErrorResponse).error
-    if (err === 'authorization_pending') {
+      ({ r, data } = await postJson(f, url, { grant_type: DEVICE_GRANT, device_code: deviceCode, client_id: DEVICE_CLIENT_ID },
+        Math.max(1, Math.min(REQUEST_TIMEOUT_MS, remaining()))))
+    } catch {
+      if (late(sent)) throw expired()
+      if (++transient > TRANSIENT_MAX) throw new Error(`Could not reach ${origin} while waiting for the sign-in. ${rerun}`)
       continue
     }
-    if (err === 'slow_down') {
-      // RFC 8628 §3.5 — increase interval by 5s on slow_down
-      pollMs += 5_000
+    if (late(sent)) throw expired()
+    if (r.status === 429) {
+      // Never sooner than the interval: a Retry-After of 0 must not turn the
+      // poll into a tight loop against the server.
+      const ra = retryAfterSeconds(r)
+      if (ra !== undefined) nextWaitMs = Math.max(ra * 1000, intervalMs)
+      else intervalMs += SLOW_DOWN_MS
       continue
     }
-    if (err === 'expired_token') {
-      throw new Error('Device code expired. Run `plur login` again to get a new code.')
+    if (r.status >= 500) {
+      if (++transient > TRANSIENT_MAX) throw new Error(`The server could not complete the sign-in (HTTP ${r.status}). ${rerun}`)
+      continue
     }
-    if (err === 'access_denied') {
-      throw new Error('Access denied. You declined the authorisation request.')
+    transient = 0
+    if (r.ok && data && typeof data.access_token === 'string' && data.access_token) {
+      return data as unknown as TokenResponse
     }
-    throw new Error(`Token polling failed: ${err ?? JSON.stringify(data)}`)
+    const err = (data as TokenErrorResponse | undefined)?.error
+    if (err === 'authorization_pending') continue
+    if (err === 'slow_down') { intervalMs += SLOW_DOWN_MS; continue }
+    if (err === 'access_denied') throw new Error('Sign-in was cancelled in the browser. Nothing was changed.')
+    if (err === 'expired_token') throw new Error(`The code expired before it was entered. ${rerun}`)
+    if (err === 'invalid_grant') throw new Error(`The server no longer knows this sign-in request (already used or unknown). ${rerun}`)
+    // Only a code this client knows is named; any other text is the server's
+    // and could carry anything, a key included.
+    const known = ['invalid_request', 'invalid_client', 'unsupported_grant_type', 'unauthorized_client', 'server_error']
+    const named = typeof err === 'string' && known.includes(err) ? `: ${err}` : ''
+    throw new Error(`Sign-in failed, ${UNEXPECTED}${named} (HTTP ${r.status}). ${rerun}`)
   }
-
-  throw new Error('Login timed out waiting for authorisation. Run `plur login` again.')
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+export interface DeviceSignInOptions {
+  /** The server's origin (see {@link normaliseHost}). */
+  server: string
+  deviceName: string
+  fetch: FetchFn
+  sleep: SleepFn
+  print: (line: string) => void
+  openBrowser: (url: string) => Promise<boolean>
+  headless: boolean
+  rerunHint: string
+  /** Stop waiting after this many seconds, if sooner than the code's expiry. */
+  timeoutSecs?: number
+}
+
+export interface DeviceSignInResult {
+  key: string
+  keyId: string
+  keyName: string
+  username: string
 }
 
 /**
- * Attempt to fetch the authenticated user's profile after minting the token,
- * so we can display a "logged in as <username>" message and store it.
+ * The device sign-in, shared by `plur login <host>` and `plur-enterprise
+ * init`: request a code, print the page and code (a page off the server's own
+ * origin, or a code outside the C3 alphabet, is refused before anything is
+ * printed), open the page unless headless, poll for the key, and check the
+ * `200` answer (token_type Bearer, a PLUR device key, the C3 fields). Writes
+ * nothing; the key is returned, never printed.
  */
-async function fetchMe(origin: string, token: string): Promise<{ username: string; scopes: string[] }> {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 5_000)
-  try {
-    const r = await fetch(`${origin}/api/v1/me`, {
-      signal: ctrl.signal,
-      headers: { 'authorization': `Bearer ${token}`, 'accept': 'application/json' },
-    })
-    if (!r.ok) return { username: '(unknown)', scopes: [] }
-    const data = await r.json() as { username?: string; scopes?: string[] }
-    return {
-      username: data.username ?? '(unknown)',
-      scopes: Array.isArray(data.scopes) ? data.scopes : [],
-    }
-  } catch {
-    return { username: '(unknown)', scopes: [] }
-  } finally {
-    clearTimeout(timer)
+export async function deviceSignIn(opts: DeviceSignInOptions): Promise<DeviceSignInResult> {
+  const origin = normaliseHost(opts.server)
+  const dev = await requestDeviceCode(origin, { deviceName: opts.deviceName, fetch: opts.fetch, sleep: opts.sleep, rerunHint: opts.rerunHint })
+  // The code's lifetime runs from here, the browser wait included (whole
+  // seconds: the lifetime is given in seconds).
+  const issued = Date.now()
+
+  if (!USER_CODE_RE.test(dev.user_code)) throw new Error(UNEXPECTED)
+  let page: URL
+  try { page = new URL(dev.verification_uri) } catch { throw new Error(UNEXPECTED) }
+  if (page.origin !== origin || page.username || page.password) {
+    throw new Error(`${UNEXPECTED}: the sign-in page is not on ${origin}`)
   }
+  const expiresIn = Number.isFinite(dev.expires_in) && dev.expires_in > 0 ? dev.expires_in : 600
+  const interval = Number.isFinite(dev.interval) && dev.interval > 0 ? dev.interval : 5
+  const timeout = opts.timeoutSecs !== undefined ? Math.min(opts.timeoutSecs, expiresIn) : expiresIn
+
+  opts.print(`Go to  ${page.href}  and enter the code  ${dev.user_code}`)
+  if (!opts.headless) {
+    const opened = await opts.openBrowser(page.href).catch(() => false)
+    if (opened) opts.print('A browser window was opened. If it did not open, use the page above.')
+  }
+  opts.print('Waiting for you to approve the sign-in…')
+
+  const tok = await pollForToken(origin, dev.device_code, interval, timeout - Math.floor((Date.now() - issued) / 1000), undefined,
+    { fetch: opts.fetch, sleep: opts.sleep, rerunHint: opts.rerunHint })
+
+  // These are printed (the user name and key name): no control characters,
+  // so a server answer cannot drive the terminal.
+  const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 256 && !/\p{Cc}/u.test(v)
+  if (typeof tok.token_type !== 'string' || tok.token_type.toLowerCase() !== 'bearer' ||
+    !KEY_RE.test(tok.access_token) || !str(tok.username) || !str(tok.key_id) || !str(tok.key_name)) {
+    throw new Error(UNEXPECTED)
+  }
+  return { key: tok.access_token, keyId: tok.key_id, keyName: tok.key_name, username: tok.username }
 }
 
 /**
@@ -520,7 +637,8 @@ export function formatStatusLines(report: LoginStatusReport): string[] {
 
 /** `plur login --status` — build, print, and exit (0 all valid / 1 otherwise). */
 async function runStatus(flags: GlobalFlags): Promise<never> {
-  const plur = createPlur(flags)
+  // A status readout writes nothing: no project-store discovery (#1665 gate).
+  const plur = createPlur(flags, { autoDiscover: false })
   let health: RemoteHealth[] = []
   try {
     health = await plur.checkRemoteHealth({ timeoutMs: STATUS_PROBE_TIMEOUT_MS })
@@ -557,6 +675,7 @@ interface ParsedArgs {
   noOpen?: boolean
   timeoutSecs?: number
   status?: boolean
+  removeStale?: boolean
   help?: boolean
   error?: string
 }
@@ -568,6 +687,7 @@ function parseArgs(args: string[]): ParsedArgs {
     if (a === '--help' || a === '-h') { out.help = true; continue }
     if (a === '--no-open')            { out.noOpen = true; continue }
     if (a === '--status')             { out.status = true; continue }
+    if (a === '--remove-stale')       { out.removeStale = true; continue }
     if (a === '--timeout') {
       const next = args[i + 1]
       if (!next || next.startsWith('--')) {
@@ -591,6 +711,124 @@ function parseArgs(args: string[]): ParsedArgs {
   return out
 }
 
+// ── Sign-in: write the server entry ──────────────────────────────────────────
+
+async function runSignIn(origin: string, parsed: ParsedArgs, flags: GlobalFlags): Promise<never> {
+  // Nothing is written until the key has arrived, been checked and its /me
+  // answered; registration is then one locked, atomic write. A ctrl-C before
+  // it leaves config.yaml as it was; after it, the entry is complete.
+  let saved = false
+  process.once('SIGINT', () => {
+    outputError(saved
+      ? `\nCancelled. ${origin} was already saved to config.yaml.`
+      : '\nSign-in cancelled. Nothing was changed.')
+    process.exit(130)
+  })
+
+  const rerunHint = 'Run `plur login` again.'
+  let signedIn: DeviceSignInResult
+  try {
+    signedIn = await deviceSignIn({
+      server: origin,
+      deviceName: deviceName(hostname(), process.platform, isWslRelease(release(), process.env)),
+      fetch,
+      sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+      print: outputText,
+      openBrowser,
+      headless: parsed.noOpen === true || isHeadless(process.env, process.platform),
+      rerunHint,
+      timeoutSecs: parsed.timeoutSecs,
+    })
+  } catch (err) {
+    outputError(`Error: ${(err as Error).message}`)
+    process.exit(1)
+  }
+  const key = signedIn.key
+  // Core logs some server text itself (during registration and the scope
+  // refresh); the key is redacted from every line this process prints.
+  redactConsoleWith(key)
+  const fail = (lines: string[]): never => {
+    for (const l of lines) outputError(redactToken(l, key))
+    process.exit(1)
+  }
+
+  const me = await fetchMe(origin, key)
+  if (me.status !== 'ok') {
+    fail([
+      `Signed in as ${signedIn.username}, but ${origin}/api/v1/me ${me.status === 'rejected' ? `refused the new key (HTTP ${me.httpStatus})` : `did not answer (${me.reason})`},`,
+      'so your personal scope is not known. Nothing was changed, and the key from this sign-in was not saved.',
+      rerunHint,
+    ])
+  }
+  const personalScope = personalScopeOf(me as Extract<MeAnswer, { status: 'ok' }>)
+
+  const root = flags.path || process.env.PLUR_PATH || undefined
+  const configPath = detectPlurStorage(root).config
+  const plur = createPlur(flags, { autoDiscover: false })
+  // Every line from here on is redacted with the key: the server's user
+  // name, key name, scopes and errors are its own text and could repeat it.
+  const say = (line: string): void => outputText(redactToken(line, key))
+  let backup: string | undefined
+  let result: Awaited<ReturnType<typeof plur.registerEnterpriseServer>>
+  try {
+    // The backup is taken under registration's config lock, from the file it
+    // is about to rewrite, and only when stale entries are removed; a backup
+    // that cannot be made owner-only refuses the whole write.
+    result = await plur.registerEnterpriseServer(origin, {
+      token: key, personalScope, removeStale: parsed.removeStale === true,
+      beforeRemove: p => { backup = backupSecretFile(dirname(p), p) },
+    })
+    saved = true
+  } catch (err) {
+    if (err instanceof PersonalScopeTakenError) fail(takeoverMessage(err, origin, configPath))
+    fail([
+      `Signed in, but ${origin} could not be saved: ${(err as Error).message}`,
+      'The key from this sign-in was not saved.',
+    ])
+  }
+
+  say(`Signed in to ${origin} as ${signedIn.username}. Saved as the server's entry in ${configPath} (key "${signedIn.keyName}").`)
+  if (result!.removed.length) {
+    say(`Removed ${result!.removed.length === 1 ? 'the entry' : 'the entries'} that held ${personalScope}:`)
+    for (const h of result!.removed) say(holderLine(h))
+    if (backup) say(`The previous config.yaml was saved to ${backup}`)
+  }
+  // Registration refuses only a takeover. An entry that keeps serving the
+  // personal scope ahead of the new one (an older entry for this server with
+  // another key, say) still gets the personal writes: say so, and exit 1.
+  let elsewhere: string | undefined
+  try {
+    const t = resolveScopeTarget(personalScope, loadConfig(configPath).stores ?? [])
+    if (t.kind === 'remote' && !(typeof t.entry.url === 'string' && normalizeEndpointUrl(t.entry.url) === normalizeEndpointUrl(origin) && t.entry.token === key)) {
+      let where = 'a server'
+      try { if (typeof t.entry.url === 'string') where = new URL(t.entry.url).origin } catch { /* unnamed */ }
+      elsewhere = `another entry for ${where}${t.entry.token !== key ? ' with another key' : ''}`
+    } else if (t.kind === 'local') {
+      elsewhere = 'a local store (a path entry)'
+    } else if (t.kind === 'conflict') {
+      elsewhere = `no server: ${t.servers.length} servers claim it, so personal writes are refused`
+    }
+  } catch { /* the route could not be read; the entry is saved */ }
+  if (elsewhere) {
+    for (const l of [
+      `Your personal scope ${personalScope} is still served by ${elsewhere} in ${configPath},`,
+      `so your personal writes do not use this sign-in. Remove that entry (or its ${personalScope} scope) from ${configPath}.`,
+    ]) outputError(redactToken(l, key))
+  }
+  let discovery: Awaited<ReturnType<typeof plur.refreshServerScopes>> = []
+  try { discovery = await plur.refreshServerScopes({ url: origin }) } catch { /* reported below */ }
+  const d = discovery[0]
+  if (d?.status === 'ok' || d?.status === 'degraded') {
+    say(`Scopes: ${d.scopes.length ? d.scopes.join(', ') : '(none yet)'}`)
+  } else if (d?.status === 'not_synced') {
+    say('Your account is not in the server\'s graph yet; its scopes will be fetched at a later session start.')
+  } else {
+    say(`Scopes could not be fetched now${d?.error ? ` (${d.error})` : ''}; they are fetched at the next session start.`)
+  }
+  outputInfo(redactToken(`Server: ${signalReload()}`, key), flags)
+  process.exit(elsewhere ? 1 : 0)
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
@@ -605,6 +843,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputText(HELP)
     return
   }
+
+  // O15: a remaining ~/.plur/config.json is moved into config.yaml once.
+  await migrateLegacyLogin({ home: homedir(), plur: () => createPlur(flags, { autoDiscover: false }), print: outputError })
 
   // --status: token validity per configured (url, token) credential (#587)
   if (parsed.status) {
@@ -624,108 +865,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     process.exit(1)
   }
 
-  // Device-flow gate (#300/#532): enterprise servers do not expose the
-  // device-flow endpoints yet, and the token this flow writes has no consumers
-  // on the recall path — attempting it would only produce a confusing HTTP 404.
-  // Point at the supported path instead. The flow below stays implemented
-  // (and unit-tested) for when server-side support (B-T9) lands; flip this
-  // constant to re-enable it.
-  const DEVICE_FLOW_AVAILABLE = false as boolean
-  if (!DEVICE_FLOW_AVAILABLE) {
-    // Error-class output (#784 policy): the command cannot do what was asked
-    // and exits 1, so the explanation + next steps go to stderr, unsuppressed.
-    outputError('plur login (OAuth device flow) is not available yet — enterprise servers')
-    outputError('do not expose the device-flow endpoints.')
-    outputError('')
-    outputError(`To connect to ${origin}:`)
-    outputError(`  1. Sign in at ${origin}/auth in your browser`)
-    outputError(`  2. Add the store: plur stores add --url ${origin} --token-env <VAR> --scope <scope>`)
-    outputError('     (or plur_stores_add over MCP). The token is checked before it is saved.')
-    outputError('')
-    outputError('Check existing tokens with: plur login --status')
-    process.exit(1)
-  }
-
-  const timeoutSecs = parsed.timeoutSecs ?? 300
-
-  outputInfo(`Authenticating with ${origin}...`, flags)
-
-  // Step 1: request device code
-  let deviceResp: DeviceCodeResponse
-  try {
-    deviceResp = await requestDeviceCode(origin)
-  } catch (err) {
-    outputError(`Error: ${(err as Error).message}`)
-    process.exit(1)
-  }
-
-  // Step 2: present code + URL to user
-  outputInfo('', flags)
-  outputText(`Your one-time code:  ${deviceResp.user_code}`)
-  outputText(`Visit:               ${deviceResp.verification_uri}`)
-  outputInfo('', flags)
-
-  if (parsed.noOpen) {
-    outputText('Open the URL above in your browser, enter the code, and approve the request.')
-  } else {
-    const opened = await openBrowser(deviceResp.verification_uri)
-    if (opened) {
-      outputText('Opening browser... (if it does not open, visit the URL above manually)')
-    } else {
-      outputText('Could not open browser. Visit the URL above manually.')
-    }
-  }
-  outputInfo('', flags)
-  outputInfo(`Waiting for approval (timeout: ${timeoutSecs}s)...`, flags)
-
-  // Step 3: poll for token
-  let tokenResp: TokenResponse
-  let dots = 0
-  try {
-    tokenResp = await pollForToken(
-      origin,
-      deviceResp.device_code,
-      deviceResp.interval,
-      timeoutSecs,
-      () => {
-        // Progress indicator — write dots without newlines while polling.
-        // Raw stdout writes (not outputText) to stay on-line; gated on
-        // --quiet like any other progress output (#730).
-        if (isQuiet(flags)) return
-        process.stdout.write('.')
-        dots++
-        if (dots % 40 === 0) process.stdout.write('\n')
-      },
-    )
-  } catch (err) {
-    if (dots > 0) process.stdout.write('\n')
-    outputError(`\nError: ${(err as Error).message}`)
-    process.exit(1)
-  }
-  if (dots > 0) process.stdout.write('\n')
-
-  // Step 4: fetch profile (best-effort)
-  const me = await fetchMe(origin, tokenResp.access_token)
-
-  // Step 5: write token to ~/.plur/config.json
-  const cfg = readPlurConfig()
-  cfg.enterprise = {
-    url: origin,
-    token: tokenResp.access_token,
-    username: me.username,
-    scopes: me.scopes,
-    authed_at: new Date().toISOString(),
-  }
-  writePlurConfig(cfg)
-  outputInfo(`\nLogged in as ${me.username} — token written to ${plurConfigPath()}`, flags)
-
-  // Step 6: signal hot-reload to running MCP server
-  const reloadResult = signalReload()
-  outputInfo(`Server: ${reloadResult}`, flags)
-
-  outputInfo('', flags)
-  outputInfo('Done. Your enterprise token is active.', flags)
-  if (me.scopes && me.scopes.length > 0) {
-    outputInfo(`  readable scopes: ${me.scopes.join(', ')}`, flags)
-  }
+  outputInfo(`Signing in to ${origin}…`, flags)
+  await runSignIn(origin, parsed, flags)
 }

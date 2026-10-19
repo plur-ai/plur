@@ -22,6 +22,13 @@ Nothing here is applied until the owner decides.
 ## ScopeInject (findings/scopeinject.md)
 
 - **SI-Q3a — `isLocalOnlyScope('project:*')`.** (A) keep · (B) drop `project:` from the local family · (C) config-driven: local only if no url store's scope contains it.
+  - Resolved 2026-09-26 as decision E4 = (C), containment (`decisions.resolved.yaml`).
+  - **Amended 2026-10-18 by owner decision O5 (epic 1797, #1633): exact match.** Owner's answer: "Project
+    scopes — Exact match. B7 updates the Lean model, the decision record and the formal tests in the same PR."
+    `project:*` is local-only exactly when the one resolver (`resolveScopeTarget`, store-resolver.ts) keeps a
+    write to it local; a url store that only contains the scope no longer makes it remote, because write
+    routing never sends it there. Model: ScopeInject §3 (`isLocalOnly` over the `claimed` oracle,
+    `old_e4_containment`), RoutingDiscovery §5 (`claimed_iff`, `route_claimed`, `containment_disagrees`).
 - **SI-Q3b — scope case drift.** (A) case-fold the local family · (B) lower-case scopes at the API boundary · (C) keep (fails closed).
 - **SI-Q3c — auto-route into url-backed personal scopes. SAME QUESTION AS WP-Q4 — one board row.** Extra option from this agent: allow only the user's own `/me` namespace.
 - **SI-Q3d — provenance `withheld` checks only `scope === 'local'`** (provenance.ts). (A) isLocalOnly ∧ ¬remote-backed · (B) "does not leave the machine" predicate · (C) keep.

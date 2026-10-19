@@ -22,6 +22,30 @@ Checked against the merge of main into #1228 (2026-09-30, #1277): still holds.
   A caller's abort throws `RemoteAbortedError`, which does not mark the host
   down, and `load()` passes no caller signal. So §5's rule, that only a thrown
   network fetch marks, is unchanged.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+remote-store.ts's only behavioural change is `me()`: it reads the C1 fields
+(`scopes_status`, `scope_metadata_status`, `gitlab_host`, `project_paths`,
+`key_expires_at`) through grammar filters, treats a non-object body as an older
+server, and throws `RemoteHttpError` on non-2xx with the old message. `me()`
+goes through the same `fetchBounded`, so §5's rule (only a thrown network fetch
+marks a host down) is unchanged, and `load()`, recall, row origin, activation
+and namespacing (§1–§4) are not in the diff. index.ts's `_loadSecondaryAndPacks`
+is not in the diff either.
+
+Checked against Codex round 2 finding 2 (2026-10-18): still holds. `me()` now
+also reports `scopes_malformed` when the body's `scopes` is missing, null, not
+an array or has a member the grammar drops; the filtered `scopes` list it
+returns is unchanged. The flag only feeds discovery's decision
+(`RoutingDiscovery.lean` §3, `malformed_keeps_cache`). No fetch, host-health,
+row-origin or recall behaviour modelled here changed.
+Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
+exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
+this model covers changed.
+Checked against the gate of #1665 (`plur login`, 2026-10-18): still holds. `remote-store.ts`
+only changes a warning: a malformed `scope_metadata` entry is named only when its scope was
+granted (a server could put the bearer key there). Parsing, what is dropped and what is kept
+are unchanged.
 -/
 
 namespace PlurSpec.R2CoreB

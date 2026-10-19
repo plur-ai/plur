@@ -15,6 +15,22 @@ Checked against #1277 (2026-09-30): still holds. tools.ts changes plur_outbox's
 output (retrying/needs_action) and makes its explicit flush `force`, and adds
 outbox notices to plur_status and plur_session_start. No tool's annotations,
 effects or plur_admin dispatch changed.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+tools.ts's only change is two reply fields of plur_stores_add (`token_scopes`
+and a note, on `token_rotated` only, so they never collide with the
+`scopeDropped` note, which needs `already_registered`). No tool's annotations,
+effects or plur_admin dispatch changed (§1), and §2–§7 do not read tools.ts.
+
+Checked against #1631 background discovery (2026-10-18): still holds.
+plur_session_start now starts a background `refreshServerScopes` (never
+awaited), skips the awaited legacy `/me` probe for endpoints served by a
+company server entry, caps the guide's scope list at 20 and adds a
+`discovery` reply field. The refresh writes only config.yaml's discovery
+cache and never retires an engram, so `sessStart`'s effects row (writes, no
+retirement, repeat adds, copy remains) and its annotations (not read-only,
+not destructive, not idempotent) are unchanged; §1's theorems about it stand.
+No other tool's annotations or plur_admin dispatch changed.
 -/
 
 namespace PlurSpec.R2Integrations

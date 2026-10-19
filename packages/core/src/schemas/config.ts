@@ -71,6 +71,91 @@ export const StoreEntrySchema = z.object({
 
 export type StoreEntry = z.infer<typeof StoreEntrySchema>
 
+// Shape-tolerance helpers for the server entry (#1220): a malformed or
+// future-version VALUE drops that field, never the whole entry and its token.
+const plainObjectOr = <T>(fallback: T) => (val: unknown) =>
+  (val != null && typeof val === 'object' && !Array.isArray(val) ? val : fallback)
+const stringList = (val: unknown) => (Array.isArray(val) ? val.filter((s) => typeof s === 'string') : undefined)
+
+// Per-scope metadata stored inside a ServerStoreEntry's `scope_settings` map.
+// Same shape-tolerance as StoreEntrySchema's dial/description/covers/sensitivity fields.
+export const ScopeSettingsSchema = z.object({
+  dial: z.enum(['always', 'never']).optional().catch(undefined),
+  description: z.string().optional().catch(undefined),
+  covers: z.preprocess(stringList, z.array(z.string()).optional()),
+  sensitivity: z.preprocess(plainObjectOr(undefined), ScopeSensitivitySchema.optional()),
+}).passthrough()
+
+export type ScopeSettings = z.infer<typeof ScopeSettingsSchema>
+
+// C6 `discovery` — cached answer from the last successful /api/v1/me call.
+// Every field is `.catch(undefined)`: a value written by a newer client (a new
+// `status`, say) must not make an older client drop the company server.
+export const DiscoveryCacheSchema = z.object({
+  discovered_at: z.string().optional().catch(undefined),
+  scopes_status: z.enum(['ok', 'not_synced']).optional().catch(undefined),
+  gitlab_host: z.string().nullable().optional().catch(undefined),
+  project_paths: z.record(z.string()).optional().catch(undefined),
+  username: z.string().optional().catch(undefined),
+  org_id: z.string().optional().catch(undefined),
+  // absent = unknown; null = no expiry (these are different values — never conflate them)
+  key_expires_at: z.string().nullable().optional().catch(undefined),
+  status: z.enum(['ok', 'not_synced', 'failed', 'auth_failed', 'degraded']).optional().catch(undefined),
+  checked_at: z.string().optional().catch(undefined),
+}).passthrough()
+
+export type DiscoveryCache = z.infer<typeof DiscoveryCacheSchema>
+
+// C6 `enterprise` block — company-server-specific metadata on a store entry.
+export const EnterpriseBlockSchema = z.object({
+  hello_engram_id: z.string().optional().catch(undefined),
+}).passthrough()
+
+export type EnterpriseBlock = z.infer<typeof EnterpriseBlockSchema>
+
+/**
+ * A multi-scope server store entry (C6, #1631).
+ *
+ * One on-disk entry represents a company PLUR server and all the scopes it
+ * grants. At load it is expanded into one in-memory `StoreEntry` per scope so
+ * the ~270 existing code paths that work per-scope entry remain unchanged.
+ *
+ * Detection: an entry is a server entry when it has both `url` and an own
+ * `scopes` key (the `enterprise` block is NOT required, preserving the #1220
+ * fixture which has no `enterprise` object).
+ *
+ * Shape-tolerant (#1220): a non-array `scopes` becomes `[]`; non-string
+ * elements are dropped; a malformed `pinned_scopes`, `enterprise`,
+ * `discovery` or per-scope `scope_settings` value drops that value, never the
+ * entry. A scope string that fails the safe grammar (`/^[\w:./-]+$/`) is
+ * dropped with a warning at expansion time.
+ *
+ * `scope` (singular) is the C6 compatibility field — older clients (≤0.21.5)
+ * require it and would otherwise drop the entry on writeback.
+ */
+export const ServerStoreEntrySchema = z.object({
+  url: z.string().url(),
+  token: z.string().optional(),
+  token_env: z.string().optional(),
+  readonly: z.boolean().default(false),
+  shared: z.boolean().optional(),
+  scope: z.string().optional(),
+  scopes: z.preprocess((val) => stringList(val) ?? [], z.array(z.string())),
+  pinned_scopes: z.preprocess(stringList, z.array(z.string()).optional()),
+  enterprise: z.preprocess(plainObjectOr({}), EnterpriseBlockSchema.default({})),
+  scope_settings: z.preprocess(
+    (val) => {
+      const obj = plainObjectOr(undefined)(val) as Record<string, unknown> | undefined
+      if (!obj) return undefined
+      return Object.fromEntries(Object.entries(obj).filter(([, v]) => plainObjectOr(undefined)(v) !== undefined))
+    },
+    z.record(ScopeSettingsSchema).optional(),
+  ),
+  discovery: z.preprocess(plainObjectOr(undefined), DiscoveryCacheSchema.optional()),
+}).passthrough()
+
+export type ServerStoreEntry = z.infer<typeof ServerStoreEntrySchema>
+
 export const LlmTierConfigSchema = z.object({
   dedup_tier: z.enum(['fast', 'balanced', 'thorough']).default('fast'),
   profile_tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced'),
