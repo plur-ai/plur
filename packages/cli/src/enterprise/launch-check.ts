@@ -15,7 +15,7 @@ const NPX_NAMES = new Set(['npx', 'npx.cmd', 'npx.exe'])
  * `/opt/homebrew/bin/npx` or `C:\…\npx.cmd`, `cmd.exe /c npx …` and the
  * `/bin/sh -lc 'exec npx -y …'` form `plur init` writes as its fallback.
  */
-function isNpxLaunch(launch: LaunchConfig): boolean {
+export function isNpxLaunch(launch: LaunchConfig): boolean {
   return [launch.command, ...launch.args]
     .flatMap(a => a.split(/\s+/))
     .some(word => {
