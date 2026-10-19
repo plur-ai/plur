@@ -81,6 +81,12 @@ describe('applyMcpEnv: codex', () => {
     expect(launch!.env.PATH).toBe('/bin')
   })
 
+  it('a relative script under the entry cwd is resolved against that cwd, as Codex does', () => {
+    put('.codex/config.toml', '[mcp_servers.plur]\ncommand = "node"\nargs = ["./node_modules/@plur-ai/mcp/dist/index.js"]\ncwd = "/opt/plur"\n')
+    const launch = toolLaunch('codex', { PATH: '/bin' }, { ...loc, platform: 'linux' })
+    expect(launch?.args[0]).toBe(join('/opt/plur', 'node_modules/@plur-ai/mcp/dist/index.js'))
+  })
+
   it('a second run with the same env is unchanged and does not touch the bytes', () => {
     const path = put('.codex/config.toml', PLUR)
     applyMcpEnv('codex', THREE, loc)
@@ -286,6 +292,14 @@ describe('applyMcpEnv: claude-code and cursor', () => {
     expect(applyMcpEnv('opencode', THREE, loc).status).toBe('refused')
     expect(readFileSync(ocPath, 'utf8')).toBe(oc)
     expect(toolLaunch('opencode', {}, loc)).toBeNull()
+  })
+
+  it('args that are not a list of text values are refused before any edit', () => {
+    const text = JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp', args: '--profile enterprise' } } })
+    const path = put('.claude.json', text)
+    expect(applyMcpEnv('claude-code', THREE, loc).status).toBe('refused')
+    expect(readFileSync(path, 'utf8')).toBe(text)
+    expect(toolLaunch('claude-code', {}, loc)).toBeNull()
   })
 
   it('a key outside the PLUR set is refused, nothing written', () => {
