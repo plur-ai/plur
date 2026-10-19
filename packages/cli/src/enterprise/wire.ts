@@ -50,7 +50,7 @@ export const PLUR_ENV_KEYS: readonly string[] = TOOL_ENV_KEYS
 export const TOOLS: readonly ToolId[] = ['claude-code', 'codex', 'opencode', 'cursor']
 
 /** A launch: what the tool runs, with the env it runs it with. */
-export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string; disabled?: true; substitutions?: true }
+export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string; disabled?: true; substitutions?: true; envFile?: true }
 
 /** Where tool configs are looked up. Defaults: os.homedir() and process.env. */
 export type WireLocation = { home?: string; env?: NodeJS.ProcessEnv }
@@ -671,7 +671,17 @@ export function toolLaunch(
     const env = entry.env === undefined ? {} : stringRecord(entry.env)
     if (env === null) return null
     const off = entry.disabled === true || entry.enabled === false
-    return { command: entry.command, args, env: { ...parentEnv, ...env }, ...(off ? { disabled: true as const } : {}) }
+    // Claude Code and Cursor expand `${NAME}` / `${env:NAME}` themselves, and
+    // Cursor reads `envFile`; this launch would carry neither.
+    const subst = [entry.command, ...args, ...Object.values(env ?? {})].some(v => v.includes('${'))
+    return {
+      command: entry.command,
+      args,
+      env: { ...parentEnv, ...env },
+      ...(off ? { disabled: true as const } : {}),
+      ...(subst ? { substitutions: true as const } : {}),
+      ...(entry.envFile !== undefined ? { envFile: true as const } : {}),
+    }
   } catch {
     return null
   }
@@ -718,7 +728,8 @@ export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJ
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(launch.command)) {
     return `${label} starts PLUR through a .cmd launcher, which cannot start without a shell — ${fix}`
   }
-  if (launch.substitutions) return `${label} fills in an {env:…} or {file:…} substitution in the plur entry, which the proof cannot reproduce — it is wired, but cannot be proven`
+  if (launch.substitutions) return `${label} fills in a substitution (\${…}, {env:…} or {file:…}) in the plur entry, which the proof cannot reproduce — it is wired, but cannot be proven`
+  if (launch.envFile) return `${label} reads an envFile for the plur entry, which the proof cannot reproduce — it is wired, but cannot be proven`
   // The command itself is not echoed: an unknown one can be anything, a credential included.
   if (!isDirectLaunch(launch)) return `${label} starts PLUR through a command that is not PLUR itself — ${fix}`
   // The proof runs from its own neutral folder (a folder turned off must not
