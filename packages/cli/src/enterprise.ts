@@ -8,10 +8,10 @@ const cmd = argv[0]
 if (!cmd || cmd === '--help' || cmd === '-h') {
   console.log(`plur-enterprise — enterprise setup for PLUR
 
-Usage: plur-enterprise <command> [options]
+Usage: plur-enterprise init --server <url> [options]
 
 Commands:
-  plur-enterprise init --server <url> [options]
+  init --server <url> [options]
 
 Options for init:
   --server <url>          PLUR Enterprise server URL (required, or set PLUR_SERVER)
