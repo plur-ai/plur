@@ -1,4 +1,6 @@
 // LRN-6: A memory I locked is never rewritten by an automatic merge or update.
+// Rewritten includes retired or marked superseded: the text, the version, the
+// status and the superseded_by link of the locked memory all stay as they were.
 //
 // Two orders, for UPDATE and MERGE each (the LLM fixture forces the verdict so
 // the real persistence guards run):
@@ -40,6 +42,10 @@ describe('LRN-6 a locked memory is never rewritten automatically', () => {
         .toBe(LOCKED)
       expect(after?.engram_version ?? 1, `the locked memory's version moved (${before?.engram_version ?? 1} -> ${after?.engram_version})`)
         .toBe(before?.engram_version ?? 1)
+      // Nor retired or replaced by the automatic check: a locked memory goes to review
+      // (LRN-9), it is never marked superseded on its own (round-9 planted-bug refresh).
+      expect(after?.status, 'the locked memory was retired by an automatic check').toBe('active')
+      expect((after as any)?.relations?.superseded_by ?? [], 'the locked memory was marked superseded by an automatic check').toEqual([])
       expect(result.engram.id, `the new statement should be saved as its own memory, not folded into the locked one`).not.toBe(locked.id)
       const saved = await s.plur.getById(result.engram.id)
       expect(saved?.statement, 'the new statement should still be saved as said').toBe(said)
@@ -98,6 +104,8 @@ describe('LRN-6 a locked memory is never rewritten automatically', () => {
       expect(after?.statement,
         `a memory locked by another writer just before the write was rewritten by an automatic ${verdict}: now ${JSON.stringify(after?.statement)}`)
         .toBe(UNLOCKED)
+      expect(after?.status, 'the memory locked in between was retired by the automatic check').toBe('active')
+      expect((after as any)?.relations?.superseded_by ?? [], 'the memory locked in between was marked superseded by the automatic check').toEqual([])
       expect(result.engram.id, 'the new statement should be saved as its own memory, not folded into the locked one').not.toBe(target.id)
       const saved = await fresh.getById(result.engram.id)
       expect(saved?.statement, 'the new statement should still be saved as said').toBe(said)
