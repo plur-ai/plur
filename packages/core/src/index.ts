@@ -5396,6 +5396,11 @@ export class Plur {
         ? { _expiry_extracted: { valid_until: validity.extracted.valid_until, phrase: validity.extracted.phrase } }
         : {}),
       _scopeSource: scopeSource,
+      // Whether the caller chose the visibility or got the #401 default. Both
+      // are stored as `visibility: private`, but only a CHOSEN private keeps a
+      // memory off the user's own personal sync remote (sync.ts pushKeep); the
+      // default only keeps it off shared remotes and packs.
+      _visibilitySource: context?.visibility != null ? 'explicit' : 'default',
     }
     return shape
   }
