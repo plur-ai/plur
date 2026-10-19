@@ -50,7 +50,7 @@ export const PLUR_ENV_KEYS: readonly string[] = TOOL_ENV_KEYS
 export const TOOLS: readonly ToolId[] = ['claude-code', 'codex', 'opencode', 'cursor']
 
 /** A launch: what the tool runs, with the env it runs it with. */
-export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string; disabled?: true }
+export type ToolLaunch = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string; disabled?: true; substitutions?: true }
 
 /** Where tool configs are looked up. Defaults: os.homedir() and process.env. */
 export type WireLocation = { home?: string; env?: NodeJS.ProcessEnv }
@@ -651,7 +651,15 @@ export function toolLaunch(
       const environment = entry.environment === undefined ? {} : stringRecord(entry.environment)
       if (environment === null) return null
       const off = entry.enabled === false || entry.disabled === true
-      return { command: entry.command[0], args: entry.command.slice(1), env: { ...parentEnv, ...environment }, ...(off ? { disabled: true as const } : {}) }
+      // OpenCode fills `{env:NAME}` and `{file:path}` in itself; this launch would carry them literally.
+      const subst = [...entry.command, ...Object.values(environment)].some(v => /\{(env|file):/.test(v))
+      return {
+        command: entry.command[0],
+        args: entry.command.slice(1),
+        env: { ...parentEnv, ...environment },
+        ...(off ? { disabled: true as const } : {}),
+        ...(subst ? { substitutions: true as const } : {}),
+      }
     }
     const data: unknown = JSON.parse(text)
     const servers = isRecord(data) && isRecord(data.mcpServers) ? data.mcpServers : undefined
@@ -710,6 +718,7 @@ export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJ
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(launch.command)) {
     return `${label} starts PLUR through a .cmd launcher, which cannot start without a shell — ${fix}`
   }
+  if (launch.substitutions) return `${label} fills in an {env:…} or {file:…} substitution in the plur entry, which the proof cannot reproduce — it is wired, but cannot be proven`
   // The command itself is not echoed: an unknown one can be anything, a credential included.
   if (!isDirectLaunch(launch)) return `${label} starts PLUR through a command that is not PLUR itself — ${fix}`
   // The proof runs from its own neutral folder (a folder turned off must not
@@ -729,6 +738,8 @@ export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJ
     || relativePath(launch.command)
     || (baseName(launch.command) === 'node' && relativeFile(launch.args[0]))
     || relativeFile(launch.env.PLUR_PATH)
+    // With no PLUR_PATH the store lives under the home folder.
+    || (!launch.env.PLUR_PATH && relativeFile(platform === 'win32' ? launch.env.USERPROFILE : launch.env.HOME))
     || relativeFile(launch.env.NODE_EXTRA_CA_CERTS)
   if (folderBound) return `${label} starts PLUR with a working folder or a relative path (script, PLUR_PATH or CA file), which the proof cannot reproduce from its own folder — use absolute paths and no \`cwd\` in the plur entry, or ${fix}`
   return null
