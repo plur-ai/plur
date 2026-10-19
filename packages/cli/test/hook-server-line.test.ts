@@ -60,9 +60,22 @@ it('a configured local-only installation has no enterprise line', async () => {
   writeFileSync(join(root, 'config.yaml'), JSON.stringify({ index: false, embeddings: { enabled: false } }))
   expect(await hook('hook-codex-session-start')).not.toContain('PLUR → server')
 }, 30000)
-it.each(['off', 'ask'])('a trusted Claude hook records execution in an %s folder', async mode => {
+it('a trusted Claude hook records execution in an ask folder', async () => {
+  const mode = 'ask'
   writeFileSync(join(root, 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(repo)}\n    plur: ${mode}\n`)
   const output = await hook('hook-inject')
   expect(output).not.toContain('PLUR → server')
   expect(Number.isFinite(Date.parse(JSON.parse(readFileSync(join(root, 'hook-runs.json'), 'utf8')).claude))).toBe(true)
+}, 30000)
+
+it.each(['hook-inject', 'hook-codex-session-start', 'hook-cursor-session-start'])('%s does not record execution in an off folder', async command => {
+  writeFileSync(join(root, 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(repo)}\n    plur: off\n`)
+  expect(await hook(command)).not.toContain('PLUR → server')
+  expect(() => readFileSync(join(root, 'hook-runs.json'))).toThrow(/ENOENT/)
+}, 30000)
+
+it.each(['hook-inject', 'hook-codex-session-start'])('%s does not record execution when the folder map is unreadable', async command => {
+  writeFileSync(join(root, 'folders.yaml'), 'folders: [broken')
+  expect(await hook(command)).not.toContain('PLUR → server')
+  expect(() => readFileSync(join(root, 'hook-runs.json'))).toThrow(/ENOENT/)
 }, 30000)

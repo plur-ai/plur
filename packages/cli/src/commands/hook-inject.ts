@@ -833,11 +833,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // `session_id`, and the folder decision from its `cwd`. Reading stdin is a
   // single synchronous read.
   const input = readStdinSync()
-  // Execution proves hook trust even when this folder has memory disabled.
-  // This diagnostic contains no memory or folder data. Later prompts with
-  // an injection marker, rehydration and non-session events do not refresh it.
-  const priorMarker = readableMarkerPath(sessionKey(input), input)
-  if (!isRehydrate && !event && !(priorMarker && existsSync(priorMarker))) recordHookRun('claude', flags.path)
 
   // The folder map (#1347) replaces the old isPlurConfigured() gate (#247):
   // off is silent; ask is silent except for the one question on the first
@@ -845,6 +840,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const dir = payloadDir(input)
   const policy = hookFolderPolicy(dir, flags)
   if (policy.mode === 'off') return
+  // Execution proves hook trust in a folder that permits hook state.
+  // This diagnostic contains no memory or folder data. Later prompts with
+  // an injection marker, rehydration and non-session events do not refresh it.
+  const priorMarker = readableMarkerPath(sessionKey(input), input)
+  if (policy.reason !== 'malformed-map' && policy.reason !== 'resolver-error' && !isRehydrate && !event && !(priorMarker && existsSync(priorMarker))) recordHookRun('claude', flags.path)
+
   if (policy.mode === 'ask') {
     if (!isRehydrate && !event) await askFolder(input, dir, policy, flags)
     return

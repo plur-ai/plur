@@ -1236,3 +1236,7 @@ the model remains valid. Presentation invariants live in SaveDestination.lean. -
 add presentation/diagnostic metadata only. Existing admission, persistence and
 write rules are unchanged. SaveDestination.SessionStatusAdapter models workspace
 status selection; real hook and stdio tests check adapter integration. -/
+
+/- 2026-10-19: Hook execution timestamps are recorded only after the off-folder
+guard. Disabled memory retains its no-store-write boundary; admitted hooks keep
+the existing timestamp and status behavior. No routing or delivery rule changes. -/
