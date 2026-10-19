@@ -843,3 +843,9 @@ the model remains valid. Presentation invariants live in SaveDestination.lean. -
 /- 2026-10-19: serverSessionLines reads cached configuration and the existing
 primary outbox projection. It does not probe, route, deliver or mutate memory.
 These transition invariants still hold; status precedence is in SaveDestination. -/
+
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/

@@ -103,3 +103,9 @@ These transition invariants still hold; status precedence is in SaveDestination.
 add presentation/diagnostic metadata only. Existing admission, persistence and
 write rules are unchanged. SaveDestination.SessionStatusAdapter models workspace
 status selection; real hook and stdio tests check adapter integration. -/
+
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/

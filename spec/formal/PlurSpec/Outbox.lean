@@ -471,6 +471,69 @@ theorem force_delivers_unconflicted {β} (bump : β → β) (w : Bool) (e : Entr
     flushEntryC bump true true w false false true e = .handedOff := by
   cases w <;> rfl
 
+/-! ### 8c. Credential changes and local destination takeover (2026-10-19)
+
+Fingerprints are opaque naturals. Code records the credential captured for the
+attempt, not one reloaded after the response. Unknown fingerprints preserve
+the old backoff. A changed key changes retry eligibility only; it cannot bypass
+current destination, conflict or content guards. A local path takeover is held
+even on a forced flush; an authorized replacement remote remains deliverable.
+-/
+
+def credentialChanged (previous current : Option Nat) : Bool :=
+  match previous, current with
+  | some a, some b => a != b
+  | _, _ => false
+
+theorem previous_unknown (current : Option Nat) : credentialChanged none current = false := by cases current <;> rfl
+theorem current_unknown (previous : Option Nat) : credentialChanged previous none = false := by cases previous <;> rfl
+theorem unchanged_key (key : Nat) : credentialChanged (some key) (some key) = false := by simp [credentialChanged]
+
+def skipWithCredential (force needsAction inWindow : Bool) (previous current : Option Nat) : Bool :=
+  skipOf force needsAction inWindow && !credentialChanged previous current
+
+theorem old_row_keeps_hold : skipWithCredential false true true none (some 2) = true := rfl
+theorem changed_key_retries : skipWithCredential false true true (some 1) (some 2) = false := rfl
+theorem same_key_keeps_hold (key : Nat) : skipWithCredential false true true (some key) (some key) = true := by
+  simp [skipWithCredential, skipOf, credentialChanged]
+
+def flushEntryCredential {β} (bump : β → β) (force needsAction inWindow localPath conflict offends delivered : Bool)
+    (previous current : Option Nat) (e : Entry β) : Res β :=
+  if localPath || conflict then .kept e
+  else flushEntry bump (skipWithCredential force needsAction inWindow previous current) offends delivered e
+
+theorem local_path_never_sent {β} (bump : β → β) (f n w c o d : Bool) (previous current : Option Nat) (e : Entry β) :
+    flushEntryCredential bump f n w true c o d previous current e = .kept e := by simp [flushEntryCredential]
+
+theorem conflict_still_held {β} (bump : β → β) (f n w l o d : Bool) (previous current : Option Nat) (e : Entry β) :
+    flushEntryCredential bump f n w l true o d previous current e = .kept e := by simp [flushEntryCredential]
+
+theorem replacement_remote_delivers {β} (bump : β → β) (e : Entry β) :
+    flushEntryCredential bump false true true false false false true (some 1) (some 2) e = .handedOff := rfl
+
+-- Before the new credential branch, the same repaired-key case stayed held.
+example : skipOf false true true = true ∧ skipWithCredential false true true (some 1) (some 2) = false := by decide
+
+/- A batch may await an earlier POST after selecting later rows. The admission
+state is read again from disk immediately before each later POST. Selection
+does not authorize an obsolete destination or credential. -/
+structure AdmissionState where
+  localPath : Bool
+  credential : Option Nat
+
+def flushSelected {β} (bump : β → β) (_selected current : AdmissionState)
+    (previous : Option Nat) (e : Entry β) : Res β :=
+  flushEntryCredential bump false true true current.localPath false false true previous current.credential e
+
+theorem takeover_after_selection_is_held {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨true, some 2⟩ (some 1) e = .kept e := rfl
+
+theorem rejected_key_restored_after_selection_is_held {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨false, some 1⟩ (some 1) e = .kept e := rfl
+
+theorem unchanged_repaired_destination_delivers {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨false, some 2⟩ (some 1) e = .handedOff := rfl
+
 end PlurSpec.Outbox
 
 /- 2026-10-19: Save destination reporting is a projection of the existing delivery

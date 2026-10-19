@@ -5,6 +5,7 @@ import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateP
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
+import { enterpriseRecoveryHint } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
@@ -3504,7 +3505,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
                   ? `Reachable, but token expires in ${h.tokenExpiresInDays}d — reauth soon`
                   : `Reachable, auth valid${expiresNote}`,
               })
-              if (soon) remediation.push(`Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — mint a new token (<host>/me/api-keys), update ~/.plur/config.yaml, restart.`)
+              if (soon) remediation.push(h.enterprise
+                ? `Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — ${enterpriseRecoveryHint(h.url)}.`
+                : `Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — mint a new token (<host>/me/api-keys), update ~/.plur/config.yaml, restart.`)
             } else if (h.tokenEnvUnset) {
               // #1564 review M2: nothing was sent; the token's variable is unset.
               // One wording with the CLI's `plur doctor` (#1572 review M2).
@@ -3512,7 +3515,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
               remediation.push(tokenEnvUnsetFix(h.url, h.tokenEnvUnset))
             } else if (h.status === 'auth_expired') {
               checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `AUTH FAILED${expiresNote} — team-scoped writes are queuing to the outbox, not syncing. (${h.reason ?? ''})` })
-              remediation.push(`Remote ${h.url}: re-authenticate — open <host>/auth/github (or <host>/me/api-keys) in a browser, paste the token into ~/.plur/config.yaml, then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
+              remediation.push(h.enterprise
+                ? `Remote ${h.url}: re-authenticate — ${enterpriseRecoveryHint(h.url)}.`
+                : `Remote ${h.url}: re-authenticate — open <host>/auth/github (or <host>/me/api-keys) in a browser, paste the token into ~/.plur/config.yaml, then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
             } else {
               checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `Unreachable (${h.reason ?? 'network error'}) — writes queue locally until it recovers.` })
               remediation.push(`Remote ${h.url}: unreachable — check connectivity/VPN. Reads fall back to local; writes queue in the outbox.`)
@@ -4035,10 +4040,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // network round-trip. Catches the 30-day silent-expiry before it bites.
           try {
             for (const t of plur.remoteTokenExpiries()) {
+              const recovery = t.enterprise ? enterpriseRecoveryHint(t.url) : null
               if (t.expired) {
-                guide += `\n\n⚠️ Enterprise token for ${t.url} EXPIRED ${t.expiresAt ?? ''}. Reauth and restart to resume team sync.`
+                guide += recovery
+                  ? `\n\n⚠️ Enterprise token for ${t.url} EXPIRED ${t.expiresAt ?? ''}. ${recovery}.`
+                  : `\n\n⚠️ Enterprise token for ${t.url} EXPIRED ${t.expiresAt ?? ''}. Reauth and restart to resume team sync.`
               } else if (typeof t.expiresInDays === 'number' && t.expiresInDays <= 7) {
-                guide += `\n\n⏳ Enterprise token for ${t.url} expires in ${t.expiresInDays}d. Mint a fresh one (<host>/me/api-keys) before it lapses.`
+                guide += recovery
+                  ? `\n\n⏳ Enterprise token for ${t.url} expires in ${t.expiresInDays}d. ${recovery}.`
+                  : `\n\n⏳ Enterprise token for ${t.url} expires in ${t.expiresInDays}d. Mint a fresh one (<host>/me/api-keys) before it lapses.`
               }
             }
           } catch { /* best-effort */ }

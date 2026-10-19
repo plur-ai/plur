@@ -69,6 +69,7 @@ import { normalizeEndpointUrl, salvageRemoteRow, safeOrigin } from './store/remo
 import { isScopeWithin, isSharedScope } from './scope-util.js'
 import { namespaceEngramId } from './engrams.js'
 import { logger } from './logger.js'
+import { enterpriseRecoveryHint } from './enterprise.js'
 import { withLock } from './sync.js'
 
 // ---------------------------------------------------------------------------
@@ -1426,6 +1427,7 @@ export async function remoteRecall(
 
 export interface RemoteStoreStatusEntry {
   host: string
+  enterprise?: boolean
   status: RemoteHostState
   dropped_scopes?: string[]
   ms?: number
@@ -1449,6 +1451,9 @@ export interface RemoteStoreStatusEntry {
  */
 export function mcpRemoteWarningLine(o: RemoteStoreStatusEntry): string {
   const host = o.host
+  if (o.enterprise && (o.status === 'auth_expired' || o.status === 'forbidden')) {
+    return `${host}: credentials rejected — team engrams unavailable; tell the user to ${enterpriseRecoveryHint(host)}.`
+  }
   switch (o.status) {
     case 'ok':
       return o.dropped_scopes && o.dropped_scopes.length > 0
@@ -1481,6 +1486,9 @@ export function mcpRemoteWarningLine(o: RemoteStoreStatusEntry): string {
  */
 export function hookRemoteHeaderLine(o: RemoteStoreStatusEntry): string | null {
   const host = o.host
+  if (o.enterprise && (o.status === 'auth_expired' || o.status === 'forbidden')) {
+    return `[PLUR] ${host}: credentials rejected — ${enterpriseRecoveryHint(host)}.`
+  }
   switch (o.status) {
     case 'ok':
       return o.dropped_scopes && o.dropped_scopes.length > 0
@@ -1508,6 +1516,9 @@ export function hookRemoteHeaderLine(o: RemoteStoreStatusEntry): string | null {
 /** Human-directed plur_doctor remediation strings (cause + human fix). */
 export function doctorRemoteRemediation(o: RemoteStoreStatusEntry): string | null {
   const host = o.host
+  if (o.enterprise && (o.status === 'auth_expired' || o.status === 'forbidden')) {
+    return `Remote ${host}: credentials rejected — ${enterpriseRecoveryHint(host)}.`
+  }
   switch (o.status) {
     case 'ok':
       return o.dropped_scopes && o.dropped_scopes.length > 0

@@ -127,3 +127,9 @@ end PlurSpec.ServerSession
 across all editor roots before status can advertise a shared destination.
 The adapter preserves remote-only precedence and caller-explicit defaults.
 The conflicting-map-roots stdio regression exercises this boundary. -/
+
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/

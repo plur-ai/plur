@@ -65,10 +65,10 @@ import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
 import type { MeResponse } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
-import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
+import { classifyOutboxFailure, credentialChanged, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
 import {
-  remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
+  remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg, tokenHealthKey,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
   resolveRecallDeadlineMs, buildRecallRemoteReport, RECALL_BOOKKEEPING_LOCK_WAIT_MS, settleBy,
   type RecallRemoteReport,
@@ -83,7 +83,7 @@ import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import { loadGitScopeSources, readGitOrigin, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import { formatSaveDestination, formatServerSessionLine, type ServerSessionState } from './save-destination.js'
 export { formatSaveDestination, formatServerSessionLine, type SaveDestinationInput, type ServerSessionState } from './save-destination.js'
-export { ENTERPRISE_SETUP_COMMAND } from './enterprise.js'
+export { ENTERPRISE_SETUP_COMMAND, enterpriseRecoveryHint } from './enterprise.js'
 export { loadGitScopeSources, gitDefaultScope, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
@@ -310,7 +310,7 @@ export { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from '.
 export { resolveScopeTarget, ScopeConflictError, type ScopeTarget } from './store-resolver.js'
 export { orderBySupersedes } from './outbox-order.js'
 export {
-  classifyOutboxFailure, summarizeOutbox, describeNeedsAction, describeHeld, statusFromErrorText, OUTBOX_CLAIM_ERROR_PREFIX,
+  classifyOutboxFailure, credentialChanged, summarizeOutbox, describeNeedsAction, describeHeld, statusFromErrorText, OUTBOX_CLAIM_ERROR_PREFIX,
   NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES,
   type OutboxState, type OutboxVerdict, type OutboxSummary, type OutboxFailureInput,
 } from './outbox-health.js'
@@ -696,6 +696,8 @@ export interface ServerDiscoveryOutcome {
  */
 export interface RemoteHealth {
   url: string
+  /** All entries at this endpoint use enterprise registration; false/absent for mixed legacy credentials. */
+  enterprise?: boolean
   /** Scopes registered locally for this (url, token) group (for the report). */
   scopes: string[]
   /** 'ok' = /me succeeded; 'auth_expired' = 401/403 or JWT exp passed; 'unreachable' = network/timeout/5xx. */
@@ -5023,6 +5025,7 @@ export class Plur {
         // resolver's own writable entry (#1633 row 34), so it is the server
         // the router dialled, never merely the first one listed.
         const storeEntry = this._remoteWriteEntry(scope)
+        const attemptedTokenFp = storeEntry?.token ? tokenHealthKey(storeEntry.token) : undefined
         // Idempotency key for this write (2026-09-29 audits): random, minted
         // once, persisted on the outbox entry, never derived from an id.
         const pushKey = randomUUID()
@@ -5109,6 +5112,7 @@ export class Plur {
                   // #1299: the status, when the remote gave one — it is what
                   // tells a refusal from a blip.
                   if (err instanceof RemoteHttpError) target.structured_data._outbox.last_status = err.status
+                  target.structured_data._outbox.last_token_fp = attemptedTokenFp
                 }
                 if (target?.structured_data?._outbox) {
                   // Incremental write (#740): only the outbox bookkeeping changed.
@@ -5354,6 +5358,8 @@ export class Plur {
     // mirroring learn() — before dedup can short-circuit the write.
     resolveValidity(statement, context)
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
+    const attemptedToken = this._remoteWriteEntry(scope)?.token
+    const attemptedTokenFp = attemptedToken ? tokenHealthKey(attemptedToken) : undefined
     // #90, formal WritePath candidate 4: an engram the caller explicitly marked
     // private does not go to a remote store. learn() has always refused it
     // (and warns); this path never checked, so the same input left the machine
@@ -5451,10 +5457,10 @@ export class Plur {
     if (isHardPinned(localPlaceholder as never)) {
       return await this._withStoreLock(this.paths.engrams, async () => {
         await this._assertHardTierFits({ ...localPlaceholder, id: 'ENG-XXXXXX-0000-00-00-000' })
-        return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, true, remoteTimeoutMs)
+        return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, true, remoteTimeoutMs, attemptedTokenFp)
       })
     }
-    return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, false, remoteTimeoutMs)
+    return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, false, remoteTimeoutMs, attemptedTokenFp)
   }
 
   /**
@@ -5475,6 +5481,7 @@ export class Plur {
     lockHeld: boolean,
     /** The caller's deadline for the POST (0.21.1). Unset: the driver's own 30 s. */
     remoteTimeoutMs?: number,
+    attemptedTokenFp?: string,
   ): Promise<Engram> {
     let serverEngram: Engram
     // Idempotency key for this write (2026-09-29 audits). The placeholder's id
@@ -5519,6 +5526,7 @@ export class Plur {
               queued_at: now,
               last_attempt: now,
               attempt_count: 1,
+              last_token_fp: attemptedTokenFp,
               last_error: (err as Error).message,
               // The same key the failed attempt carried: if that POST did land
               // (a timeout after the server stored it), the retry is collapsed.
@@ -7714,6 +7722,7 @@ export class Plur {
       if (opts?.freshOnly && age_ms > REMOTE_STATUS_TTL_MS) continue
       out.push({
         host: normalizeEndpointUrl(o.url),
+        ...(this._enterpriseRecoveryEndpoint(o.url) ? { enterprise: true } : {}),
         status: o.state,
         ...(o.dropped_scopes && o.dropped_scopes.length > 0 ? { dropped_scopes: o.dropped_scopes } : {}),
         ms: o.ms,
@@ -11782,6 +11791,7 @@ export class Plur {
       last_attempt: string; attempt_count: number; last_error: string
       /** HTTP status of the last failed push (#1299). */
       last_status?: number
+      last_token_fp?: string
       /** Unique per logical write, stable across its retries (C4). */
       idempotency_key?: string
     }
@@ -11790,8 +11800,9 @@ export class Plur {
      * cannot fix. Nothing about it changes; it is only not dialled. `force` —
      * the explicit flush — dials it.
      */
-    const heldBack = (outbox: OutboxEntry): boolean => {
+    const heldBack = (outbox: OutboxEntry, currentToken?: string): boolean => {
       if (force) return false
+      if (credentialChanged(outbox.last_token_fp, currentToken ? tokenHealthKey(currentToken) : undefined)) return false
       const verdict = classifyOutboxFailure({
         last_status: typeof outbox.last_status === 'number' ? outbox.last_status : undefined,
         last_error: outbox.last_error,
@@ -11838,6 +11849,9 @@ export class Plur {
       // listed first (#1631): the same refusal as learn, non-destructively —
       // the row stays queued until one of the entries is removed.
       const target = resolveScopeTarget(outbox.target_scope, this.config.stores ?? [])
+      if (target.kind === 'local' && target.entry?.path) {
+        return { skip: 'failed', warning: `${engram.id}: NOT pushed — scope "${outbox.target_scope}" now belongs to a local path store; the save stays queued. Rescope or forget it explicitly.` }
+      }
       if (target.kind === 'conflict') {
         return {
           skip: 'failed',
@@ -11927,7 +11941,7 @@ export class Plur {
       const outbox = (e as any).structured_data._outbox as OutboxEntry
       const route = routeFor(e, outbox)
       if ('storeEntry' in route) {
-        if (!heldBack(outbox)) return true
+        if (!heldBack(outbox, route.storeEntry.token)) return true
         held++
         return false
       }
@@ -12127,10 +12141,15 @@ export class Plur {
         }
       }
 
+      // Earlier pushes and the row claim await external work. Re-read the
+      // destination and retry credential at admission, not only at selection.
+      this.reloadConfigIfChanged()
       warnIfOld(engram, outbox)
       const route = routeFor(engram, outbox)
       if (!('storeEntry' in route)) { holdBack(route); continue }
       const { storeEntry } = route
+      if (heldBack(outbox, storeEntry.token)) { held++; continue }
+      const attemptedTokenFp = storeEntry.token ? tokenHealthKey(storeEntry.token) : undefined
 
       const driver = this._getRemoteDriver({ url: storeEntry.url!, token: storeEntry.token, scope: storeEntry.scope })
 
@@ -12281,6 +12300,7 @@ export class Plur {
         // A remote timeout or any other error takes the ordinary failure
         // path below and is retried the same way.
         if (err instanceof RemoteAbortedError) {
+          outbox.last_token_fp = attemptedTokenFp
           outbox.last_attempt = now.toISOString()
           outbox.attempt_count += 1
           outbox.last_error = 'cut at the flush time budget before the remote answered — retried on the next flush'
@@ -12295,6 +12315,7 @@ export class Plur {
         outbox.last_attempt = now.toISOString()
         outbox.attempt_count += 1
         outbox.last_error = (err as Error).message
+        outbox.last_token_fp = attemptedTokenFp
         // #1299: the status when the remote gave one; cleared when it did not,
         // so a stale 403 cannot outlive a later network failure.
         if (err instanceof RemoteHttpError) outbox.last_status = err.status
@@ -15230,18 +15251,27 @@ Generate an improved version of the procedure that prevents this failure. Return
     this.configMtimeMs = this.statConfigMtime()
   }
 
+  private _enterpriseRecoveryEndpoint(url: string): boolean {
+    const key = normalizeEndpointUrl(url)
+    const entries = this._readRawStores().filter(s => isPlainObject(s) && typeof s.url === 'string' && normalizeEndpointUrl(s.url) === key)
+    // Host-level outcomes cannot distinguish two keys on the same endpoint.
+    // Do not promise enterprise setup repairs a retained legacy credential.
+    return entries.length > 0 && entries.every(isEnterpriseServerEntry)
+  }
+
   /**
    * Local-only read of each configured remote token's JWT expiry (#295). No
    * network. Returns one entry per distinct remote URL; `expiresInDays`/`expired`
    * are null/false for opaque (non-JWT) keys. Used by session_start to warn
    * about imminent/past expiry without a round-trip.
    */
-  remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: string[]; expiresAt: string | null; expiresInDays: number | null; expired: boolean }> {
+  remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: string[]; enterprise?: boolean; expiresAt: string | null; expiresInDays: number | null; expired: boolean }> {
     return this._distinctRemoteEndpoints().map(({ url, token }) => {
       const scopes = this._storesForEndpoint(url).map(s => s.scope)
       const exp = decodeJwtExpiry(token, now)
       return {
         url, scopes,
+        ...(this._enterpriseRecoveryEndpoint(url) ? { enterprise: true } : {}),
         expiresAt: exp.expiresAt ? exp.expiresAt.toISOString() : null,
         expiresInDays: exp.expiresInDays,
         expired: exp.expired,
@@ -15284,6 +15314,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       const orgClaim = [payload?.orgId, payload?.org_id, payload?.org]
         .find((v): v is string => typeof v === 'string')
       const expiryFields = {
+        ...(this._enterpriseRecoveryEndpoint(url) ? { enterprise: true } : {}),
         tokenExpiresAt: exp.expiresAt ? exp.expiresAt.toISOString() : undefined,
         tokenExpiresInDays: exp.expiresInDays,
         ...(subject !== undefined ? { tokenSubject: subject } : {}),
