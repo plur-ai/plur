@@ -1,6 +1,6 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
-import { checkForUpdate, CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit, shortPackIntegrity } from '@plur-ai/core'
+import { CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit, shortPackIntegrity } from '@plur-ai/core'
 import { CLAW_VERSION } from './version.js'
 
 // Telemetry is core's module, not a copy (2026-09 audit): the claw copy had
@@ -285,12 +285,8 @@ const plugin = {
 
     api.logger.info(`PLUR registered: context engine + hooks + slash commands + CLI`)
 
-    // Non-blocking version check
-    checkForUpdate('@plur-ai/claw', plugin.version, (r) => {
-      if (r.updateAvailable) {
-        api.logger.warn(`PLUR update available: ${r.current} → ${r.latest}. Run: npm update @plur-ai/claw`)
-      }
-    })
+    // No automatic npm update check (TEAM-5): with no internet PLUR makes no
+    // network call it was not asked to make.
   },
 }
 

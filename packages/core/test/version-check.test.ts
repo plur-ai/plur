@@ -196,7 +196,9 @@ describe('version-check', () => {
         expect(second.latest).toBe('2.0.0')
       })
 
-      it('getCachedUpdateCheck serves stale synchronously and refreshes in background', async () => {
+      // TEAM-5: a read never starts a request. An expired answer is still
+      // shown; only an explicit checkForUpdate() asks the registry again.
+      it('getCachedUpdateCheck serves a stale answer and never refreshes it', async () => {
         const mockFetch = vi.fn()
           .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '1.0.0' }) })
           .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '2.0.0' }) })
@@ -206,16 +208,16 @@ describe('version-check', () => {
         const base = Date.now()
         vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_SUCCESS_TTL_MS + 1)
 
-        // Stale read returns the old answer immediately — never blocks —
-        // and kicks off a background refresh
         const stale = getCachedUpdateCheck('pkg-read')
         expect(stale).not.toBeNull()
         expect(stale!.updateAvailable).toBe(false)
-
         await settleVersionChecks()
-        const fresh = getCachedUpdateCheck('pkg-read')
-        expect(fresh!.updateAvailable).toBe(true)
-        expect(fresh!.latest).toBe('2.0.0')
+        expect(mockFetch).toHaveBeenCalledTimes(1)
+
+        // An explicit check after the TTL does ask again (#760).
+        const fresh = await checkForUpdate('pkg-read', '1.0.0')
+        expect(fresh.latest).toBe('2.0.0')
+        expect(getCachedUpdateCheck('pkg-read')!.updateAvailable).toBe(true)
         expect(mockFetch).toHaveBeenCalledTimes(2)
       })
 

@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad } from '@plur-ai/core'
+import { Plur, allowBackgroundModelLoad } from '@plur-ai/core'
 import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
@@ -198,7 +198,6 @@ export async function closeWhenIdle(server: Server, timeoutMs?: number): Promise
 
 // One periodic version re-check per process, however many servers are created
 // (tests create one per case — stacking an interval per server would leak).
-let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
 
 export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
   const instance = plur ?? new Plur()
@@ -209,25 +208,11 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   setActiveToolProfile(profile)
   const tools = getToolDefinitions(profile)
 
-  // Non-blocking version check — fire and forget at startup, then re-checked
-  // periodically (#760). Without the periodic re-check a long-lived server
-  // process that started while current would cache "no update" for its entire
-  // lifetime and never surface releases published after startup — which is
-  // exactly how the 0.14.x regression report happened. The timer is unref'd so
-  // it never keeps the process alive, and the TTL-driven refresh-on-read in
-  // version-check.ts covers processes whose timers are throttled.
-  const announceUpdate = (r: { updateAvailable: boolean; current: string; latest: string | null }) => {
-    if (r.updateAvailable) {
-      console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest && plur init (configs pin versions)`)
-    }
-  }
-  checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
-  if (!versionRecheckTimer) {
-    versionRecheckTimer = setInterval(() => {
-      checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
-    }, VERSION_CHECK_SUCCESS_TTL_MS)
-    versionRecheckTimer.unref?.()
-  }
+  // No automatic update check (TEAM-5): with no internet, PLUR makes no
+  // network call it was not asked to make, and a process cannot tell it is
+  // offline without trying. The npm check runs only on request
+  // (plur_status with check_updates); tools show a cached answer from such a
+  // request and never fetch on a miss.
 
   const server = new Server(
     { name: 'plur-mcp', version: VERSION },

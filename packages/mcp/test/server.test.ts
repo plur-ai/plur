@@ -715,9 +715,13 @@ describe('MCP server (wire protocol)', () => {
       const base = Date.now()
       const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_SUCCESS_TTL_MS + 1)
       try {
-        // First read after expiry stays zero-cost (may still serve the stale
-        // answer) but triggers the background refresh
-        await client.callTool({ name: 'plur_status', arguments: {} })
+        // A plain read after expiry still shows the old answer and never
+        // fetches (TEAM-5); the explicit check asks the registry again
+        result = await client.callTool({ name: 'plur_status', arguments: {} })
+        data = JSON.parse((result.content as any)[0].text)
+        expect(data.update_available).toBeUndefined()
+        expect(globalThis.fetch).not.toHaveBeenCalled()
+        await client.callTool({ name: 'plur_status', arguments: { check_updates: true } })
         await settleVersionChecks()
 
         // The next read sees the new release on both surfaces
