@@ -81,10 +81,15 @@ describe('applyMcpEnv: codex', () => {
     expect(launch!.env.PATH).toBe('/bin')
   })
 
-  it('a relative script under the entry cwd is resolved against that cwd, as Codex does', () => {
-    put('.codex/config.toml', '[mcp_servers.plur]\ncommand = "node"\nargs = ["./node_modules/@plur-ai/mcp/dist/index.js"]\ncwd = "/opt/plur"\n')
+  it('an entry with its own cwd is wired, but its launch is not handed to the proof', async () => {
+    put('.codex/config.toml', '[mcp_servers.plur]\ncommand = "node"\nargs = ["./node_modules/@plur-ai/mcp/dist/index.js"]\ncwd = "/opt/plur"\nenv = { PLUR_PATH = "./memory" }\n')
     const launch = toolLaunch('codex', { PATH: '/bin' }, { ...loc, platform: 'linux' })
-    expect(launch?.args[0]).toBe(join('/opt/plur', 'node_modules/@plur-ai/mcp/dist/index.js'))
+    expect(launch?.cwd).toBe('/opt/plur')
+    expect(launchProblem('Codex', launch!, 'linux')).toMatch(/working folder/)
+    const results = await wireTools({ mcpEnv: THREE, ...loc, platform: 'linux', parentEnv: {}, probes: NO_PROBES })
+    const codex = results.find(r => r.tool === 'codex')!
+    expect(codex.status).toBe('wired')
+    expect(launchOf(codex)).toBeUndefined()
   })
 
   it('a second run with the same env is unchanged and does not touch the bytes', () => {
@@ -230,6 +235,16 @@ describe('applyMcpEnv: opencode', () => {
     expect(applyMcpEnv('opencode', THREE, loc).status).toBe('updated')
     expect(lstatSync(link).isSymbolicLink()).toBe(true)
     expect((parseJsonc(readFileSync(target, 'utf8')) as any).mcp.plur.environment).toEqual(THREE)
+  })
+
+  it('a config folder that is a link is edited at its target; the link survives', () => {
+    const real = join(home, 'dotfiles', 'cursor')
+    mkdirSync(real, { recursive: true })
+    writeFileSync(join(real, 'mcp.json'), JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } }))
+    symlinkSync(real, join(home, '.cursor'))
+    expect(applyMcpEnv('cursor', THREE, loc).status).toBe('updated')
+    expect(lstatSync(join(home, '.cursor')).isSymbolicLink()).toBe(true)
+    expect(JSON.parse(readFileSync(join(real, 'mcp.json'), 'utf8')).mcpServers.plur.env).toEqual(THREE)
   })
 
   it('the launch is the command array plus the entry environment', () => {
