@@ -205,6 +205,9 @@ export function applyMcpEnv(tool: ToolId, env: Env, loc: WireLocation = {}): App
     if (code === 'ENOENT' || code === 'ENOTDIR') return { status: 'absent', path }
     return { status: 'refused', path, detail: 'could not read the file' }
   }
+  // JS objects drop a `__proto__` key on the way in, so the edit could not be
+  // checked against it, and could lose it.
+  if (snapshot.includes('__proto__')) return { status: 'refused', path, detail: 'the file has a key named __proto__, which PLUR cannot edit safely; left unchanged' }
   let plan: Plan
   try {
     plan = tool === 'codex' ? planCodex(snapshot, env) : tool === 'opencode' ? planOpencode(snapshot, env) : planMcpServersJson(snapshot, env)
@@ -310,7 +313,9 @@ function removeJsonProperty(text: string, objectPath: string[], key: string): st
   }
   let out = text
   for (const [from, to] of [...cuts].sort((x, y) => y[0] - x[0])) {
-    out = out.slice(0, from) + (from === prop.offset ? kept.join(' ') : '') + out.slice(to)
+    // A line comment keeps the line break that ends it.
+    const comments = kept.map(c => (c.startsWith('//') ? c + '\n' : c + ' ')).join('')
+    out = out.slice(0, from) + (from === prop.offset ? comments : '') + out.slice(to)
   }
   const at = prop.offset - cuts.filter(([from]) => from < prop.offset).reduce((n, [from, to]) => n + to - from, 0)
   const from = out.lastIndexOf('\n', at - 1) + 1
@@ -619,21 +624,21 @@ const WRAPPERS = new Set(['bunx', 'pnpx', 'pnpm', 'yarn', 'npm', 'uvx', 'wsl', '
 
 const baseName = (p: string) => (p.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.exe$/, '')
 
-/** A script of a package manager or runner run by Node itself (`node …/npm/bin/npx-cli.js`). */
-const RUNNER_SCRIPT = /(^|[\\/])(node_modules[\\/](npm|corepack|pnpm|yarn|bun)|\.yarn)[\\/]|(^|[\\/])(npx|npm|pnpm|pnpx|yarn|corepack)([-.][^\\/]*)?\.c?js$/i
+/** PLUR's MCP server entrypoint: the installed package, or a built checkout. */
+const PLUR_MCP_SCRIPT = /[\\/](@plur-ai[\\/]mcp|packages[\\/]mcp)[\\/]dist[\\/]index\.js$/i
 
 /**
  * The only launches the proof runs: PLUR's own `plur-mcp` (the `.plur/bin`
- * shim execs Node in place, so its pid is the server's), or Node running a
- * script file directly — the script first, no Node option before it, and not
- * a package runner's script.
+ * shim execs Node in place, so its pid is the server's), or Node running
+ * PLUR's MCP entrypoint directly, as its first argument. Any other script
+ * (a package runner, tsx, a supervisor) may start the server as a child.
  */
 function isDirectLaunch(launch: ToolLaunch): boolean {
   const base = baseName(launch.command)
   if (base === 'plur-mcp') return true
   if (base !== 'node') return false
   const script = launch.args[0]
-  return script !== undefined && !script.startsWith('-') && /\.(c|m)?js$/i.test(script) && !RUNNER_SCRIPT.test(script)
+  return script !== undefined && PLUR_MCP_SCRIPT.test(script)
 }
 
 /**
@@ -653,7 +658,8 @@ export function launchProblem(label: string, launch: ToolLaunch, platform: NodeJ
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(launch.command)) {
     return `${label} starts PLUR through a .cmd launcher, which cannot start without a shell — ${fix}`
   }
-  if (!isDirectLaunch(launch)) return `${label} starts PLUR through ${baseName(launch.command) || 'an unknown command'}, not PLUR itself — ${fix}`
+  // The command itself is not echoed: an unknown one can be anything, a credential included.
+  if (!isDirectLaunch(launch)) return `${label} starts PLUR through a command that is not PLUR itself — ${fix}`
   return null
 }
 
@@ -736,12 +742,22 @@ export function probeWsl(opts: {
     }
   }
   const onWindowsMount = (dir: string) => mounts.some(m => dir === m || dir.startsWith(m.endsWith('/') ? m : m + '/'))
+  const real = (p: string) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return p
+    }
+  }
   for (const dir of (opts.env.PATH ?? '').split(':')) {
     if (!dir || !dir.startsWith('/')) continue
-    if (onWindowsMount(dir)) {
+    // Judged where the files really are: a PATH folder or a `codex` that
+    // links onto a Windows drive is Windows' Codex.
+    if (onWindowsMount(dir) || onWindowsMount(real(dir))) {
       if (['codex', 'codex.exe', 'codex.cmd'].some(n => exists(join(dir, n)))) probes.codexOnWindows = true
     } else if (isExecutableFile(join(dir, 'codex'))) {
-      probes.codexOnPath = true
+      if (onWindowsMount(real(join(dir, 'codex')))) probes.codexOnWindows = true
+      else probes.codexOnPath = true
     }
   }
   return probes
