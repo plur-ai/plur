@@ -133,3 +133,7 @@ known-key backoff bypass and the local-path takeover hold. Other write guards,
 claims, idempotency and merge-back remain unchanged; the extra queue field is
 an attempted credential fingerprint only. Enterprise recovery text changes no
 recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Hook-run timestamps now respect off and unreadable-map refusal.
+The cached server line and admitted workspace scope selection are unchanged;
+the timestamp is diagnostic only and is never written on those refused paths. -/
