@@ -2201,6 +2201,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         })
         _recordInjectionTelemetry(session_id, result.injected_packs)
         return {
+          // INJ-7: the constraints section is part of what injected_ids lists
+          // (and what the store records as injected); a reply without it
+          // reported pinned prohibitions as given that never reached the agent.
+          // First, as in plur_session_start: prohibitions are read first.
+          constraints: result.constraints,
           directives: result.directives,
           consider: result.consider,
           count: result.count,
@@ -2248,6 +2253,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         })
         _recordInjectionTelemetry(session_id, result.injected_packs)
         const response: Record<string, unknown> = {
+          // INJ-7: see plur_inject — every section injected_ids covers is in the reply.
+          constraints: result.constraints,
           directives: result.directives,
           consider: result.consider,
           count: result.count,
