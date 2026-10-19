@@ -217,6 +217,8 @@ export interface RemoteProjectConfig {
 
 export interface RecallOptions {
   scope?: string
+  /** Workspace dialing context only; never an authorization or result filter. */
+  context_scopes?: string[]
   /**
    * Permitted-scope allow-list — an AUTHORIZATION filter, distinct from the
    * `scope` visibility filter above (see `ScopeRestriction` in

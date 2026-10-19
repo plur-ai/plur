@@ -19,5 +19,6 @@ import PlurSpec.GitFolder
 import PlurSpec.Login
 import PlurSpec.SaveDestination
 import PlurSpec.ServerDiagnostics
+import PlurSpec.WorkspaceChoice
 
 /-! Root of the PlurSpec models. One file per component; R2* = second verification round. -/

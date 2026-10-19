@@ -142,3 +142,9 @@ The discovery clock-skew constant is exported without changing its value. -/
 /- 2026-10-19: Hook-run timestamps now respect off and unreadable-map refusal.
 The cached server line and admitted workspace scope selection are unchanged;
 the timestamp is diagnostic only and is never written on those refused paths. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/

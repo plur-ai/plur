@@ -1,6 +1,6 @@
 import {
   folderOffEntries, folderMapProblem, folderAsk, hostFolderAsk, folderNonceOutstanding, endFolderNonceSession,
-  sweepFolderNonces, coversHomeOrRoot, workspaceFolderScope, FOLDER_NONCE_TTL_MS, type FolderMapProblem, type Plur, type FolderAsk, type FolderAskAnswer,
+  sweepFolderNonces, coversHomeOrRoot, workspaceScopeDecision, FOLDER_NONCE_TTL_MS, type WorkspaceScopeDecision, type FolderMapProblem, type Plur, type FolderAsk, type FolderAskAnswer,
   type FolderAskHost,
 } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
@@ -391,10 +391,10 @@ export function ancestorHosts(now: number = Date.now()): FolderAskHost[] {
  *    every folder under it);
  *  - an input that cannot be resolved, or any error.
  */
-export function workspaceWriteScope(plur: Plur, ws: Workspace): string | null {
+export function workspaceWriteScope(plur: Plur, ws: Workspace): WorkspaceScopeDecision {
   // The rule lives in core (workspaceFolderScope) so the CLI, whose one input
   // is the folder it runs in, resolves exactly as this server does (L10).
-  return workspaceFolderScope(ws.roots.length > 0 ? ws.roots : [ws.cwd], dir => plur.resolveFolderPolicy(dir))
+  return workspaceScopeDecision(ws.roots.length > 0 ? ws.roots : [ws.cwd], dir => plur.resolveFolderPolicy(dir))
 }
 
 /** The workspace's identity for a session default (#1563 review round 2): its roots, or its start folder. */
@@ -653,7 +653,8 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
       // The workspace's scope: workspaceWriteScope, the one resolver every
       // default uses (#1563 review round 2). Only when every input — every
       // root, none left out — agrees on one scope; otherwise none.
-      const scope = workspaceWriteScope(plur, workspace) ?? undefined
+      const scopeDecision = workspaceWriteScope(plur, workspace)
+      const scope = scopeDecision.kind === 'agreed' ? scopeDecision.scope : undefined
       // Every folder is decided: a question this session asked about one of
       // them is answered. Its scope reaches writes through the workspace
       // resolver (FOLDER_SCOPE); the process-wide slot is never set (#1563
