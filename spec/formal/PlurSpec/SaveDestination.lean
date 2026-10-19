@@ -45,6 +45,41 @@ theorem every_success_reported (successful : List Delivery) :
 
 end PlurSpec.SaveDestination
 
+/-! Session adapters (2026-10-19): the admitted workspace policy is supplied
+to the cached reader. No adapter falls back to process cwd after admission.
+The only override is an explicit session default, which also controls writes.
+This model assumes the existing gate and resolver supplied that policy. -/
+namespace PlurSpec.SessionStatusAdapter
+
+def target (admitted : Nat) (explicit : Option Nat) : Nat :=
+  explicit.getD admitted
+
+theorem admitted_without_override (admitted : Nat) : target admitted none = admitted := rfl
+theorem explicit_wins (admitted selected : Nat) : target admitted (some selected) = selected := rfl
+
+def showLine (initial rehydration : Bool) : Bool := initial && !rehydration
+
+theorem no_ordinary_prompt : showLine false false = false := rfl
+theorem no_rehydration (initial : Bool) : showLine initial true = false := by cases initial <;> rfl
+theorem initial_shown : showLine true false = true := rfl
+
+-- The former process-cwd choice could report a remote target (1) for a
+-- local editor root (0). The admitted-policy projection rejects that claim.
+example : target 0 none ≠ 1 := by decide
+
+def afterRefresh (_previous : Option Nat) (resolved : Option Nat) : Option Nat :=
+  match resolved with
+  | none => none
+  | some destination => some destination
+
+theorem failed_refresh_clears (previous : Option Nat) : afterRefresh previous none = none := rfl
+
+def memoryAfterStatus (memory : List Nat) (_statusAvailable : Bool) : List Nat := memory
+
+theorem status_failure_keeps_memory (memory : List Nat) : memoryAfterStatus memory false = memory := rfl
+
+end PlurSpec.SessionStatusAdapter
+
 /-! Cached session status (2026-10-19): presentation never probes the server.
 The queue comes from the existing primary outbox reader; only pending pushes
 are counted as waiting saves. A write warning supersedes a mapped target. -/

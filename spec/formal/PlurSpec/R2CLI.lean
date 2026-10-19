@@ -653,3 +653,8 @@ theorem old_removes_live : removesLive oldTakeover 1 (some 2) :=
 end InjectLock
 
 end PlurSpec.R2CLI
+
+/-! Checked 2026-10-19: initial-session cached server status and hook-run timestamps
+add presentation/diagnostic metadata only. Existing admission, persistence and
+write rules are unchanged. SaveDestination.SessionStatusAdapter models workspace
+status selection; real hook and stdio tests check adapter integration. -/

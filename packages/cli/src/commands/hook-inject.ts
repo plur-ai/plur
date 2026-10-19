@@ -14,6 +14,8 @@ import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome 
 import { waitForOwnStoreLock, exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from '../lib/store-lock-exit.js'
 import { correctionReminder } from './hook-correction-detect.js'
 import { recordInjected } from '../lib/auto-rate.js'
+import { recordHookRun } from '../lib/hook-runs.js'
+import { cachedServerLines } from '../lib/server-session.js'
 import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
@@ -831,6 +833,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // `session_id`, and the folder decision from its `cwd`. Reading stdin is a
   // single synchronous read.
   const input = readStdinSync()
+  // Execution proves hook trust even when this folder has memory disabled.
+  // This diagnostic contains no memory or folder data. Later prompts with
+  // an injection marker, rehydration and non-session events do not refresh it.
+  const priorMarker = readableMarkerPath(sessionKey(input), input)
+  if (!isRehydrate && !event && !(priorMarker && existsSync(priorMarker))) recordHookRun('claude', flags.path)
 
   // The folder map (#1347) replaces the old isPlurConfigured() gate (#247):
   // off is silent; ask is silent except for the one question on the first
@@ -1168,6 +1175,7 @@ async function injectSession(
     parts.push(`[PLUR Memory — rehydrated after compaction, ${count} engrams]`)
   } else {
     parts.push(`[PLUR Memory — session started, ${count} engrams injected]`)
+    parts.push(...await cachedServerLines(plur, dir, policy))
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     // remote-only: the remote-only line below names the scope, escaped (gate review of #1663).

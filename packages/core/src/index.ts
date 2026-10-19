@@ -14304,11 +14304,11 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** Cached server status; async only because primary outbox storage is async. */
-  async serverSessionLines(dir: string): Promise<string[]> {
+  async serverSessionLines(dir: string, admittedPolicy?: FolderPolicy): Promise<string[]> {
     this.reloadConfigIfChanged()
     const entries = this._readRawStores().filter(isEnterpriseServerEntry)
     if (!entries.length) return []
-    const policy = this.resolveFolderPolicy(dir, { readOnly: true })
+    const policy = admittedPolicy ?? this.resolveFolderPolicy(dir, { readOnly: true })
     const queued = (await this.listOutbox()).filter(e => e.kind === 'push')
     // A grant may disappear while its save is still queued. Match durable
     // endpoint evidence, not a mutable scopes list. Keep endpoints private.

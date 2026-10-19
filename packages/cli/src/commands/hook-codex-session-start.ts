@@ -3,6 +3,8 @@ import { hookFolderPolicy, payloadDir, sessionSettings, clearFolderAsk, isResume
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
+import { recordHookRun } from '../lib/hook-runs.js'
+import { cachedServerLines } from '../lib/server-session.js'
 
 /**
  * plur hook-codex-session-start — Codex `SessionStart` hook.
@@ -29,6 +31,7 @@ import { recordInjected } from '../lib/auto-rate.js'
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex session-start', async () => {
     const input = readStdinJson()
+    if (input.source !== 'compact') recordHookRun('codex', flags.path)
     // #1347 option C: a resumed session keeps its id, but SessionEnd deleted
     // its nonces. Forget that it was asked, so its first prompt asks again
     // with a fresh nonce. Only on resume: startup, clear and compact keep it.
@@ -77,7 +80,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)}\n\n`
         : ''
       // remote-only: where memory goes, and that the team server did not answer.
-      const fullHeader = [header, ...remoteOnlyLines(plur, result, true)].join('\n')
+      const serverLines = input.source === 'compact' ? [] : await cachedServerLines(plur, dir, policy)
+      const fullHeader = [header, ...serverLines, ...remoteOnlyLines(plur, result, true)].join('\n')
       context = refusal + (body ? `${fullHeader}\n\n${body}` : fullHeader)
     } catch (err: unknown) {
       context = '[PLUR Memory — injection FAILED at session start] ' +
