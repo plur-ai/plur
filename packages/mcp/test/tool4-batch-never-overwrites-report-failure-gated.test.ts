@@ -2,9 +2,11 @@
  * TOOL-4 product tests (2026-10-18).
  *
  * 1. plur_learn_batch never overwrites an existing memory (owner decision
- *    2026-10-18). A duplicate checker answering UPDATE or MERGE saves the item
- *    as its own memory, linked to the existing one, and the per-item result
- *    names the likely duplicate. Because it never overwrites, it is NOT marked
+ *    2026-10-18). A duplicate checker answering MERGE saves the item as its
+ *    own memory, linked to the existing one, and the per-item result names
+ *    the likely duplicate. An UPDATE answer saves the item as its own memory
+ *    that supersedes the existing one, whose text is kept (owner decision
+ *    2026-10-18, LRN-8; this file first pinned a linked ADD for UPDATE too). Because it never overwrites, it is NOT marked
  *    destructive and stays behind plur_admin (owner decision 2026-10-18: the
  *    promise is proven by behaviour, not by the marking); through the gateway
  *    it behaves exactly as when called directly.
@@ -112,14 +114,21 @@ describe('TOOL-4: behaviour over the tools', () => {
       const fresh = new Plur({ path: dir })
       expect((await fresh.getById(old.id))?.statement).toBe(OLD)
       const item = res.results[0]
-      expect(item.decision).toBe('ADD')
       expect(item.id).not.toBe(old.id)
       const added = (await fresh.list()).find(e => e.statement === INCOMING)
       expect(added, 'the incoming item was saved as its own memory').toBeDefined()
-      expect(added!.relations?.related ?? []).toContain(old.id)
-      expect(item.likely_duplicate_of?.id).toBe(old.id)
-      expect(item.likely_duplicate_of?.checker_decision).toBe(decision)
-      expect(String(item.likely_duplicate_of?.note)).toMatch(/never overwrite/i)
+      if (decision === 'UPDATE') {
+        expect(item.decision).toBe('UPDATE')
+        expect(item.existing_id).toBe(old.id)
+        expect(added!.relations?.supersedes ?? []).toContain(old.id)
+        expect((await fresh.getById(old.id))?.relations?.superseded_by ?? []).toContain(added!.id)
+      } else {
+        expect(item.decision).toBe('ADD')
+        expect(added!.relations?.related ?? []).toContain(old.id)
+        expect(item.likely_duplicate_of?.id).toBe(old.id)
+        expect(item.likely_duplicate_of?.checker_decision).toBe(decision)
+        expect(String(item.likely_duplicate_of?.note)).toMatch(/never overwrite/i)
+      }
     })
   }
 
@@ -134,7 +143,7 @@ describe('TOOL-4: behaviour over the tools', () => {
       expect((await fresh.getById(old.id))?.statement).toBe(OLD)
       const added = (await fresh.list()).find(e => e.statement === INCOMING)
       expect(added, 'the incoming item was saved as its own memory').toBeDefined()
-      expect(added!.relations?.related ?? []).toContain(old.id)
+      expect(decision === 'UPDATE' ? added!.relations?.supersedes ?? [] : added!.relations?.related ?? []).toContain(old.id)
     })
   }
 

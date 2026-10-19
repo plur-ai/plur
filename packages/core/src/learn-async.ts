@@ -13,6 +13,7 @@ import { engramContentFields } from './content-fields.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
+import type { TensionPair } from './tensions.js'
 import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, LearnBatchFailure, DedupDecision, LlmFunction } from './types.js'
 
 /**
@@ -88,6 +89,13 @@ export interface LearnAsyncDeps {
    * can demote a mutated engram before it is written back to a shared store.
    */
   offendingHitsForScope: (statement: string, scope: string) => SecretMatch[]
+  /**
+   * Put a pair in the user's review queue (LRN-9): a tension record with
+   * status `detected`, the queue plur_tensions lists and the user resolves.
+   * Returns the record id. Optional so hand-built deps keep working; without
+   * it an UPDATE onto a locked memory still saves the new statement.
+   */
+  openReview?: (pair: TensionPair) => Promise<string | undefined>
 }
 
 
@@ -198,6 +206,45 @@ function demoteIfSensitive(
 }
 
 /**
+ * The duplicate checker said UPDATE onto a locked memory (LRN-9, owner
+ * decision 2026-10-18: "there should be a review queue unless the user
+ * specifies differently"). The locked memory is left exactly as it is, the
+ * new statement is saved as its own memory, and a tension record linking the
+ * two (status `detected`) puts the pair in the user's review queue.
+ *
+ * Open, not decided here: whether the new statement is injected while the
+ * review waits, and a setting by which a user chooses otherwise.
+ */
+async function saveBesideLocked(
+  deps: LearnAsyncDeps,
+  statement: string,
+  context: LearnContext | undefined,
+  locked: Engram,
+  alreadySaved?: Engram,
+): Promise<LearnAsyncResult> {
+  const engram = alreadySaved ?? await deps.learn(statement, context)
+  let tensions: string[] | undefined
+  if (deps.openReview && engram.id !== locked.id) {
+    try {
+      const id = await deps.openReview({
+        id_a: locked.id,
+        id_b: engram.id,
+        statement_a: locked.statement,
+        statement_b: engram.statement,
+        confidence: 1,
+        reason: `The duplicate checker said ${engram.id} updates ${locked.id}, which is locked. ` +
+          `A locked memory is not superseded automatically, so both are kept and this pair waits for review.`,
+      })
+      if (id) tensions = [id]
+    } catch (err) {
+      // The new statement is saved either way; a missing review item is logged, not thrown.
+      logger.warning(`could not open a review item for ${locked.id} and ${engram.id}: ${err}`)
+    }
+  }
+  return { engram, decision: 'ADD', existing_id: locked.id, ...(tensions ? { tensions } : {}) }
+}
+
+/**
  * Execute LLM-driven dedup decision.
  *
  * Async since convergence Phase 2: the UPDATE/MERGE writes take
@@ -225,7 +272,11 @@ async function executeDedupDecision(
   // (`relations.related`, forward edge only), and the result says so. The
   // existing memory is not touched: not its text, not its tags, not its
   // version. NOOP (nothing written) is unaffected.
-  if (opts.neverOverwrite && (decision === 'UPDATE' || decision === 'MERGE')) {
+  //
+  // An UPDATE answer is NOT handled here: it supersedes (below), which never
+  // rewrites the existing memory either, in a single save and a batch save
+  // alike (owner decision 2026-10-18, LRN-8).
+  if (opts.neverOverwrite && decision === 'MERGE') {
     const existing = targetId ? await deps.getById(targetId) : null
     if (!existing || existing.status !== 'active') {
       return { engram: await deps.learn(statement, context), decision: 'ADD' }
@@ -239,7 +290,7 @@ async function executeDedupDecision(
         id: existing.id,
         checker_decision: decision,
         note:
-          `The duplicate checker suggested ${decision === 'UPDATE' ? 'replacing' : 'merging this into'} ${existing.id}. ` +
+          `The duplicate checker suggested merging this into ${existing.id}. ` +
           `Batch learning never overwrites an existing memory, so this was saved as its own memory and linked to ` +
           `${existing.id} as a likely duplicate; ${existing.id} is unchanged.`,
       },
@@ -262,47 +313,44 @@ async function executeDedupDecision(
     }
 
     case 'UPDATE': {
-      if (targetId) {
-        const existing = await deps.getById(targetId)
-        if (existing && (existing as any).commitment !== 'locked') {
-          const result = await withStoreLock(deps, async () => {
-            const engrams = await deps.store.load()
-            const idx = engrams.findIndex(e => e.id === targetId)
-            // Target gone — fall out of the lock and ADD; see the doc comment.
-            if (idx === -1) return null
-            // Re-check under the lock (formal-verification finding, persistence.md
-            // candidate 7): `existing` is a pre-lock snapshot, and an engram locked
-            // since then must not be rewritten — same outcome as locked-before: ADD.
-            if ((engrams[idx] as any).commitment === 'locked') return null
-            const previousStatement = engrams[idx].statement
-            const updated = { ...engrams[idx] } as any
-            updated.statement = statement
-            updated.content_hash = computeContentHash(statement)
-            updated.engram_version = (updated.engram_version ?? 1) + 1
-            updated.activation.last_accessed = new Date().toISOString().slice(0, 10)
-            if (context?.tags) updated.tags = [...new Set([...updated.tags, ...context.tags])]
-            // Leak guard (#353): a dedup UPDATE can introduce sensitive content
-            // into an engram living at a shared scope. Demote before persisting.
-            demoteIfSensitive(deps, updated, updated.statement)
-            engrams[idx] = updated
-            await persistOne(deps, engrams, updated)
-            await deps.syncIndex()
-            appendHistory(deps.rootPath, {
-              event: 'engram_updated',
-              engram_id: targetId,
-              timestamp: new Date().toISOString(),
-              data: { old_statement: previousStatement, new_statement: statement, reason: 'LLM dedup UPDATE' },
-              // Which model decided this (#962). A model rewrote the statement,
-              // and that rewrite became the memory. Without naming the model the
-              // decision cannot be reviewed later.
-              ...(dedupActor ? { actor: dedupActor } : {}),
-            })
-            return { engram: updated as Engram, decision: 'UPDATE' as DedupDecision, existing_id: targetId }
-          })
-          if (result) return result
-        }
+      // A changed value is saved as its own memory that supersedes the old one
+      // (owner decision 2026-10-18, LRN-8): the old text is never rewritten,
+      // it is marked `superseded_by` the new memory and stops being injected
+      // (the LearnContext.supersedes path, #240). A LOCKED target is never
+      // superseded automatically (LRN-9): it stays as it is, the new statement
+      // is saved, and the pair goes to the review queue.
+      const existing = targetId ? await deps.getById(targetId) : null
+      if (!existing || existing.status !== 'active') {
+        return { engram: await deps.learn(statement, context), decision: 'ADD' }
       }
-      return { engram: await deps.learn(statement, context), decision: 'ADD' }
+      if ((existing as any).commitment === 'locked') {
+        return await saveBesideLocked(deps, statement, context, existing)
+      }
+      const supersedes = [...new Set([...(context?.supersedes ?? []), existing.id])]
+      // The replacement lives where the memory it replaces lives, unless the
+      // caller named a scope (candidates are then already filtered to it).
+      // learn()'s own sensitive-content guard still runs on the new memory.
+      const scope = context?.scope ?? existing.scope
+      // `supersedes_unless_locked`: learn() re-checks the lock under the store
+      // lock, so a memory locked after the read above is not superseded either.
+      const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), supersedes, supersedes_unless_locked: true })
+      // Judged by effect: UPDATE is reported only when the supersede landed.
+      const landed = engram.id !== existing.id && ((engram as any).relations?.supersedes ?? []).includes(existing.id)
+      if (!landed) {
+        const now = await deps.getById(existing.id)
+        if (now && (now as any).commitment === 'locked') {
+          return await saveBesideLocked(deps, statement, context, now, engram)
+        }
+        return { engram, decision: 'ADD' }
+      }
+      appendHistory(deps.rootPath, {
+        event: 'engram_updated',
+        engram_id: existing.id,
+        timestamp: new Date().toISOString(),
+        data: { superseded_by: engram.id, new_statement: statement, reason: 'LLM dedup UPDATE: saved as a new memory that supersedes this one' },
+        ...(dedupActor ? { actor: dedupActor } : {}),
+      })
+      return { engram, decision: 'UPDATE', existing_id: existing.id }
     }
 
     case 'MERGE': {
@@ -359,10 +407,10 @@ async function executeDedupDecision(
 export interface LearnAsyncOptions {
   /**
    * Never rewrite an existing memory (owner decision 2026-10-18, batch only).
-   * An UPDATE or MERGE answer from the duplicate checker saves the statement
-   * as its own memory, linked to the one the checker named, and reports it in
-   * `likely_duplicate_of`. Default false: a single learnAsync keeps its
-   * UPDATE/MERGE behaviour.
+   * A MERGE answer from the duplicate checker saves the statement as its own
+   * memory, linked to the one the checker named, and reports it in
+   * `likely_duplicate_of`. Default false: a single learnAsync keeps its MERGE
+   * behaviour. UPDATE supersedes in both (LRN-8), so this does not touch it.
    */
   neverOverwrite?: boolean
 }
@@ -609,9 +657,11 @@ interface BatchAccumulatorEntry {
 /**
  * Batch learn: process multiple statements sequentially with LLM dedup.
  *
- * Never overwrites (owner decision 2026-10-18): an UPDATE or MERGE answer is
- * saved as a new memory linked to the one the checker named (see
- * LearnAsyncOptions.neverOverwrite); NOOP still writes nothing.
+ * Never overwrites (owner decision 2026-10-18): a MERGE answer is saved as a
+ * new memory linked to the one the checker named (see
+ * LearnAsyncOptions.neverOverwrite), an UPDATE answer as a new memory that
+ * supersedes it (LRN-8; a locked one goes to review, LRN-9); NOOP still
+ * writes nothing.
  *
  * LLM dedup calls are bounded by opts.maxLlmCalls (default 50). The cap only
  * bites on large batches of novel-but-similar statements — exact-hash NOOPs
@@ -706,21 +756,23 @@ export async function learnBatch(
     // against its input index and continue; the caller inspects `failures`.
     try {
       // Batch learning never overwrites an existing memory (owner decision
-      // 2026-10-18): UPDATE/MERGE answers become a linked ADD.
+      // 2026-10-18): a MERGE answer becomes a linked ADD, an UPDATE answer a
+      // new memory that supersedes the old one (LRN-8).
       const result = await learnAsync(batchDeps, statement, ctx, { neverOverwrite: true })
       // Tag with the input position so a caller can map this result back to its
       // input even though `results` is compacted (failed statements absent). #281
       results.push({ ...result, input_index: i })
       const key = result.decision.toLowerCase()
       if (key === 'noop') stats.noops++
-      else if (key === 'update') stats.updated++
       else if (key === 'merge') stats.merged++
       else {
-        stats.added++
-        // Record ADD-written engrams in the accumulator so subsequent statements
-        // in this batch can dedup against them (#854). UPDATE/MERGE/NOOP all
-        // point at an existing engram already in the index — only ADD produces a
-        // new one that isn't there yet.
+        if (key === 'update') stats.updated++
+        else stats.added++
+        // Record newly written engrams in the accumulator so subsequent
+        // statements in this batch can dedup against them (#854). ADD writes a
+        // new engram, and so does UPDATE, which saves the statement as a new
+        // memory superseding the old one (LRN-8); NOOP points at an existing
+        // engram already in the index, and batch MERGE is saved as an ADD.
         batchAccumulator.push({
           id: result.engram.id,
           statement: result.engram.statement,

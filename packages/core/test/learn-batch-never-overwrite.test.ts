@@ -6,12 +6,15 @@ import { Plur } from '../src/index.js'
 
 /**
  * Owner decision 2026-10-18: batch learning never overwrites an existing
- * memory. When the duplicate checker answers UPDATE or MERGE for a batch item,
- * the item is saved as its own memory, linked to the existing one
- * (relations.related) as a likely duplicate, and the per-item result says so.
- * NOOP still writes nothing and returns the existing id.
+ * memory. When the duplicate checker answers MERGE for a batch item, the item
+ * is saved as its own memory, linked to the existing one (relations.related)
+ * as a likely duplicate, and the per-item result says so. NOOP still writes
+ * nothing and returns the existing id.
  *
- * Single learnAsync is not covered by this decision and keeps its behaviour.
+ * An UPDATE answer is a changed value (owner decision 2026-10-18, LRN-8): the
+ * item is saved as its own memory that supersedes the existing one, whose
+ * text is kept unchanged. That expectation changed from the linked ADD this
+ * file first pinned for UPDATE.
  */
 
 const OLD = 'Write release summaries as three bullets followed by one explicit next action.'
@@ -37,7 +40,32 @@ describe('learnBatch never overwrites an existing memory', () => {
   })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-  for (const decision of ['UPDATE', 'MERGE'] as const) {
+  it('checker answers UPDATE: old text unchanged, new item saved and supersedes it', async () => {
+    const old = await plur.learn(OLD, { scope: 'global' })
+    const checker = scriptedChecker('UPDATE', () => old.id)
+
+    const res = await plur.learnBatch([{ statement: INCOMING, context: { scope: 'global' } }], checker.llm)
+
+    expect(checker.calls.length, 'precondition: the duplicate checker was asked').toBeGreaterThan(0)
+    expect(res.failures).toEqual([])
+    const r = res.results[0]!
+    expect(r.decision).toBe('UPDATE')
+    expect(r.existing_id).toBe(old.id)
+    expect(r.engram.id).not.toBe(old.id)
+
+    const fresh = new Plur({ path: dir })
+    const oldNow = await fresh.getById(old.id)
+    expect(oldNow?.statement).toBe(OLD)
+    expect(oldNow?.relations?.superseded_by ?? []).toEqual([r.engram.id])
+    const added = await fresh.getById(r.engram.id)
+    expect(added?.statement).toBe(INCOMING)
+    expect(added?.relations?.supersedes ?? []).toEqual([old.id])
+
+    expect(res.stats.updated).toBe(1)
+    expect(res.stats.added).toBe(0)
+  })
+
+  for (const decision of ['MERGE'] as const) {
     it(`checker answers ${decision}: old text unchanged, new item saved and linked`, async () => {
       const old = await plur.learn(OLD, { scope: 'global' })
       const checker = scriptedChecker(decision, () => old.id)
