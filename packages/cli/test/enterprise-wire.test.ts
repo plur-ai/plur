@@ -155,6 +155,14 @@ describe('applyMcpEnv: codex', () => {
     const path = put('.codex/config.toml', text)
     expect(applyMcpEnv('codex', { NODE_EXTRA_CA_CERTS: CA }, loc).status).toBe('refused')
     expect(readFileSync(path, 'utf8')).toBe(text)
+    const escaped = '[mcp_servers.plur]\ncommand = "plur-mcp"\nenv = { "__pr\\u006fto__" = "keep", USER = "yes" }\n'
+    put('.codex/config.toml', escaped)
+    expect(applyMcpEnv('codex', { NODE_EXTRA_CA_CERTS: CA }, loc).status).toBe('refused')
+    expect(readFileSync(path, 'utf8')).toBe(escaped)
+    const json = '{ "mcp": { "plur": { "command": ["plur-mcp"], "environment": { "__pr\\u006fto__": "keep" } } } }'
+    const ocPath = put('.config/opencode/opencode.json', json)
+    expect(applyMcpEnv('opencode', THREE, loc).status).toBe('refused')
+    expect(readFileSync(ocPath, 'utf8')).toBe(json)
   })
 
   it('an entry with a url is remote even when a command is left in it: refused, no launch', () => {
@@ -360,6 +368,7 @@ describe('launchProblem: only PLUR itself is a direct launch', () => {
       ['node', ['/opt/pnpm/pnpm-9.1.0.cjs', 'dlx', '@plur-ai/mcp']],
       ['node', ['/opt/node_modules/tsx/dist/cli.mjs', '/opt/plur/mcp/dist/index.js']],
       ['node', ['/opt/some/other-server.js']],
+      ['node', ['--title=/x/@plur-ai/mcp/dist/index.js', '/opt/node_modules/npm/bin/npm-cli.js', 'exec', '--', 'plur-mcp']],
     ] as Array<[string, string[]]>) {
       expect(launchProblem('Codex', { command, args, env }, 'linux'), `${command} ${args.join(' ')}`).not.toBeNull()
     }
