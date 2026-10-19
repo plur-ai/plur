@@ -286,3 +286,46 @@ describe('Codex round 11 on #1663', () => {
   })
 })
 
+describe('Codex round 12 on #1663', () => {
+  const walk = (d: string): string => !existsSync(d) ? '' : readdirSync(d, { withFileTypes: true })
+    .map(e => e.isDirectory() ? walk(join(d, e.name)) : readFileSync(join(d, e.name), 'utf8')).join('')
+
+  it('a delegating primary never deduplicates a write into a queued save of a secondary store', async () => {
+    const root = join(dir, 'h12', '.plur')
+    mkdirSync(root, { recursive: true })
+    const second = join(dir, 'second12.yaml')
+    writeFileSync(second, yaml.dump({ engrams: [queued('ENG-2026-10-18-130', 'QUEUEDDELEG the client lane is blue')] }))
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false }, stores: [{ path: second, scope: TEAM, shared: true, readonly: false }] }))
+    const appended: any[] = []
+    const store = {
+      kind: 'postgres', location: null,
+      load: async () => appended, loadCached: async () => appended, invalidate: () => {},
+      save: async (rows: any[]) => { appended.splice(0, appended.length, ...rows) },
+      findActiveByContentHash: async () => null,
+      nextEngramId: async () => 'ENG-2026-10-18-901',
+      append: async (e: any) => { appended.push(e) },
+      updateMany: async () => {},
+      loadByIds: async () => [],
+    }
+    const plur = new Plur({ path: root, store: store as any })
+    expect(await plur.wouldDeduplicate('QUEUEDDELEG the client lane is blue', { scope: TEAM })).toBeNull()
+    await plur.learn('QUEUEDDELEG the client lane is blue', { scope: TEAM }).catch(() => null)
+    const events = walk(join(root, 'history')).split('\n').filter(Boolean).map(l => JSON.parse(l))
+    expect(events.filter(e => e.event === 'engram_duplicate_absorbed')).toEqual([])
+    expect(readFileSync(second, 'utf8')).toContain('QUEUEDDELEG')
+  })
+
+  it('a corrupt personal store shows no excerpt of it in a remote-only status', async () => {
+    const home = join(dir, 'h12b'); const root = join(home, '.plur'); const work = join(home, 'client')
+    mkdirSync(root, { recursive: true }); mkdirSync(work, { recursive: true })
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false }, stores: [{ url: 'http://127.0.0.1:9', token: 't', scope: TEAM, shared: true }] }))
+    writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: work, plur: 'remote-only', scope: TEAM }] }))
+    writeFileSync(join(root, 'engrams.yaml'), 'engrams:\n  - id: ENG-1\n    statement: MYPRIVATE\n    tags: [unfinished\n')
+    const plur = new Plur({ path: root })
+    plur.bindFolder(work)
+    let out = ''
+    try { out = JSON.stringify(await plur.status()) } catch (err) { out = String((err as Error).message) + String((err as any).stack ?? '') }
+    expect(out).not.toContain('MYPRIVATE')
+  })
+})
+
