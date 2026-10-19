@@ -1,11 +1,23 @@
 /-!
 # R2CoreA — round 2, core index / provenance (packages/core/src/index.ts, provenance.ts)
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
+change swaps the config.yaml writes for `writeConfigFile` (same content, same lock) and adds
+re-exports; nothing this model covers changed.
+
 Each section names the code it mirrors. Payloads (statements, ids, scope
 classification, store configuration) are abstracted as oracles and parameters:
 theorems hold for every oracle.
 
 Findings and replays: spec/formal/findings/r2-corea.md.
+
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox`; no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
 
 Checked against the outbox lease (decision D2, PR #1231): index.ts gained a lease on outbox
 rows (`_outboxLease` bookkeeping, taken and released around each push) and `listOutbox` reports
@@ -16,6 +28,42 @@ lease changes neither — so every theorem still holds. The lease itself: WriteP
 
 Checked against #1349 (merged into #1228 on 2026-09-30): still holds. index.ts's
 only change is a re-export of `pendingStoreLockOps`, and no modelled branch changed.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+index.ts's predicates now read `resolveScopeTarget` (WritePath §3c).
+- §1: `provenanceFor` passes `_isRemoteWriteScope` (the section text said
+  `_isRemoteBackedScope`; the code has passed the write rule since
+  core-index#9b). A conflicted or ungranted scope now answers false, which by
+  `unknown_backing_stricter` can only withhold more.
+- §5b: `_crossScopeRecurrenceApplies = !_isRemoteWriteScope` is true for a
+  conflicted scope, but learn() and learnRouted() throw `ScopeConflictError`
+  (`_refuseScopeConflict`) before dedup, so no conflicted write reaches §5.
+  For one server the writable rule is the old one.
+- §2–§4, §6–§8: the forget/feedback guard, refcounted retirement, the egress
+  reload, the update walk and Decision R are not in the diff. The new code
+  (`refreshServerScopes`, the server-entry `persistStores` collapse, the
+  server-key rotation in `addStore`) is StoreEntry's territory, not modelled here.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; no section here reads it.
+
+Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds.
+`_isRemoteWriteScope` now reads `_remoteWriteEntry`, the same resolver answer
+(`remote` and writable); provenance and the recurrence gate see no change.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+No section here reads registration.
 -/
 
 namespace PlurSpec.R2CoreA

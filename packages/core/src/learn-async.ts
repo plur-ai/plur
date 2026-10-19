@@ -92,6 +92,13 @@ export interface LearnAsyncDeps {
    * it an UPDATE onto a locked memory still saves the new statement.
    */
   openReview?: (pair: TensionPair) => Promise<string | undefined>
+  /**
+   * Turn an already-saved memory into a draft (`commitment: 'draft'`: stored
+   * and searchable, never injected; INJ-4). Used by LRN-9 when a memory became
+   * locked between the read and the save, so the statement was saved before
+   * the lock was seen. Optional so hand-built deps keep working.
+   */
+  holdAsDraft?: (id: string) => Promise<void>
 }
 
 
@@ -102,8 +109,12 @@ export interface LearnAsyncDeps {
  * new statement is saved as its own memory, and a tension record linking the
  * two (status `detected`) puts the pair in the user's review queue.
  *
- * Open, not decided here: whether the new statement is injected while the
- * review waits, and a setting by which a user chooses otherwise.
+ * Owner decision 2026-10-19: while the review waits only the locked memory is
+ * given to the agent. The new statement is saved as a draft (stored and
+ * searchable, never injected, INJ-4). Resolving the review in its favour makes
+ * it a normal memory (Plur.resolveTension); resolving it for the locked memory
+ * retires it; dismissing the review leaves it a draft. There is no setting to
+ * skip the review.
  */
 async function saveBesideLocked(
   deps: LearnAsyncDeps,
@@ -112,7 +123,21 @@ async function saveBesideLocked(
   locked: Engram,
   alreadySaved?: Engram,
 ): Promise<LearnAsyncResult> {
-  const engram = alreadySaved ?? await deps.learn(statement, context)
+  let engram: Engram
+  if (alreadySaved) {
+    engram = alreadySaved
+    // Saved as a normal memory before the lock was seen: hold it back now.
+    if (engram.id !== locked.id && engram.commitment !== 'draft' && deps.holdAsDraft) {
+      try {
+        await deps.holdAsDraft(engram.id)
+        engram = { ...engram, commitment: 'draft' }
+      } catch (err) {
+        logger.warning(`could not hold ${engram.id} back as a draft while its review waits: ${err}`)
+      }
+    }
+  } else {
+    engram = await deps.learn(statement, { ...context, commitment: 'draft' })
+  }
   let tensions: string[] | undefined
   if (deps.openReview && engram.id !== locked.id) {
     try {

@@ -1,6 +1,10 @@
 /-!
 # PlurSpec.Outbox — delivery of queued team writes (decisions C3, C4, C5)
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
+change swaps the config.yaml writes for `writeConfigFile` (same content, same lock); no
+outbox, claim or breaker code changed.
+
 Models the outbox as merged on main by #1277 and carried into #1228 under
 owner decision C3 (2026-09-29): `flushOutbox` / `_flushOutboxClaimed`,
 learn()'s immediate push, the per-entry claims (`_claimOutboxEntry`,
@@ -21,6 +25,48 @@ Keys are opaque naturals. The server is one of two kinds
 (`docs/remote-store-contract.md`): `honour` deduplicates POSTs by key; `ignore`
 does not. What the network does to each attempt is an adversarial outcome
 chosen per event, so every theorem holds for every schedule of outcomes.
+
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox` (read only: the
+queued count per scope it reports); no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): updated.
+`routeFor` in `_flushOutboxClaimed` now holds an entry whose target scope two
+servers claim, before `heldBack` and before the push, so even `force` does not
+deliver it; modelled in §8b (`conflict_untouched`, `keptC_only_bookkeeping`).
+Keys, retry, claims, the listing and the breaker (§1–§7) are unchanged.
+remote-store.ts changed only `me()` (C1 /me fields; a non-2xx now throws
+`RemoteHttpError` with the same message), which the push path does not call.
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
+
+Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
+exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
+this model covers changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; the outbox and the push path are untouched.
+
+Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds. The
+`_outbox.target_url` learn writes is the resolver's writable entry; outside a conflict (refused
+before the save) it is the entry the old first-writable `find` returned. The flush, the
+retarget and the push path are unchanged.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+The outbox and the push path are untouched; `queued_by_scope` is counted as before.
 -/
 
 namespace PlurSpec.Outbox
@@ -363,6 +409,46 @@ theorem verdict_only_skips {β} (bump : β → β) (o d f w : Bool) (e : Entry �
   rw [h, this]
 
 theorem force_dials_needs_action (w : Bool) : skipOf true true w = false := by
+  cases w <;> rfl
+
+/-! ### 8b. The conflict hold (#1631; reviewed 2026-10-18)
+
+`routeFor` now holds an entry whose target scope two servers claim
+(`resolveScopeTarget(...).kind === 'conflict'`). It runs at selection, before
+the `heldBack` verdict, and again before the push, ahead of the policy
+re-scan; `force` reaches `heldBack` only, so the conflict hold binds the
+explicit flush too. A held entry is not claimed and nothing is written. -/
+
+def flushEntryC {β : Type} (bump : β → β) (force needsAction inWindow conflict offends delivered : Bool)
+    (e : Entry β) : Res β :=
+  if conflict then .kept e
+  else flushEntry bump (skipOf force needsAction inWindow) offends delivered e
+
+/-- A conflicted entry is untouched and never handed off, forced flush or not. -/
+theorem conflict_untouched {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    flushEntryC bump f n w true o d e = .kept e := rfl
+
+theorem conflict_never_delivered {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    ∀ e', flushEntryC bump f n w true o d e ≠ .handedOff ∧ flushEntryC bump f n w true o d e ≠ .demoted e' := by
+  intro e'; simp [flushEntryC]
+
+/-- §8 still holds with the new branch: a kept entry keeps scope, target and content. -/
+theorem keptC_only_bookkeeping {β} (bump : β → β) (f n w c o d : Bool) (e e' : Entry β)
+    (h : flushEntryC bump f n w c o d e = .kept e') :
+    e'.scope = e.scope ∧ e'.target = e.target ∧ e'.body = e.body := by
+  unfold flushEntryC at h
+  split at h
+  · cases h; exact ⟨rfl, rfl, rfl⟩
+  · exact kept_only_bookkeeping bump _ o d e e' h
+
+/-- Off conflicts the flush is the §8 flush, so `verdict_only_skips` and
+`force_dials_needs_action` carry over. -/
+theorem flushEntryC_off_conflict {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    flushEntryC bump f n w false o d e = flushEntry bump (skipOf f n w) o d e := rfl
+
+/-- Non-vacuity: the forced flush still delivers an unconflicted needs_action entry. -/
+theorem force_delivers_unconflicted {β} (bump : β → β) (w : Bool) (e : Entry β) :
+    flushEntryC bump true true w false false true e = .handedOff := by
   cases w <;> rfl
 
 end PlurSpec.Outbox

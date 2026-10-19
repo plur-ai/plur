@@ -98,11 +98,33 @@ export const LOAD_FETCH_TIMEOUT_MS = 30_000
  * fold, or the three spellings count as three distinct endpoints and a scope
  * registered under one spelling is re-offered under another.
  *
+ * The form is URL-parsed: `https://X.com:443/sse` is `https://x.com` too.
+ * Scheme and host are case-folded and the scheme's default port is dropped;
+ * userinfo and fragment are never part of the identity; a base path is kept
+ * as written (its case matters), less a trailing `/sse` and slash. A url that
+ * does not parse as http(s) only gets the trailing fold.
+ *
  * Comparison-time only: callers must NEVER rewrite a stored config value with
  * the normalized form — the user's spelling is preserved on disk.
  */
+/**
+ * `scheme://host[:port]` of a url, without userinfo, path or query: the only
+ * form of a configured url that goes into a log line or a message, since the
+ * configured url can carry credentials (Codex round 4, finding 3).
+ */
+export function safeOrigin(url: string): string {
+  try { return new URL(url).origin } catch { return '<invalid url>' }
+}
+
 export function normalizeEndpointUrl(url: string): string {
-  return url.replace(/\/sse\/?$/, '').replace(/\/$/, '')
+  const foldPath = (p: string): string => p.replace(/\/sse\/?$/, '').replace(/\/$/, '')
+  let u: URL
+  try { u = new URL(url) } catch { return foldPath(url) }
+  // URL-parsed (Codex round 3, finding 2): scheme and host case-folded, the
+  // scheme's default port dropped, userinfo and fragment never part of it.
+  // The base path keeps its case; only a trailing /sse and slash fold.
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return foldPath(url)
+  return `${u.protocol}//${u.host}${foldPath(u.pathname)}${u.search}`
 }
 
 // ── Host-level failure breaker (#1069) ──────────────────────────────────────
@@ -335,7 +357,7 @@ export function salvageRemoteRow(
       warnedSalvages.add(dedupeKey)
       const safeId = String(logContext.rowId ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
       logger.warning(
-        `[plur:remote-store] ${logContext.url} serves engrams with drifted field(s) [${salvagedFields.join(',')}] this client ` +
+        `[plur:remote-store] ${safeOrigin(logContext.url)} serves engrams with drifted field(s) [${salvagedFields.join(',')}] this client ` +
         `cannot validate (first seen id="${safeId}") — keeping the engrams WITHOUT those fields. ` +
         `The server and client schemas need reconciling (#1071); recall is degraded, not blind.`,
       )
@@ -350,6 +372,63 @@ export function salvageRemoteRow(
  * docs/specs/2026-09-29-feedback-source-contract.md.
  */
 export const FEEDBACK_SOURCE_CAPABILITY = 'feedback.source'
+
+/** Host grammar for server-supplied strings (#426, #408). */
+const HOST_RE = /^[a-z0-9.-]+(:\d{1,5})?$/
+/** A bracketed IPv6 literal with an optional port, e.g. `[2001:db8::1]:8443`. */
+const IPV6_HOST_RE = /^(\[[0-9a-f:.]+\])(?::(\d{1,5}))?$/
+
+/**
+ * A server-supplied host: a name or IPv4 address (HOST_RE), or a bracketed
+ * IPv6 literal in the canonical form the URL parser prints, with an optional
+ * port in range. No userinfo, path or other characters can pass.
+ */
+export function isSafeHost(h: string): boolean {
+  if (HOST_RE.test(h)) return true
+  const m = IPV6_HOST_RE.exec(h)
+  if (!m) return false
+  if (m[2] !== undefined && Number(m[2]) > 65535) return false
+  try {
+    return new URL(`http://${m[1]}/`).hostname === m[1]
+  } catch {
+    return false
+  }
+}
+/** Path grammar for server-supplied project paths (#426, #408).
+ *  Each segment must start with a word char to prevent path traversal (e.g. `..`). */
+const PATH_RE = /^[\w][\w.-]*(\/[\w][\w.-]*)*$/
+/** ISO-8601 date or date-time. `Date.parse` alone also accepts '1', '2026' and 'March 7, 2026'. */
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?)?$/
+
+/**
+ * The resolved fields returned by GET /api/v1/me (contract C1, #1631).
+ * Older servers omit some fields; see per-field comments for the absent values.
+ */
+export interface MeResponse {
+  username: string
+  org_id: string
+  role: string
+  scopes: string[]
+  scope_metadata: ScopeMetadata[]
+  capabilities: string[]
+  /** 'absent' when the server sent no field (older server). */
+  scopes_status: 'ok' | 'not_synced' | 'absent'
+  /** 'absent' when the server sent no field (older server). */
+  scope_metadata_status: 'ok' | 'unavailable' | 'absent'
+  /** undefined = field absent; null = GitLab not configured. */
+  gitlab_host: string | null | undefined
+  /** Only entries whose key is in `scopes` and whose value passes the path grammar. */
+  project_paths: Record<string, string>
+  /** undefined = absent = unknown; null = no expiry; string = ISO-8601. */
+  key_expires_at: string | null | undefined
+  /**
+   * True when the body's `scopes` was missing, null, not an array, or an array
+   * with a member that failed the grammar: `scopes` above is then not the
+   * server's list, and discovery treats the answer as degraded (keeps a
+   * non-empty cache). Absent/false = an explicit, valid array (`[]` included).
+   */
+  scopes_malformed?: boolean
+}
 
 /**
  * Advertised capabilities per (url, token), for the life of the process
@@ -536,7 +615,7 @@ export class RemoteStore {
       const why = reparse.success ? 'unknown' : reparse.error.issues
         .map(i => `${i.path.join('.') || '(root)'}: ${i.code}`).join('; ')
       const safeId = String(raw.id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
-      logger.warning(`[plur:remote-store] ${this.url} returned a malformed engram (id="${safeId}") — dropped: ${why}`)
+      logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} returned a malformed engram (id="${safeId}") — dropped: ${why}`)
       return null
     }
     const parsed = { data: salvaged.data }
@@ -597,19 +676,31 @@ export class RemoteStore {
    * out-of-band (#292). Scope-independent: `/me` is keyed on the token alone,
    * so the driver's `scope` is irrelevant here.
    *
-   * Throws on a non-2xx response (caller decides whether to swallow per URL).
+   * Extended to read enterprise C1 fields (#1631): `scopes_status`,
+   * `scope_metadata_status`, `gitlab_host`, `project_paths`, `key_expires_at`.
+   * Server-supplied strings are validated at this trust boundary (#426, #408).
+   *
+   * Throws {@link RemoteHttpError} on a non-2xx response (caller decides whether
+   * to swallow per URL). The message keeps the `Remote /me failed: <status>`
+   * pattern so the `/\b40[13]\b/` auth-expired checks in callers still match.
    */
-  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[]; capabilities: string[] }> {
+  async me(): Promise<MeResponse> {
     const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded)
-    if (!r.ok) throw new Error(`Remote /me failed: ${r.status} ${r.text}`)
-    const body = (r.json ?? {}) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[]; capabilities: unknown[] }>
+    if (!r.ok) throw new RemoteHttpError(r.status, `Remote /me failed: ${r.status} ${r.text}`)
+    // A 200 whose JSON body is not an object (a string, number, array or null) is
+    // read as an older server that sent no fields — never a TypeError from `in`.
+    const body = (r.json !== null && typeof r.json === 'object' && !Array.isArray(r.json)
+      ? r.json : {}) as Record<string, unknown>
+    // C1 values dropped at this boundary, as `field: reason` — never the value (#408).
+    const dropped: string[] = []
     // #1310: optional, additive. Older servers omit it → []. Same safe-grammar
     // filter as scope names: nothing malformed enters from a hostile remote.
-    const capabilities = Array.isArray(body.capabilities)
-      ? body.capabilities.filter((c): c is string => typeof c === 'string' && /^[\w.:-]{1,64}$/.test(c))
+    const capabilities = Array.isArray(body['capabilities'])
+      ? (body['capabilities'] as unknown[]).filter((c): c is string => typeof c === 'string' && /^[\w.:-]{1,64}$/.test(c))
       : []
     CAPABILITY_CACHE.set(this.capabilityKey(), Promise.resolve(capabilities))
-    const scopes = Array.isArray(body.scopes)
+    const rawScopes = body['scopes']
+    const scopes = Array.isArray(rawScopes)
       // Validate every /me scope to a safe grammar at the trust boundary:
       //  - #427: a non-string element would later throw in isSharedScope's
       //    `scope.startsWith(...)` BEFORE the per-scope try/catch — drop non-strings.
@@ -617,14 +708,74 @@ export class RemoteStore {
       //    agent's directive surface); a name carrying newlines/control chars is a
       //    prompt-injection channel — require `[\w:./-]+` (allows group:org/team,
       //    user:*, etc.) so nothing malformed enters from a hostile/MITM remote.
-      ? body.scopes.filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
+      ? (rawScopes as unknown[]).filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
       : []
+    // Only an explicit array whose every member passed is the server's list.
+    // Missing/null/non-array or a dropped member must not read as an
+    // authoritative [] that clears a cache (Codex round 2, finding 2).
+    const scopes_malformed = !Array.isArray(rawScopes) || scopes.length !== (rawScopes as unknown[]).length
+    if (scopes_malformed && rawScopes !== undefined) dropped.push(Array.isArray(rawScopes) ? `scopes: ${(rawScopes as unknown[]).length - scopes.length} invalid` : 'scopes: not a list')
+
+    // C1: scopes_status — unknown values → 'absent' (forward-compat) (#1631)
+    const rawScopesStatus = body['scopes_status']
+    const scopes_status: MeResponse['scopes_status'] =
+      rawScopesStatus === 'ok' || rawScopesStatus === 'not_synced' ? rawScopesStatus : 'absent'
+
+    // C1: scope_metadata_status — unknown values → 'absent' (#1631)
+    const rawScopeMetadataStatus = body['scope_metadata_status']
+    const scope_metadata_status: MeResponse['scope_metadata_status'] =
+      rawScopeMetadataStatus === 'ok' || rawScopeMetadataStatus === 'unavailable'
+        ? rawScopeMetadataStatus : 'absent'
+
+    // C1: gitlab_host — must pass host grammar; null stays null; absent → undefined (#1631, #426)
+    const rawGitlabHost = body['gitlab_host']
+    const gitlab_host: MeResponse['gitlab_host'] =
+      rawGitlabHost === null ? null
+      : typeof rawGitlabHost === 'string' && isSafeHost(rawGitlabHost) ? rawGitlabHost
+      : undefined
+    if (rawGitlabHost !== undefined && gitlab_host === undefined) dropped.push('gitlab_host: invalid')
+
+    // C1: project_paths — only entries whose key is in scopes AND whose value
+    // passes the path grammar; an absent field yields {} (#1631, #426)
+    const project_paths: Record<string, string> = {}
+    const rawPaths = body['project_paths']
+    if (rawPaths !== null && typeof rawPaths === 'object') {
+      let notGranted = 0
+      let badPath = 0
+      for (const [k, v] of Object.entries(rawPaths as Record<string, unknown>)) {
+        if (!scopes.includes(k)) notGranted++
+        else if (typeof v !== 'string' || !PATH_RE.test(v)) badPath++
+        else project_paths[k] = v
+      }
+      if (notGranted) dropped.push(`project_paths: ${notGranted} not-granted`)
+      if (badPath) dropped.push(`project_paths: ${badPath} invalid`)
+    }
+
+    // C1: key_expires_at — absent → undefined (unknown); null → null (no expiry);
+    // a string that is not valid ISO-8601 → undefined (#1631)
+    const rawKeyExpiry = body['key_expires_at']
+    const key_expires_at: MeResponse['key_expires_at'] =
+      !('key_expires_at' in body) ? undefined
+      : rawKeyExpiry === null ? null
+      : typeof rawKeyExpiry === 'string' && ISO_8601_RE.test(rawKeyExpiry) && !isNaN(Date.parse(rawKeyExpiry)) ? rawKeyExpiry
+      : undefined
+    if (rawKeyExpiry !== undefined && key_expires_at === undefined) dropped.push('key_expires_at: invalid')
+    if (dropped.length) {
+      logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} sent /me fields that do not conform (${dropped.join('; ')}) — DROPPED (#426).`)
+    }
+
     return {
-      username: body.username ?? '',
-      org_id:   body.org_id ?? '',
-      role:     body.role ?? '',
+      username: typeof body['username'] === 'string' ? body['username'] : '',
+      org_id:   typeof body['org_id'] === 'string' ? body['org_id'] : '',
+      role:     typeof body['role'] === 'string' ? body['role'] : '',
       scopes,
       capabilities,
+      scopes_status,
+      scope_metadata_status,
+      gitlab_host,
+      project_paths,
+      key_expires_at,
+      ...(scopes_malformed ? { scopes_malformed: true } : {}),
       // #345 D2: self-describing scope metadata served by the enterprise
       // `scopes` table. Validate each entry through the SAME ScopeMetadataSchema
       // the local config path uses — a hostile/old remote can send anything, so
@@ -643,8 +794,8 @@ export class RemoteStore {
       // One warning on the first connection would have caught it. The authorized-
       // set drop stays quiet: that one is a deliberate refusal (a remote must not
       // smuggle metadata for a scope it did not grant), not an unexpected shape.
-      scope_metadata: Array.isArray(body.scope_metadata)
-        ? body.scope_metadata.flatMap((m) => {
+      scope_metadata: Array.isArray(body['scope_metadata'])
+        ? (body['scope_metadata'] as unknown[]).flatMap((m) => {
             const parsed = ScopeMetadataSchema.safeParse(m)
             if (!parsed.success) {
               // Log PATHS and CODES only, never server-controlled values (#408):
@@ -653,11 +804,15 @@ export class RemoteStore {
               const why = parsed.error.issues
                 .map(i => `${i.path.join('.') || '(root)'}: ${i.code}`)
                 .join('; ')
-              const safeScope = String((m as { scope?: unknown } | null)?.scope ?? '<unknown>')
-                .replace(/[^\w:./-]/g, '?')
-                .slice(0, 64)
+              // Named only when it is a scope this answer granted: any other
+              // text is the server's and could carry anything, the bearer key
+              // included (#1665 gate: a key reflected here reached the log).
+              const rawScope = (m as { scope?: unknown } | null)?.scope
+              const safeScope = typeof rawScope === 'string' && scopes.includes(rawScope)
+                ? rawScope.replace(/[^\w:./-]/g, '?').slice(0, 64)
+                : '<a scope not granted>'
               logger.warning(
-                `[plur:remote-store] ${this.url} sent scope metadata for "${safeScope}" that does not conform ` +
+                `[plur:remote-store] ${safeOrigin(this.url)} sent scope metadata for "${safeScope}" that does not conform ` +
                 `(${why}) — DROPPED. That scope cannot participate in covers-based auto-routing until the ` +
                 `server sends a conforming shape, so unscoped writes may fall back to the personal default (#843).`,
               )
@@ -713,7 +868,7 @@ export class RemoteStore {
               const msg = (err as Error).name === 'AbortError'
                 ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
                 : (err as Error).message
-              console.error(`[plur:remote-store] ${this.url} load page failed: ${msg}`)
+              console.error(`[plur:remote-store] ${safeOrigin(this.url)} load page failed: ${msg}`)
               break
             }
             clearRemoteHostDown(this.url) // answered — alive, whatever the status
@@ -726,7 +881,7 @@ export class RemoteStore {
               if (r.status === 403 || r.status === 404) {
                 paginationComplete = true
               } else if (r.status >= 500) {
-                console.error(`[plur:remote-store] ${this.url} returned ${r.status} loading scope ${this.scope}`)
+                console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned ${r.status} loading scope ${this.scope}`)
               }
               break
             }
@@ -745,12 +900,12 @@ export class RemoteStore {
               const why = ctrl.signal.aborted
                 ? `a page body that stalled past ${LOAD_FETCH_TIMEOUT_MS}ms`
                 : 'an unreadable (non-JSON) page body'
-              console.error(`[plur:remote-store] ${this.url} returned ${why} loading scope ${this.scope}`)
+              console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned ${why} loading scope ${this.scope}`)
               break
             }
             const page = body as { rows?: unknown; total_count?: unknown } | null
             if (!page || typeof page !== 'object' || !Array.isArray(page.rows)) {
-              console.error(`[plur:remote-store] ${this.url} returned a malformed page (no rows array) loading scope ${this.scope}`)
+              console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned a malformed page (no rows array) loading scope ${this.scope}`)
               break
             }
             const rows = page.rows as any[]
@@ -779,7 +934,7 @@ export class RemoteStore {
         // back to the partial set only if there is no prior cache at all.
         return this.cache?.engrams ?? all
       } catch (err) {
-        console.error(`[plur:remote-store] ${this.url} load failed: ${(err as Error).message}`)
+        console.error(`[plur:remote-store] ${safeOrigin(this.url)} load failed: ${(err as Error).message}`)
         // Don't poison the cache on failure — let the next call retry.
         return this.cache?.engrams ?? []
       } finally {
@@ -1184,7 +1339,7 @@ export class RemoteStore {
     // Only defined update values are applied, mirroring what JSON.stringify
     // actually sent to the server. Same #408 id sanitization as reshape().
     const safeId = id.replace(/[^\w:./-]/g, '?').slice(0, 64)
-    logger.warning(`[plur:remote-store] ${this.url} PATCH ${safeId} succeeded but the echoed row was unusable — returning optimistic merge`)
+    logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} PATCH ${safeId} succeeded but the echoed row was unusable — returning optimistic merge`)
     const merged: Record<string, unknown> = prev ? { ...(prev as unknown as Record<string, unknown>) } : {}
     for (const [k, v] of Object.entries(updates)) if (v !== undefined) merged[k] = v
     merged.id = id

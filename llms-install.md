@@ -28,7 +28,7 @@ Add this server to the MCP settings (for Cline: `cline_mcp_settings.json`):
 
 - **Command:** `npx -y @plur-ai/mcp` (stdio transport)
 - **Env vars:** none required. Optional: `PLUR_HOME` to relocate the store (default `~/.plur`).
-- **Requirements:** Node.js 18+.
+- **Requirements:** Node.js 22+.
 
 ## Verify
 

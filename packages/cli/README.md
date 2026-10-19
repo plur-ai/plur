@@ -6,7 +6,7 @@ PLUR stores corrections, preferences, and patterns as **engrams** that strengthe
 
 ## Install
 
-Requires Node.js 20 or newer. Install MCP alongside the CLI for editor integration.
+Requires Node.js 22 or newer. Install MCP alongside the CLI for editor integration.
 
 ```bash
 npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest

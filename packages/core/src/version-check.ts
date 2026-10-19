@@ -1,17 +1,26 @@
 /**
- * Version check against the npm registry. Never throws.
+ * Non-blocking version check against the npm registry. Never throws or
+ * blocks startup.
  *
- * It runs only when the user asks (TEAM-5: with no internet, PLUR makes no
- * network call it was not asked to make, and a process cannot know it is
- * offline without trying). Nothing calls it at startup, on a timer, or from
- * a cached read; `getCachedUpdateCheck` shows the answer of an earlier
- * explicit check and never fetches. The offline switch (offline.ts) stops even
- * an explicit check.
+ * TEAM-5 (owner decision 2026-10-19): with no internet at all PLUR tries the
+ * network at most once, with this check, and when that cannot connect it
+ * assumes it is offline. So the first attempt that fails to connect (a
+ * network error or a timeout) marks the process offline, and from then on the
+ * update checker makes no request of any kind: not on the periodic re-check,
+ * not on a refresh-on-read, not on an explicit check. Those answer from the
+ * cache (or with nothing). A registry that answers with an error is reachable,
+ * so that is not offline. The offline switches (offline.ts) stop even the
+ * first attempt.
  *
- * Within one process an explicit check reuses a successful registry answer
- * for VERSION_CHECK_SUCCESS_TTL_MS and a failed attempt (offline, timeout,
- * non-OK response) for VERSION_CHECK_FAILURE_TTL_MS; after that the next
- * explicit check asks again (#760).
+ * Results are cached in memory with a TTL (#760): a successful registry
+ * answer is reused for VERSION_CHECK_SUCCESS_TTL_MS, a non-OK answer only for
+ * VERSION_CHECK_FAILURE_TTL_MS. Without the TTL a long-lived MCP server
+ * process that started while current cached "no update" forever and never
+ * learned about releases published after startup (the #760 report).
+ *
+ * Reads stay synchronous and zero-cost: an expired entry is returned as-is
+ * while a background refresh is kicked off (unless offline), so no caller
+ * ever waits on the network.
  */
 
 import { updateCheckDisabledByEnv } from './offline.js'
@@ -39,6 +48,17 @@ interface CacheEntry {
 
 /** Module-level cache: package name → entry */
 const cache = new Map<string, CacheEntry>()
+
+/**
+ * Set when a check could not connect (TEAM-5): the network is down for this
+ * process, and the update checker makes no further attempt for any package.
+ */
+let offline = false
+
+/** True once an update check in this process could not connect (TEAM-5). */
+export function updateCheckOffline(): boolean {
+  return offline
+}
 
 /** In-flight check per package — concurrent refresh requests piggyback. */
 const inflightByPackage = new Map<string, Promise<VersionCheckResult>>()
@@ -73,8 +93,9 @@ export async function settleVersionChecks(): Promise<void> {
 
 /**
  * Check npm for a newer version. Returns the cached result while it is within
- * its TTL; otherwise fetches and refreshes the cache.
- * Call only on an explicit user request; read later via getCachedUpdateCheck().
+ * its TTL, or whenever the process is offline; otherwise fetches and refreshes
+ * the cache. Fire-and-forget: call at startup, read later via
+ * getCachedUpdateCheck().
  */
 export function checkForUpdate(
   packageName: string,
@@ -82,7 +103,8 @@ export function checkForUpdate(
   onResult?: (result: VersionCheckResult) => void,
 ): Promise<VersionCheckResult> {
   // Piggyback on an already-running check for the same package instead of
-  // issuing a duplicate fetch (two explicit requests can overlap).
+  // issuing a duplicate fetch (refresh-on-read, the periodic re-check and an
+  // explicit request can otherwise race each other).
   const running = inflightByPackage.get(packageName)
   const p = running
     ? running.then((r) => { if (onResult) onResult(r); return r })
@@ -114,8 +136,14 @@ async function runCheck(
   }
 
   // Return cached result while fresh (#760: expired entries are re-fetched,
-  // not returned forever)
+  // not returned forever). Offline (TEAM-5): never fetch again; answer from
+  // the cache, or with nothing.
   const entry = cache.get(packageName)
+  if (offline) {
+    const result = entry?.result ?? { current: currentVersion, latest: null, updateAvailable: false, checkedAt: null }
+    if (onResult) onResult(result)
+    return result
+  }
   if (entry && !isExpired(entry, Date.now())) {
     if (onResult) onResult(entry.result)
     return entry.result
@@ -141,9 +169,9 @@ async function runCheck(
       }
     }
   } catch {
-    // Network error, timeout, offline — cache the negative result briefly
-    // (VERSION_CHECK_FAILURE_TTL_MS) so the next read retries instead of
-    // staying silent for the process lifetime.
+    // Network error or timeout: the check could not connect, so this process
+    // is offline and makes no further update-check request (TEAM-5).
+    offline = true
   }
   cache.set(packageName, { result, fetchedAt: Date.now(), ok })
   if (onResult) onResult(result)
@@ -151,19 +179,27 @@ async function runCheck(
 }
 
 /**
- * Read the cached version check result. Returns null if no explicit
- * checkForUpdate() has completed. This is the zero-cost read path for
- * assemblers and tools: it never starts a request, even when the entry has
- * outlived its TTL (TEAM-5). An expired answer is still shown; only another
- * explicit check refreshes it.
+ * Read the cached version check result. Returns null if checkForUpdate() hasn't
+ * completed yet. This is the zero-cost read path for assemblers and tools.
+ *
+ * When the cached entry has outlived its TTL a background refresh is started
+ * (#760) so the NEXT read sees fresh data; the current read still returns
+ * synchronously with the stale value and never waits on the network. Offline
+ * (TEAM-5), no refresh is started.
  */
 export function getCachedUpdateCheck(packageName: string): VersionCheckResult | null {
-  return cache.get(packageName)?.result ?? null
+  const entry = cache.get(packageName)
+  if (!entry) return null
+  if (!offline && isExpired(entry, Date.now()) && !inflightByPackage.has(packageName)) {
+    checkForUpdate(packageName, entry.result.current)
+  }
+  return entry.result
 }
 
 /** Clear cache (for testing). */
 export function clearVersionCache(): void {
   cache.clear()
+  offline = false
   inflightByPackage.clear()
 }
 

@@ -2,7 +2,8 @@ import { readFileSync } from 'fs'
 import { isDeepStrictEqual } from 'util'
 import yaml from 'js-yaml'
 import { canonicalize } from './project-config.js'
-import { atomicWrite, CONFIG_FILE_MODE, withLock } from './sync.js'
+import { withLock } from './sync.js'
+import { writeConfigFile } from './config-file.js'
 import type { StoreEntry } from './schemas/config.js'
 
 /**
@@ -102,7 +103,7 @@ export function removePrimaryStoreEntries(configPath: string, primaryEngramsPath
         `Nothing was changed; remove the entries that name ${primaryEngramsPath} by hand.`,
       )
     }
-    atomicWrite(configPath, edited, { mode: CONFIG_FILE_MODE })
+    writeConfigFile(configPath, edited)
     return [...remove].map(i => stores[i] as StoreEntry)
   })
 }
