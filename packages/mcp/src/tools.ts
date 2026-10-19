@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
@@ -3037,6 +3037,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         properties: {
           domain: { type: 'string', description: 'Only count engrams whose domain starts with this prefix (e.g. "meridian")' },
           created_after: { type: 'string', description: 'ISO-8601 date (YYYY-MM-DD). Only count engrams learned on or after this date.' },
+          check_updates: { type: 'boolean', description: 'If true, ask the npm registry whether a newer PLUR is published and report it as update_available. PLUR never checks on its own; without this, only the answer of an earlier check is shown.' },
         },
       },
       handler: async (args, plur) => {
@@ -3044,6 +3045,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           domain: args.domain as string | undefined,
           created_after: args.created_after as string | undefined,
         })
+        // The update check runs only on request (TEAM-5); otherwise the
+        // answer of an earlier request is shown, and a miss shows nothing.
+        if (args.check_updates === true) await checkForUpdate('@plur-ai/mcp', VERSION)
         const versionCheck = getCachedUpdateCheck('@plur-ai/mcp')
         // #761: name the profile + gateway in the other name-stable diagnostic
         // door. status is where agents look when "tools seem missing" — one
@@ -3854,7 +3858,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Detect fresh install: no engrams AND no episodes = never used before
         const isFreshInstall = store_stats.engram_count === 0 && store_stats.episode_count === 0
 
-        // Version staleness check — zero-cost cache read (issue #151)
+        // Version staleness — the cached answer of an explicit check only;
+        // a read never fetches (issue #151, TEAM-5)
         const versionCheck = getCachedUpdateCheck('@plur-ai/mcp')
         let version_warning: string | undefined
         if (versionCheck?.updateAvailable && versionCheck.latest) {

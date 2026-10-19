@@ -1,25 +1,20 @@
 /**
- * Non-blocking version check against the npm registry.
- * Never throws or blocks startup.
+ * Version check against the npm registry. Never throws.
  *
- * Results are cached in memory with a TTL (#760): a successful registry
- * answer is reused for VERSION_CHECK_SUCCESS_TTL_MS, a failed attempt
- * (offline, timeout, non-OK response) only for VERSION_CHECK_FAILURE_TTL_MS.
- * Before the TTLs existed the cache was "one fetch per process lifetime",
- * which silently disabled the update notification in exactly the two cases
- * it matters most:
+ * It runs only when the user asks (TEAM-5: with no internet, PLUR makes no
+ * network call it was not asked to make, and a process cannot know it is
+ * offline without trying). Nothing calls it at startup, on a timer, or from
+ * a cached read; `getCachedUpdateCheck` shows the answer of an earlier
+ * explicit check and never fetches. The offline switch (offline.ts) stops even
+ * an explicit check.
  *
- *   1. A long-lived MCP server process that started while current cached
- *      "no update" forever and never learned about releases published after
- *      startup — the #760 report: 0.14.0 stayed silent while 0.16.1 shipped.
- *   2. A process that started offline (laptop resume, network race at boot)
- *      cached the failed check forever and never retried.
- *
- * Reads stay synchronous and zero-cost: an expired entry is returned as-is
- * while a background refresh is kicked off, so no caller ever waits on the
- * network. Air-gapped installs pay at most one 3-second attempt per failure
- * window, always off the hot path.
+ * Within one process an explicit check reuses a successful registry answer
+ * for VERSION_CHECK_SUCCESS_TTL_MS and a failed attempt (offline, timeout,
+ * non-OK response) for VERSION_CHECK_FAILURE_TTL_MS; after that the next
+ * explicit check asks again (#760).
  */
+
+import { updateCheckDisabledByEnv } from './offline.js'
 
 export interface VersionCheckResult {
   current: string
@@ -59,7 +54,7 @@ function isExpired(entry: CacheEntry, now: number): boolean {
 /**
  * Wait for every in-flight check to finish writing to the cache.
  *
- * `checkForUpdate` is called fire-and-forget from server startup, so its write
+ * `checkForUpdate` may be started without being awaited, so its write
  * to the module-level cache lands at an arbitrary later point — including after
  * the caller that started it has gone away. In a process that only ever starts
  * one server that is harmless. In a test file that starts one per test it is
@@ -79,7 +74,7 @@ export async function settleVersionChecks(): Promise<void> {
 /**
  * Check npm for a newer version. Returns the cached result while it is within
  * its TTL; otherwise fetches and refreshes the cache.
- * Fire-and-forget: call at startup, read later via getCachedUpdateCheck().
+ * Call only on an explicit user request; read later via getCachedUpdateCheck().
  */
 export function checkForUpdate(
   packageName: string,
@@ -87,8 +82,7 @@ export function checkForUpdate(
   onResult?: (result: VersionCheckResult) => void,
 ): Promise<VersionCheckResult> {
   // Piggyback on an already-running check for the same package instead of
-  // issuing a duplicate fetch (refresh-on-read + the periodic re-check can
-  // otherwise race each other).
+  // issuing a duplicate fetch (two explicit requests can overlap).
   const running = inflightByPackage.get(packageName)
   const p = running
     ? running.then((r) => { if (onResult) onResult(r); return r })
@@ -111,6 +105,14 @@ async function runCheck(
   currentVersion: string,
   onResult?: (result: VersionCheckResult) => void,
 ): Promise<VersionCheckResult> {
+  // Offline, or the check turned off (offline.ts): no request of any kind,
+  // and nothing cached, so a later read cannot start a refresh either (TEAM-5).
+  if (updateCheckDisabledByEnv()) {
+    const skipped: VersionCheckResult = { current: currentVersion, latest: null, updateAvailable: false, checkedAt: null }
+    if (onResult) onResult(skipped)
+    return skipped
+  }
+
   // Return cached result while fresh (#760: expired entries are re-fetched,
   // not returned forever)
   const entry = cache.get(packageName)
@@ -149,20 +151,14 @@ async function runCheck(
 }
 
 /**
- * Read the cached version check result. Returns null if checkForUpdate() hasn't
- * completed yet. This is the zero-cost read path for assemblers.
- *
- * When the cached entry has outlived its TTL a background refresh is started
- * (#760) so the NEXT read sees fresh data — the current read still returns
- * synchronously with the stale value and never waits on the network.
+ * Read the cached version check result. Returns null if no explicit
+ * checkForUpdate() has completed. This is the zero-cost read path for
+ * assemblers and tools: it never starts a request, even when the entry has
+ * outlived its TTL (TEAM-5). An expired answer is still shown; only another
+ * explicit check refreshes it.
  */
 export function getCachedUpdateCheck(packageName: string): VersionCheckResult | null {
-  const entry = cache.get(packageName)
-  if (!entry) return null
-  if (isExpired(entry, Date.now()) && !inflightByPackage.has(packageName)) {
-    checkForUpdate(packageName, entry.result.current)
-  }
-  return entry.result
+  return cache.get(packageName)?.result ?? null
 }
 
 /** Clear cache (for testing). */
