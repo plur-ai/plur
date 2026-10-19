@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { normalizeEndpointUrl } from '@plur-ai/core'
+import { normalizeEndpointUrl, parseNamespacedId, storePrefix, legacyStorePrefix } from '@plur-ai/core'
 import { openMcpSession, type McpLaunch } from './mcp-stdio.js'
 
 export type { McpLaunch }
@@ -158,7 +158,11 @@ export async function runHello(opts: {
         tags: ['plur-connect'],
       }
       if (opts.previousId) {
-        learnArgs.supersedes = [opts.previousId]
+        // Config keeps the display id used by MCP recall. The server relation
+        // needs its own id, without this personal store's display namespace.
+        const parsed = parseNamespacedId(opts.previousId, true)
+        const ownPrefix = parsed && [storePrefix(opts.personalScope), legacyStorePrefix(opts.personalScope)].includes(parsed.prefix)
+        learnArgs.supersedes = [ownPrefix ? parsed.bare : opts.previousId]
       }
       const learnResult = (await session.callTool('plur_learn', learnArgs)) as LearnResult
       const reason = failReason(learnResult, serverKey, opts.serverUrl)

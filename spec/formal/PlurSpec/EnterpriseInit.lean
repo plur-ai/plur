@@ -70,3 +70,11 @@ example : migrate ⟨true, true, false, true, true, true, true, true⟩ = false 
 example : migrate ⟨true, true, true, true, true, true, true, false⟩ = false := by decide
 example : migrate ⟨true, true, true, true, true, true, true, true⟩ = true := by decide
 end PlurSpec.EnterpriseInit.Legacy
+
+/-! 2026-10-19: Keep the pre-provisioning stdin flag hidden in public help,
+as the existing binary contract requires. Parsing and execution are unchanged. -/
+
+/-! 2026-10-20: The rerun hello relation removes only the personal store's
+current or legacy display namespace before sending the previous id. The
+configuration/recall id remains unchanged; delivery and recall provenance
+checks, trust admission, and the previous hello's active state are unchanged. -/

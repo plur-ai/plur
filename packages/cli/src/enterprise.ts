@@ -19,7 +19,6 @@ Options for init:
   --ca-file <path>        Path to company CA certificate
   --ca-sha256 <hex>       SHA-256 fingerprint of the company CA (64 hex chars)
   --proxy <url>           HTTPS proxy URL
-  --token-stdin           Read a device key from stdin instead of browser sign-in
   --json                  Output JSON
   --no-browser            Skip browser-based sign-in prompt
 `)
