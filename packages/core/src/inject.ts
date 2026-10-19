@@ -93,12 +93,13 @@ const DEFAULT_MIN_RELEVANCE = 0.3
  * (Jaccard over the search tokens). Such a pair is one rule written for two
  * situations; the task matches one of them better, so the other does not apply.
  * Memories on other parts of the task share few words with the best match and
- * are kept, and two variants about equally relevant are both kept. Measured on
- * a labelled task set: the result changes smoothly between 0.2 and 0.35
- * similarity and between 0.85 and 0.95 relevance ratio.
+ * are kept, and so are variants about as relevant (a variant naming a sibling
+ * service while sharing most of the task's words stays above the ratio).
+ * Measured on a labelled task set: the result changes smoothly between 0.1 and
+ * 0.25 similarity and between 0.78 and 0.84 relevance ratio.
  */
-const NEIGHBOUR_SIMILARITY = 0.25
-const NEIGHBOUR_RELEVANCE_RATIO = 0.9
+const NEIGHBOUR_SIMILARITY = 0.2
+const NEIGHBOUR_RELEVANCE_RATIO = 0.8
 /** How many kept candidates each later candidate is compared with (bounds the cost on large stores). */
 const NEIGHBOUR_ANCHORS = 50
 const MAX_PER_PACK = 5
