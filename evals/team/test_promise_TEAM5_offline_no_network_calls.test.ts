@@ -1,8 +1,8 @@
 // TEAM-5: With no internet at all, I can still save and find memories, and PLUR makes no network calls.
 //
 // The network is blocked for the whole run: `fetch`, raw sockets and DNS
-// lookups all record the attempt and fail, and the model hub is told to stay
-// offline. A personal store (no team server) then saves, searches (keyword and
+// lookups all record the attempt and fail. No offline switch is set (the hub's
+// and PLUR's own are cleared): with no internet, nobody tells PLUR so. A personal store (no team server) then saves, searches (keyword and
 // hybrid, a hit and a miss) and injects. Every one must work, and the
 // recorders must be empty at the end.
 //
@@ -28,9 +28,12 @@ describe('TEAM-5 with no internet, saving and finding memories works and makes n
     saved.fetch = globalThis.fetch
     saved.connect = net.Socket.prototype.connect
     saved.lookup = dns.lookup
-    saved.env = { HF_HUB_OFFLINE: process.env.HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE: process.env.TRANSFORMERS_OFFLINE }
-    process.env.HF_HUB_OFFLINE = '1'
-    process.env.TRANSFORMERS_OFFLINE = '1'
+    // No offline hint of any kind: a user with no internet sets none of these, so
+    // PLUR must make no call without being told (fourth-audit follow-up: an eval
+    // that sets the hub's offline switch hands the product a signal to read).
+    const HINTS = ['HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'PLUR_OFFLINE', 'PLUR_NO_UPDATE_CHECK', 'NO_UPDATE_NOTIFIER']
+    saved.env = Object.fromEntries(HINTS.map(k => [k, process.env[k]]))
+    for (const k of HINTS) delete process.env[k]
     globalThis.fetch = (async (input: unknown) => {
       attempts.push(`fetch ${String((input as { url?: string })?.url ?? input)}`)
       throw new TypeError('fetch failed: the network is blocked in this eval')
