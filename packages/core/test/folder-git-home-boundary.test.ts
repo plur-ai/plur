@@ -31,7 +31,7 @@ it('keeps home, its ancestors and filesystem root behind their folder decision',
   }
 })
 it('still honors an explicit home decision and a normal project default', () => {
-  saveFolderMap(store, { version: 1, folders: [{ path: home, plur: 'on' }] })
+  saveFolderMap(store, { version: 1, folders: [{ path: home, plur: 'on', scope: 'project:example/team/backend' }] })
   expect(resolveFolderPolicy(home, options())).toMatchObject({ mode: 'on', scope })
   const repo = join(home, 'repo'); mkdirSync(repo)
   saveFolderMap(store, { version: 1, folders: [] })
