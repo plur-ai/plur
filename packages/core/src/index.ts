@@ -400,7 +400,7 @@ export { writeConfigFile } from './config-file.js'
 export { protectOwnerOnly, checkOwnerOnly, currentWindowsAccount, currentWindowsSid, windowsSystemRoot, windowsSystemTool, defaultOwnerOnlyExec, type OwnerOnlyExec, type OwnerOnlyResult, type OwnerOnlyCheck, type OwnerOnlyOptions } from './owner-only.js'
 export { markRemoteHostDown, remoteHostDownRemainingMs, clearRemoteHostDown, _resetRemoteHostBreaker, salvageRemoteRow, FEEDBACK_SOURCE_CAPABILITY, _resetRemoteCapabilityCache } from './store/remote-store.js'
 export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, updateCheckOffline, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
-export { offlineByEnv, updateCheckDisabledByEnv } from './offline.js'
+export { offlineByEnv, updateCheckDisabledByEnv, offlineInferred, offlineNow } from './offline.js'
 export { scanForTensions, getCandidatePairs, getCandidatePairsDetailed, measuredUnderDiffers, measuredUnderGateApplies, engramOrigin, MEASURED_UNDER_DIMENSIONS, MEASURED_UNDER_CONFIDENCE_CAP, type CandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
 // Tension lifecycle persistence (#181)
 export { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'

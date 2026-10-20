@@ -1,6 +1,6 @@
 import type { Engram } from './schemas/engram.js'
 import type { EmbedRole } from './embedders/types.js'
-import { downloadsOffByEnv, envOf } from './embedders/transformers-base.js'
+import { downloadsOff, envOf } from './embedders/transformers-base.js'
 import { engramSearchText } from './fts.js'
 import { existsSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, statSync, openSync, readSync, closeSync } from 'fs'
 import { join, dirname } from 'path'
@@ -244,9 +244,10 @@ export function _resetBackgroundModelLoad(): void {
 const truthy = (v: string | undefined): boolean => !!v && ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
 
 /** Downloads are off: HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE, PLUR_MODEL_DOWNLOAD=off,
- *  or transformers.js configured with `allowRemoteModels = false`. */
+ *  the process inferred it is offline (TEAM-5, offline.ts), or transformers.js
+ *  configured with `allowRemoteModels = false`. */
 async function modelDownloadDisabled(): Promise<boolean> {
-  if (downloadsOffByEnv()) return true
+  if (downloadsOff()) return true
   try {
     const transformers = await import('@huggingface/transformers') as { env?: { allowRemoteModels?: boolean } }
     if (envOf(transformers)?.allowRemoteModels === false) return true
