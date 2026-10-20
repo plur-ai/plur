@@ -193,6 +193,7 @@ models:
       - packages/core/src/index.ts
       - packages/cli/src/lib/folder-gate.ts
       - packages/mcp/src/server.ts
+      - packages/opencode/src/scope.ts
   - model: PlurSpec/Login.lean
     covers:
       - packages/cli/src/commands/login.ts
