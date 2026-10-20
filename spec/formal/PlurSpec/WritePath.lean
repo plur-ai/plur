@@ -1746,3 +1746,7 @@ end PlurSpec.WritePath
 /- 2026-10-19: Save destination reporting is a projection of the existing delivery
 evidence. It changes no routing, persistence, scope authorization or outbox rule;
 the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/- 2026-10-19: serverSessionLines reads cached configuration and the existing
+primary outbox projection. It does not probe, route, deliver or mutate memory.
+These transition invariants still hold; status precedence is in SaveDestination. -/
