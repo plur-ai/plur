@@ -1,4 +1,4 @@
-import { Plur, isDirectoryTrusted, type ProjectConfig } from '@plur-ai/core'
+import { Plur, isDirectoryTrusted, folderMapProblem, type ProjectConfig } from '@plur-ai/core'
 import { join, resolve } from 'path'
 import { homedir } from 'os'
 import type { OutputOptions } from './output.js'
@@ -147,6 +147,23 @@ export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; a
     readonly: options?.readonly,
     ...(options?.autoDiscover !== undefined ? { autoDiscover: options.autoDiscover } : {}),
   })
+  // Every command is bound to the folder it runs in (audit of #1521, S1), so
+  // `plur learn`, `recall`, `inject`, `capture`, `import` … obey a remote-only
+  // folder exactly as the hooks and the MCP server do. Hooks re-bind to the
+  // folder their payload names, failing closed (bindHookFolder).
+  //
+  // A folder map that cannot be read, or a folder that cannot be resolved,
+  // leaves a CLI command unbound, as on development (#1579 L10): local memory
+  // still prints and folderReadContext contacts no store. Binding only looks:
+  // it never imports a legacy trust.yaml (#1589 audit round 2).
+  const cwd = process.cwd()
+  try {
+    // Checked first, silently: the CLI's own notice about a broken map is
+    // folderReadContext's, said once.
+    if (folderMapProblem(lastInstance.storageRoot)) return lastInstance
+    const policy = lastInstance.resolveFolderPolicy(cwd, { readOnly: true })
+    if (policy.reason !== 'malformed-map' && policy.reason !== 'resolver-error') lastInstance.bindFolderPolicy(cwd, policy)
+  } catch { /* unbound, as above */ }
   return lastInstance
 }
 

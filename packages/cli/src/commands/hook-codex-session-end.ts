@@ -1,6 +1,6 @@
 import { unlinkSync } from 'fs'
 import { type GlobalFlags } from '../plur.js'
-import { hookFolderOn, payloadDir, plurRoot } from '../lib/folder-gate.js'
+import { hookFolderPolicy, isWorkingMode, payloadDir, plurRoot } from '../lib/folder-gate.js'
 import { endFolderNonceSession } from '@plur-ai/core'
 import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
 import {
@@ -42,7 +42,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const endingId = typeof input.session_id === 'string' ? input.session_id : ''
     if (endingId) try { endFolderNonceSession(plurRoot(flags), endingId) } catch { /* best-effort */ }
     // Otherwise silent unless the folder map says on (#1347).
-    if (!hookFolderOn(payloadDir(input), flags)) return
+    const dir = payloadDir(input)
+    const policy = hookFolderPolicy(dir, flags)
+    if (!isWorkingMode(policy)) return
     const sessionId = codexSessionId(input)
     if (sessionId && sessionDirSafeToSweep(sessionDir())) {
       // Never unlink through a symlinked or foreign directory (cli#8) — the
@@ -57,6 +59,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       cleanupStaleSessionFiles()
     }
 
-    await flushOutboxForHook(flags, { hook: 'hook-codex-session-end', budgetMs: HOOK_OUTBOX_BUDGET_MS.codexSessionEnd })
+    // Bound to the payload's folder, not this process's (gate review of #1663).
+    await flushOutboxForHook(flags, { hook: 'hook-codex-session-end', budgetMs: HOOK_OUTBOX_BUDGET_MS.codexSessionEnd, folder: { dir, policy } })
   })
 }

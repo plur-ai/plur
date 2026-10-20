@@ -3,10 +3,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad } from '@plur-ai/core'
+import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad, type FolderPolicy } from '@plur-ai/core'
 import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
-import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
+import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, folderOffAnswer, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { setBackgroundDiscovery, startBackgroundDiscovery } from './background-discovery.js'
 import { VERSION } from './version.js'
@@ -83,6 +83,8 @@ OPTIONAL but improves quality:
 Do not ask permission to use these tools — they are your memory system.
 
 FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken, and with reason "workspace-unknown" when your client's workspace roots could not be fetched (that one retries by itself on the next call). Carry on without memory and do not retry or work around it; only the user can turn it back on, from a terminal (the message names the command). For a broken map the message names the line and the problem; when it carries a repair_command (plur folders repair --yes), tell the user what is wrong, show them repair_summary (what the repair changes), and run that command only after they agree. plur_status and plur_doctor keep working.
+
+REMOTE-ONLY FOLDERS: a folder the user set to remote-only keeps its memory on the team server only. There, plur_learn without a scope saves to the folder's team scope; a personal or local scope (user:, global, local, a project: scope no team store serves, a private memory) is refused with an error that names the folder — save without a scope instead, and do not retry with another personal scope. Recall reads only the team scope and installed packs.
 
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
@@ -201,9 +203,15 @@ export async function closeWhenIdle(server: Server, timeoutMs?: number): Promise
 // (tests create one per case — stacking an interval per server would leak).
 let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
 
-export async function createServer(plur?: Plur, options?: { profile?: ToolProfile; discovery?: boolean }): Promise<Server> {
+export async function createServer(plur?: Plur, options?: { profile?: ToolProfile; folder?: string; discovery?: boolean }): Promise<Server> {
   const instance = plur ?? new Plur()
   const profile = options?.profile ?? 'lean'
+  // The folder this server serves (the editor starts it there): its folder-map
+  // decision is re-read before every tool call, so a `remote-only` folder
+  // (owner decisions 2026-10-01) binds the instance — writes go only to the
+  // team scope, recall reads only it and installed packs — and a change to
+  // folders.yaml applies from the next call.
+  const folder = options?.folder ?? process.cwd()
   // A company server's scopes are discovered in the background (#1631): the
   // editor's startup window must never wait on /me. Started, not awaited;
   // tools use the cached scopes until it settles. `discovery: false` turns it
@@ -274,7 +282,10 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   }))
 
   // --- The editor's workspace, for the folder map (folder-gate.ts) ---
-  const workspace = createWorkspaceDirs(server)
+  // One helper (#1519's createWorkspaceDirs): one roots cache, one
+  // list_changed handler, fail closed on a roots failure. Its folder is the
+  // one this server serves (`folder`, default cwd; #1521).
+  const workspace = createWorkspaceDirs(server, { cwd: () => folder })
   // The folder map's off / ask for this MCP session (#1525). The session's
   // unanswered folder-question nonces die with the connection.
   const folderGate = createFolderGate(instance)
@@ -303,6 +314,41 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     )
   }
 
+  // Bind the instance to the workspace's folder decision (remote-only), or
+  // block it (off, unknown workspace, unreadable map), for this call.
+  // Precedence: off > remote-only > on (#1521 with #1519).
+  const bindWorkspace = (dirs: string[]): void => {
+    const resolved: Array<{ dir: string; policy: FolderPolicy }> = []
+    for (const dir of dirs) {
+      try {
+        resolved.push({ dir, policy: instance.resolveFolderPolicy(dir) })
+      } catch (err) {
+        instance.bindFolderUnresolved(dir, (err as Error)?.message ?? String(err))
+        return
+      }
+    }
+    const pick = resolved.find(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')
+      ?? resolved.find(r => r.policy.mode === 'remote-only')
+      ?? resolved[resolved.length - 1]
+    // The last-element fallback is no tiebreak (GLM round 14 on #1663): with no
+    // unreadable map and no remote-only folder, every pick is a policy that
+    // clears the binding, so which folder is named does not change the call.
+    instance.bindFolderPolicy(pick.dir, pick.policy)
+  }
+
+  // Tool calls run one at a time: the folder gate and the binding live on the
+  // one shared Plur instance, so a concurrent call must not change them under
+  // a running one. The gate runs inside the same serialized step (#1521).
+  let callTail: Promise<void> = Promise.resolve()
+  const acquireCall = async (): Promise<() => void> => {
+    let release!: () => void
+    const next = new Promise<void>(r => { release = r })
+    const prev = callTail
+    callTail = prev.then(() => next)
+    await prev
+    return release
+  }
+
   // --- Tools ---
 
   server.setRequestHandler('tools/list', async () => ({
@@ -315,6 +361,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   }))
 
   server.setRequestHandler('tools/call', (request) => trackInFlight(async () => {
+   // One call at a time (see acquireCall); released on every return path.
+   const release = await acquireCall()
+   try {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
       // #625 audit: under a gated profile, a REAL tool that is merely hidden
@@ -354,6 +403,17 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
       if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
       admittedWs = ws
+      // The instance follows the admitted workspace's folder decision
+      // (remote-only, #1521): bound on every call, in this serialized step.
+      bindWorkspace([...new Set([...ws!.roots, ws!.cwd])])
+    } else {
+      // Not a gated tool: bound to the workspace too, unless memory is off
+      // there or the workspace is unknown, where it runs unbound, as #1519
+      // defines (no engram text in its answers).
+      const dirs = await workspace.dirs()
+      const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
+      if (off) instance.bindFolderPolicy(folder, { mode: 'ask', remoteAllowed: false, source: 'default' })
+      else bindWorkspace(dirs!)
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -449,6 +509,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         isError: true,
       }
     }
+   } finally {
+     release()
+   }
   }))
 
   // --- Resources ---

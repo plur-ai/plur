@@ -22,6 +22,12 @@ scan's verdict on the content. Every theorem holds for every such oracle. The pe
 `find?` per rank. Left out: string grammar of scopes, the cooldown/held-back filters of the flush
 (they only skip), YAML key order.
 
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+The resolver (§1) is unchanged and is now also what a remote-only folder calls deliverable
+(`_isDeliverableTeamScope` = shared, not local-only, not `user:`, resolver `remote` and
+writable). The remote-only gate runs before the leak guard and the write paths of §2 and only
+refuses (WritePath §3d); discovery and the cache write (§3, §4) are not touched.
+
 Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
 Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
 index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the

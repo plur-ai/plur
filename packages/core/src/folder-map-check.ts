@@ -20,13 +20,12 @@ import { isDeepStrictEqual } from 'util'
  * and nothing is changed — there is no half repair.
  */
 
-// #1521 (0.22) extends these two: `plur` gains `remote-only`, and an empty
-// `folders:` (null) becomes valid. When it lands, change them HERE — this is
-// the one schema the loader, the MCP gate and the repair share — and add
-// `remote-only` to MODES below.
+// The one schema the loader, the MCP gate and the repair share. #1521 (0.22)
+// extended it here: `plur` gains `remote-only` (also in MODES below), and an
+// empty `folders:` (null) is valid and means no entries.
 export const FolderEntrySchema = z.object({
   path: z.string().min(1),
-  plur: z.enum(['on', 'off', 'ask']).optional(),
+  plur: z.enum(['on', 'off', 'ask', 'remote-only']).optional(),
   scope: z.string().min(1).optional(),
   trusted: z.boolean().optional(),
   literal: z.boolean().optional(),
@@ -34,7 +33,9 @@ export const FolderEntrySchema = z.object({
 
 export const FolderMapSchema = z.object({
   version: z.literal(1).optional(),
-  folders: z.array(FolderEntrySchema).optional(),
+  // `folders: []` is what the template starts with; a list emptied by hand
+  // to `folders:` (null) means no entries too.
+  folders: z.array(FolderEntrySchema).nullable().optional(),
 }).passthrough()
 
 export interface FolderMapIssue {
@@ -69,7 +70,7 @@ export type FolderMapRepairPlan =
 
 const TOP_KEYS = ['version', 'folders'] as const
 const ENTRY_KEYS = new Set(['path', 'plur', 'scope', 'trusted', 'literal'])
-const MODES = ['on', 'off', 'ask'] as const
+const MODES = ['on', 'off', 'ask', 'remote-only'] as const
 /** Words that read as a yes/no: never guessed into a mode (`no` is one letter from `on`). */
 const YES_NO = new Set(['yes', 'no', 'y', 'n', 'true', 'false', 'none', 'non', 'null', '~'])
 /** A block scalar indicator (`|`, `>`, with chomping / indentation markers): its lines are text, not structure. */
@@ -362,8 +363,10 @@ export function suggestMode(value: string): string | null {
   if (t.length < 3 || YES_NO.has(lower)) return null
   // One letter off: only ever `off` or `ask`, and only when `on` is not just
   // as close — a guess never switches memory on (`ok`, `in`, `onn` stay put).
+  // Never `remote-only` either (GLM round 13 on #1663): a guess must not put a
+  // folder into a confidentiality mode the user did not finish writing.
   const near = MODES.filter(m => editDistance(lower, m) === 1)
-  return near.length === 1 && near[0] !== 'on' ? near[0] : null
+  return near.length === 1 && near[0] !== 'on' && near[0] !== 'remote-only' ? near[0] : null
 }
 
 /** The value token of a `key: value` line: [start, end) of the text inside any quotes, and the text. */
@@ -508,7 +511,7 @@ export function checkFolderMapText(text: string): FolderMapCheck {
           const span = at && at.key === 'plur' ? valueSpan(at) : null
           const suggestion = span && typeof value === 'string' ? suggestMode(span.value) : null
           fixable = suggestion !== null
-          message = `\`plur:\` in entry ${idx + 1} must be on, off or ask` +
+          message = `\`plur:\` in entry ${idx + 1} must be on, off or ask, or remote-only with a team scope` +
             (suggestion ? ` — it looks like \`${suggestion}\` with the wrong case or a typo` : '')
         } else if (key === 'trusted' || key === 'literal') {
           message = `\`${key}:\` in entry ${idx + 1} must be true or false`

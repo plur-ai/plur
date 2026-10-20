@@ -1,4 +1,5 @@
 import type { Engram } from './schemas/engram.js'
+import { withoutRemoteOnlyQueued } from './remote-only-rows.js'
 import type { EmbedRole } from './embedders/types.js'
 import { downloadsOffByEnv, envOf } from './embedders/transformers-base.js'
 import { engramSearchText } from './fts.js'
@@ -726,6 +727,8 @@ const PROGRESS_FLUSH_MS = 2000
  * load error); never retried. Returns how many vectors it added.
  */
 export async function fillEmbeddingCache(engrams: Engram[], storagePath?: string): Promise<number> {
+  // A queued remote-only save is never embedded or cached (gate review of #1663).
+  engrams = withoutRemoteOnlyQueued(engrams)
   const activeMeta = await getActiveEmbedderMeta()
   if (!activeMeta) return 0
   const cachePath = storagePath ? join(storagePath, '.embeddings-cache.json') : '.embeddings-cache.json'
@@ -779,6 +782,8 @@ export async function embeddingSearch(
   storagePath?: string,
   opts?: EmbeddingSearchOptions,
 ): Promise<Engram[]> {
+  // A queued remote-only save is never embedded or cached (gate review of #1663).
+  engrams = withoutRemoteOnlyQueued(engrams)
   if (engrams.length === 0) return []
 
   // Resolve the active embedder before touching the cache so the cache load
@@ -854,6 +859,8 @@ export async function embeddingSearchWithScores(
   storagePath?: string,
   opts?: EmbeddingSearchOptions,
 ): Promise<SimilarityResult[]> {
+  // A queued remote-only save is never embedded or cached (gate review of #1663).
+  engrams = withoutRemoteOnlyQueued(engrams)
   if (engrams.length === 0) return []
 
   const activeMeta = await getActiveEmbedderMeta()

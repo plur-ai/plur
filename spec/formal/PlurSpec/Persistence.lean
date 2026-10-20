@@ -1070,6 +1070,40 @@ theorem fixed_never_writes_locked (pre cur : Row) (new : Nat) (r : Row)
 /-- Non-vacuity: an unlocked row is still updated. -/
 theorem fixed_updates_unlocked : writeFixed ⟨false, 1⟩ ⟨false, 1⟩ 2 = some ⟨false, 2⟩ := rfl
 
+/-! Checked against #1521 (merged onto development, 2026-10-18): UPDATED. The
+re-check under the lock now also refuses a row that is a save queued from a
+remote-only folder (`structured_data._outbox.remote_only`): such a save is
+delivered or forgotten as it was saved, never rewritten by an UPDATE or MERGE
+decision. Same outcome as locked: ADD. -/
+
+structure RowRO where
+  locked : Bool
+  held   : Bool   -- `structured_data._outbox.remote_only` on the row under the lock
+  stmt   : Nat
+
+/-- The re-check as it is now (UPDATE and MERGE alike). -/
+def writeRO (pre cur : RowRO) (new : Nat) : Option RowRO :=
+  if pre.locked || cur.locked || cur.held then none else some { cur with stmt := new }
+
+/-- The re-check before #1521 (only `locked`), on the same rows. -/
+def writeLockedOnly (pre cur : RowRO) (new : Nat) : Option RowRO :=
+  if pre.locked || cur.locked then none else some { cur with stmt := new }
+
+/-- **Counterexample (re-audit 3 of #1521):** without the new check a queued
+remote-only save is rewritten in place, so what reaches the team server is no
+longer what was saved. -/
+theorem locked_only_rewrites_held :
+    writeLockedOnly ⟨false, false, 1⟩ ⟨false, true, 1⟩ 2 = some ⟨false, true, 2⟩ := rfl
+
+/-- Now: a queued remote-only save (or a locked row) is never written. -/
+theorem ro_never_writes_held (pre cur : RowRO) (new : Nat) (r : RowRO)
+    (h : writeRO pre cur new = some r) : cur.held = false ∧ cur.locked = false := by
+  unfold writeRO at h
+  cases hp : pre.locked <;> cases hc : cur.locked <;> cases hh : cur.held <;> simp [hp, hc, hh] at h ⊢
+
+/-- Non-vacuity: an ordinary unlocked row is still updated. -/
+theorem ro_updates_plain : writeRO ⟨false, false, 1⟩ ⟨false, false, 1⟩ 2 = some ⟨false, false, 2⟩ := rfl
+
 end LearnAsync
 
 /-! ## 8. Packs (packs.ts `computePackHash`, registry `addToRegistry`/`uninstallPack`)

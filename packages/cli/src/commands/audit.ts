@@ -1,4 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
+import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
@@ -323,6 +324,10 @@ async function runEngramInversionScan(flags: GlobalFlags, scope?: string, domain
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  // An audit reads editor memory from every project and sends it as recall
+  // queries (Codex round 7 on #1663): not from a remote-only folder.
+  const refused = remoteOnlyCommandRefusal(flags, 'An audit reads other projects\' memory and sends it to the team server as queries')
+  if (refused) exit(1, refused)
   let source = 'claude-code'
   let limit = 5
   let fromJson: string | undefined
