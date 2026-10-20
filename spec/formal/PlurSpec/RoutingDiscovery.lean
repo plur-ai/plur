@@ -1201,3 +1201,5 @@ by a protected backup comparison under the existing config lock. Generic fold,
 route resolution, discovery and outbox rules are unchanged. EnterpriseInit.Legacy
 models its admission and refusal boundaries. Metadata is preserved through the
 existing fold; queued idempotency keys are untouched. -/
+
+/- 2026-10-20: Resolver selection, scope conflicts and discovery are unchanged. Flush still uses the resolved authorized destination; only its retry eligibility and acknowledgment of the original queued write changed, as modeled in Outbox.lean. -/

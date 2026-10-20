@@ -66,7 +66,7 @@ import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
 import type { MeResponse } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
-import { classifyOutboxFailure, credentialChanged, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
+import { classifyOutboxFailure, credentialChanged, statusFromErrorText, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg, tokenHealthKey,
@@ -11900,7 +11900,9 @@ export class Plur {
      */
     const heldBack = (outbox: OutboxEntry, currentToken?: string): boolean => {
       if (force) return false
-      if (credentialChanged(outbox.last_token_fp, currentToken ? tokenHealthKey(currentToken) : undefined)) return false
+      const status = typeof outbox.last_status === 'number' ? outbox.last_status : statusFromErrorText(outbox.last_error)
+      if ((status === 401 || status === 403) &&
+        credentialChanged(outbox.last_token_fp, currentToken ? tokenHealthKey(currentToken) : undefined)) return false
       const verdict = classifyOutboxFailure({
         last_status: typeof outbox.last_status === 'number' ? outbox.last_status : undefined,
         last_error: outbox.last_error,
@@ -12181,6 +12183,10 @@ export class Plur {
     }
     /** Where each pushed id went — for queuing a retire if it was cancelled meanwhile (D1). */
     const pushedTo = new Map<string, { url: string; scope: string }>()
+    // A configuration-only server replacement changes the endpoint, not the
+    // queued write. Keep its admitted identity separate from the actual
+    // receipt endpoint so acknowledgment cannot erase a newer queued write.
+    const admittedWrites = new Map<string, { url: string; scope: string; key: string }>()
 
     for (const engram of pending) {
       // #1269: out of budget — leave the rest queued, untouched, for next time.
@@ -12372,6 +12378,9 @@ export class Plur {
 
       try {
         // C4: the same key on every retry of this write.
+        admittedWrites.set(engram.id, {
+          url: outbox.target_url, scope: outbox.target_scope, key: outbox.idempotency_key,
+        })
         const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget, idempotencyKey: outbox.idempotency_key })
         upload?.results.set(engram.id, { id: engram.id, outcome: pushed.review_required ? 'held_for_review' : pushed.deduplicated ? 'already_on_server' : 'sent', new_id: pushed.id })
         // #863: remember the mapping so a later engram in this same flush can
@@ -12477,10 +12486,13 @@ export class Plur {
           .filter(e => {
             if (!(consideredIds.has(e.id) && !survivorsById.has(e.id))) return true
             const dest = pushedTo.get(e.id)
-            // Handed off only while still queued FOR THE STORE IT WENT TO — a
-            // D4 update / rescope that retargeted it mid-push leaves it queued
-            // for a store that has not received it (audit of #1228, finding 1).
-            if (Plur._stillQueuedFor(e, dest)) return false
+            // A config replacement may authorize a different server for the
+            // same queued scope. Acknowledge the admitted write only while its
+            // original identity survives; cancellation, rescope and requeue
+            // still preserve the fresh row and retire the actual remote copy.
+            const admitted = admittedWrites.get(e.id)
+            if (admitted && e.scope === admitted.scope && Plur._stillQueuedFor(e, admitted)
+              && (e as any).structured_data._outbox.idempotency_key === admitted.key) return false
             const retargeted = Plur._stillQueued(e)
             const serverId = localToServer.get(e.id)
             // Decision D1: queue the accepted copy for retirement on the remote
@@ -12508,8 +12520,11 @@ export class Plur {
             // Audit of #1228, finding 1: retargeted meanwhile (D4 update /
             // rescope to another store). The snapshot's `_outbox` names the OLD
             // store; copying it back would re-point the row there.
-            const sOb = sSd?._outbox as { target_url?: string; target_scope?: string } | undefined
+            const sOb = sSd?._outbox as { target_url?: string; target_scope?: string; idempotency_key?: string } | undefined
             if (sOb?.target_url && !Plur._stillQueuedFor(e, { url: sOb.target_url, scope: sOb.target_scope ?? '' })) return e
+            // A same-destination requeue is a different logical write too.
+            // Failure bookkeeping from this attempt must not restore its old key.
+            if (sOb && (e as any).structured_data._outbox.idempotency_key !== sOb.idempotency_key) return e
             const fSd = { ...((e as any).structured_data as Record<string, unknown> | undefined ?? {}) }
             // `_outbox` and `_demoted` are the flush's own bookkeeping: copy
             // them across (including their ABSENCE, which is how a cancelled

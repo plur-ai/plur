@@ -168,3 +168,5 @@ ServerDiagnostics models missing-evidence and hook-time aggregation. -/
 flush with a selected-id filter. Existing route, sensitivity, binding and
 retirement invariants remain in force. UploadLocal models the new admission,
 selection, dry-run and receipt rules. Held receipts are never cached as live. -/
+
+/- 2026-10-20: Delivery classification and presentation remain unchanged. Successful flush acknowledgment now matches the original queued write while the receipt retains the actual accepting endpoint; Outbox.lean models that distinction. -/

@@ -1175,3 +1175,5 @@ by a protected backup comparison under the existing config lock. Generic fold,
 route resolution, discovery and outbox rules are unchanged. EnterpriseInit.Legacy
 models its admission and refusal boundaries. Metadata is preserved through the
 existing fold; queued idempotency keys are untouched. -/
+
+/- 2026-10-20: Configuration normalization, registration, folding and store identity are unchanged. Replacement delivery uses the existing resolver and records the actual accepting endpoint; Outbox.lean now distinguishes this from queued-write identity. -/
