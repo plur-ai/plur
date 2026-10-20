@@ -2113,6 +2113,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // Batch learning never overwrites (2026-10-18): the checker's
             // UPDATE/MERGE became a linked ADD, said here in plain words.
             ...(r.likely_duplicate_of ? { likely_duplicate_of: r.likely_duplicate_of } : {}),
+            // A draft whose review item could not be opened (audit 5 F3): said, not only logged.
+            ...(r.tensions?.length ? { tensions: r.tensions } : {}),
+            ...(r.review_error ? { review_error: r.review_error } : {}),
             // #856 audit: `dedup` was computed and then dropped here, so the
             // reporting it exists for reached no caller — "anything below the
             // bar is still reported" was not observable anywhere.

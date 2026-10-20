@@ -124,15 +124,19 @@ async function saveBesideLocked(
   alreadySaved?: Engram,
 ): Promise<LearnAsyncResult> {
   let engram: Engram
+  const problems: string[] = []
   if (alreadySaved) {
     engram = alreadySaved
     // Saved as a normal memory before the lock was seen: hold it back now.
     if (engram.id !== locked.id && engram.commitment !== 'draft' && deps.holdAsDraft) {
+      // learn() already saves it as a draft when it sees the lock under the
+      // store lock (audit 5 F3); this is the fallback for a lock it could not see.
       try {
         await deps.holdAsDraft(engram.id)
         engram = { ...engram, commitment: 'draft' }
       } catch (err) {
         logger.warning(`could not hold ${engram.id} back as a draft while its review waits: ${err}`)
+        problems.push(`${engram.id} could not be held back as a draft: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
   } else {
@@ -140,23 +144,45 @@ async function saveBesideLocked(
   }
   let tensions: string[] | undefined
   if (deps.openReview && engram.id !== locked.id) {
-    try {
-      const id = await deps.openReview({
-        id_a: locked.id,
-        id_b: engram.id,
-        statement_a: locked.statement,
-        statement_b: engram.statement,
-        confidence: 1,
-        reason: `The duplicate checker said ${engram.id} updates ${locked.id}, which is locked. ` +
-          `A locked memory is not superseded automatically, so both are kept and this pair waits for review.`,
-      })
-      if (id) tensions = [id]
-    } catch (err) {
-      // The new statement is saved either way; a missing review item is logged, not thrown.
-      logger.warning(`could not open a review item for ${locked.id} and ${engram.id}: ${err}`)
+    const pair = {
+      id_a: locked.id,
+      id_b: engram.id,
+      statement_a: locked.statement,
+      statement_b: engram.statement,
+      confidence: 1,
+      reason: `The duplicate checker said ${engram.id} updates ${locked.id}, which is locked. ` +
+        `A locked memory is not superseded automatically, so both are kept and this pair waits for review.`,
+    }
+    // Audit 5 F3: the draft is only reachable through this review, so opening
+    // it is retried once, and a failure is REPORTED in the result (and logged):
+    // a caller told nothing would believe the pair is waiting for the user.
+    let lastErr: unknown
+    for (let attempt = 0; attempt < 2 && !tensions; attempt++) {
+      try {
+        const id = await deps.openReview(pair)
+        if (id) tensions = [id]
+        else lastErr = new Error('the review queue returned no record')
+      } catch (err) {
+        lastErr = err
+      }
+    }
+    if (!tensions) {
+      const msg = lastErr instanceof Error ? lastErr.message : String(lastErr)
+      logger.warning(`could not open a review item for ${locked.id} and ${engram.id}: ${msg}`)
+      problems.push(
+        `The review item for ${locked.id} and ${engram.id} could not be opened (${msg}). ` +
+        `${engram.id} is saved as a draft and is not given to the agent until it is reviewed; ` +
+        `open the review again or resolve it by hand.`,
+      )
     }
   }
-  return { engram, decision: 'ADD', existing_id: locked.id, ...(tensions ? { tensions } : {}) }
+  return {
+    engram,
+    decision: 'ADD',
+    existing_id: locked.id,
+    ...(tensions ? { tensions } : {}),
+    ...(problems.length ? { review_error: problems.join(' ') } : {}),
+  }
 }
 
 /**
@@ -245,14 +271,33 @@ async function executeDedupDecision(
       // `supersedes_unless_locked`: learn() re-checks the lock under the store
       // lock, so a memory locked after the read above is not superseded either.
       const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), supersedes, supersedes_unless_locked: true })
-      // Judged by effect: UPDATE is reported only when the supersede landed.
-      const landed = engram.id !== existing.id && ((engram as any).relations?.supersedes ?? []).includes(existing.id)
+      // Judged by effect (audit 5 F4): UPDATE is reported only when BOTH edges
+      // landed — the forward edge on the new memory and the reverse edge on the
+      // target, read back from the target's own store — because the reverse
+      // edge is what stops the old memory being injected.
+      const now = engram.id !== existing.id ? await deps.getById(existing.id) : null
+      const forward = engram.id !== existing.id && ((engram as any).relations?.supersedes ?? []).includes(existing.id)
+      const landed = forward && ((now as any)?.relations?.superseded_by ?? []).includes(engram.id)
       if (!landed) {
-        const now = await deps.getById(existing.id)
-        if (now && (now as any).commitment === 'locked') {
+        // learn() saw the lock under the store lock and saved a draft (F3).
+        if (now && ((now as any).commitment === 'locked' || (!forward && engram.commitment === 'draft' && context?.commitment !== 'draft'))) {
           return await saveBesideLocked(deps, statement, context, now, engram)
         }
-        return { engram, decision: 'ADD' }
+        const linked = ((engram as any).relations?.related ?? []).includes(existing.id)
+        return {
+          engram,
+          decision: 'ADD',
+          ...(linked ? {
+            likely_duplicate_of: {
+              id: existing.id,
+              checker_decision: 'UPDATE' as const,
+              note:
+                `The duplicate checker said this updates ${existing.id}, but ${existing.id} is held where this ` +
+                `install cannot mark it replaced (a read-only store or a pack), so it would still be given to the ` +
+                `agent. This was saved as its own memory linked to ${existing.id}; ${existing.id} is unchanged.`,
+            },
+          } : {}),
+        }
       }
       appendHistory(deps.rootPath, {
         event: 'engram_updated',
