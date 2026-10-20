@@ -422,6 +422,19 @@ export interface ServerRegistration {
    *  url already holds a key (token or token_env); judged on the file under
    *  the lock. */
   keepSignIn?: boolean
+  /** Installer-only upgrade of one exact personal legacy JWT route. The caller
+   * has verified the new key and personal scope through a fresh /me response. */
+  migrateLegacyPersonal?: boolean
+}
+
+// Format recognition only, never authentication or identity evidence. Identity
+// comes from the new key's /me response, not these unsigned local claims.
+function legacyJwt(value: unknown): boolean {
+  if (typeof value !== 'string' || value.length > 16384 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) return false
+  try {
+    const [header, payload] = value.split('.').slice(0, 2).map(part => JSON.parse(Buffer.from(part, 'base64url').toString('utf8')))
+    return isPlainObj(header) && typeof header.alg === 'string' && header.alg.toLowerCase() !== 'none' && isPlainObj(payload)
+  } catch { return false }
 }
 
 /**
@@ -442,7 +455,7 @@ export interface ServerRegistration {
  */
 export function registerServerEntry(rawStores: unknown[], reg: ServerRegistration): {
   stores: unknown[]; status: 'added' | 'updated' | 'unchanged'; report: Omit<FoldReport, 'queued_by_scope'>; entry: Record<string, unknown>
-  removed: ScopeHolder[]
+  removed: ScopeHolder[]; migratedLegacy: boolean
 } {
   // One object per position: YAML aliases load as the same object at several
   // positions, and the holders are mapped back to their positions by identity
@@ -462,9 +475,30 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   const tokenEnv = str(reg.tokenEnv)
   const token = tokenEnv ? undefined : str(reg.token)
   const cred: Record<string, unknown> = tokenEnv ? { token_env: tokenEnv } : { token }
+  let migratedLegacy = false
+  let legacyMetadata: Record<string, unknown> = {}
+  if (reg.migrateLegacyPersonal && token && !tokenEnv) {
+    const candidates = rawStores.filter(r => isPlainObj(r) && r.scope === reg.personalScope &&
+      typeof r.url === 'string' && normalizeEndpointUrl(r.url) === key && !hasUserinfo(r.url) &&
+      !('path' in r) && !('token_env' in r) && !('scopes' in r) && !('enterprise' in r) &&
+      (r.readonly === undefined || r.readonly === false) && legacyJwt(r.token) &&
+      keptReason({ ...r, token }, reg.personalScope, token, undefined, false) === null)
+    if (candidates.length) {
+      const routes = rawStores.filter(r => servedScopes(r).some(scope => scope.toLowerCase() === reg.personalScope.toLowerCase()))
+      const existing = at.length === 1 ? rawStores[at[0]] as Record<string, unknown> : undefined
+      const matchingServer = existing && existing.token === token && !('token_env' in existing) &&
+        existing.scope === reg.personalScope && existing.readonly !== true &&
+        ServerStoreEntrySchema.safeParse(existing).success && rawStores.indexOf(candidates[0]) < at[0] &&
+        isDeepStrictEqual({ ...entryMetadata(existing), ...(isPlainObj(existing.scope_settings) && isPlainObj(existing.scope_settings[reg.personalScope]) ? entryMetadata(existing.scope_settings[reg.personalScope] as Record<string, unknown>) : {}) }, entryMetadata(candidates[0] as Record<string, unknown>))
+      if (candidates.length !== 1 || routes.length !== (matchingServer ? 2 : 1) || (existing && !matchingServer)) throw new Error('The legacy personal route is ambiguous. Nothing was changed; inspect the competing config.yaml entries before signing in again.')
+      legacyMetadata = entryMetadata(candidates[0] as Record<string, unknown>)
+      rawStores = rawStores.map(r => r === candidates[0] ? { ...r as Record<string, unknown>, token } : r)
+      migratedLegacy = true
+    }
+  }
   let stores: unknown[]
   if (at.length === 0) {
-    stores = [...rawStores, { url: reg.url, ...cred, scope: reg.personalScope, enterprise: { ...(reg.enterprise ?? {}) }, scopes: [] }]
+    stores = [...rawStores, { ...legacyMetadata, url: reg.url, ...cred, scope: reg.personalScope, enterprise: { ...(reg.enterprise ?? {}) }, scopes: [] }]
   } else {
     const i = at[0]
     const old = rawStores[i] as Record<string, unknown>
@@ -546,5 +580,5 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
     }
   }
   const status = at.length === 0 ? 'added' : isDeepStrictEqual(folded, rawStores) ? 'unchanged' : 'updated'
-  return { stores: folded, status, report, entry, removed: [] }
+  return { stores: folded, status, report, entry, removed: [], migratedLegacy }
 }
