@@ -5,6 +5,7 @@ import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project
 import { recordInjected } from '../lib/auto-rate.js'
 import { recordHookRun } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
+import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 
 /**
  * plur hook-codex-session-start — Codex `SessionStart` hook.
@@ -54,6 +55,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     try {
       const plur = createPlur(flags)
       bindHookFolder(plur, dir, policy)
+      const legacyLines = input.source === 'compact' ? [] : cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
       // #1198: carry the project's remote settings so Enterprise team memory
       // reaches Codex at session start too. The helper carries #1196's trust
       // gate, so this cannot reintroduce the exfiltration path.
@@ -81,7 +83,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         : ''
       // remote-only: where memory goes, and that the team server did not answer.
       const serverLines = input.source === 'compact' ? [] : await cachedServerLines(plur, dir, policy)
-      const fullHeader = [header, ...serverLines, ...remoteOnlyLines(plur, result, true)].join('\n')
+      const fullHeader = [header, ...serverLines, ...legacyLines, ...remoteOnlyLines(plur, result, true)].join('\n')
       context = refusal + (body ? `${fullHeader}\n\n${body}` : fullHeader)
     } catch (err: unknown) {
       context = '[PLUR Memory — injection FAILED at session start] ' +

@@ -181,6 +181,8 @@ export {
   clearFolderTrust,
   coversHomeOrRoot,
   workspaceFolderScope,
+  workspaceScopeDecision,
+  type WorkspaceScopeDecision,
   findPlurMarker,
   hasOwnFolderDecision,
   sameFolderPath,
@@ -451,6 +453,7 @@ export type { PackManifest } from './schemas/pack.js'
 export { shortPackIntegrity, isTransientPackDir } from './packs.js'
 export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView, InstallResult, NeutralizedCounts, PackIntegrityMigrationReport } from './packs.js'
 export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
+export { ServerStoreEntrySchema } from './schemas/config.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
   CAPSULE_MAGIC,
@@ -7380,7 +7383,7 @@ export class Plur {
    * tokens per host mean one POST per token. `remoteEndpointTokenConflicts`
    * feeds the doctor warning for that misconfiguration.
    */
-  private _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
+  private _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
     // Pick up out-of-process config edits (#307) before reading tokens: a
     // rotated credential must reach the very next dial, not the next restart.
     // The constructor's only re-read compares `stores.length`, so a rotation
@@ -7424,7 +7427,7 @@ export class Plur {
     // switch redirects subsequent recall dialing too. No session scope set
     // (the pre-#243 state) leaves dialing exactly as before.
     const dialScope = options?.scope ?? this._sessionScopes.get(options?.session) ?? undefined
-    const sessionOrg = scopeOrg(dialScope)
+    const contextOrgs = new Set((options?.scope !== undefined ? [options.scope] : options?.context_scopes ?? [dialScope]).map(scopeOrg).filter(Boolean))
     // A personal `user:` scope names its own store (#1515): a recall scoped to
     // `user:acme:me` dials the ONE store entry whose scope matches it (case
     // folded, exact-case preferred — `personalStoreEntry`), with that entry
@@ -7472,7 +7475,7 @@ export class Plur {
       const always = dialable.filter(e => e.dial === 'always')
       const shared = dialable.filter(e => isSharedScope(e.scope))
       const personal = dialable.filter(e => !isSharedScope(e.scope))
-      const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
+      const orgAffine = shared.filter(e => contextOrgs.has(scopeOrg(e.scope)))
       const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
       const personalExact = personalEntry && dialable.includes(personalEntry) ? [personalEntry] : []
       const orgContext = orgAffine.length > 0 || projectImplicated
@@ -7518,7 +7521,7 @@ export class Plur {
    */
   private _startRemoteRecall(
     query: string,
-    options?: { scope?: string; scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
+    options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
     /** The recall's deadline (#1586 audit L7): requests still in flight are
      *  aborted at it, and hosts that answered keep their rows. */
     deadlineAt?: number,
@@ -7526,7 +7529,7 @@ export class Plur {
     if (options?.remote === false) return null
     // An origin-derived local/unknown default is a privacy boundary even for
     // always-dial stores. Explicit call/session scopes remain deliberate choices.
-    if (!this._remoteOnly && options?.scope == null && this._sessionScopes.get(options?.session) == null) {
+    if (!this._remoteOnly && options?.scope == null && !options?.context_scopes?.length && this._sessionScopes.get(options?.session) == null) {
       const scope = this._gitFolderScope()
       if (scope === 'local') return null
       if (scope) options = { ...options, scope }

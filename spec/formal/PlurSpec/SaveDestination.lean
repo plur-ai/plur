@@ -143,6 +143,21 @@ The discovery clock-skew constant is exported without changing its value. -/
 The cached server line and admitted workspace scope selection are unchanged;
 the timestamp is diagnostic only and is never written on those refused paths. -/
 
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Legacy project token cleanup runs only in working session-start
+paths, requires an enterprise registration and preserves hook failure behavior.
+Private backup, tracking and snapshot guards are modeled in LegacyProjectCleanup;
+existing injection, routing and status invariants remain unchanged. -/
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/
+
 /- 2026-10-19: Doctor surfaces core server evidence and requires post-install
 hook-run timestamps for wired supported editors. Init records installation only
 after successful writes; diagnostics do not grant access or send queued saves.
