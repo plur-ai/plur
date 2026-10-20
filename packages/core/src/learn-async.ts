@@ -277,7 +277,11 @@ async function executeDedupDecision(
       // edge is what stops the old memory being injected.
       const now = engram.id !== existing.id ? await deps.getById(existing.id) : null
       const forward = engram.id !== existing.id && ((engram as any).relations?.supersedes ?? []).includes(existing.id)
-      const landed = forward && ((now as any)?.relations?.superseded_by ?? []).includes(engram.id)
+      // A target in another store names the new memory by a primary-qualified
+      // id (audit 6 N2), so an edge counts when it RESOLVES to the new memory.
+      const reverse: string[] = (now as any)?.relations?.superseded_by ?? []
+      const landed = forward && (reverse.includes(engram.id)
+        || (await Promise.all(reverse.map(id => deps.getById(id)))).some(r => r?.id === engram.id))
       if (!landed) {
         // learn() saw the lock under the store lock and saved a draft (F3).
         if (now && ((now as any).commitment === 'locked' || (!forward && engram.commitment === 'draft' && context?.commitment !== 'draft'))) {

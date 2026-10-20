@@ -84,7 +84,11 @@ describe('UPDATE across stores: reported only when the target is actually suppre
 
     const sideNow = await new Plur({ path: side }).getById(sideId)
     expect(sideNow?.statement).toBe(OLD)
-    expect(sideNow?.relations?.superseded_by ?? [], 'reverse edge in the target\'s own store').toEqual([r.engram.id])
+    // The edge names the replacement by a primary-qualified id (audit 6 N2): the
+    // bare id would name an unrelated row of the target's store.
+    const edge = sideNow?.relations?.superseded_by ?? []
+    expect(edge, 'reverse edge in the target\'s own store').toHaveLength(1)
+    expect((await plur.getById(edge[0]))?.id, 'the reverse edge names the replacement').toBe(r.engram.id)
 
     const fresh = new Plur({ path: dir })
     fresh.addStore(join(side, 'engrams.yaml'), SIDE, { shared: false, readonly: false })
@@ -230,5 +234,77 @@ describe('late lock: the replacement is a draft from its very first write (F3)',
     expect(r.decision).toBe('ADD')
     expect(r.tensions).toBeUndefined()
     expect(r.review_error).toMatch(/disk full/)
+  })
+})
+
+/**
+ * Audit 6 N2: the reverse edge written into a secondary store must name the
+ * replacement in a way that store's own view reads as foreign. Ids are minted
+ * per store from the date and a daily counter, so the replacement's bare id in
+ * the initiating primary is, the same day, the id of an unrelated row in the
+ * secondary. Read alone, that store then hid its rule behind its own unrelated
+ * row and gave only the latter.
+ */
+describe('secondary-store reverse edge keeps naming the replacement in every view (audit 6 N2)', () => {
+  const UNRELATED = 'The release checklist for the mailing list is kept in the wiki.'
+  let dir: string
+  let side: string
+  let third: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-a6-main-'))
+    side = mkdtempSync(join(tmpdir(), 'plur-a6-side-'))
+    third = mkdtempSync(join(tmpdir(), 'plur-a6-third-'))
+    for (const d of [dir, side, third]) writeFileSync(join(d, 'config.yaml'), 'embeddings:\n  enabled: false\n')
+  })
+  afterEach(() => {
+    for (const d of [dir, side, third]) rmSync(d, { recursive: true, force: true })
+  })
+
+  it('independently minted same-day ids: each store resolves the edge to the replacement or to nothing, and delivers accordingly', async () => {
+    // Secondary B: the rule at ...-001, an unrelated row at ...-002.
+    const sidePlur = new Plur({ path: side })
+    const sideOld = await sidePlur.learn(OLD, { scope: SIDE })
+    const sideUnrelated = await sidePlur.learn(UNRELATED, { scope: SIDE })
+    // Primary A already holds one row, so the replacement gets ...-002 too.
+    const plur = new Plur({ path: dir })
+    await plur.learn('Deploys are frozen on Fridays.', { scope: 'global' })
+    plur.addStore(join(side, 'engrams.yaml'), SIDE, { shared: false, readonly: false })
+    const target = await rowWith(plur, OLD)
+    const r = await plur.learnAsync(NEW, { scope: SIDE, llm: says(() => target.id) })
+    expect(r.decision).toBe('UPDATE')
+    expect(r.engram.id, 'precondition: the replacement and the unrelated row share an id').toBe(sideUnrelated.id)
+
+    // B read as its own primary store.
+    const sideAlone = new Plur({ path: side })
+    const edge = (await sideAlone.getById(sideOld.id))?.relations?.superseded_by ?? []
+    expect(edge, 'the reverse edge is written').toHaveLength(1)
+    expect(edge[0], 'the reverse edge must not be a bare id of this store').not.toBe(sideUnrelated.id)
+    expect(await sideAlone.getById(edge[0]), 'the reverse edge names nothing in this store').toBeNull()
+    const sideGiven = given(await sideAlone.inject(TASK, { budget: 4000 }))
+    expect(sideGiven, 'its replacement is not here, so the rule stays deliverable').toContain(sideOld.id)
+
+    // A, reopened, with B attached.
+    const fresh = new Plur({ path: dir })
+    fresh.addStore(join(side, 'engrams.yaml'), SIDE, { shared: false, readonly: false })
+    expect((await fresh.getById(r.engram.id))?.statement).toBe(NEW)
+    expect((await fresh.getById(r.engram.id))?.relations?.supersedes).toEqual([target.id])
+    const seenEdge = (await fresh.getById(target.id))?.relations?.superseded_by ?? []
+    expect(seenEdge).toHaveLength(1)
+    expect((await fresh.getById(seenEdge[0]))?.statement, 'in A the reverse edge names the replacement').toBe(NEW)
+    const ids = given(await fresh.inject(TASK, { budget: 4000 }))
+    expect(ids).toContain(r.engram.id)
+    expect(ids, 'replaced in A: not given').not.toContain(target.id)
+
+    // A third install C whose own primary also holds ...-001 and ...-002.
+    const thirdPlur = new Plur({ path: third })
+    await thirdPlur.learn('Standups start at nine.', { scope: 'global' })
+    const thirdSecond = await thirdPlur.learn('Mailing list moderators rotate every quarter.', { scope: 'global' })
+    expect(thirdSecond.id, 'precondition: C has a row under the replacement\'s bare id').toBe(r.engram.id)
+    thirdPlur.addStore(join(side, 'engrams.yaml'), SIDE, { shared: false, readonly: false })
+    const inC = await rowWith(thirdPlur, OLD)
+    const cEdge = inC.relations?.superseded_by ?? []
+    for (const id of cEdge) expect((await thirdPlur.getById(id))?.statement, 'in C the edge must not name C\'s own row').not.toBe(thirdSecond.statement)
+    const cGiven = given(await thirdPlur.inject(TASK, { budget: 4000 }))
+    expect(cGiven, 'its replacement is not in C, so the rule stays deliverable there').toContain(inC.id)
   })
 })

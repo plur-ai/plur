@@ -6576,6 +6576,12 @@ export class Plur {
     const engrams = await this._loadAllEngrams()
     const exact = engrams.find(e => e.id === id)
     if (exact) return exact
+    // A reference another store holds to one of my primary rows (audit 6 N2).
+    const ns = parseNamespacedId(id)
+    if (ns && ns.prefix === storePrefix(this._primaryRefScope())) {
+      const own = (await this._loadCached(this.paths.engrams)).find(e => e.id === ns.bare)
+      if (own) return own
+    }
     const byPackOriginal = this._matchPackOriginalId(engrams, id)
     if (byPackOriginal) return byPackOriginal
     return this._matchOldFormId(engrams, id)
@@ -12851,13 +12857,17 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   private async _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>> {
     const written: SecondarySupersede[] = []
+    // Audit 6 N2: the edge names the replacement by a primary-qualified id,
+    // never by its bare id — that one is only unique in THIS primary, and the
+    // same day it is the id of an unrelated row in the target store.
+    const edgeId = this._primaryQualifiedId(engram.id)
     for (const t of targets) {
       const outcome = await this._withStoreLock(t.path, async () => {
         const rows = await this._storeAt(t.path).load()
         const row = rows.find(e => e.id === t.originalId)
         if (!row || row.status !== 'active') return 'gone' as const
         if (row.commitment === 'locked') return 'locked' as const
-        if (this._writeSupersededByEdges(rows, [t.originalId], engram.id).length > 0) {
+        if (this._writeSupersededByEdges(rows, [t.originalId], edgeId).length > 0) {
           await this._writeEngrams(t.path, rows)
         }
         return 'landed' as const
@@ -12877,8 +12887,8 @@ Generate an improved version of the procedure that prevents this failure. Return
           await this._withStoreLock(t.path, async () => {
             const rows = await this._storeAt(t.path).load()
             const row = rows.find(e => e.id === t.originalId)
-            if (!row?.relations?.superseded_by?.includes(engram.id)) return
-            row.relations.superseded_by = row.relations.superseded_by.filter(id => id !== engram.id)
+            if (!row?.relations?.superseded_by?.includes(edgeId)) return
+            row.relations.superseded_by = row.relations.superseded_by.filter(id => id !== edgeId)
             await this._writeEngrams(t.path, rows)
           })
         } catch (err) {
@@ -12886,6 +12896,21 @@ Generate an improved version of the procedure that prevents this failure. Return
         }
       }
     }
+  }
+
+  /**
+   * How a row of THIS primary store is named from inside another store
+   * (audit 6 N2): its id namespaced under a scope derived from this primary's
+   * location. Another store reads it as foreign (no row of its own, and no
+   * configured store, answers to that prefix), so it can never name an
+   * unrelated row there; this install resolves it back in `getById`.
+   */
+  private _primaryQualifiedId(id: string): string {
+    return namespaceEngramId(id, this._primaryRefScope())
+  }
+
+  private _primaryRefScope(): string {
+    return `primary:${resolve(this.paths.engrams)}`
   }
 
   private _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): Engram[] {

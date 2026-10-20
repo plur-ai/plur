@@ -1,6 +1,6 @@
 import type { Engram, Association } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
-import type { LoadedPack } from './engrams.js'
+import { parseNamespacedId, type LoadedPack } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } from './decay.js'
 import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
@@ -500,9 +500,29 @@ function isReplacedByDeliverable(
   engram: Engram,
   deliverableIds: ReadonlySet<string>,
   supersededBy: ReadonlyMap<string, readonly string[]>,
+  replacedFromPrimary?: ReadonlyMap<string, readonly string[]>,
 ): boolean {
-  return (engram.relations?.superseded_by ?? []).some(id =>
+  const replacements = [...(engram.relations?.superseded_by ?? []), ...(replacedFromPrimary?.get(engram.id) ?? [])]
+  return replacements.some(id =>
     deliverableIds.has(id) && !leadsBackTo(id, engram.id, supersededBy))
+}
+
+/**
+ * Audit 6 N2: a row of ANOTHER store that a primary row supersedes, read from
+ * the primary row's forward edge. The reverse edge written into that store
+ * names the replacement in a primary-qualified form no view resolves to a
+ * loaded id (in the store's own view it must name nothing), so in this view the
+ * forward edge is what says the old row is replaced.
+ *
+ * Only primary rows count, and only edges to a namespaced (other-store) id:
+ * a store row's or pack row's forward edge must never hide a row of another
+ * store, and primary-to-primary supersession keeps working by the reverse edge
+ * exactly as before. A primary row is one with no loader marker and a bare id.
+ */
+function isPrimaryRow(e: Engram): boolean {
+  const m = e as { _storeScope?: unknown; _fromRemoteStore?: unknown; _pack?: unknown }
+  return m._storeScope === undefined && m._fromRemoteStore === undefined && m._pack === undefined
+    && parseNamespacedId(e.id) === null
 }
 
 /** Does following superseded_by edges from `start` reach `target`? A self-edge reaches at once. */
@@ -948,6 +968,17 @@ export function selectAndSpread(
   const deliverableIds = new Set<string>()
   // superseded_by edges of every engram the loops see, for loop detection.
   const supersededBy = new Map<string, readonly string[]>()
+  // Forward edges from primary rows to other stores' rows (see isPrimaryRow).
+  const replacedFromPrimary = new Map<string, string[]>()
+  for (const e of personalEngrams) {
+    if (!e.relations?.supersedes?.length || !isPrimaryRow(e)) continue
+    for (const t of e.relations.supersedes) {
+      if (parseNamespacedId(t) === null) continue
+      const list = replacedFromPrimary.get(t) ?? []
+      list.push(e.id)
+      replacedFromPrimary.set(t, list)
+    }
+  }
   const historical = hasHistoricalIntent(ctx.prompt)
 
   // Step 1-2: Score all active engrams
@@ -1060,7 +1091,7 @@ export function selectAndSpread(
   // A historical prompt ("previously", "used to") still reaches it.
   const current = scored.filter(s =>
     ((s as any).pinned === true || s.score >= minRelevance)
-    && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy)))
+    && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy, replacedFromPrimary)))
   // Nearby-variant suppression (INJ-1). The floor above is a share of a score
   // normalised to the best match and padded by recency and anchor bonuses, so
   // nearly anything sharing a word with the task clears it — including the
@@ -1261,7 +1292,7 @@ export function selectAndSpread(
       if (target.status !== 'active') { droppedRetired++; continue }
       // INJ-6: a pin over its share is not given through spreading either.
       if (omittedPinIds.has(target.id)) continue
-      if (!historical && isReplacedByDeliverable(target, deliverableIds, supersededBy)) continue
+      if (!historical && isReplacedByDeliverable(target, deliverableIds, supersededBy, replacedFromPrimary)) continue
 
       // Apply decay to co_accessed associations at read time
       const effectiveStrength = assoc.type === 'co_accessed' && assoc.updated_at
