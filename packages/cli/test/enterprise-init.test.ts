@@ -8,6 +8,7 @@ import { realExec, type ExecFn } from '../src/enterprise/exec.js'
 import { CLI_VERSION } from '../src/version.js'
 import { formatSummary } from '../src/enterprise/summary.js'
 import { startEnterpriseContract } from './helpers/contract-server.js'
+import { detectSensitive } from '@plur-ai/core'
 
 let root: string, home: string, store: string, configPath: string, contract: Awaited<ReturnType<typeof startEnterpriseContract>>
 let modes: { recallMiss?: boolean; wrongVersion?: boolean; initFails?: boolean; concurrentEdit?: boolean }, browserCalls: number, env: NodeJS.ProcessEnv
@@ -48,6 +49,15 @@ it('signs in, wires both tools, proves actual server save/recall and removes onl
   expect(config().stores[0].enterprise.hello_engram_id).toBe(contract.state.writes[0].id)
   expect(JSON.parse(readFileSync(join(env.OPENCODE_CONFIG_DIR!, 'opencode.json'), 'utf8')).mcp).not.toHaveProperty('plur-enterprise')
   expect(JSON.stringify(result)).not.toContain(contract.state.token)
+})
+it('sends a hello the privacy check accepts when the macOS host name ends in .local (#1732)', async () => {
+  const result = await run({}, { hostname: () => 'Mac-1760915000123.local', platform: 'darwin' })
+  expect(result.ok, JSON.stringify(result)).toBe(true)
+  expect(contract.state.writes).toHaveLength(1)
+  const statement = contract.state.writes[0].statement as string
+  expect(statement).toContain('Mac-1760915000123 (macOS)')
+  expect(statement).not.toContain('.local')
+  expect(detectSensitive(statement)).toEqual([])
 })
 it('reuses a working key and supersedes the previous hello without retiring it', async () => {
   expect((await run()).ok).toBe(true); const previous = contract.state.writes[0].id

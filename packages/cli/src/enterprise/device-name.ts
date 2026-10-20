@@ -20,16 +20,25 @@ const PLATFORM_LABEL: Partial<Record<NodeJS.Platform, string>> = {
  */
 const SERVER_REFUSED = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu
 
+const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/
+
 /**
  * `"<host> (Windows|macOS|Linux|Linux (WSL))"`, at most 80 characters (UTF-16
  * units, as the server counts). A long host name is cut so the platform suffix
  * survives, never inside a surrogate pair; the characters the server refuses
  * are dropped from the host name.
+ *
+ * Only the first label of a dotted host name is used (`Mac-0142.local` gives
+ * `Mac-0142`), like `hostname -s`. The domain part says nothing about the
+ * device, and the install hello carries this name: a `.local`, `.lan`, `.corp`
+ * or similar suffix would make the privacy check keep the hello on this device
+ * (#1732). An IPv4 address is kept whole.
  */
 export function deviceName(hostname: string, platform: NodeJS.Platform, isWsl: boolean): string {
   const label = platform === 'linux' && isWsl ? 'Linux (WSL)' : PLATFORM_LABEL[platform] ?? platform
   const suffix = ` (${label})`
-  const host = hostname.replace(SERVER_REFUSED, '').trim() || 'unknown host'
+  const full = hostname.replace(SERVER_REFUSED, '').trim()
+  const host = (IPV4.test(full) ? full : full.split('.')[0].trim()) || 'unknown host'
   const room = Math.max(1, DEVICE_NAME_MAX - suffix.length)
   let cut = ''
   for (const ch of host) {   // whole code points

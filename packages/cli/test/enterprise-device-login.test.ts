@@ -26,7 +26,9 @@ import type { AddressInfo } from 'net'
 import { spawn } from 'child_process'
 import yaml from 'js-yaml'
 import '../src/commands/login.js'
+import { detectSensitive } from '@plur-ai/core'
 import { deviceName, isHeadless, isVsCodeRemote } from '../src/enterprise/device-name.js'
+import { helloStatement } from '../src/enterprise/hello.js'
 import { builtCliPath } from './helpers/built-cli.js'
 import { isolatedHomeEnv } from './helpers/isolated-env.js'
 
@@ -42,6 +44,19 @@ describe('device name and headless detection', () => {
     expect(deviceName('ws-0142', 'linux', false)).toBe('ws-0142 (Linux)')
     expect(deviceName('x'.repeat(100), 'linux', true)).toMatch(/^x+ \(Linux \(WSL\)\)$/)
     expect(deviceName('x'.repeat(100), 'linux', true).length).toBe(80)
+  })
+
+  it('uses only the first label of a dotted host name, so the install hello passes the privacy check (#1732)', () => {
+    expect(deviceName('Mac-1760915000123.local', 'darwin', false)).toBe('Mac-1760915000123 (macOS)')
+    expect(deviceName('Mac-1760915000123.local.', 'darwin', false)).toBe('Mac-1760915000123 (macOS)')
+    expect(deviceName('ws-0142.corp.example.com', 'linux', false)).toBe('ws-0142 (Linux)')
+    expect(deviceName('build-staging.lan', 'linux', true)).toBe('build-staging (Linux (WSL))')
+    expect(deviceName('10.0.0.12', 'linux', false)).toBe('10.0.0.12 (Linux)')
+    expect(deviceName('.local', 'darwin', false)).toBe('unknown host (macOS)')
+    for (const host of ['Mac-1760915000123.local', 'box.lan', 'ws.internal', 'db.corp', 'pc.intranet', 'api.svc.cluster.local', 'hub-staging.example.com']) {
+      const statement = helloStatement({ username: 'smoke', deviceName: deviceName(host, 'darwin', false), tools: ['Codex'], version: '0.0.0', date: '2026-10-20' })
+      expect(detectSensitive(statement), `${host}: ${statement}`).toEqual([])
+    }
   })
 
   it('the name always passes the server\'s device_name rule: no control, format or separator characters, no half of a surrogate pair', () => {
