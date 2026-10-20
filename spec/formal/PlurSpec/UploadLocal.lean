@@ -39,3 +39,5 @@ theorem enterprise_default_off : discover none none true = false := rfl
 theorem caller_choice_wins (env : Option Bool) (enterprise choice : Bool) : discover (some choice) env enterprise = choice := rfl
 example : attempt true true false = true ∧ attempt false true false = false := by decide
 end PlurSpec.UploadLocal
+
+/- 2026-10-20: Upload selection, consent, privacy admission and queue creation are unchanged; the new outbox delivery identity checks apply after this model admits the write. -/

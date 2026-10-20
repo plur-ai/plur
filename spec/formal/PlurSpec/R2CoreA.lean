@@ -870,3 +870,5 @@ inventing authorization through normalization. No engine behavior changes. -/
 flush with a selected-id filter. Existing route, sensitivity, binding and
 retirement invariants remain in force. UploadLocal models the new admission,
 selection, dry-run and receipt rules. Held receipts are never cached as live. -/
+
+/- 2026-10-20: Recall persistence, import planning and retire events are unchanged. Only queued flush retry admission and merge-back identity changed; Outbox.lean models these refinements. -/
