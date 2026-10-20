@@ -53,6 +53,27 @@ Callers treat 401/403 as an auth failure and other errors as transient.
 
 ---
 
+## `POST /api/v1/write-check` — permission evidence without a save
+
+The request is `{ "scopes": ["project:example/team/app"] }`, with one to fifty
+scopes. The response is `{ "results": [{ "scope": "project:example/team/app",
+"writable": true, "review_held": false }] }`. Results must match the requested
+scope count and order, with boolean permission fields. A refusal may include a
+string `reason`. A review-held write is permitted but awaits review.
+
+Doctor checks all configured enterprise servers: reachability, key acceptance,
+credential-file protection, cached scope freshness, the client route and server
+write permission, and queued operations. Larger scope lists use ordered chunks
+of fifty; no team/project scopes means no permission request. Missing evidence,
+including an older server's 404, is **could not check** and fails overall health.
+Probes do not refresh grants, send queued saves or repair file permissions.
+
+The CLI also reports hook execution for Claude Code, Codex and Cursor when their
+PLUR hooks and MCP registration are both present. Init records installation time;
+doctor requires a session-start run after that time. Changed hooks need a
+new run. Missing evidence prompts a new session; Codex also needs `/hooks` and
+explicit trust. MCP doctor checks the engine/server, not editor hook trust.
+
 # Remote store: retried writes
 
 How the client retries a write to a team store, and what a server does to make

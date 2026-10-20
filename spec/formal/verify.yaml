@@ -23,6 +23,10 @@ models:
     covers:
       - packages/core/src/index.ts
       - packages/core/src/store/remote-store.ts
+      - packages/cli/src/commands/doctor.ts
+      - packages/cli/src/commands/init.ts
+      - packages/cli/src/lib/hook-runs.ts
+      - packages/mcp/src/tools.ts
   - model: PlurSpec/WritePath.lean
     covers:
       - packages/core/src/session-scopes.ts

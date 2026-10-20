@@ -10,6 +10,7 @@ import { updateCodexRegistration } from '../codex-config.js'
 import { CLI_VERSION } from '../version.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import { plurRoot } from '../lib/folder-gate.js'
+import { recordHookInstall } from '../lib/hook-runs.js'
 import {
   resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize,
   upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile, registerClaudeUserMcp,
@@ -1058,7 +1059,7 @@ function shouldSetupCursor(args: string[], cwd: string = process.cwd()): boolean
   return existsSync(join(cwd, '.cursor'))
 }
 
-function installCursor(cmd: string): string {
+function installCursor(cmd: string, root: string): string {
   const mcpPath = cursorProjectMcpConfigPath()
   const hooksPath = cursorProjectHooksConfigPath()
   const rulesPath = cursorRulesPath()
@@ -1129,7 +1130,7 @@ function installCursor(cmd: string): string {
     const hooksConfig = readCursorHooksConfig(hooksPath)
     const hadHooks = hasPlurCursorHooks(hooksConfig)
     const merged = mergeCursorHooks(hooksConfig, buildCursorHooks(cmd))
-    writeCursorHooksConfig(hooksPath, merged)
+    recordHookInstall('cursor', root, JSON.stringify(hooksConfig) !== JSON.stringify(merged), () => writeCursorHooksConfig(hooksPath, merged))
     hooksStatus = hadHooks ? 'upgraded' : 'installed'
   }
 
@@ -1278,7 +1279,8 @@ function installCodex(cmd: string, root: string, keepLaunch: boolean, env: NodeJ
   } else {
     const existing = readCodexHooksConfig(hooksPath)
     const had = hasPlurCodexHooks(existing)
-    writeCodexHooksConfig(hooksPath, mergeCodexHooks(existing, buildCodexHooks(cmd)))
+    const merged = mergeCodexHooks(existing, buildCodexHooks(cmd))
+    recordHookInstall('codex', root, JSON.stringify(existing) !== JSON.stringify(merged), () => writeCodexHooksConfig(hooksPath, merged))
     hooksStatus = had ? 'upgraded' : 'installed'
     hooksWritten = true
   }
@@ -1712,7 +1714,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // The MCP server is NOT registered here: Claude Code does not read MCP
       // servers from settings.json (#1561). installClaudeCodeMcp below writes
       // it to ~/.claude.json and moves an old entry out of this file.
-      writeSettings(enforcementPath, settings)
+      recordHookInstall('claude', plurRoot(flags), before !== after, () => writeSettings(enforcementPath, settings))
       // Only once user settings carry the hooks: a repo an older init set up
       // hands its PLUR hooks over, so none runs twice (#1467).
       // Contained like the other legs (#1469 review): a failure here (a
@@ -1738,7 +1740,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       const globalBefore = JSON.stringify(globalSettings.hooks ?? {})
       globalSettings = mergeHooks(globalSettings, PLUR_HOOKS_ENFORCEMENT)
       const globalAfter = JSON.stringify(globalSettings.hooks ?? {})
-      writeSettings(enforcementPath, globalSettings)
+      recordHookInstall('claude', plurRoot(flags), globalBefore !== globalAfter, () => writeSettings(enforcementPath, globalSettings))
       enforcementHooksStatus = hooksStatusFor(globalBefore, globalAfter, globalHadHooks)
     }
 
@@ -1763,7 +1765,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         healPlurMcpEntry(projectSettings as Record<string, unknown>)
       }
 
-      writeSettings(injectionPath, projectSettings)
+      recordHookInstall('claude', plurRoot(flags), projectBefore !== projectAfter, () => writeSettings(injectionPath, projectSettings))
       injectionHooksStatus = hooksStatusFor(projectBefore, projectAfter, projectHadHooks)
     }
   }
@@ -1809,7 +1811,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     : 'skipped (no ~/.codex found — pass --codex to force, --no-codex to silence this)'
 
   const cursorStatus = shouldSetupCursor(args)
-    ? containLeg('Cursor', () => installCursor(stringHookCmd('cursor')))
+    ? containLeg('Cursor', () => installCursor(stringHookCmd('cursor'), plurRoot(flags)))
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
 
   const opencodeStatus = shouldSetupOpencode(args)
