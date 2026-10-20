@@ -12,6 +12,8 @@ vi.mock('@plur-ai/core', async original => {
       this.storageRoot = process.env.PLUR_PATH
       this.config = { auto_learn: true }
       this.resolveFolderPolicy = vi.fn((dir: string) => fake.policy.get(dir) ?? { mode: 'on', source: 'map', scope: 'local', remoteAllowed: false })
+      this.bindFolderPolicy = vi.fn()
+      this.bindFolderUnresolved = vi.fn()
       this.isDirectoryTrusted = () => false
       this.injectHybrid = vi.fn(async () => ({ marker: options.cwd }))
       this.learnRouted = vi.fn(async () => ({}))
