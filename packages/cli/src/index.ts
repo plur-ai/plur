@@ -67,6 +67,8 @@ Commands:
   promote <id>            Promote an engram to active
   rescope <id...> --to <scope>  Move engram(s) to another scope (#676)
                           [--keep-local] [--dry-run]; also: promote <id> --to <scope>
+  upload                  Preview local memories for authorized team scopes
+                          --yes sends; --only <id,…> limits the selection
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
@@ -175,6 +177,7 @@ const COMMANDS: Record<string, string> = {
   import: './commands/import.js',
   promote: './commands/promote.js',
   rescope: './commands/rescope.js',
+  upload: './commands/upload.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
   remote: './commands/remote.js',
