@@ -13,7 +13,7 @@ import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
 import { acceptDiscoveredScopes, registerServerEntry, PersonalScopeTakenError, SignInHeldError, type DiscoveryStatus, type ScopeRejection, type FoldReport, type ScopeHolder } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, namespacePackEngrams, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore, type LoadedPack } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, namespacePackEngrams, matchLegacyPackId, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore, type LoadedPack } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -6584,7 +6584,27 @@ export class Plur {
     }
     const byPackOriginal = this._matchPackOriginalId(engrams, id)
     if (byPackOriginal) return byPackOriginal
+    const byLegacyPackId = this._matchLegacyPackId(engrams, id)
+    if (byLegacyPackId) return byLegacyPackId
     return this._matchOldFormId(engrams, id)
+  }
+
+  /**
+   * The pack row an id of the EARLIER pack-id form names (before pack names
+   * not in slug form got a digest: `ENG-X-pack-release-rules` for the pack
+   * `Release Rules`, now `ENG-X-pack-release-rules--<digest>`). Such ids were
+   * handed out in lookups, relations and receipts. Reached only when no loaded
+   * row carries `id` exactly, and only when exactly one pack row answers to it
+   * ({@link matchLegacyPackId}); an id two packs shared names neither.
+   */
+  private _matchLegacyPackId(engrams: Engram[], id: string): Engram | null {
+    const rows: Array<{ row: Engram; pack: string }> = []
+    for (const e of engrams) {
+      const pack = (e as { _pack?: unknown })._pack
+      if (typeof pack === 'string') rows.push({ row: e, pack })
+      else if (e.id === id) return null
+    }
+    return matchLegacyPackId(rows, id)
   }
 
   /**
@@ -6656,6 +6676,15 @@ export class Plur {
     for (const id of missing) {
       const m = this._matchOldFormId(all, id)
       if (m) { rest.push({ ...m, id }); found.add(id) }
+    }
+    // A pack id of the earlier form (saved in a relation or a receipt) finds
+    // its pack row, handed back under its current pack id.
+    missing = missing.filter(id => !found.has(id))
+    for (const id of missing) {
+      const m = this._matchLegacyPackId(all, id)
+      if (!m) continue
+      found.add(id)
+      if (!primary.some(e => e.id === m.id) && !rest.some(e => e.id === m.id)) rest.push(m)
     }
     missing = missing.filter(id => !found.has(id))
     const remote = options?.remoteCapability && missing.length > 0
@@ -10804,6 +10833,14 @@ export class Plur {
     applyOpts: { source?: FeedbackSource } = {},
   ): Promise<void> {
     if (!fs.existsSync(this.paths.packs)) throw new Error(`Engram not found: ${id}`)
+
+    // A pack id of the earlier form (a receipt from before the pack-id digest)
+    // is rated as the one pack row it names; ambiguous, it names none.
+    {
+      const rows = this._loadInstalledPacks().flatMap(p => p.engrams.map(row => ({ row, pack: p.manifest.name })))
+      const legacy = matchLegacyPackId(rows, id)
+      if (legacy) id = legacy.id
+    }
 
     for (const entry of fs.readdirSync(this.paths.packs)) {
       const packDir = `${this.paths.packs}/${entry}`
