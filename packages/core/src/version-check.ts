@@ -23,7 +23,7 @@
  * ever waits on the network.
  */
 
-import { updateCheckDisabledByEnv } from './offline.js'
+import { updateCheckDisabledByEnv, markOffline, offlineInferred, _resetInferredOffline } from './offline.js'
 
 export interface VersionCheckResult {
   current: string
@@ -49,15 +49,14 @@ interface CacheEntry {
 /** Module-level cache: package name → entry */
 const cache = new Map<string, CacheEntry>()
 
-/**
- * Set when a check could not connect (TEAM-5): the network is down for this
- * process, and the update checker makes no further attempt for any package.
- */
-let offline = false
+// When a check could not connect (TEAM-5) the network is down for this
+// process: the shared offline state (offline.ts) is set, the update checker
+// makes no further attempt for any package, and the model loader downloads
+// nothing.
 
-/** True once an update check in this process could not connect (TEAM-5). */
+/** True once this process inferred it is offline (TEAM-5). */
 export function updateCheckOffline(): boolean {
-  return offline
+  return offlineInferred()
 }
 
 /** In-flight check per package — concurrent refresh requests piggyback. */
@@ -139,7 +138,7 @@ async function runCheck(
   // not returned forever). Offline (TEAM-5): never fetch again; answer from
   // the cache, or with nothing.
   const entry = cache.get(packageName)
-  if (offline) {
+  if (offlineInferred()) {
     const result = entry?.result ?? { current: currentVersion, latest: null, updateAvailable: false, checkedAt: null }
     if (onResult) onResult(result)
     return result
@@ -171,7 +170,7 @@ async function runCheck(
   } catch {
     // Network error or timeout: the check could not connect, so this process
     // is offline and makes no further update-check request (TEAM-5).
-    offline = true
+    markOffline()
   }
   cache.set(packageName, { result, fetchedAt: Date.now(), ok })
   if (onResult) onResult(result)
@@ -190,7 +189,7 @@ async function runCheck(
 export function getCachedUpdateCheck(packageName: string): VersionCheckResult | null {
   const entry = cache.get(packageName)
   if (!entry) return null
-  if (!offline && isExpired(entry, Date.now()) && !inflightByPackage.has(packageName)) {
+  if (!offlineInferred() && isExpired(entry, Date.now()) && !inflightByPackage.has(packageName)) {
     checkForUpdate(packageName, entry.result.current)
   }
   return entry.result
@@ -199,7 +198,7 @@ export function getCachedUpdateCheck(packageName: string): VersionCheckResult | 
 /** Clear cache (for testing). */
 export function clearVersionCache(): void {
   cache.clear()
-  offline = false
+  _resetInferredOffline()
   inflightByPackage.clear()
 }
 

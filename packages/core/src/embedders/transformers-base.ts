@@ -13,7 +13,7 @@
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import type { EmbedderAdapter } from './types.js'
-import { offlineByEnv } from '../offline.js'
+import { offlineByEnv, offlineInferred } from '../offline.js'
 
 /** Pooling strategies supported by @huggingface/transformers feature-extraction. */
 export type Pooling = 'cls' | 'mean' | 'none'
@@ -82,6 +82,13 @@ async function defaultCacheDir(): Promise<string | null> {
  *  false` is enforced by transformers.js itself. */
 export function downloadsOffByEnv(): boolean {
   return offlineByEnv() || (process.env.PLUR_MODEL_DOWNLOAD ?? '').trim().toLowerCase() === 'off'
+}
+
+/** Downloads are off for this process: off by environment, or the process
+ *  inferred it is offline after a failed connection (TEAM-5, offline.ts). A
+ *  model already on disk is still loaded, from disk only. */
+export function downloadsOff(): boolean {
+  return downloadsOffByEnv() || offlineInferred()
 }
 
 /**
@@ -217,8 +224,15 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
         // already baked into the resolved paths and changing it does nothing.
         env.cacheDir = cacheDir
       }
-      // Downloads off: the loader itself is told not to fetch anything.
-      const opts = { ...(dtype ? { dtype } : {}), ...(downloadsOffByEnv() ? { local_files_only: true } : {}) }
+      // Downloads off: the loader itself is told not to fetch anything. That
+      // is not enough for a model missing from disk: transformers.js v4's
+      // pipeline() resolves the model's file list (get_pipeline_files) before
+      // it reads local_files_only, and that step fetches config.json. So a
+      // missing model is refused here, before the library is asked (TEAM-5).
+      if (downloadsOff() && (await modelPresence(modelId, weights)) === false) {
+        throw new Error(`embedding model ${modelId} is not on disk and downloads are off (offline); nothing was fetched`)
+      }
+      const opts = { ...(dtype ? { dtype } : {}), ...(downloadsOff() ? { local_files_only: true } : {}) }
       const pipeline = transformers.pipeline as (task: string, model: string, o?: object) => Promise<unknown>
       const pipe = await pipeline('feature-extraction', modelId, Object.keys(opts).length ? opts : undefined)
       loadedKeys.add(key)
