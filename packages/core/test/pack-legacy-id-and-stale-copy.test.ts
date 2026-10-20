@@ -110,7 +110,7 @@ describe('a public pack id from the earlier id scheme still names its pack row',
   it('feedback on the earlier id reaches the pack row', async () => {
     await plur.installPack(source(src, 'a', 'Release Rules', '1.0'))
     await plur.feedback('ENG-TEST-pack-release-rules', 'positive')
-    const packFile = listPacks(join(dir, 'packs')).find(p => p.manifest.name === 'Release Rules')!.path
+    const packFile = listPacks(join(dir, 'packs')).find(p => p.manifest?.name === 'Release Rules')!.path
     const rows = (yaml.load(readFileSync(join(packFile, 'engrams.yaml'), 'utf8')) as { engrams: Array<Record<string, any>> }).engrams
     expect(rows[0].id).toBe('ENG-TEST')
     expect(rows[0].feedback_signals?.positive).toBe(1)
@@ -136,10 +136,10 @@ describe('upgrading a pack the earlier collision bug installed twice', () => {
 
   it('leaves one authoritative installation with a consistent registry', async () => {
     await seedDuplicate()
-    expect(listPacks(packs).filter(p => p.manifest.name === 'beta')).toHaveLength(2)
+    expect(listPacks(packs).filter(p => p.manifest?.name === 'beta')).toHaveLength(2)
     const res = await installPack(packs, source(tmp, 'b3', 'beta', '3.0'))
-    const beta = listPacks(packs).filter(p => p.manifest.name === 'beta')
-    expect(beta.map(p => p.manifest.version)).toEqual(['3.0'])
+    const beta = listPacks(packs).filter(p => p.manifest?.name === 'beta')
+    expect(beta.map(p => p.manifest?.version)).toEqual(['3.0'])
     expect(res.superseded).toEqual(['beta'])
     const rows = registryRows(packs).filter(r => r.name === 'beta')
     expect(rows).toHaveLength(1)
@@ -161,7 +161,7 @@ describe('upgrading a pack the earlier collision bug installed twice', () => {
     const res = await installPack(packs, named)
     expect(res.registry.dir).toBe('beta')
     expect(res.superseded).toEqual(['pack'])
-    expect(listPacks(packs).filter(p => p.manifest.name === 'beta').map(p => p.manifest.version)).toEqual(['3.0'])
+    expect(listPacks(packs).filter(p => p.manifest?.name === 'beta').map(p => p.manifest?.version)).toEqual(['3.0'])
   })
 
   it('keeps two installations of one pack the user made from differently named sources', async () => {
@@ -171,7 +171,7 @@ describe('upgrading a pack the earlier collision bug installed twice', () => {
     await installPack(packs, other)                                       // packs/beta-team
     const res = await installPack(packs, source(tmp, 'z', 'beta', '2.0')) // upgrades packs/pack
     expect(res.superseded ?? []).toEqual([])
-    expect(listPacks(packs).filter(p => p.manifest.name === 'beta').map(p => p.manifest.version).sort()).toEqual(['1.5', '2.0'])
+    expect(listPacks(packs).filter(p => p.manifest?.name === 'beta').map(p => p.manifest?.version).sort()).toEqual(['1.5', '2.0'])
   })
 
   it('keeps genuinely different packs apart', async () => {
@@ -179,7 +179,7 @@ describe('upgrading a pack the earlier collision bug installed twice', () => {
     await installPack(packs, source(tmp, 'b', 'beta', '1.0'))
     const res = await installPack(packs, source(tmp, 'b2', 'beta', '2.0'))
     expect(res.superseded ?? []).toEqual([])
-    const names = listPacks(packs).map(p => `${p.manifest.name}@${p.manifest.version}`).sort()
+    const names = listPacks(packs).map(p => `${p.manifest?.name}@${p.manifest?.version}`).sort()
     expect(names).toEqual(['alpha@1.0', 'beta@2.0'])
   })
 })
