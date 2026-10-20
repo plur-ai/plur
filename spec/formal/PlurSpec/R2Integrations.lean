@@ -807,6 +807,7 @@ core admission; the legacy workspaceFolderScope result is unchanged. Explicit
 choices retain routing and authorization. Recall adds the admitted root orgs
 to dialing context, without widening the authorization filter or remote-only
 binding. WorkspaceChoice models this adapter admission and context selection. -/
+
 /- 2026-10-19: Doctor surfaces core server evidence and requires post-install
 hook-run timestamps for wired supported editors. Init records installation only
 after successful writes; diagnostics do not grant access or send queued saves.
