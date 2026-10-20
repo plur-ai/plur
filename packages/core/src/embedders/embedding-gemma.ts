@@ -28,7 +28,7 @@
  * benchmark numbers and keep first-run download manageable.
  */
 import type { EmbedderAdapter, EmbedRole } from './types.js'
-import { importTransformers, resolveLoadCacheDir, modelPresence, downloadsOff, envOf } from './transformers-base.js'
+import { importTransformers, resolveLoadCacheDir, modelPresence, envOf, refuseMissingModelOffline, localOnlyOptions } from './transformers-base.js'
 
 export const EMBEDDING_GEMMA_MODEL_ID = 'onnx-community/embeddinggemma-300m-ONNX'
 const DIM = 768
@@ -60,7 +60,12 @@ async function load(): Promise<{ tokenizer: Tok; model: Mdl }> {
       const cacheDir = await resolveLoadCacheDir(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS)
       const env = envOf(transformers)
       if (cacheDir && env) env.cacheDir = cacheDir
-      const offline = downloadsOff() ? { local_files_only: true } : {}
+      // Downloads off: a model missing from disk is refused before the
+      // library is asked (audit 6, N4). The tokenizer loader looks up
+      // tokenizer_config.json remotely without the options passed below, so
+      // `local_files_only` alone still reached the network.
+      await refuseMissingModelOffline(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS, 'embedding model')
+      const offline = localOnlyOptions()
       const tokenizer = (await AutoTokenizer.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, offline)) as unknown as Tok
       const model = (await AutoModel.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, { dtype: 'q8', ...offline })) as unknown as Mdl
       gemmaLoaded = true
