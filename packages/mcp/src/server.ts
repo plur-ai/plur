@@ -317,7 +317,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   // Bind the instance to the workspace's folder decision (remote-only), or
   // block it (off, unknown workspace, unreadable map), for this call.
   // Precedence: off > remote-only > on (#1521 with #1519).
+  let boundStatusPolicy: { dir: string; policy: FolderPolicy } | undefined
   const bindWorkspace = (dirs: string[], defaultDirs: string[] = dirs): void => {
+    boundStatusPolicy = undefined
     const resolved: Array<{ dir: string; policy: FolderPolicy }> = []
     for (const dir of dirs) {
       try {
@@ -333,11 +335,17 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       ?? resolved[resolved.length - 1]
     // Restrictive decisions still cover both roots and startup cwd. Origin
     // defaults belong to the editor roots, not the server process directory.
-    const defaults = resolved.filter(r => defaultDirs.includes(r.dir)).map(r => r.policy.git)
+    const defaultPolicies = resolved.filter(r => defaultDirs.includes(r.dir)).map(r => r.policy)
+    const defaults = defaultPolicies.map(p => p.git)
     const key = (git: FolderPolicy['git']) => git?.kind === 'scope' ? `scope:${git.scope}`
       : git?.kind === 'local' || git?.kind === 'unknown' ? 'local' : 'absent'
     const git = defaults.every(d => key(d) === key(defaults[0])) ? defaults[0]
       : defaults.some(Boolean) ? { kind: 'unknown' as const, reason: 'ambiguous-mapping' as const } : undefined
+    // Explicit map scopes need the same agreement as Git defaults. A mixed
+    // workspace has no session default; the first root is not authoritative.
+    const scope = defaultPolicies.every(p => p.scope === defaultPolicies[0]?.scope) ? defaultPolicies[0]?.scope : undefined
+    boundStatusPolicy = { dir: pick.dir, policy: { ...pick.policy, git,
+      scope: pick.policy.mode === 'remote-only' ? pick.policy.scope : scope } }
     instance.bindFolderPolicy(pick.dir, { ...pick.policy, git })
   }
 
@@ -474,15 +482,23 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       // admitted — from the CURRENT roots, by the one resolver. Under a
       // Symbol key no client can set.
       const folderContext: FolderScopeContext = {
+        serverStatus: async (explicitScope) => {
+          const admitted = boundStatusPolicy
+          if (!admitted) return []
+          return instance.serverSessionLines(admitted.dir, explicitScope && admitted.policy.mode !== 'remote-only'
+            ? { ...admitted.policy, scope: explicitScope, git: undefined } : admitted.policy)
+        },
         resolve: async () => {
           const ws = await workspace.workspace()
           // The scope and binding must describe the same workspace. A newer
           // local/unknown answer must never fall back to an earlier Git scope.
           if (ws === null) {
+            boundStatusPolicy = undefined
             instance.bindFolderUnresolved(folder, 'the current workspace could not be read')
             return null
           }
           if (folderGate.check(ws).plur !== 'on') {
+            boundStatusPolicy = undefined
             instance.bindFolderUnresolved(folder, 'memory is not enabled in the current workspace')
             return null
           }

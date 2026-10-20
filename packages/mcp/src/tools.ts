@@ -911,6 +911,8 @@ export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
  */
 export interface FolderScopeContext {
   resolve(): Promise<{ scope: string | null; key: string } | null>
+  /** Cached status for the policy admitted by the gate, never process cwd. */
+  serverStatus?(explicitScope?: string): Promise<string[]>
   /**
    * The same answer for the workspace the folder gate admitted this call in
    * (#1566), with no new roots request. Reads use it; writes use resolve(),
@@ -4051,6 +4053,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           for (const w of discoveryWarnings(server_discovery)) guide += `\n\n${w}`
         } catch { /* a status row is never worth failing session_start over */ }
 
+        let server_status: string[] = []
+        try {
+          server_status = folderCtx?.serverStatus
+            ? await folderCtx.serverStatus(explicit_default_scope ?? undefined)
+            : await plur.serverSessionLines(process.cwd(), default_scope
+              ? { mode: 'on', source: 'map', remoteAllowed: true, scope: default_scope } : undefined)
+        } catch {
+          server_status = ['PLUR → server · ⚠ cached status could not be read; run plur doctor']
+        }
+        for (const line of server_status) guide += `\n\n${line}`
+
         // #761: the lean surface is invisible in tools/list, and session_start
         // is the first tool an agent calls — one line here tells it the
         // gateway exists BEFORE it ever misses a name and concludes the MCP
@@ -4074,6 +4087,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           store_stats,
           ...(store_errors ? { store_errors } : {}),
           guide,
+          server_status,
           // Remote scope routing info (#229)
           ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
           // #1631: each company server's cached scope count and discovery

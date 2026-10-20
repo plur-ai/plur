@@ -160,6 +160,12 @@ models:
 
   - model: PlurSpec/SaveDestination.lean
     covers:
+      - packages/cli/src/lib/hook-runs.ts
+      - packages/cli/src/lib/server-session.ts
+      - packages/cli/src/commands/hook-inject.ts
+      - packages/cli/src/commands/hook-codex-session-start.ts
+      - packages/cli/src/commands/hook-cursor-session-start.ts
+      - packages/mcp/src/server.ts
       - packages/core/src/save-destination.ts
       - packages/core/src/enterprise.ts
       - packages/core/src/index.ts
