@@ -1694,23 +1694,29 @@ function pickInstallDirName(
     try { installed = loadPack(dir).manifest.name?.trim() } catch { return true }
     return !installed || installed === manifestName
   }
-  // A pack already installed is replaced where it is. Choosing by which
-  // directory happens to be free first meant a pack once displaced into a
-  // fallback directory (`bob-tips`, `x-2`) was installed a second time into the
-  // preferred one as soon as that came free, leaving the old version loadable
-  // beside the new one.
+  // A pack already installed in one of the directories THIS install could be
+  // given is replaced where it is. Choosing by which directory happened to be
+  // free first meant a pack once displaced into a fallback directory
+  // (`bob-tips`, `x-2`) was installed a second time into the preferred one as
+  // soon as that came free, leaving the old version loadable beside the new.
+  // Only this install's own candidates count (preferred, manifest name,
+  // `<base>-N`): two folders that happen to ship the same manifest name under
+  // different basenames stay two installations (registry rows keyed by dir).
+  const base = safeManifestName ?? preferred
+  const numberOf = (e: string): number =>
+    e.startsWith(`${base}-`) && /^[0-9]+$/.test(e.slice(base.length + 1)) ? Number(e.slice(base.length + 1)) : NaN
   const existing = installedDirsNamed(packsDir, manifestName)
-  if (existing.length > 0) {
-    for (const want of [preferred, safeManifestName]) {
-      if (!want) continue
-      const hit = existing.find(e => e === onDiskEntryName(packsDir, want))
-      if (hit) return hit
-    }
-    return existing[0]
+  for (const want of [preferred, safeManifestName]) {
+    if (!want) continue
+    const hit = existing.find(e => e === onDiskEntryName(packsDir, want))
+    if (hit) return hit
   }
+  const fallback = existing
+    .filter(e => numberOf(e) >= 2)
+    .sort((a, b) => numberOf(a) - numberOf(b))[0]
+  if (fallback) return fallback
   if (accepts(preferred)) return preferred
   if (safeManifestName && safeManifestName !== preferred && accepts(safeManifestName)) return safeManifestName
-  const base = safeManifestName ?? preferred
   for (let n = 2; ; n++) {
     const candidate = `${base}-${n}`
     if (accepts(candidate)) return candidate
