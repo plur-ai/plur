@@ -1,0 +1,11 @@
+--- a/packages/cli/src/commands/hook-codex-session-start.ts
++++ b/packages/cli/src/commands/hook-codex-session-start.ts
+@@ -82,7 +82,7 @@
+         ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)}\n\n`
+         : ''
+       // remote-only: where memory goes, and that the team server did not answer.
+-      const serverLines = input.source === 'compact' ? [] : await cachedServerLines(plur, dir, policy)
++      const serverLines = input.source !== 'compact' ? [] : await cachedServerLines(plur, dir, policy)
+       const fullHeader = [header, ...serverLines, ...legacyLines, ...remoteOnlyLines(plur, result, true)].join('\n')
+       context = refusal + (body ? `${fullHeader}\n\n${body}` : fullHeader)
+     } catch (err: unknown) {

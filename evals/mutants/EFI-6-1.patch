@@ -1,0 +1,11 @@
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -15469,7 +15469,7 @@
+       else if (!knownScopes) add('write-path', 'could-not-check', 'scope lookup did not succeed')
+       else try {
+         const results = []
+-        for (let i = 0; i < scopes.length; i += 50) results.push(...await driver.writeCheck(scopes.slice(i, i + 50), signal))
++        for (let i = 0; i < Math.min(50, scopes.length); i += 50) results.push(...await driver.writeCheck(scopes.slice(i, i + 50), signal))
+         const refused = results.filter(r => !r.writable)
+         add('write-path', refused.length ? 'fail' : 'ok', refused.length
+           ? refused.map(r => `${r.scope}: ${r.reason ?? 'not writable'}`).join('; ')

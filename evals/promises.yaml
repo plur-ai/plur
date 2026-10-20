@@ -557,3 +557,73 @@ retired:
   replaced_by: TOOL-4
   date: '2026-10-17'
   reason: The promise said 'my client still asks me first', which PLUR cannot guarantee (audit rewording 6). TOOL-4 promises the marking and the gateway refusal, finds every deleting tool from the handlers, and says moving a memory between scopes is not overwriting.
+
+- key: enterprise_install
+  name: Installing and using team memory
+  what_it_does: Connects my tools to a team server while keeping destinations, consent and recovery visible.
+  promises:
+  - id: EFI-1
+    promise: "An unrelated repository keeps unscoped memory on this machine while an authorized repository can use its team server."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-2
+    promise: "Every completed single, batch and session save tells me where it went, and a queued save never claims to be delivered."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-3
+    promise: "Session status names the cached destination and waiting saves without waiting for a server probe."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-4
+    promise: "Session-start hooks and MCP tell the agent where this workspace saves, and a hook records its actual run."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-5
+    promise: "A queued save reaches an authorized replacement server once, and changing a key retries only authentication refusals."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-6
+    promise: "Server diagnostics check every configured write scope and never call missing permission evidence healthy."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-7
+    promise: "Doctor reports unavailable server permission evidence as an unhealthy installation."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-8
+    promise: "A workspace whose folders save to different places saves nothing until I choose a destination."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-9
+    promise: "Session startup removes obsolete untracked installer credentials but preserves tracked project configuration."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-10
+    promise: "Uploading selected local memories sends only those eligible memories and leaves personal and unselected memories local."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-11
+    promise: "Upload preview changes nothing, and confirmation accounts for both sent and retained memories."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-12
+    promise: "Setup proves a working tool installation or restores configuration after a pre-save installation failure, and reruns reuse a working key."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.
+  - id: EFI-13
+    promise: "An old installation upgrades with a recoverable backup, while a tool still launching the old client stays explicitly unproven."
+    kind: deterministic
+    today: unknown
+    evidence: New enterprise installation eval; execution and planted-bug proof pending.

@@ -1,0 +1,11 @@
+--- a/packages/cli/src/enterprise/cleanup.ts
++++ b/packages/cli/src/enterprise/cleanup.ts
+@@ -100,7 +100,7 @@
+   run(join(opts.plurDir, HEADER_FILE), (target, c) => {
+     if (!existsSync(target)) return { target, status: 'absent' }
+     const holders = headerHolders(home, env)
+-    if (holders.length > 0) return { target, status: 'refused', detail: `kept: ${holders.join('; ')}` }
++    if (holders.length >= 0) return { target, status: 'refused', detail: `kept: ${holders.join('; ')}` }
+     return cleanupFile(target, c)
+   })
+ 
