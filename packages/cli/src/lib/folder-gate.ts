@@ -10,8 +10,12 @@ import {
   type FolderMapProblem,
   folderAskOnce as coreFolderAskOnce,
   type FolderAskOptions as CoreFolderAskOptions,
+  remoteOnlySessionLine,
+  remoteOnlyUnservedNotice,
   type FolderPolicy,
   type Plur,
+  type RemoteOnlyStatus,
+  folderEscapedPath,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 
@@ -41,6 +45,11 @@ export {
  *   - `ask` → the hook is silent, except the prompt-level inject hook of each
  *             editor, which on the first prompt of a session emits the one
  *             question built by {@link folderAskOnce} instead of memories.
+ *   - `remote-only` → the hook works as for `on`, with its Plur instance bound
+ *             to the folder ({@link bindHookFolder}): core then writes only to
+ *             the folder's team scope and reads only that scope (dialled) and
+ *             installed packs. If the team server does not answer, the session
+ *             starts without memory and says so once ({@link remoteOnlyLines}).
  *
  * Only the CLI (`plur folders set`) writes the map; nothing here writes it.
  */
@@ -48,6 +57,20 @@ export {
 /** The PLUR home the hooks read the map from: `--path`, else PLUR_PATH, else ~/.plur. */
 export function plurRoot(flags?: { path?: string }): string {
   return flags?.path ?? process.env.PLUR_PATH ?? join(homedir(), '.plur')
+}
+
+/**
+ * The refusal for a CLI command that must not run in a remote-only folder
+ * (Codex round 7 on #1663), or null. `what` says what the command would do
+ * with memory there. A folder map that cannot be read leaves the command as
+ * on development (owner decision 1 on #1663).
+ */
+export function remoteOnlyCommandRefusal(flags: { path?: string } | undefined, what: string, cwd: string = process.cwd()): string | null {
+  let policy: FolderPolicy
+  try { policy = resolveFolderPolicy(cwd, { root: plurRoot(flags), readOnly: true }) } catch { return null }
+  if (policy.mode !== 'remote-only') return null
+  return `This folder (${folderEscapedPath(cwd)}) is remote-only: its memory lives only on the team server. ${what}, so nothing was done. ` +
+    'Run it outside the remote-only folder.'
 }
 
 /**
@@ -75,9 +98,39 @@ export function hookFolderPolicy(dir: string, flags?: { path?: string }): Folder
   }
 }
 
+/** True when a policy means the hooks do their normal work (`on`, or `remote-only`). */
+export function isWorkingMode(policy: FolderPolicy): boolean {
+  return policy.mode === 'on' || policy.mode === 'remote-only'
+}
+
 /** True when the hooks should do their normal work in `dir`. */
 export function hookFolderOn(dir: string, flags?: { path?: string }): boolean {
-  return hookFolderPolicy(dir, flags).mode === 'on'
+  return isWorkingMode(hookFolderPolicy(dir, flags))
+}
+
+/**
+ * Bind a hook's Plur instance to its folder. Only `remote-only` changes what
+ * the instance does (owner decisions 2026-10-01); every hook that recalls or
+ * writes calls this right after creating the instance.
+ */
+export function bindHookFolder(plur: Plur, dir: string, policy: FolderPolicy): void {
+  // No skip when the method is missing (audit of #1521, S7): an instance that
+  // cannot be bound must not quietly behave as `on` in a remote-only folder.
+  plur.bindFolderPolicy(dir, policy)
+}
+
+/**
+ * The lines a remote-only session shows. At the session's first context
+ * (`first`): where memory goes, and — when the team server did not serve the
+ * injection — that the session starts without memory. Later contexts show
+ * nothing, so the notice is said once. Empty outside remote-only folders.
+ */
+export function remoteOnlyLines(plur: Plur, result: { remote_only?: RemoteOnlyStatus } | null, first: boolean): string[] {
+  const ro = plur.remoteOnlyFolder()
+  if (!ro || !first) return []
+  const lines = [remoteOnlySessionLine(ro)]
+  if (result?.remote_only && !result.remote_only.served) lines.push(remoteOnlyUnservedNotice(result.remote_only))
+  return lines
 }
 
 
@@ -170,6 +223,8 @@ function within(dir: string, root: string): boolean {
  *    the home folder, a folder above it or a filesystem root (an answer there
  *    would cover every folder under it). With no such root, an undecided
  *    workspace is off (asked about nothing, nothing loaded).
+ *  - A remote-only root (#1521) makes the workspace remote-only (fail
+ *    closed): memory then lives only on that root's team server.
  *  - Otherwise memory is on. The scope applies only when every root exists,
  *    is not home or above, and is on with that same scope; else no scope.
  *  - A payload `cwd` never decides by itself when there are roots: it picks
@@ -224,10 +279,21 @@ export function cursorHookFolder(
     .filter(r => !coversHome(r.path))
     .map(r => ({ ...r, policy: hookFolderPolicy(r.path, flags) }))
   const existingAskable = askable.filter(r => r.real !== null)
+  // A map that cannot be read decides nothing for any root (Codex round 7 on
+  // #1663): off, as MCP refuses, and every root's generated rule is removed.
+  const allKnownRoots = [...new Set(roots.flatMap(r => r.real ? [r.real] : []))]
+  if (askable.some(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')) {
+    return { dir: firstDir, policy: WORKSPACE_UNKNOWN, cleanupDirs: allKnownRoots }
+  }
   const ask = askable.find(r => r.policy.mode === 'ask')
   if (ask) {
     const dir = ask.real ?? existingAskable[0]?.real ?? null
-    return { dir, policy: ask.policy, ...(ask.real === null ? { askAbout: ask.given } : {}) }
+    // A remote-only root or cwd in the same workspace (Codex round 4 on
+    // #1663): the question is still asked, and every root is named so the
+    // session start removes a generated rule an earlier session left there.
+    const remoteOnlyHere = offChecks.some(p => hookFolderPolicy(p, flags).mode === 'remote-only')
+    const all = remoteOnlyHere ? { cleanupDirs: [...new Set(roots.flatMap(r => r.real ? [r.real] : []))] } : {}
+    return { dir, policy: ask.policy, ...(ask.real === null ? { askAbout: ask.given } : {}), ...all }
   }
 
   // On. With no root to ask about (only the home folder or above), memory is
@@ -247,7 +313,25 @@ export function cursorHookFolder(
   const dir = inCwd ?? pool[0] ?? null
   const policy = dir ? hookFolderPolicy(dir, flags) : null
   // A map that cannot be read decides nothing: off, as MCP refuses (fail safe).
-  if (!policy || policy.reason === 'malformed-map' || policy.reason === 'resolver-error') return { dir, policy: WORKSPACE_UNKNOWN }
+  if (!policy || policy.reason === 'malformed-map' || policy.reason === 'resolver-error') return { dir, policy: WORKSPACE_UNKNOWN, cleanupDirs: allKnownRoots }
+  // remote-only (#1521) is kept as it is, never turned into `on`: memory
+  // there lives only on the team server. Any root that is remote-only makes
+  // the workspace remote-only (fail closed), from the output folder's own
+  // entry when it has one, else the first such root's.
+  // A remote-only decision also names every root, so the session start can
+  // remove the generated rule an earlier session left in another root (gate
+  // review of #1663): it may hold personal memory.
+  const allRoots = [...new Set(roots.flatMap(r => r.real ? [r.real] : []))]
+  if (policy.mode === 'remote-only') return { dir, policy, cleanupDirs: allRoots }
+  const remoteOnlyRoot = askable.find(r => r.policy.mode === 'remote-only')
+  if (remoteOnlyRoot) return { dir, policy: remoteOnlyRoot.policy, cleanupDirs: allRoots }
+  // Every spelling `off` is checked on, too (gate review of #1663): each root
+  // as given and as resolved — a home-or-above root included — and the
+  // payload cwd. A remote-only one keeps the workspace remote-only.
+  for (const p of offChecks) {
+    const restricted = hookFolderPolicy(p, flags)
+    if (restricted.mode === 'remote-only') return { dir, policy: restricted, cleanupDirs: allRoots }
+  }
   // A home-or-above root that is undecided is on here, by the MCP rule, never `ask`.
   const on: FolderPolicy = policy.mode === 'on'
     ? policy

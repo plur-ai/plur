@@ -45,6 +45,12 @@ Checked against #1277, #1400, #1414 and #1422 (merged into #1228 on 2026-09-30):
   hook state dir of §1. The inject lock and its release (§3) are unchanged.
 - doctor: `overall` also requires a deliverable outbox (#1299). §5's
   `readyLine`/`hookHarnesses` claim is unchanged.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+hook-inject's deferred wrap-up and hook-session-end capture no episode for a remote-only
+folder (the checkpoint is removed) and none for a folder that cannot be resolved (the
+checkpoint is kept); hook-agy-pre-invocation binds its instance. Checkpoint vetting, session
+identity, the inject lock, counters, the doctor verdict and turn identity are unchanged.
 -/
 
 namespace PlurSpec.R2CLI

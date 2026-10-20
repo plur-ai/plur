@@ -44,6 +44,32 @@ index.ts's predicates now read `resolveScopeTarget` (WritePath §3c).
   (`refreshServerScopes`, the server-entry `persistStores` collapse, the
   server-key rotation in `addStore`) is StoreEntry's territory, not modelled here.
 
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+While bound to a remote-only folder, `_probeIdCollisions` and the remote walks of forget,
+feedback, setPinned and update skip url stores whose scope is not a deliverable team scope,
+and a bare id only on a team-scope row; the local row they would act on is refused first
+(`_remoteOnlyRefuseLocalRow`) unless it is this folder's queued save. Unbound, every walk is
+as modelled in §2–§4. `peek_absent_sound` reads the same cache. The write gate is WritePath §3d.
+Gate review of #1663 (2026-10-18): still holds. While bound, those walks (and the bare-id update)
+are narrowed further, to the folder's own team store or the store of an explicit deliverable team
+scope, and an explicit team scope first checks that the row it names there is in that team scope.
+Each is a filter that only removes candidates before the modelled walk; unbound, nothing changed.
+Codex round 3 (2026-10-18): still holds. While bound, the bare-id update uses the resolver's exact
+target and a held team row (tri-state probe), the explicit-scope check is tri-state (unknown refuses),
+getByIds drops a personal row from the team host, and cache warming, store listing and old-form id
+resolution contact only the folder's own team store. Again only filters; unbound, unchanged.
+Codex round 4 (2026-10-18): still holds. nearDuplicates and similaritySearch use no embedder while
+bound, and a bound operation starts no embedding pass; no modelled branch changed.
+Codex round 5 (2026-10-18): still holds. Bare-id walks need positive team ownership on the host
+(tri-state probe); recallAsync/recallExpanded/recallAutoSearch use keyword recall and
+rerankerSelfEval refuses while bound; the remote-only dial needs the folder scope exactly in a
+scopes allow-list. Only filters and refusals; unbound, unchanged.
+Codex round 8 (2026-10-18): still holds. A public mutator captures the remote-only binding when it
+starts and keeps it to the end (the store lock's AsyncLocalStorage); unbound, nothing changed.
+Gate structural changes (2026-10-18): still holds. The capture is now one choke point over every
+public async method; a queued remote-only save (isRemoteOnlyQueued) is left out of the local
+indexes, the embedder and its cache, and local provenance, whatever the binding. Only exclusions.
+
 Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
 refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
 (nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env

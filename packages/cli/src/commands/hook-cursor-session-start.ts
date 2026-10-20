@@ -1,7 +1,7 @@
 import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { cursorHookFolder, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur } from '../lib/folder-gate.js'
+import { cursorHookFolder, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule, removeGeneratedContextRules } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
@@ -63,6 +63,14 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   if (dir && policy.mode === 'ask') removeStaleAsk(cursorContextRulePath(dir))
+  // remote-only (also an `ask` workspace with a remote-only root): another
+  // root's generated rule may hold personal memory from an earlier session;
+  // this session writes its own rule in `dir` only.
+  // Every root, `dir` included, before any early return (Codex round 6 on
+  // #1663): the fresh rule is written below only when the session goes on.
+  if (policy.mode === 'remote-only' || (policy.mode === 'ask' && cleanupDirs)) {
+    for (const root of new Set([...(cleanupDirs ?? []), ...(dir ? [dir] : [])])) removeGeneratedContextRules(root)
+  }
 
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't track this session — stay silent rather than guess
@@ -99,6 +107,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   let fullContext: string
   try {
     const plur = createPlur(flags)
+    // remote-only: core reads only the team scope (dialled, even from this
+    // keyword-only inject) and packs, never the personal store.
+    bindHookFolder(plur, dir, policy)
     const projectRemote = resolveProjectRemote(plur, dir)
     const projectConfig = sessionSettings(policy, projectRemote.config)
     const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
@@ -123,9 +134,13 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // A store in the workspace that was found but not added (#1589): once per
     // conversation and workspace folder (the payload's root, not this process's).
     const hint = skippedStoreNotice(plur, conversationId, dir)
-    const header = `[PLUR Memory — session started, ${count} engrams injected]` +
-      (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '') +
-      (hint ? `\n${hint}` : '')
+    const header = [
+      `[PLUR Memory — session started, ${count} engrams injected]` +
+        (projectConfig.scope && !plur.remoteOnlyFolder() ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '') +
+        (hint ? `\n${hint}` : ''),
+      // remote-only: where memory goes, and that the team server did not answer.
+      ...remoteOnlyLines(plur, result, true),
+    ].join('\n')
 
     // A refused .plur.yaml is still worth saying: the user's scope routing is
     // unaffected, but they should know the remote settings were not honoured —

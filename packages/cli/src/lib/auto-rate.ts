@@ -443,6 +443,11 @@ export async function autoRateTurn(opts: {
     if (pending.length === 0 && !capture) return outcome // nothing injected, nothing to do
 
     const plur = opts.plur ?? createPlur(opts.flags)
+    // Bound to the turn's folder BEFORE any lookup or rating (Codex round 3 on
+    // #1663): in a remote-only folder core then reads and rates only that
+    // folder's team rows, whatever folder this worker runs in.
+    const dir = opts.cwd ?? process.cwd()
+    const policy = plur.bindFolder(dir)
 
     if (pending.length > 0) {
       // Remote ids are fetched by id (the remote cache is empty in a fresh
@@ -504,8 +509,9 @@ export async function autoRateTurn(opts: {
         // whenever no scope applies — the statement goes to the local store
         // via `learn()`, which never routes, so it can never be auto-routed
         // into a shared scope either. A folder the map turns off gets nothing.
-        const dir = opts.cwd ?? process.cwd()
-        const policy = plur.resolveFolderPolicy(dir)
+        // Bound above (before the ratings): in a remote-only folder core sends
+        // every captured statement to the folder's team scope and refuses
+        // anything that would stay on this machine (owner decisions 2026-10-01).
         const configPath = findProjectConfigPath(dir)
         const hint = configPath ? readProjectConfigFromPath(configPath) : {}
         const trusted = configPath !== null && plur.isDirectoryTrusted(dirname(configPath))

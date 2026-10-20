@@ -28,6 +28,10 @@ theorems hold for every oracle that satisfies the stated hypotheses, and §2 sho
 sensitivity merge satisfies them. Left out: YAML key order, `storeEntryForDisk`'s token_env
 rule (#1561, modelled elsewhere), non-server entries in §3.
 
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+index.ts adds the remote-only binding and its guards; expand / collapse, sensitivity
+writeback, stable identity, rotation and metadata handling are not touched.
+
 Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
 refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
 (nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env

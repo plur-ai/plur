@@ -1,6 +1,7 @@
 import { existsSync } from 'fs'
 import { createRequire } from 'module'
 import { loadEngrams, storePrefix, namespaceEngramId } from './engrams.js'
+import { withoutRemoteOnlyQueued } from './remote-only-rows.js'
 import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
@@ -249,7 +250,8 @@ export class IndexedStorage {
 
     const tx = db.transaction(() => {
       // Sync primary store
-      const primaryEngrams = loadEngrams(this.engramsPath)
+      // A queued remote-only save is never mirrored here (gate review of #1663).
+      const primaryEngrams = withoutRemoteOnlyQueued(loadEngrams(this.engramsPath))
       for (const e of primaryEngrams) {
         // `personal` mirrors isPersonalScope of the stored scope so loadFiltered
         // can pass personal-family scopes under any project-scope filter (#353).
@@ -264,7 +266,8 @@ export class IndexedStorage {
       for (const store of this.stores) {
         if (!store.path) continue
         validSources.add(store.path)
-        const storeEngrams = loadEngrams(store.path)
+        // A queued remote-only save is never mirrored here (gate review of #1663).
+        const storeEngrams = withoutRemoteOnlyQueued(loadEngrams(store.path))
         for (const e of storeEngrams) {
           // Scope validation: skip mismatched scopes. Segment-aware (#383) so a
           // sibling string-prefix scope can't be indexed under this store.

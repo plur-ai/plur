@@ -3,7 +3,8 @@ import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
-import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
+import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
@@ -1456,6 +1457,27 @@ function receiptSummary(r: Receipt): string {
   )
 }
 
+/**
+ * remote-only folder: refuse a tool that reads or writes a file of this
+ * machine's store directly, past the bound Plur instance (gate review of #1663).
+ */
+function refuseLocalFileInRemoteOnly(plur: Plur, what: string): void {
+  const ro = plur.remoteOnlyFolder()
+  if (!ro) return
+  throw new RemoteOnlyWriteError(ro.folder, ro.scope, undefined, ro.blocked ? 'blocked' : 'local-store', ro.blocked ?? what)
+}
+
+/**
+ * remote-only folder: refuse a tool that would send memories to a model the
+ * caller names (Codex round 6 on #1663). That model is not the folder's team
+ * server, so nothing is sent; the refusal comes before any memory is read.
+ */
+function refuseModelInRemoteOnly(plur: Plur, tool: string): void {
+  if (!plur.remoteOnlyFolder()) return
+  throw new Error(`This folder is remote-only: its memory goes only to its team server, and ${tool} would send ` +
+    'memories to the model you named, so nothing was sent. Run it outside the remote-only folder.')
+}
+
 function getAllToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -1820,6 +1842,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             })() : {}),
           }
         } catch (err) {
+          // A remote-only folder's refusal is the answer, not a failure to
+          // retry locally: nothing may be kept on this machine there.
+          if (err instanceof RemoteOnlyWriteError) throw err
 // learnRouted now saves to outbox on remote failure, so this
           // path should rarely be reached. Keep as defense-in-depth.
           const engram = await plur.learn(statement, context)
@@ -2884,6 +2909,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['llm_base_url', 'llm_api_key'],
       },
       handler: async (args, plur) => {
+        refuseModelInRemoteOnly(plur, 'plur_extract_meta')
         const llm = makeHttpLlm(
           args.llm_base_url as string,
           args.llm_api_key as string,
@@ -3004,6 +3030,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['meta_engram_id', 'test_domain', 'llm_base_url', 'llm_api_key'],
       },
       handler: async (args, plur) => {
+        refuseModelInRemoteOnly(plur, 'plur_validate_meta')
         const allEngrams = await plur.list()
         const meta = allEngrams.find(e => e.id === (args.meta_engram_id as string))
         if (!meta) {
@@ -3791,6 +3818,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         // Inject relevant engrams
         let engrams: { text: string; count: number; injected_ids: string[] } | null = null
+        // remote-only folder (owner decisions 2026-10-01): whether the team
+        // server served this injection; the session says so when it did not.
+        let remoteOnlyStatus: RemoteOnlyStatus | undefined
         // #1586 audit L6: what the injection's server leg did on THIS call.
         let injectionReport: { remote?: RecallRemoteReport; results_complete?: boolean; degraded_reason?: string; embedder_error?: string } = {}
         try {
@@ -3801,6 +3831,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             remote_timeout_ms: 5000, // session_start warm budget (#776)
             deadline_at,
           })
+          remoteOnlyStatus = result.remote_only
           injectionReport = {
             remote: result.remote,
             results_complete: result.results_complete,
@@ -3842,6 +3873,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             session_id,
             source: 'session_start',
           })
+          remoteOnlyStatus = result.remote_only
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
             // CONSTRAINTS FIRST — deliberate, do not "restore" the old order.
@@ -3905,9 +3937,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           guide = `⚠️ ${projectConfig.warning}\n\n${guide}`
         }
 
+        // remote-only folder: where memory goes replaces the project-scope
+        // guidance below (a `.plur.yaml` scope does not apply there), and an
+        // unreachable team server is said up front — once, at session start.
+        const remoteOnly = plur.remoteOnlyFolder()
+        const remoteOnlyNotice = remoteOnlyStatus && !remoteOnlyStatus.served ? remoteOnlyUnservedNotice(remoteOnlyStatus) : undefined
+        if (remoteOnlyNotice) guide = `⚠️ ${remoteOnlyNotice}\n\n${guide}`
         // Project scope guidance (#177) — surface auto-detected project
         // scope so the agent knows engrams will be tagged with it.
-        if (scope_source === 'folder-map') {
+        if (remoteOnly) {
+          guide += `\n\n${remoteOnlySessionLine(remoteOnly)}`
+        } else if (scope_source === 'folder-map') {
           guide += `\n\nThis folder's scope: "${default_scope}" (from your folder map, plur folders). ` +
             `plur_learn calls without an explicit scope will be tagged with this scope. Pass scope: "global" only ` +
             `for genuinely cross-project knowledge.`
@@ -4110,6 +4150,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
           } : {}),
           // Version staleness warning (issue #151)
           ...(version_warning ? { version_warning, version: VERSION } : {}),
+          ...(remoteOnly ? {
+            remote_only: {
+              folder: remoteOnly.folder,
+              scope: remoteOnly.scope,
+              served: remoteOnlyStatus?.served ?? false,
+              ...(remoteOnlyStatus?.host ? { host: remoteOnlyStatus.host } : {}),
+              ...(remoteOnlyStatus?.reason ? { reason: remoteOnlyStatus.reason } : {}),
+              ...(remoteOnlyNotice ? { notice: remoteOnlyNotice } : {}),
+            },
+          } : {}),
         }
         // A4′ (#776): per-host remote recall degradation from the injection
         // above — attached only when a host is non-ok or scope-narrowed.
@@ -4349,7 +4399,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // `sources[].session_id` is filled from `session_episode_id`. Capturing
         // the episode after the learns left every one of them with no session to
         // point at — and this path writes a large share of all engrams.
-        const episode = plur.capture(summary, {
+        // A remote-only folder captures no timeline (owner decision on #1521);
+        // the suggestions below still go to its team scope.
+        const episode = plur.remoteOnlyFolder() ? null : plur.capture(summary, {
           session_id,
           channel: 'mcp',
         })
@@ -4385,7 +4437,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               session: await _writeSession(args, plur, endSession),
               domain: projectDomain,
               // Link the engram back to the session that produced it (#960).
-              session_episode_id: episode.id,
+              ...(episode ? { session_episode_id: episode.id } : {}),
               // An end-of-session summary is the model's reading of what
               // happened, not something the user stated outright (#963).
               claim_class: 'inferred',
@@ -4459,7 +4511,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         return {
           engrams_created,
           ...(engrams_failed.length ? { engrams_failed } : {}),
-          episode_id: episode.id,
+          episode_id: episode?.id ?? null,
           total_engrams: status.engram_count,
           ...(injection_summary ? { injection_summary } : {}),
           ...(unsent > 0 ? {
@@ -4819,6 +4871,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         })
 
         if (args.scan) {
+          refuseModelInRemoteOnly(plur, 'plur_tensions scan')
           const llm = args.llm_base_url && args.llm_api_key
             ? makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, args.llm_model as string | undefined)
             : getLlmFunction()
@@ -4989,6 +5042,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           }
         }
 
+        // remote-only: the local history is personal-store bookkeeping (gate
+        // review of #1663); getEngramHistory above answers [] there too.
+        refuseLocalFileInRemoteOnly(plur, 'Reading the history of this machine\'s store')
         // Return recent history across all engrams
         const { listHistoryMonths, readHistory } = await import('@plur-ai/core')
         const status = await plur.status()
@@ -5027,6 +5083,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         required: ['engram_id', 'failure_context'],
       },
       handler: async (args, plur) => {
+        if (args.llm_base_url && args.llm_api_key) refuseModelInRemoteOnly(plur, 'plur_report_failure with a model')
         let llm: LlmFunction | undefined
         if (args.llm_base_url && args.llm_api_key) {
           llm = makeHttpLlm(
@@ -5190,6 +5247,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         },
       },
       handler: async (args, plur) => {
+        // remote-only: the profile cache is derived from personal memory, and
+        // a profile generated here would be kept on this machine (gate review of #1663).
+        refuseLocalFileInRemoteOnly(plur, 'The cognitive profile (kept in this machine\'s store)')
         const status = await plur.status()
         const storagePath = status.storage_root
         if (!args.force_regenerate) {

@@ -6,6 +6,7 @@ import { buildDedupPrompt, parseDedupResponse } from './dedup.js'
 import { appendHistory } from './history.js'
 import { logger } from './logger.js'
 import { searchTextFrom } from './fts.js'
+import { isRemoteOnlyQueued } from './remote-only-rows.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
@@ -262,6 +263,13 @@ async function executeDedupDecision(
       }
       if ((existing as any).commitment === 'locked') {
         return await saveBesideLocked(deps, statement, context, existing)
+      }
+      // A save queued from a remote-only folder is never superseded by a dedup
+      // decision: it is delivered or forgotten as it was saved (re-audit 3 of
+      // #1521), so the reverse edge would be a local rewrite of it. Saved
+      // beside it, unlinked, as before.
+      if (isRemoteOnlyQueued(existing)) {
+        return { engram: await deps.learn(statement, context), decision: 'ADD' }
       }
       const supersedes = [...new Set([...(context?.supersedes ?? []), existing.id])]
       // The replacement lives where the memory it replaces lives, unless the

@@ -42,6 +42,14 @@ deliver it; modelled in §8b (`conflict_untouched`, `keptC_only_bookkeeping`).
 Keys, retry, claims, the listing and the breaker (§1–§7) are unchanged.
 remote-store.ts changed only `me()` (C1 /me fields; a non-2xx now throws
 `RemoteHttpError` with the same message), which the push path does not call.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+`_flushOutboxClaimed` gained one more hold for an entry marked `remote_only`: when its target
+scope is no longer a deliverable team scope, or the target's policy now forbids its content,
+the entry is held exactly like the #1631 conflict hold of §8b — no push, no demotion to a local
+row, only `last_attempt` / `last_error` bookkeeping and a `failed` count. Keys, retry, claims,
+the listing and the breaker (§1–§7) are unchanged.
+
 Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
 refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
 (nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
@@ -50,6 +58,11 @@ warning naming the url by origin; no modelled branch changed.
 Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
 exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
 this model covers changed.
+
+Gate structural change 1 on #1663 (2026-10-18): still holds. A delivery no longer writes automatic
+provenance for a queued remote-only save; keys, retry, claims, holds and the breaker are unchanged.
+Codex round 11 (2026-10-18): still holds. The two remote-only holds in the flush now classify by the
+shared predicate (either marker field), so a half-stripped marker is held like §8b; nothing else changed.
 
 Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
 index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the

@@ -42,6 +42,28 @@ scope of a server entry it adds `token_scopes` and a note. That is not in any
 section here (learn entry points, session lifecycle, hook merges, exit codes,
 dsh, hermes, array coercion, `.plur.yaml` trust).
 
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+The hooks (hook-inject, hook-codex-inject, hook-cursor-session-start, hook-agy-pre-invocation)
+call `bindHookFolder` right after `createPlur` and add `remoteOnlyLines` to the header; plur.ts
+binds a CLI command's instance to its folder (read-only; left unbound when the folder map cannot
+be read, as on development); tools.ts adds the remote-only block to plur_session_start and lets
+plur_learn rethrow `RemoteOnlyWriteError` instead of its local fallback. In a folder that is not
+remote-only the binding is cleared and every modelled path is unchanged; in a remote-only folder
+the write gate is WritePath §3d.
+Gate review of #1663 (2026-10-18): still holds. hook-observe records only in an `on` folder; the
+Claude Code and Codex session-end hooks bind their outbox flush to the payload folder;
+cursorHookFolder also reads remote-only from every root spelling and the payload cwd; `plur restore
+--yes` and MCP plur_history (no id) / plur_profile refuse in a remote-only folder. Each only removes
+work in a remote-only folder; no modelled path changes elsewhere.
+Codex round 3 (2026-10-18): still holds. In a remote-only folder the semantic paths rank by keyword
+(no embedder, no reranker), plur migrate up/down refuses, auto-rate binds before its lookups, agy does
+not replay a turn cache from another folder mode, Cursor removes other roots' generated rules, and the
+session hooks omit the raw Project scope line. Outside remote-only folders nothing changed.
+Codex rounds 6-7 (2026-10-18): still holds. plur tensions --scan and plur audit refuse in a remote-only
+folder; agy replays a turn cache only under the same decision and scope; Cursor treats an unreadable
+map as off for the whole workspace and removes every root's generated rule. pinnedQuota asks only a
+team store while bound. No modelled adapter path changes outside remote-only folders and broken maps.
+
 Checked against #1631 background discovery (2026-10-18): still holds.
 plur_session_start starts a background scope refresh for company server
 entries, skips the awaited `/me` probe for their endpoints (exactly those

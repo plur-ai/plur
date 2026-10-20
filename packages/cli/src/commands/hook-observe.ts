@@ -2,7 +2,7 @@ import { mkdirSync, appendFileSync, readSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
-import { hookFolderOn, payloadDir, parsePayload } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, parsePayload } from '../lib/folder-gate.js'
 
 /**
  * plur hook-observe — capture tool calls for offline pattern extraction.
@@ -62,7 +62,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   process.stdout.write(raw)
 
   // No capture unless the folder map says on (#1347; was #247's project gate).
-  if (!hookFolderOn(payloadDir(parsePayload(raw)), flags)) return
+  // Not in a remote-only folder either: an observation keeps tool input
+  // (commands, edits) in this machine's store, which such a folder forbids
+  // (gate review of #1663).
+  if (hookFolderPolicy(payloadDir(parsePayload(raw)), flags).mode !== 'on') return
 
   let data: Record<string, unknown>
   try {

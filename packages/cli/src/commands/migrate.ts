@@ -1,4 +1,4 @@
-import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION, exportPgliteEmbeddingsToCache, resolveBackendTier, loadConfig } from '@plur-ai/core'
+import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION, exportPgliteEmbeddingsToCache, resolveBackendTier, loadConfig, resolveFolderPolicy, RemoteOnlyWriteError } from '@plur-ai/core'
 import { existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -28,6 +28,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
     }
     return
+  }
+
+  // A remote-only folder never uses the personal store (gate review of #1663):
+  // migrating it from there (up or down, which also copies the corpus to a
+  // .bak file) is refused, as restore and sync are. An unreadable folder map
+  // leaves this command as on development (decision 1).
+  if (subcommand === 'up' || subcommand === 'down') {
+    let policy: ReturnType<typeof resolveFolderPolicy> | null = null
+    try { policy = resolveFolderPolicy(process.cwd(), { root: dirname(paths.engrams), readOnly: true }) } catch { policy = null }
+    if (policy?.mode === 'remote-only') {
+      exit(1, new RemoteOnlyWriteError(process.cwd(), policy.scope ?? null, undefined, 'local-store',
+        'Migrating the store (run it outside the remote-only folder)').message)
+    }
   }
 
   if (subcommand === 'up' || subcommand === undefined) {

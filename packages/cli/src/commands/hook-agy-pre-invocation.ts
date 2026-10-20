@@ -1,6 +1,6 @@
 import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { hookFolderPolicy, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
+import { hookFolderPolicy, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import type { FolderPolicy } from '@plur-ai/core'
 import {
   readStdinJson,
@@ -100,7 +100,15 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // INSIDE the record, so a sanitized-path collision between two
     // conversations reads as "no cache", never as another conversation's
     // memory (F9).
-    const cached = readAgyTurnCache(conversationId)
+    // A message cached under another folder mode is not this turn's in a
+    // remote-only folder (gate review of #1663): it may hold personal memory.
+    const rawCached = readAgyTurnCache(conversationId)
+    // Replayed only under the same folder decision (Codex round 7 on #1663):
+    // never when the map cannot be read, and in a remote-only folder only a
+    // message cached there for the same team scope.
+    const unresolved = policy?.reason === 'malformed-map' || policy?.reason === 'resolver-error'
+    const cached = rawCached && (unresolved ||
+      (policy?.mode === 'remote-only' && (rawCached.mode !== 'remote-only' || rawCached.scope !== policy.scope))) ? null : rawCached
 
     // "First" is the conversation's first turn. The absence of a cache alone
     // cannot say that: with an unusable cache dir it is absent on EVERY turn,
@@ -142,6 +150,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     agyMarkSessionStarted(conversationId)
 
     const plur = createPlur(flags)
+    if (workspace && policy) bindHookFolder(plur, workspace, policy)
     // The workspace path, not process.cwd(): agy runs hooks with cwd = the
     // hooks.json directory (~/.gemini/config), where the .plur.yaml walk can
     // never succeed — cwd here would silently strip project scoping from
@@ -169,8 +178,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
         : ''
       const header = isFirst
-        ? `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
-          (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
+        ? [
+          `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
+            (projectConfig.scope && !plur.remoteOnlyFolder() ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : ''),
+          // remote-only: where memory goes, and that the team server did not answer.
+          ...remoteOnlyLines(plur, result, true),
+        ].join('\n')
         : `[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]`
       const refusal = isFirst
         ? [
@@ -214,6 +227,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       textHash: userHash,
       message,
       ...(user ? { offset: user.offset } : {}),
+      ...(policy ? { mode: policy.mode, ...(policy.scope ? { scope: policy.scope } : {}) } : {}),
     })
 
     if (!message) return

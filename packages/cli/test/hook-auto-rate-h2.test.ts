@@ -32,6 +32,8 @@ describe('decision H2 — auto-rate at most once per engram per session', () => 
   const fakePlur = () => ({
     getByIds: async (ids: string[]) => ids.filter(i => i === ID).map(id => ({ id, statement: STATEMENT })),
     feedback: async (id: string) => { feedbackCalls.push(id) },
+    // Every turn binds to its folder first (gate review of #1663); an ordinary folder here.
+    bindFolder: () => ({ mode: 'on', remoteAllowed: false, source: 'default' }),
     config: {},
   })
 

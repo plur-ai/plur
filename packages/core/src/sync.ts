@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process'
+import { isRemoteOnlyQueued } from './remote-only-rows.js'
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, chmodSync } from 'fs'
 import { join, dirname, relative, basename } from 'path'
 import * as yaml from 'js-yaml'
@@ -349,10 +350,12 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | 
  * consistent with the "private stays local" write-path semantics (#90).
  */
 function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
+  // A queued remote-only save is never committed or pushed, whatever the remote
+  // (gate review of #1663): history would keep it after delivery.
   if (remoteType === 'shared') {
-    return e => isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
+    return e => !isRemoteOnlyQueued(e) && isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
   }
-  return e => e?.scope !== 'local'
+  return e => !isRemoteOnlyQueued(e) && e?.scope !== 'local'
 }
 
 /**
