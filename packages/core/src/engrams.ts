@@ -1142,10 +1142,61 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
  * Idempotent, and the result always fits the engram id alphabet.
  */
 export function packEngramId(id: string, packName: string): string {
-  const slug = packName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pack'
-  const suffix = `-pack-${slug}`
+  const suffix = `-pack-${packIdSlug(packName)}`
   if (id.endsWith(suffix)) return id
   return `${id}${suffix}`
+}
+
+/**
+ * The pack-name part of a pack id, one per pack name.
+ *
+ * A name already in slug form (`release-rules`) is used as it is. Any other
+ * name (`Release Rules`, `release_rules`) is lowered to a slug and followed by
+ * `--` and twelve hex digits of a SHA-256 digest of the exact name. A slug-form
+ * name never contains `--`, so the two kinds cannot meet, and two other names
+ * that lower to the same slug differ in the digest. Lowering alone made
+ * `Release Rules` and `release-rules` hand out one id for two packs' rows.
+ */
+function packIdSlug(packName: string): string {
+  if (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(packName)) return packName
+  const slug = packName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pack'
+  const digest = createHash('sha256').update(packName).digest('hex').slice(0, 12)
+  return `${slug}--${digest}`
+}
+
+/**
+ * A pack's rows as every read path hands them out: each under its pack id
+ * ({@link packEngramId}), and every reference one row makes to ANOTHER ROW OF
+ * THE SAME PACK (relations, engram associations, `derived_from`, `abstract`)
+ * rewritten to that row's pack id too.
+ *
+ * Renaming the rows alone broke the pack's own graph: an old rule still said
+ * `superseded_by: [ENG-PACK-NEW]`, no loaded row answered to that id any more,
+ * so supersession, spreading and lookup of the target all missed, and the
+ * obsolete rule was injected beside its correction. A reference to an id the
+ * pack does not ship is left as it is. Returns copies; the pack file is never
+ * touched, so feedback write-back keeps saving the author's own ids.
+ */
+export function namespacePackEngrams(engrams: Engram[], packName: string): Engram[] {
+  const own = new Set(engrams.map(e => e.id))
+  const ref = (target: string): string => own.has(target) ? packEngramId(target, packName) : target
+  const refs = (list: unknown): unknown => Array.isArray(list) ? list.map(t => typeof t === 'string' ? ref(t) : t) : list
+  return engrams.map(e => {
+    const out: Engram = { ...e, id: packEngramId(e.id, packName) }
+    if (e.relations) {
+      const rel: Record<string, unknown> = { ...e.relations }
+      for (const k of Object.keys(rel)) rel[k] = refs(rel[k])
+      out.relations = rel as Engram['relations']
+    }
+    if (Array.isArray(e.associations)) {
+      out.associations = e.associations.map(a => a && a.target_type === 'engram' && typeof a.target === 'string'
+        ? { ...a, target: ref(a.target) }
+        : a)
+    }
+    if (typeof e.derived_from === 'string') out.derived_from = ref(e.derived_from)
+    if (typeof e.abstract === 'string') out.abstract = ref(e.abstract)
+    return out
+  })
 }
 
 /**

@@ -68,6 +68,47 @@ describe('install directory collisions', () => {
     expect(listPacks(packs).map(p => p.manifest?.version)).toEqual(['2.0.0', '2.0.0'])
   })
 
+  it('a pack displaced by a collision is upgraded in place after the collision is gone', async () => {
+    await installPack(packs, source('alice/pack', 'alice-tips', 'Alice tip'))
+    await installPack(packs, source('bob/pack', 'bob-tips', 'Bob tip v1'))
+    expect(dirs()).toEqual(['bob-tips', 'pack'])
+    uninstallPack(packs, 'pack')
+    // The preferred directory is free again; bob's installation lives in bob-tips.
+    const r = await installPack(packs, source('bob2/pack', 'bob-tips', 'Bob tip v2', '2.0.0'))
+    expect(r.registry.dir).toBe('bob-tips')
+    expect(dirs()).toEqual(['bob-tips'])
+    const installed = listPacks(packs)
+    expect(installed.map(p => [p.manifest?.name, p.manifest?.version])).toEqual([['bob-tips', '2.0.0']])
+  })
+
+  it('a pack in a numbered fallback directory is upgraded in place after the collisions are gone', async () => {
+    await installPack(packs, source('y/x', 'y-tips', 'Lives in packs/x'))
+    await installPack(packs, source('a/pack', 'alice-tips', 'Lives in packs/pack'))
+    await installPack(packs, source('b/pack', 'x', 'X v1'))
+    expect(dirs()).toEqual(['pack', 'x', 'x-2'])
+    uninstallPack(packs, 'x')
+    uninstallPack(packs, 'pack')
+    const r = await installPack(packs, source('c/pack', 'x', 'X v2', '2.0.0'))
+    expect(r.registry.dir).toBe('x-2')
+    expect(dirs()).toEqual(['x-2'])
+    expect(listPacks(packs).map(p => [p.manifest?.name, p.manifest?.version])).toEqual([['x', '2.0.0']])
+  })
+
+  it('after an in-place upgrade of a displaced pack, injection carries only the new rule', async () => {
+    const { Plur } = await import('../src/index.js')
+    const root = join(tmp, 'root')
+    const plur = new Plur({ path: root })
+    const rootPacks = join(root, 'packs')
+    await plur.installPack(source('alice/pack', 'alice-tips', 'Alice rule about gardening tomatoes'))
+    await plur.installPack(source('bob/pack', 'bob-tips', 'Release rule: tag the build before publishing'))
+    uninstallPack(rootPacks, 'pack')
+    await plur.installPack(source('bob2/pack', 'bob-tips', 'Release rule: sign the tag before publishing', '2.0.0'))
+    const r = await plur.inject('release rule tag build publishing')
+    const rendered = [r.directives, r.constraints, r.consider].join('\n')
+    expect(rendered).toContain('sign the tag before publishing')
+    expect(rendered).not.toContain('tag the build before publishing')
+  })
+
   it('removing one of the two leaves the other installed', async () => {
     await installPack(packs, source('alice/pack', 'alice-tips', 'A'))
     await installPack(packs, source('bob/pack', 'bob-tips', 'B'))

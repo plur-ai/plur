@@ -13,7 +13,7 @@ import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
 import { acceptDiscoveredScopes, registerServerEntry, PersonalScopeTakenError, SignInHeldError, type DiscoveryStatus, type ScopeRejection, type FoldReport, type ScopeHolder } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore, type LoadedPack } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, namespacePackEngrams, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore, type LoadedPack } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -1832,7 +1832,7 @@ export class Plur {
   private _loadInstalledPacks(): LoadedPack[] {
     return loadAllPacks(this.paths.packs).map(pack => ({
       ...pack,
-      engrams: pack.engrams.map(e => ({ ...e, id: packEngramId(e.id, pack.manifest.name) })),
+      engrams: namespacePackEngrams(pack.engrams, pack.manifest.name),
     }))
   }
 

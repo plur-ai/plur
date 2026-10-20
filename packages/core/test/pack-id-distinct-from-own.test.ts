@@ -34,6 +34,17 @@ function writePack(dir: string, name: string, rows: Array<{ id: string; statemen
   writeFileSync(join(dir, 'engrams.yaml'), `engrams:\n${body}\n`)
 }
 
+function writeGraphPack(dir: string, name: string, rows: Array<Record<string, unknown>>): void {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${JSON.stringify(name)}\nversion: "1.0"\n---\n`)
+  const full = rows.map(r => ({
+    type: 'behavioral', scope: 'global', status: 'active',
+    activation: { retrieval_strength: 0.9, storage_strength: 1.0, frequency: 0, last_accessed: '2026-01-01' },
+    ...r,
+  }))
+  writeFileSync(join(dir, 'engrams.yaml'), yaml.dump({ engrams: full }))
+}
+
 describe('pack memory ids are distinct from my own memory ids', () => {
   let dir: string
   let src: string
@@ -131,5 +142,85 @@ describe('pack memory ids are distinct from my own memory ids', () => {
     await plur.forget(mine.id)
     const after = await plur.getById(mine.id)
     expect(after?.statement ?? '').not.toContain('skip the tests')
+  })
+
+  it('a pack whose rule was corrected inside the pack delivers only the correction', async () => {
+    writeGraphPack(join(src, 'release-rules'), 'release-rules', [
+      {
+        id: 'ENG-PACK-OLD', statement: 'Release rule: publish straight from the laptop without tagging',
+        relations: { superseded_by: ['ENG-PACK-NEW'], related: ['ENG-PACK-SIB'] },
+      },
+      {
+        id: 'ENG-PACK-NEW', statement: 'Release rule: publish only from a signed tag in CI',
+        relations: { supersedes: ['ENG-PACK-OLD'], related: ['ENG-PACK-SIB'], broader: ['ENG-PACK-SIB'] },
+        associations: [{ target_type: 'engram', target: 'ENG-PACK-SIB', strength: 0.8, type: 'semantic' }],
+        derived_from: 'ENG-PACK-OLD',
+      },
+      {
+        id: 'ENG-PACK-SIB', statement: 'Release checklists live next to the changelog',
+        relations: { narrower: ['ENG-PACK-NEW'], conflicts: ['ENG-PACK-OLD'], related: ['ENG-NOT-IN-PACK'] },
+      },
+    ])
+    await plur.installPack(join(src, 'release-rules'))
+    const id = (x: string) => packEngramId(x, 'release-rules')
+
+    const r = await plur.inject('release rule publish tag laptop CI')
+    const rendered = [r.directives, r.constraints, r.consider].join('\n')
+    expect(rendered).toContain('signed tag in CI')
+    expect(rendered).not.toContain('straight from the laptop')
+    expect(r.injected_ids).not.toContain(id('ENG-PACK-OLD'))
+
+    // Every internal reference names the namespaced row it points to.
+    const old = await plur.getById(id('ENG-PACK-OLD'))
+    expect(old?.relations?.superseded_by).toEqual([id('ENG-PACK-NEW')])
+    expect(old?.relations?.related).toEqual([id('ENG-PACK-SIB')])
+    const neu = await plur.getById(id('ENG-PACK-NEW'))
+    expect(neu?.relations?.supersedes).toEqual([id('ENG-PACK-OLD')])
+    expect(neu?.relations?.broader).toEqual([id('ENG-PACK-SIB')])
+    expect(neu?.associations?.map(a => a.target)).toEqual([id('ENG-PACK-SIB')])
+    expect(neu?.derived_from).toBe(id('ENG-PACK-OLD'))
+    const sib = await plur.getById(id('ENG-PACK-SIB'))
+    expect(sib?.relations?.narrower).toEqual([id('ENG-PACK-NEW')])
+    expect(sib?.relations?.conflicts).toEqual([id('ENG-PACK-OLD')])
+    // A reference to a memory outside the pack is left as it is.
+    expect(sib?.relations?.related).toEqual(['ENG-NOT-IN-PACK'])
+    for (const target of [...(old?.relations?.superseded_by ?? []), ...(neu?.relations?.supersedes ?? []), ...(neu?.associations ?? []).map(a => a.target)]) {
+      expect(await plur.getById(target), `relation target ${target} resolves`).not.toBeNull()
+    }
+    // The list path hands out the same rewritten graph.
+    const listed = (await plur.list()).find(e => e.id === id('ENG-PACK-OLD'))
+    expect(listed?.relations?.superseded_by).toEqual([id('ENG-PACK-NEW')])
+
+    // Feedback on a namespaced id still writes back, and the pack file keeps its own references.
+    await plur.feedback(id('ENG-PACK-NEW'), 'positive')
+    const raw = yaml.load(readFileSync(join(dir, 'packs', 'release-rules', 'engrams.yaml'), 'utf8')) as { engrams: Array<{ id: string; relations?: { supersedes?: string[] }; feedback_signals?: { positive?: number } }> }
+    const rawNew = raw.engrams.find(e => e.id === 'ENG-PACK-NEW')
+    expect(rawNew?.feedback_signals?.positive).toBe(1)
+    expect(rawNew?.relations?.supersedes).toEqual(['ENG-PACK-OLD'])
+  })
+
+  it('two pack names that normalise to the same slug still get distinct ids', async () => {
+    expect(packEngramId('ENG-2026-0101-001', 'Release Rules')).not.toBe(packEngramId('ENG-2026-0101-001', 'release-rules'))
+    expect(packEngramId('ENG-2026-0101-001', 'release_rules')).not.toBe(packEngramId('ENG-2026-0101-001', 'release-rules'))
+    expect(packEngramId('ENG-2026-0101-001', 'Release Rules')).not.toBe(packEngramId('ENG-2026-0101-001', 'release_rules'))
+    expect(packEngramId('ENG-2026-0101-001', 'Release Rules')).toMatch(/^(ENG|ABS|META)-[A-Za-z0-9-]+$/)
+    const once = packEngramId('ENG-2026-0101-001', 'Release Rules')
+    expect(packEngramId(once, 'Release Rules')).toBe(once)
+
+    writeGraphPack(join(src, 'one'), 'Release Rules', [{ id: 'ENG-2026-0101-001', statement: 'prefer semicolons when writing TypeScript code alpha' }])
+    writeGraphPack(join(src, 'two'), 'release-rules', [{ id: 'ENG-2026-0101-001', statement: 'prefer semicolons when writing TypeScript code beta' }])
+    await plur.installPack(join(src, 'one'))
+    await plur.installPack(join(src, 'two'))
+    const r = await plur.inject('write TypeScript code semicolons')
+    expect(new Set(r.injected_ids).size).toBe(r.injected_ids.length)
+    expect(r.injected_ids).toEqual(expect.arrayContaining([
+      packEngramId('ENG-2026-0101-001', 'Release Rules'),
+      packEngramId('ENG-2026-0101-001', 'release-rules'),
+    ]))
+    await plur.feedback(packEngramId('ENG-2026-0101-001', 'Release Rules'), 'positive')
+    const rawOne = yaml.load(readFileSync(join(dir, 'packs', 'one', 'engrams.yaml'), 'utf8')) as { engrams: Array<{ feedback_signals?: { positive?: number } }> }
+    const rawTwo = yaml.load(readFileSync(join(dir, 'packs', 'two', 'engrams.yaml'), 'utf8')) as { engrams: Array<{ feedback_signals?: { positive?: number } }> }
+    expect(rawOne.engrams[0].feedback_signals?.positive).toBe(1)
+    expect(rawTwo.engrams[0].feedback_signals?.positive ?? 0).toBe(0)
   })
 })

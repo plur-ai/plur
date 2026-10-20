@@ -1694,6 +1694,20 @@ function pickInstallDirName(
     try { installed = loadPack(dir).manifest.name?.trim() } catch { return true }
     return !installed || installed === manifestName
   }
+  // A pack already installed is replaced where it is. Choosing by which
+  // directory happens to be free first meant a pack once displaced into a
+  // fallback directory (`bob-tips`, `x-2`) was installed a second time into the
+  // preferred one as soon as that came free, leaving the old version loadable
+  // beside the new one.
+  const existing = installedDirsNamed(packsDir, manifestName)
+  if (existing.length > 0) {
+    for (const want of [preferred, safeManifestName]) {
+      if (!want) continue
+      const hit = existing.find(e => e === onDiskEntryName(packsDir, want))
+      if (hit) return hit
+    }
+    return existing[0]
+  }
   if (accepts(preferred)) return preferred
   if (safeManifestName && safeManifestName !== preferred && accepts(safeManifestName)) return safeManifestName
   const base = safeManifestName ?? preferred
@@ -1701,6 +1715,19 @@ function pickInstallDirName(
     const candidate = `${base}-${n}`
     if (accepts(candidate)) return candidate
   }
+}
+
+/** Directories in `packsDir` holding a pack whose manifest name is `manifestName`, sorted. */
+function installedDirsNamed(packsDir: string, manifestName: string | undefined): string[] {
+  if (!manifestName || !fs.existsSync(packsDir)) return []
+  return fs.readdirSync(packsDir).filter(e => {
+    if (isTransientPackDir(e)) return false
+    const d = path.join(packsDir, e)
+    try {
+      if (!fs.statSync(d).isDirectory()) return false
+      return loadPack(d).manifest.name?.trim() === manifestName
+    } catch { return false }
+  }).sort()
 }
 
 function resolveInside(packsDir: string, name: string, op: string): string {
