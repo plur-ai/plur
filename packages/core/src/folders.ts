@@ -838,6 +838,10 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   // ask, or a remote-only choice; legacy trusted settings keep precedence.
   if (!opts.gitScopes?.length || policy.scope || policy.reason ||
     !(policy.mode === 'on' || (policy.mode === 'ask' && policy.source === 'default'))) return policy
+  // Rule 5 keeps the home directory (and a root or an ancestor of home) on
+  // ask: a dotfiles checkout in $HOME must not switch memory on for
+  // everything under it, nor make its origin's project the default there.
+  if (coversHomeOrRoot(dir, opts.home ?? homedir())) return policy
   const git = gitDefaultScope(dir, opts.gitScopes, { read: opts.readOrigin })
   if (git.kind === 'not-git') return policy
   return { ...policy, mode: 'on', source: 'git', git, ...(git.kind === 'scope' ? { scope: git.scope } : {}) }

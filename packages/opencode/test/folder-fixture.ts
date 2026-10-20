@@ -18,12 +18,19 @@ afterAll(() => { for (const h of homes.splice(0)) rmSync(h, { recursive: true, f
 /** `fake` plus a `resolveFolderPolicy` answering from a folder map of `folders` (paths canonicalised). */
 export function withFolderMap<T extends object>(fake: T, folders: FolderEntry[]): T & {
   resolveFolderPolicy(dir: string): FolderPolicy
+  bindFolderPolicy(dir: string, policy: FolderPolicy): void
+  bindFolderUnresolved(dir: string, why: string): void
+  bound: Array<{ dir: string; policy?: FolderPolicy; unresolved?: string }>
 } {
   const root = mkdtempSync(join(tmpdir(), 'oc-folder-fixture-'))
   homes.push(root)
   saveFolderMap(root, { version: 1, folders: folders.map(f => ({ ...f, path: canonicalize(f.path) })) })
+  const bound: Array<{ dir: string; policy?: FolderPolicy; unresolved?: string }> = []
   return Object.assign(fake, {
     resolveFolderPolicy: (dir: string) => resolveFolderPolicy(dir, { root }),
+    bindFolderPolicy: (dir: string, policy: FolderPolicy) => { bound.push({ dir, policy }) },
+    bindFolderUnresolved: (dir: string, why: string) => { bound.push({ dir, unresolved: why }) },
+    bound,
   })
 }
 
