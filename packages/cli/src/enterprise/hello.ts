@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { normalizeEndpointUrl, parseNamespacedId, storePrefix, legacyStorePrefix } from '@plur-ai/core'
+import { detectSensitive, normalizeEndpointUrl, parseNamespacedId, storePrefix, legacyStorePrefix } from '@plur-ai/core'
 import { openMcpSession, type McpLaunch } from './mcp-stdio.js'
 
 export type { McpLaunch }
@@ -27,7 +27,8 @@ export function helloStatement(p: {
   version: string
   date: string
 }): string {
-  return `PLUR connected: ${p.username} on ${p.deviceName}, ${p.tools.join(', ')}, PLUR ${p.version}, ${p.date}`
+  const label = detectSensitive(p.deviceName).length ? 'private device' : p.deviceName
+  return `PLUR connected: ${p.username} on ${label}, ${p.tools.join(', ')}, PLUR ${p.version}, ${p.date}`
 }
 
 interface LearnResult {
