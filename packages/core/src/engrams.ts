@@ -371,22 +371,68 @@ export function readHeldRecovery(root: string): HeldFile[] | null {
   return files as HeldFile[]
 }
 
+/** An engram-id token (`ENG-…`, `ABS-…`, `META-…`) anywhere in a string. */
+export const ENGRAM_ID_TOKEN = /\b(?:ENG|ABS|META)-[A-Za-z0-9-]+/g
+
+/** Replace engram-id tokens in a record by `map` (old id -> new id), everywhere in it. */
+export function renameEngramIdRefs(v: unknown, map: ReadonlyMap<string, string>): unknown {
+  if (typeof v === 'string') return v.replace(ENGRAM_ID_TOKEN, m => map.get(m) ?? m)
+  if (Array.isArray(v)) return v.map(x => renameEngramIdRefs(x, map))
+  if (v !== null && typeof v === 'object') {
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, renameEngramIdRefs(x, map)]))
+  }
+  return v
+}
+
+/** The recovery file's raw `merge_renames`, or null (absent / unreadable). */
+function rawHeldMergeRenames(root: string): IdRename[] | null {
+  try {
+    const v = JSON.parse(fs.readFileSync(heldRecoveryPath(root), 'utf8')) as { merge_renames?: unknown } | null
+    const r = v?.merge_renames
+    if (!Array.isArray(r) || !r.every(x => x && typeof x.from === 'string' && typeof x.to === 'string')) return null
+    return r.map(x => ({ from: x.from as string, to: x.to as string }))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Audit 6, N1. The engram renames a sync's record merge made to COMMITTED
+ * engrams while records were held aside. Held records were written on this
+ * machine, so a reference in them to the old id meant this machine's engram,
+ * which has the new id once that merge is committed. The map is saved with the
+ * held records BEFORE the merge commit, so a process killed right after the
+ * commit still has it on restart.
+ *
+ * It applies only once the merge is concluded: while `.git/MERGE_HEAD` exists
+ * the merge was interrupted before its commit, the store still has the old
+ * ids, and the restart aborts that merge (empty list here).
+ */
+export function readHeldMergeRenames(root: string): IdRename[] {
+  if (fs.existsSync(path.join(root, '.git', 'MERGE_HEAD'))) return []
+  return rawHeldMergeRenames(root) ?? []
+}
+
 /**
  * Durably record `files` as held (write + fsync + rename + fsync dir), or delete
  * the recovery file when `files` is empty. Called BEFORE the tree is reset and
  * again, to delete it, only AFTER every held record is back.
  */
-export function writeHeldRecovery(root: string, files: readonly HeldFile[]): void {
+export function writeHeldRecovery(root: string, files: readonly HeldFile[], mergeRenames?: readonly IdRename[] | null): void {
   const p = heldRecoveryPath(root)
   if (files.length === 0) {
     try { fs.unlinkSync(p) } catch { return }
     fsyncDir(path.dirname(p))
     return
   }
+  // `undefined` keeps the merge renames already saved (a rewrite of the held
+  // records, e.g. after some were restored); `null` drops them (a new hold).
+  const merge = mergeRenames === undefined ? rawHeldMergeRenames(root) : mergeRenames
   atomicWrite(p, JSON.stringify({
     version: 1,
     note: 'Records a plur sync set aside during git pull (never pushed). Restored automatically; do not delete by hand.',
     files,
+    ...(merge && merge.length > 0 ? { merge_renames: merge } : {}),
   }), { mode: 0o600 })
 }
 
@@ -433,7 +479,12 @@ function heldEngramsFor(filePath: string): unknown[] | null {
   const root = path.dirname(path.resolve(filePath))
   if (!fs.existsSync(heldRecoveryPath(root))) return null
   try {
-    return readHeldRecovery(root)?.find(f => f.file === 'engrams.yaml')?.held ?? null
+    const held = readHeldRecovery(root)?.find(f => f.file === 'engrams.yaml')?.held ?? null
+    const merged = held ? readHeldMergeRenames(root) : []
+    if (!held || merged.length === 0) return held
+    // A concluded merge renamed committed engrams: held references follow (N1).
+    const map = new Map(merged.map(r => [r.from, r.to] as const))
+    return held.map(r => renameEngramIdRefs(r, map))
   } catch (err) {
     logger.warning(`${(err as Error).message}`)
     return null

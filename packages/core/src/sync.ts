@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkS
 import { join, dirname, relative, basename } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
-import { engramStoreEntries, sameEngramContent, freshDuplicateId, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
+import { engramStoreEntries, sameEngramContent, freshDuplicateId, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, readHeldMergeRenames, renameEngramIdRefs, ENGRAM_ID_TOKEN, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
 import { recordLastWritten } from './backup.js'
 import { _ownerOnlyHost, checkOwnerOnly, currentWindowsAccount, protectOwnerOnly, type OwnerOnlyExec } from './owner-only.js'
 import {
@@ -279,7 +279,6 @@ const SIBLING_STRIP_FILES = ['episodes.yaml', 'candidates.yaml', 'tensions.yaml'
  * over the id charset, so a longer unknown token ("ENG-0011" around "ENG-001")
  * extracts as itself and simply fails push-set membership — conservative.
  */
-const ENGRAM_ID_TOKEN = /\b(?:ENG|ABS|META)-[A-Za-z0-9-]+/g
 
 /**
  * Dump options matching the sibling-file writers (episodes.ts / tension-store.ts
@@ -624,7 +623,7 @@ function holdWithheld(root: string, remoteType: SyncRemoteType): WithheldFile[] 
   if (files.length === 0) return files
   // Durable BEFORE the tree is touched: from here until the restore completes,
   // this file is the only copy of the held records.
-  writeHeldRecovery(root, files)
+  writeHeldRecovery(root, files, null)
   for (const f of files) git(['checkout', '--', f.file], root)
   return files
 }
@@ -636,12 +635,7 @@ function headBlob(root: string, file: string): string | null {
 
 /** Replace engram-id tokens in a record by `map` (old id -> new id), everywhere in it. */
 function renameIdRefs(v: unknown, map: ReadonlyMap<string, string>): unknown {
-  if (typeof v === 'string') return v.replace(ENGRAM_ID_TOKEN, m => map.get(m) ?? m)
-  if (Array.isArray(v)) return v.map(x => renameIdRefs(x, map))
-  if (v !== null && typeof v === 'object') {
-    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, renameIdRefs(x, map)]))
-  }
-  return v
+  return renameEngramIdRefs(v, map)
 }
 
 /** Held sibling records not already present verbatim in `current` — a restore may be re-run after a crash. */
@@ -771,7 +765,20 @@ function heldPendingNote(root: string, unresolved: readonly WithheldFile[]): str
 function recoverHeld(root: string): WithheldFile[] {
   const files = readHeldRecovery(root)
   if (!files) return []
-  const restored = restoreWithheld(root, files)
+  // Audit 6, N1. Killed between the record merge and the merge commit: the
+  // merge is half-done (merged files in the tree, MERGE_HEAD set) and its
+  // renames are not in the store yet. Abort it — the tree goes back to HEAD,
+  // which is what the held records were set aside from — and let this sync
+  // pull again; that pull merges and renames afresh.
+  if (gitSafe(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], root) !== null) gitSafe(['merge', '--abort'], root)
+  // Killed after the merge commit: its renames were saved with the held
+  // records before the commit, and the held records follow them as in an
+  // uninterrupted sync. Empty while a merge is still half-done.
+  const merged = readHeldMergeRenames(root)
+  const restored = restoreWithheld(root, files, merged)
+  if (merged.length > 0) {
+    recordIdRenames(root, merged, SYNC_MERGE_RENAME_REASON, { store: join(root, 'engrams.yaml'), cause: 'sync-recovery' })
+  }
   if (restored.renames.length > 0) {
     recordIdRenames(root, restored.renames, SYNC_HELD_RENAME_REASON,
       { store: join(root, 'engrams.yaml'), cause: 'sync-recovery', files: restored.rewrote })
@@ -890,10 +897,16 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType, mergeRenames:
       gitSafe(['merge', '--abort'], root)
       throw new Error('Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.')
     }
+    // Audit 6, N1: the renames are saved with the held records BEFORE the
+    // commit, so a process killed the moment the commit exists still has them
+    // on restart (`recoverHeld`). They take effect only once MERGE_HEAD is gone.
+    const heldNow = renames.length > 0 ? readHeldRecovery(root) : null
+    if (heldNow && heldNow.length > 0) writeHeldRecovery(root, heldNow, renames)
     stageStoreFiles(root)
     stageStripped(root, remoteType)
     const merged = gitSafe(['commit', '--no-edit', '-m', 'plur sync: merged both devices\' changes'], root)
     if (merged === null) {
+      if (heldNow && heldNow.length > 0) writeHeldRecovery(root, heldNow, null)
       gitSafe(['merge', '--abort'], root)
       return false
     }
@@ -989,7 +1002,10 @@ function mergeValue(base: unknown, ours: unknown, theirs: unknown, key?: string)
  * Records both sides added under one id are merged field by field — for
  * engrams, {@link renameLocalClashes} has already split genuine clashes apart.
  */
-function mergeRecordLists(base: unknown[], ours: unknown[], theirs: unknown[]): unknown[] {
+function mergeRecordLists(
+  base: unknown[], ours: unknown[], theirs: unknown[],
+  mergeOne: (base: unknown, ours: unknown, theirs: unknown) => unknown = mergeValue,
+): unknown[] {
   const keyOf = (r: unknown): string => {
     const id = (r as { id?: unknown } | null)?.id
     return typeof id === 'string' ? `id:${id}` : `content:${JSON.stringify(r) ?? ''}`
@@ -1003,7 +1019,7 @@ function mergeRecordLists(base: unknown[], ours: unknown[], theirs: unknown[]): 
     const inBase = b.has(k), inOurs = o.has(k)
     if (inBase && !inOurs) continue // this device deleted it
     if (!inOurs) { out.push(rt); continue }
-    const merged = mergeValue(inBase ? b.get(k) : undefined, o.get(k), rt)
+    const merged = mergeOne(inBase ? b.get(k) : undefined, o.get(k), rt)
     if (merged !== undefined) out.push(merged)
   }
   for (const [k, ro] of o) {
@@ -1052,15 +1068,12 @@ function renameLocalClashes(base: unknown[], ours: unknown[], theirs: unknown[])
  * store refers to a sibling record's id, so no reference has to follow.
  *
  * A review of the SAME engram pair is one review detected on both devices
- * (`recordTensions` keeps one record per pair), not a clash: it is still merged
- * field by field.
+ * (`recordTensions` keeps one record per pair), not a clash: it is merged by
+ * {@link mergeReview}, keeping the furthest lifecycle state.
  */
 function renameSiblingClashes(file: string, base: unknown[], ours: unknown[], theirs: unknown[]): unknown[] {
   const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
-  const pairOf = (r: unknown): string | null => {
-    const t = r as { engram_a?: unknown; engram_b?: unknown } | null
-    return typeof t?.engram_a === 'string' && typeof t?.engram_b === 'string' ? [t.engram_a, t.engram_b].sort().join(':') : null
-  }
+  const pairOf = reviewPairOf
   const baseIds = new Set(base.map(idOf).filter((x): x is string => typeof x === 'string'))
   const theirsById = new Map<string, unknown>()
   for (const r of theirs) { const id = idOf(r); if (typeof id === 'string') theirsById.set(id, r) }
@@ -1076,6 +1089,72 @@ function renameSiblingClashes(file: string, base: unknown[], ours: unknown[], th
     taken.add(to)
     return { ...(r as object), id: to }
   })
+}
+
+/** A review's unordered engram pair (`tensionPairKey` form), or null for a record that is not one. */
+function reviewPairOf(r: unknown): string | null {
+  const t = r as { engram_a?: unknown; engram_b?: unknown } | null
+  return typeof t?.engram_a === 'string' && typeof t?.engram_b === 'string' ? [t.engram_a, t.engram_b].sort().join(':') : null
+}
+
+type ReviewLifecycle = { status?: unknown; resolved_by?: unknown; resolved_at?: unknown }
+/** How far along `detected → confirmed → dismissed | resolved` a review is. A resolution retired a memory, so it outranks a dismissal. */
+const REVIEW_RANK: Record<string, number> = { detected: 0, confirmed: 1, dismissed: 2, resolved: 3 }
+const reviewRank = (r: unknown): number => REVIEW_RANK[String((r as ReviewLifecycle | null)?.status ?? 'detected')] ?? 0
+const lifecycleOf = (r: unknown) => {
+  const x = (r ?? {}) as ReviewLifecycle
+  return { status: x.status ?? 'detected', resolved_by: x.resolved_by ?? null, resolved_at: x.resolved_at ?? null }
+}
+
+/**
+ * Of two records of one review, the one whose lifecycle state stands (audit 6,
+ * N3): the furthest along, so a resolution (with its winner and time) or a
+ * dismissal is never reopened by the other device's detected/confirmed copy.
+ * Two different resolutions: the earlier one, then the smaller winner id — the
+ * same answer whichever device merges.
+ */
+function standingReview(x: unknown, y: unknown): unknown {
+  if (reviewRank(x) !== reviewRank(y)) return reviewRank(x) > reviewRank(y) ? x : y
+  const key = (r: unknown) => { const l = lifecycleOf(r); return `${l.resolved_at ?? '\uffff'}\0${l.resolved_by ?? ''}` }
+  return key(x) <= key(y) ? x : y
+}
+
+/** `record` with the lifecycle fields of `from`. */
+const withLifecycle = (record: unknown, from: unknown): unknown => ({ ...(record as object), ...lifecycleOf(from) })
+
+/** Field merge of one review record both devices changed; the lifecycle comes from {@link standingReview}. */
+function mergeReview(base: unknown, ours: unknown, theirs: unknown): unknown {
+  const merged = mergeValue(base, ours, theirs)
+  if (merged === undefined || reviewPairOf(ours) === null || reviewPairOf(ours) !== reviewPairOf(theirs)) return merged
+  return withLifecycle(merged, standingReview(ours, theirs))
+}
+
+/**
+ * One record per unordered memory pair (audit 6, N3; `recordTensions` keeps one
+ * locally). Two devices that detected the same pair under different daily ids
+ * hold one review twice. The merged list keeps one: the id already in the base,
+ * else the remote's (already published), else the first; its fields are that
+ * record's, its lifecycle the standing one of the group.
+ */
+function onePerReviewPair(list: unknown[], base: unknown[], theirs: unknown[]): unknown[] {
+  const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
+  const baseIds = new Set(base.map(idOf))
+  const theirIds = new Set(theirs.map(idOf))
+  const groups = new Map<string, unknown[]>()
+  for (const r of list) {
+    const pair = reviewPairOf(r)
+    if (pair !== null) groups.set(pair, [...(groups.get(pair) ?? []), r])
+  }
+  const out: unknown[] = []
+  for (const r of list) {
+    const pair = reviewPairOf(r)
+    const group = pair === null ? undefined : groups.get(pair)
+    if (!group || group.length === 1) { out.push(r); continue }
+    if (group[0] !== r) continue // emitted at the group's first position
+    const keep = group.find(x => baseIds.has(idOf(x))) ?? group.find(x => theirIds.has(idOf(x))) ?? group[0]
+    out.push(withLifecycle(keep, group.reduce((a, x) => standingReview(a, x))))
+  }
+  return out
 }
 
 /**
@@ -1149,7 +1228,10 @@ function mergeStoreRecords(root: string): IdRename[] {
       continue
     }
     const oursNow = renameSiblingClashes(file, b, map.size > 0 ? o.map(r => renameIdRefs(r, map)) : o, t)
-    write(file, yaml.dump(mergeRecordLists(b, oursNow, t), SIBLING_DUMP_OPTS))
+    const merged = file === 'tensions.yaml'
+      ? onePerReviewPair(mergeRecordLists(b, oursNow, t, mergeReview), b, t)
+      : mergeRecordLists(b, oursNow, t)
+    write(file, yaml.dump(merged, SIBLING_DUMP_OPTS))
   }
   return renames
 }

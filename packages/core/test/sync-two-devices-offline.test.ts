@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync } from 'child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import * as yaml from 'js-yaml'
@@ -257,3 +257,154 @@ describe('a renamed memory and the records held aside for privacy', () => {
     void dirA
   })
 })
+
+/**
+ * Audit 6, N1: the record merge renames device B's unpushed memory, and B's
+ * machine-local records (held aside during the pull) must follow that rename.
+ * In an uninterrupted sync the rename map is passed in memory. Here B's sync
+ * runs in a child process that is really killed (SIGKILL, no `finally`) at a
+ * point of the merge, through a `git` on PATH that kills its parent there:
+ * - during the record merge, before the rename map is saved;
+ * - after the map is saved, just before the merge commit;
+ * - right after the merge commit (the audit's reproduction).
+ * The next sync must leave every held reference naming B's memory.
+ */
+const SYNC_SRC = join(__dirname, '../src/sync.ts')
+const REAL_GIT = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+
+function killingGit(dir: string): string {
+  const bin = join(dir, 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'git'), `#!/bin/sh
+if [ -f .git/MERGE_HEAD ]; then
+  case "$KILL_AT:$1" in
+    before-map:add|before-commit:commit) kill -KILL $PPID; sleep 30 ;;
+    after-commit:commit) "${REAL_GIT}" "$@"; kill -KILL $PPID; sleep 30 ;;
+  esac
+fi
+exec "${REAL_GIT}" "$@"
+`, { mode: 0o755 })
+  return bin
+}
+
+for (const killAt of ['before-map', 'before-commit', 'after-commit'] as const) {
+  describe(`a sync killed during the merge that renames a memory (${killAt})`, () => {
+    it('the restart leaves every held reference on the renamed memory', { timeout: 120_000 }, async () => {
+      const { A, B, dirA, dirB, remote } = await twoDevices(['A shared base fact both devices start from'])
+      const a1 = await A.learn('Device A: the release train leaves on Thursdays', { scope: 'global' })
+      const b1 = await B.learn('Device B: the build cache lives in the shared bucket', { scope: 'global' })
+      expect(a1.id, 'precondition: both devices minted the same memory id').toBe(b1.id)
+      const local = await B.learn('Device B private note: the bucket key is in my keychain', { scope: 'local' })
+      const store = loadYaml(dirB, 'engrams.yaml')
+      store.engrams.find((e: any) => e.id === local.id).relations = { related: [b1.id] }
+      writeFileSync(join(dirB, 'engrams.yaml'), yaml.dump(store, { lineWidth: 120, noRefs: true }))
+      const ep = B.capture(`Private session about ${b1.id} and ${local.id}`)
+      await A.sync()
+
+      const bin = killingGit(tmp)
+      const script = join(tmp, 'child.mts')
+      writeFileSync(script, `const { sync } = await import(${JSON.stringify(SYNC_SRC)}); sync(${JSON.stringify(dirB)})\n`)
+      let death: any
+      try {
+        execFileSync(process.execPath, ['--import', 'tsx', script], {
+          cwd: join(__dirname, '..'), stdio: 'pipe', timeout: 60_000,
+          env: { ...process.env, KILL_AT: killAt, PATH: `${bin}:${process.env.PATH}` },
+        })
+      } catch (err) { death = err }
+      expect(death?.signal, 'the child sync was killed').toBe('SIGKILL')
+      expect(existsSync(join(dirB, '.git', 'plur-held.json')), 'held records are in the recovery file').toBe(true)
+      const subject = git(['log', '-1', '--format=%s'], dirB)
+      if (killAt === 'after-commit') expect(subject).toContain('merged both devices')
+      else expect(subject).not.toContain('merged both devices')
+
+      if (killAt === 'after-commit') {
+        // Before any restart, a reader already sees the held relation on B's memory.
+        const view = await open(dirB).getById(local.id)
+        const bView = (await open(dirB).list()).find(e => e.statement === b1.statement)!
+        expect(bView.id, 'the merge renamed B').not.toBe(b1.id)
+        expect((view as any)?.relations?.related, 'reader view of the held relation').toEqual([bView.id])
+      }
+
+      await open(dirB).sync()
+      await A.sync()
+      await open(dirB).sync()
+
+      const all = loadYaml(dirB, 'engrams.yaml').engrams as any[]
+      const bNow = all.find(e => e.statement === b1.statement)
+      const aNow = all.find(e => e.statement === a1.statement)
+      expect(aNow.id, 'the pushed memory keeps the id').toBe(a1.id)
+      expect(bNow.id, 'the unpushed memory was renamed').not.toBe(b1.id)
+      expect(all.filter(e => e.statement === b1.statement)).toHaveLength(1)
+      const localNow = all.find(e => e.id === local.id)
+      expect(localNow, 'the machine-local memory is back').toBeTruthy()
+      expect(localNow.relations?.related ?? [], 'local relation follows the rename').toEqual([bNow.id])
+      const episode = (loadYaml(dirB, 'episodes.yaml') as any[]).filter(e => e.id === ep.id)
+      expect(episode).toHaveLength(1)
+      expect(episode[0].summary, 'held episode follows the rename').toBe(`Private session about ${bNow.id} and ${local.id}`)
+      expect(existsSync(join(dirB, '.git', 'plur-held.json')), 'recovery finished').toBe(false)
+      expect(existsSync(join(dirB, '.git', 'MERGE_HEAD')), 'no merge left half-done').toBe(false)
+      const remoteText = ['engrams.yaml', 'episodes.yaml']
+        .map(f => { try { return git(['show', `main:${f}`], remote) } catch { return '' } }).join('\n')
+      expect(remoteText).not.toContain(local.statement)
+      expect(remoteText).not.toContain(local.id)
+      expect(remoteText).toContain(b1.statement)
+      expect(git(['rev-parse', 'HEAD'], dirA).trim()).toBe(git(['rev-parse', 'HEAD'], dirB).trim())
+    })
+  })
+}
+
+/**
+ * Audit 6, N3: both devices reviewed the SAME memory pair. That is one review:
+ * after syncing there is exactly one record for the unordered pair, and a
+ * terminal state (resolved with its winner and time, or dismissed) is never
+ * replaced by 'detected' or 'confirmed' from the other device.
+ */
+const pairReview = (id: string, x: string, y: string, status: string, extra: Record<string, unknown> = {}) => ({
+  id, engram_a: x, engram_b: y, statement_a: `statement of ${x}`, statement_b: `statement of ${y}`,
+  confidence: 0.9, reason: 'they disagree', detected_at: '2026-10-20T10:00:00.000Z', status,
+  resolved_by: null, resolved_at: null, category: 'factual', ...extra,
+})
+
+const COMBOS = [['resolved', 'detected'], ['resolved', 'confirmed'], ['dismissed', 'detected'], ['dismissed', 'confirmed'], ['confirmed', 'detected']] as const
+
+for (const order of ['A first', 'B first'] as const) {
+  for (const ids of ['same id', 'different ids'] as const) {
+    describe(`two devices reviewed the same pair (${order}, ${ids})`, () => {
+      it('one record per pair survives and keeps the most advanced state', { timeout: 120_000 }, async () => {
+        // One pair of memories per state combination; device A holds the first state.
+        const { dirA, dirB, ids: m } = await twoDevices(COMBOS.flatMap((_, i) => [
+          `Pair ${i} memory one: the gateway times out after ${i + 1}0 seconds`,
+          `Pair ${i} memory two: the gateway times out after ${i + 1}5 seconds`,
+        ]))
+        const resolvedAt = '2026-10-20T11:00:00.000Z'
+        const onA: unknown[] = [], onB: unknown[] = []
+        COMBOS.forEach(([stA, stB], i) => {
+          const [x, y] = [m[2 * i], m[2 * i + 1]]
+          const n = (k: number) => `T-2026-1020-${String(k).padStart(3, '0')}`
+          onA.push(pairReview(n(i + 1), x, y, stA, stA === 'resolved' ? { resolved_by: y, resolved_at: resolvedAt } : {}))
+          // B saw the pair in the reverse order.
+          onB.push(pairReview(ids === 'same id' ? n(i + 1) : n(i + 1 + COMBOS.length), y, x, stB))
+        })
+        writeFileSync(join(dirA, 'tensions.yaml'), yaml.dump(onA, { lineWidth: 120, noRefs: true }))
+        writeFileSync(join(dirB, 'tensions.yaml'), yaml.dump(onB, { lineWidth: 120, noRefs: true }))
+        const [first, second] = order === 'A first' ? [dirA, dirB] : [dirB, dirA]
+        await open(first).sync()
+        await open(second).sync()
+        await open(first).sync()
+        for (const [name, dir] of [['A', dirA], ['B', dirB]] as const) {
+          const reviews = open(dir).listTensions()
+          expect(reviews, `${name}: one record per pair (${JSON.stringify(reviews)})`).toHaveLength(COMBOS.length)
+          COMBOS.forEach(([stA], i) => {
+            const key = [m[2 * i], m[2 * i + 1]].sort().join(':')
+            const ofPair = reviews.filter(r => [r.engram_a, r.engram_b].sort().join(':') === key)
+            expect(ofPair, `${name}: pair ${i}`).toHaveLength(1)
+            expect(ofPair[0].status, `${name}: pair ${i} state`).toBe(stA)
+            expect(ofPair[0].resolved_by).toBe(stA === 'resolved' ? m[2 * i + 1] : null)
+            expect(ofPair[0].resolved_at).toBe(stA === 'resolved' ? resolvedAt : null)
+          })
+        }
+        expect(git(['rev-parse', 'HEAD'], dirA).trim()).toBe(git(['rev-parse', 'HEAD'], dirB).trim())
+      })
+    })
+  }
+}
