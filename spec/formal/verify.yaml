@@ -4,6 +4,10 @@ libraries: [PlurSpec]
 allowed_axioms: [propext, Classical.choice, Quot.sound]
 strict_drift: false   # true: a stale model fails CI instead of warning
 models:
+  - model: PlurSpec/ServerDiagnostics.lean
+    covers:
+      - packages/core/src/index.ts
+      - packages/core/src/store/remote-store.ts
   - model: PlurSpec/WritePath.lean
     covers:
       - packages/core/src/session-scopes.ts
