@@ -3622,9 +3622,19 @@ function getAllToolDefinitions(): ToolDefinition[] {
         } else {
           checks.push({ check: 'folder map', ok: true, detail: 'folders.yaml is readable (or absent: no decisions yet)' })
         }
+        const server_stores = await plur.checkServerStores().catch(() => [{
+          url: 'configuration', ok: false,
+          checks: [{ name: 'reachable', result: 'could-not-check', detail: 'server diagnostics could not be completed' }],
+        }])
+        for (const server of server_stores) for (const c of server.checks) {
+          checks.push({ check: `server ${server.url}: ${c.name}`, ok: c.result === 'ok', result: c.result,
+            detail: `${c.result === 'could-not-check' ? 'could not check: ' : ''}${c.detail}` })
+        }
+        if (server_stores.some(s => !s.ok)) remediation.push('Resolve the failed or unavailable server checks above; run plur-enterprise init to repair sign-in or refresh setup.')
         return {
           ok: checks.every(c => c.ok),
           checks,
+          server_stores,
           ...folderMap,
           embedder: {
             before_probe: before,
@@ -3632,7 +3642,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           },
           capabilities: canaryStatuses,
           tool_surface,
-          remediation: remediation.length > 0 ? remediation : ['All checks passed — PLUR is healthy.'],
+          remediation: remediation.length > 0 ? remediation : [checks.every(c => c.ok) ? 'All checks passed — PLUR is healthy.' : 'Resolve the failed checks above.'],
         }
       },
     },
