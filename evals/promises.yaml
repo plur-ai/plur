@@ -538,25 +538,6 @@ capabilities:
     today: holds
     evidence: 'evals/episodes EPI-2, through MCP: event summaries read back from plur_timeline are passed to plur_ingest with extract_only; it returns candidates and saved=false, and no file in the store changes (hash snapshot of the whole tree), the memory count is unchanged and no candidate is found by search. Control: without extract_only the same extraction saves. 2 planted bugs: EPI-2-1, EPI-2-2 killed.'
 
-# Promises retired on purpose: the meaning changed, so the id did (evals/README.md).
-# Only a retired id may leave the baseline (gate.py --base).
-retired:
-- id: PRV-5
-  replaced_by: PRV-6
-  date: '2026-10-17'
-  reason: 'Owner decision on the 2026-10-17 board: a team-scoped memory is shared unless marked private; safety rests on server-side review-by-default and the save line saying where each memory went. The old promise (kept local until cleared) is no longer what PLUR promises.'
-- id: INJ-3
-  replaced_by: INJ-6
-  date: '2026-10-17'
-  reason: 'Independent audit A-01: ''always given'' cannot hold for any number of pins under a finite space limit. INJ-6 promises priority within the space and names any pinned memory left out. The INJ-3 checks are kept inside the INJ-6 eval.'
-- id: LRN-3
-  replaced_by: LRN-7
-  date: '2026-10-17'
-  reason: 'Owner decision 2026-10-17: duplicate handling is promised only with an AI checker configured; similarity-score ranking (AUC) is a diagnostic, not a decision (audit D-01). Measurement kept at evals/diagnostics/learn_duplicate_score_auc.test.ts.'
-- id: TOOL-2
-  replaced_by: TOOL-4
-  date: '2026-10-17'
-  reason: The promise said 'my client still asks me first', which PLUR cannot guarantee (audit rewording 6). TOOL-4 promises the marking and the gateway refusal, finds every deleting tool from the handlers, and says moving a memory between scopes is not overwriting.
 
 - key: enterprise_install
   name: Installing and using team memory
@@ -627,3 +608,23 @@ retired:
     kind: deterministic
     today: unknown
     evidence: New enterprise installation eval; execution and planted-bug proof pending.
+
+# Promises retired on purpose: the meaning changed, so the id did (evals/README.md).
+# Only a retired id may leave the baseline (gate.py --base).
+retired:
+- id: PRV-5
+  replaced_by: PRV-6
+  date: '2026-10-17'
+  reason: 'Owner decision on the 2026-10-17 board: a team-scoped memory is shared unless marked private; safety rests on server-side review-by-default and the save line saying where each memory went. The old promise (kept local until cleared) is no longer what PLUR promises.'
+- id: INJ-3
+  replaced_by: INJ-6
+  date: '2026-10-17'
+  reason: 'Independent audit A-01: ''always given'' cannot hold for any number of pins under a finite space limit. INJ-6 promises priority within the space and names any pinned memory left out. The INJ-3 checks are kept inside the INJ-6 eval.'
+- id: LRN-3
+  replaced_by: LRN-7
+  date: '2026-10-17'
+  reason: 'Owner decision 2026-10-17: duplicate handling is promised only with an AI checker configured; similarity-score ranking (AUC) is a diagnostic, not a decision (audit D-01). Measurement kept at evals/diagnostics/learn_duplicate_score_auc.test.ts.'
+- id: TOOL-2
+  replaced_by: TOOL-4
+  date: '2026-10-17'
+  reason: The promise said 'my client still asks me first', which PLUR cannot guarantee (audit rewording 6). TOOL-4 promises the marking and the gateway refusal, finds every deleting tool from the handlers, and says moving a memory between scopes is not overwriting.
