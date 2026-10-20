@@ -882,3 +882,7 @@ checks, trust admission, and the previous hello's active state are unchanged. -/
 
 /-! 2026-10-20: A local hello marked demoted now names the privacy refusal.
 It still fails the server proof; routing, admission and recall are unchanged. -/
+
+/-! 2026-10-20: Sensitive device labels are omitted from generated hello text.
+This formatting does not exempt usernames or the full statement from privacy
+checks and does not change the save/recall proof conditions above. -/

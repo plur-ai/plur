@@ -60,3 +60,8 @@ no privacy rule, routing decision, or success condition changes. -/
 diagnostic rather than a connection failure. Refusal still leaves setup
 incomplete, retains the accepted hello/key and pending write checks, and never
 includes raw cleanup/parser details. Rollback and proof predicates are unchanged. -/
+
+/-! 2026-10-20: Hello formatting replaces a device label flagged by the existing
+sensitivity detector with "private device". Sign-in metadata retains the original
+label. The complete statement still passes through the existing privacy guard;
+server-save and recall evidence remain required for success. -/
