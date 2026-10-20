@@ -3,8 +3,10 @@
 
 GitScope proves the pure mapping. This model covers its admission into folder
 policy and the captured default used by writes and remote recall. `guarded`
-represents off, remote-only, malformed/untrusted maps, explicit ask, or an
-existing scope. Such policies never reach the git reader. Local/unknown means
+represents off, remote-only, malformed/untrusted maps, explicit ask, an
+existing scope, or a folder that is the home directory, a filesystem root or an
+ancestor of home, or that lies in a repository rooted at one of those (rule 5:
+those keep asking). Such policies never reach the git reader. Local/unknown means
 local, never auto-routing. Explicit call and session choices still win.
 
 Git execution, canonicalization and cache invalidation are integration-tested;
@@ -131,3 +133,11 @@ These transition invariants still hold; status precedence is in SaveDestination.
 add presentation/diagnostic metadata only. Existing admission, persistence and
 write rules are unchanged. SaveDestination.SessionStatusAdapter models workspace
 status selection; real hook and stdio tests check adapter integration. -/
+
+/-! 2026-10-20 (#1690 review): the home directory, a filesystem root and an
+ancestor of home are guarded, and so is every folder in a repository rooted at
+one of them, so a mapped dotfiles checkout in $HOME keeps the ask default for
+home and everything under it that has no repository of its own. The opencode adapter now binds each resolved policy
+(`bindFolderPolicy`, or `bindFolderUnresolved` when resolution throws), as the
+CLI hooks and the MCP server do, so `mayDial none none .local = false` holds for
+its recalls as well. -/

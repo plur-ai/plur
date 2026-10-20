@@ -66,6 +66,29 @@ describe('git-origin folder defaults', () => {
     expect(policy()).toMatchObject({ mode: 'on', git: { kind: 'unknown', reason: 'cache-stale' } })
     expect(policy().scope).toBeUndefined()
   })
+  it('the home directory, its ancestors and a filesystem root keep asking even when they are mapped repositories', () => {
+    const read = vi.fn(origin)
+    for (const dir of [home, join(home, '..'), '/']) {
+      const decided = resolveFolderPolicy(dir, { root, home, gitScopes: [source], readOrigin: read })
+      expect(decided, dir).toMatchObject({ mode: 'ask', source: 'default' })
+      expect(decided.scope, dir).toBeUndefined()
+    }
+    expect(read).not.toHaveBeenCalled()
+    expect(policy()).toMatchObject({ mode: 'on', source: 'git', scope })
+  })
+  it('a folder under a home that is itself a Git repository does not inherit the home origin', () => {
+    // A dotfiles checkout: home is the repository, the subfolder has no .git of its own.
+    execFileSync('git', ['init', '-q', home])
+    const notes = join(home, 'Documents', 'notes')
+    mkdirSync(notes, { recursive: true })
+    const read = vi.fn(origin)
+    expect(resolveFolderPolicy(notes, { root, home, gitScopes: [source], readOrigin: read }))
+      .toMatchObject({ mode: 'ask', source: 'default' })
+    expect(read).not.toHaveBeenCalled()
+    // A repository of its own under that home still gets its default.
+    execFileSync('git', ['init', '-q', repo])
+    expect(policy()).toMatchObject({ mode: 'on', source: 'git', scope })
+  })
   it('non-repositories and installations without server entries still ask', () => {
     expect(policy(() => ({ kind: 'not-git' })).mode).toBe('ask')
     const read = vi.fn(origin)
