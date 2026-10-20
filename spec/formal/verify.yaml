@@ -4,6 +4,12 @@ libraries: [PlurSpec]
 allowed_axioms: [propext, Classical.choice, Quot.sound]
 strict_drift: false   # true: a stale model fails CI instead of warning
 models:
+  - model: PlurSpec/LegacyProjectCleanup.lean
+    covers:
+      - packages/cli/src/lib/legacy-plur-yaml.ts
+      - packages/cli/src/commands/hook-inject.ts
+      - packages/cli/src/commands/hook-codex-session-start.ts
+      - packages/cli/src/commands/hook-cursor-session-start.ts
   - model: PlurSpec/WorkspaceChoice.lean
     covers:
       - packages/cli/src/lib/folder-gate.ts

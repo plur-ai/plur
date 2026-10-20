@@ -8,6 +8,7 @@ import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project
 import { recordInjected } from '../lib/auto-rate.js'
 import { recordHookRun } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
+import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 
 /**
  * plur hook-cursor-session-start — Cursor `sessionStart` hook.
@@ -113,6 +114,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // remote-only: core reads only the team scope (dialled, even from this
     // keyword-only inject) and packs, never the personal store.
     bindHookFolder(plur, dir, policy)
+    const legacyLines = cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
     const projectRemote = resolveProjectRemote(plur, dir)
     const projectConfig = sessionSettings(policy, projectRemote.config)
     const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
@@ -144,6 +146,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // remote-only: where memory goes, and that the team server did not answer.
       ...remoteOnlyLines(plur, result, true),
       ...await cachedServerLines(plur, dir, policy),
+      ...legacyLines,
     ].join('\n')
 
     // A refused .plur.yaml is still worth saying: the user's scope routing is

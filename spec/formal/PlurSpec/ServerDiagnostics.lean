@@ -61,3 +61,7 @@ core admission; the legacy workspaceFolderScope result is unchanged. Explicit
 choices retain routing and authorization. Recall adds the admitted root orgs
 to dialing context, without widening the authorization filter or remote-only
 binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/
