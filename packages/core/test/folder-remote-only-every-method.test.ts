@@ -158,6 +158,7 @@ describe('every public Plur method in a remote-only folder', () => {
       coveringTrustedAncestor: [work], resolveFolderPolicy: [work], remoteOnlyFolder: [], listFolders: [],
       gitScopeSources: [], folderDefaultScope: [work],
       serverSessionLines: [work], checkServerStores: [{ timeoutMs: 100 }],
+      listUploadCandidates: [[TEAM]], uploadLocal: [[pid]],
       setFolder: [join(base, 'elsewhere'), { mode: 'off' }], removeFolder: [join(base, 'elsewhere')],
       issueFolderNonce: ['s1', join(base, 'elsewhere'), { mode: 'on' }], endFolderNonceSession: ['s1'],
       autoDiscoverStores: [work], listStores: [], listStoresAsync: [], warmRemoteCaches: [], getWritableRemoteScopes: [],
@@ -189,6 +190,7 @@ describe('every public Plur method in a remote-only folder', () => {
     // id, a local scope, or a personal-store operation). Every other method
     // must not be refused: a wrong refusal is a failure too.
     const MUST_REFUSE = new Set([
+      "listUploadCandidates", "uploadLocal",
       'capture', 'episodeToEngram', 'saveMetaEngrams', 'exportPack', 'recordTensions', 'confirmTension',
       'dismissTension', 'resolveTension', 'purgeTensions', 'compact', 'reindex', 'reindexAsync', 'sync',
       'feedback', 'setPinned', 'setPinnedAsync', 'updateEngram', 'updateEngramAsync', 'forget', 'rescope',

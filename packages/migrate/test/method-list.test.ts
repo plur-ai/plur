@@ -109,6 +109,8 @@ const ALWAYS_ASYNC = new Set([
   'registerEnterpriseServer',
   // Born async: read-only server diagnostics perform bounded HTTP probes.
   'checkServerStores',
+  // Born async: explicit upload reads and writes through the async store seam.
+  'listUploadCandidates', 'uploadLocal',
   // Born async: cached session status reads through the async outbox store.
   'serverSessionLines',
 ])
