@@ -99,7 +99,8 @@ describe('TOOL-3 unsent team memories are reported, never a silent success', () 
     expect(start.isError, `session start failed outright: ${start.text}`).toBe(false)
     expect(await s.plur.outboxCount(), 'precondition: the retry could not send them').toBe(2)
     const outbox = start.json?.outbox
-    const pendingSaid = outbox?.pending ?? start.json?.outbox_needs_action?.count
+    // A missing count is "nothing said": 0, so it fails as an assertion, not a type error.
+    const pendingSaid = Number(outbox?.pending ?? start.json?.outbox_needs_action?.count ?? 0)
     expect(pendingSaid,
       `session start retried the queue, could not send, and did not say so; it read: ${start.text.slice(0, 600)}`)
       .toBeGreaterThan(0)
