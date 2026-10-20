@@ -1,6 +1,7 @@
 import type { Engram, Association } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { LoadedPack } from './engrams.js'
+import { legacyPackEngramId } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } from './decay.js'
 import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
@@ -1035,6 +1036,27 @@ export function selectAndSpread(
     }
   }
 
+  // A pack row also answers, for spreading, to the id it had under the earlier
+  // pack-id scheme: my memories' relations saved before the upgrade still name
+  // it that way. Only when no row carries that id exactly and exactly one pack
+  // row answers to it (two packs once shared such an id; then it names neither).
+  {
+    const exactIds = new Set<string>(personalEngrams.map(e => e.id))
+    const legacyRows = new Map<string, string[]>()
+    for (const pack of packs) {
+      for (const engram of pack.engrams) {
+        exactIds.add(engram.id)
+        const legacy = legacyPackEngramId(engram.id, pack.manifest.name)
+        if (legacy) legacyRows.set(legacy, [...(legacyRows.get(legacy) ?? []), engram.id])
+      }
+    }
+    for (const [legacy, ids] of legacyRows) {
+      if (ids.length !== 1 || exactIds.has(legacy)) continue
+      const row = engramMap.get(ids[0])
+      if (row) engramMap.set(legacy, row)
+    }
+  }
+
   // Step 3: Normalize keyword_match to [0,10] (all scored engrams, not yet filtered)
   const maxKm = Math.max(...scored.map(e => e.keyword_match), 1)
   for (const e of scored) {
@@ -1252,6 +1274,8 @@ export function selectAndSpread(
       if (visited.has(assoc.target)) continue
 
       const target = engramMap.get(assoc.target)
+      // Reached under an earlier pack id (see the alias above) but already in.
+      if (target && visited.has(target.id)) continue
       if (!target) {
         if (scopeExcludedIds.has(assoc.target)) continue
         if (nonActiveIds.has(assoc.target)) droppedRetired++
@@ -1287,6 +1311,7 @@ export function selectAndSpread(
       spreadCandidates.push(spreadEngram)
       spreadTokens += cost
       visited.add(assoc.target)
+      visited.add(target.id)
     }
   }
 

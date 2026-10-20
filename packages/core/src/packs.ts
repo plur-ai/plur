@@ -1117,6 +1117,12 @@ export async function previewPack(source: string): Promise<PreviewResult> {
 export interface InstallResult {
   installed: number
   name: string
+  /**
+   * Directories of other copies of this same pack that this install removed:
+   * copies the earlier collision bug installed beside it (see
+   * `staleCollisionCopies`). Empty when there were none.
+   */
+  superseded: string[]
   conflicts: ConflictItem[]
   security: PrivacyScanResult
   registry: RegistryEntry
@@ -1464,6 +1470,10 @@ function _installPackDir(
   // on a case-insensitive filesystem: the swap below then keeps that name and
   // the registry row follows the directory (audit of #1230, finding 2).
   const destDir = resolveInside(packsDir, onDiskEntryName(packsDir, sourceName), 'install')
+  // Copies of this same pack that the earlier collision bug left beside the
+  // one being upgraded. Decided now, from the registry as it was before this
+  // install rewrites the target's row; removed only after the swap succeeds.
+  const obsoleteCopies = staleCollisionCopies(packsDir, path.basename(destDir), manifestName)
 
   // STAGE the whole install, then swap it in (#813, audit finding 12).
   //
@@ -1602,8 +1612,27 @@ function _installPackDir(
   }
   addToRegistry(packsDir, registryEntry)
 
+  // One authoritative installation: the copies found above are removed with
+  // their registry rows, each moved aside first so a reader never loads a
+  // half-deleted pack. A failure is reported, not hidden; the new version is
+  // already in place either way.
+  const superseded: string[] = []
+  for (const dir of obsoleteCopies) {
+    const live = path.join(packsDir, dir)
+    const aside = `${live}.replacing-${process.pid}-${Date.now()}`
+    try {
+      fs.renameSync(live, aside)
+      removeFromRegistry(packsDir, dir, manifestName)
+      fs.rmSync(aside, { recursive: true, force: true })
+      superseded.push(dir)
+    } catch (err) {
+      logger.warning(`installPack: could not remove the obsolete copy of '${manifestName}' in ${dir}: ${(err as Error).message}`)
+    }
+  }
+
   return {
     installed: newEngrams.length,
+    superseded,
     name: sourceName,
     conflicts,
     security: preview.security,
@@ -1721,6 +1750,44 @@ function pickInstallDirName(
     const candidate = `${base}-${n}`
     if (accepts(candidate)) return candidate
   }
+}
+
+/**
+ * Other installed copies of the pack being installed into `target` that the
+ * earlier collision bug left behind, which this install supersedes.
+ *
+ * The bug: a pack displaced by a collision (its source folder `pack` was taken
+ * by another pack, so it went to `beta` or `pack-2`) was installed a SECOND
+ * time into `pack` once that came free. Its fingerprint is in the registry: a
+ * row whose directory is not the one its own source asked for, while that
+ * asked-for directory holds the same pack. So a directory with the same
+ * manifest name is obsolete when either
+ *   - its row says it was displaced from `target` (it wanted `target`), or
+ *   - the target's row says the target was displaced from it.
+ *
+ * Kept, always: a pack with a different manifest name; a copy with no `dir`
+ * row (nothing records where it came from); a copy installed from a URL (no
+ * asked-for directory is recorded); and a copy that sits in the directory its
+ * own source asked for, which is how two installations made on purpose from
+ * differently named sources look. The current installer never creates the
+ * displaced-plus-original pair itself (it upgrades an existing copy in place),
+ * so the pair only comes from the old bug or from copying by hand.
+ */
+function staleCollisionCopies(packsDir: string, target: string, manifestName: string | undefined): string[] {
+  if (!manifestName) return []
+  let entries: RegistryEntry[]
+  try { entries = loadRegistry(packsDir) } catch { return [] }
+  const askedFor = (dir: string): string | undefined => {
+    const row = entries.find(e => e.dir === dir)
+    if (!row || typeof row.source !== 'string' || isPackUrl(row.source)) return undefined
+    const raw = path.basename(row.source)
+    const name = row.name?.trim()
+    const wanted = raw === FLAT_ARCHIVE_DIRNAME && name && /^[A-Za-z0-9._-]+$/.test(name) ? name : raw
+    return wanted === dir ? undefined : wanted
+  }
+  const targetWanted = askedFor(target)
+  return installedDirsNamed(packsDir, manifestName).filter(dir =>
+    dir !== target && (askedFor(dir) === target || targetWanted === dir))
 }
 
 /** Directories in `packsDir` holding a pack whose manifest name is `manifestName`, sorted. */

@@ -1159,9 +1159,51 @@ export function packEngramId(id: string, packName: string): string {
  */
 function packIdSlug(packName: string): string {
   if (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(packName)) return packName
-  const slug = packName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pack'
   const digest = createHash('sha256').update(packName).digest('hex').slice(0, 12)
-  return `${slug}--${digest}`
+  return `${legacyPackIdSlug(packName)}--${digest}`
+}
+
+/** The pack-name part pack ids had before {@link packIdSlug}: the name lowered to a slug, nothing more. */
+function legacyPackIdSlug(packName: string): string {
+  return packName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pack'
+}
+
+/**
+ * The id a pack row had under the earlier pack-id scheme (lowered name, no
+ * digest), given the row's current pack id. Null when the two schemes agree,
+ * which is every pack whose name is already in slug form.
+ *
+ * Ids of the earlier form were handed out (lookups, my memories' relations,
+ * receipts) and are not rewritten anywhere, so readers resolve them with
+ * {@link matchLegacyPackId}.
+ */
+export function legacyPackEngramId(packRowId: string, packName: string): string | null {
+  const current = `-pack-${packIdSlug(packName)}`
+  const legacy = `-pack-${legacyPackIdSlug(packName)}`
+  if (current === legacy) return null
+  const original = packRowId.endsWith(current) ? packRowId.slice(0, -current.length) : packRowId
+  return original.endsWith(legacy) ? original : `${original}${legacy}`
+}
+
+/**
+ * The one pack row an id of the earlier pack-id form names, or null.
+ *
+ * Only for an id NO loaded row carries exactly: a current id always wins, so
+ * the slug-form pack `release-rules`, whose id never changed, keeps
+ * `…-pack-release-rules` even beside a `Release Rules` pack that had the same
+ * id before. When two pack rows answer to one earlier id (`Release Rules` and
+ * `release_rules` both lowered to `release-rules`), it names neither: that id
+ * was already shared by both packs, and picking one would hand out the other
+ * pack's text under it.
+ */
+export function matchLegacyPackId<T extends { id: string }>(
+  rows: ReadonlyArray<{ row: T; pack: string }>,
+  id: string,
+): T | null {
+  if (!id.includes('-pack-')) return null
+  if (rows.some(r => r.row.id === id)) return null
+  const hits = rows.filter(r => legacyPackEngramId(r.row.id, r.pack) === id)
+  return hits.length === 1 ? hits[0].row : null
 }
 
 /**
