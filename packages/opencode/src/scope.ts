@@ -1,6 +1,6 @@
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { projectRemoteRefusalNotice as coreRefusalNotice, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
+import { projectRemoteRefusalNotice as coreRefusalNotice, formatServerSessionLine, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
 
 /**
  * Which path this session's memory is scoped by.
@@ -147,6 +147,7 @@ export function resolveTrustedScope(
 /** The subset of `Plur` the folder decision needs. */
 export interface FolderPolicySource {
   resolveFolderPolicy(dir: string): FolderPolicy
+  bindFolderPolicy(dir: string, policy: FolderPolicy): void
 }
 
 /**
@@ -158,9 +159,18 @@ export interface FolderPolicySource {
  */
 export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
   try {
-    return plur.resolveFolderPolicy(dir)
+    const policy = plur.resolveFolderPolicy(dir)
+    // Both adapters use this decision before recall and learning. Admission
+    // without binding would let always-dial stores bypass Git's local default.
+    plur.bindFolderPolicy(dir, policy)
+    if (policy.mode === 'on' && policy.git?.kind === 'unknown') {
+      warn(formatServerSessionLine({ host: '', status: 'ok', target: policy.git, keyExpiresAt: null }))
+    }
+    return policy
   } catch (err) {
     warn(`folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); memory is off here.`)
-    return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
+    const failed: FolderPolicy = { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
+    try { plur.bindFolderPolicy(dir, failed) } catch { /* admission still refuses memory */ }
+    return failed
   }
 }

@@ -59,6 +59,34 @@ def mayDial (explicit session : Option Nat) (git : Default) : Bool :=
 
 theorem local_no_remote : mayDial none none .local = false := rfl
 
+/- 2026-10-20: OpenCode now binds the exact resolved policy before either
+adapter recalls or learns. Binding/resolution failures refuse admission.
+Implicit Git defaults also preserve home/root ask decisions. -/
+def implicitDefault (broadPath explicitOn sources : Bool) (origin : Default) : Default :=
+  applyOrigin (broadPath && !explicitOn) sources .absent origin
+
+theorem home_requires_decision (sources : Bool) (origin : Default) :
+    implicitDefault true false sources origin = .absent := by
+  simp [implicitDefault, applyOrigin]
+
+theorem explicit_home_keeps_project (scope : Nat) :
+    implicitDefault true true true (.project scope) = .project scope := rfl
+
+def adapterMayDial (bound : Bool) (resolved : Default) : Bool :=
+  bound && mayDial none none resolved
+
+theorem adapter_binding_required (resolved : Default) :
+    adapterMayDial false resolved = false := rfl
+
+theorem adapter_local_never_dials (bound : Bool) :
+    adapterMayDial bound .local = false := by cases bound <;> rfl
+
+theorem adapter_mapped_dials (scope : Nat) :
+    adapterMayDial true (.project scope) = true := rfl
+
+-- Before binding, the default absent instance could dial an always store.
+example : mayDial none none .absent = true ∧ adapterMayDial true .local = false := by decide
+
 def capturedWrite (captured _current : Default) (automatic : Nat) : Nat :=
   writeScope none none captured automatic
 

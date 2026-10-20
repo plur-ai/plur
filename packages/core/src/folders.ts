@@ -838,6 +838,9 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   // ask, or a remote-only choice; legacy trusted settings keep precedence.
   if (!opts.gitScopes?.length || policy.scope || policy.reason ||
     !(policy.mode === 'on' || (policy.mode === 'ask' && policy.source === 'default'))) return policy
+  // A dotfiles repository must not implicitly activate the whole home (or
+  // its ancestors). An explicit on/marker decision still keeps precedence.
+  if (policy.mode === 'ask' && policy.source === 'default' && coversHomeOrRoot(dir, opts.home)) return policy
   const git = gitDefaultScope(dir, opts.gitScopes, { read: opts.readOrigin })
   if (git.kind === 'not-git') return policy
   return { ...policy, mode: 'on', source: 'git', git, ...(git.kind === 'scope' ? { scope: git.scope } : {}) }
