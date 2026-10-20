@@ -1,10 +1,11 @@
 --- a/packages/opencode/src/scope.ts
 +++ b/packages/opencode/src/scope.ts
-@@ -174,6 +174,6 @@
-     plur.bindFolderUnresolved(dir, why)
-     return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
-   }
--  plur.bindFolderPolicy(dir, policy)
-+  // Regression: resolve the policy without binding it.
-   return policy
- }
+@@ -167,7 +167,7 @@
+ export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
+   try {
+     const policy = plur.resolveFolderPolicy(dir)
+-    plur.bindFolderPolicy(dir, policy)
++    // Regression: resolve the policy without binding it.
+     if (policy.mode === "on" && policy.git?.kind === "unknown") {
+       warn(formatServerSessionLine({ host: "", status: "ok", target: policy.git, keyExpiresAt: null }))
+     }
