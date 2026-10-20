@@ -37,6 +37,11 @@ gives an entry whose url is not http(s) an empty identity and no scopes: such a 
 add a freshness `problem`, which `problem_unknown` already covers. `sameGitlab` now also refuses
 a `gitlab_host` whose port is outside 1-65535: a narrower `same r g` oracle, which every theorem
 already quantifies over.
+
+Checked 2026-10-20: `findGitRoot` is now exported for the folder policy's home/root
+boundary check. Its implementation and `gitDefaultScope` are unchanged, so the origin
+input abstraction and theorems above still apply. The admission boundary is modeled
+separately in `PlurSpec.GitFolder`.
 -/
 
 set_option linter.unusedSimpArgs false

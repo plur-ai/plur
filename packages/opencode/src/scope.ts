@@ -1,6 +1,6 @@
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { projectRemoteRefusalNotice as coreRefusalNotice, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
+import { projectRemoteRefusalNotice as coreRefusalNotice, formatServerSessionLine, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
 
 /**
  * Which path this session's memory is scoped by.
@@ -165,15 +165,17 @@ export interface FolderPolicySource {
  * instance; an unbound one would dial with the policy switched `on`.
  */
 export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
-  let policy: FolderPolicy
   try {
-    policy = plur.resolveFolderPolicy(dir)
+    const policy = plur.resolveFolderPolicy(dir)
+    plur.bindFolderPolicy(dir, policy)
+    if (policy.mode === "on" && policy.git?.kind === "unknown") {
+      warn(formatServerSessionLine({ host: "", status: "ok", target: policy.git, keyExpiresAt: null }))
+    }
+    return policy
   } catch (err) {
     const why = (err as Error)?.message ?? String(err)
     warn(`folder map: could not resolve ${dir} (${why}); memory is off here.`)
-    plur.bindFolderUnresolved(dir, why)
-    return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
+    try { plur.bindFolderUnresolved(dir, why) } catch { /* admission still refuses memory */ }
+    return { mode: "ask", remoteAllowed: false, source: "default", reason: "resolver-error" }
   }
-  plur.bindFolderPolicy(dir, policy)
-  return policy
 }
