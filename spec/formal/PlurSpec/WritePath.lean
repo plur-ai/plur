@@ -1762,3 +1762,9 @@ requests, strict permission evidence, and explicit missing-evidence failures.
 They do not change grants, memory, queue delivery or file permissions. Existing
 write/routing invariants hold; ServerDiagnostics models report aggregation.
 The discovery clock-skew constant is exported without changing its value. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/

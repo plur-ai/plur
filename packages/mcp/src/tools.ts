@@ -163,6 +163,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       // slot the last-started session owns. #1566: with no session default
       // of its own, the workspace's scope — the one resolver writes use.
       session: await _readSession(args, plur),
+      context_scopes: await _readContextScopes(args),
     })
     const results = kwMeta.engrams
     const response: Record<string, unknown> = {
@@ -226,6 +227,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     // scope filter is passed. Same rule as writes (E7, formal R2), and the
     // same workspace scope when the session has no default (#1566).
     session: await _readSession(args, plur),
+    context_scopes: await _readContextScopes(args),
   })
   // Opt-in, content-free engagement counter (default-off; no query text).
   recordTelemetry('recall')
@@ -911,7 +913,7 @@ export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
  * also means no scope.
  */
 export interface FolderScopeContext {
-  resolve(): Promise<{ scope: string | null; key: string } | null>
+  resolve(): Promise<{ scope: string | null; key: string; roots?: Array<{ root: string; scope: string | null }> } | null>
   /** Cached status for the policy admitted by the gate, never process cwd. */
   serverStatus?(explicitScope?: string): Promise<string[]>
   /**
@@ -920,7 +922,26 @@ export interface FolderScopeContext {
    * which re-reads the roots at the moment the write is admitted. Absent
    * when the call was not gated: reads then use resolve().
    */
-  admitted?(): { scope: string | null; key: string } | null
+  admitted?(): { scope: string | null; key: string; roots?: Array<{ root: string; scope: string | null }> } | null
+}
+
+class RootsDisagreeError extends Error {
+  readonly refusal: { saved: false; refused: 'roots-disagree'; choices: string[]; message: string }
+  constructor(roots: Array<{ root: string; scope: string | null }>) {
+    const choices = [...new Set([...roots.flatMap(r => r.scope ? [r.scope] : []), ...(roots.some(r => !r.scope) ? ['global'] : [])])]
+    const message = `This window has folders that save to different places: ${roots.map(r => `${JSON.stringify(r.root)} → ${r.scope ? JSON.stringify(r.scope) : 'this laptop only'}`).join('; ')}. Pass scope to choose: ${choices.map(c => JSON.stringify(c) + (c === 'global' ? ' (this laptop only)' : '')).join(' or ')}. Nothing was saved.`
+    super(message)
+    this.refusal = { saved: false, refused: 'roots-disagree', choices, message }
+  }
+}
+
+async function _readContextScopes(args: Record<string, unknown>): Promise<string[] | undefined> {
+  if (args.scope !== undefined) return undefined
+  const ctx = _folderContext(args)
+  try {
+    const ws = ctx?.admitted ? ctx.admitted() : await ctx?.resolve()
+    return ws?.roots ? [...new Set(ws.roots.flatMap(r => r.scope ? [r.scope] : []))] : undefined
+  } catch { return undefined }
 }
 
 function _folderContext(args: Record<string, unknown>): FolderScopeContext | null {
@@ -1046,15 +1067,16 @@ function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
  * Without a FolderScopeContext (the tools used outside the server) the
  * session alone decides, as before.
  */
-async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false): Promise<string> {
+async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false, explicitDestinations = false): Promise<string> {
   const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
   const chosen = base !== undefined ? base : (explicit ?? _implicitSessionId())
   const ctx = _folderContext(args)
   if (!ctx) return chosen ?? NO_SESSION
   // An id this process never registered has no default (Codex path 6).
   const session = chosen !== undefined && _knownSession(chosen, plur, true) ? chosen : NO_SESSION
-  let ws: { scope: string | null; key: string } | null = null
+  let ws: Awaited<ReturnType<FolderScopeContext['resolve']>> = null
   try { ws = read && ctx.admitted ? ctx.admitted() : await ctx.resolve() } catch { ws = null }
+  if (!read && args.scope === undefined && !explicitDestinations && ws?.roots) throw new RootsDisagreeError(ws.roots)
   if (session !== NO_SESSION) {
     const record = _sessionTelemetry.get(session)
     const own = plur.getSessionScope({ session })
@@ -1580,6 +1602,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['statement'],
       },
       handler: async (args, plur) => {
+        let session: string
+        try { session = await _writeSession(args, plur) }
+        catch (err) { if (err instanceof RootsDisagreeError) return err.refusal; throw err }
         const llm = getLlmFunction()
         // LLM-facing context. Fields not in inputSchema (knowledge_anchors,
         // dual_coding, abstract, derived_from, memory_class,
@@ -1623,7 +1648,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // persisted on the engram (LearnContext.session selects a scope, it
           // is not part of one). The workspace's answer where the session
           // gives none, or its roots changed (#1562, #1563 review round 2).
-          session: await _writeSession(args, plur),
+          session,
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -1948,7 +1973,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Same context derivation as plur_learn (formal Adapters #1): the
         // session is resolved once for the whole call, the .plur.yaml domain
         // is the default when an item names none, and an explicit value wins.
-        const batchSession = await _writeSession(args, plur)
+        let batchSession: string
+        try { batchSession = await _writeSession({ ...args, scope: undefined }, plur, undefined, false, raw.every(e => typeof e.scope === 'string' && e.scope.length > 0)) }
+        catch (err) { if (err instanceof RootsDisagreeError) return err.refusal; throw err }
         const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
         const items = raw.map((e) => ({
           statement: sanitizeStatement(e.statement as string),
@@ -4332,7 +4359,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           engram_suggestions: {
             type: 'array',
             items: {
-              // Prefer {statement, type} objects. Bare strings are tolerated
+              // Prefer {statement, type, scope} objects. Bare strings are tolerated
               // and treated as {statement: <string>} (issue #231).
               anyOf: [
                 { type: 'string' },
@@ -4341,6 +4368,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
                   properties: {
                     statement: { type: 'string', description: 'A concise, reusable assertion. Write it as advice to your future self.' },
                     type: { type: 'string', enum: ['behavioral', 'terminological', 'procedural', 'architectural'] },
+                    scope: { type: 'string', description: 'Explicit destination; required when workspace roots disagree.' },
                   },
                   required: ['statement'],
                 },
@@ -4361,24 +4389,27 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // {statement} objects. The episode is captured below and the learns
         // point at it, so a malformed item found halfway through would leave an
         // episode and some engrams behind with the call reported as failed.
-        const items: Array<{ statement: string; type?: string }> = []
+        const items: Array<{ statement: string; type?: string; scope?: string }> = []
         if (Array.isArray(suggestions) && suggestions.length) {
           for (let i = 0; i < suggestions.length; i++) {
             const s = suggestions[i]
             let statement: string | undefined
             let type: string | undefined
+            let scope: string | undefined
             if (typeof s === 'string') {
               statement = s
             } else if (s && typeof s === 'object') {
               statement = (s as any).statement
               type = (s as any).type
+              scope = (s as any).scope
             }
             if (typeof statement !== 'string' || statement.length === 0) {
               throw new Error(
                 `engram_suggestions[${i}] must be a string or {statement: string, type?: string}, got ${typeof s}`,
               )
             }
-            items.push({ statement, type })
+            if (scope !== undefined && (typeof scope !== 'string' || !scope.trim())) throw new Error(`engram_suggestions[${i}].scope must be a non-empty string`)
+            items.push({ statement, type, scope })
           }
         }
 
@@ -4411,8 +4442,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         let engrams_created = 0
         const engram_results: Array<{ index: number; id: string; scope: string; delivery: string; destination: string }> = []
         const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
+        const unsaved: Array<{ index: number; statement: string } & RootsDisagreeError['refusal']> = []
         for (let i = 0; i < items.length; i++) {
-          const { statement, type } = items[i]
+          const { statement, type, scope } = items[i]
           try {
             // Sanitise here too (#940). core's learn() collapses line
             // terminators, so this is not the only thing standing between a
@@ -4424,7 +4456,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               type: type as any,
               // E7: no resolvable session → no session default; through the
               // server, the workspace's answer (#1563 review round 2).
-              session: await _writeSession(args, plur, endSession),
+              session: await _writeSession({ ...args, scope }, plur, endSession),
+              scope,
               domain: projectDomain,
               // Link the engram back to the session that produced it (#960).
               ...(episode ? { session_episode_id: episode.id } : {}),
@@ -4436,6 +4469,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             engram_results.push({ index: i, id: delivered.delivery === "outbox" ? saved.id : plur.readIdFor(saved), scope: saved.scope, delivery: delivered.delivery, destination: delivered.destination })
             engrams_created++
           } catch (err) {
+            if (err instanceof RootsDisagreeError) { unsaved.push({ index: i, statement, ...err.refusal }); continue }
             engrams_failed.push({ index: i, statement: statement.slice(0, 80), error: (err as Error).message })
           }
         }
@@ -4490,11 +4524,12 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         return {
           engrams_created,
           engram_results,
+          ...(unsaved.length ? { unsaved } : {}),
           ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode?.id ?? null,
           total_engrams: status.engram_count,
           ...(injection_summary ? { injection_summary } : {}),
-          hint: engrams_failed.length
+          hint: unsaved.length ? `${unsaved.length} suggestion(s) need an explicit destination — see unsaved.` : engrams_failed.length
             ? `${engrams_failed.length} suggestion(s) could not be stored — see engrams_failed. The rest were.`
             : engrams_created === 0
             ? 'No engrams captured this session. If any corrections, preferences, or patterns came up, consider calling plur_learn before ending.'

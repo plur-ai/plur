@@ -1057,19 +1057,32 @@ export function coversHomeOrRoot(dir: string, home: string = homedir()): boolean
  *  - an input that cannot be resolved, or any error.
  */
 export function workspaceFolderScope(inputs: string[], policyOf: (dir: string) => FolderPolicy): string | null {
-  if (inputs.length === 0) return null
-  let agreed: string | null = null
+  const decision = workspaceScopeDecision(inputs, policyOf)
+  return decision.kind === 'agreed' ? decision.scope : null
+}
+
+export type WorkspaceScopeDecision =
+  | { kind: 'agreed'; scope: string }
+  | { kind: 'none' }
+  | { kind: 'disagree'; roots: Array<{ root: string; scope: string | null }> }
+
+/** Preserve every root's destination so an ambiguous write can ask for a choice. */
+export function workspaceScopeDecision(inputs: string[], policyOf: (dir: string) => FolderPolicy): WorkspaceScopeDecision {
+  if (inputs.length === 0) return { kind: 'none' }
+  const roots: Array<{ root: string; scope: string | null }> = []
   for (const input of inputs) {
     let dir: string
-    try { dir = realpathSync.native(input) } catch { return null }
-    try { if (coversHomeOrRoot(dir)) return null } catch { return null }
+    try { dir = realpathSync.native(input) } catch { return { kind: 'none' } }
+    try { if (coversHomeOrRoot(dir)) return { kind: 'none' } } catch { return { kind: 'none' } }
     let policy: FolderPolicy
-    try { policy = policyOf(dir) } catch { return null }
-    if (policy.mode !== 'on' || !policy.scope) return null
-    if (agreed === null) agreed = policy.scope
-    else if (agreed !== policy.scope) return null
+    try { policy = policyOf(dir) } catch { return { kind: 'none' } }
+    if (policy.mode !== 'on') return { kind: 'none' }
+    roots.push({ root: dir, scope: policy.scope || null })
   }
-  return agreed
+  const scopes = new Set(roots.map(r => r.scope))
+  if (scopes.size > 1) return { kind: 'disagree', roots }
+  const scope = roots[0].scope
+  return scope === null ? { kind: 'none' } : { kind: 'agreed', scope }
 }
 
 function hasGlob(p: string): boolean {

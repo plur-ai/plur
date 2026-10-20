@@ -801,3 +801,9 @@ known-key backoff bypass and the local-path takeover hold. Other write guards,
 claims, idempotency and merge-back remain unchanged; the extra queue field is
 an attempted credential fingerprint only. Enterprise recovery text changes no
 recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/

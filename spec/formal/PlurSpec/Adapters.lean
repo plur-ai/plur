@@ -1246,3 +1246,9 @@ recall, authorization or adapter admission rule. -/
 /- 2026-10-19: Hook execution timestamps are recorded only after the off-folder
 guard. Disabled memory retains its no-store-write boundary; admitted hooks keep
 the existing timestamp and status behavior. No routing or delivery rule changes. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
