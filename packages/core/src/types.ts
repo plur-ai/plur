@@ -146,6 +146,13 @@ export interface LearnAsyncResult {
   existing_id?: string
   tensions?: string[]
   /**
+   * Set when an UPDATE onto a locked memory saved the new statement as a draft
+   * but its review item could not be opened (audit 5 F3). The draft is never
+   * injected, and without the review nobody is asked about it, so this is
+   * reported rather than only logged.
+   */
+  review_error?: string
+  /**
    * Present when the duplicate checker answered MERGE (owner decision
    * 2026-10-18: learning never overwrites; single and batch saves alike since
    * LRN-7): instead of rewriting the existing memory, the item was saved as

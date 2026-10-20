@@ -50,10 +50,20 @@ function makeDeps(candidates: Engram[]): LearnAsyncDeps {
     hashDedup: async () => null,
     recallHybrid: async () => candidates,
     recall: async () => candidates,
-    // Echoes `supersedes` the way learn() writes `relations.supersedes`.
-    learn: async (statement: string, context?: any) =>
-      ({ id: 'ENG-2026-0619-001', statement, scope: context?.scope ?? 'global',
-        ...(context?.supersedes?.length ? { relations: { supersedes: context.supersedes } } : {}) } as unknown as Engram),
+    // Echoes `supersedes` the way learn() writes `relations.supersedes`, and
+    // writes the reverse `superseded_by` edge on the target as learn() does
+    // (learnAsync reports UPDATE only when both edges are there, audit 5 F4).
+    learn: async (statement: string, context?: any) => {
+      const id = 'ENG-2026-0619-001'
+      for (const t of context?.supersedes ?? []) {
+        const i = candidates.findIndex(c => c.id === t)
+        const target = candidates[i] as any
+        // A copy in place of the shared fixture object, so no edge leaks into other tests.
+        if (target) candidates[i] = { ...target, relations: { ...(target.relations ?? {}), superseded_by: [...(target.relations?.superseded_by ?? []), id] } }
+      }
+      return ({ id, statement, scope: context?.scope ?? 'global',
+        ...(context?.supersedes?.length ? { relations: { supersedes: context.supersedes } } : {}) } as unknown as Engram)
+    },
     getById: async (id: string) => candidates.find(c => c.id === id) ?? null,
     store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-test-engrams.yaml',

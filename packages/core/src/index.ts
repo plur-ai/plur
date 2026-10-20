@@ -1193,6 +1193,9 @@ export interface MutationOutcome {
 }
 
 /** Per-store answer of the id-collision probe run by forget, feedback and setPinned. */
+/** A dedup supersede target held in a writable secondary store (audit 5 F4). */
+interface SecondarySupersede { id: string; path: string; originalId: string }
+
 interface CollisionProbe {
   scope: string
   url: string
@@ -4684,11 +4687,58 @@ export class Plur {
       // taken after the checker read the target still wins. The caller sees
       // the dropped target missing from `relations.supersedes` and sends the
       // pair to review instead.
+      //
+      // Audit 5 F3: when a target is locked the new memory is saved as a DRAFT
+      // in this same write, so it is never deliverable, not between this write
+      // and the caller's review step, and not after a crash at that boundary.
+      //
+      // Audit 5 F4: each target is checked in the store that holds it. A target
+      // in a writable secondary store keeps the supersede, and its reverse edge
+      // is written in that store (`_landSecondarySupersedes`, right before the
+      // new row is written). A target whose store cannot take the reverse edge
+      // (readonly store, pack, remote cache) is not superseded at all: nothing
+      // there would suppress it, so the new memory is linked to it instead.
+      let secondarySupersedes: SecondarySupersede[] = []
       if (context?.supersedes_unless_locked && context.supersedes?.length) {
         const wanted = context.supersedes
-        const rows = canDelegate ? await ps.loadByIds!(wanted) : engrams
-        const locked = new Set(rows.filter(e => wanted.includes(e.id) && e.commitment === 'locked').map(e => e.id))
-        if (locked.size > 0) context = { ...context, supersedes: wanted.filter(t => !locked.has(t)) }
+        const primaryRows = canDelegate ? await ps.loadByIds!(wanted) : engrams
+        const keep: string[] = []
+        const linkOnly: string[] = []
+        let lockedSeen = false
+        for (const t of wanted) {
+          const p = primaryRows.find(e => e.id === t)
+          if (p) {
+            if (p.commitment === 'locked') lockedSeen = true
+            else keep.push(t)
+            continue
+          }
+          const seen = allEngrams.find(e => e.id === t) as (Engram & { _storeScope?: string; _pack?: string }) | undefined
+          const info = seen && !seen._pack && typeof seen._storeScope === 'string'
+            ? await this._findEngramStore(t, seen._storeScope)
+            : null
+          if (info && info.path !== this.paths.engrams) {
+            // The target's own store, read fresh rather than from the cache.
+            const row = (await this._storeAt(info.path).load()).find(e => e.id === info.originalId)
+            if (row?.commitment === 'locked') { lockedSeen = true; continue }
+            if (row && row.status === 'active' && !info.readonly && !this._readonly) {
+              keep.push(t)
+              secondarySupersedes.push({ id: t, path: info.path, originalId: info.originalId })
+              continue
+            }
+          } else if (seen?.commitment === 'locked') {
+            lockedSeen = true
+            continue
+          }
+          linkOnly.push(t)
+        }
+        if (keep.length !== wanted.length) {
+          context = {
+            ...context,
+            supersedes: keep,
+            ...(linkOnly.length ? { related: [...new Set([...(context.related ?? []), ...linkOnly])] } : {}),
+            ...(lockedSeen ? { commitment: 'draft' as const } : {}),
+          }
+        }
       }
 
       const id = canDelegate
@@ -4805,7 +4855,10 @@ export class Plur {
         // Incremental write (#740): append the new engram; on a store without
         // `append` this saves the corpus in hand, which already carries the
         // superseded_by back-edges — so the second write below is skipped.
-        await this._appendEngram(engrams, engram)
+        // Audit 5 F4: reverse edges in secondary stores, re-checked under that
+        // store's lock; undone if the new row cannot be written.
+        const undoSecondary = await this._landSecondarySupersedes(engram, secondarySupersedes)
+        try { await this._appendEngram(engrams, engram) } catch (err) { await undoSecondary(); throw err }
         if (this._primaryStore.append) {
           await this._updateEngrams(engrams, supersededTargets)
         }
@@ -4954,7 +5007,10 @@ export class Plur {
       // Incremental write (#740): same shape as the outbox path above — append
       // the new engram, then persist superseded_by back-edges when the append
       // was targeted (a fallback save already wrote them with the corpus).
-      await this._appendEngram(engrams, engram)
+      // Audit 5 F4: reverse edges in secondary stores, re-checked under that
+      // store's lock; undone if the new row cannot be written.
+      const undoSecondary = await this._landSecondarySupersedes(engram, secondarySupersedes)
+      try { await this._appendEngram(engrams, engram) } catch (err) { await undoSecondary(); throw err }
       if (this._primaryStore.append) {
         await this._updateEngrams(engrams, supersededTargets)
       }
@@ -12779,6 +12835,59 @@ Generate an improved version of the procedure that prevents this failure. Return
    * mutated rows explicitly via `_updateEngrams` — a whole-corpus fallback
    * save carries them implicitly, a targeted `append` does not.
    */
+  /**
+   * Audit 5 F4: write the reverse `superseded_by` edge on supersede targets
+   * that live in a writable SECONDARY store, in that store, under its own lock
+   * — the primary-only `_writeSupersededByEdges` never reached them, so the
+   * old memory kept being injected beside its replacement.
+   *
+   * Called right before the new row is written, with the new row in hand and
+   * not yet persisted, so anything decided here lands in the same write:
+   *  - target locked meanwhile (LRN-9): the forward edge is dropped and the new
+   *    row becomes a draft;
+   *  - target gone or retired meanwhile: the forward edge becomes a link.
+   * Returns an undo that removes the edges it wrote, for when the new row then
+   * fails to write (a dangling edge would down-rank the target).
+   */
+  private async _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>> {
+    const written: SecondarySupersede[] = []
+    for (const t of targets) {
+      const outcome = await this._withStoreLock(t.path, async () => {
+        const rows = await this._storeAt(t.path).load()
+        const row = rows.find(e => e.id === t.originalId)
+        if (!row || row.status !== 'active') return 'gone' as const
+        if (row.commitment === 'locked') return 'locked' as const
+        if (this._writeSupersededByEdges(rows, [t.originalId], engram.id).length > 0) {
+          await this._writeEngrams(t.path, rows)
+        }
+        return 'landed' as const
+      })
+      if (outcome === 'landed') { written.push(t); continue }
+      const rel = engram.relations
+      if (rel) rel.supersedes = (rel.supersedes ?? []).filter(id => id !== t.id)
+      if (outcome === 'locked') {
+        engram.commitment = 'draft'
+      } else if (rel) {
+        rel.related = [...new Set([...(rel.related ?? []), t.id])]
+      }
+    }
+    return async () => {
+      for (const t of written) {
+        try {
+          await this._withStoreLock(t.path, async () => {
+            const rows = await this._storeAt(t.path).load()
+            const row = rows.find(e => e.id === t.originalId)
+            if (!row?.relations?.superseded_by?.includes(engram.id)) return
+            row.relations.superseded_by = row.relations.superseded_by.filter(id => id !== engram.id)
+            await this._writeEngrams(t.path, rows)
+          })
+        } catch (err) {
+          logger.warning(`could not remove the superseded_by edge ${t.id} -> ${engram.id} after the write failed: ${err}`)
+        }
+      }
+    }
+  }
+
   private _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): Engram[] {
     const mutated: Engram[] = []
     for (const targetId of targetIds) {
