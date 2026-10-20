@@ -81,6 +81,8 @@ import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-g
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import { loadGitScopeSources, readGitOrigin, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
+import { formatSaveDestination } from './save-destination.js'
+export { formatSaveDestination, type SaveDestinationInput } from './save-destination.js'
 export { loadGitScopeSources, gitDefaultScope, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
@@ -5599,7 +5601,29 @@ export class Plur {
    * warning names the requested scope, not the one it landed in. A sensitive-
    * content demotion is excluded: it already carries its own warning.
    */
-  deliveryOf(engram: Engram, requestedScope?: string): {
+  deliveryOf(engram: Engram, requestedScope?: string, folder?: GitScopeOutcome | null) {
+    const delivered = this._deliveryDetails(engram, requestedScope)
+    const target = resolveScopeTarget(engram.scope, this.config.stores ?? [])
+    const ctx = Plur._lockBinding.getStore()
+    const git = requestedScope !== undefined ? null
+      : folder === undefined ? (ctx?.plur === this ? ctx.git : this._boundGit) : folder
+    const demoted = (engram as any).structured_data?._demoted as { from: string } | undefined
+    const mismatch = requestedScope && requestedScope !== engram.scope && isSharedScope(requestedScope)
+      && !(engram as any).structured_data?._demoted
+    const localReason = demoted
+      ? `sensitive content was kept private instead of being sent to ${demoted.from}`
+      : mismatch ? `recorded on an existing memory in ${engram.scope}; nothing was sent to ${requestedScope}`
+      : isSharedScope(engram.scope) && urlGroupsForScope(engram.scope, this.config.stores ?? []).length > 0
+        ? `this save was not sent to the store for ${engram.scope}` : undefined
+    return { ...delivered, destination: formatSaveDestination({
+      delivery: delivered.delivery, scope: engram.scope, server: delivered.host,
+      shared: isSharedScope(engram.scope), folder: git,
+      unauthorizedOn: target.kind === 'unauthorized' ? target.server : undefined,
+      queuedReason: delivered.reason, localReason,
+    }) }
+  }
+
+  private _deliveryDetails(engram: Engram, requestedScope?: string): {
     delivery: LearnDelivery
     warning?: string
     /** Only for `outbox`: why it was queued, in plain words, with what to do. */

@@ -791,3 +791,7 @@ theorem absent_allowed (n : String) : allowedFixed false n = true := rfl
 theorem orig_colon_port_allowed : allowedOrig true "" = true := by decide
 
 end PlurSpec.R2Integrations
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/

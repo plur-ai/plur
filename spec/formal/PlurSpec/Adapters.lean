@@ -1227,3 +1227,7 @@ theorem orig_remedy_promises_the_impossible :
     offersTrustAloneOrig .noTrust = true ∧ grantCanHelp .noTrust = false := ⟨rfl, rfl⟩
 
 end PlurSpec.Adapters
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
