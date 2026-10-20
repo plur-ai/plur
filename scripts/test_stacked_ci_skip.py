@@ -52,9 +52,11 @@ def test_stacked_pull_requests_are_rerun_not_trusted():
     # "Not run. regressed: 0" passed). The check now re-runs, on GitHub, the evals of
     # the promises the pull request names, after the strict separation check and the
     # judge-integrity check. It runs from the BASE branch's workflow
-    # (pull_request_target), so a pull request cannot rewrite its own check; with a
-    # read-only token, no secrets and no shared cache, so the code it runs can take
-    # nothing and poison nothing.
+    # (pull_request_target), and the checking scripts and the baseline come from a
+    # second checkout of the base commit, never from the pull request's tree, so a
+    # pull request cannot rewrite the checks meant to stop it (review of #1670).
+    # Fork pull requests do not run; the token is read-only, with no secrets and no
+    # shared cache.
     assert PROOF.exists(), PROOF
     on = _on(PROOF)
     assert set(on) == {"pull_request_target"}, on
@@ -65,6 +67,24 @@ def test_stacked_pull_requests_are_rerun_not_trusted():
     text = PROOF.read_text()
     assert "secrets." not in text and "actions/cache" not in text
     assert "github.event.pull_request.head.sha" in text and "persist-credentials: false" in text
+    (job,) = d["jobs"].values()
+    assert job.get("if") == "github.event.pull_request.head.repo.full_name == github.repository", job.get("if")
+    checkouts = [st for st in job["steps"] if str(st.get("uses", "")).startswith("actions/checkout@")]
+    by_path = {st["with"]["path"]: st["with"] for st in checkouts}
+    assert set(by_path) == {"judge", "pr"}, by_path
+    assert by_path["judge"]["ref"] == "${{ github.event.pull_request.base.sha }}", by_path["judge"]
+    assert by_path["pr"]["ref"] == "${{ github.event.pull_request.head.sha }}", by_path["pr"]
+    assert all(w.get("persist-credentials") is False for w in by_path.values()), by_path
+    # every checking script and the baseline are the base commit's copy
+    steps_run = [st.get("run", "") for st in job["steps"]]
+    sep = next(r for r in steps_run if "check-eval-separation.py" in r)
+    assert "../judge/scripts/check-eval-separation.py" in sep, sep
+    intact = next(r for r in steps_run if "judge-intact.sh" in r)
+    assert "../judge/scripts/judge-intact.sh" in intact, intact
+    baseline = next(i for i, r in enumerate(steps_run) if "baseline.json" in r)
+    assert "judge/evals/baseline.json" in steps_run[baseline], steps_run[baseline]
+    # the baseline is read before any code of the pull request runs
+    assert baseline < next(i for i, r in enumerate(steps_run) if "pnpm install" in r)
     # the description is read from the environment, never pasted into the script
     assert "${{ github.event.pull_request.body }}" not in text.split("env:")[0]
     runs = "\n".join(st.get("run", "") for job in d["jobs"].values() for st in job["steps"])

@@ -9,11 +9,17 @@ name: Stacked local proof
 #   2. install and build, then the judge is as committed;
 #   3. the evals of the promises the pull request names on its `Promises:` line
 #      are run again here, and every one must be green.
-# It runs from the BASE branch's copy of this file (pull_request_target), so a
-# pull request cannot rewrite its own check. The token is read-only, no secret
-# is used and nothing is cached, so the pull request's code, which this job
-# builds and runs, can take nothing and poison nothing. The full matrix and the
-# full gate run once, when the integration branch comes into development.
+# This file runs from the BASE branch (pull_request_target), and so do the
+# checks: the separation checker, the judge-integrity script and the baseline
+# are read from a second checkout of the base commit (`judge/`), never from the
+# pull request's tree (`pr/`). Only once the base's own checker has found the
+# pull request free of judge files does the job install, build and run the
+# evals from `pr/`, whose harness is then the committed one. Pull requests from
+# forks are not run at all. The token is read-only, no secret is used and
+# nothing is cached. What this does not close: the evals execute the pull
+# request's product code, which could write a forged result file; the full
+# matrix and the full gate run once, when the integration branch comes into
+# development, and that is the gate this one stands in front of.
 # scripts/test_stacked_ci_skip.py pins all of this.
 
 on:
@@ -33,12 +39,23 @@ env:
 
 jobs:
   local-proof:
+    # Same-repository pull requests only: a fork's code never runs in the base
+    # repository's context.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: The checks, from the base commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: judge
+          persist-credentials: false
+      - name: The pull request
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
           fetch-depth: 0
           persist-credentials: false
       - name: The promises this pull request claims
@@ -53,12 +70,29 @@ jobs:
             exit 1
           fi
           echo "ids=$ids" >> "$GITHUB_OUTPUT"
+      - name: None of them is already in the base baseline
+        # Read from the base checkout, before any code of the pull request runs.
+        env:
+          IDS: ${{ steps.claimed.outputs.ids }}
+        run: |
+          python3 - "$IDS" judge/evals/baseline.json <<'PY'
+          import json, re, sys
+          want = sys.argv[1].split(",")
+          norm = lambda p: re.sub(r"^([A-Z]+)[^A-Z0-9]*0*(\d+)$", r"\1\2", p)   # as the eval runner normalises them: LRN-8 -> LRN8
+          base = json.load(open(sys.argv[2]))
+          held = set(base.get("green", base) if isinstance(base, dict) else base)
+          already = [p for p in want if norm(p) in {norm(h) for h in held}]
+          if already:
+              print(f"::error::Already green in evals/baseline.json, so they prove no new work: {already}")
+              sys.exit(1)
+          PY
       - name: Only product source and product tests changed
+        working-directory: pr
         env:
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
           git fetch -q origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
-          python3 scripts/check-eval-separation.py "origin/$BASE" --strict
+          python3 ../judge/scripts/check-eval-separation.py "origin/$BASE" --strict
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9
@@ -66,30 +100,27 @@ jobs:
         with:
           node-version: 22
       - run: pnpm install --frozen-lockfile
+        working-directory: pr
       - run: pnpm -r build
+        working-directory: pr
       - name: The judge is as committed
-        run: bash scripts/judge-intact.sh
+        working-directory: pr
+        run: bash ../judge/scripts/judge-intact.sh
       - name: The embedding model loads offline
+        working-directory: pr
         run: |
           node evals/helpers/provision-model.mjs fetch
           node evals/helpers/provision-model.mjs verify
       - name: Every claimed promise is green here
+        working-directory: pr
         env:
           IDS: ${{ steps.claimed.outputs.ids }}
         run: |
-          python3 .evals/run.py --config evals/evals.yaml --only "$IDS" --exclude-kind agent --json > claimed.json || true
-          python3 - "$IDS" <<'PY'
-          import json, re, sys
+          python3 .evals/run.py --config evals/evals.yaml --only "$IDS" --exclude-kind agent --json > ../claimed.json || true
+          python3 - "$IDS" ../claimed.json <<'PY'
+          import json, sys
           want = sys.argv[1].split(",")
-          norm = lambda p: re.sub(r"^([A-Z]+)[^A-Z0-9]*0*(\d+)$", r"\1\2", p)   # as .evals/run.py: LRN-8 -> LRN8
-          got = json.load(open("claimed.json"))["promises"]
-          # A promise already protected by the baseline proves no new work.
-          base = json.load(open("evals/baseline.json"))
-          held = set(base.get("green", base) if isinstance(base, dict) else base)
-          already = [p for p in want if norm(p) in {norm(h) for h in held}]
-          if already:
-              print(f"::error::Already green in evals/baseline.json, so they prove no new work: {already}")
-              sys.exit(1)
+          got = json.load(open(sys.argv[2]))["promises"]
           bad = {p: got.get(p, "unknown promise") for p in want if got.get(p) != "green"}
           for p in want:
               print(f"{got.get(p, 'unknown promise'):10} {p}")
