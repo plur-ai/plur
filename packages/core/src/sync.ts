@@ -671,10 +671,19 @@ function missingSiblingRecords(current: readonly unknown[], held: readonly unkno
  *   sync committed and pushed. Only when HEAD still holds the pre-pull blob
  *   (nothing was integrated) do the saved bytes go back.
  */
-function restoreWithheld(root: string, files: WithheldFile[]): { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } {
+function restoreWithheld(root: string, files: WithheldFile[], merged: readonly IdRename[] = []): { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } {
   // engrams.yaml first: its renames (P1b) are applied to held sibling records.
-  const ordered = [...files].sort((a, b) => Number(b.file === 'engrams.yaml') - Number(a.file === 'engrams.yaml'))
-  const renamed = new Map<string, string>()
+  let ordered = [...files].sort((a, b) => Number(b.file === 'engrams.yaml') - Number(a.file === 'engrams.yaml'))
+  // Renames the record merge made to COMMITTED engrams during this pull (F2):
+  // held records were written on this machine, so a reference in them to the
+  // old id meant this machine's engram, which now has the new id. Every held
+  // record follows, held engrams included (their relations), before anything
+  // else is decided about them.
+  if (merged.length > 0) {
+    const map = new Map(merged.map(r => [r.from, r.to] as const))
+    ordered = ordered.map(f => ({ ...f, held: f.held.map(r => renameIdRefs(r, map)) }))
+  }
+  const renamed = new Map<string, string>(merged.map(r => [r.from, r.to] as const))
   const allRenames: IdRename[] = []
   const rewrote: string[] = []
   const unresolved: WithheldFile[] = []
@@ -829,12 +838,13 @@ function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; re
   const held = holdWithheld(root, remoteType)
   let ok = false
   let restored: { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } = { renames: [], rewrote: [], unresolved: [] }
+  const mergeRenames: IdRename[] = []
   try {
-    ok = pullRebaseClean(root, remoteType)
+    ok = pullRebaseClean(root, remoteType, mergeRenames)
   } finally {
     // On a throw from the restore the recovery file stays: the next sync or
     // store write finishes the job.
-    restored = restoreWithheld(root, held)
+    restored = restoreWithheld(root, held, mergeRenames)
   }
   let committed: string[] = []
   if (restored.renames.length > 0) {
@@ -848,7 +858,11 @@ function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; re
   return { ok, rewroteSiblings: committed, unresolved: restored.unresolved }
 }
 
-function pullRebaseClean(root: string, remoteType: SyncRemoteType): boolean {
+/**
+ * @param mergeRenames receives the engram renames the record merge made, so the
+ *   caller can carry them into the records held aside for privacy (F2).
+ */
+function pullRebaseClean(root: string, remoteType: SyncRemoteType, mergeRenames: IdRename[] = []): boolean {
   const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
   const result = gitSafe(['pull', '--rebase', 'origin', branch], root)
   if (result !== null) return true
@@ -883,6 +897,7 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType): boolean {
       gitSafe(['merge', '--abort'], root)
       return false
     }
+    mergeRenames.push(...renames)
     if (renames.length > 0) {
       recordIdRenames(root, renames, SYNC_MERGE_RENAME_REASON, { store: join(root, 'engrams.yaml'), cause: 'sync-merge' })
     }
@@ -1028,6 +1043,42 @@ function renameLocalClashes(base: unknown[], ours: unknown[], theirs: unknown[])
 }
 
 /**
+ * Sibling records (reviews, episodes, candidates) both sides added under one id
+ * with different content. Review ids are a per-day sequence (`T-YYYY-MMDD-NNN`),
+ * so two offline devices mint the same next id for two DIFFERENT reviews; the
+ * field merge in {@link mergeRecordLists} used to blend them into one record and
+ * the other review was gone. Same rule as engrams (P1b, keep both, rename one):
+ * this side's record was never pushed, so it takes a fresh id. Nothing in the
+ * store refers to a sibling record's id, so no reference has to follow.
+ *
+ * A review of the SAME engram pair is one review detected on both devices
+ * (`recordTensions` keeps one record per pair), not a clash: it is still merged
+ * field by field.
+ */
+function renameSiblingClashes(file: string, base: unknown[], ours: unknown[], theirs: unknown[]): unknown[] {
+  const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
+  const pairOf = (r: unknown): string | null => {
+    const t = r as { engram_a?: unknown; engram_b?: unknown } | null
+    return typeof t?.engram_a === 'string' && typeof t?.engram_b === 'string' ? [t.engram_a, t.engram_b].sort().join(':') : null
+  }
+  const baseIds = new Set(base.map(idOf).filter((x): x is string => typeof x === 'string'))
+  const theirsById = new Map<string, unknown>()
+  for (const r of theirs) { const id = idOf(r); if (typeof id === 'string') theirsById.set(id, r) }
+  const taken = new Set<string>([...baseIds, ...theirsById.keys()])
+  for (const r of ours) { const id = idOf(r); if (typeof id === 'string') taken.add(id) }
+  return ours.map(r => {
+    const id = idOf(r)
+    if (typeof id !== 'string' || baseIds.has(id) || !theirsById.has(id)) return r
+    const other = theirsById.get(id)
+    if (sameEngramContent(other, r)) return r
+    if (file === 'tensions.yaml' && pairOf(r) !== null && pairOf(r) === pairOf(other)) return r
+    const to = freshDuplicateId(id, r, taken)
+    taken.add(to)
+    return { ...(r as object), id: to }
+  })
+}
+
+/**
  * Merge the store files of an in-progress `git merge` as records (SYN-5), so
  * both devices' offline saves, corrections and forgets survive. Writes and
  * stages each merged file. Throws when a conflicted file cannot be merged this
@@ -1097,7 +1148,7 @@ function mergeStoreRecords(root: string): IdRename[] {
       if (conflicted) throw new Error(UNMERGEABLE)
       continue
     }
-    const oursNow = map.size > 0 ? o.map(r => renameIdRefs(r, map)) : o
+    const oursNow = renameSiblingClashes(file, b, map.size > 0 ? o.map(r => renameIdRefs(r, map)) : o, t)
     write(file, yaml.dump(mergeRecordLists(b, oursNow, t), SIBLING_DUMP_OPTS))
   }
   return renames
