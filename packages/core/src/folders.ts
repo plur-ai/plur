@@ -14,7 +14,7 @@ import { renderFolderMapText, surgicalFolderMapText } from './folder-map-text.js
 import { escapedPath, folderCommandOfferable, quoted } from './folder-ask.js'
 import { resolveScopeTarget } from './store-resolver.js'
 import type { StoreEntry } from './schemas/config.js'
-import { gitDefaultScope, type GitScopeSource, type GitScopeOutcome, type OriginRead } from './git-origin.js'
+import { findGitRoot, gitDefaultScope, type GitScopeSource, type GitScopeOutcome, type OriginRead } from './git-origin.js'
 
 /**
  * The folder map (#1347): `<PLUR home>/folders.yaml` holds the user's own
@@ -838,6 +838,16 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   // ask, or a remote-only choice; legacy trusted settings keep precedence.
   if (!opts.gitScopes?.length || policy.scope || policy.reason ||
     !(policy.mode === 'on' || (policy.mode === 'ask' && policy.source === 'default'))) return policy
+  // Rule 5 keeps the home directory (and a root or an ancestor of home) on
+  // ask: a dotfiles checkout in $HOME must not switch memory on for
+  // everything under it, nor make its origin's project the default there.
+  // The origin lookup walks up to the nearest `.git`, so a folder under home
+  // with no repository of its own would inherit the home repository's origin:
+  // check the enclosing repository's root as well as the folder.
+  const home = opts.home ?? homedir()
+  if (coversHomeOrRoot(dir, home)) return policy
+  const gitRoot = findGitRoot(dir)
+  if (gitRoot !== null && coversHomeOrRoot(gitRoot, home)) return policy
   const git = gitDefaultScope(dir, opts.gitScopes, { read: opts.readOrigin })
   if (git.kind === 'not-git') return policy
   return { ...policy, mode: 'on', source: 'git', git, ...(git.kind === 'scope' ? { scope: git.scope } : {}) }

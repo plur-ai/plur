@@ -111,7 +111,8 @@ export function parseGitRemoteUrl(url: string): ParsedRemote | null {
 
 // ── readGitOrigin ──────────────────────────────────────────────────────────
 
-function findGitRoot(dir: string): string | null {
+/** The nearest folder at or above `dir` that holds a `.git`, or null. */
+export function findGitRoot(dir: string): string | null {
   // Resolve first: a lexical walk up a relative path stops at '.', which would
   // report the caller's cwd repo for a folder that is in no repo at all.
   let current = resolve(dir)
