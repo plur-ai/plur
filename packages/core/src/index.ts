@@ -6899,9 +6899,11 @@ export class Plur {
     const exact = engrams.find(e => e.id === id)
     if (exact) return exact
     // A reference another store holds to one of my primary rows (audit 6 N2).
+    // The same visibility as the bare id: none in remote-only mode (B2), and a
+    // save queued from a remote-only folder is never returned (#1663).
     const ns = parseNamespacedId(id)
-    if (ns && ns.prefix === storePrefix(this._primaryRefScope())) {
-      const own = (await this._loadCached(this.paths.engrams)).find(e => e.id === ns.bare)
+    if (ns && !this._remoteOnly && ns.prefix === storePrefix(this._primaryRefScope())) {
+      const own = withoutRemoteOnlyQueued(await this._loadCached(this.paths.engrams)).find(e => e.id === ns.bare)
       if (own) return own
     }
     const byPackOriginal = this._matchPackOriginalId(engrams, id)
