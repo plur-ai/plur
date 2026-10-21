@@ -1,5 +1,8 @@
 """check-eval-separation.py: an eval and the code it judges never change in one pull request."""
 import importlib.util
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("sep", Path(__file__).with_name("check-eval-separation.py"))
@@ -88,3 +91,22 @@ def test_strict_flag_is_parsed():
     assert sep.parse_args(["x", "origin/integration/promises-green", "--strict"]) == ("origin/integration/promises-green", True)
     assert sep.parse_args(["x", "origin/main"]) == ("origin/main", False)
     assert sep.parse_args(["x"]) is None
+
+
+def test_moving_an_eval_out_of_evals_is_caught():
+    """A rename must be judged by its old path too, or a failing eval can be moved out of a promise."""
+    script = str(Path(__file__).with_name("check-eval-separation.py"))
+    with tempfile.TemporaryDirectory() as d:
+        git = lambda *a: subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@example.com"); git("config", "user.name", "t")
+        (Path(d) / "evals/inject").mkdir(parents=True)
+        (Path(d) / "packages/core/test").mkdir(parents=True)
+        (Path(d) / "evals/inject/test_promise_INJ9_b.test.ts").write_text("// eval\n")
+        git("add", "-A"); git("commit", "-qm", "base")
+        git("checkout", "-qb", "stacked")
+        git("mv", "evals/inject/test_promise_INJ9_b.test.ts", "packages/core/test/moved.test.ts")
+        git("commit", "-qm", "move the eval out")
+        r = subprocess.run([sys.executable, script, "main", "--strict"], cwd=d, capture_output=True, text=True)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "evals/inject/test_promise_INJ9_b.test.ts" in r.stdout, r.stdout

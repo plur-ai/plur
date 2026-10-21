@@ -10,7 +10,7 @@ judge gets loosened on the day it would have gone red -- Datacore's first evals
 were weakened exactly that way. Eval changes go in their own pull request,
 approved by a code owner.
 
-Usage: check-eval-separation.py <base-ref> [--strict]   (reads `git diff --name-only <base>...HEAD`)
+Usage: check-eval-separation.py <base-ref> [--strict]   (reads `git diff --name-only --no-renames <base>...HEAD`)
 Exit 1 when both kinds changed; prints the files.
 
 --strict is for the overnight agent's stacked pull requests (fourth audit A4-01): the
@@ -62,7 +62,11 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     base, strict = parsed
-    out = subprocess.run(["git", "diff", "--name-only", f"{base}...HEAD"], capture_output=True, text=True)
+    # --no-renames: a moved file is listed under both its old and new path. With
+    # rename detection, moving an eval out of evals/ shows only the new path, so
+    # the check would pass while the runner silently drops that eval.
+    out = subprocess.run(["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"],
+                         capture_output=True, text=True)
     if out.returncode != 0:
         print(f"could not tell: git diff failed: {out.stderr.strip()}", file=sys.stderr)
         return 1
