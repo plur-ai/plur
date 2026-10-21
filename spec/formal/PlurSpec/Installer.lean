@@ -868,3 +868,21 @@ theorem old_collapses_failed_save :
 end Summary
 
 end PlurSpec.Installer
+
+/-! 2026-10-19: initialization now distinguishes a learn never attempted from
+unconfirmed delivery, keeps pending write checks distinct from empty scopes,
+and uses the shared hello types and WSL-side labels in summary output. Existing
+save/recall provenance and per-tool proof rules remain unchanged; EnterpriseInit
+models the added orchestration and rollback conditions. -/
+
+/-! 2026-10-20: The rerun hello relation removes only the personal store's
+current or legacy display namespace before sending the previous id. The
+configuration/recall id remains unchanged; delivery and recall provenance
+checks, trust admission, and the previous hello's active state are unchanged. -/
+
+/-! 2026-10-20: A local hello marked demoted now names the privacy refusal.
+It still fails the server proof; routing, admission and recall are unchanged. -/
+
+/-! 2026-10-20: Sensitive device labels are omitted from generated hello text.
+This formatting does not exempt usernames or the full statement from privacy
+checks and does not change the save/recall proof conditions above. -/

@@ -1,16 +1,6 @@
-export type ToolId = 'claude-code' | 'codex' | 'opencode' | 'cursor'
-
-export const TOOL_LABEL: Record<ToolId, string> = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  opencode: 'OpenCode',
-  cursor: 'Cursor',
-}
-
-export type HelloResult = {
-  saved: { ok: true; id: string } | { ok: false; reason: string }
-  perTool: Array<{ tool: ToolId; recalled: boolean; reason?: string }>
-}
+import { TOOL_LABEL, type ToolId, type HelloResult } from './hello.js'
+export { TOOL_LABEL, type ToolId, type HelloResult } from './hello.js'
+import { OTHER_SIDE_TEXT, type WireSide } from './wire.js'
 
 export type VersionCheckResult =
   | { ok: true }
@@ -21,6 +11,7 @@ export type WireResult = {
   status: 'wired' | 'refused' | 'other-side' | 'failed'
   configPath: string
   detail?: string
+  side?: WireSide
 }
 
 export type WiredTool = WireResult & {
@@ -41,6 +32,7 @@ export type EnterpriseInitResult = {
   hello: HelloResult | null
   tools: WiredTool[]
   writeCheck: WriteCheckResult[]
+  writeCheckState?: 'pending' | 'complete'
   uploadCandidates: number
   flushed?: { flushed: number; failed: number }
   failure?: {
@@ -128,7 +120,7 @@ export function formatSummary(r: EnterpriseInitResult): string[] {
       const why = perTool?.reason ?? (r.hello && !r.hello.saved.ok ? 'the connection check did not save' : 'could not be verified')
       msg = `wired, but not proven: ${why}`
     } else if (tool.status === 'other-side') {
-      msg = 'runs in WSL — run the installer inside WSL'
+      msg = OTHER_SIDE_TEXT[tool.side ?? 'wsl']
     } else if (tool.status === 'refused') {
       msg = `could not be wired${tool.detail ? ` — ${tool.detail}` : ''}`
     } else {
@@ -146,7 +138,9 @@ export function formatSummary(r: EnterpriseInitResult): string[] {
   }
 
   // Write-check lines
-  if (r.writeCheck.length === 0) {
+  if (r.writeCheckState === 'pending') {
+    lines.push('! Write check: not verified')
+  } else if (r.writeCheck.length === 0) {
     lines.push('• Write check: nothing to check (no team or project scopes)')
   } else {
     for (const wc of r.writeCheck) {

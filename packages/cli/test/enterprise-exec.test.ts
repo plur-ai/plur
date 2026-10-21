@@ -25,6 +25,12 @@ describe('createExec', () => {
     expect(r).toEqual({ status: 0, stdout: 'HELLO' })
   })
 
+  it('captures stderr only when asked', () => {
+    const script = 'process.stdout.write("out"); process.stderr.write("err"); process.exitCode = 3'
+    expect(exec(node, ['-e', script])).toEqual({ status: 3, stdout: 'out' })
+    expect(exec(node, ['-e', script], { stderr: true })).toEqual({ status: 3, stdout: 'out', stderr: 'err' })
+  })
+
   it('a timeout is a non-zero status, not null', () => {
     const r = exec(node, ['-e', 'setTimeout(()=>{}, 10000)'], { timeoutMs: 300 })
     expect(r.status).toBe(EXEC_TIMEOUT_STATUS)

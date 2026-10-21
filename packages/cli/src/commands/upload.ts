@@ -7,7 +7,12 @@ export const FLAGS_WITH_VALUES = ['--only']
 
 /** Init refreshes discovery before asking how many primary rows can be offered. */
 export async function countUploadCandidates(plur: Plur, scopes: string[]): Promise<number> {
-  return (await plur.listUploadCandidates(scopes)).filter(row => row.proposed !== null).length
+  const stores = (await plur.listStores()).map(store => ({ ...store }))
+  const writable = scopes.filter(scope => {
+    const target = resolveScopeTarget(scope, stores)
+    return target.kind === 'remote' && target.writable
+  })
+  return (await plur.listUploadCandidates(writable)).filter(row => row.proposed !== null).length
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {

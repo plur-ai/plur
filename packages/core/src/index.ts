@@ -13712,6 +13712,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    *  read + merge + write only; the in-memory refresh happens after release. */
   private persistStores(stores: StoreEntry[], opts?: {
     serverSensitivityScopes?: Set<string>
+    onConfigWrite?: (before: string | null, after: string) => void
     /** A new key for a server entry (#1631): written in place onto the one
      *  on-disk server entry `entry` was expanded from, found by identity on
      *  the fresh read under the lock. No match, or more than one, is refused
@@ -13720,6 +13721,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   }): void {
     withLock(this.paths.config, () => {
       let configData: Record<string, unknown> = {}
+      let before: string | null = null
       // Read the existing config to preserve other top-level keys (auto_learn,
       // packs, embeddings, routing defaults, …). A TRANSIENT read failure on an
       // EXISTING file (EACCES, a concurrent truncating writer, a momentary FS
@@ -13729,6 +13731,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       // any other error aborts the writeback so we never truncate a live config.
       try {
         const raw = fs.readFileSync(this.paths.config, 'utf8')
+        before = raw
         if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
       } catch (err) {
         if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
@@ -13798,7 +13801,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       // config — so a crash mid-write silently erases store registrations and
       // routes later writes to the local default store. atomicWrite is
       // tmp + fsync + rename, so a crash leaves the previous complete config.
-      writeConfigFile(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+      const after = yaml.dump(configData, { lineWidth: 120, noRefs: true })
+      writeConfigFile(this.paths.config, after)
+      opts?.onConfigWrite?.(before, after)
     })
     this.config = this._loadConfig()
     this.configMtimeMs = this.statConfigMtime()
@@ -14099,13 +14104,18 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async registerEnterpriseServer(url: string, opts: {
     token?: string; tokenEnv?: string; personalScope: string; enterprise?: Record<string, string>; removeStale?: boolean
+    migrateLegacyPersonal?: boolean
+    /** Required for a legacy conversion; verifies its backup under this lock. */
+    beforeLegacyMigration?: (configPath: string) => void
+    /** Installer rollback evidence, delivered under the write lock. Contains secrets; never log. */
+    onConfigWrite?: (before: string | null, after: string) => void
     /** Refuse ({@link SignInHeldError}) when config.yaml already holds a sign-in for the url. */
     keepSignIn?: boolean
     /** Called under the config lock with config.yaml's path, before a write
      *  that removes stale entries (the file is still as read); a throw writes
      *  nothing. `plur login --remove-stale` backs config.yaml up here. */
     beforeRemove?: (configPath: string) => void
-  }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[] }> {
+  }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }> {
     let parsed: URL
     try { parsed = new URL(url) } catch {
       throw new Error('registerEnterpriseServer: the server address is not a valid http(s) URL')
@@ -14135,7 +14145,11 @@ Generate an improved version of the procedure that prevents this failure. Return
     try {
       this._updateRawStores(rawStores => {
         try {
-          result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise, removeStale: opts.removeStale === true, keepSignIn: opts.keepSignIn === true })
+          result = registerServerEntry(rawStores, { url, token: tokenEnv ? undefined : opts.token, tokenEnv, personalScope: personal, enterprise: opts.enterprise, removeStale: opts.removeStale === true, keepSignIn: opts.keepSignIn === true, migrateLegacyPersonal: opts.migrateLegacyPersonal === true })
+          if (result.migratedLegacy) {
+            if (!opts.beforeLegacyMigration) throw new Error('legacy migration requires a verified configuration backup')
+            opts.beforeLegacyMigration(this.paths.config)
+          }
         } catch (err) {
           if (err instanceof SignInHeldError) throw new SignInHeldError(`registerEnterpriseServer: ${err.message}`)
           // The refusal keeps its type and the entries it names (#1638), so
@@ -14156,7 +14170,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         // Windows (a verified access list, or the write is refused) (#1631).
         rawStores.splice(0, rawStores.length, ...result.stores)
         return true
-      })
+      }, opts.onConfigWrite)
     } catch (err) {
       const e = err as { message?: unknown; name?: unknown; mark?: { line?: unknown }; code?: unknown }
       if (typeof e?.message === 'string' && e.message.startsWith('registerEnterpriseServer: ')) throw err
@@ -14185,7 +14199,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
     const queued_by_scope: Record<string, number> = Object.fromEntries(counts)
     logger.info(`[plur:register] ${r.status} the server entry for ${safeOrigin(url)}: ${r.report.folded.length} folded, ${r.report.kept_separate.length} kept separate${r.removed.length ? `, ${r.removed.length} stale removed` : ''}`)
-    return { status: r.status, fold: { ...r.report, queued_by_scope }, removed: r.removed }
+    return { status: r.status, fold: { ...r.report, queued_by_scope }, removed: r.removed, ...(r.migratedLegacy ? { migratedLegacy: true } : {}) }
   }
 
   /**
@@ -15199,7 +15213,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     return out
   }
 
-  async refreshServerScopes(opts?: { url?: string; timeoutMs?: number }): Promise<ServerDiscoveryOutcome[]> {
+  async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWrite?: (before: string | null, after: string) => void }): Promise<ServerDiscoveryOutcome[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
     this.reloadConfigIfChanged()
     const wanted = opts?.url ? normalizeEndpointUrl(opts.url) : undefined
@@ -15316,7 +15330,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         })
       }
       return changed
-    })
+    }, opts?.onConfigWrite)
 
     // Server metadata lands in scope_settings through the existing sync, once
     // the new scopes are expanded in memory (#1173, #648).
@@ -15331,7 +15345,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         metadata: (me.scope_metadata ?? []).filter(m => accepted.has(m.scope)),
       })
     }
-    if (metadata.length) this.persistScopeMetadata(metadata)
+    if (metadata.length) this.persistScopeMetadata(metadata, opts?.onConfigWrite)
     return outcomes
   }
 
@@ -15353,12 +15367,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    * and every untouched entry is kept. Same discipline as
    * {@link persistDismissedScopes}: a read error other than ENOENT aborts.
    */
-  private _updateRawStores(mutate: (rawStores: unknown[]) => boolean): void {
+  private _updateRawStores(mutate: (rawStores: unknown[]) => boolean, onConfigWrite?: (before: string | null, after: string) => void): void {
     let wrote = false
     withLock(this.paths.config, () => {
       let configData: Record<string, unknown> = {}
+      let before: string | null = null
       try {
         const raw = fs.readFileSync(this.paths.config, 'utf8')
+        before = raw
         if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
       } catch (err) {
         if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
@@ -15366,7 +15382,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       const rawStores = Array.isArray(configData.stores) ? [...(configData.stores as unknown[])] : []
       if (!mutate(rawStores)) return
       configData.stores = rawStores
-      writeConfigFile(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+      const after = yaml.dump(configData, { lineWidth: 120, noRefs: true })
+      writeConfigFile(this.paths.config, after)
+      onConfigWrite?.(before, after)
       wrote = true
     })
     if (!wrote) return
@@ -15831,7 +15849,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * scopes are named to persistStores (`serverSensitivityScopes`) so
    * mergeStoresForWriteback's raw-forbid restore doesn't discard the update.
    */
-  persistScopeMetadata(discoveries: RemoteScopeDiscovery[]): void {
+  persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (before: string | null, after: string) => void): void {
     // Raw config, not this.config: the in-memory list drops ignored duplicate
     // local entries (#1319), and writing it back would delete them from disk.
     const stores = loadConfig(this.paths.config).stores ?? []
@@ -15889,7 +15907,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
     })
 
-    if (changed) this.persistStores(updated, { serverSensitivityScopes })
+    if (changed) this.persistStores(updated, { serverSensitivityScopes, onConfigWrite })
   }
 
   /**

@@ -206,8 +206,8 @@ describe('connectServerStore', () => {
     const r = await connectServerStore({ plur: p, server: stub.url, token: KEY, personalScope: 'user:acme:alice', configPath: cfg })
 
     expect(order).toEqual(['register:after-backup', 'refresh'])
-    expect(reg).toHaveBeenCalledWith(stub.url, { token: KEY, personalScope: 'user:acme:alice' })
-    expect(ref).toHaveBeenCalledWith({ url: stub.url })
+    expect(reg).toHaveBeenCalledWith(stub.url, { token: KEY, personalScope: 'user:acme:alice', onConfigWrite: expect.any(Function) })
+    expect(ref).toHaveBeenCalledWith({ url: stub.url, onConfigWrite: reg.mock.calls[0][1].onConfigWrite })
     expect(r.status).toBe('added')
     expect(r.discovery.status).toBe('ok')
     expect(r.backupPath).not.toBeNull()

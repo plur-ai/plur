@@ -10,8 +10,8 @@ import { spawnSync } from 'child_process'
 export type ExecFn = (
   cmd: string,
   args: string[],
-  opts?: { env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string }
-) => { status: number; stdout: string }
+  opts?: { env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string; stderr?: boolean }
+) => { status: number; stdout: string; stderr?: string }
 
 /** The command ran past `timeoutMs` and was killed (the `timeout(1)` code). */
 export const EXEC_TIMEOUT_STATUS = 124
@@ -51,7 +51,8 @@ export function createExec(platform: NodeJS.Platform = process.platform): ExecFn
         // timeout would bound nothing. SIGKILL cannot be.
         killSignal: 'SIGKILL',
         input: opts.input,
-        stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
+        // stderr only when asked (a log of `plur init`): a probe never reads it.
+        stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', opts.stderr ? 'pipe' : 'ignore'],
         // A Windows or macOS certificate export runs to a few MB.
         maxBuffer: 64 * 1024 * 1024,
       })
@@ -61,13 +62,19 @@ export function createExec(platform: NodeJS.Platform = process.platform): ExecFn
       return { status: EXEC_START_FAILED_STATUS, stdout: '' }
     }
     const stdout = typeof r.stdout === 'string' ? r.stdout : ''
-    const code = (r.error as NodeJS.ErrnoException | undefined)?.code
-    if (code === 'ETIMEDOUT') return { status: EXEC_TIMEOUT_STATUS, stdout }
-    if (r.error && r.pid === 0) return { status: EXEC_START_FAILED_STATUS, stdout: '' }
-    if (r.error) return { status: code === 'ENOENT' ? EXEC_START_FAILED_STATUS : EXEC_SIGNALLED_STATUS, stdout }
-    if (r.status === null) return { status: EXEC_SIGNALLED_STATUS, stdout }
-    return { status: r.status, stdout }
+    const out = outcome(r, stdout)
+    return opts.stderr ? { ...out, stderr: typeof r.stderr === 'string' ? r.stderr : '' } : out
   }
+}
+
+/** spawnSync's result as a status: timeout, start failure and signal each get their own code. */
+function outcome(r: ReturnType<typeof spawnSync>, stdout: string): { status: number; stdout: string } {
+  const code = (r.error as NodeJS.ErrnoException | undefined)?.code
+  if (code === 'ETIMEDOUT') return { status: EXEC_TIMEOUT_STATUS, stdout }
+  if (r.error && r.pid === 0) return { status: EXEC_START_FAILED_STATUS, stdout: '' }
+  if (r.error) return { status: code === 'ENOENT' ? EXEC_START_FAILED_STATUS : EXEC_SIGNALLED_STATUS, stdout }
+  if (r.status === null) return { status: EXEC_SIGNALLED_STATUS, stdout }
+  return { status: r.status, stdout }
 }
 
 export const realExec: ExecFn = createExec()

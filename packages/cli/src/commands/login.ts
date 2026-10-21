@@ -198,7 +198,8 @@ const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
 /** C3 user codes: two groups of four consonants (no vowels, no digits). */
 const USER_CODE_RE = /^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/
 /** A PLUR device key: `plur_sk_` and at least 16 base64url characters. */
-const KEY_RE = /^plur_sk_[A-Za-z0-9_-]{16,}$/
+export const DEVICE_KEY_RE = /^plur_sk_[A-Za-z0-9_-]{16,}$/
+const KEY_RE = DEVICE_KEY_RE
 const UNEXPECTED = 'unexpected answer from the server'
 /** RFC 8628 §3.5: each slow_down (and a 429 without Retry-After) adds 5 s. */
 const SLOW_DOWN_MS = 5_000
