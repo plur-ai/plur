@@ -93,20 +93,49 @@ def test_strict_flag_is_parsed():
     assert sep.parse_args(["x"]) is None
 
 
+
+SCRIPT = str(Path(__file__).with_name("check-eval-separation.py"))
+# The developer's own git config must not decide the outcome: a global
+# diff.renames=false would hide the regression, commit signing or a failing
+# hooks path would break the setup.
+HERMETIC = {**__import__("os").environ, "GIT_CONFIG_GLOBAL": __import__("os").devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def scratch_repo(d: str):
+    git = lambda *a: subprocess.run(["git", "-C", d, *a], check=True, capture_output=True, env=HERMETIC)
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com"); git("config", "user.name", "t")
+    (Path(d) / "evals/inject").mkdir(parents=True)
+    (Path(d) / "packages/core/test").mkdir(parents=True)
+    (Path(d) / "packages/core/src").mkdir(parents=True)
+    (Path(d) / "evals/inject/test_promise_INJ9_b.test.ts").write_text("// eval\n")
+    git("add", "-A"); git("commit", "-qm", "base")
+    git("checkout", "-qb", "stacked")
+    return git
+
+
+def check(d: str, *args: str):
+    return subprocess.run([sys.executable, SCRIPT, "main", *args], cwd=d, capture_output=True, text=True, env=HERMETIC)
+
+
 def test_moving_an_eval_out_of_evals_is_caught():
     """A rename must be judged by its old path too, or a failing eval can be moved out of a promise."""
-    script = str(Path(__file__).with_name("check-eval-separation.py"))
     with tempfile.TemporaryDirectory() as d:
-        git = lambda *a: subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)
-        git("init", "-q", "-b", "main")
-        git("config", "user.email", "t@example.com"); git("config", "user.name", "t")
-        (Path(d) / "evals/inject").mkdir(parents=True)
-        (Path(d) / "packages/core/test").mkdir(parents=True)
-        (Path(d) / "evals/inject/test_promise_INJ9_b.test.ts").write_text("// eval\n")
-        git("add", "-A"); git("commit", "-qm", "base")
-        git("checkout", "-qb", "stacked")
+        git = scratch_repo(d)
         git("mv", "evals/inject/test_promise_INJ9_b.test.ts", "packages/core/test/moved.test.ts")
         git("commit", "-qm", "move the eval out")
-        r = subprocess.run([sys.executable, script, "main", "--strict"], cwd=d, capture_output=True, text=True)
+        r = check(d, "--strict")
         assert r.returncode == 1, r.stdout + r.stderr
         assert "evals/inject/test_promise_INJ9_b.test.ts" in r.stdout, r.stdout
+
+
+def test_a_source_file_with_a_quoted_name_is_still_source():
+    """git quotes non-ASCII paths without -z; the quoted form must not escape the source pattern."""
+    with tempfile.TemporaryDirectory() as d:
+        git = scratch_repo(d)
+        (Path(d) / "evals/inject/test_promise_INJ9_b.test.ts").write_text("// eval, edited\n")
+        (Path(d) / "packages/core/src/\u00e9.ts").write_text("export {}\n")
+        git("add", "-A"); git("commit", "-qm", "eval and source together")
+        r = check(d)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "packages/core/src/\u00e9.ts" in r.stdout, r.stdout

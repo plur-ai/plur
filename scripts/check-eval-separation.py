@@ -10,7 +10,7 @@ judge gets loosened on the day it would have gone red -- Datacore's first evals
 were weakened exactly that way. Eval changes go in their own pull request,
 approved by a code owner.
 
-Usage: check-eval-separation.py <base-ref> [--strict]   (reads `git diff --name-only --no-renames <base>...HEAD`)
+Usage: check-eval-separation.py <base-ref> [--strict]   (reads `git diff --name-only --no-renames -z <base>...HEAD`)
 Exit 1 when both kinds changed; prints the files.
 
 --strict is for the overnight agent's stacked pull requests (fourth audit A4-01): the
@@ -65,12 +65,15 @@ def main(argv: list[str]) -> int:
     # --no-renames: a moved file is listed under both its old and new path. With
     # rename detection, moving an eval out of evals/ shows only the new path, so
     # the check would pass while the runner silently drops that eval.
-    out = subprocess.run(["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"],
+    # -z: paths are NUL-separated and never quoted. Without it git quotes a path
+    # with non-ASCII characters, quotes or control characters, and the quoted
+    # form matches neither the judge nor the source patterns.
+    out = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD"],
                          capture_output=True, text=True)
     if out.returncode != 0:
         print(f"could not tell: git diff failed: {out.stderr.strip()}", file=sys.stderr)
         return 1
-    paths = [p for p in out.stdout.splitlines() if p.strip()]
+    paths = [p for p in out.stdout.split("\0") if p.strip()]
     if strict:
         refused = strict_refused(paths)
         if refused:
