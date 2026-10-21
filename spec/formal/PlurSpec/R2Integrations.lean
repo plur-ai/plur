@@ -39,6 +39,13 @@ cache and never retires an engram, so `sessStart`'s effects row (writes, no
 retirement, repeat adds, copy remains) and its annotations (not read-only,
 not destructive, not idempotent) are unchanged; §1's theorems about it stand.
 No other tool's annotations or plur_admin dispatch changed.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.R2Integrations
@@ -784,3 +791,7 @@ theorem absent_allowed (n : String) : allowedFixed false n = true := rfl
 theorem orig_colon_port_allowed : allowedOrig true "" = true := by decide
 
 end PlurSpec.R2Integrations
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/

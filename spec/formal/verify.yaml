@@ -145,6 +145,13 @@ models:
   - model: PlurSpec/GitScope.lean
     covers:
       - packages/core/src/git-origin.ts
+  - model: PlurSpec/GitFolder.lean
+    covers:
+      - packages/core/src/folders.ts
+      - packages/core/src/index.ts
+      - packages/cli/src/lib/folder-gate.ts
+      - packages/mcp/src/server.ts
+      - packages/opencode/src/scope.ts
   - model: PlurSpec/Login.lean
     covers:
       - packages/cli/src/commands/login.ts
@@ -152,3 +159,17 @@ models:
       - packages/cli/src/enterprise/device-name.ts
       - packages/cli/src/enterprise/sign-in-shared.ts
       - packages/cli/src/enterprise/server-store.ts
+
+  - model: PlurSpec/SaveDestination.lean
+    covers:
+      - packages/cli/src/lib/hook-runs.ts
+      - packages/cli/src/lib/server-session.ts
+      - packages/cli/src/commands/hook-inject.ts
+      - packages/cli/src/commands/hook-codex-session-start.ts
+      - packages/cli/src/commands/hook-cursor-session-start.ts
+      - packages/mcp/src/server.ts
+      - packages/core/src/save-destination.ts
+      - packages/core/src/enterprise.ts
+      - packages/core/src/index.ts
+      - packages/cli/src/commands/learn.ts
+      - packages/mcp/src/tools.ts

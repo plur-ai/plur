@@ -80,6 +80,13 @@ holders, the same message); it is now a `PersonalScopeTakenError` that names tho
 `removeStale` drops exactly them before the same registration runs again, in the same locked write
 (modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
 The outbox and the push path are untouched; `queued_by_scope` is counted as before.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.Outbox
@@ -465,3 +472,11 @@ theorem force_delivers_unconflicted {β} (bump : β → β) (w : Bool) (e : Entr
   cases w <;> rfl
 
 end PlurSpec.Outbox
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/- 2026-10-19: serverSessionLines reads cached configuration and the existing
+primary outbox projection. It does not probe, route, deliver or mutate memory.
+These transition invariants still hold; status precedence is in SaveDestination. -/

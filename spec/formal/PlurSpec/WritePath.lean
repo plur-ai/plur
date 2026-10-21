@@ -63,6 +63,13 @@ holders, the same message); it is now a `PersonalScopeTakenError` that names tho
 `removeStale` drops exactly them before the same registration runs again, in the same locked write
 (modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
 No write-path branch changed: the entries left are routed as before.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.WritePath
@@ -1735,3 +1742,11 @@ theorem old_vanished_history :
     rescopeOneOld .landed .vanished = some ⟨.rescoped, true, true⟩ := rfl
 
 end PlurSpec.WritePath
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/- 2026-10-19: serverSessionLines reads cached configuration and the existing
+primary outbox projection. It does not probe, route, deliver or mutate memory.
+These transition invariants still hold; status precedence is in SaveDestination. -/

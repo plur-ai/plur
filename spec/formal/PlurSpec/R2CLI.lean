@@ -51,6 +51,13 @@ hook-inject's deferred wrap-up and hook-session-end capture no episode for a rem
 folder (the checkpoint is removed) and none for a folder that cannot be resolved (the
 checkpoint is kept); hook-agy-pre-invocation binds its instance. Checkpoint vetting, session
 identity, the inject lock, counters, the doctor verdict and turn identity are unchanged.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.R2CLI
@@ -646,3 +653,12 @@ theorem old_removes_live : removesLive oldTakeover 1 (some 2) :=
 end InjectLock
 
 end PlurSpec.R2CLI
+
+/-! Checked 2026-10-19: initial-session cached server status and hook-run timestamps
+add presentation/diagnostic metadata only. Existing admission, persistence and
+write rules are unchanged. SaveDestination.SessionStatusAdapter models workspace
+status selection; real hook and stdio tests check adapter integration. -/
+
+/- 2026-10-19: Hook execution timestamps are recorded only after the off-folder
+guard. Disabled memory retains its no-store-write boundary; admitted hooks keep
+the existing timestamp and status behavior. No routing or delivery rule changes. -/

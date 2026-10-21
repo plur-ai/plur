@@ -156,6 +156,8 @@ describe('every public Plur method in a remote-only folder', () => {
       verifyRemoteStore: [{ url: baseUrl, token: TOKEN, scope: TEAM }], autoDiscoveryEnabled: [], isDirectoryTrusted: [work],
       trustDirectory: [join(base, 'elsewhere')], untrustDirectory: [join(base, 'elsewhere')], listTrustedDirectories: [],
       coveringTrustedAncestor: [work], resolveFolderPolicy: [work], remoteOnlyFolder: [], listFolders: [],
+      gitScopeSources: [], folderDefaultScope: [work],
+      serverSessionLines: [work],
       setFolder: [join(base, 'elsewhere'), { mode: 'off' }], removeFolder: [join(base, 'elsewhere')],
       issueFolderNonce: ['s1', join(base, 'elsewhere'), { mode: 'on' }], endFolderNonceSession: ['s1'],
       autoDiscoverStores: [work], listStores: [], listStoresAsync: [], warmRemoteCaches: [], getWritableRemoteScopes: [],

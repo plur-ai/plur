@@ -911,6 +911,8 @@ export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
  */
 export interface FolderScopeContext {
   resolve(): Promise<{ scope: string | null; key: string } | null>
+  /** Cached status for the policy admitted by the gate, never process cwd. */
+  serverStatus?(explicitScope?: string): Promise<string[]>
   /**
    * The same answer for the workspace the folder gate admitted this call in
    * (#1566), with no new roots request. Reads use it; writes use resolve(),
@@ -1816,6 +1818,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // more specific `warning` below (outbox, demotion, refusal) still
             // wins that key; `delivery_warning` keeps this one either way.
             delivery: delivered.delivery,
+            destination: delivered.destination,
             // Which server holds it (normalized endpoint, no userinfo), when
             // delivery is remote and this process can tell (Codex round 5).
             ...(delivered.host ? { delivered_to: delivered.host } : {}),
@@ -1862,6 +1865,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, ...learnDecision(engram),
             delivery: delivered.delivery,
+            destination: delivered.destination,
             ...(delivered.host ? { delivered_to: delivered.host } : {}),
             ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
@@ -2128,6 +2132,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             input_index: r.input_index,
             id: isOutbox ? r.engram.id : plur.readIdFor(r.engram),
             delivery: delivered.delivery,
+            destination: delivered.destination,
             ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
             ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
             statement: r.engram.statement,
@@ -4086,6 +4091,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           for (const w of discoveryWarnings(server_discovery)) guide += `\n\n${w}`
         } catch { /* a status row is never worth failing session_start over */ }
 
+        let server_status: string[] = []
+        try {
+          server_status = folderCtx?.serverStatus
+            ? await folderCtx.serverStatus(explicit_default_scope ?? undefined)
+            : await plur.serverSessionLines(process.cwd(), default_scope
+              ? { mode: 'on', source: 'map', remoteAllowed: true, scope: default_scope } : undefined)
+        } catch {
+          server_status = ['PLUR → server · ⚠ cached status could not be read; run plur doctor']
+        }
+        for (const line of server_status) guide += `\n\n${line}`
+
         // #761: the lean surface is invisible in tools/list, and session_start
         // is the first tool an agent calls — one line here tells it the
         // gateway exists BEFORE it ever misses a name and concludes the MCP
@@ -4109,6 +4125,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           store_stats,
           ...(store_errors ? { store_errors } : {}),
           guide,
+          server_status,
           // Remote scope routing info (#229)
           ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
           // #1631: each company server's cached scope count and discovery
@@ -4420,6 +4437,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
 
         let engrams_created = 0
+        const engram_results: Array<{ index: number; id: string; scope: string; delivery: string; destination: string }> = []
         const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
         for (let i = 0; i < items.length; i++) {
           const { statement, type } = items[i]
@@ -4430,7 +4448,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             // at the tool-call markers (`</statement>`, `<parameter name=`),
             // and session_end is the write path where an agent transcribing its
             // own session is most likely to carry them in.
-            await plur.learnRouted(sanitizeStatement(statement), {
+            const saved = await plur.learnRouted(sanitizeStatement(statement), {
               type: type as any,
               // E7: no resolvable session → no session default; through the
               // server, the workspace's answer (#1563 review round 2).
@@ -4442,6 +4460,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               // happened, not something the user stated outright (#963).
               claim_class: 'inferred',
             })
+            const delivered = plur.deliveryOf(saved)
+            engram_results.push({ index: i, id: delivered.delivery === "outbox" ? saved.id : plur.readIdFor(saved), scope: saved.scope, delivery: delivered.delivery, destination: delivered.destination })
             engrams_created++
           } catch (err) {
             engrams_failed.push({ index: i, statement: statement.slice(0, 80), error: (err as Error).message })
@@ -4510,6 +4530,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         return {
           engrams_created,
+          engram_results,
           ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode?.id ?? null,
           total_engrams: status.engram_count,

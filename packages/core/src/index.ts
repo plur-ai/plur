@@ -80,6 +80,11 @@ import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
+import { loadGitScopeSources, readGitOrigin, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
+import { formatSaveDestination, formatServerSessionLine, type ServerSessionState } from './save-destination.js'
+export { formatSaveDestination, formatServerSessionLine, type SaveDestinationInput, type ServerSessionState } from './save-destination.js'
+export { ENTERPRISE_SETUP_COMMAND } from './enterprise.js'
+export { loadGitScopeSources, gitDefaultScope, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import type { StorageAdapter } from './storage-adapter.js'
@@ -1440,7 +1445,7 @@ export class Plur {
   }
 
   /** The binding a locked store operation captured at its start (R3-5). */
-  private static _lockBinding = new AsyncLocalStorage<{ plur: Plur; binding: RemoteOnlyBinding | null }>()
+  private static _lockBinding = new AsyncLocalStorage<{ plur: Plur; binding: RemoteOnlyBinding | null; git?: GitScopeOutcome }>()
   private _activeBinding(): RemoteOnlyBinding | null {
     const ctx = Plur._lockBinding.getStore()
     return ctx && ctx.plur === this ? ctx.binding : this._boundFolder
@@ -1539,6 +1544,7 @@ export class Plur {
    * `session-scopes.ts` for why that could not survive the async write path.
    */
   private _sessionScopes = new SessionScopeRegistry()
+  private _gitOrigins = new Map<string, { at: number; origin: OriginRead }>()
   /**
    * Set when this instance is bound to a `remote-only` folder
    * (`bindFolder` / `bindFolderPolicy`, owner decisions 2026-10-01): writes go
@@ -1547,6 +1553,13 @@ export class Plur {
    * everywhere else, where nothing below changes.
    */
   private _boundFolder: RemoteOnlyBinding | null = null
+  private _boundGit?: GitScopeOutcome
+  private _gitFolderScope(): string | null {
+    const ctx = Plur._lockBinding.getStore()
+    const git = ctx?.plur === this ? ctx.git : this._boundGit
+    return git?.kind === 'scope' ? git.scope
+      : git?.kind === 'local' || git?.kind === 'unknown' ? 'local' : null
+  }
   /**
    * The binding in effect for THIS operation (Codex round 8 on #1663): the
    * one a public mutator captured when it started, else the current one. A
@@ -1558,7 +1571,7 @@ export class Plur {
   private _captured<T>(fn: () => T): T {
     const ctx = Plur._lockBinding.getStore()
     if (ctx?.plur === this) return fn()
-    return Plur._lockBinding.run({ plur: this, binding: this._boundFolder }, fn)
+    return Plur._lockBinding.run({ plur: this, binding: this._boundFolder, git: this._boundGit }, fn)
   }
   /**
    * Cross-encoder reranker adapter (#220). Resolved lazily on first recall with
@@ -2584,7 +2597,7 @@ export class Plur {
     // write. A nested lock keeps the outer operation's binding.
     const ctx = Plur._lockBinding.getStore()
     if (ctx?.plur === this) return await this._withStoreLockBound(path, fn, lockOptions)
-    return await Plur._lockBinding.run({ plur: this, binding: this._boundFolder }, () => this._withStoreLockBound(path, fn, lockOptions))
+    return await Plur._lockBinding.run({ plur: this, binding: this._boundFolder, git: this._boundGit }, () => this._withStoreLockBound(path, fn, lockOptions))
   }
 
   private async _withStoreLockBound<T>(path: string, fn: () => Promise<T>, lockOptions?: AsyncLockOptions): Promise<T> {
@@ -4459,7 +4472,7 @@ export class Plur {
     // not read off a shared field — under concurrent sessions the shared field
     // let one session's `setSessionScope` decide another session's write. See
     // `session-scopes.ts`.
-    const sessionScope = this._sessionScopes.get(context?.session)
+    const sessionScope = this._sessionScopes.get(context?.session) ?? this._gitFolderScope()
     let routed: { scope: string; confidence: number; reason: string } | null = null
     let refusedShared: { scope: string; confidence: number; reason: string } | null = null
     let scope: string
@@ -5688,7 +5701,29 @@ export class Plur {
    * warning names the requested scope, not the one it landed in. A sensitive-
    * content demotion is excluded: it already carries its own warning.
    */
-  deliveryOf(engram: Engram, requestedScope?: string): {
+  deliveryOf(engram: Engram, requestedScope?: string, folder?: GitScopeOutcome | null) {
+    const delivered = this._deliveryDetails(engram, requestedScope)
+    const target = resolveScopeTarget(engram.scope, this.config.stores ?? [])
+    const ctx = Plur._lockBinding.getStore()
+    const git = requestedScope !== undefined ? null
+      : folder === undefined ? (ctx?.plur === this ? ctx.git : this._boundGit) : folder
+    const demoted = (engram as any).structured_data?._demoted as { from: string } | undefined
+    const mismatch = requestedScope && requestedScope !== engram.scope && isSharedScope(requestedScope)
+      && !(engram as any).structured_data?._demoted
+    const localReason = demoted
+      ? `sensitive content was kept private instead of being sent to ${demoted.from}`
+      : mismatch ? `recorded on an existing memory in ${engram.scope}; nothing was sent to ${requestedScope}`
+      : isSharedScope(engram.scope) && urlGroupsForScope(engram.scope, this.config.stores ?? []).length > 0
+        ? `this save was not sent to the store for ${engram.scope}` : undefined
+    return { ...delivered, destination: formatSaveDestination({
+      delivery: delivered.delivery, scope: engram.scope, server: delivered.host,
+      shared: isSharedScope(engram.scope), folder: git,
+      unauthorizedOn: target.kind === 'unauthorized' ? target.server : undefined,
+      queuedReason: delivered.reason, localReason,
+    }) }
+  }
+
+  private _deliveryDetails(engram: Engram, requestedScope?: string): {
     delivery: LearnDelivery
     warning?: string
     /** Only for `outbox`: why it was queued, in plain words, with what to do. */
@@ -7636,6 +7671,13 @@ export class Plur {
     deadlineAt?: number,
   ): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null {
     if (options?.remote === false) return null
+    // An origin-derived local/unknown default is a privacy boundary even for
+    // always-dial stores. Explicit call/session scopes remain deliberate choices.
+    if (!this._remoteOnly && options?.scope == null && this._sessionScopes.get(options?.session) == null) {
+      const scope = this._gitFolderScope()
+      if (scope === 'local') return null
+      if (scope) options = { ...options, scope }
+    }
     if (isRemoteRecallDisabled()) return null
     if (!query || !query.trim()) return null
     const hosts = this._remoteRecallHosts(options)
@@ -14510,8 +14552,79 @@ Generate an improved version of the procedure that prevents this failure. Return
   resolveFolderPolicy(dir: string, options?: { home?: string; readOnly?: boolean }): FolderPolicy {
     return _resolveFolderPolicy(dir, {
       root: this.paths.root,
+      gitScopes: loadGitScopeSources(this.paths.root),
+      readOrigin: d => {
+        const path = canonicalize(d)
+        const now = Date.now()
+        const cached = this._gitOrigins.get(path)
+        if (cached && now >= cached.at && now - cached.at < 30_000) return cached.origin
+        const origin = readGitOrigin(path)
+        // Bound memory for long-lived clients that visit many folders.
+        if (this._gitOrigins.size >= 256) this._gitOrigins.clear()
+        this._gitOrigins.set(path, { at: now, origin })
+        return origin
+      },
       ...(options?.home ? { home: options.home } : {}),
       ...(options?.readOnly ? { readOnly: true } : {}),
+    })
+  }
+
+  gitScopeSources(): GitScopeSource[] {
+    return loadGitScopeSources(this.paths.root)
+  }
+
+  folderDefaultScope(dir: string): { mode: FolderPolicy['mode']; scope: string | null; git: GitScopeOutcome | null } {
+    const policy = this.resolveFolderPolicy(dir, { readOnly: true })
+    return { mode: policy.mode, scope: policy.scope ?? null, git: policy.git ?? null }
+  }
+
+  /** Cached server status; async only because primary outbox storage is async. */
+  async serverSessionLines(dir: string, admittedPolicy?: FolderPolicy): Promise<string[]> {
+    this.reloadConfigIfChanged()
+    const entries = this._readRawStores().filter(isEnterpriseServerEntry)
+    if (!entries.length) return []
+    const policy = admittedPolicy ?? this.resolveFolderPolicy(dir, { readOnly: true })
+    const queued = (await this.listOutbox()).filter(e => e.kind === 'push')
+    // A grant may disappear while its save is still queued. Match durable
+    // endpoint evidence, not a mutable scopes list. Keep endpoints private.
+    const originalTargets = new Map<string, string>()
+    if (queued.length) for (const row of await this._loadCached(this.paths.engrams)) {
+      const url = (row as any).structured_data?._outbox?.target_url
+      if (typeof url === 'string') originalTargets.set(row.id, normalizeEndpointUrl(url))
+    }
+    return entries.map(entry => {
+      const cache = isPlainObject(entry.discovery) ? entry.discovery : {}
+      const waiting = queued.filter(e => {
+        const current = this._remoteWriteEntry(e.target_scope)?.url
+        const target = current ? normalizeEndpointUrl(current) : originalTargets.get(e.id)
+        return target === normalizeEndpointUrl(entry.url)
+      })
+      const action = waiting.find(e => e.state === 'needs_action')
+      const dates = waiting.map(e => e.queued_at).filter(d => Number.isFinite(Date.parse(d))).sort()
+      const status = (['ok', 'not_synced', 'failed', 'auth_failed', 'degraded'] as const).find(s => s === cache.status) ?? 'never'
+      // An agreed explicit/effective scope outranks how individual roots
+      // obtained it. Remote-only also keeps its scope above Git defaults.
+      const target: ServerSessionState['target'] = policy.scope ? { kind: 'map', scope: policy.scope } : policy.git ?? null
+      const targetScope = target?.kind === 'scope' || target?.kind === 'map' ? target.scope : undefined
+      const route = targetScope ? resolveScopeTarget(targetScope, this.config.stores ?? []) : undefined
+      const writeWarning = route?.kind === 'remote' && route.entry.readonly
+        ? `the store for ${targetScope} is read-only`
+        : route?.kind === 'conflict' ? `more than one server claims ${targetScope}; choose a single store`
+        : route?.kind === 'unauthorized' ? `${targetScope} is not granted to you on this server`
+        : route?.kind === 'local' ? `saves for ${targetScope} stay on this laptop; no writable server store is registered`
+        : route?.kind === 'remote' && normalizeEndpointUrl(route.entry.url!) !== normalizeEndpointUrl(entry.url)
+          ? 'this repository saves to another server' : undefined
+      return formatServerSessionLine({
+        host: normalizeEndpointUrl(entry.url),
+        username: typeof cache.username === 'string' ? cache.username : undefined,
+        status,
+        target, writeWarning,
+        keyExpiresAt: cache.key_expires_at === null || typeof cache.key_expires_at === 'string' ? cache.key_expires_at : undefined,
+        ...(waiting.length ? { queued: {
+          count: waiting.length, since: dates[0]?.slice(0, 10) ?? 'an unknown date', needsAction: !!action,
+          ...(action && action.last_status !== 401 && action.last_status !== 403 ? { reason: 'the queued save needs attention' } : {}),
+        } } : {}),
+      })
     })
   }
 
@@ -14534,6 +14647,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * server) follows the map as it changes.
    */
   bindFolderPolicy(dir: string, policy: FolderPolicy): void {
+    this._boundGit = policy.mode === 'on' ? policy.git : undefined
     if (policy.reason === 'malformed-map' || policy.reason === 'resolver-error') {
       // Fail safe (audit of #1521, S3; audit F4 of #1517): the map may hold an
       // `off` or a remote-only decision we cannot see, so read and write nothing.
@@ -14555,6 +14669,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * succeeds.
    */
   bindFolderUnresolved(dir: string, why: string): void {
+    this._boundGit = undefined
     this._boundFolder = { folder: dir, scope: null, blocked: `the folder decision for ${folderEscaped(dir)} could not be resolved (${folderEscaped(why)})` }
   }
 
@@ -15905,11 +16020,11 @@ for (const name of Object.getOwnPropertyNames(Plur.prototype)) {
   const original = d.value as (...args: unknown[]) => unknown
   // The capture itself is inline (no method of the instance is called), so a
   // call is exactly one call on the instance: the folder-off test counts them.
-  const als = (Plur as unknown as { _lockBinding: AsyncLocalStorage<{ plur: Plur; binding: RemoteOnlyBinding | null }> })._lockBinding
+  const als = (Plur as unknown as { _lockBinding: AsyncLocalStorage<{ plur: Plur; binding: RemoteOnlyBinding | null; git?: GitScopeOutcome }> })._lockBinding
   const wrapped = function (this: Plur, ...args: unknown[]) {
     const ctx = als.getStore()
     if (ctx?.plur === this) return original.apply(this, args)
-    return als.run({ plur: this, binding: (this as unknown as { _boundFolder: RemoteOnlyBinding | null })._boundFolder }, () => original.apply(this, args))
+    return als.run({ plur: this, binding: (this as unknown as { _boundFolder: RemoteOnlyBinding | null })._boundFolder, git: (this as unknown as { _boundGit?: GitScopeOutcome })._boundGit }, () => original.apply(this, args))
   }
   Object.defineProperty(wrapped, BINDING_CAPTURED, { value: true })
   Object.defineProperty(Plur.prototype, name, { ...d, value: wrapped })

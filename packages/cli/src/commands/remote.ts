@@ -380,6 +380,7 @@ const SOURCE_LABEL: Record<FolderPolicy['source'], string> = {
   'plur-yaml': "this repo's .plur.yaml",
   'mcp-config': 'a project MCP config',
   default: 'no decision recorded',
+  git: "this repo's origin and the server's project mapping",
 }
 
 async function show(flags: GlobalFlags): Promise<void> {

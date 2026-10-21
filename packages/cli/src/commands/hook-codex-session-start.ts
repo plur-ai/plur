@@ -3,6 +3,8 @@ import { hookFolderPolicy, payloadDir, sessionSettings, clearFolderAsk, isResume
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
+import { recordHookRun } from '../lib/hook-runs.js'
+import { cachedServerLines } from '../lib/server-session.js'
 
 /**
  * plur hook-codex-session-start — Codex `SessionStart` hook.
@@ -37,6 +39,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // asked by hook-codex-inject on the first prompt; `off` is silent.
     const dir = payloadDir(input)
     const policy = hookFolderPolicy(dir, flags)
+    if (policy.mode !== 'off' && policy.reason !== 'malformed-map' && policy.reason !== 'resolver-error' && input.source !== 'compact') recordHookRun('codex', flags.path)
     if (policy.mode !== 'on' && policy.mode !== 'remote-only') return
     const sessionId = codexSessionId(input)
     if (!sessionId) return
@@ -77,7 +80,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)}\n\n`
         : ''
       // remote-only: where memory goes, and that the team server did not answer.
-      const fullHeader = [header, ...remoteOnlyLines(plur, result, true)].join('\n')
+      const serverLines = input.source === 'compact' ? [] : await cachedServerLines(plur, dir, policy)
+      const fullHeader = [header, ...serverLines, ...remoteOnlyLines(plur, result, true)].join('\n')
       context = refusal + (body ? `${fullHeader}\n\n${body}` : fullHeader)
     } catch (err: unknown) {
       context = '[PLUR Memory — injection FAILED at session start] ' +

@@ -6,6 +6,8 @@ import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule, removeGeneratedContextRules } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
+import { recordHookRun } from '../lib/hook-runs.js'
+import { cachedServerLines } from '../lib/server-session.js'
 
 /**
  * plur hook-cursor-session-start — Cursor `sessionStart` hook.
@@ -62,6 +64,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     for (const root of cleanupDirs ?? (dir ? [dir] : [])) removeGeneratedContextRules(root)
     return
   }
+  recordHookRun('cursor', flags.path)
   if (dir && policy.mode === 'ask') removeStaleAsk(cursorContextRulePath(dir))
   // remote-only (also an `ask` workspace with a remote-only root): another
   // root's generated rule may hold personal memory from an earlier session;
@@ -140,6 +143,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         (hint ? `\n${hint}` : ''),
       // remote-only: where memory goes, and that the team server did not answer.
       ...remoteOnlyLines(plur, result, true),
+      ...await cachedServerLines(plur, dir, policy),
     ].join('\n')
 
     // A refused .plur.yaml is still worth saying: the user's scope routing is

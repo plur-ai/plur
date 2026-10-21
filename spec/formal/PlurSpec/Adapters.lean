@@ -73,6 +73,13 @@ scope list and adds a `discovery` reply field. It does not touch the
 session-scope registry or its default-scope slot (§1), `_cleanExpiredSessions`
 or session_end (§2), or the `.plur.yaml` trust gate (§9): `default_scope` and
 `scope_source` are computed exactly as before.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.Adapters
@@ -1220,3 +1227,16 @@ theorem orig_remedy_promises_the_impossible :
     offersTrustAloneOrig .noTrust = true ∧ grantCanHelp .noTrust = false := ⟨rfl, rfl⟩
 
 end PlurSpec.Adapters
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/-! Checked 2026-10-19: initial-session cached server status and hook-run timestamps
+add presentation/diagnostic metadata only. Existing admission, persistence and
+write rules are unchanged. SaveDestination.SessionStatusAdapter models workspace
+status selection; real hook and stdio tests check adapter integration. -/
+
+/- 2026-10-19: Hook execution timestamps are recorded only after the off-folder
+guard. Disabled memory retains its no-store-write boundary; admitted hooks keep
+the existing timestamp and status behavior. No routing or delivery rule changes. -/
