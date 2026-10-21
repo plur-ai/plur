@@ -4,6 +4,16 @@ libraries: [PlurSpec]
 allowed_axioms: [propext, Classical.choice, Quot.sound]
 strict_drift: false   # true: a stale model fails CI instead of warning
 models:
+  - model: PlurSpec/EnterpriseInit.lean
+    covers:
+      - packages/core/src/index.ts
+      - packages/cli/src/enterprise.ts
+      - packages/cli/src/enterprise/init.ts
+      - packages/cli/src/enterprise/command.ts
+      - packages/cli/src/enterprise/server-store.ts
+      - packages/cli/src/enterprise/hello.ts
+      - packages/cli/src/enterprise/summary.ts
+      - packages/cli/src/commands/upload.ts
   - model: PlurSpec/UploadCommand.lean
     covers:
       - packages/cli/src/commands/upload.ts

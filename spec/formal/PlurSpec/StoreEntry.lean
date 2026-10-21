@@ -1169,4 +1169,11 @@ flush with a selected-id filter. Existing route, sensitivity, binding and
 retirement invariants remain in force. UploadLocal models the new admission,
 selection, dry-run and receipt rules. Held receipts are never cached as live. -/
 
+/-! 2026-10-19: Installer legacy personal JWT conversion is explicitly opted in,
+limited to one exact verified personal route on the same endpoint, and guarded
+by a protected backup comparison under the existing config lock. Generic fold,
+route resolution, discovery and outbox rules are unchanged. EnterpriseInit.Legacy
+models its admission and refusal boundaries. Metadata is preserved through the
+existing fold; queued idempotency keys are untouched. -/
+
 /- 2026-10-20: Configuration normalization, registration, folding and store identity are unchanged. Replacement delivery uses the existing resolver and records the actual accepting endpoint; Outbox.lean now distinguishes this from queued-write identity. -/

@@ -18,3 +18,7 @@ theorem queued_not_delivered : delivered .queued = false := rfl
 theorem sensitive_not_delivered : delivered .sensitive = false := rfl
 theorem failed_not_delivered : delivered .failed = false := rfl
 end PlurSpec.UploadCommand
+
+/-! 2026-10-19: the initializer's candidate count now resolves each advertised
+scope through the same unambiguous writable-remote filter as the upload command.
+This only narrows the preview count; no send or consent rule changes. -/

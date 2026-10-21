@@ -96,6 +96,9 @@ export interface ConnectResult {
   status: 'added' | 'updated' | 'unchanged'
   fold: FoldReport
   discovery: ServerDiscoveryOutcome
+  migratedLegacy?: boolean
+  /** Restore only this uninterrupted sequence of writes; never serialize its private snapshots. */
+  rollback: () => OwnerOnlyResult
 }
 
 /**
@@ -130,6 +133,7 @@ export async function connectServerStore(opts: {
   personalScope: string
   configPath: string
   backupHost?: BackupHost
+  migrateLegacyPersonal?: boolean
 }): Promise<ConnectResult> {
   const { plur, server, token, configPath } = opts
   const scrub = (err: unknown): Error => {
@@ -152,27 +156,44 @@ export async function connectServerStore(opts: {
   }
 
   const undoConsole = redactConsoleWith(token)
+  let expected = backupPath ? readFileSync(backupPath, 'utf8') : null
+  const original = expected
+  let interrupted = false
+  const onConfigWrite = (before: string | null, after: string) => {
+    if (before !== expected) interrupted = true
+    expected = after
+  }
+  const rollback = (): OwnerOnlyResult => {
+    if (interrupted) throw new Error('config.yaml changed during installation; it was preserved. Inspect the backup before restoring it.')
+    return rollbackServerStore(backupPath, configPath, expected === null ? null : Buffer.from(expected), original === null ? undefined : Buffer.from(original))
+  }
   try {
     let registered: Awaited<ReturnType<Plur['registerEnterpriseServer']>>
     try {
-      registered = await plur.registerEnterpriseServer(server, { token, personalScope: opts.personalScope })
+      registered = await plur.registerEnterpriseServer(server, { token, personalScope: opts.personalScope, onConfigWrite,
+        ...(opts.migrateLegacyPersonal ? { migrateLegacyPersonal: true, beforeLegacyMigration: (path: string) => {
+          if (!backupPath || readFileSync(path, 'utf8') !== expected || readFileSync(backupPath, 'utf8') !== expected) {
+            throw new Error('The legacy configuration changed after its backup. Nothing was changed; retry installation.')
+          }
+        } } : {}),
+      })
     } catch (err) {
       // A refusal writes nothing. Any other throw may come after core wrote
       // (a reload after the write, say): put the backup back first.
       if (err instanceof PersonalScopeTakenError) throw scrub(err)
       if (err instanceof SignInHeldError) throw new SignInHeldError(redactToken(err.message, token))
-      throw restoreThen(scrub(err), backupPath, configPath, scrub)
+      throw restoreThen(scrub(err), backupPath, rollback, scrub)
     }
 
     try {
-      const outcomes = await plur.refreshServerScopes({ url: server })
+      const outcomes = await plur.refreshServerScopes({ url: server, onConfigWrite })
       const discovery = outcomes[0] ?? {
         url: server, status: 'failed' as const, applied: false, scopes: [], rejected: [], pinned_unlisted: [],
         error: 'the server entry was not found after registration',
       }
-      return redactDeep({ backupPath, status: registered.status, fold: registered.fold, discovery }, token)
+      return { ...redactDeep({ backupPath, status: registered.status, fold: registered.fold, discovery, ...(registered.migratedLegacy ? { migratedLegacy: true } : {}) }, token), rollback }
     } catch (err) {
-      throw restoreThen(scrub(err), backupPath, configPath, scrub)
+      throw restoreThen(scrub(err), backupPath, rollback, scrub)
     }
   } finally {
     undoConsole()
@@ -201,9 +222,9 @@ function redactDeep<T>(value: T, token: string): T {
 }
 
 /** Roll back, then hand back `e` (or, when the restore failed, an error naming both and the backup). */
-function restoreThen(e: Error, backupPath: string | null, configPath: string, scrub: (err: unknown) => Error): Error {
+function restoreThen(e: Error, backupPath: string | null, rollback: () => OwnerOnlyResult, scrub: (err: unknown) => Error): Error {
   try {
-    rollbackServerStore(backupPath, configPath)
+    rollback()
   } catch (rb) {
     return new Error(`${e.message}; and config.yaml could not be restored (${scrub(rb).message})${backupPath ? `. The previous config.yaml is at ${backupPath}` : ''}`)
   }
@@ -216,13 +237,20 @@ function restoreThen(e: Error, backupPath: string | null, configPath: string, sc
  * was no config.yaml), the file is removed. Throws when the bytes read back
  * differ. Returns core's owner-only verdict on the restored file.
  */
-export function rollbackServerStore(backupPath: string | null, configPath: string): OwnerOnlyResult {
+export function rollbackServerStore(backupPath: string | null, configPath: string, expectedCurrent?: Buffer | null, expectedBackup?: Buffer): OwnerOnlyResult {
   return withLock(configPath, () => {
+    // A subprocess may have run since registration. Refuse to overwrite an
+    // intervening configuration change, even while holding the restore lock.
+    if ((expectedCurrent === null && existsSync(configPath)) ||
+        (expectedCurrent && (!existsSync(configPath) || !readFileSync(configPath).equals(expectedCurrent)))) {
+      throw new Error('config.yaml changed during installation; it was preserved. Inspect the backup before restoring it.')
+    }
     if (backupPath === null) {
       try { unlinkSync(configPath) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
       return { ok: true } as const
     }
     const bytes = readFileSync(backupPath)
+    if (expectedBackup && !bytes.equals(expectedBackup)) throw new Error('The configuration backup changed; config.yaml was preserved.')
     const r = writeConfigFile(configPath, bytes)
     if (!readFileSync(configPath).equals(bytes)) throw new Error('config.yaml does not match its backup after the restore')
     return r

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { normalizeEndpointUrl } from '@plur-ai/core'
+import { detectSensitive, normalizeEndpointUrl, parseNamespacedId, storePrefix, legacyStorePrefix } from '@plur-ai/core'
 import { openMcpSession, type McpLaunch } from './mcp-stdio.js'
 
 export type { McpLaunch }
@@ -16,7 +16,7 @@ export const TOOL_LABEL: Record<ToolId, string> = {
 }
 
 export interface HelloResult {
-  saved: { ok: true; id: string } | { ok: false; reason: string }
+  saved: { ok: true; id: string } | { ok: false; reason: string; notAttempted?: true }
   perTool: Array<{ tool: ToolId; recalled: boolean; reason?: string }>
 }
 
@@ -27,12 +27,14 @@ export function helloStatement(p: {
   version: string
   date: string
 }): string {
-  return `PLUR connected: ${p.username} on ${p.deviceName}, ${p.tools.join(', ')}, PLUR ${p.version}, ${p.date}`
+  const label = detectSensitive(p.deviceName).length ? 'private device' : p.deviceName
+  return `PLUR connected: ${p.username} on ${label}, ${p.tools.join(', ')}, PLUR ${p.version}, ${p.date}`
 }
 
 interface LearnResult {
   id?: string
   delivery?: string
+  demoted?: boolean
   /** The server that holds the saved memory, as a normalized endpoint (Codex round 5). */
   delivered_to?: string
   destination?: string
@@ -98,6 +100,7 @@ function failReason(result: LearnResult, serverKey: string, serverUrl: string): 
     return 'queued on this device, not delivered to the server'
   }
   if (result.delivery === 'local') {
+    if (result.demoted === true) return 'the privacy check kept sensitive content on this device; nothing was delivered to the server'
     return 'saved locally, not delivered to the server'
   }
   if (result.destination) {
@@ -120,7 +123,7 @@ export async function runHello(opts: {
   const perTool: HelloResult['perTool'] = []
 
   if (opts.launches.length === 0) {
-    return { saved: { ok: false, reason: 'no tool launches provided' }, perTool: [] }
+    return { saved: { ok: false, reason: 'no tool launches provided', notAttempted: true }, perTool: [] }
   }
 
   // Fresh neutral cwd — not process.cwd() or HOME
@@ -143,7 +146,7 @@ export async function runHello(opts: {
       session = await openMcpSession(firstLaunch, { cwd: neutralCwd, timeoutMs: timeout })
     } catch (e) {
       return {
-        saved: { ok: false, reason: e instanceof Error ? e.message : String(e) },
+        saved: { ok: false, reason: e instanceof Error ? e.message : String(e), notAttempted: true },
         perTool: [],
       }
     }
@@ -158,7 +161,11 @@ export async function runHello(opts: {
         tags: ['plur-connect'],
       }
       if (opts.previousId) {
-        learnArgs.supersedes = [opts.previousId]
+        // Config keeps the display id used by MCP recall. The server relation
+        // needs its own id, without this personal store's display namespace.
+        const parsed = parseNamespacedId(opts.previousId, true)
+        const ownPrefix = parsed && [storePrefix(opts.personalScope), legacyStorePrefix(opts.personalScope)].includes(parsed.prefix)
+        learnArgs.supersedes = [ownPrefix ? parsed.bare : opts.previousId]
       }
       const learnResult = (await session.callTool('plur_learn', learnArgs)) as LearnResult
       const reason = failReason(learnResult, serverKey, opts.serverUrl)
