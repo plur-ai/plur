@@ -277,6 +277,20 @@ describe('Codex round 11 on #1663', () => {
     expect(JSON.stringify(residual)).not.toContain('QUEUEDRESIDUAL')
   })
 
+  it('getById by the primary-qualified id hides a queued save too, and still finds an ordinary row', async () => {
+    const root = homeRoot()
+    writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, embeddings: { enabled: false } }))
+    writeFileSync(join(root, 'engrams.yaml'), yaml.dump({ engrams: [
+      queued('ENG-2026-10-18-126', 'QUEUEDQUALIFIED fact'),
+      row('ENG-2026-10-18-127', 'ordinary qualified fact', { scope: 'local' }),
+    ] }))
+    const plur = new Plur({ path: root })
+    const qualified = (id: string) => (plur as any)._primaryQualifiedId(id)
+    expect(await plur.getById('ENG-2026-10-18-126')).toBeNull()
+    expect(JSON.stringify(await plur.getById(qualified('ENG-2026-10-18-126')))).not.toContain('QUEUEDQUALIFIED')
+    expect((await plur.getById(qualified('ENG-2026-10-18-127')))?.statement).toBe('ordinary qualified fact')
+  })
+
   it('a half-stripped marker still holds the save: no demotion, and the hold refuses it', () => {
     const half = queued('ENG-2026-10-18-125', 'QUEUEDHALF fact')
     delete half.structured_data._outbox.remote_only

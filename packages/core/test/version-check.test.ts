@@ -7,6 +7,7 @@ import {
   settleVersionChecks,
   VERSION_CHECK_SUCCESS_TTL_MS,
   VERSION_CHECK_FAILURE_TTL_MS,
+  updateCheckOffline,
 } from '../src/version-check.js'
 
 describe('version-check', () => {
@@ -174,20 +175,22 @@ describe('version-check', () => {
         expect(second.latest).toBe('2.0.0')
       })
 
-      it('retries a failed check after the failure TTL (offline at startup)', async () => {
+      it('retries a non-OK registry answer after the failure TTL', async () => {
+        // The registry answered (the network is up) but with an error: that is
+        // not offline, so an explicit check after the failure TTL asks again.
         const mockFetch = vi.fn()
-          .mockRejectedValueOnce(new Error('offline'))
+          .mockResolvedValueOnce({ ok: false })
           .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '2.0.0' }) })
         globalThis.fetch = mockFetch as any
 
         const first = await checkForUpdate('pkg-fail', '1.0.0')
         expect(first.latest).toBeNull()
+        expect(updateCheckOffline()).toBe(false)
 
         // Still inside the failure TTL — negative result served from cache
         await checkForUpdate('pkg-fail', '1.0.0')
         expect(mockFetch).toHaveBeenCalledTimes(1)
 
-        // After the failure TTL the check retries instead of staying silent
         const base = Date.now()
         vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_FAILURE_TTL_MS + 1)
         const second = await checkForUpdate('pkg-fail', '1.0.0')
@@ -206,8 +209,7 @@ describe('version-check', () => {
         const base = Date.now()
         vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_SUCCESS_TTL_MS + 1)
 
-        // Stale read returns the old answer immediately — never blocks —
-        // and kicks off a background refresh
+        // Stale read returns the old answer immediately and starts a refresh
         const stale = getCachedUpdateCheck('pkg-read')
         expect(stale).not.toBeNull()
         expect(stale!.updateAvailable).toBe(false)
@@ -243,6 +245,79 @@ describe('version-check', () => {
       expect(getCachedUpdateCheck('pkg-c')).not.toBeNull()
       clearVersionCache()
       expect(getCachedUpdateCheck('pkg-c')).toBeNull()
+    })
+  })
+
+  // TEAM-5 (owner decision 2026-10-19): PLUR tries the network at most once,
+  // with the update check. When that cannot connect, the process is offline and
+  // the update checker makes no further attempt of any kind: not on an explicit
+  // check, not on a refresh-on-read, however much time has passed.
+  describe('offline after a connection failure (TEAM-5)', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+
+    it('a check that cannot connect marks the process offline', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed')) as any
+      expect(updateCheckOffline()).toBe(false)
+      await checkForUpdate('pkg-off', '1.0.0')
+      expect(updateCheckOffline()).toBe(true)
+    })
+
+    it('while offline, an explicit check after the failure TTL makes no request', async () => {
+      const mockFetch = vi.fn()
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValue({ ok: true, json: () => Promise.resolve({ version: '2.0.0' }) })
+      globalThis.fetch = mockFetch as any
+      await checkForUpdate('pkg-off', '1.0.0')
+      const base = Date.now()
+      vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_SUCCESS_TTL_MS * 10)
+      const r = await checkForUpdate('pkg-off', '1.0.0')
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(r.latest).toBeNull()
+    })
+
+    it('while offline, no package is checked: the network is down for the process', async () => {
+      const mockFetch = vi.fn().mockRejectedValueOnce(new TypeError('fetch failed'))
+      globalThis.fetch = mockFetch as any
+      await checkForUpdate('pkg-off', '1.0.0')
+      await checkForUpdate('pkg-other', '1.0.0')
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+    })
+
+    it('while offline, a stale read starts no refresh', async () => {
+      const mockFetch = vi.fn()
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '1.0.0' }) })
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValue({ ok: true, json: () => Promise.resolve({ version: '2.0.0' }) })
+      globalThis.fetch = mockFetch as any
+      await checkForUpdate('pkg-a', '1.0.0')
+      await checkForUpdate('pkg-b', '1.0.0') // cannot connect: offline from here
+      const base = Date.now()
+      vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_SUCCESS_TTL_MS + 1)
+      const stale = getCachedUpdateCheck('pkg-a')
+      await settleVersionChecks()
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+      // The earlier answer is still shown.
+      expect(stale!.latest).toBe('1.0.0')
+      expect(getCachedUpdateCheck('pkg-a')!.latest).toBe('1.0.0')
+    })
+
+    it('a timeout counts as cannot connect', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' })) as any
+      await checkForUpdate('pkg-off', '1.0.0')
+      expect(updateCheckOffline()).toBe(true)
+    })
+
+    it('a non-OK registry answer is not offline', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 }) as any
+      await checkForUpdate('pkg-off', '1.0.0')
+      expect(updateCheckOffline()).toBe(false)
+    })
+
+    it('clearVersionCache resets the offline mark (tests only)', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed')) as any
+      await checkForUpdate('pkg-off', '1.0.0')
+      clearVersionCache()
+      expect(updateCheckOffline()).toBe(false)
     })
   })
 })

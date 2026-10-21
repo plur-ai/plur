@@ -3,10 +3,11 @@
  * P1/P1b, 2026-09-27), applied to the three residual cases found while applying
  * them (findings/r2-persist.md, apply phase, follow-ups 1–3):
  *
- *  1. P1b on a PERSONAL remote: sibling files (episodes, tensions, candidates)
- *     are committed, not held. After the held local engram is re-id'd, their
- *     references to the old id must follow it — otherwise they silently resolve
- *     to the other machine's engram. The rewrite is pushed and recorded.
+ *  1. P1b on a PERSONAL remote: after the held local engram is re-id'd, sibling
+ *     files' (episodes, tensions, candidates) references to the old id must
+ *     follow it — otherwise they silently resolve to the other machine's
+ *     engram. The rewrite is recorded; a record naming the local engram is
+ *     never pushed (SYN-6), so it is held across the pull like the engram.
  *  2. Postgres `save` renames reach the Plur instance's history.
  *  3. `saveEngrams` keeps a quarantined (schema-invalid) entry whose id matches
  *     a valid engram's, under a fresh id, recorded in history. It used to drop it.
@@ -79,9 +80,13 @@ describe('follow-up 1: P1b on a personal remote rewrites committed sibling refer
     expect(eps.find(x => x.id === 'EP-A')).toMatchObject({ summary: `A worked on ${mine.id}`, engram_ids: [mine.id] })
     expect(eps.find(x => x.id === 'EP-B')).toMatchObject({ summary: `B worked on ${OLD}`, engram_ids: [OLD] })
 
-    // Pushed: it is the user's own remote.
+    // NOT pushed, even to the user's own remote: EP-A names a scope:local
+    // engram, and a side record about a machine-local memory stays on this
+    // machine (SYN-6). The pulled episode is still there.
     const remoteEps = yaml.load(execSync('git show main:episodes.yaml', { cwd: bare, encoding: 'utf8' })) as any[]
-    expect(remoteEps.find(x => x.id === 'EP-A').engram_ids).toEqual([mine.id])
+    expect(remoteEps.find(x => x.id === 'EP-A')).toBeUndefined()
+    expect(remoteEps.find(x => x.id === 'EP-B')).toMatchObject({ engram_ids: [OLD] })
+    expect(JSON.stringify(remoteEps)).not.toContain(mine.id)
 
     const ev = rekeyed(A)
     expect(ev).toHaveLength(1)

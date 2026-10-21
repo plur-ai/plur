@@ -526,9 +526,12 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
   })
 
   // ==========================================================================
-  // PATH 7 — learnAsync MERGE: concatenation introduces sensitive content.
+  // PATH 7 — learnAsync MERGE with sensitive content. A MERGE no longer
+  // concatenates into the target (LRN-7): the statement is saved as its own
+  // memory through learn(), whose guard must still demote it, and the clean
+  // shared engram stays as it was.
   // ==========================================================================
-  it('learnAsync MERGE: concatenating sensitive content into a clean shared engram demotes it', async () => {
+  it('learnAsync MERGE: sensitive content saved beside a clean shared engram is demoted, the shared one untouched', async () => {
     mockEmptyRemote()
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
@@ -542,13 +545,17 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
       llm: mergeLlm,
     })
 
-    expect(res.decision).toBe('MERGE')
+    expect(res.decision).toBe('ADD')
+    expect(res.likely_duplicate_of?.checker_decision).toBe('MERGE')
+    expect(res.likely_duplicate_of?.id).toBe(seededId)
+    expect(res.engram.id).not.toBe(seededId)
     expect(res.engram.scope, 'learnAsync MERGE must demote').toBe('local')
     expect((res.engram as any).visibility).toBe('private')
 
     await new Promise(r => setTimeout(r, 80))
     expect(egressCalls().length).toBe(0)
     expect((await readSharedStore(dir)).find(e => String(e.statement).includes('hub-staging'))).toBeUndefined()
+    expect((await plur.getById(seededId))?.statement).toBe('the deployment notes summary for the release')
   })
 
   it('learnAsync UPDATE: a CLEAN mutation does NOT demote (no over-block)', async () => {

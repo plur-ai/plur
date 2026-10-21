@@ -446,8 +446,21 @@ const BM25_B = 0.75
 
 /** Score an engram against query tokens using BM25 with IDF, TF saturation, and length normalization */
 export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map<string, number>, avgDocLength?: number): number {
+  return ftsScoreDetail(engram, queryTokens, idfWeights, avgDocLength).score
+}
+
+/**
+ * BM25 score plus query coverage: the share of the query's term weight (the
+ * same effective IDF the score uses) carried by query terms this engram
+ * contains, in [0, 1]. A document that matches every informative query word
+ * has coverage 1; one that matches a single word out of four equally rare
+ * ones has 0.25. Hybrid fusion uses it to weigh how much a keyword hit says.
+ */
+export function ftsScoreDetail(
+  engram: Engram, queryTokens: string[], idfWeights?: Map<string, number>, avgDocLength?: number,
+): { score: number; coverage: number } {
   const allTerms = ftsTokenize(engramSearchText(engram))
-  if (queryTokens.length === 0) return 0
+  if (queryTokens.length === 0) return { score: 0, coverage: 0 }
 
   const docLen = allTerms.length
   const avgdl = avgDocLength && avgDocLength > 0 ? avgDocLength : docLen
@@ -456,6 +469,8 @@ export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map
   const hasNonZeroIdf = idfWeights && Array.from(idfWeights.values()).some(v => v > 0)
 
   let score = 0
+  let weightTotal = 0
+  let weightMatched = 0
   for (const qt of queryTokens) {
     let effectiveIdf: number
     if (!idfWeights) {
@@ -472,11 +487,13 @@ export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map
 
     // Count term frequency. Shares `termMatches` with `computeIdf` — tf and df
     // counted under different rules is not BM25, and nothing would report it.
+    weightTotal += effectiveIdf
     let tf = 0
     for (const t of allTerms) {
       if (termMatches(t, qt)) tf++
     }
     if (tf === 0) continue
+    weightMatched += effectiveIdf
 
     // BM25 formula: IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * docLen / avgdl))
     const numerator = tf * (BM25_K1 + 1)
@@ -484,7 +501,7 @@ export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map
     score += effectiveIdf * (numerator / denominator)
   }
 
-  return score
+  return { score, coverage: weightTotal > 0 ? weightMatched / weightTotal : 0 }
 }
 
 /** Search engrams by text query with BM25 scoring */
@@ -494,6 +511,19 @@ export function searchEngrams(
   limit = 20,
   stats?: CorpusStats,
 ): Engram[] {
+  return searchEngramsScored(engrams, query, limit, stats).map(r => r.engram)
+}
+
+/** A BM25 hit with its score and query coverage (see {@link ftsScoreDetail}). */
+export interface ScoredKeywordHit { engram: Engram; score: number; coverage: number }
+
+/** {@link searchEngrams}, keeping each hit's BM25 score and query coverage. Same order. */
+export function searchEngramsScored(
+  engrams: Engram[],
+  query: string,
+  limit = 20,
+  stats?: CorpusStats,
+): ScoredKeywordHit[] {
   const queryTokens = ftsTokenize(query)
   if (queryTokens.length === 0) return []
   // `stats` present means `engrams` is a NARROWED candidate set and the corpus
@@ -517,7 +547,7 @@ export function searchEngrams(
       : 0
 
   let scored = engrams
-    .map(e => ({ engram: e, score: ftsScore(e, queryTokens, idfWeights, avgDocLength) }))
+    .map(e => ({ engram: e, ...ftsScoreDetail(e, queryTokens, idfWeights, avgDocLength) }))
     .filter(r => r.score > 0)
 
   // Fallback: on tiny/uniform corpora, every query token can be either
@@ -526,12 +556,11 @@ export function searchEngrams(
   // lexically-similar docs.
   if (scored.length === 0) {
     scored = engrams
-      .map(e => ({ engram: e, score: ftsScore(e, queryTokens, undefined, avgDocLength) }))
+      .map(e => ({ engram: e, ...ftsScoreDetail(e, queryTokens, undefined, avgDocLength) }))
       .filter(r => r.score > 0)
   }
 
   return scored
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map(r => r.engram)
 }

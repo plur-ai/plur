@@ -225,12 +225,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   const tools = getToolDefinitions(profile)
 
   // Non-blocking version check — fire and forget at startup, then re-checked
-  // periodically (#760). Without the periodic re-check a long-lived server
-  // process that started while current would cache "no update" for its entire
-  // lifetime and never surface releases published after startup — which is
-  // exactly how the 0.14.x regression report happened. The timer is unref'd so
-  // it never keeps the process alive, and the TTL-driven refresh-on-read in
-  // version-check.ts covers processes whose timers are throttled.
+  // periodically (#760) so a long-lived server learns about releases published
+  // after it started. The timer is unref'd so it never keeps the process alive.
+  // TEAM-5: this start check is the one network attempt PLUR makes with no
+  // internet. When it cannot connect the process is offline, and the timer,
+  // refresh-on-read and plur_status check_updates make no further request
+  // (version-check.ts).
   const announceUpdate = (r: { updateAvailable: boolean; current: string; latest: string | null }) => {
     if (r.updateAvailable) {
       console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest && plur init (configs pin versions)`)

@@ -173,6 +173,7 @@ models:
       - packages/cli/src/enterprise/ca.ts
       - packages/cli/src/enterprise/launch-env.ts
       - packages/cli/src/enterprise/exec.ts
+      - packages/cli/src/enterprise/wire.ts
   - model: PlurSpec/GitScope.lean
     covers:
       - packages/core/src/git-origin.ts

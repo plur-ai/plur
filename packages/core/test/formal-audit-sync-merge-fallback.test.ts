@@ -28,7 +28,10 @@ let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-merge-fallback-')) })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-const EP = (line: string) => `episodes:\n  - id: EP-1\n    summary: "${line}"\n  - id: EP-2\n    summary: "stable"\n`
+// The record-list shape PLUR writes (episodes.ts). Sync parses episodes.yaml on
+// every remote type to keep records naming withheld engrams home, and refuses a
+// file PLUR itself cannot load, so the fixture must be a loadable one.
+const EP = (line: string) => `- id: EP-1\n  summary: "${line}"\n- id: EP-2\n  summary: "stable"\n`
 const ENGRAMS = 'engrams: []\n'
 
 describe('sync merge fallback on divergent branches', () => {

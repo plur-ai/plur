@@ -101,6 +101,21 @@ export interface LearnContext {
    */
   supersedes?: string[]
   /**
+   * Internal (the duplicate checker's supersede, LRN-8/LRN-9): drop any
+   * `supersedes` target that is locked at write time, checked under the
+   * store lock. A locked memory is never superseded automatically; the
+   * caller reads `relations.supersedes` on the returned engram to see
+   * whether the supersede applied, and sends the pair to review if not.
+   */
+  supersedes_unless_locked?: boolean
+  /**
+   * IDs of engrams this one is related to. Written to `relations.related` on
+   * the new engram only; the targets are not modified. Batch learning uses it
+   * to link an item to the memory the duplicate checker said it resembles,
+   * because batch learning never overwrites an existing memory (2026-10-18).
+   */
+  related?: string[]
+  /**
    * Measurement context for numeric or benchmark-derived claims (#869).
    * Records model, source_type, hardware, dataset, and/or date under which
    * the asserted value was measured. When omitted, the field is absent from
@@ -140,6 +155,27 @@ export interface LearnAsyncResult {
   decision: DedupDecision
   existing_id?: string
   tensions?: string[]
+  /**
+   * Set when an UPDATE onto a locked memory saved the new statement as a draft
+   * but its review item could not be opened (audit 5 F3). The draft is never
+   * injected, and without the review nobody is asked about it, so this is
+   * reported rather than only logged.
+   */
+  review_error?: string
+  /**
+   * Present when the duplicate checker answered MERGE (owner decision
+   * 2026-10-18: learning never overwrites; single and batch saves alike since
+   * LRN-7): instead of rewriting the existing memory, the item was saved as
+   * its own memory (decision 'ADD') and linked to the existing one through
+   * `relations.related`. `checker_decision` is what the checker suggested;
+   * nothing was changed on the existing memory. (An UPDATE answer supersedes
+   * instead and is reported as decision 'UPDATE', LRN-8.)
+   */
+  likely_duplicate_of?: {
+    id: string
+    checker_decision: 'UPDATE' | 'MERGE'
+    note: string
+  }
   /**
    * What the dedup pass was actually able to do, and what it saw (#854).
    *

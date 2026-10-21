@@ -15,6 +15,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur, storePrefix, legacyStorePrefix } from '../src/index.js'
+import { packEngramId } from '../src/engrams.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
@@ -52,7 +53,9 @@ describe('M1: a pack id that only looks like an old-form store id is left alone'
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: fin\nversion: "1.0"\nx-datacore:\n  id: fin\n  injection_policy: on_match\n  engram_count: 1\n---\n')
     writeFileSync(join(packDir, 'engrams.yaml'), yaml.dump({ engrams: [{ ...row('ENG-PFR-001', 'global', 'Pack engram PFR'), pack: 'fin', visibility: 'private' }] }))
     const plur = new Plur({ path: dir })
-    expect((await plur.getById('ENG-PFR-001'))?.id).toBe('ENG-PFR-001')
+    // Found by its own id, and handed out under its pack id (PCK-4), never
+    // rewritten into a store's namespaced form.
+    expect((await plur.getById('ENG-PFR-001'))?.id).toBe(packEngramId('ENG-PFR-001', 'fin'))
     await plur.feedback('ENG-PFR-001', 'positive')
     const raw = yaml.load(readFileSync(join(packDir, 'engrams.yaml'), 'utf8')) as any
     expect(raw.engrams[0].feedback_signals.positive).toBe(1)
