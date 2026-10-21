@@ -1,0 +1,11 @@
+--- a/packages/cli/src/commands/doctor.ts
++++ b/packages/cli/src/commands/doctor.ts
+@@ -1546,7 +1546,7 @@
+       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
+       hookShim, mcpShim, handshake, cursorHandshake, embedder,
+       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
+-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
++      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores: [], hookTrust,
+     }
+   })
+ }

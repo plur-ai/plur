@@ -1,0 +1,11 @@
+--- a/packages/cli/src/enterprise/init.ts
++++ b/packages/cli/src/enterprise/init.ts
+@@ -104,7 +104,7 @@
+   let rollback: (() => ReturnType<typeof protectKeyFile>) | undefined
+   let learnMayHaveRun = false
+   const undoRegistration = () => {
+-    if (!rollback || result.signIn.reused || learnMayHaveRun) return
++    if (!rollback || result.signIn.reused || result.signIn.username) return
+     try {
+       const protectedFile = rollback()
+       if (!protectedFile.ok) throw new Error('unprotected restore')

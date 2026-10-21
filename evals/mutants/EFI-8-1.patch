@@ -1,0 +1,11 @@
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -1076,7 +1076,7 @@
+   const session = chosen !== undefined && _knownSession(chosen, plur, true) ? chosen : NO_SESSION
+   let ws: Awaited<ReturnType<FolderScopeContext['resolve']>> = null
+   try { ws = read && ctx.admitted ? ctx.admitted() : await ctx.resolve() } catch { ws = null }
+-  if (!read && args.scope === undefined && !explicitDestinations && ws?.roots) throw new RootsDisagreeError(ws.roots)
++  if (!read && args.scope === null && !explicitDestinations && ws?.roots) throw new RootsDisagreeError(ws.roots)
+   if (session !== NO_SESSION) {
+     const record = _sessionTelemetry.get(session)
+     const own = plur.getSessionScope({ session })

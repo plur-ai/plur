@@ -67,6 +67,9 @@ jobs:
           key: plur-models-bge-small-en-v1.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+      # Configuration commands only, matching the ordinary migration test CI.
+      - name: Install Codex for real migration registration
+        run: npm install -g --no-audit --no-fund @openai/codex@0.160.1
       # The harness's own tests run real vitest (second audit R-04, R-06), so after install.
       - name: The harness's own tests
         run: python3 scripts/test_evals_harness.py
@@ -149,6 +152,8 @@ jobs:
           key: plur-models-bge-small-en-v1.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+      - name: Install Codex for real migration registration
+        run: npm install -g --no-audit --no-fund @openai/codex@0.160.1
       # The evals block the network, so the model must be in the cache before they run;
       # verify loads it with downloads off (second audit R-07).
       - name: The embedding model is in the cache and loads offline

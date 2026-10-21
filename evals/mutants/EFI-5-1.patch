@@ -1,0 +1,11 @@
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -12491,7 +12491,7 @@
+             // original identity survives; cancellation, rescope and requeue
+             // still preserve the fresh row and retire the actual remote copy.
+             const admitted = admittedWrites.get(e.id)
+-            if (admitted && e.scope === admitted.scope && Plur._stillQueuedFor(e, admitted)
++            if (admitted && e.scope === admitted.scope && Plur._stillQueuedFor(e, dest!)
+               && (e as any).structured_data._outbox.idempotency_key === admitted.key) return false
+             const retargeted = Plur._stillQueued(e)
+             const serverId = localToServer.get(e.id)
