@@ -21,7 +21,7 @@ This repo publishes four npm packages and three Python/PyPI packages from `packa
 
 This guide covers the npm release workflow. Python packages follow the same versioning cadence but ship via `python -m build` + `twine upload`.
 
-**Pending pin bump (audit 1228-c):** the next standard release is the first `@plur-ai/cli` that honours `--`; `release.sh` must move `_NPX_CLI_VERSION` in `packages/hermes/plur_hermes/bridge.py` and `packages/python/plur_ai/bridge.py` to it, and the "first release after 0.20.1" wording in both READMEs should then name that version.
+**CLI fallback pins (audit 1228-c):** the 0.22.0 preparation pins `_NPX_CLI_VERSION` in both Python bridges to 0.22.0 and names that version in their READMEs for leading-dash queries. Keep those pins aligned with every standard release; `release.sh` updates them together.
 
 Publishing credentials (npm auth as `plur9`, the pending `NPM_TOKEN` repo secret, ClawHub OAuth)
 are documented in [`docs/runbooks/credentials.md`](docs/runbooks/credentials.md).

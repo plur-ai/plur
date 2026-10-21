@@ -2,7 +2,75 @@
 
 ## 0.22.0 (unreleased)
 
-Targets 0.22, not 0.21.1 (owner decision 2026-10-02).
+Enterprise first install.
+
+### Enterprise first install
+
+- Sign in once.
+- See where saves go.
+- Preview uploads.
+- Verify hooks and server.
+
+`plur-enterprise init` now completes device sign-in, tool configuration and a
+kept hello-memory proof through the installed MCP connection. Failed setup
+rolls back its own changes without replacing edits made during sign-in.
+Reruns reuse the device connection and link the new hello to the previous
+one. Legacy personal-store migration preserves guarded backups and reports
+configuration it cannot safely remove. (#1665, #1666, #1669, #1701, #1702)
+
+One server entry can serve several discovered scopes. Scope discovery runs
+in the background, reports failure rather than an empty success, and keeps
+configuration owner-only. Git-origin routing uses authorized project paths;
+an unmatched repository stays local, and a home-rooted repository does not
+invent an implicit project scope. Ambiguous routes and multi-root windows
+whose destinations disagree require an explicit choice. A `project:` scope
+is local unless a configured server explicitly serves it.
+(#1631, #1632, #1633, #1656, #1658, #1659, #1660, #1661, #1662, #1690, #1696)
+
+Save receipts distinguish delivery, queued writes and local storage, naming
+the actual destination. Session hooks and MCP show cached server status;
+`plur doctor` checks the server and installed hook-run evidence and does not
+call an unverified connection healthy. Queued saves retry after credential
+changes and recheck their destination before delivery. Session startup
+retires legacy project-token configuration with guarded backups.
+(#1667, #1668, #1691, #1692, #1693, #1694, #1695, #1697, #1698)
+
+`plur upload` previews selected primary-store memories and requires explicit
+confirmation before sending them. Server receipts distinguish newly stored,
+duplicate and held-for-review writes. Remote-only folders refuse this local
+store upload path. (#1699, #1700)
+
+OpenCode MCP setup uses the installed PLUR binary and repairs older managed
+`npx` entries, including the Windows fallback when no local binary is
+available. (#1637, #1311)
+
+### Memory correctness
+
+- Starting in a folder where memory is off runs no startup migration.
+  (#1523)
+- A correction still gets its save reminder when the injection lock is busy
+  or the normal attempt cap was reached. (#1385)
+- A correction outside the scope visible to an injection no longer hides
+  the memory it replaces. (#1237)
+- Different packs from same-named folders no longer replace each other;
+  pack identities and internal references survive upgrade and reinstall.
+  (#1188, #1670)
+- Retrieval and duplicate checking distinguish reworded memories, changed
+  values and different subjects. Pinned memories retain their budget share;
+  proposals to change a locked memory wait in review. Sync preserves
+  independent reviews and renamed references, and a failed connection also
+  stops automatic model downloads. (#1670)
+- Personal sync repositories mirror private memories again. Shared sync
+  excludes private content, including side records; machine-local memories
+  and their side records stay on the machine for both kinds of remote.
+  (#1670)
+- Injection receipts describe whole memories actually present in the reply,
+  including their scopes. Corrections in secondary stores retain the link
+  to their replacement without overwriting the original text. (#1670)
+
+The release also adds promise evals and planted-bug checks for these
+behaviors, with independent test-harness separation checks.
+(#1664, #1671, #1745, #1746, #1747)
 
 ### remote-only folders keep memory on the team server (#1521)
 
@@ -111,7 +179,7 @@ and entry order are kept byte for byte. A file PLUR cannot read is still never
 overwritten. `@plur-ai/core` gains a dependency on `yaml` (already in the
 lockfile as a build-tool dependency).
 
-## Unreleased
+### Sign-in and runtime requirements
 
 - **`plur login <host>` signs this device in to a PLUR server and no longer writes `~/.plur/config.json`.** The device sign-in (RFC 8628) is no longer turned off: it prints a sign-in page and a code, waits for your approval at the server's poll interval, and saves the device key as the server's one entry in `~/.plur/config.yaml`, with your personal scope from the server. The key is never printed, and nothing is written before it arrives, so ctrl-C changes nothing. When another entry already holds your personal scope, `plur login` names it and changes nothing; `plur login <host> --remove-stale` removes it (config.yaml is backed up first). **A remaining `~/.plur/config.json` from an older `plur login` is read once:** if the server still accepts its key and `config.yaml` holds no sign-in to that server yet, the key moves into `config.yaml` (a sign-in already in `config.yaml` is never replaced); either way the file is moved to an owner-only copy under `~/.plur/backups/` with a one-time notice and is no longer read. Signing in needs a server with the device sign-in endpoints. (#1638)
 - **BREAKING: Node 20 is no longer supported. Every published package now requires Node 22 or later** (`engines.node` `>=22`), and CI no longer tests Node 20. Node 20 cannot send the remote store's requests through an HTTPS proxy without an extra dependency: its built-in `fetch` has no `NODE_USE_ENV_PROXY`. Behind a proxy, use Node 22.21 or later (or 24+) with `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1` set in the environment PLUR starts with.
