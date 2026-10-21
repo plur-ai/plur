@@ -42,8 +42,9 @@ import type { GlobalFlags } from '../plur.js'
 /** Default network budget per harness, ms — leaves room for node start-up and
  *  the store load inside each harness's hook timeout. */
 export const HOOK_OUTBOX_BUDGET_MS = {
-  /** Claude Code SessionEnd, installed with a 5s timeout. */
-  claudeSessionEnd: 2_500,
+  /** Claude Code SessionEnd, installed with a 5s timeout. 2.5s ran 4.3s end to
+   *  end on a 16k-engram store (start-up, YAML parse, grace, exit): too close. */
+  claudeSessionEnd: 2_000,
   /** Codex SessionEnd, clamped by Codex to 3s. */
   codexSessionEnd: 1_200,
   /** Cursor stop, installed with a 3s timeout. */
@@ -146,17 +147,20 @@ export async function flushOutboxForHook(
     if (opts.minIntervalMs) markFlushed(root, opts.hook)
 
     const budgetMs = budgetFromEnv(opts.budgetMs)
-    const plur = opts.plur ?? (await import('../plur.js')).createPlur(flags)
-    const flush = plur.flushOutbox({ timeoutMs: budgetMs })
-    // Observed either way, so a rejection after the outer timer won is not an
-    // unhandled rejection that takes the process down with a non-zero exit.
-    flush.catch(() => {})
-
+    // The outer deadline starts before the engine is built and the flush is
+    // called: on a large store the flush parses engrams.yaml synchronously
+    // (about 3s at 29MB, 16k engrams), and a timer armed after that let the
+    // hook run budget + parse — 5.75s against a 3s budget.
     let timer: NodeJS.Timeout | undefined
     const outer = new Promise<'timeout'>(resolve => {
       timer = setTimeout(() => resolve('timeout'), budgetMs + LOCAL_GRACE_MS)
     })
     try {
+      const plur = opts.plur ?? (await import('../plur.js')).createPlur(flags)
+      const flush = plur.flushOutbox({ timeoutMs: budgetMs })
+      // Observed either way, so a rejection after the outer timer won is not an
+      // unhandled rejection that takes the process down with a non-zero exit.
+      flush.catch(() => {})
       const result = await Promise.race([flush, outer])
       if (result === 'timeout') {
         process.stderr.write(

@@ -237,6 +237,14 @@ const COMMANDS: Record<string, string> = {
  * non-zero because a cache could not be warmed. Core records the failure for
  * `plur doctor` either way.
  */
+/** Resolves once everything written to stdout so far has been handed to the OS (bounded). */
+function stdoutFlushed(maxMs = 2_000): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, maxMs)
+    process.stdout.write('', () => { clearTimeout(timer); resolve() })
+  })
+}
+
 async function drainPendingIndexWork(): Promise<void> {
   try {
     const { getLastPlurInstance } = await import('./plur.js')
@@ -293,6 +301,18 @@ try {
   // background sync, so for most installs this drain is a no-op; where it
   // isn't, the fingerprint guard makes an unchanged YAML nearly free.
   await drainPendingIndexWork()
+  // A hook exits when its work is done, not when the event loop drains. An
+  // outbox flush abandoned at its budget can leave a socket connecting (undici
+  // rejects the aborted fetch but keeps its connector going until its own 10s
+  // connect timeout), and that handle alone held the process past Claude
+  // Code's 5s SessionEnd budget: "Hook cancelled". Through exitWhenStoreIdle,
+  // as on the error path below, so the exit never lands in a store write.
+  // Stdout first: on macOS a pipe is written asynchronously, and an exit with
+  // the injection still buffered would hand the editor a truncated document.
+  if (command.startsWith('hook-')) {
+    await stdoutFlushed()
+    await exitWhenStoreIdle()
+  }
 } catch (err: any) {
   // Hook commands never print errors to stdout (owner decision H1, formal
   // field report cluster 5). An editor parses a hook's stdout as its result
