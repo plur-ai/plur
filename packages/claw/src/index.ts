@@ -285,7 +285,8 @@ const plugin = {
 
     api.logger.info(`PLUR registered: context engine + hooks + slash commands + CLI`)
 
-    // Non-blocking version check
+    // Non-blocking version check, once at register. When it cannot connect the
+    // process is offline and no further update check is attempted (TEAM-5).
     checkForUpdate('@plur-ai/claw', plugin.version, (r) => {
       if (r.updateAvailable) {
         api.logger.warn(`PLUR update available: ${r.current} → ${r.latest}. Run: npm update @plur-ai/claw`)

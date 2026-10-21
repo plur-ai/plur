@@ -39,6 +39,9 @@
  * issue #451.
  */
 import type { RerankerAdapter } from './types.js'
+import {
+  importTransformers, resolveLoadCacheDir, envOf, weightsFileFor, refuseMissingModelOffline, localOnlyOptions,
+} from '../embedders/transformers-base.js'
 
 export const BGE_RERANKER_V2_M3_MODEL_ID = 'onnx-community/bge-reranker-v2-m3-ONNX'
 export const MS_MARCO_MINILM_L6_MODEL_ID = 'Xenova/ms-marco-MiniLM-L-6-v2'
@@ -72,10 +75,24 @@ async function loadPipeline(modelId: string, dtype: Dtype): Promise<LoadedPipeli
       // Xet-backed downloads fail in some sandboxes; the classic HTTP path
       // works everywhere transformers.js does.
       process.env.HF_HUB_DISABLE_XET ??= '1'
-      const { AutoTokenizer, AutoModelForSequenceClassification } = await import('@huggingface/transformers')
+      const transformers = await importTransformers()
+      const { AutoTokenizer, AutoModelForSequenceClassification } = transformers as unknown as {
+        AutoTokenizer: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
+        AutoModelForSequenceClassification: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
+      }
+      // The same cache and the same download guard as the embedders (audit 6,
+      // N4): once PLUR is offline (declared, or inferred from a failed
+      // connection), a reranker model missing from disk is refused before the
+      // library is asked, and one on disk is loaded from disk only.
+      const weights = weightsFileFor(dtype)
+      const cacheDir = await resolveLoadCacheDir(modelId, weights)
+      const env = envOf(transformers)
+      if (cacheDir && env) env.cacheDir = cacheDir
+      await refuseMissingModelOffline(modelId, weights, 'reranker model')
+      const offline = localOnlyOptions()
       const [tokenizer, model] = await Promise.all([
-        AutoTokenizer.from_pretrained(modelId),
-        AutoModelForSequenceClassification.from_pretrained(modelId, { dtype } as { dtype: Dtype }),
+        AutoTokenizer.from_pretrained(modelId, offline),
+        AutoModelForSequenceClassification.from_pretrained(modelId, { dtype, ...offline }),
       ])
       return {
         tokenizer: tokenizer as unknown as LoadedPipeline['tokenizer'],

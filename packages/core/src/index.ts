@@ -14,7 +14,7 @@ import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
 import { acceptDiscoveredScopes, registerServerEntry, PersonalScopeTakenError, SignInHeldError, type DiscoveryStatus, type ScopeRejection, type FoldReport, type ScopeHolder } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, namespacePackEngrams, matchLegacyPackId, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore, type LoadedPack } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -422,7 +422,8 @@ export { atomicWrite, withLock } from './sync.js'
 export { writeConfigFile } from './config-file.js'
 export { protectOwnerOnly, checkOwnerOnly, currentWindowsAccount, currentWindowsSid, windowsSystemRoot, windowsSystemTool, defaultOwnerOnlyExec, type OwnerOnlyExec, type OwnerOnlyResult, type OwnerOnlyCheck, type OwnerOnlyOptions } from './owner-only.js'
 export { markRemoteHostDown, remoteHostDownRemainingMs, clearRemoteHostDown, _resetRemoteHostBreaker, salvageRemoteRow, FEEDBACK_SOURCE_CAPABILITY, _resetRemoteCapabilityCache } from './store/remote-store.js'
-export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
+export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, updateCheckOffline, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
+export { offlineByEnv, updateCheckDisabledByEnv, offlineInferred, offlineNow } from './offline.js'
 export { scanForTensions, getCandidatePairs, getCandidatePairsDetailed, measuredUnderDiffers, measuredUnderGateApplies, engramOrigin, MEASURED_UNDER_DIMENSIONS, MEASURED_UNDER_CONFIDENCE_CAP, type CandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
 // Tension lifecycle persistence (#181)
 export { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
@@ -909,6 +910,16 @@ const LLM_BREAKER_WINDOW_MS = 5 * 60 * 1000
 const LLM_BREAKER_COOLDOWN_MS = 60 * 60 * 1000
 
 /** Map engram type to default cognitive level (Idea 5). */
+/**
+ * `LearnContext.related` as a list of ids. A plain string is one id; anything
+ * else that is not an array of non-empty strings contributes nothing.
+ */
+function relatedIds(related: unknown): string[] {
+  if (typeof related === 'string') return related ? [related] : []
+  if (!Array.isArray(related)) return []
+  return [...new Set(related.filter((x): x is string => typeof x === 'string' && x.length > 0))]
+}
+
 const TYPE_TO_COGNITIVE: Record<string, string> = {
   behavioral: 'apply',
   terminological: 'remember',
@@ -1205,6 +1216,9 @@ export interface MutationOutcome {
 }
 
 /** Per-store answer of the id-collision probe run by forget, feedback and setPinned. */
+/** A dedup supersede target held in a writable secondary store (audit 5 F4). */
+interface SecondarySupersede { id: string; path: string; originalId: string }
+
 interface CollisionProbe {
   scope: string
   url: string
@@ -1846,7 +1860,8 @@ export class Plur {
     // sentinel file (#156). It must never take the constructor down — but with
     // an async write path, "started in the constructor" and "finished" are no
     // longer the same moment, so callers that need the result get `ready()`.
-    this._readyPromise = this._autoPurgeLegacyTensions().catch((err: unknown) => {
+    const startDir = options?.cwd || process.cwd()
+    this._readyPromise = this._autoPurgeLegacyTensions(startDir).catch((err: unknown) => {
       logger.warning(`[plur] legacy tension auto-purge failed: ${(err as Error).message}`)
     })
   }
@@ -1903,13 +1918,17 @@ export class Plur {
     return this._backendSelection
   }
 
-  private async _autoPurgeLegacyTensions(): Promise<void> {
+  private async _autoPurgeLegacyTensions(startDir: string): Promise<void> {
     // A read-only instance must not run a write migration — and must not stamp
     // the sentinel either, or the purge would be recorded as done without ever
     // having happened. Left for the next writable instance to perform (#731).
     if (this._readonly) return
     const sentinel = join(this.paths.root, '.tensions-purged')
     if (fs.existsSync(sentinel)) return
+    // Starting in a folder where memory is off touches no memory (#1523): the
+    // migration reads every store and stamps the sentinel, so it is left,
+    // unstamped, for the next start outside that folder.
+    if (this._startFolderOff(startDir)) return
     // After the constructor's caller had its turn to bind the instance (Codex
     // round 10 on #1663): a remote-only binding then refuses the purge, and it
     // is left for the next unbound instance.
@@ -1996,6 +2015,21 @@ export class Plur {
    *
    * One implementation, two callers. Duplicating it is what caused all three.
    */
+  /**
+   * Installed packs as every read path hands them out: each row under its
+   * pack id ({@link packEngramId}), never under the id its author's store
+   * minted. That id can be one of MY memory ids (same day, same sequence, or
+   * picked on purpose), and a pack row shown under it reads to the agent as my
+   * own memory (PCK-4). Injection, search/list and the receipt all load packs
+   * through here, so the id a pack row carries is the same on every path.
+   */
+  private _loadInstalledPacks(): LoadedPack[] {
+    return loadAllPacks(this.paths.packs).map(pack => ({
+      ...pack,
+      engrams: namespacePackEngrams(pack.engrams, pack.manifest.name),
+    }))
+  }
+
   private async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promise<Engram[]> {
     // remote-only: only the url store(s) serving the folder's team scope — no
     // secondary file store, which is this machine's disk like the primary.
@@ -2038,7 +2072,7 @@ export class Plur {
     }
 
     // Include pack engrams so they're searchable via recall
-    const packs = loadAllPacks(this.paths.packs)
+    const packs = this._loadInstalledPacks()
     for (const pack of packs) {
       for (const e of pack.engrams) {
         if (e.status !== 'active') continue
@@ -4920,6 +4954,65 @@ export class Plur {
       if (cross.hit) await this._recordCrossScopeRecurrence(cross.hit, engrams, scope, context)
       const unpersistableHit = sameScopeForeign ?? cross.foreign
 
+      // LRN-9: a supersede proposed by the duplicate checker never lands on a
+      // memory that is locked — checked here, under the store lock, so a lock
+      // taken after the checker read the target still wins. The caller sees
+      // the dropped target missing from `relations.supersedes` and sends the
+      // pair to review instead.
+      //
+      // Audit 5 F3: when a target is locked the new memory is saved as a DRAFT
+      // in this same write, so it is never deliverable, not between this write
+      // and the caller's review step, and not after a crash at that boundary.
+      //
+      // Audit 5 F4: each target is checked in the store that holds it. A target
+      // in a writable secondary store keeps the supersede, and its reverse edge
+      // is written in that store (`_landSecondarySupersedes`, right before the
+      // new row is written). A target whose store cannot take the reverse edge
+      // (readonly store, pack, remote cache) is not superseded at all: nothing
+      // there would suppress it, so the new memory is linked to it instead.
+      let secondarySupersedes: SecondarySupersede[] = []
+      if (context?.supersedes_unless_locked && context.supersedes?.length) {
+        const wanted = context.supersedes
+        const primaryRows = canDelegate ? await ps.loadByIds!(wanted) : engrams
+        const keep: string[] = []
+        const linkOnly: string[] = []
+        let lockedSeen = false
+        for (const t of wanted) {
+          const p = primaryRows.find(e => e.id === t)
+          if (p) {
+            if (p.commitment === 'locked') lockedSeen = true
+            else keep.push(t)
+            continue
+          }
+          const seen = allEngrams.find(e => e.id === t) as (Engram & { _storeScope?: string; _pack?: string }) | undefined
+          const info = seen && !seen._pack && typeof seen._storeScope === 'string'
+            ? await this._findEngramStore(t, seen._storeScope)
+            : null
+          if (info && info.path !== this.paths.engrams) {
+            // The target's own store, read fresh rather than from the cache.
+            const row = (await this._storeAt(info.path).load()).find(e => e.id === info.originalId)
+            if (row?.commitment === 'locked') { lockedSeen = true; continue }
+            if (row && row.status === 'active' && !info.readonly && !this._readonly) {
+              keep.push(t)
+              secondarySupersedes.push({ id: t, path: info.path, originalId: info.originalId })
+              continue
+            }
+          } else if (seen?.commitment === 'locked') {
+            lockedSeen = true
+            continue
+          }
+          linkOnly.push(t)
+        }
+        if (keep.length !== wanted.length) {
+          context = {
+            ...context,
+            supersedes: keep,
+            ...(linkOnly.length ? { related: [...new Set([...(context.related ?? []), ...linkOnly])] } : {}),
+            ...(lockedSeen ? { commitment: 'draft' as const } : {}),
+          }
+        }
+      }
+
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
         // remote-only: `allEngrams` leaves out most of the primary store, whose
@@ -5039,7 +5132,10 @@ export class Plur {
         // Incremental write (#740): append the new engram; on a store without
         // `append` this saves the corpus in hand, which already carries the
         // superseded_by back-edges — so the second write below is skipped.
-        await this._appendEngram(engrams, engram)
+        // Audit 5 F4: reverse edges in secondary stores, re-checked under that
+        // store's lock; undone if the new row cannot be written.
+        const undoSecondary = await this._landSecondarySupersedes(engram, secondarySupersedes)
+        try { await this._appendEngram(engrams, engram) } catch (err) { await undoSecondary(); throw err }
         if (this._primaryStore.append) {
           await this._updateEngrams(engrams, supersededTargets)
         }
@@ -5188,7 +5284,10 @@ export class Plur {
       // Incremental write (#740): same shape as the outbox path above — append
       // the new engram, then persist superseded_by back-edges when the append
       // was targeted (a fallback save already wrote them with the corpus).
-      await this._appendEngram(engrams, engram)
+      // Audit 5 F4: reverse edges in secondary stores, re-checked under that
+      // store's lock; undone if the new row cannot be written.
+      const undoSecondary = await this._landSecondarySupersedes(engram, secondarySupersedes)
+      try { await this._appendEngram(engrams, engram) } catch (err) { await undoSecondary(); throw err }
       if (this._primaryStore.append) {
         await this._updateEngrams(engrams, supersededTargets)
       }
@@ -5829,9 +5928,14 @@ export class Plur {
       // #240: forward supersedes edge travels with the remote-routed shape.
       // The reverse superseded_by edge on remote targets is NOT patched
       // (best-effort — see LearnContext.supersedes docs).
-      relations: (context?.supersedes?.length ?? 0) > 0 ? {
-        broader: [], narrower: [], related: [], conflicts: [],
-        supersedes: context!.supersedes!, superseded_by: [],
+      // `related` (2026-10-18): batch learning links an item to the memory the
+      // duplicate checker said it resembles, instead of overwriting that memory.
+      // Forward edge only; the target is not modified.
+      // A single id passed as a plain string (an untyped caller) is one id, not
+      // a list of characters.
+      relations: ((context?.supersedes?.length ?? 0) > 0 || relatedIds(context?.related).length > 0) ? {
+        broader: [], narrower: [], related: relatedIds(context?.related), conflicts: [],
+        supersedes: [...(context?.supersedes ?? [])], superseded_by: [],
       } : undefined,
       pinned: context?.pinned === true ? true : undefined,
       pinned_tier: context?.pin_tier,
@@ -5925,6 +6029,13 @@ export class Plur {
       recordLlmFailure: () => this._recordLlmFailure(),
       syncIndex: () => this._syncIndex(),
       offendingHitsForScope: (statement: string, scope: string) => this._offendingHitsForScope(statement, scope),
+      // LRN-9: an UPDATE onto a locked memory waits in the review queue the
+      // user already resolves (tension records, plur_tensions).
+      openReview: async (pair: TensionPair) => (await this.recordTensions([pair])).records[0]?.id,
+      holdAsDraft: async (id: string) => {
+        const e = await this.getById(id)
+        if (e && e.commitment !== 'draft') await this.updateEngram({ ...e, commitment: 'draft' })
+      },
     }
   }
 
@@ -6787,7 +6898,52 @@ export class Plur {
     const engrams = this._remoteOnly ? await this._remoteOnlyVisible() : await this._loadAllEngrams()
     const exact = engrams.find(e => e.id === id)
     if (exact) return exact
+    // A reference another store holds to one of my primary rows (audit 6 N2).
+    // The same visibility as the bare id: none in remote-only mode (B2), and a
+    // save queued from a remote-only folder is never returned (#1663).
+    const ns = parseNamespacedId(id)
+    if (ns && !this._remoteOnly && ns.prefix === storePrefix(this._primaryRefScope())) {
+      const own = withoutRemoteOnlyQueued(await this._loadCached(this.paths.engrams)).find(e => e.id === ns.bare)
+      if (own) return own
+    }
+    const byPackOriginal = this._matchPackOriginalId(engrams, id)
+    if (byPackOriginal) return byPackOriginal
+    const byLegacyPackId = this._matchLegacyPackId(engrams, id)
+    if (byLegacyPackId) return byLegacyPackId
     return this._matchOldFormId(engrams, id)
+  }
+
+  /**
+   * The pack row an id of the EARLIER pack-id form names (before pack names
+   * not in slug form got a digest: `ENG-X-pack-release-rules` for the pack
+   * `Release Rules`, now `ENG-X-pack-release-rules--<digest>`). Such ids were
+   * handed out in lookups, relations and receipts. Reached only when no loaded
+   * row carries `id` exactly, and only when exactly one pack row answers to it
+   * ({@link matchLegacyPackId}); an id two packs shared names neither.
+   */
+  private _matchLegacyPackId(engrams: Engram[], id: string): Engram | null {
+    const rows: Array<{ row: Engram; pack: string }> = []
+    for (const e of engrams) {
+      const pack = (e as { _pack?: unknown })._pack
+      if (typeof pack === 'string') rows.push({ row: e, pack })
+      else if (e.id === id) return null
+    }
+    return matchLegacyPackId(rows, id)
+  }
+
+  /**
+   * The pack row a pack's OWN id names, for ids handed out before pack rows
+   * got their pack ids (e.g. `ENG-PFR-001`). Reached only when no loaded row
+   * carries `id` exactly, so an id one of my memories holds — active or
+   * forgotten — never leads to a pack row (PCK-4). Only when exactly one pack
+   * row carries it.
+   */
+  private _matchPackOriginalId(engrams: Engram[], id: string): Engram | null {
+    const matches = engrams.filter(e => {
+      const pack = (e as { _pack?: unknown })._pack
+      return typeof pack === 'string' && e.id === packEngramId(id, pack)
+    })
+    return matches.length === 1 ? matches[0] : null
   }
 
   /**
@@ -6855,6 +7011,15 @@ export class Plur {
     for (const id of missing) {
       const m = this._matchOldFormId(all, id)
       if (m) { rest.push({ ...m, id }); found.add(id) }
+    }
+    // A pack id of the earlier form (saved in a relation or a receipt) finds
+    // its pack row, handed back under its current pack id.
+    missing = missing.filter(id => !found.has(id))
+    for (const id of missing) {
+      const m = this._matchLegacyPackId(all, id)
+      if (!m) continue
+      found.add(id)
+      if (!primary.some(e => e.id === m.id) && !rest.some(e => e.id === m.id)) rest.push(m)
     }
     missing = missing.filter(id => !found.has(id))
     const remote = options?.remoteCapability && missing.length > 0
@@ -8419,7 +8584,7 @@ export class Plur {
   ): Promise<InjectionResult> {
     // remote-only: team store rows + packs, never the personal store.
     let allEngrams = await this._readCorpus()
-    const allPacks = this._remoteOnly?.blocked ? [] : loadAllPacks(this.paths.packs)
+    const allPacks = this._remoteOnly?.blocked ? [] : this._loadInstalledPacks()
 
     if (remote && remote.engrams.length > 0) {
       // Candidate-pool dedup by namespaced id — the SERVER copy wins (fresher
@@ -11210,6 +11375,14 @@ export class Plur {
   ): Promise<void> {
     if (!fs.existsSync(this.paths.packs)) throw new Error(`Engram not found: ${id}`)
 
+    // A pack id of the earlier form (a receipt from before the pack-id digest)
+    // is rated as the one pack row it names; ambiguous, it names none.
+    {
+      const rows = this._loadInstalledPacks().flatMap(p => p.engrams.map(row => ({ row, pack: p.manifest.name })))
+      const legacy = matchLegacyPackId(rows, id)
+      if (legacy) id = legacy.id
+    }
+
     for (const entry of fs.readdirSync(this.paths.packs)) {
       const packDir = `${this.paths.packs}/${entry}`
       if (!fs.statSync(packDir).isDirectory()) continue
@@ -11229,7 +11402,13 @@ export class Plur {
       const packStore = this._storeAt(engramsPath)
       const handled = await this._withStoreLock(engramsPath, async () => {
         const engrams = await packStore.load()
-        const engram = engrams.find(e => e.id === id)
+        // A pack row answers to its pack id ({@link packEngramId}), the id
+        // every read path hands out. Its bare id still finds it: the caller
+        // reaches here only after no store of mine held `id` (PCK-4).
+        let packName: string | undefined
+        try { packName = loadPack(packDir).manifest.name } catch { packName = undefined }
+        const engram = engrams.find(e => packName !== undefined && packEngramId(e.id, packName) === id)
+          ?? engrams.find(e => e.id === id)
         if (!engram) return false
 
         applyFeedbackSignal(engram, signal, undefined, applyOpts)
@@ -12894,7 +13073,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
 
     const packIds: string[] = []
-    for (const pack of loadAllPacks(this.paths.packs)) {
+    for (const pack of this._loadInstalledPacks()) {
       for (const e of pack.engrams) {
         if (e.status === 'active') {
           packIds.push(e.id)
@@ -13053,6 +13232,8 @@ Generate an improved version of the procedure that prevents this failure. Return
   /**
    * Dismiss a tension as a false positive (detected|confirmed → dismissed).
    * The pair stays in the scan exclusion set, so it is never re-flagged.
+   * Neither memory changes: a draft in the pair (LRN-9's held-back proposal)
+   * stays a draft — stored and searchable, never injected.
    */
   dismissTension(id: string): TensionRecord {
     this._assertWritable()
@@ -13067,7 +13248,9 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Resolve a tension by picking the winning engram: the loser is retired
    * outright (decisive — NOT reference-count-decremented like forget(), see
    * audit #213 §2), the record becomes status 'resolved' with resolved_by /
-   * resolved_at set.
+   * resolved_at set. A winner that is a draft (LRN-9: a statement proposed
+   * onto a locked memory waits as a draft) becomes a normal memory with
+   * commitment 'decided', so it is given to the agent from then on.
    */
   async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }> {
     // Readonly (#731): refuse BEFORE the claim below writes tensions.yaml.
@@ -13112,15 +13295,35 @@ Generate an improved version of the procedure that prevents this failure. Return
       return { ...r }
     })
 
+    // A winner still waiting as a draft (LRN-9: a statement proposed onto a
+    // locked memory is held back as a draft until the user decides) is what
+    // the user just chose, so it becomes a normal memory that is given to the
+    // agent. Promoted before the loser is retired so the user is never left
+    // with neither memory given; undone below if the retirement fails.
+    let promoted: Engram | null = null
     // Retire the loser. If that fails, release the claim so the operation can
     // be retried rather than leaving a resolved tension whose loser is alive.
     try {
+      const winner = await this.getById(winnerId)
+      if (winner && winner.commitment === 'draft' && winner.status === 'active') {
+        if (!(await this.updateEngram({ ...winner, commitment: 'decided' }))) {
+          throw new Error(`Cannot make the chosen memory ${winnerId} a normal memory (not found in a writable store)`)
+        }
+        promoted = winner
+      }
       const retired = await this._retireEngramForResolution(loserId, `tension ${id} resolved in favor of ${winnerId}`)
       if (!retired) throw new Error(`Cannot retire losing engram ${loserId} (not found in a writable local store)`)
     } catch (err) {
       // Cast: TS cannot see that the closure above ran before this catch, so
       // it narrows `previous` to never.
       const prev = previous as Pick<TensionRecord, 'status' | 'resolved_by' | 'resolved_at'> | null
+      if (promoted) {
+        const p = promoted as Engram
+        try {
+          const now = await this.getById(p.id)
+          if (now) await this.updateEngram({ ...now, commitment: 'draft' })
+        } catch { /* best-effort, as the claim rollback below */ }
+      }
       if (prev) {
         try {
           this._mutateTension(id, r => {
@@ -13285,6 +13488,78 @@ Generate an improved version of the procedure that prevents this failure. Return
    * mutated rows explicitly via `_updateEngrams` — a whole-corpus fallback
    * save carries them implicitly, a targeted `append` does not.
    */
+  /**
+   * Audit 5 F4: write the reverse `superseded_by` edge on supersede targets
+   * that live in a writable SECONDARY store, in that store, under its own lock
+   * — the primary-only `_writeSupersededByEdges` never reached them, so the
+   * old memory kept being injected beside its replacement.
+   *
+   * Called right before the new row is written, with the new row in hand and
+   * not yet persisted, so anything decided here lands in the same write:
+   *  - target locked meanwhile (LRN-9): the forward edge is dropped and the new
+   *    row becomes a draft;
+   *  - target gone or retired meanwhile: the forward edge becomes a link.
+   * Returns an undo that removes the edges it wrote, for when the new row then
+   * fails to write (a dangling edge would down-rank the target).
+   */
+  private async _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>> {
+    const written: SecondarySupersede[] = []
+    // Audit 6 N2: the edge names the replacement by a primary-qualified id,
+    // never by its bare id — that one is only unique in THIS primary, and the
+    // same day it is the id of an unrelated row in the target store.
+    const edgeId = this._primaryQualifiedId(engram.id)
+    for (const t of targets) {
+      const outcome = await this._withStoreLock(t.path, async () => {
+        const rows = await this._storeAt(t.path).load()
+        const row = rows.find(e => e.id === t.originalId)
+        if (!row || row.status !== 'active') return 'gone' as const
+        if (row.commitment === 'locked') return 'locked' as const
+        if (this._writeSupersededByEdges(rows, [t.originalId], edgeId).length > 0) {
+          await this._writeEngrams(t.path, rows)
+        }
+        return 'landed' as const
+      })
+      if (outcome === 'landed') { written.push(t); continue }
+      const rel = engram.relations
+      if (rel) rel.supersedes = (rel.supersedes ?? []).filter(id => id !== t.id)
+      if (outcome === 'locked') {
+        engram.commitment = 'draft'
+      } else if (rel) {
+        rel.related = [...new Set([...(rel.related ?? []), t.id])]
+      }
+    }
+    return async () => {
+      for (const t of written) {
+        try {
+          await this._withStoreLock(t.path, async () => {
+            const rows = await this._storeAt(t.path).load()
+            const row = rows.find(e => e.id === t.originalId)
+            if (!row?.relations?.superseded_by?.includes(edgeId)) return
+            row.relations.superseded_by = row.relations.superseded_by.filter(id => id !== edgeId)
+            await this._writeEngrams(t.path, rows)
+          })
+        } catch (err) {
+          logger.warning(`could not remove the superseded_by edge ${t.id} -> ${engram.id} after the write failed: ${err}`)
+        }
+      }
+    }
+  }
+
+  /**
+   * How a row of THIS primary store is named from inside another store
+   * (audit 6 N2): its id namespaced under a scope derived from this primary's
+   * location. Another store reads it as foreign (no row of its own, and no
+   * configured store, answers to that prefix), so it can never name an
+   * unrelated row there; this install resolves it back in `getById`.
+   */
+  private _primaryQualifiedId(id: string): string {
+    return namespaceEngramId(id, this._primaryRefScope())
+  }
+
+  private _primaryRefScope(): string {
+    return `primary:${resolve(this.paths.engrams)}`
+  }
+
   private _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): Engram[] {
     const mutated: Engram[] = []
     for (const targetId of targetIds) {

@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 import { readHistoryForEngram } from '../src/history.js'
+import { packEngramId } from '../src/engrams.js'
 
 const S = 'Prefer small pull requests over large ones'
 
@@ -56,7 +57,7 @@ describe('Decision A: a write whose statement exists only where the writer canno
     const rows = await primaryRows(plur)
     expect(rows.map(r => r.statement)).toEqual([S])
     expect(readFileSync(packFile, 'utf8')).toBe(before)
-    const ev = recurrenceEvents(plur, 'ENG-2026-09-26-001')
+    const ev = recurrenceEvents(plur, packEngramId('ENG-2026-09-26-001', 'p1'))
     expect(ev).toHaveLength(1)
     expect(ev[0].data.persisted_to).toBe('history-only')
     expect(ev[0].data.stored_as).toBe(got.id)
@@ -72,7 +73,7 @@ describe('Decision A: a write whose statement exists only where the writer canno
     // The pack row was not mutated in memory either.
     const packRow = (await (plur as any)._loadSecondaryAndPacks()).find((r: any) => r._pack === 'p2')
     expect(packRow.write_count ?? 1).toBe(1)
-    expect(recurrenceEvents(plur, 'ENG-2026-09-26-002')[0]?.data.persisted_to).toBe('history-only')
+    expect(recurrenceEvents(plur, packEngramId('ENG-2026-09-26-002', 'p2'))[0]?.data.persisted_to).toBe('history-only')
   })
 
   it('readonly store hit: new row; the readonly file is never written', async () => {

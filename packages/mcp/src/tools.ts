@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
@@ -1164,9 +1164,17 @@ export type ToolProfile = 'full' | 'lean' | 'cursor'
 // is `destructiveHint: true` and therefore listed here: plur_forget,
 // plur_packs_uninstall, plur_tensions_purge, plur_tensions (action:"resolve"
 // retires the losing engram — exactly forget's effect) and plur_validate_meta
-// (a third failed validation retires a non-top meta-engram). 13 core tools +
-// plur_admin = 14 exposed. plur_rescope is deliberately NOT here: a rescope
-// always leaves a copy, so it is a move, not a removal (see its annotation).
+// (a third failed validation retires a non-top meta-engram). plur_rescope is
+// deliberately NOT here: a rescope always leaves a copy, so it is a move, not
+// a removal (see its annotation).
+//
+// TOOL-4 (2026-10-18): "every tool that deletes a memory or overwrites its
+// text is marked destructive, and the gateway can never delete or overwrite".
+// plur_report_failure joins for that reason: procedure evolution replaces a
+// procedure's text with what its checker returns. plur_learn_batch does not:
+// batch learning never overwrites (owner decision 2026-10-18), proven by
+// behaviour rather than by a marking, so it stays an ordinary gateway action.
+// 14 core tools + plur_admin = 15 exposed.
 // Exported (audit fix — evaluator review, iteration 2, 2026-07-09) so
 // server.ts's plur://guide resource can build its cursor-profile redirect
 // note FROM this set instead of hardcoding a second, independent copy of
@@ -1187,6 +1195,7 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_tensions_purge',
   'plur_tensions',
   'plur_validate_meta',
+  'plur_report_failure',
 ])
 
 /**
@@ -1419,7 +1428,7 @@ export function describeToolSurface(profile: ToolProfile = activeToolProfile()):
 export function getToolDefinitions(profile: ToolProfile = 'lean'): ToolDefinition[] {
   const all = getAllToolDefinitions()
   if (profile === 'full') return all
-  // 'lean' and 'cursor' are identical: 13 core tools + plur_admin dispatch (14 exposed)
+  // 'lean' and 'cursor' are identical: 14 core tools + plur_admin dispatch (15 exposed)
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
 }
@@ -1877,7 +1886,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
       description:
         'Create many engrams in one call — the batch form of plur_learn. Accepts an array of engram objects and ' +
         'writes them sequentially through the SAME dedup + policy pipeline as plur_learn (content-hash NOOP → semantic ' +
-        'recall → LLM ADD/UPDATE/MERGE decision, or local cosine REPORTING when no LLM is configured). Exact-hash dedup ' +
+        'recall → LLM duplicate check, or local cosine REPORTING when no LLM is configured). A batch NEVER overwrites ' +
+        'an existing memory: when the duplicate checker says an item should replace or be merged into an existing ' +
+        'memory, the item is saved as its own memory instead (decision ADD), linked to that memory, and its result ' +
+        'carries `likely_duplicate_of` { id, checker_decision: UPDATE | MERGE, note }; the existing memory is unchanged. ' +
+        'A checker NOOP writes nothing and returns the existing id. Exact-hash dedup ' +
         'also applies WITHIN the batch: a statement duplicating an earlier item in the same array resolves to NOOP ' +
         'against it. Similarity never suppresses a write — each result carries `dedup.mode` (llm | cosine | hash-only) ' +
         'and, when similarity ran, `dedup.near_duplicates`. Read dedup.mode before trusting an ADD: hash-only means ' +
@@ -1893,6 +1906,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         'default ("private" — excluded from packs and shared git sync), and an item whose scope is a team store ' +
         'still goes to that team store; to keep a team-scope memory local, use plur_learn with an explicit ' +
         'visibility: "private". See plur-ai/plur#281.',
+      // TOOL-4: a batch never overwrites or deletes an existing memory (see the
+      // description), so it is not destructive and stays behind plur_admin.
       annotations: { title: 'Learn (batch)', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
@@ -2120,6 +2135,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: r.engram.type,
             decision: r.decision,
             ...(r.existing_id ? { existing_id: r.existing_id } : {}),
+            // Batch learning never overwrites (2026-10-18): the checker's
+            // UPDATE/MERGE became a linked ADD, said here in plain words.
+            ...(r.likely_duplicate_of ? { likely_duplicate_of: r.likely_duplicate_of } : {}),
+            // A draft whose review item could not be opened (audit 5 F3): said, not only logged.
+            ...(r.tensions?.length ? { tensions: r.tensions } : {}),
+            ...(r.review_error ? { review_error: r.review_error } : {}),
             // #856 audit: `dedup` was computed and then dropped here, so the
             // reporting it exists for reached no caller — "anything below the
             // bar is still reported" was not observable anywhere.
@@ -2216,6 +2237,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         })
         _recordInjectionTelemetry(session_id, result.injected_packs)
         return {
+          // INJ-7: the constraints section is part of what injected_ids lists
+          // (and what the store records as injected); a reply without it
+          // reported pinned prohibitions as given that never reached the agent.
+          // First, as in plur_session_start: prohibitions are read first.
+          constraints: result.constraints,
           directives: result.directives,
           consider: result.consider,
           count: result.count,
@@ -2263,6 +2289,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         })
         _recordInjectionTelemetry(session_id, result.injected_packs)
         const response: Record<string, unknown> = {
+          // INJ-7: see plur_inject — every section injected_ids covers is in the reply.
+          constraints: result.constraints,
           directives: result.directives,
           consider: result.consider,
           count: result.count,
@@ -2751,7 +2779,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           remote_type: {
             type: 'string',
             enum: ['personal', 'shared'],
-            description: 'What the sync remote is for (#640). personal (default): mirror everything non-local, private included — a solo user\'s own backup. shared: push ONLY shared-scope, non-private engrams — personal-family and private engrams never reach the remote, and episode/candidate/tension records derived from non-pushed engrams are stripped too (#686). Persist the choice in config.yaml as sync.remote_type instead of passing it per call.',
+            description: 'What the sync remote is for (#640). personal (default): mirror everything non-local, private included — a solo user\'s own backup. shared: push ONLY shared-scope, non-private engrams — personal-family and private engrams never reach the remote. On both, episode/candidate/tension records naming a non-pushed engram are stripped too (#686). Persist the choice in config.yaml as sync.remote_type instead of passing it per call.',
           },
         },
       },
@@ -3054,6 +3082,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         properties: {
           domain: { type: 'string', description: 'Only count engrams whose domain starts with this prefix (e.g. "meridian")' },
           created_after: { type: 'string', description: 'ISO-8601 date (YYYY-MM-DD). Only count engrams learned on or after this date.' },
+          check_updates: { type: 'boolean', description: 'If true, ask the npm registry whether a newer PLUR is published and report it as update_available. PLUR also checks once at start; if that check could not connect, PLUR is offline and this answers from the earlier result (update_check: "offline") without a new request.' },
         },
       },
       handler: async (args, plur) => {
@@ -3061,7 +3090,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
           domain: args.domain as string | undefined,
           created_after: args.created_after as string | undefined,
         })
+        // An explicit check asks the registry, unless an earlier check could
+        // not connect: then the process is offline and checkForUpdate answers
+        // from the cache without a request (TEAM-5).
+        if (args.check_updates === true) await checkForUpdate('@plur-ai/mcp', VERSION)
         const versionCheck = getCachedUpdateCheck('@plur-ai/mcp')
+        const update_offline = args.check_updates === true && updateCheckOffline()
         // #761: name the profile + gateway in the other name-stable diagnostic
         // door. status is where agents look when "tools seem missing" — one
         // line here turns a lookup miss into a plur_admin call instead of a
@@ -3110,6 +3144,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
               latest: versionCheck.latest,
               behind: minorVersionsBehind(versionCheck.current, versionCheck.latest),
             },
+          } : {}),
+          ...(update_offline ? {
+            update_check: 'offline: the update check could not connect earlier in this process, so PLUR makes no further network attempt. Restart PLUR once online to check again.',
           } : {}),
           capabilities: await mcpCanary.status(),
           // #1526: a broken folders.yaml pauses every memory tool. Status is
@@ -3880,7 +3917,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Detect fresh install: no engrams AND no episodes = never used before
         const isFreshInstall = store_stats.engram_count === 0 && store_stats.episode_count === 0
 
-        // Version staleness check — zero-cost cache read (issue #151)
+        // Version staleness check — zero-cost cache read (issue #151); it
+        // starts no refresh once the process is offline (TEAM-5)
         const versionCheck = getCachedUpdateCheck('@plur-ai/mcp')
         let version_warning: string | undefined
         if (versionCheck?.updateAvailable && versionCheck.latest) {
@@ -4457,12 +4495,39 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         const status = await plur.status()
 
+        // Team memories still waiting in the outbox are reported here, with
+        // the true count: ending a session must never look like a clean
+        // success while writes for a team store were never sent. Nothing is
+        // said when the queue is empty, and a queue that cannot be read is
+        // reported as such rather than passed off as empty.
+        let unsent = 0
+        let outbox_error: string | undefined
+        try {
+          unsent = await plur.outboxCount()
+        } catch (err) {
+          outbox_error = (err as Error).message
+        }
+
         return {
           engrams_created,
           ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode?.id ?? null,
           total_engrams: status.engram_count,
           ...(injection_summary ? { injection_summary } : {}),
+          ...(unsent > 0 ? {
+            outbox: {
+              pending: unsent,
+              warning:
+                `${unsent} item(s) for a team store have not been sent and stay queued locally. ` +
+                'They are retried on the next session start or plur_sync; plur_outbox lists them.',
+            },
+          } : {}),
+          ...(outbox_error ? {
+            outbox_error,
+            outbox_warning:
+              `The queue of team memories waiting to be sent could not be checked — ${outbox_error}. ` +
+              'Some may not have been sent; run plur_outbox to see what is queued.',
+          } : {}),
           hint: engrams_failed.length
             ? `${engrams_failed.length} suggestion(s) could not be stored — see engrams_failed. The rest were.`
             : engrams_created === 0
@@ -5002,7 +5067,10 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     {
       name: 'plur_report_failure',
       description: 'Report a failure for a procedural engram — triggers procedure evolution via LLM if configured. Only works on procedural engrams. Max 3 revisions per procedure per 24h.',
-      annotations: { title: 'Report Failure', destructiveHint: false, idempotentHint: false },
+      // TOOL-4: procedure evolution replaces the procedure's text with what the
+      // checker returns, so this is destructive: a direct tool in every
+      // profile, refused by plur_admin. Behaviour unchanged.
+      annotations: { title: 'Report Failure', destructiveHint: true, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {

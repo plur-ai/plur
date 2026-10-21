@@ -71,22 +71,27 @@ describe('MED-20 + LOW-9 — learnAsync UPDATE/MERGE demotion (real guard, share
     expect(e.structured_data?._demoted?.patterns).toMatch(/public_ipv4/)
   }, 30_000)
 
-  it('MERGE that introduces a public IP into a SHARED-scope engram demotes + stamps _demoted', async () => {
+  // LRN-7: a MERGE no longer concatenates into the shared engram, so the
+  // sensitive statement cannot ride into it. It is saved as its own memory
+  // (through learn() and its guard), and the shared engram is unchanged.
+  it('MERGE with a public IP leaves the SHARED-scope engram unchanged and keeps the IP out of the shared scope', async () => {
     const plur = freshPlur({ dedup: { enabled: true, mode: 'llm' } })
     const seed = await plur.learn('the staging cluster is documented in the handbook', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
 
     const llm = dedupLlm('MERGE', seed.id)
     // "staging" is shared with the seed so BM25 finds the candidate even when
     // embeddings are unavailable under full-suite load (prevents a flake where
-    // zero-overlap candidates caused an ADD instead of MERGE — see #680).
+    // zero-overlap candidates caused an ADD without asking — see #680).
     const result = await plur.learnAsync(`staging cluster reachable at ${PUBLIC_IP}:8877`, { llm })
 
-    expect(result.decision).toBe('MERGE')
-    const e = result.engram as Engram & { visibility?: string; structured_data?: { _demoted?: { from: string; to: string; patterns: string } } }
-    expect(e.scope).toBe('local')
-    expect(e.visibility).toBe('private')
-    expect(e.structured_data?._demoted?.from).toBe(SHARED_SCOPE)
-    expect(e.structured_data?._demoted?.patterns).toMatch(/public_ipv4|ipv4_port/)
+    expect(llm).toHaveBeenCalled()
+    expect(result.decision).toBe('ADD')
+    expect(result.likely_duplicate_of?.checker_decision).toBe('MERGE')
+    expect(result.engram.id).not.toBe(seed.id)
+    expect(result.engram.scope).not.toBe(SHARED_SCOPE)
+    const after = await plur.getById(seed.id)
+    expect(after?.statement).toBe('the staging cluster is documented in the handbook')
+    expect(after?.scope).toBe(SHARED_SCOPE)
   }, 30_000)
 
   it('BOUNDARY: the SAME UPDATE into a PERSONAL (global) engram does NOT demote and does NOT stamp', async () => {

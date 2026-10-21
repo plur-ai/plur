@@ -291,6 +291,40 @@ describe('supersedes chain — a replaced engram is not injected as current', ()
     expect(ids).not.toContain('ENG-2026-0102-002')
   })
 
+  // A replacement outside this injection's scope filter is not deliverable
+  // here either (#1237): suppressing the old engram on it would leave the
+  // session with neither.
+  it('a replacement in another project does not suppress the engram it supersedes (#1237)', () => {
+    const elsewhere = make({ ...tip(), scope: 'project:other' })
+    const result = selectAndSpread(
+      { prompt: 'how do I deploy the website', maxTokens: 5000, scope: 'project:mine' },
+      [older(), elsewhere], [],
+    )
+    const ids = allIds(result)
+    expect(ids).toContain('ENG-2026-0102-001')
+    expect(ids).not.toContain('ENG-2026-0102-002')
+  })
+
+  it('a replacement in an injectable pack but another project does not suppress the engram it supersedes (#1237)', () => {
+    const result = selectAndSpread(
+      { prompt: 'how do I deploy the website', maxTokens: 5000, scope: 'project:mine' },
+      [older()], [packOf('always', [make({ ...tip(), scope: 'project:other' })])],
+    )
+    const ids = allIds(result)
+    expect(ids).toContain('ENG-2026-0102-001')
+    expect(ids).not.toContain('ENG-2026-0102-002')
+  })
+
+  it('a replacement in the project I inject in still suppresses the engram it supersedes (control)', () => {
+    const result = selectAndSpread(
+      { prompt: 'how do I deploy the website', maxTokens: 5000, scope: 'project:mine' },
+      [older(), make({ ...tip(), scope: 'project:mine' })], [],
+    )
+    const ids = allIds(result)
+    expect(ids).toContain('ENG-2026-0102-002')
+    expect(ids).not.toContain('ENG-2026-0102-001')
+  })
+
   it('a replacement in an injectable pack still suppresses the engram it supersedes (control)', () => {
     const result = selectAndSpread(
       { prompt: 'how do I deploy the website', maxTokens: 5000 },

@@ -1,6 +1,6 @@
 import type { Engram, Association } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
-import type { LoadedPack } from './engrams.js'
+import { parseNamespacedId, legacyPackEngramId, type LoadedPack } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } from './decay.js'
 import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
@@ -8,6 +8,7 @@ import { freshTailBoost } from './fresh-tail.js'
 import { makeVisibilityPredicate } from './scope-util.js'
 import { collapseLineTerminators } from './sanitize.js'
 import { isNotYetValid, isExpired, isExpiredBeyondGrace } from './validity.js'
+import { ftsTokenize } from './fts.js'
 
 /**
  * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
@@ -84,18 +85,38 @@ export interface InternalInjectionResult {
 
 const DEFAULT_MAX_TOKENS = 8000
 const DEFAULT_MIN_RELEVANCE = 0.3
+/**
+ * Nearby-variant suppression (INJ-1). With the meaning model available, an
+ * unpinned candidate is left out when a clearly better match is nearly the same
+ * rule: its relevance is below NEIGHBOUR_RELEVANCE_RATIO of that match's, and
+ * the two statements share at least NEIGHBOUR_SIMILARITY of their words
+ * (Jaccard over the search tokens). Such a pair is one rule written for two
+ * situations; the task matches one of them better, so the other does not apply.
+ * Memories on other parts of the task share few words with the best match and
+ * are kept, and so are variants about as relevant (a variant naming a sibling
+ * service while sharing most of the task's words stays above the ratio).
+ * Measured on a labelled task set: the result changes smoothly between 0.1 and
+ * 0.25 similarity and between 0.78 and 0.84 relevance ratio.
+ */
+const NEIGHBOUR_SIMILARITY = 0.2
+const NEIGHBOUR_RELEVANCE_RATIO = 0.8
+/** How many kept candidates each later candidate is compared with (bounds the cost on large stores). */
+const NEIGHBOUR_ANCHORS = 50
 const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
-// Pinned engrams bypass per-pack/per-domain caps but must not eat the entire
-// budget — left unbounded, a single user with many pinned packs could starve
-// every relevance-scored engram. Cap at 50% of maxTokens so contextual recall
-// still gets at least half the budget. Tuned for default 8000 → 4000 pinned.
+// Default share of the injection budget that may be PINNED (owner decision
+// 2026-10-19, INJ-6). Configurable as `injection.pinned_ratio`. The same share
+// is the pin-time quota (`pinnedQuota()`) and the ceiling on pins at
+// injection: pins are given first, up to their share, so a large pinned set
+// cannot crowd out the memories that match the task, which get the rest of
+// the budget. Every pin that did not fit its share is named in
+// `omitted_pinned`.
 const PINNED_TOKEN_BUDGET_RATIO = 0.5
 /**
  * Default share of the pinned budget the HARD tier may occupy (pinned
  * two-tier model). The hard tier is a sub-cap INSIDE the pinned share, not a
  * budget of its own: soft pins get whatever the hard tier leaves, so a store
- * with no hard-tier engrams sees exactly the pinned share it always had.
+ * with no hard-tier engrams gives its soft pins the whole pinned share.
  * Configurable as `injection.pinned_hard_ratio`; bounded to [0, 1], so the
  * hard tier can never exceed the pinned quota.
  */
@@ -120,9 +141,10 @@ export function pinnedHardCap(
 }
 
 /**
- * The share of the injection budget reserved for pinned engrams —
- * `injection.pinned_ratio`, the same ratio `pinnedQuota()` enforces at pin
- * time, so admission and injection agree. Non-finite falls back to the
+ * The pinned share of the injection budget — `injection.pinned_ratio`, the
+ * ratio `pinnedQuota()` enforces at pin time, so admission and injection
+ * agree. At injection it caps the pins (INJ-6) and sizes the hard tier's
+ * sub-cap. Non-finite falls back to the
  * default 0.5; out-of-range values are clamped to [0, 1].
  */
 export function pinnedShareRatio(pinnedRatio: number = PINNED_TOKEN_BUDGET_RATIO): number {
@@ -329,7 +351,8 @@ export function estimateTokens(engram: ScoredEngram): number {
   // hand-kept field sum this replaced had already drifted from formatLayer3 —
   // it charged nothing for `Kind: <claim_class>` (#963) or for the soft-expiry
   // `⚠ EXPIRED <date> — verify before use: ` prefix — and it charged layer 1
-  // for the statement although layer 1 renders an UNTRUNCATED `summary`.
+  // for the statement although layer 1 rendered an UNTRUNCATED `summary`
+  // (layer 1 now renders the whole statement and its scope, INJ-7).
   // Replayed: an inferred, soft-expired engram rendered 202 chars (51 tokens)
   // against an estimate of 37; a consider entry with a long summary rendered
   // 34 against 25. Rendering is the only estimate that cannot drift.
@@ -378,6 +401,14 @@ function legacyEstimateChars(engram: ScoredEngram): number {
 
 function tokenize(text: string): Set<string> {
   return new Set(text.toLowerCase().split(/\W+/).filter(w => w.length > 2))
+}
+
+/** Shared words over all words of two token sets; 0 when both are empty. */
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let shared = 0
+  for (const w of a) if (b.has(w)) shared++
+  const union = a.size + b.size - shared
+  return union === 0 ? 0 : shared / union
 }
 
 export function anchorBoost(engram: Engram, taskWords: Set<string>): number {
@@ -452,8 +483,9 @@ function isSupersededEngram(engram: ScoredEngram): boolean {
  * current: the correction that replaced it is, so it is not injected (outside
  * a historical prompt). When no replacement is deliverable here — retired,
  * living only in a remote store, a draft awaiting approval (#1141), expired,
- * or in an on_request pack — dropping the old engram would leave the session
- * with neither, so the ×0.3 re-rank still applies instead.
+ * in an on_request pack, or in a scope this injection cannot see (#1237) —
+ * dropping the old engram would leave the session with neither, so the ×0.3
+ * re-rank still applies instead.
  *
  * A supersede loop is not a replacement. Self-supersession, and a replacement
  * whose own superseded_by chain leads back to this engram (A → B → A), would
@@ -468,9 +500,29 @@ function isReplacedByDeliverable(
   engram: Engram,
   deliverableIds: ReadonlySet<string>,
   supersededBy: ReadonlyMap<string, readonly string[]>,
+  replacedFromPrimary?: ReadonlyMap<string, readonly string[]>,
 ): boolean {
-  return (engram.relations?.superseded_by ?? []).some(id =>
+  const replacements = [...(engram.relations?.superseded_by ?? []), ...(replacedFromPrimary?.get(engram.id) ?? [])]
+  return replacements.some(id =>
     deliverableIds.has(id) && !leadsBackTo(id, engram.id, supersededBy))
+}
+
+/**
+ * Audit 6 N2: a row of ANOTHER store that a primary row supersedes, read from
+ * the primary row's forward edge. The reverse edge written into that store
+ * names the replacement in a primary-qualified form no view resolves to a
+ * loaded id (in the store's own view it must name nothing), so in this view the
+ * forward edge is what says the old row is replaced.
+ *
+ * Only primary rows count, and only edges to a namespaced (other-store) id:
+ * a store row's or pack row's forward edge must never hide a row of another
+ * store, and primary-to-primary supersession keeps working by the reverse edge
+ * exactly as before. A primary row is one with no loader marker and a bare id.
+ */
+function isPrimaryRow(e: Engram): boolean {
+  const m = e as { _storeScope?: unknown; _fromRemoteStore?: unknown; _pack?: unknown }
+  return m._storeScope === undefined && m._fromRemoteStore === undefined && m._pack === undefined
+    && parseNamespacedId(e.id) === null
 }
 
 /** Does following superseded_by edges from `start` reach `target`? A self-edge reaches at once. */
@@ -600,7 +652,10 @@ export function scoreEngram(
 
   // Base score from term hits * (decayed) retrieval strength
   // Pack engrams use raw RS (read-only, can't track usage)
-  let rs = isPack
+  // A locked engram does not fade with disuse either: it ranks at its stored
+  // strength, the same exemption confidenceDecay gives it below (FDB-4).
+  const isLocked = (engram as any).commitment === 'locked'
+  let rs = isPack || isLocked
     ? engram.activation.retrieval_strength
     : decayedStrength(engram.activation.retrieval_strength, daysSince(engram.activation.last_accessed))
   // Idea 21 (SP1): Additional confidence decay for engrams without recent feedback
@@ -642,8 +697,8 @@ export interface OmittedPinned {
   /** Estimated token cost of the engram that was skipped. */
   cost: number
   /** `pinned-sub-budget`: the pinned share (`injection.pinned_ratio`, default
-   *  50%) was exhausted while overall
-   *  budget remained. `total-budget`: no room left at all.
+   *  50%) was exhausted while overall budget remained.
+   *  `total-budget`: no room left at all.
    *  `hard-tier-cap`: a hard-tier engram did not fit the hard tier's sub-cap.
    *  `soft-tier-budget`: an engram with an explicit soft tier or priority did
    *  not fit what the hard tier left of the pinned share. An engram with no
@@ -754,9 +809,8 @@ export function fillTokenBudget(
 
   // Two-pass selection: pinned engrams first, then the rest. Pinned items
   // ignore per-pack and per-domain fairness caps because they're meant to be
-  // always-load — but they respect both maxTokens AND a sub-budget so they
-  // can't starve the relevance-scored engrams. With many pinned packs, the
-  // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
+  // always-load; they respect maxTokens AND the pinned share (and the hard
+  // tier its sub-cap inside it), and the rest gets what they leave (INJ-6).
   // Primary-store pins first, then `stores:`/remote, then packs; score orders
   // within an origin. Sorted before selection so budget pressure can never let
   // a pack pin in ahead of one of the user's own.
@@ -772,10 +826,14 @@ export function fillTokenBudget(
     || (isHardPinned(a as never) ? 0 : effectivePinnedPriority(b as never) - effectivePinnedPriority(a as never))
     || b.score - a.score)
   const unpinned = scored.filter(e => (e as any).pinned !== true)
+  // Pinned memories come first, up to their share of the budget (owner
+  // decision 2026-10-19, INJ-6): `injection.pinned_ratio`, default half. A
+  // large pinned set cannot take the whole budget; the memories matching the
+  // task get what the pins leave, and every pin over the share is named.
   const pinnedBudget = Math.floor(pinnedBudgetBase * pinnedShareRatio(pinnedRatio))
   // The hard tier is a sub-cap inside the pinned share; the soft tier gets
   // what the hard tier holds back. With no hard-tier candidates the reserve is
-  // 0 and the soft tier has the whole pinned share, as before the tiers.
+  // 0 and the soft tier has the whole pinned share.
   const hardCap = pinnedHardCap(pinnedBudgetBase, pinnedHardRatio, pinnedRatio)
   if (pinnedLedger.hardSpent === undefined) pinnedLedger.hardSpent = 0
   if (pinnedLedger.hardReserve === undefined) pinnedLedger.hardReserve = hardPinnedReserve(scored, hardCap)
@@ -901,17 +959,32 @@ export function selectAndSpread(
   // "retired" nor "unresolvable" — it is simply not part of this view — so it
   // is skipped without feeding spread_drops.
   const scopeExcludedIds = new Set<string>()
-  // Every engram this session could deliver, in scope or not, for the
-  // "replaced by a deliverable engram" test: active, approved, valid, and not
-  // in an on_request pack. A correction stored in another scope still replaces
-  // (whether it should is #1237). Filled by the scoring loops below.
+  // Every engram this injection could deliver, for the "replaced by a
+  // deliverable engram" test: active, approved, valid, visible under this
+  // inject's scope filter, and not in an on_request pack. A correction kept in
+  // a scope this injection cannot see is not deliverable here, so the engram
+  // it replaces stays injectable rather than leaving neither (#1237).
+  // Filled by the scoring loops below.
   const deliverableIds = new Set<string>()
   // superseded_by edges of every engram the loops see, for loop detection.
   const supersededBy = new Map<string, readonly string[]>()
+  // Forward edges from primary rows to other stores' rows (see isPrimaryRow).
+  const replacedFromPrimary = new Map<string, string[]>()
+  for (const e of personalEngrams) {
+    if (!e.relations?.supersedes?.length || !isPrimaryRow(e)) continue
+    for (const t of e.relations.supersedes) {
+      if (parseNamespacedId(t) === null) continue
+      const list = replacedFromPrimary.get(t) ?? []
+      list.push(e.id)
+      replacedFromPrimary.set(t, list)
+    }
+  }
   const historical = hasHistoricalIntent(ctx.prompt)
 
   // Step 1-2: Score all active engrams
   const scored: ScoredEngram[] = []
+  // Keyword score + meaning similarity per candidate, for the relative cut in step 5.
+  const relevance = new Map<string, number>()
 
   for (const engram of personalEngrams) {
     if (engram.relations?.superseded_by?.length) supersededBy.set(engram.id, engram.relations.superseded_by)
@@ -921,13 +994,14 @@ export function selectAndSpread(
     // unresolvable targets, and a pending-review engram is neither.
     const deliverable = !skipForApproval(engram)
       && !skipForValidity(engram, nowMs, expiryMode, graceDays)
-    if (deliverable) deliverableIds.add(engram.id)
     // Visibility BEFORE the map and the score (see isInjectVisible): nothing
     // below — pinned exemption, embedding boost, spreading — may revive it.
     if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
+    if (deliverable) deliverableIds.add(engram.id)
     if (!deliverable) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
+    relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
     // Embedding boost: semantically similar engrams with zero keyword hits still get scored.
     // Threshold raised from 0.3 -> 0.5 in 0.9.4 — with embeddings now actually running
     // (post-build-config fix), 0.3 was too generous and surfaced spurious matches between
@@ -967,11 +1041,12 @@ export function selectAndSpread(
       if (engram.status !== 'active') continue
       const deliverable = !skipForApproval(engram)
         && !skipForValidity(engram, nowMs, expiryMode, graceDays)
-      if (deliverable) deliverableIds.add(engram.id)
       if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
+      if (deliverable) deliverableIds.add(engram.id)
       if (!deliverable) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
+      relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
       if (raw === 0 && embBoost > 0.5) {
         raw = embBoost * 2
@@ -988,6 +1063,27 @@ export function selectAndSpread(
         scored_entry._pack = pack.manifest.name
         scored.push(scored_entry)
       }
+    }
+  }
+
+  // A pack row also answers, for spreading, to the id it had under the earlier
+  // pack-id scheme: my memories' relations saved before the upgrade still name
+  // it that way. Only when no row carries that id exactly and exactly one pack
+  // row answers to it (two packs once shared such an id; then it names neither).
+  {
+    const exactIds = new Set<string>(personalEngrams.map(e => e.id))
+    const legacyRows = new Map<string, string[]>()
+    for (const pack of packs) {
+      for (const engram of pack.engrams) {
+        exactIds.add(engram.id)
+        const legacy = legacyPackEngramId(engram.id, pack.manifest.name)
+        if (legacy) legacyRows.set(legacy, [...(legacyRows.get(legacy) ?? []), engram.id])
+      }
+    }
+    for (const [legacy, ids] of legacyRows) {
+      if (ids.length !== 1 || exactIds.has(legacy)) continue
+      const row = engramMap.get(ids[0])
+      if (row) engramMap.set(legacy, row)
     }
   }
 
@@ -1014,9 +1110,35 @@ export function selectAndSpread(
   // A superseded engram whose replacement is deliverable is not current, so it is
   // not a candidate at all — not in directives, constraints or consider.
   // A historical prompt ("previously", "used to") still reaches it.
-  const filtered = scored.filter(s =>
+  const current = scored.filter(s =>
     ((s as any).pinned === true || s.score >= minRelevance)
-    && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy)))
+    && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy, replacedFromPrimary)))
+  // Nearby-variant suppression (INJ-1). The floor above is a share of a score
+  // normalised to the best match and padded by recency and anchor bonuses, so
+  // nearly anything sharing a word with the task clears it — including the
+  // variant of the matching rule written for a different situation ("incident
+  // summaries" beside "review summaries"). When the meaning model ran, walk the
+  // candidates from most to least relevant and leave out one that is nearly the
+  // same statement as a clearly more relevant candidate already kept. Pinned
+  // candidates, and candidates the meaning model gave no score, are neither
+  // judged nor used as anchors. Without the meaning model, keyword overlap alone
+  // cannot rank a rule above its variant, so that path keeps the old behaviour.
+  let filtered = current
+  if (embeddingBoosts && embeddingBoosts.size > 0) {
+    const judged = (e: ScoredEngram) => (e as any).pinned !== true && embeddingBoosts.has(e.id)
+    const rel = (e: ScoredEngram) => relevance.get(e.id) ?? 0
+    const byRelevance = current.filter(judged).sort((a, b) => rel(b) - rel(a))
+    const anchors: Array<{ rel: number; words: Set<string> }> = []
+    const dropped = new Set<string>()
+    for (const e of byRelevance) {
+      const words = new Set(ftsTokenize(e.statement))
+      const r = rel(e)
+      const variant = anchors.some(a => r < NEIGHBOUR_RELEVANCE_RATIO * a.rel && jaccard(a.words, words) >= NEIGHBOUR_SIMILARITY)
+      if (variant) { dropped.add(e.id); continue }
+      if (anchors.length < NEIGHBOUR_ANCHORS) anchors.push({ rel: r, words })
+    }
+    if (dropped.size > 0) filtered = current.filter(e => !dropped.has(e.id))
+  }
 
   // Sort by score descending
   filtered.sort((a, b) => b.score - a.score)
@@ -1072,6 +1194,12 @@ export function selectAndSpread(
   const pinnedDirectives = pinnedPass.selected.filter(e => !isConstraintCandidate(e))
   const pinnedConstraintTokens = pinnedConstraints.reduce((a, e) => a + estimateTokens(e), 0)
 
+  // Pins had first claim, up to their share (INJ-6). The memories matching
+  // the task get the rest of the budget. A pin that did not fit its share is
+  // named in `omitted_pinned` and does not come back through the consider pool
+  // or spreading below: that would give it past its share, after the task's
+  // memories.
+  const omittedPinIds = new Set(pinnedPass.omitted_pinned.map(o => o.id))
   const unpinned = filtered.filter(e => (e as any).pinned !== true)
   const constraintCandidates = unpinned.filter(isConstraintCandidate)
   const otherCandidates = unpinned.filter(e => !isConstraintCandidate(e))
@@ -1117,6 +1245,7 @@ export function selectAndSpread(
   }
   const dip19Remainder = filtered.filter(e => {
     if (directiveIds.has(e.id)) return false
+    if (omittedPinIds.has(e.id)) return false
     const pack = e.pack ?? '__personal__'
     if (pack !== '__personal__' && (directivePackCounts.get(pack) ?? 0) >= MAX_PER_PACK) return false
     return true
@@ -1149,7 +1278,7 @@ export function selectAndSpread(
       // everything was dropped reported nothing dropped — re-opening the hole
       // #1142 exists to close, in its worst instance. A single oversized
       // pinned engram at a tiny budget returned silence.
-      omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned),
+      omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned, dip19Pool),
     }
   }
 
@@ -1175,6 +1304,8 @@ export function selectAndSpread(
       if (visited.has(assoc.target)) continue
 
       const target = engramMap.get(assoc.target)
+      // Reached under an earlier pack id (see the alias above) but already in.
+      if (target && visited.has(target.id)) continue
       if (!target) {
         if (scopeExcludedIds.has(assoc.target)) continue
         if (nonActiveIds.has(assoc.target)) droppedRetired++
@@ -1182,7 +1313,9 @@ export function selectAndSpread(
         continue
       }
       if (target.status !== 'active') { droppedRetired++; continue }
-      if (!historical && isReplacedByDeliverable(target, deliverableIds, supersededBy)) continue
+      // INJ-6: a pin over its share is not given through spreading either.
+      if (omittedPinIds.has(target.id)) continue
+      if (!historical && isReplacedByDeliverable(target, deliverableIds, supersededBy, replacedFromPrimary)) continue
 
       // Apply decay to co_accessed associations at read time
       const effectiveStrength = assoc.type === 'co_accessed' && assoc.updated_at
@@ -1208,6 +1341,7 @@ export function selectAndSpread(
       spreadCandidates.push(spreadEngram)
       spreadTokens += cost
       visited.add(assoc.target)
+      visited.add(target.id)
     }
   }
 
@@ -1257,7 +1391,7 @@ export function selectAndSpread(
     ...(droppedUnresolvable > 0 || droppedRetired > 0
       ? { spread_drops: { dropped_unresolvable: droppedUnresolvable, dropped_retired: droppedRetired } }
       : {}),
-    omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned, directives),
+    omitted_pinned: dedupeOmitted(pinnedPass.omitted_pinned, [...directives, ...allConsider]),
   }
 }
 
@@ -1316,9 +1450,36 @@ const entrySafe = (value: string): string => collapseLineTerminators(String(valu
  */
 const metaSafe = (value: string): string => entrySafe(value).replace(/\s*\|\s*/g, ' ')
 
+/**
+ * Where a delivered memory came from: the scope it was saved in, on its own
+ * indented continuation line of the entry (INJ-7).
+ *
+ * An entry the agent receives must say whose memory it is — a team rule and a
+ * personal note read the same otherwise. Rendered on every layer, as its own
+ * line rather than a field of the layer-3 meta line, so it reads the same in
+ * every section and cannot be shadowed by a forged meta field.
+ */
+function originLines(engram: WireEngram, indent: string): string[] {
+  const scope = (engram as { scope?: unknown }).scope
+  if (typeof scope !== 'string' || scope === '') return []
+  return [`${indent}Scope: ${entrySafe(scope)}`]
+}
+
+/**
+ * Layer 1 (the "also consider" section) renders the WHOLE statement (INJ-7).
+ *
+ * It used to render `summary ?? statement.slice(0, 60)`: a memory routed here
+ * reached the agent cut to its first 60 characters (or to an auto-summary of a
+ * long statement) while the reply listed it as given. A short form is not the
+ * memory; what is reported as given is delivered whole. The budget already
+ * charges for the rendered entry (`estimateTokens` renders it), so a long
+ * statement costs what it delivers.
+ */
 export function formatLayer1(engram: WireEngram): string {
-  const display = (engram as any).summary ?? engram.statement.slice(0, 60)
-  return `[${engram.id}] ${expiredMarker(engram)}${inferredMark(engram)}${entrySafe(display)}`
+  return [
+    `[${engram.id}] ${expiredMarker(engram)}${inferredMark(engram)}${entrySafe(engram.statement)}`,
+    ...originLines(engram, '  '),
+  ].join('\n')
 }
 
 /**
@@ -1345,12 +1506,14 @@ export function formatLayer2(engram: WireEngram): string {
   return [
     `[${engram.id}] ${expiredMarker(engram)}${inferredMark(engram)}${entrySafe(engram.statement)}`,
     ...contraindicationLines(engram, '  '),
+    ...originLines(engram, '  '),
   ].join('\n')
 }
 
 export function formatLayer3(engram: WireEngram): string {
   const lines = [`[${engram.id}] ${expiredMarker(engram)}${entrySafe(engram.statement)}`]
   lines.push(...contraindicationLines(engram, '  '))
+  lines.push(...originLines(engram, '  '))
   if (engram.rationale) lines.push(`  Rationale: ${entrySafe(engram.rationale)}`)
   const meta: string[] = []
   if (engram.domain) meta.push(`Domain: ${engram.domain}`)
